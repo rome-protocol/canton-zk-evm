@@ -1,0 +1,29 @@
+# A fixture, not a result: the shape of what network/smoke.sh writes now (format 2), with made-up values, so that
+# tests/network_static.sh runs the format 2 checks. The real result is demo/results/smoke.txt.
+format=2
+date=2026-01-01T00:00:00Z
+source_commit=0123456789abcdef0123456789abcdef01234567
+dar_sha256=1111111111111111111111111111111111111111111111111111111111111111
+package_id=2222222222222222222222222222222222222222222222222222222222222222
+chain_id=1
+block=1
+block_hash=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+transactions=0
+gas_used=0
+proof_seconds=1.00
+advance_seconds=1.00
+builder_total_seconds=1.00
+canton_head_number=1
+canton_head_hash=0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+block_record_seen_by_reader=yes
+reth_finalized=yes
+wrapped_proof_bytes=1
+guest_elf_sha256=3333333333333333333333333333333333333333333333333333333333333333
+programVK=0x4444444444444444444444444444444444444444444444444444444444444444
+rootC=0x5555555555555555555555555555555555555555555555555555555555555555
+canton=fixture
+daml_sdk=fixture
+daml_lf_target=2.4
+zisk=fixture
+reth=fixture
+gpu=fixture

@@ -1,0 +1,70 @@
+-- The test form of the sidecar module. It answers in the same one-line format as the real sidecar, but from a
+-- small table instead of checking anything: Daml Script's test ledger cannot make an external call. The header
+-- field of a call picks the scenario, so a test says "block 01" and gets a well-formed answer for it.
+-- Every check Daml makes on an answer is the real one; only where the answer comes from is stubbed. The call goes
+-- through the same hex helpers as the production form: the request body is hex, so is the answer's.
+module Zk.Sidecar where
+
+import qualified DA.Text as T
+import Zk.Hex
+
+-- What the test chain is pinned to, and what the table's blocks carry.
+stubVK, stubRoot, stubHash0, stubHash1, stubHash2, stubStateRoot0, stubStateRoot, stubStateRoot2, tenTokens, fiveTokens : Text
+stubVK = mconcat (replicate 64 "a")
+stubRoot = mconcat (replicate 64 "b")
+stubHash0 = mconcat (replicate 64 "0")       -- the genesis block's hash: the chain's first head
+stubHash1 = mconcat (replicate 64 "1")
+stubHash2 = mconcat (replicate 64 "2")
+stubStateRoot0 = mconcat (replicate 64 "4")  -- the genesis block's state root: the chain's first head state root
+stubStateRoot = mconcat (replicate 64 "5")   -- block 1's
+stubStateRoot2 = mconcat (replicate 64 "6")  -- block 2's
+tenTokens = mconcat (replicate 48 "0") <> "8ac7230489e80000"   -- 10 * 10^18, as 64 hex digits
+fiveTokens = mconcat (replicate 48 "0") <> "4563918244f40000"
+
+-- The stand-in for the extension service: it takes the hex body and answers with a hex body.
+stubService : (Text -> Text) -> Text -> Text
+stubService answer body = toHex (answer (fromHex body))
+
+verifyCall : Text -> Update Text
+verifyCall input = pure (fromHex (stubService verifyAnswer (toHex input)))
+
+factCall : Text -> Update Text
+factCall input = pure (fromHex (stubService factAnswer (toHex input)))
+
+-- Header "01" is a good block 1 on the genesis; "11" a good block 2 on block 1. The rest each get one thing wrong.
+-- A block's state root is the one of its number: block 1's, then block 2's.
+verifyAnswer : Text -> Text
+verifyAnswer input = case T.splitOn "," input of
+  [proof, header, _txs]
+    | proof == "ba" -> "no the proof does not verify"
+    | header == "01" -> ok stubVK stubRoot stubHash1 stubHash0 1 30000000
+    | header == "11" -> ok stubVK stubRoot stubHash2 stubHash1 2 30000000
+    | header == "02" -> ok stubVK stubRoot stubHash1 stubHash2 1 30000000   -- the parent is not the head
+    | header == "03" -> ok stubVK stubRoot stubHash1 stubHash0 2 30000000   -- the number skips one
+    | header == "04" -> ok stubVK stubRoot stubHash1 stubHash0 1 31000000   -- the gas limit is over the cap
+    | header == "05" -> ok stubRoot stubRoot stubHash1 stubHash0 1 30000000 -- proven under another program
+    | header == "06" -> ok stubVK stubVK stubHash1 stubHash0 1 30000000     -- proven under another ZisK release
+  _ -> "no unknown block"
+  where
+    ok vk rc bh ph n gl = T.intercalate " " ["ok", vk, rc, bh, ph, show n, if n == 2 then stubStateRoot2 else stubStateRoot, "1700000000", show gl, "21000", "1"]
+
+-- Like the real sidecar, the stub has proofs only for the roots of its chain: block 1's against the genesis state root
+-- and block 2's against block 1's; under any other pair the proofs do not verify. Storage nodes "ba" fail the storage
+-- proof; "ee" show the balance did not change (the answer is ok with a rise of 64 zeros); "e3" a rise of five tokens;
+-- "e5" a balance that fell; "e1", "e4" and "e2" answer well-formed but for another new root, another parent root and
+-- another holder; any other show a rise of ten tokens.
+factAnswer : Text -> Text
+factAnswer input = case T.splitOn "," input of
+  [root, parentRoot, token, holder, slot, _account, storage, _parentAccount, _parentStorage]
+    | (parentRoot, root) `notElem` [(stubStateRoot0, stubStateRoot), (stubStateRoot, stubStateRoot2)] -> "no the account proof does not verify"
+    | storage == "ba" -> "no the storage proof does not verify"
+    | storage == "e5" -> "no the balance fell"
+    | storage == "ee" -> answer root parentRoot token holder slot (mconcat (replicate 64 "0"))
+    | storage == "e3" -> answer root parentRoot token holder slot fiveTokens
+    | storage == "e1" -> answer stubRoot parentRoot token holder slot tenTokens
+    | storage == "e4" -> answer root stubRoot token holder slot tenTokens
+    | storage == "e2" -> answer root parentRoot token (mconcat (replicate 40 "3")) slot tenTokens
+    | otherwise -> answer root parentRoot token holder slot tenTokens
+  _ -> "no malformed input"
+  where
+    answer root parentRoot token holder slot rise = T.intercalate " " ["ok", root, parentRoot, token, holder, slot, rise]

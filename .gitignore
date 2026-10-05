@@ -1,0 +1,15 @@
+# Per-run state: the JWT secret and the genesis copy reth reads.
+state/
+*.jwt
+jwt.hex
+*.key
+.env
+.env.*
+target/
+prover/make-input/Cargo.lock
+__pycache__/
+daml/build/
+daml/dist/
+node_modules/
+explorer/dist/
+explorer/public/verify/

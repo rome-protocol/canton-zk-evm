@@ -1,0 +1,39 @@
+name: daml
+
+on:
+  pull_request:
+    paths: ["daml/**", ".github/workflows/daml.yml"]
+  push:
+    branches: [main]
+    paths: ["daml/**", ".github/workflows/daml.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: The token-standard packages match their pinned hashes
+        run: cd daml/dars && sha256sum -c SHA256SUMS
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install dpm and the pinned Daml SDK
+        env:
+          # SDK 3.5.12 (the sdk-version in daml.yaml): the publisher's SHA256 for dpm-3.5.12-linux-amd64.tar.gz, as its package registry lists it.
+          SDK_SHA256: af3cb2f3e3a2f99e8733f618383f7f7c2bf58fa63417911c7f73c34fe69b7b63
+        run: |
+          version=$(sed -n 's/^sdk-version: *//p' daml/daml.yaml)
+          bundle="dpm-${version}-linux-amd64.tar.gz"
+          curl -SLf --retry 3 -o "$RUNNER_TEMP/$bundle" "https://artifactregistry.googleapis.com/download/v1/projects/da-images/locations/europe/repositories/public-generic/files/dpm-sdk:${version}:${bundle}:download?alt=media"
+          echo "$SDK_SHA256  $RUNNER_TEMP/$bundle" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/sdk"
+          tar xzf "$RUNNER_TEMP/$bundle" -C "$RUNNER_TEMP/sdk" --strip-components 1
+          "$RUNNER_TEMP/sdk/bin/dpm" bootstrap "$RUNNER_TEMP/sdk"
+          echo "$HOME/.dpm/bin" >> "$GITHUB_PATH"
+      - name: Build the DAR and run the Daml Script tests
+        run: daml/test.sh
+

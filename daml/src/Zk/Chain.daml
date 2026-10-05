@@ -1,0 +1,191 @@
+-- One EVM chain on Canton. A block is one Canton transaction: `ZkChain.Advance` has the sidecar check the block's
+-- proof, checks that the block follows the chain's head, settles the Daml actions tied to it, and moves the
+-- head on. Daml does no hashing and no proof checking; it compares the strings the sidecar answers (README.md).
+module Zk.Chain where
+
+import DA.Action (foldlA)
+import qualified DA.Text as T
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.AllocationV1
+import Zk.Sidecar
+
+isHex : Text -> Bool
+isHex s = all (`elem` T.explode "0123456789abcdef") (T.explode s)
+
+hexField : Text -> Bool
+hexField s = s /= "" && isHex s
+
+-- What `verify` answered for a block (README.md: "verify").
+data Verified = Verified with
+    programVK : Text
+    rootC : Text
+    blockHash : Text
+    parentHash : Text
+    number : Int
+    stateRoot : Text
+    timestamp : Int
+    gasLimit : Int
+    gasUsed : Int
+    txCount : Int
+  deriving (Eq, Show)
+
+-- `ok` and ten fields, or `no` and a reason. Anything else is refused too.
+parseVerify : Text -> Either Text Verified
+parseVerify line = case T.splitOn " " line of
+  ["ok", programVK, rootC, blockHash, parentHash, n, stateRoot, ts, gl, gu, tc]
+    | Some [number, timestamp, gasLimit, gasUsed, txCount] <- mapA T.parseInt [n, ts, gl, gu, tc] ->
+        Right Verified with ..
+  _ -> Left line
+
+-- A leg is a Daml action tied to the block: its terms, and the proofs of the balance they name, at the parent block
+-- and at this one.
+data Leg = Leg with
+    terms : ContractId DvpTerms
+    accountNodes : [Text]
+    storageNodes : [Text]
+    parentAccountNodes : [Text]
+    parentStorageNodes : [Text]
+  deriving (Eq, Show)
+
+noExtraArgs : ExtraArgs
+noExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+template ChainProposal
+  with
+    operator : Party
+    confirmer : Party
+    builder : Party
+    reader : Party
+    chainId : Int
+    genesisHash : Text
+    genesisStateRoot : Text
+    programVK : Text
+    rootC : Text
+    rulesHash : Text
+    gasCap : Int
+  where
+    signatory operator
+    observer confirmer
+    ensure chainId > 0 && gasCap > 0 && all hexField [genesisHash, genesisStateRoot, programVK, rootC, rulesHash]
+
+    -- The pins are this contract's own fields. The confirmer is expected to compare them with its own sidecar and build before it accepts.
+    -- On the one-machine network, up.sh starts the sidecars with the same values it proposes, and propose.py accepts at once.
+    choice Accept : ContractId ZkChain
+      controller confirmer
+      do create ZkChain with headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; ..
+
+-- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
+template ZkChain
+  with
+    operator : Party
+    confirmer : Party
+    builder : Party
+    reader : Party
+    chainId : Int
+    programVK : Text
+    rootC : Text
+    rulesHash : Text
+    gasCap : Int
+    headNumber : Int
+    headHash : Text
+    headStateRoot : Text
+  where
+    signatory operator, confirmer
+    observer builder
+
+    choice Advance : (ContractId ZkChain, ContractId BlockRecord)
+      with
+        headerHex : Text
+        txsHex : Text
+        proofHex : Text
+        legs : [Leg]
+      controller builder
+      do
+        assertMsg "the header, transactions and proof must be lowercase hex" (hexField headerHex && isHex txsHex && hexField proofHex)
+        answer <- verifyCall (T.intercalate "," [proofHex, headerHex, txsHex])
+        b <- either (\why -> abort ("the sidecar refused the block: " <> why)) pure (parseVerify answer)
+        assertMsg "the block was proven by another program" (b.programVK == programVK)
+        assertMsg "the block was proven by another ZisK release" (b.rootC == rootC)
+        assertMsg "the block's parent is not the chain's head" (b.parentHash == headHash)
+        assertMsg "the block's number is not the head's plus one" (b.number == headNumber + 1)
+        assertMsg "the block is over the gas cap" (b.gasLimit <= gasCap && b.gasUsed <= gasCap)
+        _ <- foldlA (settleLeg chainId operator confirmer b.stateRoot headStateRoot) [] legs
+        record <- create BlockRecord with
+          number = b.number; blockHash = b.blockHash; parentHash = b.parentHash; ..
+        next <- create this with headNumber = b.number; headHash = b.blockHash; headStateRoot = b.stateRoot
+        pure (next, record)
+
+-- Ask the sidecar how far the balance the terms name rose between the parent block's state and this block's, and settle
+-- with what it answered. A leg's condition is a payment in this block, not a balance that happens to be true, so one
+-- payment cannot satisfy two terms: at most one leg per token and holder in a block (`seen` is the ones settled so far).
+-- The terms must name this chain's operator and confirmer. Authority would not always refuse others: the builder
+-- is a controller of `Advance`, so terms that name the builder in one of those roles would otherwise pass.
+settleLeg : Int -> Party -> Party -> Text -> Text -> [(Text, Text)] -> Leg -> Update [(Text, Text)]
+settleLeg chain operator confirmer root parentRoot seen leg = do
+  t <- fetch leg.terms
+  assertMsg "the terms are for another chain" (t.chainId == chain)
+  assertMsg "the terms name another operator than the chain's" (t.operator == operator)
+  assertMsg "the terms name another confirmer than the chain's" (t.confirmer == confirmer)
+  assertMsg "two legs in one block name the same token and holder" ((t.token, t.holder) `notElem` seen)
+  answer <- factCall (T.intercalate "," [root, parentRoot, t.token, t.holder, show t.slot,
+    T.intercalate ";" leg.accountNodes, T.intercalate ";" leg.storageNodes,
+    T.intercalate ";" leg.parentAccountNodes, T.intercalate ";" leg.parentStorageNodes])
+  rise <- case T.splitOn " " answer of
+    ["ok", r, p, token, holder, slot, rise] | r == root && p == parentRoot && token == t.token && holder == t.holder && slot == show t.slot -> pure rise
+    _ -> abort ("the sidecar did not confirm the balance: " <> answer)
+  exercise leg.terms Settle with rise
+  pure ((t.token, t.holder) :: seen)
+
+-- One per block: everything a third party needs to replay the chain and re-check each proof.
+template BlockRecord
+  with
+    operator : Party
+    confirmer : Party
+    builder : Party
+    reader : Party
+    chainId : Int
+    number : Int
+    blockHash : Text
+    parentHash : Text
+    headerHex : Text
+    txsHex : Text
+    proofHex : Text
+  where
+    signatory operator, confirmer
+    observer builder, reader
+
+-- "If, in the proven block, the balance of `holder` in `token` rose by exactly `expected`, execute `allocation`." The
+-- allocation is the token standard's own, made by u for v with the operator as executor, so it locks u's holding until then.
+template DvpTerms
+  with
+    u : Party
+    v : Party
+    operator : Party
+    confirmer : Party
+    builder : Party
+    chainId : Int
+    token : Text
+    holder : Text
+    slot : Int
+    expected : Text
+    allocation : ContractId Allocation
+  where
+    signatory u, v
+    observer operator, confirmer, builder
+    -- `expected` is the rise, so it is not zero: terms that expect no rise would settle without a payment.
+    ensure all hexField [token, holder, expected] && T.length expected == 64 && T.explode expected /= replicate 64 "0"
+
+    -- The operator and the confirmer together are the signatories of ZkChain, so their authority is present inside
+    -- `Advance` and nowhere else: no one of them can settle alone, and the builder cannot settle at all.
+    choice Settle : ()
+      with
+        rise : Text
+      controller operator, confirmer
+      do
+        assertMsg "the balance did not rise by the amount the terms expect" (rise == expected)
+        a <- fetch allocation
+        let leg = (view a).allocation
+        assertMsg "the allocation's executor is not the operator" (leg.settlement.executor == operator)
+        assertMsg "the allocation is not from u to v" (leg.transferLeg.sender == u && leg.transferLeg.receiver == v)
+        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+        pure ()

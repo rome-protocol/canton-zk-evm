@@ -1,0 +1,14 @@
+# The canton-zk-evm Daml package. Build it through build.sh, which fills in the dars path and the sidecar form.
+sdk-version: 3.5.12
+name: canton-zk-evm
+version: 0.1.0
+source: src
+dependencies:
+  - daml-prim
+  - daml-stdlib
+data-dependencies:
+  - __DARS__/splice-api-token-metadata-v1-1.0.0.dar
+  - __DARS__/splice-api-token-holding-v1-1.0.0.dar
+  - __DARS__/splice-api-token-allocation-v1-1.0.0.dar
+build-options:
+  - --target=2.1

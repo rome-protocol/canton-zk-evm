@@ -1,0 +1,51 @@
+name: sidecar
+
+on:
+  pull_request:
+    paths: ["sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
+  push:
+    branches: [main]
+    paths: ["sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  sidecar:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: shellcheck sidecar/tests/*.sh
+
+  # A real block and real balance proofs from the project's own reth, taken fresh on every run: the
+  # tests run against them as well as against the stored copy. reth is started only through
+  # network/reth/launch.sh. The folder is kept as an artifact so the stored test data can be refreshed.
+  fresh-reth-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install the packages prover/make-block.py needs
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install eth-account==0.13.7 websockets==15.0.1
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - name: Take a block and balance proofs from reth
+        run: sidecar/tests/capture_fixtures.sh "$RUNNER_TEMP/fresh"
+      - name: Run every test against the fresh data too
+        run: SIDECAR_FIXTURES="$RUNNER_TEMP/fresh" cargo test --locked --manifest-path sidecar/Cargo.toml
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fresh-fixtures
+          path: ${{ runner.temp }}/fresh

@@ -1,0 +1,50 @@
+name: demo
+
+on:
+  pull_request:
+    paths: ["demo/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
+  push:
+    branches: [main]
+    paths: ["demo/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  # No Docker, Canton or GPU: the demo's EVM side against a fake reth, the tamper switch, the genesis override, the recorded results.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: shellcheck demo/*.sh tests/demo_*.sh
+      - run: tests/demo_static.sh
+      - run: tests/demo_explorer_static.sh
+      - name: Install the demo's packages, by hash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r demo/requirements.txt
+      - name: The EVM side (a fake reth) and the sidecar stand-in
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -W error::ResourceWarning -m unittest discover -s demo/tests -v
+          python3 -m unittest discover -s tests -p 'test_demo_sidecar.py' -v
+          python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_demo_call_log.py' -v
+
+  # demo/TKA.bin is what the pinned solc makes of demo/TKA.sol.
+  token:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: demo/build-token.sh --check
+
+  # Everything but the proof: real reth, real Canton and Daml package, real token standard, real builder, the real sidecar for
+  # the balance check; a stand-in prover and a stand-in for the sidecar's proof check (tests/demo_rehearsal.sh says what is real).
+  # The explorer's image is built and run beside the chain, and checked against it.
+  rehearsal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_rehearsal.sh

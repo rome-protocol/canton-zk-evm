@@ -1,0 +1,11 @@
+# What a build from the repository root does not send: state, build folders and the tests (the server's tests sit beside its code).
+**/node_modules
+**/target
+**/dist
+state
+.git
+**/*.test.ts
+**/*.test.tsx
+explorer/test
+explorer/e2e
+explorer/public/verify

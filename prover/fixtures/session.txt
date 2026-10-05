@@ -1,0 +1,31 @@
+# The first proof of this chain: a block with one plain transfer, proved by ZisK on one GPU.
+# Recorded on 2026-10-04, from the guest that prover/build-guest.sh builds (the same ELF from two source folders; see guest/README.md).
+# It replaces the first session's record, whose ELF was built before the build became independent of the source folder.
+# Plain facts, one key=value per line. transfer-proof.json is the proof (the four fields of
+# cargo-zisk-dev export-solidity-calldata); wrapped-proof.hex is the same four one after the other.
+zisk=1.3.1-alpha
+guest=zisk-eth-client v0.13.1 (edf8adcda75c015f4225abe3aabb3bed03e21beb) with the chain-rules check
+chain_id=770101
+# Block 1's parent is a throwaway genesis: a copy of network/genesis.json that also funds a test key.
+block=1
+block_hash=0x61c57c4cc50a0e5f93dc480d906bccc27ce33784c6c6d433673bd6d5f453bef6
+transactions=1
+gas_used=21000
+elf_sha256=44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf
+programVK=0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f
+rootC=0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4
+rulesHash=47bebde79a0c22167b3f4470458a0cfc86abab759da506c455297cfe70fedd27
+input_sha256=c8a967e3df673a3f52eada69cdfad72c136487983dfd522530bfbf61d8cc2d44
+gpu=NVIDIA RTX PRO 6000 Blackwell Server Edition, driver 580.178.04
+steps=385277
+# Seconds. The prover was already running with its keys loaded; the first setup of the program took 43 s.
+# guest_build_seconds is all of prover/build-guest.sh from an empty build folder, the dependency download included.
+prove_seconds=6.33 6.75 6.69
+guest_build_seconds=125
+program_setup_seconds=43
+wrapped_proof_bytes=1344
+verified_cargo_zisk=yes
+verified_zk_verifier=yes
+# The same input with the chain id changed to 1 in its chain config was refused:
+# the guest stops with "Chain config is not this chain's" and the prover returns no proof (checked again on this ELF).
+other_chain_id_refused=yes

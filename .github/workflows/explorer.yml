@@ -1,0 +1,67 @@
+name: explorer
+
+on:
+  pull_request:
+    paths: ["explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
+  push:
+    branches: [main]
+    paths: ["explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Fakes only: a fake reth and a fake Ledger API. No Docker network, Canton or GPU. The tests run in the pinned Node image, and the pages must build.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Type-check and run the tests, from the lockfile
+        run: |
+          set -a; . ./PINS; set +a
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npm run typecheck && npm test && npm run build"
+
+  # The Ledger API calls, against the OpenAPI document that the pinned Canton writes itself: the requests the explorer sends must be
+  # fields that document names, and the fake Ledger API's answers must have its shape. Starts Canton's participants; no bootstrap, no GPU.
+  ledger-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: shellcheck explorer/*.sh
+      - name: Save the pinned Canton's OpenAPI document
+        run: explorer/check-ledger-api.sh "$RUNNER_TEMP/openapi.json"
+      - name: Check the explorer's calls against it
+        run: |
+          set -a; . ./PINS; set +a
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e CANTON_OPENAPI=/openapi.json -v "$RUNNER_TEMP/openapi.json:/openapi.json:ro" -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run server/ledger.openapi.test.ts"
+
+  # The Verify button's check: the sidecar's own `verify`, built for WebAssembly by explorer/verify/. It runs when the sidecar,
+  # the verifier or the trie checker changes, because the module is built from them. The Rust tests check that the module's
+  # export answers as the sidecar does; then the built file is loaded in Node through the page's own loader and asked the same.
+  verify-wasm:
+    runs-on: ubuntu-latest
+    env:
+      WASM: explorer/verify/target/wasm32-unknown-unknown/release/zk_explorer_verify.wasm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: rustup target add wasm32-unknown-unknown
+      # The module is built with explorer/verify/Cargo.lock, the confirmers' sidecar with sidecar/Cargo.lock. A crate in both must be at the same version.
+      - run: shellcheck explorer/verify/check-lock-versions.sh explorer/verify/build.sh
+      - run: explorer/verify/check-lock-versions.sh
+      - run: cargo fmt --check --manifest-path explorer/verify/Cargo.toml
+      - run: cargo clippy --locked --all-targets --manifest-path explorer/verify/Cargo.toml -- -D warnings
+      - run: cargo test --locked --manifest-path explorer/verify/Cargo.toml
+      - name: Build for WebAssembly, into the folder the explorer serves it from
+        run: explorer/verify/build.sh
+      - name: Run the loader's and the block page's tests on the built file, and check the pages' build serves it
+        run: |
+          set -a; . ./PINS; set +a
+          ls -l "$WASM"
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e VERIFY_WASM="/repo/$WASM" -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run src/verify src/pages/block.test.tsx && npm run build && cmp dist/verify/zk_explorer_verify.wasm verify/target/wasm32-unknown-unknown/release/zk_explorer_verify.wasm"

@@ -1,0 +1,42 @@
+name: verifier
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verifier:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: verifier
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  mpt:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mpt
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  # A real proof from the project's own reth. reth is started only through network/reth/launch.sh.
+  mpt-reth-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Take a proof from reth
+        run: tests/capture_proof.sh "$RUNNER_TEMP/reth-proof"
+      - name: Check it with zk-mpt
+        run: ZK_MPT_RETH_PROOF="$RUNNER_TEMP/reth-proof" cargo test --locked --manifest-path mpt/Cargo.toml -- --ignored

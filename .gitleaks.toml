@@ -1,0 +1,15 @@
+# Use the default rules, with one exception: the proofs in mpt/fixtures are public node
+# answers. Their "key" field is a storage slot (a 32-byte hash), not a secret.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Storage slots in eth_getProof test data"
+paths = ['''mpt/fixtures/[a-z_]+\.json''']
+
+[[allowlists]]
+description = "The test token's contract address in the demo's results: a public address on the local chain, not a secret"
+condition = "AND"
+paths = ['''demo/results/run[12]\.txt''']
+regexTarget = "line"
+regexes = ['''token=0x[0-9a-f]{40}$''']

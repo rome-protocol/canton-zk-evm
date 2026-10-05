@@ -1,0 +1,60 @@
+canton-zk-evm
+Copyright © 2026 Coin Vesting Inc. d/b/a Rome Protocol. All rights reserved.
+
+Everything in this repository is under the licence in LICENSE, except the third-party parts below,
+which keep their own licences.
+
+guest/ (except guest/rules/, guest/fixtures/, guest/README.md and the two changes marked "canton-zk-evm change")
+    A copy of part of zisk-eth-client (https://github.com/0xPolygonHermez/zisk-eth-client),
+    tag v0.13.1. Licensed under Apache-2.0 or MIT, at your option: guest/LICENSE-APACHE and
+    guest/LICENSE-MIT. guest/rules/, guest/fixtures/, guest/README.md and the two marked changes are
+    Rome Protocol's, under LICENSE.
+
+daml/dars/
+    The Canton token standard API packages and the reference test token, unchanged files of the
+    Splice 0.8.3 release (https://github.com/digital-asset/decentralized-canton-sync). Apache-2.0;
+    the licence text is in daml/dars/LICENSE-APACHE.
+
+verifier/src/vk.rs
+    Contains numerical verification-key parameters extracted from ZisK v1.3.1-alpha, commit
+    306a9c934ba4947b1d586d69b67120f8b4c41466, zisk-contracts/PlonkVerifier.sol (a generated file
+    marked GPL-3.0). Only the mathematical parameter values were taken; the Rust verifier was written
+    independently by Rome Protocol. The file also holds the same kind of parameters from ZisK
+    v1.2.0-alpha, commit fbbc69bcd2ea9a78d1a438b4a897bc48ff0b00a3, used only in tests.
+
+explorer/
+    Rome Protocol's own code, under LICENSE, except for the third-party parts listed here. The
+    explorer uses three groups of them: npm packages, Rust crates compiled into WebAssembly, and fonts.
+
+    npm packages, pinned exactly in explorer/package-lock.json and not copied into this repository.
+    The pages are built from react, react-dom, scheduler, react-router, react-router-dom, cookie,
+    set-cookie-parser, @tanstack/react-query and @tanstack/query-core, all MIT-licensed. The server
+    runs with viem and the packages it depends on (@adraffy/ens-normalize,
+    @noble/ciphers, @noble/curves, @noble/hashes, @scure/base, @scure/bip32, @scure/bip39, abitype,
+    eventemitter3, isows, ox and ws), all MIT-licensed; they are installed from npm and not shipped
+    with the pages. The build and test tools (Vite, Vitest, jsdom, Testing Library and their
+    dependencies, under MIT, ISC, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC0-1.0, MIT-0, MPL-2.0
+    for lightningcss, and Apache-2.0 for TypeScript and its native compiler packages, aria-query,
+    detect-libc, expect-type and xml-name-validator) are not shipped with it.
+
+    Rust crates in the WebAssembly file built by explorer/verify/ (the Verify check). The file is
+    built from this repository's sidecar, verifier and mpt crates and from these crates, as pinned in
+    explorer/verify/Cargo.lock. Each is licensed under MIT, under Apache-2.0, or under both at your
+    option (zerocopy also offers BSD-2-Clause as a third option):
+    ahash, allocator-api2, ark-bn254, ark-ec, ark-ff, ark-poly, ark-serialize, ark-std, arrayvec,
+    ascii, block-buffer, cfg-if, chunked_transfer, crypto-common, digest, either, generic-array,
+    hashbrown, httpdate, itertools, keccak, log, num-bigint, num-integer, num-traits, once_cell,
+    ppv-lite86, rand, rand_chacha, rand_core, sha2, sha3, tiny_http, typenum, zerocopy, zeroize.
+    (generic-array is MIT only.) The file also contains the Rust standard library for the
+    wasm32-unknown-unknown target and the libraries it is built with, under MIT or Apache-2.0.
+    Running cargo tree --locked --target wasm32-unknown-unknown -e normal,no-proc-macro --format
+    "{p} {l}" in explorer/verify lists each crate with its licence.
+
+    IBM Plex Sans and IBM Plex Mono, in explorer/public/fonts/: the Latin subsets as packaged by
+    Fontsource (https://fontsource.org), copyright IBM Corp. Licensed under the SIL Open Font
+    License 1.1. The licence texts are in OFL-IBM-Plex-Sans.txt and OFL-IBM-Plex-Mono.txt, next to the
+    font files, and the explorer serves them with the fonts. The explorer serves the fonts itself and
+    loads no font from another host.
+
+Tools and images used at build or run time (reth, Canton, the Daml SDK, ZisK, and others pinned in
+PINS) are not part of this repository and are under their own licences.

@@ -1,0 +1,33 @@
+name: builder
+
+on:
+  pull_request:
+    paths: ["builder/**", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
+  push:
+    branches: [main]
+    paths: ["builder/**", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Fakes only: a fake reth, a fake Canton Ledger API and a fake prover. No real Canton, GPU or reth.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Python 3.12
+        run: python3 --version | grep -q '^Python 3\.12\.'
+      - name: Install the one dependency, by hash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r builder/requirements.txt
+      - name: Run the tests
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s builder/tests -v
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: shellcheck builder/tests/*.sh

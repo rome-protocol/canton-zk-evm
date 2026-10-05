@@ -1,0 +1,24 @@
+[package]
+name = "cze-rules"
+description = "The chain settings the guest is built for, and the rules hash that stands for them."
+version = "0.1.0"
+edition = "2021"
+license-file = "../../LICENSE"
+publish = false
+
+# Its own workspace, so that it can be built and tested on its own, without the guest's
+# dependencies. The guest uses it as a path dependency.
+[workspace]
+
+[dependencies]
+# Pinned to the same alloy-genesis as the guest (the version in the guest's Cargo.lock), so the
+# hash computed here is the hash computed inside the guest.
+alloy-genesis = "=2.0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+alloy-genesis = { version = "=2.0.5", features = ["serde-bincode-compat"] }
+bincode = { version = "2.0", features = ["serde"] }
+serde_with = "3"

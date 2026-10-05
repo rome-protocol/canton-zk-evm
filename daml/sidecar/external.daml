@@ -1,0 +1,16 @@
+-- The production form of the sidecar module: each call goes to the "canton-zk-evm" extension service
+-- that every confirming participant runs beside it. Canton runs the call at the submitting participant and
+-- again at every confirmer, and rejects the transaction if the answers differ.
+-- Needs a Daml toolchain that has DA.ExternalCall. daml/README.md says which, and how this is tested.
+module Zk.Sidecar where
+
+import DA.ExternalCall (externalCall)
+import Zk.Hex
+
+-- The proof, header and transactions in; one line out (README: "verify").
+verifyCall : Text -> Update Text
+verifyCall input = fromHex <$> externalCall "canton-zk-evm" "verify" "" (toHex input)
+
+-- A state root, a token, a holder, a slot and two storage proofs in; one line out (README: "fact").
+factCall : Text -> Update Text
+factCall input = fromHex <$> externalCall "canton-zk-evm" "fact" "" (toHex input)

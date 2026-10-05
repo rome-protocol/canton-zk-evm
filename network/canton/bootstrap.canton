@@ -1,0 +1,53 @@
+// Brings the Canton network up for the chain: starts the nodes, bootstraps the synchronizer, connects the three
+// participants, creates the parties and the Ledger API users, uploads the Daml package and vets it.
+// Writes the party ids to $CZE_STATE_DIR/canton/parties.env for the scripts that follow.
+// The DAR is the real form of the package (daml/build.sh external): path in $CZE_DAR.
+
+val stateDir = sys.env.getOrElse("CZE_STATE_DIR", "state")
+val darPath = sys.env.getOrElse("CZE_DAR", sys.error("set CZE_DAR to the built canton-zk-evm external DAR"))
+
+nodes.local.start()
+bootstrap.synchronizer_local()
+
+Seq(operator, confirmer, users).foreach { p =>
+  p.synchronizers.connect_local(sequencer1, alias = "da")
+}
+
+val operatorParty = operator.parties.enable("operator")
+val builderParty = operator.parties.enable("builder")
+val confirmerParty = confirmer.parties.enable("confirmer")
+val uParty = users.parties.enable("u")
+val vParty = users.parties.enable("v")
+val registryParty = users.parties.enable("registry")
+val readerParty = users.parties.enable("reader")
+
+// One Ledger API user per acting party. The network runs without Ledger API authentication.
+operator.ledger_api.users.create("operator", actAs = Set(operatorParty), primaryParty = Some(operatorParty))
+operator.ledger_api.users.create("builder", actAs = Set(builderParty), readAs = Set(operatorParty), primaryParty = Some(builderParty))
+confirmer.ledger_api.users.create("confirmer", actAs = Set(confirmerParty), primaryParty = Some(confirmerParty))
+users.ledger_api.users.create("u", actAs = Set(uParty), primaryParty = Some(uParty))
+users.ledger_api.users.create("v", actAs = Set(vParty), primaryParty = Some(vParty))
+users.ledger_api.users.create("registry", actAs = Set(registryParty), primaryParty = Some(registryParty))
+users.ledger_api.users.create("reader", readAs = Set(readerParty), primaryParty = Some(readerParty))
+// The demo's setup (demo/canton.py) acts for U, V and the registry together: they are on one participant, and the
+// Daml terms they sign are one submission by both.
+users.ledger_api.users.create("demo", actAs = Set(uParty, vParty, registryParty), primaryParty = Some(uParty))
+
+// Every participant that hosts a stakeholder needs the package, and vets it. The DAR carries its token-standard dependencies.
+Seq(operator, confirmer, users).foreach { p =>
+  p.dars.upload(darPath, vetAllPackages = true, synchronizeVetting = true)
+}
+
+val lines = Seq(
+  s"OPERATOR_PARTY=${operatorParty.toProtoPrimitive}",
+  s"BUILDER_PARTY=${builderParty.toProtoPrimitive}",
+  s"CONFIRMER_PARTY=${confirmerParty.toProtoPrimitive}",
+  s"U_PARTY=${uParty.toProtoPrimitive}",
+  s"V_PARTY=${vParty.toProtoPrimitive}",
+  s"REGISTRY_PARTY=${registryParty.toProtoPrimitive}",
+  s"READER_PARTY=${readerParty.toProtoPrimitive}",
+)
+val out = java.nio.file.Path.of(stateDir, "canton", "parties.env")
+java.nio.file.Files.createDirectories(out.getParent)
+java.nio.file.Files.writeString(out, lines.mkString("", "\n", "\n"))
+println("BOOTSTRAP DONE")

@@ -1,0 +1,50 @@
+# Trimmed copy of the workspace file of zisk-eth-client v0.13.1 (see README.md in this folder).
+# Only the two library crates the reth guest needs are members, and only the dependencies they
+# use are listed. The guest itself (bin/guests/stateless-validator-reth) is its own workspace,
+# as upstream.
+[workspace]
+members = [
+    "crates/common/guest-common",
+    "crates/clients/reth/guest",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.10.0"
+edition = "2021"
+
+[workspace.dependencies]
+guest-common = { path = "crates/common/guest-common" }
+
+# crates.io dependencies
+zisk-zkvm-interface = "1.3.1-alpha"
+ziskos = "1.3.1-alpha"
+
+revm = { version = "38.0.0", default-features = false }
+
+# types (for reth)
+alloy-rlp = "0.3"
+alloy-primitives = "1.5.6"
+alloy-consensus = { version = "2.0.0", default-features = false }
+alloy-genesis = "2.0.0"
+alloy-rpc-types-debug = "2.0.0"
+
+# reth
+reth-primitives-traits = { version = "0.3.0", default-features = false }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", tag = "v2.1.0", default-features = false }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", tag = "v2.1.0", default-features = false }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", tag = "v2.1.0", default-features = false }
+stateless-reth = { git = "https://github.com/paradigmxyz/stateless", rev = "e5480e71a8031641ff471cad9dc482a7a14b32d5", package = "stateless" }
+stateless-reth-tries = { git = "https://github.com/paradigmxyz/stateless", rev = "e5480e71a8031641ff471cad9dc482a7a14b32d5", package = "tries" }
+
+# common dependencies
+anyhow = "1.0"
+bincode = { version = "2.0", default-features = false, features = [
+  "serde",
+  "std",
+] }
+k256 = { version = "0.13.4" }
+tiny-keccak = { version = "2.0.0", features = ["keccak"] }
+rayon = "1.11.0"
+serde = "1.0"
+serde_with = "3.14"

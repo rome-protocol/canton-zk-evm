@@ -1,0 +1,31 @@
+-- The external call carries text as hex: the request and the response bodies are the hex of the ASCII line,
+-- lowercase, with no newline at either end (README.md: "What the sidecar answers"). Both forms of Zk.Sidecar use these.
+module Zk.Hex where
+
+import DA.List ((!!))
+import qualified DA.Text as T
+
+hexDigits : [Text]
+hexDigits = T.explode "0123456789abcdef"
+
+-- Two lowercase hex digits for each character. The lines are ASCII.
+toHex : Text -> Text
+toHex s = T.implode [hexDigits !! (c / 16) <> hexDigits !! (c % 16) | c <- T.toCodePoints s]
+
+-- The line a hex body spells; "" if the body is not whole bytes of hex, which no valid answer is.
+fromHex : Text -> Text
+fromHex s = case pairs (T.explode s) of
+  Some cs -> T.fromCodePoints cs
+  None -> ""
+
+pairs : [Text] -> Optional [Int]
+pairs [] = Some []
+pairs (a :: b :: rest) = do
+  hi <- digit a
+  lo <- digit b
+  tail <- pairs rest
+  pure ((hi * 16 + lo) :: tail)
+pairs _ = None
+
+digit : Text -> Optional Int
+digit d = lookup d (zip hexDigits [0 .. 15])

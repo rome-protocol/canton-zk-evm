@@ -1,0 +1,275 @@
+-- Daml Script tests for the canton-zk-evm package, run against its stub form (daml/README.md: "How the
+-- external call is tested"). The token is the Splice reference token, driven through the standard's own factory.
+module Zk.ChainTest where
+
+import DA.Assert ((===))
+import DA.Foldable (forA_)
+import DA.List (sort)
+import DA.Time (addRelTime, days)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import qualified Splice.Api.Token.HoldingV1 as H
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationInstructionV1
+import Splice.Testing.Tokens.TestTokenV1 (Token(..), TokenRules(..))
+
+import Zk.Chain
+import Zk.Hex
+import Zk.Sidecar
+
+data F = F with
+  operator, confirmer, builder, reader, registry, u, v : Party
+  chain : ContractId ZkChain
+  terms : ContractId DvpTerms
+  rulesCid : ContractId TokenRules
+  rules : Disclosure
+
+tokenAddr, uAddr : Text
+tokenAddr = mconcat (replicate 20 "11")
+uAddr = mconcat (replicate 20 "22")
+
+-- Whom the terms (and the allocation's executor) name as the operator and the confirmer. `Honest` names the chain's own.
+-- The others name the builder in one role: the authority present in `Advance` would still let such a leg settle
+-- (the builder is the controller, the chain's signatories are there too), so only the chain's own check refuses it.
+data Naming = Honest | BuilderAsOperator | BuilderAsConfirmer
+
+-- A chain at its genesis; U holds 100 test tokens and has allocated 10 of them to V, executor the operator;
+-- U and V have signed the terms "if U's address gained ten tokens in this block, execute that allocation".
+fixture : Script F
+fixture = fixtureWith Honest
+
+fixtureWith : Naming -> Script F
+fixtureWith naming = do
+  [operator, confirmer, builder, reader, registry, u, v] <- mapA allocateParty ["Operator", "Confirmer", "Builder", "Reader", "Registry", "U", "V"]
+  proposal <- submit operator $ createCmd ChainProposal with
+    chainId = 770101; genesisHash = stubHash0; genesisStateRoot = stubStateRoot0; programVK = stubVK; rootC = stubRoot; rulesHash = stubRoot; gasCap = 30000000; ..
+  chain <- submit confirmer $ exerciseCmd proposal Accept
+  rulesCid <- submit registry $ createCmd TokenRules with admin = registry
+  Some rules <- queryDisclosure registry rulesCid
+  let termsOperator = case naming of BuilderAsOperator -> builder; _ -> operator
+  let termsConfirmer = case naming of BuilderAsConfirmer -> builder; _ -> confirmer
+  terms <- makeTerms operator confirmer builder registry rulesCid rules u v termsOperator termsConfirmer "dvp-1"
+  pure F with ..
+
+-- U allocates 10 test tokens to V (executor `exec`), and U and V sign terms for it. U's holding is a fresh one of 100,
+-- so more than one pair of terms can be made.
+makeTerms : Party -> Party -> Party -> Party -> ContractId TokenRules -> Disclosure -> Party -> Party -> Party -> Party -> Text -> Script (ContractId DvpTerms)
+makeTerms operator confirmer builder registry rulesCid rules u v exec conf ref = do
+  now <- getTime
+  let instrument = H.InstrumentId with admin = registry; id = "TKA"
+  holding <- submit (actAs [u, registry]) $ createCmd Token with
+    holding = H.HoldingView with owner = u; instrumentId = instrument; amount = 100.0; lock = None; meta = emptyMetadata
+  let spec = AllocationSpecification with
+        settlement = SettlementInfo with
+          executor = exec; settlementRef = Reference with id = ref; cid = None
+          requestedAt = now; allocateBefore = addRelTime now (days 1); settleBefore = addRelTime now (days 2); meta = emptyMetadata
+        transferLegId = "leg"
+        transferLeg = TransferLeg with sender = u; receiver = v; amount = 10.0; instrumentId = instrument; meta = emptyMetadata
+  r <- submit (actAs u <> disclose rules) $ exerciseCmd (toInterfaceContractId @AllocationFactory rulesCid) AllocationFactory_Allocate with
+    expectedAdmin = registry; allocation = spec; requestedAt = now
+    inputHoldingCids = [toInterfaceContractId @H.Holding holding]; extraArgs = noExtraArgs
+  allocation <- case r.output of
+    AllocationInstructionResult_Completed cid -> pure cid
+    _ -> abort "the reference token completes an allocation at once"
+  submit (actAs [u, v]) $ createCmd DvpTerms with
+    operator = exec; confirmer = conf
+    chainId = 770101; token = tokenAddr; holder = uAddr; slot = 3; expected = tenTokens; ..
+
+-- The builder's submission: it sees the terms and the allocation as the parties' participants hand them over.
+asBuilder : F -> SubmitOptions
+asBuilder f = actAs f.builder <> readAs [f.operator, f.confirmer, f.u, f.v, f.registry] <> disclose f.rules
+
+advance : F -> ContractId ZkChain -> Text -> Text -> Text -> [ContractId DvpTerms] -> Commands (ContractId ZkChain, ContractId BlockRecord)
+advance f chain header proof storage legs = exerciseCmd chain Advance with
+  headerHex = header; txsHex = ""; proofHex = proof
+  legs = [Leg with terms = t; accountNodes = ["aa"]; storageNodes = [storage]; parentAccountNodes = ["aa"]; parentStorageNodes = ["cc"] | t <- legs]
+
+-- V's tokens, as amounts.
+vHolds : F -> Script [Decimal]
+vHolds f = map (\(_, t) -> t.holding.amount) <$> query @Token f.v
+
+-- The chain still stands at its genesis and U's holding is where it was: nothing was written.
+nothingMoved : F -> Script ()
+nothingMoved f = do
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headHash) === (0, stubHash0)
+  query @BlockRecord f.operator >>= \rs -> length rs === 0
+  vHolds f >>= \xs -> xs === []
+  Some _ <- queryContractId f.u f.terms
+  pure ()
+
+-- An Advance the chain must refuse, and that leaves nothing behind.
+refused : Text -> Text -> Text -> Script ()
+refused header proof storage = refusedBlock Honest header proof storage
+
+-- A good block carrying terms that name other parties than the chain's.
+refusedWith : Naming -> Script ()
+refusedWith naming = refusedBlock naming "01" "aa" "bb"
+
+refusedBlock : Naming -> Text -> Text -> Text -> Script ()
+refusedBlock naming header proof storage = do
+  f <- fixtureWith naming
+  submitMustFail (asBuilder f) $ advance f f.chain header proof storage [f.terms]
+  nothingMoved f
+
+-- The call bodies are the hex of the ASCII line: lowercase, no newline.
+testHexOfTheAsciiLine : Script ()
+testHexOfTheAsciiLine = do
+  toHex "ok 5,;" === "6f6b20352c3b"
+  fromHex "6f6b20352c3b" === "ok 5,;"
+  fromHex (toHex "no the proof does not verify") === "no the proof does not verify"
+  fromHex "6f6" === ""      -- an odd number of digits is not a body
+  fromHex "6g" === ""       -- nor is a non-hex digit
+
+testAcceptCreatesChain : Script ()
+testAcceptCreatesChain = do
+  f <- fixture
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headHash, c.programVK, c.rootC, c.gasCap) === (0, stubHash0, stubVK, stubRoot, 30000000)
+  c.builder === f.builder
+  -- the confirmer's signature is what makes the pins binding: the operator cannot accept for it
+  p <- submit f.operator $ createCmd ChainProposal with
+    operator = f.operator; confirmer = f.confirmer; builder = f.builder; reader = f.reader
+    chainId = 1; genesisHash = stubHash0; genesisStateRoot = stubStateRoot0; programVK = stubVK; rootC = stubRoot; rulesHash = stubRoot; gasCap = 1
+  submitMustFail f.operator $ exerciseCmd p Accept
+
+testAdvanceMovesHoldingAndRecordsBlock : Script ()
+testAdvanceMovesHoldingAndRecordsBlock = do
+  f <- fixture
+  (next, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" [f.terms]
+  vHolds f >>= \xs -> xs === [10.0]
+  None <- queryContractId f.u f.terms           -- the terms are consumed
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headHash) === (1, stubHash1)
+  [(_, r)] <- query @BlockRecord f.reader      -- the reader party sees the record
+  (r.number, r.blockHash, r.parentHash, r.proofHex) === (1, stubHash1, stubHash0, "aa")
+
+testBlocksChainOn : Script ()
+testBlocksChainOn = do
+  f <- fixture
+  (c1, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" []
+  (_, _) <- submit (asBuilder f) $ advance f c1 "11" "aa" "bb" []
+  rs <- query @BlockRecord f.reader
+  sort [r.number | (_, r) <- rs] === [1, 2]
+
+testRefusesWrongParent : Script ()
+testRefusesWrongParent = refused "02" "aa" "bb"
+
+testRefusesWrongNumber : Script ()
+testRefusesWrongNumber = refused "03" "aa" "bb"
+
+testRefusesOverTheGasCap : Script ()
+testRefusesOverTheGasCap = refused "04" "aa" "bb"
+
+testRefusesWrongProgramKey : Script ()
+testRefusesWrongProgramKey = refused "05" "aa" "bb"
+
+testRefusesWrongZiskRelease : Script ()
+testRefusesWrongZiskRelease = refused "06" "aa" "bb"
+
+testRefusesAFailingProof : Script ()
+testRefusesAFailingProof = refused "01" "ba" "bb"
+
+-- The proof is good but the balance did not rise at all in this block (the stub's "ee"), or rose by another amount ("e3"):
+-- the whole block is refused, nothing moves.
+testRefusesABalanceThatDidNotRise : Script ()
+testRefusesABalanceThatDidNotRise = refused "01" "aa" "ee"
+
+testRefusesARiseOfAnotherAmount : Script ()
+testRefusesARiseOfAnotherAmount = refused "01" "aa" "e3"
+
+-- A balance that fell is no rise: the sidecar answers no.
+testRefusesABalanceThatFell : Script ()
+testRefusesABalanceThatFell = refused "01" "aa" "e5"
+
+testRefusesAFailingStorageProof : Script ()
+testRefusesAFailingStorageProof = refused "01" "aa" "ba"
+
+-- Daml checks the sidecar's answer is about the roots and the holder it asked about.
+testRefusesAnAnswerForAnotherRoot : Script ()
+testRefusesAnAnswerForAnotherRoot = refused "01" "aa" "e1"
+
+testRefusesAnAnswerForAnotherParentRoot : Script ()
+testRefusesAnAnswerForAnotherParentRoot = refused "01" "aa" "e4"
+
+testRefusesAnAnswerForAnotherHolder : Script ()
+testRefusesAnAnswerForAnotherHolder = refused "01" "aa" "e2"
+
+-- Terms that name another operator, or another confirmer, than the chain's are not settled by it, even when
+-- the builder (who is a controller of `Advance`) stands in the named role.
+testRefusesTermsNamingAnotherOperator : Script ()
+testRefusesTermsNamingAnotherOperator = refusedWith BuilderAsOperator
+
+testRefusesTermsNamingAnotherConfirmer : Script ()
+testRefusesTermsNamingAnotherConfirmer = refusedWith BuilderAsConfirmer
+
+-- Terms written for another chain are not settled by this one.
+testRefusesTermsForAnotherChain : Script ()
+testRefusesTermsForAnotherChain = do
+  f <- fixture
+  Some old <- queryContractId f.u f.terms
+  other <- submit (actAs [f.u, f.v]) $ createCmd DvpTerms with
+    u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder
+    chainId = 2; token = tokenAddr; holder = uAddr; slot = 3; expected = tenTokens; allocation = old.allocation
+  submitMustFail (asBuilder f) $ advance f f.chain "01" "aa" "bb" [other]
+  nothingMoved f
+
+-- Settle works only inside Advance: the operator alone, the confirmer alone, the builder or U alone are all refused.
+testSettleOutsideAdvanceIsRefused : Script ()
+testSettleOutsideAdvanceIsRefused = do
+  f <- fixture
+  let readers = readAs [f.operator, f.confirmer, f.u, f.v, f.registry, f.builder] <> disclose f.rules
+  forA_ [f.operator, f.confirmer, f.builder, f.u] $ \p ->
+    submitMustFail (actAs p <> readers) $ exerciseCmd f.terms Settle with rise = tenTokens
+  nothingMoved f
+
+-- Only the builder advances the chain.
+testOnlyTheBuilderAdvances : Script ()
+testOnlyTheBuilderAdvances = do
+  f <- fixture
+  forA_ [f.operator, f.confirmer, f.reader] $ \p ->
+    submitMustFail (actAs p <> readAs [f.builder, f.u, f.v, f.registry] <> disclose f.rules) $ advance f f.chain "01" "aa" "bb" [f.terms]
+  nothingMoved f
+
+-- The balance must have risen in THIS block. A payment that made the balance true in block 1 does not let terms
+-- written afterwards settle in block 2: nothing was paid in block 2, the balance did not rise (the stub's "ee").
+testALeftoverTermsCannotSettleInALaterBlock : Script ()
+testALeftoverTermsCannotSettleInALaterBlock = do
+  f <- fixture
+  (c1, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" []
+  submitMustFail (asBuilder f) $ advance f c1 "11" "aa" "ee" [f.terms]
+  Some _ <- queryContractId f.u f.terms
+  vHolds f >>= \xs -> xs === []
+
+-- A payment in a later block settles in that block: the parent root Daml gives the sidecar is the head's, block 1's
+-- (the stub has proofs only for that pair of roots).
+testALegSettlesInALaterBlock : Script ()
+testALegSettlesInALaterBlock = do
+  f <- fixture
+  (c1, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" []
+  (_, _) <- submit (asBuilder f) $ advance f c1 "11" "aa" "bb" [f.terms]
+  vHolds f >>= \xs -> xs === [10.0]
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headStateRoot) === (2, stubStateRoot2)
+
+-- One payment must not satisfy two terms: two terms for the same token and holder in one block are refused,
+-- though each alone would settle.
+testTwoTermsForTheSameHolderInOneBlockAreRefused : Script ()
+testTwoTermsForTheSameHolderInOneBlockAreRefused = do
+  f <- fixture
+  second <- makeTerms f.operator f.confirmer f.builder f.registry f.rulesCid f.rules f.u f.v f.operator f.confirmer "dvp-2"
+  submitMustFail (asBuilder f) $ advance f f.chain "01" "aa" "bb" [f.terms, second]
+  nothingMoved f
+  -- each alone is fine
+  _ <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" [second]
+  vHolds f >>= \xs -> xs === [10.0]
+
+-- Terms that expect no rise at all would settle without any payment.
+testTermsExpectingNothingAreRefused : Script ()
+testTermsExpectingNothingAreRefused = do
+  f <- fixture
+  Some old <- queryContractId f.u f.terms
+  submitMustFail (actAs [f.u, f.v]) $ createCmd DvpTerms with
+    u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder
+    chainId = 770101; token = tokenAddr; holder = uAddr; slot = 3; expected = mconcat (replicate 64 "0"); allocation = old.allocation

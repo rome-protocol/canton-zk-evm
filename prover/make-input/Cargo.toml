@@ -1,0 +1,24 @@
+[package]
+name = "cze-make-input"
+description = "Turns one block, its execution witness and the chain's genesis into the prover input, with zisk-eth-client's own input code."
+version = "0.1.0"
+edition = "2021"
+license-file = "../../LICENSE"
+publish = false
+
+# Its own workspace. It builds against a checkout of zisk-eth-client at the pinned commit, which
+# make-input.sh puts in state/zisk-eth-client and whose Cargo.lock it starts from, so that every
+# shared dependency has the version upstream uses.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+alloy-genesis = "2.0.0"
+alloy-rpc-types-debug = "2.0.0"
+alloy-rpc-types-eth = "2.0.0"
+serde_json = "1"
+input-reth = { path = "../../state/zisk-eth-client/crates/clients/reth/input" }
+stateless-reth = { git = "https://github.com/paradigmxyz/stateless", rev = "e5480e71a8031641ff471cad9dc482a7a14b32d5", package = "stateless" }
+
+[patch.crates-io]
+ruint = { git = "https://github.com/0xPolygonHermez/zisk-patch-ruint.git", branch = "zisk-patch/v1.19.0" }

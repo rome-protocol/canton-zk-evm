@@ -1,0 +1,26 @@
+[package]
+name = "zk-explorer-verify"
+description = "The sidecar's block check, built for WebAssembly so that a browser can run it."
+version = "0.1.0"
+edition = "2021"
+license-file = "../../LICENSE"
+publish = false
+
+[lib]
+# cdylib is the .wasm file; rlib is what the tests link against.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The sidecar's own crate, with its default features and no others. The feature that lets a
+# test replace the proof check stays off, so nothing here can swap the check out.
+zk-sidecar = { path = "../../sidecar" }
+
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

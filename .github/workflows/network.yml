@@ -1,0 +1,35 @@
+name: network
+
+on:
+  pull_request:
+    paths: ["network/**", "daml/**", "tests/**", "PINS", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+  push:
+    branches: [main]
+    paths: ["network/**", "daml/**", "tests/**", "PINS", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The pins and the scripts' own checks: no Canton, no Docker.
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: tests/network_static.sh
+      - run: tests/network_checks.sh
+      - name: The proposal script, against a fake Ledger API
+        run: python3 -m unittest discover -s tests -p 'test_propose.py' -v
+
+  # The Canton side for real: the pinned Canton 3.6 snapshot and Daml compiler, the real form of the Daml package,
+  # the config and bootstrap, the chain proposal, and one Advance, against a stand-in for the sidecars.
+  canton:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Canton, the real Daml package and one Advance
+        run: tests/canton_network.sh

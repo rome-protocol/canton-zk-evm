@@ -1,0 +1,70 @@
+/*
+ * The faucet page's styles. Every rule sits under .faucet-page, so none reaches another page. The colours are the explorer's own
+ * (names and values), set here at the lowest weight, so the shell's own set wins wherever it defines one. They follow the system's
+ * light or dark setting.
+ */
+:where(:root) {
+  --bg: #FBF8F4; --surface: #FFFFFF; --surface-2: #F7F2F6; --ink: #140218; --muted: #6B5A72; --faint: #9E8FA6;
+  --line: rgba(94,10,96,.14); --link: #5E0A60;
+  --ok: #1B7A43; --ok-tint: #E9F5EE; --ok-line: #9ACDB0;
+  --bad: #B4232C; --bad-tint: #FCEDEE; --bad-line: #EDB5B9;
+  --amber: #9A6510; --amber-tint: #FBF1DE; --amber-line: #EBCF97;
+  --btn: #5E0A60; --btn-ink: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  :where(:root) {
+    --bg: #120B15; --surface: #1B1220; --surface-2: #22172A; --ink: #F2ECF4; --muted: #B3A3BA; --faint: #85738C;
+    --line: rgba(222,180,228,.16); --link: #E3B5E4;
+    --ok: #5CCB8E; --ok-tint: rgba(92,203,142,.10); --ok-line: rgba(92,203,142,.32);
+    --bad: #F2828A; --bad-tint: rgba(242,130,138,.10); --bad-line: rgba(242,130,138,.34);
+    --amber: #E8B45E; --amber-tint: rgba(232,180,94,.10); --amber-line: rgba(232,180,94,.32);
+    --btn: #D9A6DA; --btn-ink: #1B0B1E;
+  }
+}
+
+.faucet-page { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.faucet-page .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.faucet-page .muted { color: var(--muted); }
+.faucet-page .small { font-size: 12.5px; }
+.faucet-page .ptitle { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.faucet-page .ptitle h1 { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.02em; }
+.faucet-page .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; max-width: 780px; }
+.faucet-page .card > p { margin: 0 0 16px; font-size: 15px; }
+.faucet-page .ic { display: inline-block; vertical-align: -2px; flex: none; }
+.faucet-page a { color: var(--link); text-decoration: none; }
+.faucet-page .hx { white-space: nowrap; }
+.faucet-page .copy { border: 0; background: none; color: var(--faint); padding: 0 0 0 5px; vertical-align: -1px; cursor: pointer; }
+.faucet-page .copy:hover, .faucet-page .copy:focus-visible { color: var(--link); }
+
+.faucet-page .ff { display: flex; flex-direction: column; gap: 6px; margin: 0 0 14px; }
+.faucet-page .ff-row { display: flex; gap: 10px; }
+.faucet-page .input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 9px; padding: 8px 12px; font-size: 13.5px; }
+.faucet-page .input::placeholder { color: var(--faint); }
+.faucet-page .input[aria-invalid="true"] { border-color: var(--bad-line); }
+.faucet-page .btn { font: inherit; font-weight: 500; font-size: 14px; border-radius: 9px; padding: 7px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; white-space: nowrap; }
+.faucet-page .btn.primary { background: var(--btn); color: var(--btn-ink); border-color: var(--btn); }
+.faucet-page .btn[disabled] { opacity: .55; cursor: default; }
+.faucet-page :is(.input, .btn):focus-visible, .faucet-page a:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+.faucet-page .alert { display: flex; gap: 10px; align-items: flex-start; border-radius: 12px; padding: 12px 16px; border: 1px solid; margin-bottom: 14px; }
+.faucet-page .alert .ic { margin-top: 2px; }
+.faucet-page .alert > div { color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
+.faucet-page .ok-alert { background: var(--ok-tint); border-color: var(--ok-line); color: var(--ok); }
+.faucet-page .ok-alert > div { line-height: 1.7; }
+.faucet-page .bad-alert { background: var(--bad-tint); border-color: var(--bad-line); color: var(--bad); }
+.faucet-page .wait-alert { background: var(--amber-tint); border-color: var(--amber-line); color: var(--amber); }
+.faucet-page .muted-alert { background: var(--surface-2); border-color: var(--line); color: var(--muted); }
+
+.faucet-page .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; border-radius: 999px; padding: 2px 10px 2px 8px; border: 1px solid; white-space: nowrap; }
+.faucet-page .chip .dot { width: 8px; height: 8px; border-radius: 50%; display: block; }
+.faucet-page .chip-waiting { color: var(--amber); background: transparent; border-color: var(--amber-line); }
+.faucet-page .chip-waiting .dot { background: transparent; border: 1.5px solid currentColor; }
+
+.faucet-page .fnotes { margin: 16px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.faucet-page .card > :first-child:is(.fnotes) { margin-top: 0; }
+
+@media (max-width: 520px) {
+  .faucet-page .card { padding: 16px; }
+  .faucet-page .ff-row { flex-direction: column; }
+  .faucet-page .ptitle h1 { font-size: 24px; }
+}

@@ -1,0 +1,40 @@
+name: guest-prover
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: guest/rules
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: cargo test --locked
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Lint the prover scripts and the fixtures test
+        run: shellcheck prover/*.sh tests/fixtures.sh tests/guest-repro.sh
+
+  fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: The recorded proof is consistent
+        run: tests/fixtures.sh
+
+  guest-repro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: The guest build runs in one fixed folder (stand-in ZisK tools; not a real ZisK build)
+        run: tests/guest-repro.sh

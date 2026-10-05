@@ -1,0 +1,37 @@
+/* The Verify panel. Colours come from the page's theme (--surface, --line, --ink, --muted, --ok, --bad and their tints and lines,
+   --canton, --btn, --btn-ink). Everything is scoped to .verify, so the panel needs no other stylesheet. */
+.verify { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+.verify h3 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -0.005em; }
+.verify .v-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.verify p { margin: 6px 0 0; }
+.verify .muted { color: var(--muted); }
+.verify .small { font-size: 12.5px; }
+.verify .mono { font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.verify .ic { display: inline-block; vertical-align: -2px; flex: none; }
+.verify .btn { font: inherit; font-weight: 500; font-size: 14px; border-radius: 9px; padding: 7px 18px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.verify .btn.primary { background: var(--btn); color: var(--btn-ink); border-color: var(--btn); }
+.verify .btn[disabled] { opacity: .55; cursor: default; }
+.verify .btn:focus-visible { outline: 2px solid var(--canton); outline-offset: 2px; }
+.verify .v-res { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 10px; margin: 6px 0 6px; font-size: 15px; }
+.verify .v-res b { flex: 1 1 0; min-width: 0; }
+.verify .v-res .muted { margin-left: auto; }
+.verify .v-facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 8px 0 0; }
+.verify .v-facts dt { color: var(--muted); }
+.verify .v-facts dd { margin: 0; overflow-wrap: anywhere; font-size: 12.5px; }
+.verify .ok-res { background: var(--ok-tint); color: var(--ok); border: 1px solid var(--ok-line); }
+.verify .bad-res { background: var(--bad-tint); color: var(--bad); border: 1px solid var(--bad-line); }
+.verify.v-pass { border-color: var(--ok-line); }
+.verify.v-fail { border-color: var(--bad-line); }
+.verify .v-list { list-style: none; padding: 0; margin: 8px 0 10px; display: flex; flex-direction: column; gap: 5px; }
+.verify .v-list li { display: block; position: relative; padding-left: 22px; }
+.verify .v-list .ic { color: var(--ok); position: absolute; left: 0; top: 3px; }
+.verify .v-run { display: flex; align-items: center; gap: 10px; color: var(--muted); padding: 6px 0; }
+.verify .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--canton); display: block; }
+@media (prefers-reduced-motion: no-preference) { .verify .spinner { animation: verify-spin .8s linear infinite; } }
+@keyframes verify-spin { to { transform: rotate(360deg); } }
+.verify.muted-card { opacity: .85; }
+@media (max-width: 640px) {
+  .verify .v-h { flex-wrap: wrap; }
+  .verify .v-res { flex-wrap: wrap; }
+  .verify .v-res .muted { margin-left: 0; width: 100%; }
+}
