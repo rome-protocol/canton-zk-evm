@@ -7,7 +7,8 @@
 #   4. the two sidecars (operator's on 8085, confirmer's on 8086), pinned to programVK and rootC
 #   5. the ZisK prover (prover/start.sh)
 #   6. Canton: one synchronizer, three participants (network/canton/), the Daml package uploaded and vetted
-#   7. the chain: the operator proposes it with genesis = reth's block 0, and the confirmer accepts
+#   7. the chain: the operator and the gateway propose it with genesis = reth's block 0, which holds the gateway contract's
+#      code at GATEWAY_ADDRESS, and the confirmer accepts
 # Needs ZisK installed (prover/install.sh), Docker, a GPU, Rust, Python 3 and jq. State, logs and pid files go to
 # $CZE_STATE_DIR (default ./state, ignored by git); the Engine secret and the party ids are created there per run.
 set -euo pipefail
@@ -61,6 +62,10 @@ GENESIS_HASH=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)
 [[ $GENESIS_HASH =~ ^0x[0-9a-f]{64}$ ]] || fail "could not read reth's block 0"
 GENESIS_STATE_ROOT=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.stateRoot)
 [[ $GENESIS_STATE_ROOT =~ ^0x[0-9a-f]{64}$ ]] || fail "could not read the state root of reth's block 0"
+# The chain's genesis state root fixes the gateway contract's code, so whoever accepts the chain accepts that code: check that
+# block 0 holds exactly the code in gateway/Gateway.bin-runtime at the gateway's address.
+GATEWAY_CODE=$(rpc eth_getCode "\"$GATEWAY_ADDRESS\",\"0x0\"" | jq -r .result)
+[ "$GATEWAY_CODE" = "0x$(tr -d '[:space:]' < "$ROOT/gateway/Gateway.bin-runtime")" ] || fail "reth's block 0 does not hold the gateway's code at $GATEWAY_ADDRESS"
 
 step "the sidecars"
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
@@ -91,5 +96,5 @@ grep -q "BOOTSTRAP DONE" "$NET/logs/canton.log" || fail "Canton did not finish i
 
 step "the chain: genesis $GENESIS_HASH, state root $GENESIS_STATE_ROOT"
 python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --genesis-state-root "${GENESIS_STATE_ROOT#0x}" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" \
-  --rules-hash "$RULES_HASH" | tee "$NET/chain.json"
+  --rules-hash "$RULES_HASH" --gateway-address "${GATEWAY_ADDRESS#0x}" | tee "$NET/chain.json"
 echo "== up ($(date -u +%T)); smoke test: network/smoke.sh"

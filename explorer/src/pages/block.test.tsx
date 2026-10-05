@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiBlock, ApiStatus } from "../api.ts";
 import { addr, block, fakeApi, hash, NOT_FOUND, renderApp, reply, route, status, tick, update } from "../test-utils.tsx";
 
-const LEGS = "Daml legs settled with this block are not shown to the public. Only the two traders and the chain's operator, confirmer and builder see them, and each token's registry sees its own token move.";
+const LEGS = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 const KEY = "0x" + "cd".repeat(32);
 const EE = "0x" + "ee".repeat(32);
 

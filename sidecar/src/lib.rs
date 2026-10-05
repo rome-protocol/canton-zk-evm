@@ -1,7 +1,8 @@
 //! The service Canton calls through its external-call extension, one beside each confirming
 //! participant. Two functions, each a pure function of its input line (no state, no network, no
-//! clock): `verify` checks a proven block, `fact` checks how far a balance rose in it. The lines and the
-//! answers are those of `daml/README.md`.
+//! clock): `verify` checks a proven block, `legs` checks that the Canton legs attached to a block are
+//! exactly the ones the block recorded in the gateway contract. The lines and the answers are those
+//! of `daml/README.md`.
 //!
 //! Originally written by Rome Protocol.
 
@@ -143,27 +144,25 @@ fn nodes(s: &str) -> Result<Vec<Vec<u8>>, &'static str> {
         .collect()
 }
 
-/// The holder's balance in the state `state_root`, from the two proofs; zero when the proofs show
-/// there is none.
-fn balance_in(
+/// The legs hash the gateway contract keeps for block `number`, in the state `state_root`, from the
+/// two proofs; zero when the proofs show there is none.
+fn recorded_in(
     state_root: &[u8; 32],
-    token: &[u8; 20],
-    holder: &[u8; 20],
-    slot: u64,
+    gateway: &[u8; 20],
+    number: u64,
     account_nodes: &[Vec<u8>],
     storage_nodes: &[Vec<u8>],
 ) -> Result<[u8; 32], &'static str> {
-    let account = zk_mpt::verify_account(state_root, token, account_nodes)
+    let account = zk_mpt::verify_account(state_root, gateway, account_nodes)
         .map_err(|_| "the account proof does not verify")?;
-    // Where a Solidity mapping keeps the entry of `holder`: keccak256(holder . slot), both as 32 bytes.
-    let mut preimage = [0u8; 64];
-    preimage[12..32].copy_from_slice(holder);
-    preimage[56..].copy_from_slice(&slot.to_be_bytes());
     if storage_nodes.is_empty() && account.storage_root == keccak(&[0x80]) {
         // Nothing is stored in the account at all, which the account proof shows.
         return Ok([0; 32]);
     }
-    match zk_mpt::verify_storage(&account.storage_root, &keccak(&preimage), storage_nodes)
+    // Where a Solidity mapping at slot 0 keeps the entry of `number`: keccak256(number . 0), both as 32 bytes.
+    let mut slot = [0u8; 64];
+    slot[24..32].copy_from_slice(&number.to_be_bytes());
+    match zk_mpt::verify_storage(&account.storage_root, &keccak(&slot), storage_nodes)
         .map_err(|_| "the storage proof does not verify")?
     {
         zk_mpt::StorageValue::Present(v) => Ok(v),
@@ -171,74 +170,108 @@ fn balance_in(
     }
 }
 
-/// `after - before` as 256-bit numbers; `None` if `after` is the smaller.
-fn rise(before: &[u8; 32], after: &[u8; 32]) -> Option<[u8; 32]> {
-    let mut out = [0u8; 32];
-    let mut borrow = 0i16;
-    for i in (0..32).rev() {
-        let d = after[i] as i16 - before[i] as i16 - borrow;
-        out[i] = d.rem_euclid(256) as u8;
-        borrow = (d < 0) as i16;
-    }
-    (borrow == 0).then_some(out)
+/// A Canton amount as Daml writes a `Decimal` (digits, a point, one to ten digits) in base units, as
+/// the 32-byte word the gateway hashes: the amount times 10^10. Nothing is ever rounded. Daml's
+/// numbers have 28 digits before the point and 10 after, so every one of them fits in 128 bits.
+fn canton_amount(text: &str) -> Result<[u8; 32], &'static str> {
+    let (whole, fraction) = text.split_once('.').ok_or(MALFORMED)?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    (digits(whole) && digits(fraction) && fraction.len() <= 10)
+        .then_some(())
+        .ok_or(MALFORMED)?;
+    let whole: u128 = whole.parse().map_err(|_| MALFORMED)?;
+    let fraction: u128 = format!("{fraction:0<10}").parse().map_err(|_| MALFORMED)?;
+    let units = whole
+        .checked_mul(10_000_000_000)
+        .and_then(|w| w.checked_add(fraction))
+        .ok_or(MALFORMED)?;
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&units.to_be_bytes());
+    Ok(word)
 }
 
-fn fact_line(line: &str) -> Result<String, &'static str> {
-    let [root, parent_root, token, holder, slot, account_nodes, storage_nodes, parent_account_nodes, parent_storage_nodes] =
+/// One attached leg, `kind/id/token/account/amount/party`, folded into the running hash the way the
+/// gateway contract does: the Keccak-256 of seven 32-byte words.
+fn add_leg(running: [u8; 32], leg: &str) -> Result<[u8; 32], &'static str> {
+    let [kind, id, token, account, amount, party] = leg.split('/').collect::<Vec<_>>()[..] else {
+        return Err(MALFORMED);
+    };
+    let kind_number: u8 = match kind {
+        "deposit" => 1,
+        "withdrawal" => 2,
+        "payment" => 3,
+        _ => return Err(MALFORMED),
+    };
+    let (id, token, account): ([u8; 32], [u8; 20], [u8; 20]) =
+        (fixed(id)?, fixed(token)?, fixed(account)?);
+    // A payment's amount is the ERC-20 amount, as it is; the other two are Canton amounts.
+    let amount: [u8; 32] = if kind_number == 3 {
+        fixed(amount)?
+    } else {
+        canton_amount(amount)?
+    };
+    // Only a withdrawal names a party: the hex of the receiver's party id.
+    let party = unhex(party).ok_or(MALFORMED)?;
+    if kind_number != 2 && !party.is_empty() {
+        return Err(MALFORMED);
+    }
+    let mut preimage = Vec::with_capacity(7 * 32);
+    preimage.extend_from_slice(&running);
+    preimage.extend_from_slice(&[0u8; 31]);
+    preimage.push(kind_number);
+    preimage.extend_from_slice(&id);
+    preimage.extend_from_slice(&[0u8; 12]);
+    preimage.extend_from_slice(&token);
+    preimage.extend_from_slice(&[0u8; 12]);
+    preimage.extend_from_slice(&account);
+    preimage.extend_from_slice(&amount);
+    preimage.extend_from_slice(&keccak(&party));
+    Ok(keccak(&preimage))
+}
+
+fn legs_line(line: &str) -> Result<String, &'static str> {
+    let [root, number, gateway, account_nodes, storage_nodes, attached] =
         line.split(',').collect::<Vec<_>>()[..]
     else {
         return Err(MALFORMED);
     };
-    let (state_root, parent_state_root, token_address, holder_address): (
-        [u8; 32],
-        [u8; 32],
-        [u8; 20],
-        [u8; 20],
-    ) = (
-        fixed(root)?,
-        fixed(parent_root)?,
-        fixed(token)?,
-        fixed(holder)?,
-    );
-    let slot: u64 = slot
+    let (state_root, gateway_address): ([u8; 32], [u8; 20]) = (fixed(root)?, fixed(gateway)?);
+    let number: u64 = number
         .bytes()
         .all(|c| c.is_ascii_digit())
-        .then(|| slot.parse().ok())
+        .then(|| number.parse().ok())
         .flatten()
         .ok_or(MALFORMED)?;
     let (account_nodes, storage_nodes) = (nodes(account_nodes)?, nodes(storage_nodes)?);
-    let (parent_account_nodes, parent_storage_nodes) =
-        (nodes(parent_account_nodes)?, nodes(parent_storage_nodes)?);
+    let attached: Vec<&str> = if attached.is_empty() {
+        vec![]
+    } else {
+        attached.split('|').collect()
+    };
+    let hash = attached
+        .iter()
+        .try_fold([0u8; 32], |h, leg| add_leg(h, leg))?;
 
-    let after = balance_in(
+    let recorded = recorded_in(
         &state_root,
-        &token_address,
-        &holder_address,
-        slot,
+        &gateway_address,
+        number,
         &account_nodes,
         &storage_nodes,
     )?;
-    let before = balance_in(
-        &parent_state_root,
-        &token_address,
-        &holder_address,
-        slot,
-        &parent_account_nodes,
-        &parent_storage_nodes,
-    )?;
-    let rise = rise(&before, &after).ok_or("the balance fell")?;
-    Ok(format!(
-        "ok {root} {parent_root} {token} {holder} {slot} {}",
-        hex(&rise)
-    ))
+    if hash != recorded {
+        return Err("the legs are not the ones the block recorded");
+    }
+    Ok(format!("ok {root} {number} {gateway} {}", attached.len()))
 }
 
-/// `fact`: the line is
-/// `stateRoot,parentStateRoot,token,holder,slot,accountNodes,storageNodes,parentAccountNodes,parentStorageNodes`:
-/// the balance proofs at the block's state root and at its parent's. The answer is
-/// `ok stateRoot parentStateRoot token holder slot rise`, where `rise` is the balance at the block's
-/// root minus the balance at the parent's, as 64 hex digits (all zeros for no change), or
-/// `no <reason>`, among them `no the balance fell`.
-pub fn fact(line: &str) -> String {
-    fact_line(line).unwrap_or_else(|reason| format!("no {reason}"))
+/// `legs`: the line is `stateRoot,number,gateway,accountNodes,storageNodes,legs`. `stateRoot` is the
+/// proven block's, `number` its number in decimal, `gateway` the gateway contract's address. The two
+/// node lists are `eth_getProof`'s account proof of the gateway and its storage proof of the entry
+/// for `number` (the second may be empty). `legs` is empty, or the attached legs joined by `|`, each
+/// `kind/id/token/account/amount/party`. The answer is `ok stateRoot number gateway count` when the
+/// legs, hashed as the gateway hashes them, are exactly the value the block recorded, or
+/// `no <reason>`.
+pub fn legs(line: &str) -> String {
+    legs_line(line).unwrap_or_else(|reason| format!("no {reason}"))
 }

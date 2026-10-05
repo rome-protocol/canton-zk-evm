@@ -41,3 +41,7 @@ JAVA_MAJOR=21
 # The demo's test token (demo/TKA.sol) is compiled with this solc image by demo/build-token.sh; demo/TKA.bin is its output.
 SOLC_VERSION=0.8.28
 SOLC_IMAGE=ethereum/solc@sha256:b3b83d65e1eae916b58e0c19b9051afa7ffc93e00f8210196639dee794a2a98a
+# The gateway (gateway/Gateway.sol): one contract at this fixed address, put into each run's genesis by network/make-state.sh.
+# gateway/Gateway.bin-runtime is its runtime code, built by gateway/build.sh with the solc image above and checked in CI.
+# The address is far from the low addresses Ethereum uses for precompiles and system contracts.
+GATEWAY_ADDRESS=0xa7e0000000000000000000000000000000000000

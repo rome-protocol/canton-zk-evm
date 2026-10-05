@@ -94,4 +94,18 @@ grep -q 'CZE_SOURCE_COMMIT' "$ROOT/network/smoke.sh" || fail "smoke.sh does not 
 for k in format source_commit dar_sha256 package_id; do grep -q "echo \"$k=" "$ROOT/network/smoke.sh" || fail "smoke.sh does not write $k"; done
 # The Daml-LF target is described as what it is: a snapshot line, not a release.
 grep -q 'Daml 3.6 snapshot line' "$ROOT/daml/build.sh" || fail "daml/build.sh does not say LF 2.4 is from the Daml 3.6 snapshot line"
+
+# The gateway party (the chain's custody holder): hosted on the operator's participant, the operator's user may act as it, the
+# builder may read as it, and its id goes to the parties file. up.sh gives the chain the gateway contract's address from PINS and
+# stops unless the genesis reth runs holds the gateway's code.
+B=$ROOT/network/canton/bootstrap.canton
+grep -q 'val gatewayParty = operator.parties.enable("gateway")' "$B" || fail "bootstrap.canton does not create the gateway party on the operator's participant"
+grep -qE 'users.create\("operator", actAs = Set\(operatorParty, gatewayParty\)' "$B" || fail "the operator's user cannot act as the gateway party"
+grep -qE 'users.create\("builder", .*readAs = Set\(operatorParty, gatewayParty\)' "$B" || fail "the builder cannot read as the gateway party"
+grep -q 'GATEWAY_PARTY=' "$B" || fail "bootstrap.canton does not write GATEWAY_PARTY to parties.env"
+[ "$(grep -cE 'actAs = Set\([^)]*gatewayParty' "$B")" = 1 ] || fail "a user other than the operator's can act as the gateway party"
+# shellcheck disable=SC2016
+grep -q -- '--gateway-address "${GATEWAY_ADDRESS#0x}"' "$ROOT/network/up.sh" || fail "up.sh does not give the chain the gateway address from PINS"
+grep -q 'eth_getCode' "$ROOT/network/up.sh" || fail "up.sh does not read the gateway's code from reth's genesis"
+grep -q 'gateway/Gateway.bin-runtime' "$ROOT/network/up.sh" || fail "up.sh does not compare it with gateway/Gateway.bin-runtime"
 echo "network static checks passed"

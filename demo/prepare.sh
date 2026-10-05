@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run once, before network/up.sh: installs the demo's Python packages (by hash, into $CZE_STATE_DIR/venv, which up.sh and the
-# builder use too), makes V's key and U's address for this run, and writes the genesis that also funds V (demo/evm.py genesis).
+# builder use too), makes V's and U's keys for this run, and writes the genesis that also funds both (demo/evm.py genesis).
 # Then start the network with that genesis:
 #   CZE_GENESIS_FILE=<state>/demo/genesis.json network/up.sh
-# Nothing here is committed: the keys are made per run, in the state folder, mode 0600.
+# Nothing here is committed: the keys (v.key and u.key) are made per run, in the state folder, mode 0600.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export CZE_STATE_DIR=${CZE_STATE_DIR:-$ROOT/state}

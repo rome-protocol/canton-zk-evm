@@ -2,10 +2,10 @@ name: builder
 
 on:
   pull_request:
-    paths: ["builder/**", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
+    paths: ["builder/**", "gateway/Gateway.sol", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
   push:
     branches: [main]
-    paths: ["builder/**", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
+    paths: ["builder/**", "gateway/Gateway.sol", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
 
 permissions:
   contents: read

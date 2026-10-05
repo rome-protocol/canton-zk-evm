@@ -1,5 +1,7 @@
 // Brings the Canton network up for the chain: starts the nodes, bootstraps the synchronizer, connects the three
 // participants, creates the parties and the Ledger API users, uploads the Daml package and vets it.
+// The gateway party holds the Canton tokens that are locked for their wrapped forms on the EVM. It is hosted on the operator's
+// participant, so the operator's Ledger API user acts as it, and whoever runs that participant can move what it holds.
 // Writes the party ids to $CZE_STATE_DIR/canton/parties.env for the scripts that follow.
 // The DAR is the real form of the package (daml/build.sh external): path in $CZE_DAR.
 
@@ -15,6 +17,7 @@ Seq(operator, confirmer, users).foreach { p =>
 
 val operatorParty = operator.parties.enable("operator")
 val builderParty = operator.parties.enable("builder")
+val gatewayParty = operator.parties.enable("gateway")
 val confirmerParty = confirmer.parties.enable("confirmer")
 val uParty = users.parties.enable("u")
 val vParty = users.parties.enable("v")
@@ -22,8 +25,10 @@ val registryParty = users.parties.enable("registry")
 val readerParty = users.parties.enable("reader")
 
 // One Ledger API user per acting party. The network runs without Ledger API authentication.
-operator.ledger_api.users.create("operator", actAs = Set(operatorParty), primaryParty = Some(operatorParty))
-operator.ledger_api.users.create("builder", actAs = Set(builderParty), readAs = Set(operatorParty), primaryParty = Some(builderParty))
+// The operator and the gateway sign the chain's proposal and the token proposals together, so the operator's user acts as both.
+operator.ledger_api.users.create("operator", actAs = Set(operatorParty, gatewayParty), primaryParty = Some(operatorParty))
+// The builder reads what the operator and the gateway see (the gateway's holdings, the contracts of the legs) and acts as neither.
+operator.ledger_api.users.create("builder", actAs = Set(builderParty), readAs = Set(operatorParty, gatewayParty), primaryParty = Some(builderParty))
 confirmer.ledger_api.users.create("confirmer", actAs = Set(confirmerParty), primaryParty = Some(confirmerParty))
 users.ledger_api.users.create("u", actAs = Set(uParty), primaryParty = Some(uParty))
 users.ledger_api.users.create("v", actAs = Set(vParty), primaryParty = Some(vParty))
@@ -42,6 +47,7 @@ val lines = Seq(
   s"OPERATOR_PARTY=${operatorParty.toProtoPrimitive}",
   s"BUILDER_PARTY=${builderParty.toProtoPrimitive}",
   s"CONFIRMER_PARTY=${confirmerParty.toProtoPrimitive}",
+  s"GATEWAY_PARTY=${gatewayParty.toProtoPrimitive}",
   s"U_PARTY=${uParty.toProtoPrimitive}",
   s"V_PARTY=${vParty.toProtoPrimitive}",
   s"REGISTRY_PARTY=${registryParty.toProtoPrimitive}",

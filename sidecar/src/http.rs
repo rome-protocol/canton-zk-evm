@@ -4,7 +4,7 @@
 //!
 //! Originally written by Rome Protocol.
 
-use crate::{fact, hex, unhex, verify, Config};
+use crate::{hex, legs, unhex, verify, Config};
 use std::io::Read;
 use std::sync::Arc;
 
@@ -38,8 +38,8 @@ pub fn route(
                     "the body is not the lowercase hex of a line of text".into(),
                 ),
                 (Some("verify"), Some(line)) => (200, hex(verify(cfg, &line).as_bytes())),
-                (Some("fact"), Some(line)) => (200, hex(fact(&line).as_bytes())),
-                _ => (400, "the function is not verify or fact".into()),
+                (Some("legs"), Some(line)) => (200, hex(legs(&line).as_bytes())),
+                _ => (400, "the function is not verify or legs".into()),
             }
         }
         (_, "/api/v1/version" | "/api/v1/external-call") => (405, "method not allowed".into()),

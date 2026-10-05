@@ -3,11 +3,15 @@
 
   builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>]
 
+It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
+side, and builds the block again without any transaction whose leg has none. Only then does it prove the block and
+submit it, with exactly the legs the block recorded.
+
 Exit status: 0 if Canton committed the block, 2 if Canton refused it (reth is moved back to Canton's head) or if it is
 not known whether it committed ("committed": null; reth is left where it is), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, hashlib, hmac, http.client, json, os, subprocess, sys, time, urllib.error, urllib.request, uuid
+import argparse, base64, functools, hashlib, hmac, http.client, json, os, re, subprocess, sys, time, urllib.error, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,11 +22,18 @@ from keccak import keccak256
 
 ROOT = Path(__file__).resolve().parent.parent
 ZERO32 = "0x" + "00" * 32
-NO_CODE = "0x" + keccak256(b"").hex()   # the code hash of an account with no code, which is what reth answers for one that does not exist
+UNIT = 10**10   # a Canton token has 10 decimals, and so has its wrapped form: one wrapped unit is 0.0000000001 on Canton
+LEG_TOPIC = "0x" + keccak256(b"Leg(uint8,bytes32,address,address,uint256,string)").hex()   # the gateway contract's Leg event
+DEPOSIT, WITHDRAWAL, PAYMENT = 1, 2, 3   # the kinds of leg, as the gateway contract numbers them
+KINDS = {DEPOSIT: "deposit", WITHDRAWAL: "withdrawal", PAYMENT: "payment"}
 EMPTY_LIST = b"\xc0"   # the RLP of a list with nothing in it; the transactions of an empty block
 CHAIN = "#canton-zk-evm:Zk.Chain:ZkChain"
 TERMS = "#canton-zk-evm:Zk.Chain:DvpTerms"
+DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
+GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
+ACCEPTANCE = "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance"
 ALLOCATION = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
+HOLDING = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
 
 
 class BuilderError(Exception):
@@ -89,6 +100,7 @@ def post_json(url: str, body: dict, headers: dict) -> object:
 class Reth:
     def __init__(self, cfg: Config, ws):
         self.cfg, self.ws, self.next_id = cfg, ws, 0
+        self.imported: list = []   # the raw transactions of the block the builder last made reth's head
 
     def call(self, method: str, params: list):
         """A call on the builder-only WebSocket port."""
@@ -114,6 +126,28 @@ class Reth:
         status = self.engine("engine_forkchoiceUpdatedV3", [state, None])["payloadStatus"]["status"]
         if status != "VALID":
             raise BuilderError(f"engine_forkchoiceUpdatedV3 answered {status}")
+
+
+def put_back(reth: Reth) -> None:
+    """reth does not return an unwound block's transactions to its pool, so the builder sends them again. Errors are ignored: a
+    transaction the pool already has, or one whose nonce is used, is not a problem."""
+    raws, reth.imported = reth.imported, []
+    for raw in raws:
+        try:
+            reth.call("eth_sendRawTransaction", [raw])
+        except BuilderError:
+            pass
+
+
+def without(pairs: list, exclude: set) -> list:
+    """The last build's (transaction, raw bytes), less the excluded ones and each such sender's later ones."""
+    stopped, kept = set(), []
+    for t, raw in pairs:
+        if t["from"] in stopped or t["hash"] in exclude:
+            stopped.add(t["from"])
+            continue
+        kept.append((t, raw))
+    return kept
 
 
 def price(t: dict) -> int:
@@ -187,15 +221,24 @@ class Ledger:
         flt = {"TemplateFilter": {"value": {"templateId": template, "includeCreatedEventBlob": False}}}
         return [{"contractId": e["contractId"], **e["createArgument"]} for e in self._created(flt)]
 
+    def interface_views(self, interface: str) -> list:
+        """(contract id, view) of the active contracts of a token standard interface that the builder can see; the view is
+        None if the participant shows none."""
+        flt = {"InterfaceFilter": {"value": {"interfaceId": interface, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
+        found = []
+        for e in self._created(flt):
+            views = [v["viewValue"] for v in e.get("interfaceViews") or [] if v.get("viewStatus", {}).get("code", 0) == 0 and v.get("viewValue")]
+            found.append((e["contractId"], views[0] if views else None))
+        return found
+
     def active_allocations(self) -> dict:
         """The token standard's allocations that are active and that the builder can see: id -> the allocation's
         specification (executor, deadlines, the transfer leg), or None if the participant shows no view of it."""
-        flt = {"InterfaceFilter": {"value": {"interfaceId": ALLOCATION, "includeInterfaceView": True, "includeCreatedEventBlob": False}}}
-        found = {}
-        for e in self._created(flt):
-            views = [v["viewValue"] for v in e.get("interfaceViews") or [] if v.get("viewStatus", {}).get("code", 0) == 0 and v.get("viewValue")]
-            found[e["contractId"]] = views[0]["allocation"] if views else None
-        return found
+        return {cid: view["allocation"] if view else None for cid, view in self.interface_views(ALLOCATION)}
+
+    def active_holdings(self) -> list:
+        """The token standard's holdings that the builder can see: each one's contract id and view (owner, instrument, amount, lock)."""
+        return [{"contractId": cid, **view} for cid, view in self.interface_views(HOLDING) if view]
 
     def head(self) -> dict:
         # Parties given with --read-as may let the builder see other builders' chains; only the ones it builds count.
@@ -204,8 +247,7 @@ class Ledger:
             raise BuilderError(f"expected one active ZkChain contract built by {self.cfg.party}, found {len(found)}")
         return found[0]
 
-    def advance(self, chain: dict, headerHex: str, txsHex: str, proofHex: str, legs: list) -> None:
-        argument = {"headerHex": headerHex, "txsHex": txsHex, "proofHex": proofHex, "legs": legs}
+    def advance(self, chain: dict, argument: dict) -> None:
         command = {"ExerciseCommand": {"templateId": CHAIN, "contractId": chain["contractId"], "choice": "Advance", "choiceArgument": argument}}
         body = {"commands": [command], "commandId": str(uuid.uuid4()), "userId": self.cfg.ledger_user,
                 "actAs": [self.cfg.party], "readAs": self.readers()}
@@ -214,7 +256,7 @@ class Ledger:
         post_json(self.cfg.ledger_url + "/v2/commands/submit-and-wait", body, self.auth)
 
 
-# ---- one block -------------------------------------------------------------------------------------------------
+# ---- the legs a block records ----------------------------------------------------------------------------------
 
 def run(cmd: str, *args: str) -> None:
     done = subprocess.run([*cmd.split(), *args], capture_output=True, text=True)
@@ -222,17 +264,72 @@ def run(cmd: str, *args: str) -> None:
         raise BuilderError(f"{Path(cmd.split()[0]).name} failed: {(done.stderr or done.stdout).strip()[-400:]}")
 
 
-def balance_key(holder: str, slot: int) -> str:
-    """Where Solidity keeps holder's entry of the mapping at `slot`."""
-    return "0x" + keccak256(bytes(12) + bytes.fromhex(holder) + slot.to_bytes(32, "big")).hex()
-
-
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def allocation_problem(spec: dict | None, terms: dict, operator: str, now: datetime) -> str | None:
-    """Why an allocation cannot settle these terms in this block, or None. The deadline is judged by the builder's clock."""
+def canton_amount(base: int) -> str:
+    """A wrapped token amount in base units as the Canton amount it stands for, exactly: 40000000000 -> "4.0"."""
+    whole, fraction = divmod(base, UNIT)
+    return f"{whole}.{str(fraction).rjust(10, '0').rstrip('0') or '0'}"
+
+
+def base_units(amount) -> int | None:
+    """A Canton amount (digits, then a point and one to ten digits, or just digits) in base units; None for anything else."""
+    found = re.fullmatch(r"(\d+)(?:\.(\d{1,10}))?", amount) if isinstance(amount, str) else None
+    return int(found[1]) * UNIT + int((found[2] or "").ljust(10, "0")) if found else None
+
+
+@dataclass
+class LegEvent:
+    """One Leg event of the gateway contract: what a transaction of the block asked of Canton."""
+    kind: int
+    id: str        # 64 lowercase hex digits
+    token: str     # 40
+    account: str   # 40: the recipient of a deposit, the holder who burnt, or the payee
+    amount: int    # in base units
+    party: str     # a withdrawal's receiver, as the text the holder sent; empty otherwise
+    tx: str        # the hash of the transaction that made the event
+
+
+def decode_leg(log: dict) -> LegEvent:
+    """A Leg log of the gateway: the event's six non-indexed fields, ABI encoded. Anything else is an error."""
+    try:
+        data = bytes.fromhex(log["data"][2:])
+        words = [data[i:i + 32] for i in range(0, 192, 32)]
+        kind, amount, offset = int.from_bytes(words[0], "big"), int.from_bytes(words[4], "big"), int.from_bytes(words[5], "big")
+        size = int.from_bytes(data[192:224], "big")
+        padded = 224 + -(-size // 32) * 32
+        well_formed = (kind in (DEPOSIT, WITHDRAWAL, PAYMENT) and offset == 0xC0 and len(data) == padded and not any(words[2][:12] + words[3][:12])
+                       and not any(data[224 + size:]))
+        if not well_formed:
+            raise ValueError("not the gateway's Leg event")
+        return LegEvent(kind, words[1].hex(), words[2][12:].hex(), words[3][12:].hex(), amount,
+                        data[224:224 + size].decode(errors="replace"), log["transactionHash"])
+    except (KeyError, ValueError, TypeError, IndexError) as e:
+        raise BuilderError(f"cannot read a Leg event of the gateway: {e}") from e
+
+
+def read_legs(reth: Reth, chain: dict, block_hash: str) -> list:
+    """The block's Leg events, in log order, which is the order of the gateway's running hash. This is reth's own view and nothing
+    depends on it being honest: the hash in the proven state decides, and Daml compares the legs sent with it."""
+    logs = reth.call("eth_getLogs", [{"blockHash": block_hash, "address": "0x" + chain["gatewayAddress"], "topics": [LEG_TOPIC]}])
+    return [decode_leg(log) for log in logs]
+
+
+def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
+    """(account nodes, storage nodes) of the gateway's account and its `legs[number]` slot at the block, in hex without 0x."""
+    slot = "0x" + keccak256(int(number, 16).to_bytes(32, "big") + bytes(32)).hex()   # Solidity's key for a mapping at slot 0
+    proof = reth.call("eth_getProof", ["0x" + chain["gatewayAddress"], [slot], number])
+    return [x[2:] for x in proof["accountProof"]], [x[2:] for x in proof["storageProof"][0]["proof"]]
+
+
+class NoCantonSide(Exception):
+    """A leg that has no Canton side now; the message says why."""
+
+
+def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str) -> str | None:
+    """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock."""
     if spec is None:
         return "the participant shows no view of its allocation"
     try:
@@ -246,74 +343,164 @@ def allocation_problem(spec: dict | None, terms: dict, operator: str, now: datet
     if spec["settlement"].get("executor") != operator:
         return "its allocation's executor is not the chain's operator"
     leg = spec.get("transferLeg") or {}
-    if leg.get("sender") != terms["u"]:
-        return "its allocation's sender is not the terms' u"
-    if leg.get("receiver") != terms["v"]:
-        return "its allocation's receiver is not the terms' v"
+    if leg.get("sender") != sender:
+        return f"its allocation's sender is not {sender_is}"
+    if leg.get("receiver") != receiver:
+        return f"its allocation's receiver is not {receiver_is}"
     return None
 
 
-def stored(proof: dict) -> int:
-    """The balance an eth_getProof answer shows."""
-    return int(proof["storageProof"][0]["value"], 16)
+def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
+    """Whether a contract names this chain's id, operator and confirmer, and the chain's party for each of `roles` besides. Daml checks the
+    same before it settles a leg: the builder is a controller of Advance, so a contract that names it in one of those roles would otherwise pass."""
+    return int(contract["chainId"]) == int(chain["chainId"]) and all(contract[r] == chain[r] for r in ("operator", "confirmer", *roles))
 
 
-def proof_nodes(proof: dict) -> tuple:
-    """(account nodes, storage nodes) of an eth_getProof answer, in hex without 0x."""
-    return [x[2:] for x in proof["accountProof"]], [x[2:] for x in proof["storageProof"][0]["proof"]]
+class Canton:
+    """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
+
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime):
+        self.ledger, self.chain, self.now = ledger, chain, now
+
+    @functools.cached_property
+    def requests(self): return self.ledger.active(DEPOSIT_REQUEST)
+
+    @functools.cached_property
+    def tokens(self): return self.ledger.active(GATEWAY_TOKEN)
+
+    @functools.cached_property
+    def acceptances(self): return self.ledger.active(ACCEPTANCE)
+
+    @functools.cached_property
+    def terms(self): return self.ledger.active(TERMS)
+
+    @functools.cached_property
+    def allocations(self): return self.ledger.active_allocations()
+
+    @functools.cached_property
+    def holdings(self): return self.ledger.active_holdings()
+
+    def token(self, leg: LegEvent) -> dict:
+        found = [t for t in self.tokens if t["evmToken"] == leg.token and names_chain(t, self.chain, "gateway")]
+        if not found:
+            raise NoCantonSide("the EVM token is not registered with the gateway on Canton")
+        return found[0]
 
 
-def make_legs(cfg: Config, reth: Reth, chain: dict, number: str) -> tuple:
-    """(legs, skipped). A leg is attached for terms of this chain (naming its operator and its confirmer) only if their allocation is still active and
-    visible, its settle-before time has not passed, its executor is the chain's operator, it moves from u to v, the
-    holder's balance rose in this block by exactly the amount the terms expect (reth's proof at this block minus its
-    proof at the parent, Canton's head), no other terms of this block point at the same allocation, and no earlier terms
-    in this block name the same token and holder (one payment settles one terms). Other terms are left out of this
-    block, and each is reported with its reason; they can be attached to a later block."""
-    ledger = Ledger(cfg)
-    live = ledger.active_allocations()
-    now = utcnow()
-    parent = hex(int(chain["headNumber"]))
-    candidates, skipped = [], []
-    for terms in ledger.active(TERMS):
-        if int(terms["chainId"]) != int(chain["chainId"]):
-            continue
-        if terms["operator"] != chain["operator"] or terms["confirmer"] != chain["confirmer"]:
-            skipped.append({"terms": terms["contractId"], "reason": "its operator or confirmer is not the chain's"})
-            continue
-        if terms["allocation"] not in live:
-            skipped.append({"terms": terms["contractId"], "reason": "its allocation is not active, or not visible to the builder"})
-            continue
-        problem = allocation_problem(live[terms["allocation"]], terms, chain["operator"], now)
-        if problem:
-            skipped.append({"terms": terms["contractId"], "reason": problem})
-            continue
-        args = ["0x" + terms["token"], [balance_key(terms["holder"], int(terms["slot"]))]]
-        after, before = reth.call("eth_getProof", [*args, number]), reth.call("eth_getProof", [*args, parent])
-        if before["codeHash"] == NO_CODE:   # the account is not in the parent's state; no balance can be proven there
-            skipped.append({"terms": terms["contractId"], "reason": "the token did not exist in the parent block"})
-            continue
-        if stored(after) < stored(before):
-            skipped.append({"terms": terms["contractId"], "reason": f"the balance fell in this block, from {stored(before):#x} to {stored(after):#x}"})
-            continue
-        if stored(after) - stored(before) != int(terms["expected"], 16):
-            skipped.append({"terms": terms["contractId"], "reason": f"the balance rose by {stored(after) - stored(before):#x} in this block, not by the amount the terms expect"})
-            continue
-        candidates.append((terms, after, before))
-    legs, taken = [], set()
-    for terms, after, before in candidates:
-        if sum(t["allocation"] == terms["allocation"] for t, _, _ in candidates) > 1:   # an allocation can be executed once
-            skipped.append({"terms": terms["contractId"], "reason": "another terms contract in this block points at the same allocation"})
-            continue
-        if (terms["token"], terms["holder"]) in taken:   # one payment cannot satisfy two terms
-            skipped.append({"terms": terms["contractId"], "reason": "other terms in this block name the same token and holder, and one payment settles one terms"})
-            continue
-        taken.add((terms["token"], terms["holder"]))
-        (account, storage), (parent_account, parent_storage) = proof_nodes(after), proof_nodes(before)
-        legs.append({"terms": terms["contractId"], "accountNodes": account, "storageNodes": storage,
-                     "parentAccountNodes": parent_account, "parentStorageNodes": parent_storage})
-    return legs, skipped
+def first_fit(candidates: list, problem_of, none_found: str):
+    """The first candidate without a problem. If there is none, the first candidate's problem, or `none_found` if there are no candidates."""
+    problems = []
+    for candidate in candidates:
+        problem = problem_of(candidate)
+        if problem is None:
+            return candidate
+        problems.append(problem)
+    raise NoCantonSide(problems[0] if problems else none_found)
 
+
+def allocation_in_use(cid: str, taken: set | None) -> str | None:
+    """An allocation can be executed once, so one leg of a block can use it. `taken` is None while only a leg's own faults are looked for."""
+    return "an earlier leg of this block uses the same allocation" if taken is not None and cid in taken else None
+
+
+def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
+    """A deposit needs an active request with its id and recipient, whose allocation goes from the depositor to the gateway in the registered
+    instrument, for the amount claimed, and is live."""
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+    requests = [r for r in canton.requests if r["depositId"] == leg.id and r["recipient"] == leg.account and names_chain(r, chain, "gateway")]
+    if not requests:
+        raise NoCantonSide("no deposit request of this chain for this id and recipient")
+    token = canton.token(leg)
+
+    def problem(r):
+        if r["allocation"] not in canton.allocations:
+            return "its allocation is not active, or not visible to the builder"
+        spec = canton.allocations[r["allocation"]]
+        found = allocation_problem(spec, chain["operator"], canton.now, r["depositor"], chain["gateway"], "the depositor", "the gateway")
+        if found:
+            return found
+        transfer = spec["transferLeg"]
+        if transfer.get("instrumentId") != token["instrumentId"]:
+            return "its allocation is of another instrument than the token's"
+        if base_units(transfer.get("amount")) != leg.amount:
+            return "its allocation's amount is not the amount claimed"
+        return allocation_in_use(r["allocation"], taken)
+
+    request = first_fit(requests, problem, "")
+    if claimed is not None:
+        claimed["allocations"].add(request["allocation"])
+    return {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
+
+
+def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
+    """A withdrawal needs the registered token, the named party's standing acceptance and unlocked gateway holdings of the instrument that
+    cover the amount. A holding made earlier in the same transaction cannot be named in advance, so one withdrawal of an instrument goes in a block."""
+    chain = canton.chain
+    token = canton.token(leg)
+    instrument = (token["instrumentId"]["admin"], token["instrumentId"]["id"])
+    if claimed is not None and instrument in claimed["instruments"]:
+        raise NoCantonSide("another withdrawal of the same token is already in this block")
+    acceptances = [a for a in canton.acceptances if a["party"] == leg.party and names_chain(a, chain, "gateway")]
+    if not acceptances:
+        raise NoCantonSide("the receiver has no standing acceptance of withdrawals")
+    usable = [h for h in canton.holdings if h["owner"] == chain["gateway"] and h["instrumentId"] == token["instrumentId"] and not h.get("lock")]
+    usable = [h for h in usable if base_units(h["amount"]) is not None]   # whole base units: a sum is never rounded
+    usable.sort(key=lambda h: (-base_units(h["amount"]), h["contractId"]))
+    needed, inputs, total = leg.amount, [], 0
+    for h in usable:
+        if total >= needed:
+            break
+        inputs.append(h["contractId"])
+        total += base_units(h["amount"])
+    if total < needed:
+        raise NoCantonSide("the gateway's holdings of the token do not cover the amount")
+    if claimed is not None:
+        claimed["instruments"].add(instrument)
+    return {"tag": "WithdrawalLeg", "value": {"id": leg.id, "token": token["contractId"], "from": leg.account, "amount": canton_amount(leg.amount),
+                                              "acceptance": acceptances[0]["contractId"], "inputs": inputs}}
+
+
+def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
+    """A payment needs active terms with its id, token, payee and amount, whose allocation goes from u to v and is live."""
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+    named = [t for t in canton.terms if t["dvpId"] == leg.id and names_chain(t, chain)]
+
+    def problem(t):
+        if t["token"] != leg.token:
+            return "the terms name another token"
+        if t["payee"] != leg.account:
+            return "the terms name another payee"
+        if t["amount"] != f"{leg.amount:064x}":
+            return "the terms name another amount"
+        if t["allocation"] not in canton.allocations:
+            return "its allocation is not active, or not visible to the builder"
+        found = allocation_problem(canton.allocations[t["allocation"]], chain["operator"], canton.now, t["u"], t["v"], "the terms' u", "the terms' v")
+        return found or allocation_in_use(t["allocation"], taken)
+
+    terms = first_fit(named, problem, "no terms of this chain for this payment id")
+    if claimed is not None:
+        claimed["allocations"].add(terms["allocation"])
+    return {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
+
+
+def match_legs(canton: Canton, events: list) -> tuple:
+    """(legs, missing). Each event's Canton side is found, in the order of the events; `missing` is the events with none, each with its reason.
+    A leg's own faults are looked for first. Only when every leg is fine on its own is it asked whether two legs want the same allocation or the
+    same instrument's holdings, so a leg that is going to be left out never takes the place of another."""
+    finders = {DEPOSIT: deposit_leg, WITHDRAWAL: withdrawal_leg, PAYMENT: payment_leg}
+    for claimed in (None, {"allocations": set(), "instruments": set()}):
+        legs, missing = [], []
+        for event in events:
+            try:
+                legs.append(finders[event.kind](event, canton, claimed))
+            except NoCantonSide as e:
+                missing.append((event, str(e)))
+        if missing:
+            return legs, missing
+    return legs, []
+
+
+# ---- one block -------------------------------------------------------------------------------------------------
 
 def build_block(cfg: Config, exclude: set = frozenset()) -> dict:
     with connect(cfg.ws_url, max_size=None) as ws:
@@ -326,28 +513,65 @@ def build_block(cfg: Config, exclude: set = frozenset()) -> dict:
             return _build(cfg, reth, chain, head, set(exclude))
         except BaseException:
             reth.forkchoice(head, head, head)
+            try:
+                put_back(reth)
+            except Exception:   # the error that brought us here is the one to report
+                pass
             raise
 
 
-def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dict:
+def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, previous: list | None = None) -> tuple:
+    """Builds a block on Canton's head and makes it reth's head. The transactions come from reth's pending pool the first time, and
+    afterwards from the last build's list (`previous`) less the excluded ones: reth no longer has them in its pool once a block that
+    held them was its head. (payload, the (transaction, raw bytes) pairs in the block)."""
     n, cap = int(chain["headNumber"]) + 1, int(chain["gasCap"])
     parent = reth.call("eth_getBlockByHash", [head, False])
     if not parent or int(parent["number"], 16) != n - 1:
         raise BuilderError("reth does not have Canton's head block")
-    pending = reth.call("txpool_content", [])["pending"]
-    chosen = choose_txs(pending, min(cap, int(parent["gasLimit"], 16)), exclude)
-    raws = [reth.call("eth_getRawTransactionByHash", [t["hash"]]) for t in chosen]
+    if previous is None:
+        pending = reth.call("txpool_content", [])["pending"]
+        chosen = choose_txs(pending, min(cap, int(parent["gasLimit"], 16)), exclude)
+        pairs = [(t, reth.call("eth_getRawTransactionByHash", [t["hash"]])) for t in chosen]
+    else:
+        pairs = without(previous, exclude)
+    raws = [raw for _, raw in pairs]
+    reth.imported = raws
     attributes = {"timestamp": hex(max(int(time.time()), int(parent["timestamp"], 16) + 1)), "prevRandao": ZERO32,
                   "suggestedFeeRecipient": cfg.fee_recipient, "withdrawals": [], "parentBeaconBlockRoot": ZERO32}
     built = reth.call("testing_buildBlockV1", [head, attributes, raws, None])   # always a list, never null
     payload = built["executionPayload"]
     if payload["transactions"] != raws or int(payload["gasLimit"], 16) > cap or int(payload["gasUsed"], 16) > cap:
         raise BuilderError("reth built a block other than the one asked for, or over the gas cap")
-    block_hash = payload["blockHash"]
     status = reth.engine("engine_newPayloadV4", [payload, [], ZERO32, built["executionRequests"]])["status"]
     if status != "VALID":
         raise BuilderError(f"engine_newPayloadV4 answered {status}")
-    reth.forkchoice(block_hash, head, head)
+    reth.forkchoice(payload["blockHash"], head, head)
+    return payload, pairs
+
+
+def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dict:
+    n = int(chain["headNumber"]) + 1
+    if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
+        raise BuilderError("the chain record's gateway address is not 40 lowercase hex digits")
+    left_out, pairs = [], None   # the transactions left out because a leg of theirs had no Canton side, each with the reason; the last build's transactions
+    while True:
+        # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
+        # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
+        # every leg of the block has its Canton side, and a block with no transaction left out is the one that goes on.
+        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, pairs)
+        chosen = [t for t, _ in pairs]
+        events = read_legs(reth, chain, payload["blockHash"])
+        legs, missing = match_legs(Canton(Ledger(cfg), chain, utcnow()), events) if events else ([], [])
+        if not missing:
+            break
+        for event, reason in missing:
+            if event.tx not in exclude:
+                exclude.add(event.tx)
+                left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
+        reth.forkchoice(head, head, head)
+        put_back(reth)   # the left-out transactions wait in the pool again; the next build is made from the list in hand
+    block_hash = payload["blockHash"]
+    leg_txs = list(dict.fromkeys(e.tx for e in events))
 
     raw = bytes.fromhex(reth.call("debug_getRawBlock", [payload["blockNumber"]])[2:])
     header, txs = split_block(raw)
@@ -367,11 +591,15 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dic
     if len(proof) != 2688 or proof.strip("0123456789abcdef"):
         raise BuilderError("the wrapped proof is not 1,344 bytes of lowercase hex")
 
-    legs, skipped = make_legs(cfg, reth, chain, payload["blockNumber"])
+    account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
+    argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proof,
+                "gatewayAccountNodes": account_nodes, "gatewayStorageNodes": storage_nodes, "legs": legs}
+    (work / "advance.json").write_text(json.dumps(argument))   # kept: the argument of the Advance, as it was sent
+    report = {"number": n, "blockHash": block_hash, "legTransactions": leg_txs, "leftOut": left_out}
 
     reason = None
     try:
-        Ledger(cfg).advance(chain, header.hex(), "" if txs == EMPTY_LIST else txs.hex(), proof, legs)
+        Ledger(cfg).advance(chain, argument)
     except urllib.error.HTTPError as e:
         with e:
             reason = e.read().decode(errors="replace")[:600]
@@ -383,15 +611,16 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dic
         except (OSError, ValueError, http.client.HTTPException, BuilderError) as e:
             # Neither a commit nor a refusal is known. reth stays where it is: moving it back could undo a block Canton
             # committed. The next run starts from Canton's head, whichever it is.
-            return {"committed": None, "number": n, "blockHash": block_hash,
+            return {"committed": None, **report,
                     "reason": f"{reason}; and Canton's head could not be read afterwards ({e}), so it is not known whether the block committed",
-                    "keptTransactions": [t["hash"] for t in chosen], "skippedTerms": skipped}
+                    "keptTransactions": [t["hash"] for t in chosen]}
         if now != block_hash[2:]:
             reth.forkchoice(head, head, head)
-            return {"committed": False, "number": n, "blockHash": block_hash, "reason": reason,
-                    "keptTransactions": [t["hash"] for t in chosen], "skippedTerms": skipped}
+            put_back(reth)
+            return {"committed": False, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
+    reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(block_hash, block_hash, block_hash)
-    return {"committed": True, "number": n, "blockHash": block_hash, "transactions": [t["hash"] for t in chosen], "legs": len(legs), "skippedTerms": skipped}
+    return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
 
 
 def read_disclosed(path: str) -> list:

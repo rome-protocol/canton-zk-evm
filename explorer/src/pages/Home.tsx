@@ -7,7 +7,7 @@ import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, utc } from "../format.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 
-const LEGS = "Daml legs settled with a block are not shown to the public. Only the two traders and the chain's operator, confirmer and builder see them, and each token's registry sees its own token move.";
+const LEGS = "Daml legs settled with a block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 
 type Dot = "ok" | "bad" | "off";
 

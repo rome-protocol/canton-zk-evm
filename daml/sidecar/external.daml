@@ -11,6 +11,7 @@ import Zk.Hex
 verifyCall : Text -> Update Text
 verifyCall input = fromHex <$> externalCall "canton-zk-evm" "verify" "" (toHex input)
 
--- A state root, a token, a holder, a slot and two storage proofs in; one line out (README: "fact").
-factCall : Text -> Update Text
-factCall input = fromHex <$> externalCall "canton-zk-evm" "fact" "" (toHex input)
+-- The proven block's state root and number, the gateway's address, the gateway's two storage proofs and the attached legs
+-- in; one line out (README: "legs").
+legsCall : Text -> Update Text
+legsCall input = fromHex <$> externalCall "canton-zk-evm" "legs" "" (toHex input)

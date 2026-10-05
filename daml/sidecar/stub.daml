@@ -28,8 +28,8 @@ stubService answer body = toHex (answer (fromHex body))
 verifyCall : Text -> Update Text
 verifyCall input = pure (fromHex (stubService verifyAnswer (toHex input)))
 
-factCall : Text -> Update Text
-factCall input = pure (fromHex (stubService factAnswer (toHex input)))
+legsCall : Text -> Update Text
+legsCall input = pure (fromHex (stubService legsAnswer (toHex input)))
 
 -- Header "01" is a good block 1 on the genesis; "11" a good block 2 on block 1. The rest each get one thing wrong.
 -- A block's state root is the one of its number: block 1's, then block 2's.
@@ -48,23 +48,24 @@ verifyAnswer input = case T.splitOn "," input of
   where
     ok vk rc bh ph n gl = T.intercalate " " ["ok", vk, rc, bh, ph, show n, if n == 2 then stubStateRoot2 else stubStateRoot, "1700000000", show gl, "21000", "1"]
 
--- Like the real sidecar, the stub has proofs only for the roots of its chain: block 1's against the genesis state root
--- and block 2's against block 1's; under any other pair the proofs do not verify. Storage nodes "ba" fail the storage
--- proof; "ee" show the balance did not change (the answer is ok with a rise of 64 zeros); "e3" a rise of five tokens;
--- "e5" a balance that fell; "e1", "e4" and "e2" answer well-formed but for another new root, another parent root and
--- another holder; any other show a rise of ten tokens.
-factAnswer : Text -> Text
-factAnswer input = case T.splitOn "," input of
-  [root, parentRoot, token, holder, slot, _account, storage, _parentAccount, _parentStorage]
-    | (parentRoot, root) `notElem` [(stubStateRoot0, stubStateRoot), (stubStateRoot, stubStateRoot2)] -> "no the account proof does not verify"
+-- The stub cannot hash, so it stands in for the gateway's proofs like this. The roots and numbers are the ones of its blocks:
+-- block 1 under the first state root, block 2 under the second; under any other pair the account proof does not verify.
+-- Account nodes "ba" fail it too. "e1", "e2", "e3" and "e4" answer well-formed but for another root, another number,
+-- another gateway and another count. The storage nodes are the legs the block recorded, as hex (none: no legs); the
+-- stub answers `ok` only if the attached legs are exactly those, and storage nodes "ba" fail the storage proof.
+legsAnswer : Text -> Text
+legsAnswer input = case T.splitOn "," input of
+  [root, number, gateway, account, storage, legs]
+    | (root, number) `notElem` [(stubStateRoot, "1"), (stubStateRoot2, "2")] -> "no the account proof does not verify"
+    | account == "ba" -> "no the account proof does not verify"
     | storage == "ba" -> "no the storage proof does not verify"
-    | storage == "e5" -> "no the balance fell"
-    | storage == "ee" -> answer root parentRoot token holder slot (mconcat (replicate 64 "0"))
-    | storage == "e3" -> answer root parentRoot token holder slot fiveTokens
-    | storage == "e1" -> answer stubRoot parentRoot token holder slot tenTokens
-    | storage == "e4" -> answer root stubRoot token holder slot tenTokens
-    | storage == "e2" -> answer root parentRoot token (mconcat (replicate 40 "3")) slot tenTokens
-    | otherwise -> answer root parentRoot token holder slot tenTokens
+    | fromHex storage /= legs -> "no the legs are not the ones the block recorded"
+    | account == "e1" -> answer (mconcat (replicate 64 "9")) number gateway count
+    | account == "e2" -> answer root "3" gateway count
+    | account == "e3" -> answer root number (mconcat (replicate 40 "3")) count
+    | account == "e4" -> answer root number gateway (count + 1)
+    | otherwise -> answer root number gateway count
+    where count = if legs == "" then 0 else length (T.splitOn "|" legs)
   _ -> "no malformed input"
   where
-    answer root parentRoot token holder slot rise = T.intercalate " " ["ok", root, parentRoot, token, holder, slot, rise]
+    answer root number gateway count = T.intercalate " " ["ok", root, number, gateway, show count]

@@ -4,11 +4,11 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 
 | File | What it is |
 |---|---|
-| `genesis.json`, `make-state.sh` | The chain's genesis, and the per-run state (the Engine secret) |
+| `genesis.json`, `make-state.sh` | The chain's genesis, and the per-run state (the Engine secret, and the genesis that reth reads: the chain's genesis, or the one `CZE_GENESIS_FILE` names, plus the gateway contract from `gateway/` at `GATEWAY_ADDRESS`) |
 | `reth/` | `launch.sh` is the only way reth is started. Peer discovery is always off. `check.sh` proves it is off, `stop.sh` stops it |
 | `canton/canton.conf` | One synchronizer and three participants, all in memory, all on localhost |
-| `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties and Ledger API users, uploads and vets the Daml package |
-| `canton/propose.py` | The operator proposes the chain and the confirmer accepts it |
+| `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties (the gateway party among them) and Ledger API users, uploads and vets the Daml package |
+| `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
 | `canton/fetch.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
 | `up.sh`, `down.sh` | Start and stop everything |
@@ -20,11 +20,23 @@ One synchronizer (a sequencer and a mediator) and three participants:
 
 | Participant | Hosts | Sidecar |
 |---|---|---|
-| `operator` | the operator and the builder | yes, on 8085 |
+| `operator` | the operator, the builder and the gateway | yes, on 8085 |
 | `confirmer` | the confirmer | yes, on 8086 |
 | `users` | U, V, the test token's registry and the reader | none |
 
 The Daml package calls the extension `canton-zk-evm` (`DA.ExternalCall`). Each confirming participant sends that extension to its own sidecar: the operator's to 8085, the confirmer's to 8086. The users participant has no extension, because it is never asked to run the call: it only receives the block record, as an observer. Everything is in memory, so a restart is a new network, and everything listens on 127.0.0.1. The network runs without Ledger API authentication; it is for one machine and one run.
+
+The gateway is the party that holds the Canton tokens that are locked for their wrapped forms on the EVM. It lives on the operator's participant, and the operator's Ledger API user acts as both the operator and the gateway, because the two sign the chain and each token's registration together. The builder reads as the operator and the gateway and acts as neither. The custody is therefore only as safe as that participant: whoever runs it can move what the gateway holds. That is acceptable for a local network where we run every party, and it is not for anything of value.
+
+The chain record names the gateway party and the address of the gateway contract (`GATEWAY_ADDRESS` in `PINS`, given to `propose.py` by `up.sh`). Before it proposes the chain, `up.sh` checks that block 0 of the reth it started holds exactly the code in `gateway/Gateway.bin-runtime` at that address, because the genesis state root in the chain record fixes that code for the life of the chain.
+
+To register a token, the operator and the gateway propose that the wrapped token at an EVM address stands for a Canton instrument (its admin and id), whose registry's transfer factory is a given contract, and the confirmer accepts:
+
+```sh
+python3 network/canton/propose.py token --evm-token <address> --instrument-admin <party> --instrument-id <id> --factory <contract id>
+```
+
+Registering a token is a trust decision, because the gateway runs that registry's Daml code with its own authority. `propose.py` makes the check a confirmer should make: it asks reth, at the finalized block (the one Canton has committed), whether the gateway contract made that token, and stops if it did not. Then it accepts at once, as it does for the chain.
 
 The JSON Ledger API of each participant is on 7575 (operator, the one the builder uses), 7576 (confirmer) and 7577 (users).
 
@@ -68,11 +80,11 @@ The Canton side is tested without a GPU:
 ```sh
 tests/network_static.sh      # reth only through launch.sh; the extension only on the two confirming participants; the recorded smoke result
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
-python3 -m unittest discover -s tests -p 'test_propose.py'
-tests/canton_network.sh      # the pinned Canton, the real Daml package and one Advance, against a stand-in for the sidecars
+python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
+tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
 ```
 
-`canton_network.sh` needs Linux x86-64, Java 21, Python 3 and network access. It checks that the bootstrap, the upload and the vetting work; that a block whose sidecar answer is `no` is refused and changes nothing; that a good one commits; and that Canton asks the operator's sidecar when it receives the block and both sidecars when it validates it.
+`canton_network.sh` needs Linux x86-64, Java 21, Python 3 and network access. It checks that the bootstrap, the upload and the vetting work; that the chain names the gateway party and address, and the Ledger API's user rights are right (the builder's user may read as the gateway and may not act as it; the operator's user may act as it); that a token is registered once and not twice; that a block is refused and changes nothing when the sidecar's `verify` answer is `no`, when its `legs` answer is `no` or is not the line Daml expects, and when only the confirmer's sidecar says `no`; that a good one commits; and that Canton asks the operator's sidecar for both `verify` and `legs` when it receives the block and both sidecars when it validates it.
 
 ## Not here
 

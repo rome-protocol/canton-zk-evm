@@ -1,6 +1,7 @@
 """The builder, against fakes only: a fake reth (builder-only WebSocket port and Engine port), a fake Canton JSON
 Ledger API and a fake prover. No real Canton, GPU or reth. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, hashlib, hmac, io, json, os, shutil, sys, tempfile, unittest
+import base64, contextlib, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
+from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -9,10 +10,31 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 from keccak import keccak256
-from fakes import (BUILDER, HEAD_HASH, HEAD_NUMBER, JWT_SECRET, LEDGER_TOKEN, FakeLedger, FakeReth, Raw, raw_of, rlp, tx)
+from fakes import (BUILDER, DEPOSIT, GATEWAY, HEAD_HASH, HEAD_NUMBER, JWT_SECRET, LEDGER_TOKEN, LEG_TOPIC, PAYMENT, WITHDRAWAL,
+                   FakeLedger, FakeReth, Leg, Raw, raw_of, rlp, tx)
 
-ALICE, BOB = "0x" + "a1" * 20, "0x" + "b2" * 20
-TERMS = ("terms-1", {"u": "u::1", "v": "v::1", "operator": "op", "confirmer": "co", "builder": BUILDER, "chainId": "770101", "token": "11" * 20, "holder": "22" * 20, "slot": "0", "allocation": "alloc-1", "expected": "00" * 31 + "0a"})
+ALICE, BOB, CAROL = "0x" + "a1" * 20, "0x" + "b2" * 20, "0x" + "c4" * 20   # senders of EVM transactions
+PAY_ID, DEP_ID, WD_ID = "ee" * 32, "dd" * 32, "ab" * 32
+TKA, WTKB, WTKC = "11" * 20, "22" * 20, "33" * 20   # an ERC-20 that payments are made in, and two wrapped tokens
+PAYEE = "c3" * 20
+TKB = {"admin": "adm", "id": "TKB"}   # the Canton instrument that WTKB wraps
+TKC = {"admin": "adm", "id": "TKC"}
+UNIT = 10**10   # base units in one Canton unit
+
+# What the chain's Canton contracts look like in the Ledger API's JSON, and the Leg events that go with each.
+named = {"operator": "op", "confirmer": "co", "builder": BUILDER, "chainId": "770101"}
+TERMS = ("terms-1", {**named, "u": "u::1", "v": "v::1", "label": "dvp-1", "dvpId": PAY_ID, "token": TKA, "payee": PAYEE,
+                     "amount": "00" * 31 + "0a", "allocation": "alloc-1"})
+REQUEST = ("req-1", {**named, "gateway": "gw", "depositor": "d::1", "depositId": DEP_ID, "recipient": PAYEE, "allocation": "alloc-d1"})
+TOKEN = ("tok-1", {**named, "gateway": "gw", "evmToken": WTKB, "instrumentId": TKB, "factory": "fac-1"})
+TOKEN_C = ("tok-2", {**named, "gateway": "gw", "evmToken": WTKC, "instrumentId": TKC, "factory": "fac-2"})
+ACCEPTANCE = ("acc-1", {**named, "gateway": "gw", "party": "r::1"})
+def holding(cid, amount, instrument=TKB, owner="gw", lock=None):
+    return cid, {"owner": owner, "instrumentId": instrument, "amount": amount, "lock": lock, "meta": {"values": {}}}
+
+PAY = Leg(PAYMENT, PAY_ID, TKA, PAYEE, 10)
+DEP = Leg(DEPOSIT, DEP_ID, WTKB, PAYEE, 10 * UNIT)
+WD = Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, 4 * UNIT, "r::1")
 
 
 class Setup:
@@ -40,6 +62,14 @@ class Setup:
     def forkchoices(self):
         return [p[0] for m, p in self.reth.engine_calls if m == "engine_forkchoiceUpdatedV3"]
 
+    def builds(self):
+        """The transaction lists reth was asked to build blocks from, one per build."""
+        return [p[2] for m, p in self.reth.ws_calls if m == "testing_buildBlockV1"]
+
+    def advance_argument(self):
+        (sub,) = self.ledger.submitted
+        return sub["commands"][0]["ExerciseCommand"]["choiceArgument"]
+
 
 class Case(unittest.TestCase):
     def setup(self, *a, **k):
@@ -47,18 +77,24 @@ class Case(unittest.TestCase):
         self.addCleanup(s.close)
         return s
 
+    def build(self, s, **k):
+        result = b.build_block(s.cfg, **k)
+        self.assertTrue(result["committed"], result)
+        return result
+
+    def in_pool(self, s):
+        return {t["hash"] for ts in s.reth.pool.values() for t in ts}
 
 class OneBlock(Case):
     def test_one_good_block_end_to_end(self):
         t1, t2 = tx(ALICE, 0), tx(BOB, 0, price=5)
         s = self.setup({ALICE: [t1], BOB: [t2]}, terms=[TERMS])
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
+        s.reth.tx_legs[t2["hash"]] = [PAY]
+        result = self.build(s)
         self.assertEqual(result["number"], HEAD_NUMBER + 1)
         # reth: the explicit list, in price order, with Prague attributes and an empty withdrawals list
-        build = [p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"]
-        self.assertEqual(len(build), 1)
-        parent, attrs, raws, extra = build[0]
+        (build,) = [p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"]
+        parent, attrs, raws, extra = build
         self.assertEqual((parent, raws, extra), (HEAD_HASH, [raw_of(t1), raw_of(t2)], None))
         self.assertEqual(attrs["withdrawals"], [])
         self.assertEqual(attrs["suggestedFeeRecipient"], "0x" + "fe" * 20)
@@ -77,7 +113,7 @@ class OneBlock(Case):
         self.assertEqual([l.split()[0] for l in s.log.read_text().splitlines()], ["make-input", "prove"])
         self.assertEqual([m for m, _ in s.reth.ws_calls if m in ("debug_executionWitness", "debug_getRawBlock")],
                          ["debug_getRawBlock", "debug_executionWitness"])
-        # Advance: as the builder, in the line formats of daml/README.md, with the leg's two proofs
+        # Advance: as the builder, with the proof, the gateway's two proofs and the leg
         (sub,) = s.ledger.submitted
         self.assertEqual(sub["userId"], "builder-user")
         self.assertEqual(sub["actAs"], [BUILDER])
@@ -89,101 +125,66 @@ class OneBlock(Case):
         self.assertEqual(arg["proofHex"], "ab" * 1344)
         self.assertEqual(keccak256(bytes.fromhex(arg["headerHex"])).hex(), n_hash[2:])
         self.assertEqual(arg["txsHex"], rlp([bytes.fromhex(raw_of(t1)[2:]), bytes.fromhex(raw_of(t2)[2:])]).hex())
-        self.assertEqual(arg["legs"], [{"terms": "terms-1", "accountNodes": ["aa01", "aa02"], "storageNodes": ["bb01"],
-                                        "parentAccountNodes": ["cc01", "cc02"], "parentStorageNodes": ["dd01"]}])
-        # reth is asked for the balance's proof at the new block and at the parent, which is Canton's head
-        proof_call = [p for m, p in s.reth.ws_calls if m == "eth_getProof"]
-        key = "0x" + keccak256(bytes(12) + bytes.fromhex("22" * 20) + bytes(32)).hex()
-        self.assertEqual(proof_call, [["0x" + "11" * 20, [key], hex(HEAD_NUMBER + 1)], ["0x" + "11" * 20, [key], hex(HEAD_NUMBER)]])
+        self.assertEqual((arg["gatewayAccountNodes"], arg["gatewayStorageNodes"]), (["aa01", "aa02"], ["bb01"]))
+        self.assertEqual(arg["legs"], [{"tag": "PaymentLeg", "value": {"terms": "terms-1"}}])
+        self.assertEqual(sorted(arg), ["gatewayAccountNodes", "gatewayStorageNodes", "headerHex", "legs", "proofHex", "txsHex"])
         self.assertEqual(s.ledger.bad_auth, 0)
 
-    def test_terms_of_another_chain_are_not_legs(self):
-        other = ("terms-2", {**TERMS[1], "chainId": "1"})
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, other])
-        b.build_block(s.cfg)
-        self.assertEqual([l["terms"] for l in s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"]], ["terms-1"])
+    def test_the_gateways_proofs_are_asked_for_at_the_new_block_and_nothing_else_is(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        self.build(s)
+        n = HEAD_NUMBER + 1
+        slot = "0x" + keccak256(n.to_bytes(32, "big") + bytes(32)).hex()   # Solidity's key for legs[n], the mapping at slot 0
+        self.assertEqual([p for m, p in s.reth.ws_calls if m == "eth_getProof"], [["0x" + GATEWAY, [slot], hex(n)]])
 
-    def test_terms_naming_another_operator_or_confirmer_are_skipped_with_a_reason(self):
-        wrong_operator = ("terms-2", {**TERMS[1], "operator": "someone-else", "allocation": "alloc-2"})
-        wrong_confirmer = ("terms-3", {**TERMS[1], "confirmer": "someone-else", "allocation": "alloc-3"})
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, wrong_operator, wrong_confirmer])
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
-        legs = s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"]
-        self.assertEqual([l["terms"] for l in legs], ["terms-1"])
-        self.assertEqual(sorted(x["terms"] for x in result["skippedTerms"]), ["terms-2", "terms-3"])
-        for x in result["skippedTerms"]:
-            self.assertIn("operator or confirmer", x["reason"])
+    def test_the_legs_are_read_from_the_gateways_events_of_the_new_block(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.build(s)
+        self.assertEqual([p for m, p in s.reth.ws_calls if m == "eth_getLogs"],
+                         [[{"blockHash": result["blockHash"], "address": "0x" + GATEWAY, "topics": [LEG_TOPIC]}]])
 
-    def test_a_leg_is_attached_only_for_a_true_value_and_a_live_allocation(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        result = b.build_block(s.cfg)
-        self.assertEqual((result["legs"], result["skippedTerms"]), (1, []))
-        interface = [q["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"].get("InterfaceFilter") for q in s.ledger.queries]
-        (asked,) = [i for i in interface if i]
-        self.assertEqual(asked["value"]["interfaceId"], "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation")
+    def test_an_empty_block_proves_it_needs_no_legs(self):
+        s = self.setup({})
+        result = self.build(s)
+        arg = s.advance_argument()
+        self.assertEqual((arg["txsHex"], arg["legs"]), ("", []))
+        self.assertEqual((arg["gatewayAccountNodes"], arg["gatewayStorageNodes"]), (["aa01", "aa02"], ["bb01"]))
+        self.assertEqual((result["legs"], result["leftOut"], result["legTransactions"]), (0, [], []))
+        self.assertEqual(len(s.ledger.queries), 1)   # only the chain: a block with no legs needs nothing else from Canton
 
-    def test_a_withdrawn_allocation_means_the_block_lands_without_that_leg(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS], allocations=[])
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
+    def test_the_advance_argument_is_saved_in_the_blocks_work_folder(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, terms=[TERMS])
+        s.reth.tx_legs[t["hash"]] = [PAY]
+        self.build(s)
+        saved = json.loads((Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}" / "advance.json").read_text())
+        self.assertEqual(saved, s.advance_argument())
+
+    def test_the_argument_is_saved_also_when_canton_refuses_it(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="no")
+        self.assertFalse(b.build_block(s.cfg)["committed"])
+        saved = json.loads((Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}" / "advance.json").read_text())
+        self.assertEqual(saved, s.advance_argument())
+
+    def test_a_balance_is_not_a_leg_and_no_token_is_asked_about(self):
+        # A plain transfer to the payee makes no Leg event, so it settles nothing, whatever the terms say.
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, terms=[TERMS])
+        result = self.build(s)
         self.assertEqual(result["legs"], 0)
-        (skipped,) = result["skippedTerms"]
-        self.assertEqual(skipped["terms"], "terms-1")
-        self.assertIn("allocation", skipped["reason"])
-        self.assertEqual(s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"], [])
-        self.assertEqual([m for m, _ in s.reth.ws_calls if m == "eth_getProof"], [])   # nothing to ask reth about
+        self.assertEqual(s.advance_argument()["legs"], [])
+        self.assertEqual(result["leftOut"], [])
 
-    def rise_is_not_expected(self, balance, parent_balance, word):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.reth.balance, s.reth.parent_balance = balance, parent_balance   # the terms expect a rise of 0x0a
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
-        self.assertEqual(result["legs"], 0)
-        (skipped,) = result["skippedTerms"]
-        self.assertEqual(skipped["terms"], "terms-1")
-        self.assertIn(word, skipped["reason"])
-        self.assertEqual(s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"], [])
-
-    def test_a_rise_of_another_amount_means_the_leg_is_skipped(self):
-        self.rise_is_not_expected("0x09", "0x00", "rose")   # 9, not 10
-        self.rise_is_not_expected("0x0f", "0x03", "rose")   # 12
-
-    def test_a_balance_that_was_already_true_before_this_block_is_not_a_payment(self):
-        # The holder has the amount the terms name, but it was there in the parent too: nobody paid in this block.
-        self.rise_is_not_expected("0x0a", "0x0a", "rose")
-
-    def test_a_token_that_did_not_exist_in_the_parent_means_the_leg_is_skipped(self):
-        # The parent has no account for the token (reth answers with the code hash of no code), so there is no proof of
-        # a balance there: Canton's sidecar would refuse the whole block, so the terms wait for a later one.
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.reth.parent_code_hash = "0x" + keccak256(b"").hex()
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
-        (skipped,) = result["skippedTerms"]
-        self.assertEqual(skipped["terms"], "terms-1")
-        self.assertIn("did not exist", skipped["reason"])
-
-    def test_a_balance_that_fell_means_the_leg_is_skipped(self):
-        self.rise_is_not_expected("0x03", "0x0a", "fell")
-
-    def test_one_skipped_leg_does_not_stop_the_others(self):
-        terms = [TERMS, ("terms-3", {**TERMS[1], "allocation": "alloc-3", "holder": "33" * 20})]
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=terms, allocations=["alloc-3"])
-        result = b.build_block(s.cfg)
-        self.assertEqual([l["terms"] for l in s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"]], ["terms-3"])
-        self.assertEqual([x["terms"] for x in result["skippedTerms"]], ["terms-1"])
-
-    def test_a_rise_on_top_of_an_existing_balance_is_a_rise(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.reth.balance, s.reth.parent_balance = "0x0f", "0x05"
-        self.assertEqual(b.build_block(s.cfg)["legs"], 1)
-
-    def test_a_skipped_leg_is_reported_also_when_canton_refuses(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS], allocations=[], refuse="no")
-        result = b.build_block(s.cfg)
-        self.assertFalse(result["committed"])
-        self.assertEqual([x["terms"] for x in result["skippedTerms"]], ["terms-1"])
+    def test_the_report_names_the_transactions_that_recorded_legs(self):
+        t1, t2, t3 = tx(ALICE, 0), tx(BOB, 0, price=5), tx(CAROL, 0, price=1)
+        s = self.setup({ALICE: [t1], BOB: [t2], CAROL: [t3]}, terms=[TERMS])
+        s.ledger.requests, s.ledger.tokens = [REQUEST], [TOKEN]
+        s.reth.tx_legs[t1["hash"]] = [PAY]
+        s.reth.tx_legs[t2["hash"]] = [DEP]
+        result = self.build(s)
+        self.assertEqual(result["legs"], 2)
+        self.assertEqual(result["legTransactions"], [t1["hash"], t2["hash"]])
+        self.assertEqual(result["transactions"], [t1["hash"], t2["hash"], t3["hash"]])
 
     def test_an_empty_block_sends_empty_txs_hex(self):
         s = self.setup({})
@@ -249,12 +250,521 @@ class OneBlock(Case):
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
 
 
+class LegCase(Case):
+    """A block with legs: the builder reads them from reth, finds each one's Canton side, and either attaches it or
+    builds the block again without the transaction that recorded it."""
+
+    def leg_tx(self, s, leg, sender=ALICE, nonce=0, **k):
+        t = tx(sender, nonce, **k)
+        s.reth.tx_legs[t["hash"]] = [leg] if isinstance(leg, Leg) else leg
+        return t
+
+    def attached(self, s, tag):
+        legs = s.advance_argument()["legs"]
+        self.assertEqual([l["tag"] for l in legs], [tag])
+        return legs[0]["value"]
+
+    def assert_left_out(self, s, t, *words, builds=2):
+        """The block was built again without t, committed with no leg, and the report says why t was left out."""
+        result = self.build(s)
+        self.assertEqual(result["legs"], 0)
+        self.assertEqual(s.advance_argument()["legs"], [])
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t["hash"]])
+        for w in words:
+            self.assertIn(w, result["leftOut"][0]["reason"])
+        self.assertEqual(len(s.builds()), builds)
+        self.assertNotIn(raw_of(t), s.builds()[-1])
+        self.assertNotIn(t["hash"], result["transactions"])
+        return result
+
+
+class Payments(LegCase):
+    def setup_pay(self, terms=(TERMS,), **k):
+        s = self.setup({ALICE: []}, terms=list(terms), **k)
+        t = tx(ALICE, 0)
+        s.reth.pool[ALICE] = [t]
+        s.reth.tx_legs[t["hash"]] = [PAY]
+        return s, t
+
+    def test_a_payment_with_its_terms_is_attached(self):
+        s, t = self.setup_pay()
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
+        self.assertEqual((result["legs"], result["leftOut"], len(s.builds())), (1, [], 1))
+
+    def test_no_terms_for_the_payment_means_it_is_left_out_and_the_block_is_built_again(self):
+        s, t = self.setup_pay(terms=())
+        self.assert_left_out(s, t, "no terms", "payment")
+        # reth went back to Canton's head between the two builds, and the second block is the one that was proven and sent
+        safe = {"headBlockHash": HEAD_HASH, "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH}
+        fcs = s.forkchoices()
+        first, second = [p[0]["blockHash"] for p in s.engine("engine_newPayloadV4")]
+        self.assertEqual(fcs, [safe,
+                               {"headBlockHash": first, "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH}, safe,
+                               {"headBlockHash": second, "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH},
+                               {"headBlockHash": second, "safeBlockHash": second, "finalizedBlockHash": second}])
+        self.assertEqual(s.log.read_text().count("prove"), 1)   # nothing was proven for the first block
+        self.assertEqual(keccak256(bytes.fromhex(s.advance_argument()["headerHex"])).hex(), second[2:])
+
+    def test_terms_for_another_payment_do_not_match(self):
+        other = ("terms-2", {**TERMS[1], "dvpId": "ff" * 32})
+        s, t = self.setup_pay(terms=[other])
+        self.assert_left_out(s, t, "no terms")
+
+    def test_terms_that_name_another_token_payee_or_amount_do_not_match(self):
+        for field, value, word in (("token", "44" * 20, "token"), ("payee", "55" * 20, "payee"), ("amount", "00" * 31 + "0b", "amount")):
+            with self.subTest(field):
+                s, t = self.setup_pay(terms=[("terms-2", {**TERMS[1], field: value})])
+                self.assert_left_out(s, t, word)
+
+    def test_terms_of_another_chain_operator_or_confirmer_do_not_match(self):
+        for field, value in (("chainId", "1"), ("operator", "someone-else"), ("confirmer", "someone-else")):
+            with self.subTest(field):
+                s, t = self.setup_pay(terms=[("terms-2", {**TERMS[1], field: value})])
+                self.assert_left_out(s, t, "no terms")
+
+    def test_a_withdrawn_allocation_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay(allocations=[])
+        self.assert_left_out(s, t, "allocation", "not active")
+
+    def test_a_passed_settle_before_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = {"settleBefore": "2020-01-01T00:00:00.123456Z"}
+        self.assert_left_out(s, t, "settle-before")
+
+    def test_the_deadline_is_judged_by_the_builders_clock(self):
+        for now, legs in ((2029, 1), (2031, 0)):
+            s, t = self.setup_pay()
+            s.ledger.views["alloc-1"] = {"settleBefore": "2030-01-01T00:00:00Z"}
+            with mock.patch.object(b, "utcnow", lambda now=now: datetime(now, 6, 1, tzinfo=timezone.utc)):
+                self.assertEqual(b.build_block(s.cfg)["legs"], legs, now)
+
+    def test_a_settle_before_that_cannot_be_read_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = {"settleBefore": "tomorrow"}
+        self.assert_left_out(s, t, "settle-before")
+
+    def test_an_executor_that_is_not_the_chains_operator_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = {"executor": "someone-else"}
+        self.assert_left_out(s, t, "executor")
+
+    def test_a_sender_that_is_not_u_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = {"sender": "v::1", "receiver": "v::1"}
+        self.assert_left_out(s, t, "sender", "u")
+
+    def test_a_receiver_that_is_not_v_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = {"receiver": "u::1"}
+        self.assert_left_out(s, t, "receiver", "v")
+
+    def test_an_allocation_without_a_visible_view_means_the_payment_is_left_out(self):
+        s, t = self.setup_pay()
+        s.ledger.views["alloc-1"] = None
+        self.assert_left_out(s, t, "view")
+
+    def test_the_interface_view_is_asked_for(self):
+        s, t = self.setup_pay()
+        self.build(s)
+        asked = [q["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"].get("InterfaceFilter") for q in s.ledger.queries]
+        (asked,) = [i for i in asked if i]
+        self.assertTrue(asked["value"]["includeInterfaceView"])
+        self.assertEqual(asked["value"]["interfaceId"], "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation")
+
+    def test_two_payments_for_one_allocation_leave_the_later_one_out(self):
+        twin = ("terms-2", {**TERMS[1], "dvpId": "ff" * 32})   # the same allocation, alloc-1
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS, twin])
+        t1, t2 = self.leg_tx(s, PAY, ALICE, price=9), self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), BOB, price=1)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [t1], [t2]
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
+        self.assertIn("same allocation", result["leftOut"][0]["reason"])
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
+
+    def test_terms_left_for_another_payment_do_not_take_an_allocation(self):
+        # terms-1 is for a payment nobody made; terms-2 is for the payment in the block and has the same allocation
+        unused = ("terms-0", {**TERMS[1], "dvpId": "ff" * 32})
+        s, t = self.setup_pay(terms=[unused, ("terms-2", TERMS[1])])
+        self.build(s)
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-2"})
+
+    def test_a_plain_transfer_in_the_same_block_changes_nothing(self):
+        s, t = self.setup_pay()
+        plain = tx(BOB, 0, price=1)   # a transfer to the payee: no Leg event
+        s.reth.pool[BOB] = [plain]
+        result = self.build(s)
+        self.assertEqual(result["transactions"], [t["hash"], plain["hash"]])
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
+
+
+class Deposits(LegCase):
+    def setup_dep(self, requests=(REQUEST,), tokens=(TOKEN,), **k):
+        s = self.setup({ALICE: []}, **k)
+        s.ledger.requests, s.ledger.tokens = list(requests), list(tokens)
+        t = self.leg_tx(s, DEP)
+        s.reth.pool[ALICE] = [t]
+        return s, t
+
+    def test_a_claim_with_its_request_and_token_is_attached(self):
+        s, t = self.setup_dep()
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
+        self.assertEqual((result["legs"], result["legTransactions"]), (1, [t["hash"]]))
+
+    def test_no_request_for_the_claim_means_it_is_left_out(self):
+        s, t = self.setup_dep(requests=())
+        self.assert_left_out(s, t, "no deposit request")
+
+    def test_a_request_for_another_id_or_recipient_does_not_match(self):
+        for field, value in (("depositId", "ff" * 32), ("recipient", "55" * 20)):
+            with self.subTest(field):
+                s, t = self.setup_dep(requests=[("req-2", {**REQUEST[1], field: value})])
+                self.assert_left_out(s, t, "no deposit request")
+
+    def test_a_request_of_another_chain_operator_confirmer_or_gateway_does_not_match(self):
+        for field, value in (("chainId", "1"), ("operator", "x"), ("confirmer", "x"), ("gateway", "x")):
+            with self.subTest(field):
+                s, t = self.setup_dep(requests=[("req-2", {**REQUEST[1], field: value})])
+                self.assert_left_out(s, t, "no deposit request")
+
+    def test_a_token_that_is_not_registered_means_the_claim_is_left_out(self):
+        s, t = self.setup_dep(tokens=())
+        self.assert_left_out(s, t, "not registered")
+
+    def test_a_token_of_another_chain_or_gateway_does_not_count(self):
+        for field, value in (("chainId", "1"), ("operator", "x"), ("confirmer", "x"), ("gateway", "x")):
+            with self.subTest(field):
+                s, t = self.setup_dep(tokens=[("tok-2", {**TOKEN[1], field: value})])
+                self.assert_left_out(s, t, "not registered")
+
+    def test_a_token_registered_for_another_evm_token_does_not_count(self):
+        s, t = self.setup_dep(tokens=[TOKEN_C])
+        self.assert_left_out(s, t, "not registered")
+
+    def test_an_allocation_that_is_gone_or_hidden_means_the_claim_is_left_out(self):
+        s, t = self.setup_dep(allocations=[])
+        self.assert_left_out(s, t, "allocation", "not active")
+        s, t = self.setup_dep()
+        s.ledger.views["alloc-d1"] = None
+        self.assert_left_out(s, t, "view")
+
+    def test_a_passed_settle_before_an_executor_a_sender_or_a_receiver_that_do_not_fit(self):
+        for over, word in (({"settleBefore": "2020-01-01T00:00:00Z"}, "settle-before"), ({"executor": "someone-else"}, "executor"),
+                           ({"sender": "x::1"}, "sender"), ({"receiver": "x::1"}, "gateway")):
+            with self.subTest(word):
+                s, t = self.setup_dep()
+                s.ledger.views["alloc-d1"] = over
+                self.assert_left_out(s, t, word)
+
+    def test_an_allocation_of_another_instrument_means_the_claim_is_left_out(self):
+        for instrument in ({"admin": "adm", "id": "TKX"}, {"admin": "other", "id": "TKB"}):
+            with self.subTest(instrument["id"] + instrument["admin"]):
+                s, t = self.setup_dep()
+                s.ledger.views["alloc-d1"] = {"instrument": instrument}
+                self.assert_left_out(s, t, "instrument")
+
+    def test_an_allocation_of_another_amount_means_the_claim_is_left_out(self):
+        for amount in ("9.0", "10.0000000001", "100.0"):
+            with self.subTest(amount):
+                s, t = self.setup_dep()
+                s.ledger.views["alloc-d1"] = {"amount": amount}
+                self.assert_left_out(s, t, "amount")
+
+    def test_an_amount_is_compared_as_a_number(self):
+        s, t = self.setup_dep()
+        s.ledger.views["alloc-d1"] = {"amount": "10.0000000000"}
+        self.build(s)
+        self.assertEqual(len(s.advance_argument()["legs"]), 1)
+
+    def test_of_two_requests_for_one_id_the_one_that_can_settle_is_used(self):
+        dead = ("req-0", {**REQUEST[1], "depositor": "e::1", "allocation": "alloc-dead"})
+        s, t = self.setup_dep(requests=[dead, REQUEST], allocations=["alloc-d1"])
+        self.build(s)
+        self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
+
+    def test_one_allocation_is_used_by_one_leg_of_a_block(self):
+        second = ("req-2", {**REQUEST[1], "depositId": "ff" * 32})   # the same allocation, claimed under another id
+        s, t1 = self.setup_dep(requests=[REQUEST, second])
+        t2 = self.leg_tx(s, Leg(DEPOSIT, "ff" * 32, WTKB, PAYEE, 10 * UNIT), BOB, price=1)
+        s.reth.pool[BOB] = [t2]
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
+        self.assertIn("same allocation", result["leftOut"][0]["reason"])
+        self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
+
+
+class Withdrawals(LegCase):
+    def setup_wd(self, acceptances=(ACCEPTANCE,), tokens=(TOKEN,), holdings=(holding("h-1", "6.0"),), **k):
+        s = self.setup({ALICE: []}, **k)
+        s.ledger.acceptances, s.ledger.tokens, s.ledger.holdings = list(acceptances), list(tokens), list(holdings)
+        t = self.leg_tx(s, WD)
+        s.reth.pool[ALICE] = [t]
+        return s, t
+
+    def test_a_withdrawal_with_a_token_an_acceptance_and_holdings_is_attached(self):
+        s, t = self.setup_wd()
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "WithdrawalLeg"), {
+            "id": WD_ID, "token": "tok-1", "from": PAYEE, "amount": "4.0", "acceptance": "acc-1", "inputs": ["h-1"]})
+        self.assertEqual((result["legs"], result["legTransactions"]), (1, [t["hash"]]))
+
+    def test_the_amount_is_the_wrapped_amount_in_canton_units(self):
+        for base, text in ((1, "0.0000000001"), (123456789012, "12.3456789012"), (5 * UNIT, "5.0")):
+            with self.subTest(base):
+                s, t = self.setup_wd(holdings=[holding("h-1", "100.0")])
+                s.reth.tx_legs[t["hash"]] = [Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, base, "r::1")]
+                self.build(s)
+                self.assertEqual(self.attached(s, "WithdrawalLeg")["amount"], text)
+
+    def test_no_acceptance_means_the_withdrawal_is_left_out(self):
+        s, t = self.setup_wd(acceptances=())
+        self.assert_left_out(s, t, "acceptance")
+
+    def test_an_acceptance_of_another_party_or_another_chain_does_not_count(self):
+        for field, value in (("party", "x::9"), ("chainId", "1"), ("operator", "x"), ("confirmer", "x"), ("gateway", "x")):
+            with self.subTest(field):
+                s, t = self.setup_wd(acceptances=[("acc-2", {**ACCEPTANCE[1], field: value})])
+                self.assert_left_out(s, t, "acceptance")
+
+    def test_a_party_text_that_is_not_a_party_means_the_withdrawal_is_left_out(self):
+        s, t = self.setup_wd()
+        s.reth.tx_legs[t["hash"]] = [Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, 4 * UNIT, "not a party é")]
+        self.assert_left_out(s, t, "acceptance")
+
+    def test_a_token_that_is_not_registered_means_the_withdrawal_is_left_out(self):
+        s, t = self.setup_wd(tokens=[TOKEN_C])
+        self.assert_left_out(s, t, "not registered")
+
+    def test_holdings_that_do_not_cover_the_amount_mean_the_withdrawal_is_left_out(self):
+        s, t = self.setup_wd(holdings=[holding("h-1", "1.0"), holding("h-2", "2.5")])
+        self.assert_left_out(s, t, "holdings", "cover")
+
+    def test_locked_holdings_and_other_owners_and_other_instruments_are_not_counted(self):
+        lock = {"holders": ["x"], "expiresAt": None, "expiresAfter": None, "context": None}
+        s, t = self.setup_wd(holdings=[holding("h-1", "6.0", lock=lock), holding("h-2", "6.0", owner="someone"), holding("h-3", "6.0", instrument=TKC)])
+        self.assert_left_out(s, t, "holdings")
+
+    def test_the_largest_holdings_are_used_first_and_no_more_than_needed(self):
+        holdings = [holding("h-1", "1.0"), holding("h-5", "5.0"), holding("h-2", "2.0")]
+        for amount, inputs in ((4 * UNIT, ["h-5"]), (5 * UNIT, ["h-5"]), (7 * UNIT, ["h-5", "h-2"]), (7 * UNIT + UNIT // 2, ["h-5", "h-2", "h-1"]), (8 * UNIT, ["h-5", "h-2", "h-1"])):
+            with self.subTest(amount):
+                s, t = self.setup_wd(holdings=holdings)
+                s.reth.tx_legs[t["hash"]] = [Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, amount, "r::1")]
+                self.build(s)
+                self.assertEqual(self.attached(s, "WithdrawalLeg")["inputs"], inputs)
+
+    def test_holdings_are_summed_in_whole_base_units_and_one_that_cannot_be_read_is_not_counted(self):
+        big, one = "1234567890123456789.0000000001", "1.0"
+        holdings = [holding("h-1", one), holding("h-big", big), holding("h-bad", "1e30"), holding("h-neg", "-5.0")]
+        s, t = self.setup_wd(holdings=holdings)
+        s.reth.tx_legs[t["hash"]] = [Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, b.base_units("1234567890123456790.0000000001"), "r::1")]
+        self.build(s)
+        self.assertEqual(self.attached(s, "WithdrawalLeg")["inputs"], ["h-big", "h-1"])
+
+    def test_holdings_are_asked_for_with_their_interface_view(self):
+        s, t = self.setup_wd()
+        self.build(s)
+        asked = [q["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"].get("InterfaceFilter") for q in s.ledger.queries]
+        ids = {i["value"]["interfaceId"]: i["value"]["includeInterfaceView"] for i in asked if i}
+        self.assertEqual(ids, {"#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding": True})
+
+    def test_one_withdrawal_of_an_instrument_goes_into_a_block_and_the_next_waits(self):
+        s, t1 = self.setup_wd(holdings=[holding("h-1", "50.0")])
+        t2 = self.leg_tx(s, Leg(WITHDRAWAL, "cd" * 32, WTKB, PAYEE, UNIT, "r::1"), BOB, price=1)
+        s.reth.pool[BOB] = [t2]
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
+        self.assertIn("same token", result["leftOut"][0]["reason"])
+        self.assertEqual(self.attached(s, "WithdrawalLeg")["id"], WD_ID)
+
+    def test_withdrawals_of_two_instruments_both_go_in(self):
+        s, t1 = self.setup_wd(tokens=[TOKEN, TOKEN_C], holdings=[holding("h-1", "50.0"), holding("h-2", "50.0", instrument=TKC)])
+        t2 = self.leg_tx(s, Leg(WITHDRAWAL, "cd" * 32, WTKC, PAYEE, UNIT, "r::1"), BOB, price=1)
+        s.reth.pool[BOB] = [t2]
+        result = self.build(s)
+        self.assertEqual([l["value"]["inputs"] for l in s.advance_argument()["legs"]], [["h-1"], ["h-2"]])
+        self.assertEqual(result["leftOut"], [])
+
+
+class Rebuilding(LegCase):
+    def test_legs_go_in_the_order_of_the_events_across_and_within_transactions(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        s.ledger.requests, s.ledger.tokens, s.ledger.acceptances, s.ledger.holdings = [REQUEST], [TOKEN], [ACCEPTANCE], [holding("h-1", "6.0")]
+        t1 = self.leg_tx(s, [WD, PAY], ALICE, price=9)   # two legs from one transaction
+        t2 = self.leg_tx(s, DEP, BOB, price=5)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [t1], [t2]
+        result = self.build(s)
+        self.assertEqual([l["tag"] for l in s.advance_argument()["legs"]], ["WithdrawalLeg", "PaymentLeg", "DepositLeg"])
+        self.assertEqual(result["legTransactions"], [t1["hash"], t2["hash"]])
+
+    def test_a_transaction_with_a_leg_left_out_takes_its_senders_later_ones_with_it_and_not_others(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS, ("terms-2", {**TERMS[1], "dvpId": "fe" * 32, "allocation": "alloc-2"})])
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), ALICE, 0, price=9)   # no terms for this one
+        later = self.leg_tx(s, PAY, ALICE, 1, price=9)   # would have terms, but waits behind it
+        other = self.leg_tx(s, Leg(PAYMENT, "fe" * 32, TKA, PAYEE, 10), BOB, 0, price=1)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [bad, later], [other]
+        result = self.build(s)
+        self.assertEqual(s.builds(), [[raw_of(bad), raw_of(later), raw_of(other)], [raw_of(other)]])
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [bad["hash"]])
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-2"})
+
+    def test_a_rebuilt_block_keeps_the_honest_transactions_although_reth_has_dropped_them_from_its_pool(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        honest = self.leg_tx(s, PAY, ALICE, price=9)
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), BOB, price=1)   # no terms
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [honest], [bad]
+        s.reth.refuse_resend = True   # the rebuilt block must not depend on the pool taking them back
+        result = self.build(s)
+        self.assertEqual(s.builds(), [[raw_of(honest), raw_of(bad)], [raw_of(honest)]])
+        self.assertEqual((result["legs"], result["transactions"]), (1, [honest["hash"]]))
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
+
+    def test_a_transaction_that_is_left_out_does_not_take_an_allocation_from_another(self):
+        twin = ("terms-2", {**TERMS[1], "dvpId": "fe" * 32})
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS, twin])
+        doomed = self.leg_tx(s, [PAY, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10)], ALICE, price=9)
+        other = self.leg_tx(s, Leg(PAYMENT, "fe" * 32, TKA, PAYEE, 10), BOB, price=1)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [doomed], [other]
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [doomed["hash"]])
+        self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-2"})
+
+    def test_a_transaction_that_is_left_out_waits_in_the_pool_and_the_ones_in_the_block_do_not(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        honest = self.leg_tx(s, PAY, ALICE, price=9)
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), BOB, 0, price=1)
+        later = tx(BOB, 1, price=1)   # waits behind it
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [honest], [bad, later]
+        self.build(s)
+        self.assertEqual(self.in_pool(s), {bad["hash"], later["hash"]})
+
+    def test_two_refused_runs_in_a_row_leave_the_transaction_in_the_pool_once(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, refuse="no")
+        b.build_block(s.cfg)
+        b.build_block(s.cfg)
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+        self.assertEqual(len(s.reth.pool[ALICE]), 1)
+
+    def test_the_transactions_of_a_refused_block_are_in_the_pool_again(self):
+        a, c = tx(ALICE, 0), tx(BOB, 0)
+        s = self.setup({ALICE: [a], BOB: [c]}, refuse="the block is over the gas cap")
+        result = b.build_block(s.cfg)
+        self.assertFalse(result["committed"])
+        self.assertEqual(self.in_pool(s), {a["hash"], c["hash"]})
+        s.ledger.refuse = None
+        self.assertEqual(self.build(s)["transactions"], [a["hash"], c["hash"]])
+
+    def test_the_transactions_are_in_the_pool_again_when_the_run_fails(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.reth.tx_legs[t["hash"]] = [PAY]
+        s.reth.bad_log_data = b"\x01" * 10
+        with self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_a_committed_block_is_not_sent_to_the_pool_again_when_the_last_forkchoice_fails(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.reth.sync_on_final = True
+        with self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_a_committed_block_leaves_its_transactions_out_of_the_pool(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        self.build(s)
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_every_leg_without_a_canton_side_is_found_in_one_pass(self):
+        s = self.setup({ALICE: [], BOB: []})
+        a, c = self.leg_tx(s, PAY, ALICE), self.leg_tx(s, PAY, BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [a], [c]
+        result = self.build(s)
+        self.assertEqual(len(s.builds()), 2)
+        self.assertEqual(sorted(x["transaction"] for x in result["leftOut"]), sorted([a["hash"], c["hash"]]))
+
+    def test_a_leg_that_shows_up_only_without_another_transaction_is_found_by_building_again(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        first = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), ALICE, price=9)   # no terms: left out in the first pass
+        second = tx(BOB, 0, price=1)
+        # the second transaction pays against real terms while the first is in the block, and against nothing once it is gone
+        s.reth.tx_legs[second["hash"]] = lambda in_block: [PAY] if first["hash"] in in_block else [Leg(PAYMENT, "fe" * 32, TKA, PAYEE, 10)]
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [first], [second]
+        result = self.build(s)
+        self.assertEqual(s.builds(), [[raw_of(first), raw_of(second)], [raw_of(second)], []])
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [first["hash"], second["hash"]])
+        self.assertEqual(s.advance_argument()["legs"], [])
+
+    def test_a_transaction_with_two_legs_that_have_no_side_is_left_out_once(self):
+        s = self.setup({ALICE: []})
+        t = self.leg_tx(s, [PAY, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10)])
+        s.reth.pool[ALICE] = [t]
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [t["hash"]])
+
+    def test_a_transaction_named_with_exclude_is_not_reported_as_left_out(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        self.assertEqual(self.build(s, exclude={t["hash"]})["leftOut"], [])
+
+    def test_a_refused_advance_lists_the_transactions_that_recorded_legs_and_the_next_run_looks_again(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, terms=[TERMS], refuse="the allocation was withdrawn")
+        s.reth.tx_legs[t["hash"]] = [PAY]
+        result = b.build_block(s.cfg)
+        self.assertFalse(result["committed"])
+        self.assertEqual((result["legTransactions"], result["keptTransactions"]), ([t["hash"]], [t["hash"]]))
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
+        s.ledger.refuse, s.ledger.allocations = None, []   # the allocation really is gone now
+        again = self.build(s)
+        self.assertEqual([x["transaction"] for x in again["leftOut"]], [t["hash"]])
+
+    def test_an_unknown_outcome_lists_the_legs_too(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, terms=[TERMS], drop_but_commit=True)
+        s.ledger.head_fails_after_submit = True
+        s.reth.tx_legs[t["hash"]] = [PAY]
+        result = b.build_block(s.cfg)
+        self.assertIsNone(result["committed"])
+        self.assertEqual((result["legTransactions"], result["leftOut"]), ([t["hash"]], []))
+
+    def test_a_log_that_cannot_be_read_stops_the_run_and_moves_reth_back(self):
+        for bad in (b"\x01" * 10, bytes(32 * 7), bytes(32 * 5)):
+            with self.subTest(len(bad)):
+                t = tx(ALICE, 0)
+                s = self.setup({ALICE: [t]})
+                s.reth.tx_legs[t["hash"]] = [PAY]
+                s.reth.bad_log_data = bad
+                with self.assertRaises(b.BuilderError):
+                    b.build_block(s.cfg)
+                self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
+                self.assertEqual(s.ledger.submitted, [])
+
+
+class ChainRecord(Case):
+    def test_a_gateway_address_that_is_not_forty_lowercase_hex_digits_stops_the_run_before_anything_is_built(self):
+        for bad in ("0x" + GATEWAY, GATEWAY.upper(), GATEWAY[:-2], GATEWAY + "00", ""):
+            with self.subTest(bad):
+                s = self.setup({ALICE: [tx(ALICE, 0)]})
+                good = s.ledger.chain_args
+                s.ledger.chain_args = lambda good=good, bad=bad: {**good(), "gatewayAddress": bad}
+                with self.assertRaises(b.BuilderError):
+                    b.build_block(s.cfg)
+                self.assertEqual(s.builds(), [])
+
+
 class Visibility(Case):
     """--read-as and --disclosed: the operator-hosted builder sees what the operator sees, and passes the contracts
     the token registry discloses. Without them nothing changes."""
 
     def test_by_default_only_the_builder_reads_and_nothing_is_disclosed(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, terms=[TERMS])
+        s.reth.tx_legs[t["hash"]] = [PAY]
         b.build_block(s.cfg)
         for q in s.ledger.queries:
             self.assertEqual(list(q["eventFormat"]["filtersByParty"]), [BUILDER])
@@ -263,10 +773,12 @@ class Visibility(Case):
         self.assertNotIn("disclosedContracts", sub)
 
     def test_read_as_parties_are_added_to_every_read_and_to_advance(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, terms=[TERMS])
+        s.reth.tx_legs[t["hash"]] = [PAY]
         s.cfg.read_as = ("operator::1220cc", "other::1220dd")
         self.assertTrue(b.build_block(s.cfg)["committed"])
-        self.assertEqual(len(s.ledger.queries), 3)   # the chain, the allocations, the terms
+        self.assertEqual(len(s.ledger.queries), 3)   # the chain, the terms, the allocations
         for q in s.ledger.queries:
             self.assertEqual(list(q["eventFormat"]["filtersByParty"]), [BUILDER, "operator::1220cc", "other::1220dd"])
         (sub,) = s.ledger.submitted
@@ -279,110 +791,6 @@ class Visibility(Case):
         s.cfg.disclosed = disclosed
         self.assertTrue(b.build_block(s.cfg)["committed"])
         self.assertEqual(s.ledger.submitted[0]["disclosedContracts"], disclosed)
-
-
-class LegChecks(Case):
-    """What the builder checks about a leg's allocation before it attaches the leg. Terms that fail are left out,
-    each with its reason, and the block still lands."""
-
-    def skipped(self, s, reason_word):
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
-        self.assertEqual(result["legs"], 0)
-        (x,) = result["skippedTerms"]
-        self.assertEqual(x["terms"], "terms-1")
-        self.assertIn(reason_word, x["reason"])
-        self.assertEqual(s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"], [])
-        return x
-
-    def test_the_interface_view_is_asked_for(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        b.build_block(s.cfg)
-        asked = [q["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"].get("InterfaceFilter") for q in s.ledger.queries]
-        (asked,) = [i for i in asked if i]
-        self.assertTrue(asked["value"]["includeInterfaceView"])
-
-    def test_a_passed_settle_before_means_the_leg_is_skipped(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.ledger.views["alloc-1"] = {"settleBefore": "2020-01-01T00:00:00.123456Z"}
-        self.skipped(s, "settle-before")
-        self.assertEqual([m for m, _ in s.reth.ws_calls if m == "eth_getProof"], [])
-
-    def test_the_deadline_is_judged_by_the_builders_clock(self):
-        from datetime import datetime, timezone
-        for now, legs in ((2029, 1), (2031, 0)):
-            s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-            s.ledger.views["alloc-1"] = {"settleBefore": "2030-01-01T00:00:00Z"}
-            with mock.patch.object(b, "utcnow", lambda now=now: datetime(now, 6, 1, tzinfo=timezone.utc)):
-                self.assertEqual(b.build_block(s.cfg)["legs"], legs, now)
-
-    def test_a_settle_before_that_cannot_be_read_means_the_leg_is_skipped(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.ledger.views["alloc-1"] = {"settleBefore": "tomorrow"}
-        self.skipped(s, "settle-before")
-
-    def test_an_executor_that_is_not_the_chains_operator_means_the_leg_is_skipped(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.ledger.views["alloc-1"] = {"executor": "someone-else"}
-        self.skipped(s, "executor")
-
-    def test_a_sender_that_is_not_u_means_the_leg_is_skipped(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.ledger.views["alloc-1"] = {"sender": "v::1", "receiver": "v::1"}
-        self.skipped(s, "sender")
-
-    def test_a_receiver_that_is_not_v_means_the_leg_is_skipped(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.ledger.views["alloc-1"] = {"receiver": "u::1"}
-        self.skipped(s, "receiver")
-
-    def test_an_allocation_without_a_visible_view_means_the_leg_is_skipped(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS])
-        s.ledger.views["alloc-1"] = None
-        self.skipped(s, "view")
-
-    def test_two_terms_for_one_allocation_are_both_left_out_and_the_others_stay(self):
-        twin = ("terms-2", {**TERMS[1], "holder": "33" * 20})   # the same allocation, alloc-1
-        other = ("terms-3", {**TERMS[1], "allocation": "alloc-3", "holder": "44" * 20})
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, twin, other])
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
-        self.assertEqual([l["terms"] for l in s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"]], ["terms-3"])
-        self.assertEqual(sorted(x["terms"] for x in result["skippedTerms"]), ["terms-1", "terms-2"])
-        self.assertTrue(all("same allocation" in x["reason"] for x in result["skippedTerms"]))
-
-    def test_terms_of_another_chain_do_not_count_as_a_second_term_for_an_allocation(self):
-        elsewhere = ("terms-2", {**TERMS[1], "chainId": "1"})
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, elsewhere])
-        self.assertEqual(b.build_block(s.cfg)["legs"], 1)
-
-    def test_a_term_whose_rise_is_not_true_does_not_block_its_twin(self):
-        twin = ("terms-2", {**TERMS[1], "expected": "00" * 31 + "09", "allocation": "alloc-2"})   # reth proves a rise of 0x0a, not 9
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, twin])
-        result = b.build_block(s.cfg)
-        self.assertEqual(result["legs"], 1)
-        self.assertEqual([x["terms"] for x in result["skippedTerms"]], ["terms-2"])
-
-    def test_one_payment_settles_one_terms_for_a_token_and_holder(self):
-        # Two terms for the same token and holder, each with its own allocation, both true of the one payment: only the
-        # first goes in, and the other is reported. A third, for another holder, is not affected.
-        same = ("terms-2", {**TERMS[1], "allocation": "alloc-2"})
-        other = ("terms-3", {**TERMS[1], "allocation": "alloc-3", "holder": "33" * 20})
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, same, other])
-        result = b.build_block(s.cfg)
-        self.assertTrue(result["committed"], result)
-        self.assertEqual([l["terms"] for l in s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"]], ["terms-1", "terms-3"])
-        (x,) = result["skippedTerms"]
-        self.assertEqual(x["terms"], "terms-2")
-        self.assertIn("same token and holder", x["reason"])
-
-    def test_terms_left_out_for_their_allocation_do_not_take_the_places_of_others(self):
-        # terms-1 and terms-2 point at one allocation and are both left out; terms-3 (same token and holder) is the one that goes in.
-        twin = ("terms-2", {**TERMS[1], "holder": "33" * 20})
-        third = ("terms-3", {**TERMS[1], "allocation": "alloc-3", "holder": "33" * 20})
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, terms=[TERMS, twin, third])
-        b.build_block(s.cfg)
-        self.assertEqual([l["terms"] for l in s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["legs"]], ["terms-3"])
 
 
 class Refusal(Case):
@@ -464,10 +872,11 @@ class Transactions(Case):
 
     def test_gas_cap_is_respected(self):
         pool = {ALICE: [tx(ALICE, n, gas=21000, price=9) for n in range(5)], BOB: [tx(BOB, 0, gas=30000, price=1)]}
+        first_three = [raw_of(t) for t in pool[ALICE][:3]]   # the fake pool loses the block's transactions once it is head
         s = self.setup(pool, gas_cap=70_000)
         b.build_block(s.cfg)
         raws = [p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"][0][2]
-        self.assertEqual(raws, [raw_of(t) for t in pool[ALICE][:3]])   # 63,000; the 4th would make 84,000
+        self.assertEqual(raws, first_three)   # 63,000; the 4th would make 84,000
         self.assertLessEqual(21000 * len(raws), 70_000)
 
     def test_a_transaction_that_does_not_fit_stops_its_sender_not_the_others(self):
@@ -609,6 +1018,36 @@ class Pieces(unittest.TestCase):
         header, t = rlp([b"x" * 40, b"y"]), [b"\x02" + b"z" * 60]
         raw = rlp([Raw(header), t, [], []])
         self.assertEqual(b.split_block(raw), (header, rlp(t)))
+
+    def test_the_leg_event_is_the_one_the_contract_declares(self):
+        source = (HERE.parent.parent / "gateway" / "Gateway.sol").read_text()
+        (params,) = re.findall(r"event Leg\(([^)]*)\);", source)
+        signature = "Leg(" + ",".join(p.split()[0] for p in params.split(",")) + ")"
+        self.assertEqual(signature, "Leg(uint8,bytes32,address,address,uint256,string)")
+        self.assertEqual(b.LEG_TOPIC, "0x" + keccak256(signature.encode()).hex())
+
+    def test_a_leg_event_is_read_back_as_it_was_written(self):
+        for leg in (PAY, DEP, WD, Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, 1, "x" * 100 + "\u00e9")):
+            log = {"address": "0x" + GATEWAY, "topics": [LEG_TOPIC], "data": "0x" + leg.data().hex(), "transactionHash": "0x" + "99" * 32}
+            got = b.decode_leg(log)
+            self.assertEqual((got.kind, got.id, got.token, got.account, got.amount, got.party, got.tx),
+                             (leg.kind, leg.id, leg.token, leg.account, leg.amount, leg.party, "0x" + "99" * 32))
+
+    def test_a_leg_event_that_is_not_well_formed_is_refused(self):
+        good = PAY.data()
+        for bad in (good[:-1], good + b"\x00", bytes(32) + good[32:], good[:160] + (7).to_bytes(32, "big") + good[192:],
+                    (9).to_bytes(32, "big") + good[32:], good[:96] + b"\x01" + good[97:], WD.data()[:-1] + b"\x01"):
+            with self.subTest(len(bad)), self.assertRaises(b.BuilderError):
+                b.decode_leg({"data": "0x" + bad.hex(), "transactionHash": "0x" + "99" * 32})
+
+    def test_wrapped_amounts_and_canton_amounts_convert_exactly(self):
+        for base, text in ((0, "0.0"), (1, "0.0000000001"), (UNIT, "1.0"), (123456789012, "12.3456789012"), (10**30, "100000000000000000000.0")):
+            self.assertEqual(b.canton_amount(base), text)
+            self.assertEqual(b.base_units(text), base)
+        self.assertEqual(b.base_units("10.0000000000"), 10 * UNIT)
+        self.assertEqual(b.base_units("7"), 7 * UNIT)
+        for bad in ("0.00000000001", "1.00000000005", "abc", "", "-1.0", None):
+            self.assertIsNone(b.base_units(bad), bad)
 
 
 if __name__ == "__main__":

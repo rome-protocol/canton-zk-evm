@@ -1,11 +1,16 @@
 -- Daml Script tests for the canton-zk-evm package, run against its stub form (daml/README.md: "How the
 -- external call is tested"). The token is the Splice reference token, driven through the standard's own factory.
+--
+-- The stub cannot hash, so it treats the gateway's storage proof as the text of the legs the block recorded (as hex),
+-- and the account proof as a tag that picks a failure (README.md and sidecar/stub.daml). A test writes down the legs
+-- its block "recorded" in the exact line format the real sidecar reads, which also pins that format.
 module Zk.ChainTest where
 
 import DA.Assert ((===))
 import DA.Foldable (forA_)
 import DA.List (sort)
 import DA.Time (addRelTime, days)
+import qualified DA.Text as T
 import Daml.Script
 
 import Splice.Api.Token.MetadataV1
@@ -18,100 +23,217 @@ import Zk.Chain
 import Zk.Hex
 import Zk.Sidecar
 
-data F = F with
-  operator, confirmer, builder, reader, registry, u, v : Party
-  chain : ContractId ZkChain
-  terms : ContractId DvpTerms
+-- The registry that issues the test token: its rules (the factory for both transfers and allocations), and the
+-- disclosure of those rules, which the builder needs to settle.
+data Reg = Reg with
+  registry : Party
   rulesCid : ContractId TokenRules
   rules : Disclosure
 
-tokenAddr, uAddr : Text
+data F = F with
+  operator, confirmer, builder, reader, registry, gateway, u, v, d : Party
+  chain : ContractId ZkChain
+  reg : Reg
+  rulesCid : ContractId TokenRules
+  rules : Disclosure
+  token : ContractId GatewayToken
+  terms : ContractId DvpTerms
+  dvp1, dvp2 : Text
+  deposit : ContractId DepositRequest
+  acceptance : ContractId WithdrawalAcceptance
+
+-- The EVM side: the gateway's address, the EVM token that wraps TKB, the payment token, and some accounts.
+gatewayAddr, wTkb, tokenAddr, uAddr, recipientAddr, burnerAddr : Text
+gatewayAddr = mconcat (replicate 20 "a7")
+wTkb = mconcat (replicate 20 "33")
 tokenAddr = mconcat (replicate 20 "11")
 uAddr = mconcat (replicate 20 "22")
+recipientAddr = mconcat (replicate 20 "44")
+burnerAddr = mconcat (replicate 20 "55")
+
+-- A 64-digit id from one repeated byte.
+idOf : Text -> Text
+idOf b = mconcat (replicate 32 b)
+
+deposit1, withdrawalId : Text
+deposit1 = idOf "d1"
+withdrawalId = idOf "c1"
+
+-- The labels of the two payments. Their ids are `paymentId u v label`, so they belong to the pair that signed them.
+label1, label2 : Text
+label1 = "dvp-1"
+label2 = "dvp-2"
 
 -- Whom the terms (and the allocation's executor) name as the operator and the confirmer. `Honest` names the chain's own.
 -- The others name the builder in one role: the authority present in `Advance` would still let such a leg settle
 -- (the builder is the controller, the chain's signatories are there too), so only the chain's own check refuses it.
 data Naming = Honest | BuilderAsOperator | BuilderAsConfirmer
 
--- A chain at its genesis; U holds 100 test tokens and has allocated 10 of them to V, executor the operator;
--- U and V have signed the terms "if U's address gained ten tokens in this block, execute that allocation".
+-- A chain at its genesis, with a gateway. TKB is registered: its EVM form is the token at `wTkb`.
+-- U has allocated 10 TKB to V and the two have signed terms for the payment of `label1`: "if the chain's gateway records
+-- this payment of 10 of the payment token to U's address, execute that allocation".
+-- D has allocated 10 TKB to the gateway and signed a request to deposit them for `recipientAddr`.
+-- U has said it accepts withdrawals.
 fixture : Script F
 fixture = fixtureWith Honest
 
 fixtureWith : Naming -> Script F
 fixtureWith naming = do
-  [operator, confirmer, builder, reader, registry, u, v] <- mapA allocateParty ["Operator", "Confirmer", "Builder", "Reader", "Registry", "U", "V"]
-  proposal <- submit operator $ createCmd ChainProposal with
-    chainId = 770101; genesisHash = stubHash0; genesisStateRoot = stubStateRoot0; programVK = stubVK; rootC = stubRoot; rulesHash = stubRoot; gasCap = 30000000; ..
+  [operator, confirmer, builder, reader, registry, gateway, u, v, d] <-
+    mapA allocateParty ["Operator", "Confirmer", "Builder", "Reader", "Registry", "Gateway", "U", "V", "D"]
+  proposal <- submit (actAs [operator, gateway]) $ createCmd ChainProposal with
+    chainId = 770101; genesisHash = stubHash0; genesisStateRoot = stubStateRoot0; programVK = stubVK; rootC = stubRoot
+    rulesHash = stubRoot; gasCap = 30000000; gatewayAddress = gatewayAddr; ..
   chain <- submit confirmer $ exerciseCmd proposal Accept
   rulesCid <- submit registry $ createCmd TokenRules with admin = registry
   Some rules <- queryDisclosure registry rulesCid
+  let reg = Reg with ..
+  token <- makeToken operator confirmer gateway builder 770101 reg wTkb
   let termsOperator = case naming of BuilderAsOperator -> builder; _ -> operator
   let termsConfirmer = case naming of BuilderAsConfirmer -> builder; _ -> confirmer
-  terms <- makeTerms operator confirmer builder registry rulesCid rules u v termsOperator termsConfirmer "dvp-1"
+  terms <- makeTerms operator confirmer builder reg u v termsOperator termsConfirmer label1
+  let dvp1 = paymentId u v label1
+  let dvp2 = paymentId u v label2
+  deposit <- makeDeposit operator confirmer gateway builder 770101 reg d gateway operator "TKB" deposit1 recipientAddr
+  acceptance <- submit u $ createCmd WithdrawalAcceptance with
+    party = u; chainId = 770101; operator; confirmer; gateway; builder
   pure F with ..
 
--- U allocates 10 test tokens to V (executor `exec`), and U and V sign terms for it. U's holding is a fresh one of 100,
--- so more than one pair of terms can be made.
-makeTerms : Party -> Party -> Party -> Party -> ContractId TokenRules -> Disclosure -> Party -> Party -> Party -> Party -> Text -> Script (ContractId DvpTerms)
-makeTerms operator confirmer builder registry rulesCid rules u v exec conf ref = do
+-- The gateway's registration of a token: this Canton instrument (TKB of the registry) is what the EVM token wraps.
+makeToken : Party -> Party -> Party -> Party -> Int -> Reg -> Text -> Script (ContractId GatewayToken)
+makeToken operator confirmer gateway builder chainId reg evmToken = do
+  let instrumentId = H.InstrumentId with admin = reg.registry; id = "TKB"
+  p <- submit (actAs [operator, gateway]) $ createCmd GatewayTokenProposal with
+    factory = toInterfaceContractId reg.rulesCid; ..
+  submit confirmer $ exerciseCmd p AcceptToken
+
+-- `sender` allocates `amount` of the instrument to `receiver` (executor `exec`), from a fresh holding of exactly that amount.
+allocate : Reg -> Party -> Party -> Party -> Text -> Decimal -> Text -> Script (ContractId Allocation)
+allocate reg sender receiver exec inst amount ref = do
   now <- getTime
-  let instrument = H.InstrumentId with admin = registry; id = "TKA"
-  holding <- submit (actAs [u, registry]) $ createCmd Token with
-    holding = H.HoldingView with owner = u; instrumentId = instrument; amount = 100.0; lock = None; meta = emptyMetadata
+  let instrument = H.InstrumentId with admin = reg.registry; id = inst
+  holding <- submit (actAs [sender, reg.registry]) $ createCmd Token with
+    holding = H.HoldingView with owner = sender; instrumentId = instrument; amount; lock = None; meta = emptyMetadata
   let spec = AllocationSpecification with
         settlement = SettlementInfo with
           executor = exec; settlementRef = Reference with id = ref; cid = None
           requestedAt = now; allocateBefore = addRelTime now (days 1); settleBefore = addRelTime now (days 2); meta = emptyMetadata
         transferLegId = "leg"
-        transferLeg = TransferLeg with sender = u; receiver = v; amount = 10.0; instrumentId = instrument; meta = emptyMetadata
-  r <- submit (actAs u <> disclose rules) $ exerciseCmd (toInterfaceContractId @AllocationFactory rulesCid) AllocationFactory_Allocate with
-    expectedAdmin = registry; allocation = spec; requestedAt = now
+        transferLeg = TransferLeg with sender; receiver; amount; instrumentId = instrument; meta = emptyMetadata
+  r <- submit (actAs sender <> disclose reg.rules) $ exerciseCmd (toInterfaceContractId @AllocationFactory reg.rulesCid) AllocationFactory_Allocate with
+    expectedAdmin = reg.registry; allocation = spec; requestedAt = now
     inputHoldingCids = [toInterfaceContractId @H.Holding holding]; extraArgs = noExtraArgs
-  allocation <- case r.output of
+  case r.output of
     AllocationInstructionResult_Completed cid -> pure cid
     _ -> abort "the reference token completes an allocation at once"
+
+-- U allocates 10 TKB to V (executor `exec`), and U and V sign terms for the payment of `label`.
+makeTerms : Party -> Party -> Party -> Reg -> Party -> Party -> Party -> Party -> Text -> Script (ContractId DvpTerms)
+makeTerms operator confirmer builder reg u v exec conf label = do
+  let id = paymentId u v label
+  allocation <- allocate reg u v exec "TKB" 10.0 id
   submit (actAs [u, v]) $ createCmd DvpTerms with
     operator = exec; confirmer = conf
-    chainId = 770101; token = tokenAddr; holder = uAddr; slot = 3; expected = tenTokens; ..
+    chainId = 770101; dvpId = id; token = tokenAddr; payee = uAddr; amount = tenTokens; ..
 
--- The builder's submission: it sees the terms and the allocation as the parties' participants hand them over.
+-- `depositor` allocates 10 of `inst` to `receiver` (executor `exec`) and signs a request to deposit them for `recipient`.
+makeDeposit : Party -> Party -> Party -> Party -> Int -> Reg -> Party -> Party -> Party -> Text -> Text -> Text -> Script (ContractId DepositRequest)
+makeDeposit operator confirmer gateway builder chainId reg depositor receiver exec inst id recipient = do
+  allocation <- allocate reg depositor receiver exec inst 10.0 id
+  submit depositor $ createCmd DepositRequest with depositId = id; ..
+
+-- The builder's submission: it sees the contracts of the legs as the parties' participants hand them over.
 asBuilder : F -> SubmitOptions
-asBuilder f = actAs f.builder <> readAs [f.operator, f.confirmer, f.u, f.v, f.registry] <> disclose f.rules
+asBuilder f = actAs f.builder <> readAs [f.operator, f.confirmer, f.gateway, f.u, f.v, f.d, f.registry] <> disclose f.rules
 
-advance : F -> ContractId ZkChain -> Text -> Text -> Text -> [ContractId DvpTerms] -> Commands (ContractId ZkChain, ContractId BlockRecord)
-advance f chain header proof storage legs = exerciseCmd chain Advance with
+-- What the sidecar's legs call reads: the lines of the legs, in the format of README.md.
+line : Text -> Text -> Text -> Text -> Text -> Text -> Text
+line kind id token account amount party = T.intercalate "/" [kind, id, token, account, amount, party]
+
+depositLine, paymentLine : Text -> Text
+depositLine id = line "deposit" id wTkb recipientAddr "10.0" ""
+paymentLine id = line "payment" id tokenAddr uAddr tenTokens ""
+
+withdrawalLine : Text -> Text -> Text -> Party -> Text
+withdrawalLine id from amount party = line "withdrawal" id wTkb from amount (toHex (partyToText party))
+
+-- The stub's stand-in for the gateway's storage proof: the recorded lines, as hex. A block that recorded no legs has none.
+recordedNodes : [Text] -> [Text]
+recordedNodes [] = []
+recordedNodes ls = [toHex (T.intercalate "|" ls)]
+
+advanceWith : ContractId ZkChain -> Text -> Text -> [Text] -> [Text] -> [Leg] -> Commands (ContractId ZkChain, ContractId BlockRecord)
+advanceWith chain header proof accountNodes storageNodes legs = exerciseCmd chain Advance with
   headerHex = header; txsHex = ""; proofHex = proof
-  legs = [Leg with terms = t; accountNodes = ["aa"]; storageNodes = [storage]; parentAccountNodes = ["aa"]; parentStorageNodes = ["cc"] | t <- legs]
+  gatewayAccountNodes = accountNodes; gatewayStorageNodes = storageNodes; ..
 
--- V's tokens, as amounts.
-vHolds : F -> Script [Decimal]
-vHolds f = map (\(_, t) -> t.holding.amount) <$> query @Token f.v
+-- A good call: the block recorded exactly `recorded`, and the builder attaches `legs`.
+advance : ContractId ZkChain -> Text -> [Text] -> [Leg] -> Commands (ContractId ZkChain, ContractId BlockRecord)
+advance chain header recorded legs = advanceWith chain header "aa" ["aa"] (recordedNodes recorded) legs
 
--- The chain still stands at its genesis and U's holding is where it was: nothing was written.
+depositLeg : F -> Leg
+depositLeg f = DepositLeg with request = f.deposit; token = f.token
+
+paymentLeg : F -> Leg
+paymentLeg f = PaymentLeg with terms = f.terms
+
+-- U's withdrawal of 4 TKB, funded from a holding of the gateway's.
+withdrawalLeg : F -> ContractId H.Holding -> Leg
+withdrawalLeg f holding = WithdrawalLeg with
+  id = withdrawalId; token = f.token; from = burnerAddr; amount = 4.0; acceptance = f.acceptance; inputs = [holding]
+
+-- The gateway's custody: a holding of 10 TKB, which only withdrawals draw on.
+custody : F -> Script (ContractId H.Holding)
+custody f = do
+  c <- submit (actAs [f.gateway, f.registry]) $ createCmd Token with
+    holding = H.HoldingView with owner = f.gateway; instrumentId = H.InstrumentId with admin = f.registry; id = "TKB"
+                                 amount = 10.0; lock = None; meta = emptyMetadata
+  pure (toInterfaceContractId @H.Holding c)
+
+-- A party's holdings of one instrument, as sorted amounts.
+holds : Party -> Text -> Script [Decimal]
+holds p inst = sort . map (\(_, t) -> t.holding.amount) . filter (\(_, t) -> t.holding.instrumentId.id == inst) <$> query @Token p
+
+-- The chain still stands at its genesis and nothing was written: the contracts of the legs are all still there, and
+-- no one holds anything that a leg would have made.
 nothingMoved : F -> Script ()
 nothingMoved f = do
   [(_, c)] <- query @ZkChain f.operator
   (c.headNumber, c.headHash) === (0, stubHash0)
   query @BlockRecord f.operator >>= \rs -> length rs === 0
-  vHolds f >>= \xs -> xs === []
+  holds f.v "TKB" >>= \xs -> xs === []
+  holds f.u "TKB" >>= \xs -> xs === []
   Some _ <- queryContractId f.u f.terms
+  Some _ <- queryContractId f.d f.deposit
   pure ()
 
--- An Advance the chain must refuse, and that leaves nothing behind.
-refused : Text -> Text -> Text -> Script ()
-refused header proof storage = refusedBlock Honest header proof storage
+-- An Advance the chain must refuse, for a reason that contains `why`, and that leaves nothing behind.
+refused : Text -> F -> Commands a -> Script ()
+refused why f cmds = refusedAs why f (asBuilder f) cmds
+
+refusedAs : Text -> F -> SubmitOptions -> Commands a -> Script ()
+refusedAs why f as cmds = do
+  r <- trySubmit as cmds
+  case r of
+    Left e -> assertMsg ("refused, but not for \"" <> why <> "\": " <> show e) (why `T.isInfixOf` show e)
+    Right _ -> abort ("the chain committed a block that it should have refused (" <> why <> ")")
+  nothingMoved f
+
+-- What the chain says when the legs attached are not the ones the block recorded.
+notRecorded : Text
+notRecorded = "the legs are not the ones the block recorded"
+
+-- A block of no legs that the chain must refuse.
+refusedBlock : Text -> Text -> Text -> Script ()
+refusedBlock why header proof = do
+  f <- fixture
+  refused why f $ advanceWith f.chain header proof ["aa"] [] []
 
 -- A good block carrying terms that name other parties than the chain's.
-refusedWith : Naming -> Script ()
-refusedWith naming = refusedBlock naming "01" "aa" "bb"
-
-refusedBlock : Naming -> Text -> Text -> Text -> Script ()
-refusedBlock naming header proof storage = do
+refusedNaming : Text -> Naming -> Script ()
+refusedNaming why naming = do
   f <- fixtureWith naming
-  submitMustFail (asBuilder f) $ advance f f.chain header proof storage [f.terms]
-  nothingMoved f
+  refused why f $ advance f.chain "01" [paymentLine f.dvp1] [paymentLeg f]
 
 -- The call bodies are the hex of the ASCII line: lowercase, no newline.
 testHexOfTheAsciiLine : Script ()
@@ -122,24 +244,55 @@ testHexOfTheAsciiLine = do
   fromHex "6f6" === ""      -- an odd number of digits is not a body
   fromHex "6g" === ""       -- nor is a non-hex digit
 
+-- The sidecar reads a Canton amount as digits, a point and up to ten more digits. This is how Daml writes a Decimal.
+testTheFormInWhichDamlWritesADecimal : Script ()
+testTheFormInWhichDamlWritesADecimal = do
+  show (10.0 : Decimal) === "10.0"
+  show (4.0 : Decimal) === "4.0"
+  show (0.0000000001 : Decimal) === "0.0000000001"
+  show (123456.5 : Decimal) === "123456.5"
+  show (0.25 : Decimal) === "0.25"
+
 testAcceptCreatesChain : Script ()
 testAcceptCreatesChain = do
   f <- fixture
   [(_, c)] <- query @ZkChain f.operator
   (c.headNumber, c.headHash, c.programVK, c.rootC, c.gasCap) === (0, stubHash0, stubVK, stubRoot, 30000000)
+  (c.gateway, c.gatewayAddress) === (f.gateway, gatewayAddr)
   c.builder === f.builder
-  -- the confirmer's signature is what makes the pins binding: the operator cannot accept for it
-  p <- submit f.operator $ createCmd ChainProposal with
-    operator = f.operator; confirmer = f.confirmer; builder = f.builder; reader = f.reader
-    chainId = 1; genesisHash = stubHash0; genesisStateRoot = stubStateRoot0; programVK = stubVK; rootC = stubRoot; rulesHash = stubRoot; gasCap = 1
+  -- the confirmer's and the gateway's signatures are what make the pins binding: the operator cannot make or accept for them
+  let proposal = ChainProposal with
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; reader = f.reader
+        chainId = 1; genesisHash = stubHash0; genesisStateRoot = stubStateRoot0; programVK = stubVK; rootC = stubRoot
+        rulesHash = stubRoot; gasCap = 1; gatewayAddress = gatewayAddr
+  submitMustFail f.operator $ createCmd proposal
+  p <- submit (actAs [f.operator, f.gateway]) $ createCmd proposal
   submitMustFail f.operator $ exerciseCmd p Accept
+  submitMustFail f.gateway $ exerciseCmd p Accept
+  -- the gateway's address is an EVM address
+  submitMustFail (actAs [f.operator, f.gateway]) $ createCmd (proposal with gatewayAddress = "a7")
 
-testAdvanceMovesHoldingAndRecordsBlock : Script ()
-testAdvanceMovesHoldingAndRecordsBlock = do
+-- The registration of a token is the decision of the operator, the confirmer and the gateway together.
+testRegisteringATokenNeedsAllThree : Script ()
+testRegisteringATokenNeedsAllThree = do
   f <- fixture
-  (next, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" [f.terms]
-  vHolds f >>= \xs -> xs === [10.0]
-  None <- queryContractId f.u f.terms           -- the terms are consumed
+  Some t <- queryContractId f.operator f.token
+  (t.evmToken, t.instrumentId.id, t.instrumentId.admin) === (wTkb, "TKB", f.registry)
+  let token = GatewayToken with
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+        evmToken = wTkb; instrumentId = t.instrumentId; factory = t.factory
+  forA_ [[f.operator], [f.operator, f.gateway], [f.operator, f.confirmer], [f.confirmer, f.gateway]] $ \ps ->
+    submitMustFail (actAs ps) $ createCmd token
+  -- an EVM token is 20 bytes of hex
+  submitMustFail (actAs [f.operator, f.gateway]) $ createCmd GatewayTokenProposal with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    evmToken = "33"; instrumentId = t.instrumentId; factory = t.factory
+
+-- A block that recorded no legs needs none, and commits with none.
+testABlockOfNoLegsCommits : Script ()
+testABlockOfNoLegsCommits = do
+  f <- fixture
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [] []
   [(_, c)] <- query @ZkChain f.operator
   (c.headNumber, c.headHash) === (1, stubHash1)
   [(_, r)] <- query @BlockRecord f.reader      -- the reader party sees the record
@@ -148,128 +301,355 @@ testAdvanceMovesHoldingAndRecordsBlock = do
 testBlocksChainOn : Script ()
 testBlocksChainOn = do
   f <- fixture
-  (c1, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" []
-  (_, _) <- submit (asBuilder f) $ advance f c1 "11" "aa" "bb" []
+  (c1, _) <- submit (asBuilder f) $ advance f.chain "01" [] []
+  (_, _) <- submit (asBuilder f) $ advance c1 "11" [] []
   rs <- query @BlockRecord f.reader
   sort [r.number | (_, r) <- rs] === [1, 2]
 
+-- A deposit: the depositor's allocation is executed, so the gateway holds the 10 TKB; the request is used up.
+testADepositSettles : Script ()
+testADepositSettles = do
+  f <- fixture
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [depositLine deposit1] [depositLeg f]
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+  None <- queryContractId f.d f.deposit
+  [(_, c)] <- query @ZkChain f.operator
+  c.headNumber === 1
+
+-- A withdrawal: the gateway pays 4 TKB from its custody to U, who has said it accepts; the change stays with the gateway.
+testAWithdrawalSettles : Script ()
+testAWithdrawalSettles = do
+  f <- fixture
+  holding <- custody f
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [withdrawalLeg f holding]
+  holds f.u "TKB" >>= \xs -> xs === [4.0]
+  holds f.gateway "TKB" >>= \xs -> xs === [6.0]
+  -- the acceptance is standing: it is still there for the next withdrawal
+  Some _ <- queryContractId f.u f.acceptance
+  pure ()
+
+-- A registry that completes a transfer at once (the reference token does so when the receiver is the sender): the
+-- gateway accepting withdrawals for itself reaches the other branch of `Receive`.
+testAWithdrawalThatTheRegistryCompletesAtOnceSettles : Script ()
+testAWithdrawalThatTheRegistryCompletesAtOnceSettles = do
+  f <- fixture
+  holding <- custody f
+  own <- submit f.gateway $ createCmd WithdrawalAcceptance with
+    party = f.gateway; chainId = 770101; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.gateway] [(withdrawalLeg f holding) with acceptance = own]
+  holds f.gateway "TKB" >>= \xs -> xs === [4.0, 6.0]
+
+-- A payment: the allocation named in the terms is executed.
+testAPaymentSettles : Script ()
+testAPaymentSettles = do
+  f <- fixture
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [paymentLine f.dvp1] [paymentLeg f]
+  holds f.v "TKB" >>= \xs -> xs === [10.0]
+  None <- queryContractId f.u f.terms           -- the terms are consumed
+  pure ()
+
+-- One block, one leg of each kind, in the order the block recorded them.
+testThreeLegsInOrderSettle : Script ()
+testThreeLegsInOrderSettle = do
+  f <- fixture
+  holding <- custody f
+  let recorded = [depositLine deposit1, paymentLine f.dvp1, withdrawalLine withdrawalId burnerAddr "4.0" f.u]
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" recorded [depositLeg f, paymentLeg f, withdrawalLeg f holding]
+  holds f.v "TKB" >>= \xs -> xs === [10.0]
+  holds f.u "TKB" >>= \xs -> xs === [4.0]
+  holds f.gateway "TKB" >>= \xs -> xs === [6.0, 10.0]
+
+-- The order is part of what the block recorded.
+testTwoLegsSwappedAreRefused : Script ()
+testTwoLegsSwappedAreRefused = do
+  f <- fixture
+  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1, depositLine deposit1] [depositLeg f, paymentLeg f]
+
+-- A leg the block recorded is missing from the attached ones.
+testAMissingLegIsRefused : Script ()
+testAMissingLegIsRefused = do
+  f <- fixture
+  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1] []
+  refused notRecorded f $ advance f.chain "01" [depositLine deposit1, paymentLine f.dvp1] [paymentLeg f]
+
+-- Terms attached to a block that recorded no payment for them.
+testAnExtraLegIsRefused : Script ()
+testAnExtraLegIsRefused = do
+  f <- fixture
+  refused notRecorded f $ advance f.chain "01" [] [paymentLeg f]
+  refused notRecorded f $ advance f.chain "01" [depositLine deposit1] [depositLeg f, paymentLeg f]
+
+-- Any field of a recorded leg that differs from the attached contract's: id, token, account, amount.
+testALegWithAnotherFieldIsRefused : Script ()
+testALegWithAnotherFieldIsRefused = do
+  f <- fixture
+  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp2] [paymentLeg f]                              -- another payment id
+  refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 wTkb uAddr tenTokens ""] [paymentLeg f]   -- another token
+  refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 tokenAddr burnerAddr tenTokens ""] [paymentLeg f]   -- another payee
+  refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 tokenAddr uAddr fiveTokens ""] [paymentLeg f]       -- another amount
+  refused notRecorded f $ advance f.chain "01" [line "deposit" deposit1 wTkb burnerAddr "10.0" ""] [depositLeg f]      -- another recipient
+  refused notRecorded f $ advance f.chain "01" [line "deposit" deposit1 wTkb recipientAddr "9.0" ""] [depositLeg f]    -- another amount
+  refused notRecorded f $ advance f.chain "01" [line "deposit" (idOf "d2") wTkb recipientAddr "10.0" ""] [depositLeg f] -- another deposit id
+  refused notRecorded f $ advance f.chain "01" [line "payment" f.dvp1 tokenAddr uAddr tenTokens ""] [depositLeg f]        -- another kind
+
+-- The builder sends a withdrawal's id, burner and amount as text. If it lies about any, the hash differs.
+testAWithdrawalTheBuilderMisreportsIsRefused : Script ()
+testAWithdrawalTheBuilderMisreportsIsRefused = do
+  f <- fixture
+  holding <- custody f
+  let leg = withdrawalLeg f holding
+  let recorded = withdrawalLine withdrawalId burnerAddr "4.0" f.u
+  refused notRecorded f $ advance f.chain "01" [recorded] [leg with amount = 5.0]
+  refused notRecorded f $ advance f.chain "01" [recorded] [leg with from = recipientAddr]
+  refused notRecorded f $ advance f.chain "01" [recorded] [leg with id = idOf "c2"]
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+
+-- An acceptance of another party than the one the block named.
+testAnAcceptanceOfAnotherPartyIsRefused : Script ()
+testAnAcceptanceOfAnotherPartyIsRefused = do
+  f <- fixture
+  holding <- custody f
+  other <- submit f.v $ createCmd WithdrawalAcceptance with
+    party = f.v; chainId = 770101; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder
+  refused notRecorded f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [(withdrawalLeg f holding) with acceptance = other]
+
+-- The amount of a withdrawal may not be zero or negative: it could not be a line the EVM wrote.
+testAWithdrawalOfNothingIsRefused : Script ()
+testAWithdrawalOfNothingIsRefused = do
+  f <- fixture
+  holding <- custody f
+  forA_ [0.0, -4.0] $ \amount ->
+    refused "the withdrawal is of no amount" f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr (show amount) f.u] [(withdrawalLeg f holding) with amount]
+
+-- The gateway's custody must cover the withdrawal: the registry's own check refuses it.
+testAWithdrawalMoreThanTheCustodyIsRefused : Script ()
+testAWithdrawalMoreThanTheCustodyIsRefused = do
+  f <- fixture
+  holding <- custody f
+  refused "'input amount' is less than 'transfer.amount'" f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "11.0" f.u] [(withdrawalLeg f holding) with amount = 11.0]
+
+-- The same payment id twice cannot be two payments: the block records a payment once, so one set of terms settles once.
+testTermsSettleOnlyOnce : Script ()
+testTermsSettleOnlyOnce = do
+  f <- fixture
+  (c1, _) <- submit (asBuilder f) $ advance f.chain "01" [paymentLine f.dvp1] [paymentLeg f]
+  submitMustFail (asBuilder f) $ advance c1 "11" [paymentLine f.dvp1] [paymentLeg f]
+  holds f.v "TKB" >>= \xs -> xs === [10.0]
+
+-- Two honest payments to one address settle in the same block: nothing ties a block to one leg per holder.
+testTwoPaymentsToOneAddressSettleInOneBlock : Script ()
+testTwoPaymentsToOneAddressSettleInOneBlock = do
+  f <- fixture
+  second <- makeTerms f.operator f.confirmer f.builder f.reg f.u f.v f.operator f.confirmer label2
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [paymentLine f.dvp1, paymentLine f.dvp2] [paymentLeg f, PaymentLeg with terms = second]
+  holds f.v "TKB" >>= \xs -> xs === [10.0, 10.0]
+
+-- Terms are tied to the two parties who signed them. A builder with a token and a second party of its own cannot sign
+-- terms that carry the id V pays against, and terms of its own carry another id, so they are not the payment recorded.
+testTermsOfOtherPartiesCannotStandInForAPayment : Script ()
+testTermsOfOtherPartiesCannotStandInForAPayment = do
+  f <- fixture
+  Some old <- queryContractId f.u f.terms
+  ownRulesCid <- submit f.builder $ createCmd TokenRules with admin = f.builder
+  Some ownRules <- queryDisclosure f.builder ownRulesCid
+  let own = Reg with registry = f.builder; rulesCid = ownRulesCid; rules = ownRules
+  b2 <- allocateParty "Builder2"
+  allocation <- allocate own f.builder b2 f.operator "TKB" 10.0 f.dvp1
+  let forged = DvpTerms with
+        u = f.builder; v = b2; operator = f.operator; confirmer = f.confirmer; builder = f.builder
+        chainId = 770101; label = label1; dvpId = f.dvp1; token = tokenAddr; payee = uAddr; amount = tenTokens; allocation
+  -- the id of U and V's payment cannot be put on terms of any other pair
+  submitMustFail (actAs [f.builder, b2]) $ createCmd forged
+  forA_ [(f.u, f.d), (f.d, f.v), (f.v, f.u)] $ \(u, v) ->
+    submitMustFail (actAs [u, v]) $ createCmd (forged with u = u; v = v; allocation = old.allocation)
+  -- terms of its own carry the id of its own pair, which the block did not record
+  mine <- submit (actAs [f.builder, b2]) $ createCmd (forged with dvpId = paymentId f.builder b2 label1)
+  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = mine]
+
+-- A leg settles in a later block just as in the first: the sidecar is asked about that block's own root and number.
+testALegSettlesInALaterBlock : Script ()
+testALegSettlesInALaterBlock = do
+  f <- fixture
+  (c1, _) <- submit (asBuilder f) $ advance f.chain "01" [] []
+  (_, _) <- submit (asBuilder f) $ advance c1 "11" [paymentLine f.dvp1] [paymentLeg f]
+  holds f.v "TKB" >>= \xs -> xs === [10.0]
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headStateRoot) === (2, stubStateRoot2)
+
+-- The proof checks Advance made before are all still made.
 testRefusesWrongParent : Script ()
-testRefusesWrongParent = refused "02" "aa" "bb"
+testRefusesWrongParent = refusedBlock "parent is not the chain's head" "02" "aa"
 
 testRefusesWrongNumber : Script ()
-testRefusesWrongNumber = refused "03" "aa" "bb"
+testRefusesWrongNumber = refusedBlock "number is not the head's plus one" "03" "aa"
 
 testRefusesOverTheGasCap : Script ()
-testRefusesOverTheGasCap = refused "04" "aa" "bb"
+testRefusesOverTheGasCap = refusedBlock "over the gas cap" "04" "aa"
 
 testRefusesWrongProgramKey : Script ()
-testRefusesWrongProgramKey = refused "05" "aa" "bb"
+testRefusesWrongProgramKey = refusedBlock "another program" "05" "aa"
 
 testRefusesWrongZiskRelease : Script ()
-testRefusesWrongZiskRelease = refused "06" "aa" "bb"
+testRefusesWrongZiskRelease = refusedBlock "another ZisK release" "06" "aa"
 
 testRefusesAFailingProof : Script ()
-testRefusesAFailingProof = refused "01" "ba" "bb"
+testRefusesAFailingProof = refusedBlock "the proof does not verify" "01" "ba"
 
--- The proof is good but the balance did not rise at all in this block (the stub's "ee"), or rose by another amount ("e3"):
--- the whole block is refused, nothing moves.
-testRefusesABalanceThatDidNotRise : Script ()
-testRefusesABalanceThatDidNotRise = refused "01" "aa" "ee"
-
-testRefusesARiseOfAnotherAmount : Script ()
-testRefusesARiseOfAnotherAmount = refused "01" "aa" "e3"
-
--- A balance that fell is no rise: the sidecar answers no.
-testRefusesABalanceThatFell : Script ()
-testRefusesABalanceThatFell = refused "01" "aa" "e5"
+-- The gateway's proofs are checked by the sidecar, under the proven block's state root.
+testRefusesAFailingAccountProof : Script ()
+testRefusesAFailingAccountProof = do
+  f <- fixture
+  refused "the account proof does not verify" f $ advanceWith f.chain "01" "aa" ["ba"] [] []
 
 testRefusesAFailingStorageProof : Script ()
-testRefusesAFailingStorageProof = refused "01" "aa" "ba"
+testRefusesAFailingStorageProof = do
+  f <- fixture
+  refused "the storage proof does not verify" f $ advanceWith f.chain "01" "aa" ["aa"] ["ba"] []
 
--- Daml checks the sidecar's answer is about the roots and the holder it asked about.
-testRefusesAnAnswerForAnotherRoot : Script ()
-testRefusesAnAnswerForAnotherRoot = refused "01" "aa" "e1"
+-- Daml checks the answer is about the root, the number and the gateway it asked about, and the number of legs it sent.
+testRefusesAnAnswerForAnotherBlockOrGatewayOrCount : Script ()
+testRefusesAnAnswerForAnotherBlockOrGatewayOrCount = do
+  f <- fixture
+  forA_ ["e1", "e2", "e3", "e4"] $ \tag ->
+    refused (notRecorded <> ": ok") f $ advanceWith f.chain "01" "aa" [tag] (recordedNodes [paymentLine f.dvp1]) [paymentLeg f]
 
-testRefusesAnAnswerForAnotherParentRoot : Script ()
-testRefusesAnAnswerForAnotherParentRoot = refused "01" "aa" "e4"
-
-testRefusesAnAnswerForAnotherHolder : Script ()
-testRefusesAnAnswerForAnotherHolder = refused "01" "aa" "e2"
+-- Daml turns a malformed proof away before asking.
+testRefusesProofsThatAreNotHex : Script ()
+testRefusesProofsThatAreNotHex = do
+  f <- fixture
+  refused "must be lowercase hex" f $ advanceWith f.chain "01" "aa" ["a,a"] [] []
+  refused "must be lowercase hex" f $ advanceWith f.chain "01" "aa" ["aa"] ["nothex"] []
+  refused "must be lowercase hex" f $ advanceWith f.chain "01" "aa" ["aa;"] [] []
 
 -- Terms that name another operator, or another confirmer, than the chain's are not settled by it, even when
 -- the builder (who is a controller of `Advance`) stands in the named role.
 testRefusesTermsNamingAnotherOperator : Script ()
-testRefusesTermsNamingAnotherOperator = refusedWith BuilderAsOperator
+testRefusesTermsNamingAnotherOperator = refusedNaming "names another operator" BuilderAsOperator
 
 testRefusesTermsNamingAnotherConfirmer : Script ()
-testRefusesTermsNamingAnotherConfirmer = refusedWith BuilderAsConfirmer
+testRefusesTermsNamingAnotherConfirmer = refusedNaming "names another confirmer" BuilderAsConfirmer
 
--- Terms written for another chain are not settled by this one.
-testRefusesTermsForAnotherChain : Script ()
-testRefusesTermsForAnotherChain = do
+-- Every kind of contract that names another chain, operator, confirmer or gateway than this chain's is refused.
+testRefusesContractsOfAnotherChain : Script ()
+testRefusesContractsOfAnotherChain = do
   f <- fixture
   Some old <- queryContractId f.u f.terms
   other <- submit (actAs [f.u, f.v]) $ createCmd DvpTerms with
     u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder
-    chainId = 2; token = tokenAddr; holder = uAddr; slot = 3; expected = tenTokens; allocation = old.allocation
-  submitMustFail (asBuilder f) $ advance f f.chain "01" "aa" "bb" [other]
-  nothingMoved f
+    chainId = 2; label = label1; dvpId = f.dvp1; token = tokenAddr; payee = uAddr; amount = tenTokens; allocation = old.allocation
+  refused "is for another chain" f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = other]
+  -- a deposit request for another chain, and one that names another gateway party (the builder) than the chain's
+  d2 <- makeDeposit f.operator f.confirmer f.gateway f.builder 2 f.reg f.d f.gateway f.operator "TKB" deposit1 recipientAddr
+  refused "is for another chain" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = d2; token = f.token]
+  d3 <- makeDeposit f.operator f.confirmer f.builder f.builder 770101 f.reg f.d f.builder f.operator "TKB" deposit1 recipientAddr
+  refused "names another gateway" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = d3; token = f.token]
+  -- an acceptance for another chain, and a token registered for another chain
+  a2 <- submit f.u $ createCmd WithdrawalAcceptance with
+    party = f.u; chainId = 2; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder
+  holding <- custody f
+  refused "is for another chain" f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [(withdrawalLeg f holding) with acceptance = a2]
+  t2 <- makeToken f.operator f.confirmer f.gateway f.builder 2 f.reg wTkb
+  refused "is for another chain" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = f.deposit; token = t2]
 
--- Settle works only inside Advance: the operator alone, the confirmer alone, the builder or U alone are all refused.
+-- A deposit of another instrument than the one the token wraps.
+testRefusesADepositOfAnotherInstrument : Script ()
+testRefusesADepositOfAnotherInstrument = do
+  f <- fixture
+  other <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.operator "TKC" deposit1 recipientAddr
+  refused "of another instrument" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = other; token = f.token]
+
+-- A deposit that is not an allocation to the gateway, with the operator as executor: another receiver, another executor.
+testRefusesADepositNotToTheGateway : Script ()
+testRefusesADepositNotToTheGateway = do
+  f <- fixture
+  toV <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.v f.operator "TKB" deposit1 recipientAddr
+  refused "not from the depositor to the gateway" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = toV; token = f.token]
+  byBuilder <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.builder "TKB" deposit1 recipientAddr
+  refused "executor is not the operator" f $ advance f.chain "01" [depositLine deposit1] [DepositLeg with request = byBuilder; token = f.token]
+
+-- A token whose factory belongs to another registry than the one its instrument names: the factory refuses, because the
+-- withdrawal names the instrument's admin as the one it expects. With the token's own factory the same block settles.
+testRefusesATokenWhoseFactoryIsAnotherAdmins : Script ()
+testRefusesATokenWhoseFactoryIsAnotherAdmins = do
+  f <- fixture
+  holding <- custody f
+  registry2 <- allocateParty "Registry2"
+  rules2 <- submit registry2 $ createCmd TokenRules with admin = registry2
+  Some disclosed2 <- queryDisclosure registry2 rules2
+  Some t <- queryContractId f.operator f.token
+  p <- submit (actAs [f.operator, f.gateway]) $ createCmd GatewayTokenProposal with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    evmToken = wTkb; instrumentId = t.instrumentId; factory = toInterfaceContractId rules2
+  bad <- submit f.confirmer $ exerciseCmd p AcceptToken
+  let recorded = [withdrawalLine withdrawalId burnerAddr "4.0" f.u]
+  refusedAs "'expectedAdmin' is not equal" f (asBuilder f <> disclose disclosed2) $ advance f.chain "01" recorded [(withdrawalLeg f holding) with token = bad]
+  (_, _) <- submit (asBuilder f <> disclose disclosed2) $ advance f.chain "01" recorded [withdrawalLeg f holding]
+  holds f.u "TKB" >>= \xs -> xs === [4.0]
+
+-- The settlement choices work only inside Advance. Lock and Receive need the operator, the confirmer and the gateway
+-- together, Settle the operator and the confirmer together: no one of them alone, and not the builder, can settle.
 testSettleOutsideAdvanceIsRefused : Script ()
 testSettleOutsideAdvanceIsRefused = do
   f <- fixture
-  let readers = readAs [f.operator, f.confirmer, f.u, f.v, f.registry, f.builder] <> disclose f.rules
-  forA_ [f.operator, f.confirmer, f.builder, f.u] $ \p ->
-    submitMustFail (actAs p <> readers) $ exerciseCmd f.terms Settle with rise = tenTokens
+  holding <- custody f
+  let readers = readAs [f.operator, f.confirmer, f.gateway, f.u, f.v, f.d, f.registry, f.builder] <> disclose f.rules
+  forA_ [f.operator, f.confirmer, f.builder, f.u, f.v] $ \p ->
+    submitMustFail (actAs p <> readers) $ exerciseCmd f.terms Settle
+  forA_ [[f.operator], [f.confirmer], [f.gateway], [f.builder], [f.d], [f.operator, f.confirmer], [f.operator, f.gateway], [f.confirmer, f.gateway]] $ \ps -> do
+    submitMustFail (actAs ps <> readers) $ exerciseCmd f.deposit Lock
+    submitMustFail (actAs ps <> readers) $ exerciseCmd f.acceptance Receive with
+      token = f.token; amount = 4.0; inputs = [holding]
   nothingMoved f
+  -- Those were refused for lack of authority, not for lack of sight: the three together, who meet only inside Advance
+  -- on purpose, can do each of the three.
+  submit (actAs [f.operator, f.confirmer, f.gateway] <> readers) $ exerciseCmd f.deposit Lock
+  submit (actAs [f.operator, f.confirmer, f.gateway] <> readers) $ exerciseCmd f.acceptance Receive with
+    token = f.token; amount = 4.0; inputs = [holding]
+  submit (actAs [f.operator, f.confirmer] <> readers) $ exerciseCmd f.terms Settle
+  holds f.u "TKB" >>= \xs -> xs === [4.0]
+  holds f.v "TKB" >>= \xs -> xs === [10.0]
 
 -- Only the builder advances the chain.
 testOnlyTheBuilderAdvances : Script ()
 testOnlyTheBuilderAdvances = do
   f <- fixture
-  forA_ [f.operator, f.confirmer, f.reader] $ \p ->
-    submitMustFail (actAs p <> readAs [f.builder, f.u, f.v, f.registry] <> disclose f.rules) $ advance f f.chain "01" "aa" "bb" [f.terms]
+  forA_ [f.operator, f.confirmer, f.gateway, f.reader] $ \p ->
+    submitMustFail (actAs p <> readAs [f.builder, f.u, f.v, f.d, f.registry] <> disclose f.rules) $
+      advance f.chain "01" [paymentLine f.dvp1] [paymentLeg f]
   nothingMoved f
 
--- The balance must have risen in THIS block. A payment that made the balance true in block 1 does not let terms
--- written afterwards settle in block 2: nothing was paid in block 2, the balance did not rise (the stub's "ee").
-testALeftoverTermsCannotSettleInALaterBlock : Script ()
-testALeftoverTermsCannotSettleInALaterBlock = do
-  f <- fixture
-  (c1, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" []
-  submitMustFail (asBuilder f) $ advance f c1 "11" "aa" "ee" [f.terms]
-  Some _ <- queryContractId f.u f.terms
-  vHolds f >>= \xs -> xs === []
-
--- A payment in a later block settles in that block: the parent root Daml gives the sidecar is the head's, block 1's
--- (the stub has proofs only for that pair of roots).
-testALegSettlesInALaterBlock : Script ()
-testALegSettlesInALaterBlock = do
-  f <- fixture
-  (c1, _) <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" []
-  (_, _) <- submit (asBuilder f) $ advance f c1 "11" "aa" "bb" [f.terms]
-  vHolds f >>= \xs -> xs === [10.0]
-  [(_, c)] <- query @ZkChain f.operator
-  (c.headNumber, c.headStateRoot) === (2, stubStateRoot2)
-
--- One payment must not satisfy two terms: two terms for the same token and holder in one block are refused,
--- though each alone would settle.
-testTwoTermsForTheSameHolderInOneBlockAreRefused : Script ()
-testTwoTermsForTheSameHolderInOneBlockAreRefused = do
-  f <- fixture
-  second <- makeTerms f.operator f.confirmer f.builder f.registry f.rulesCid f.rules f.u f.v f.operator f.confirmer "dvp-2"
-  submitMustFail (asBuilder f) $ advance f f.chain "01" "aa" "bb" [f.terms, second]
-  nothingMoved f
-  -- each alone is fine
-  _ <- submit (asBuilder f) $ advance f f.chain "01" "aa" "bb" [second]
-  vHolds f >>= \xs -> xs === [10.0]
-
--- Terms that expect no rise at all would settle without any payment.
-testTermsExpectingNothingAreRefused : Script ()
-testTermsExpectingNothingAreRefused = do
+-- The payment id is the EVM's id itself, in one form only: 64 lowercase hex digits. The token and the payee are 20-byte
+-- addresses, the amount 64 digits and not zero.
+testTermsInTheWrongFormAreRefused : Script ()
+testTermsInTheWrongFormAreRefused = do
   f <- fixture
   Some old <- queryContractId f.u f.terms
-  submitMustFail (actAs [f.u, f.v]) $ createCmd DvpTerms with
-    u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder
-    chainId = 770101; token = tokenAddr; holder = uAddr; slot = 3; expected = mconcat (replicate 64 "0"); allocation = old.allocation
+  let terms = DvpTerms with
+        u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder
+        chainId = 770101; label = label1; dvpId = f.dvp1; token = tokenAddr; payee = uAddr; amount = tenTokens; allocation = old.allocation
+  _ <- submit (actAs [f.u, f.v]) $ createCmd terms
+  forA_ [ terms with dvpId = "dvp-1"
+        , terms with dvpId = T.asciiToUpper f.dvp1
+        , terms with label = label2
+        , terms with dvpId = ""
+        , terms with dvpId = mconcat (replicate 31 "a1")
+        , terms with token = "11"
+        , terms with payee = T.asciiToUpper gatewayAddr
+        , terms with payee = tokenAddr <> "00"
+        , terms with amount = mconcat (replicate 64 "0")
+        , terms with amount = "ff"
+        , terms with amount = "" ] $ \bad ->
+    submitMustFail (actAs [f.u, f.v]) $ createCmd bad
+
+-- A deposit's id and recipient are in the EVM's form too.
+testADepositRequestInTheWrongFormIsRefused : Script ()
+testADepositRequestInTheWrongFormIsRefused = do
+  f <- fixture
+  Some old <- queryContractId f.d f.deposit
+  let request = DepositRequest with
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+        depositor = f.d; depositId = deposit1; recipient = recipientAddr; allocation = old.allocation
+  forA_ [ request with depositId = "d1"
+        , request with recipient = "44"
+        , request with recipient = T.asciiToUpper gatewayAddr ] $ \bad ->
+    submitMustFail f.d $ createCmd bad

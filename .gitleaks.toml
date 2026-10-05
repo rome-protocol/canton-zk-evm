@@ -13,3 +13,10 @@ condition = "AND"
 paths = ['''demo/results/run[12]\.txt''']
 regexTarget = "line"
 regexes = ['''token=0x[0-9a-f]{40}$''']
+
+[[allowlists]]
+description = "The wrapped token's contract address in the sidecar's test data: a public address on a throwaway local chain, not a secret"
+condition = "AND"
+paths = ['''sidecar/tests/fixtures/legs\.json''']
+regexTarget = "line"
+regexes = ['''"token": "[0-9a-f]{40}",?$''']

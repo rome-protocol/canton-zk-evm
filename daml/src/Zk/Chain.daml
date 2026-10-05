@@ -1,12 +1,18 @@
 -- One EVM chain on Canton. A block is one Canton transaction: `ZkChain.Advance` has the sidecar check the block's
--- proof, checks that the block follows the chain's head, settles the Daml actions tied to it, and moves the
--- head on. Daml does no hashing and no proof checking; it compares the strings the sidecar answers (README.md).
+-- proof, checks that the block follows the chain's head, checks with the sidecar that the legs attached are exactly the
+-- ones the block recorded in the gateway contract's state, settles them, and moves the head on. Daml does no proof checking
+-- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The one hash it takes is the payment
+-- id of a pair of parties (`paymentId`), which only names terms and proves nothing.
 module Zk.Chain where
 
-import DA.Action (foldlA)
+import DA.Foldable (forA_)
+import DA.Time (addRelTime, days)
 import qualified DA.Text as T
 import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV1 (Holding, InstrumentId)
 import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.TransferInstructionV1
+import Zk.Hex
 import Zk.Sidecar
 
 isHex : Text -> Bool
@@ -14,6 +20,10 @@ isHex s = all (`elem` T.explode "0123456789abcdef") (T.explode s)
 
 hexField : Text -> Bool
 hexField s = s /= "" && isHex s
+
+-- Exactly `n` lowercase hex digits: the form of an EVM address (40) and of an id or an amount (64).
+hexOfLength : Int -> Text -> Bool
+hexOfLength n s = T.length s == n && isHex s
 
 -- What `verify` answered for a block (README.md: "verify").
 data Verified = Verified with
@@ -37,14 +47,24 @@ parseVerify line = case T.splitOn " " line of
         Right Verified with ..
   _ -> Left line
 
--- A leg is a Daml action tied to the block: its terms, and the proofs of the balance they name, at the parent block
--- and at this one.
-data Leg = Leg with
-    terms : ContractId DvpTerms
-    accountNodes : [Text]
-    storageNodes : [Text]
-    parentAccountNodes : [Text]
-    parentStorageNodes : [Text]
+-- A leg is a Daml action that the block's EVM transactions asked for, which the gateway contract recorded in its state.
+-- A deposit locks a Canton token with the gateway, a withdrawal releases one from its custody, and a payment settles
+-- the allocation named in a set of terms. Daml builds the sidecar's line of a deposit and of a payment from the
+-- contracts the leg names. No Canton contract holds a withdrawal's id, burner or amount, so the builder sends those three
+-- as text. The proven hash binds them, with all the rest, to what the block recorded.
+data Leg
+  = DepositLeg with
+      request : ContractId DepositRequest
+      token : ContractId GatewayToken
+  | WithdrawalLeg with
+      id : Text
+      token : ContractId GatewayToken
+      from : Text
+      amount : Decimal
+      acceptance : ContractId WithdrawalAcceptance
+      inputs : [ContractId Holding]
+  | PaymentLeg with
+      terms : ContractId DvpTerms
   deriving (Eq, Show)
 
 noExtraArgs : ExtraArgs
@@ -54,6 +74,7 @@ template ChainProposal
   with
     operator : Party
     confirmer : Party
+    gateway : Party
     builder : Party
     reader : Party
     chainId : Int
@@ -63,22 +84,27 @@ template ChainProposal
     rootC : Text
     rulesHash : Text
     gasCap : Int
+    gatewayAddress : Text
   where
-    signatory operator
+    signatory operator, gateway
     observer confirmer
     ensure chainId > 0 && gasCap > 0 && all hexField [genesisHash, genesisStateRoot, programVK, rootC, rulesHash]
+      && hexOfLength 40 gatewayAddress
 
-    -- The pins are this contract's own fields. The confirmer is expected to compare them with its own sidecar and build before it accepts.
+    -- The pins are this contract's own fields. The confirmer is expected to compare them with its own sidecar and build before it accepts,
+    -- and to check that the genesis it accepts holds the gateway contract's code at `gatewayAddress`.
     -- On the one-machine network, up.sh starts the sidecars with the same values it proposes, and propose.py accepts at once.
     choice Accept : ContractId ZkChain
       controller confirmer
       do create ZkChain with headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; ..
 
 -- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
+-- The gateway is the party that holds the Canton tokens locked for the EVM tokens that stand for them.
 template ZkChain
   with
     operator : Party
     confirmer : Party
+    gateway : Party
     builder : Party
     reader : Party
     chainId : Int
@@ -86,11 +112,12 @@ template ZkChain
     rootC : Text
     rulesHash : Text
     gasCap : Int
+    gatewayAddress : Text
     headNumber : Int
     headHash : Text
     headStateRoot : Text
   where
-    signatory operator, confirmer
+    signatory operator, confirmer, gateway
     observer builder
 
     choice Advance : (ContractId ZkChain, ContractId BlockRecord)
@@ -98,10 +125,13 @@ template ZkChain
         headerHex : Text
         txsHex : Text
         proofHex : Text
+        gatewayAccountNodes : [Text]
+        gatewayStorageNodes : [Text]
         legs : [Leg]
       controller builder
       do
         assertMsg "the header, transactions and proof must be lowercase hex" (hexField headerHex && isHex txsHex && hexField proofHex)
+        assertMsg "the gateway's proofs must be lowercase hex" (all hexField (gatewayAccountNodes <> gatewayStorageNodes))
         answer <- verifyCall (T.intercalate "," [proofHex, headerHex, txsHex])
         b <- either (\why -> abort ("the sidecar refused the block: " <> why)) pure (parseVerify answer)
         assertMsg "the block was proven by another program" (b.programVK == programVK)
@@ -109,32 +139,77 @@ template ZkChain
         assertMsg "the block's parent is not the chain's head" (b.parentHash == headHash)
         assertMsg "the block's number is not the head's plus one" (b.number == headNumber + 1)
         assertMsg "the block is over the gas cap" (b.gasLimit <= gasCap && b.gasUsed <= gasCap)
-        _ <- foldlA (settleLeg chainId operator confirmer b.stateRoot headStateRoot) [] legs
+        -- The legs the block needs are the ones the gateway recorded in the block's state, and no others. Daml writes the line
+        -- of each attached leg from its own contracts, the sidecar hashes the lines as the gateway contract does and compares the
+        -- result with the proven value. One call is made also for a block with no legs: it proves that the block needs none.
+        legLines <- mapA (legLine this) legs
+        legsAnswer <- legsCall (T.intercalate "," [b.stateRoot, show b.number, gatewayAddress,
+          T.intercalate ";" gatewayAccountNodes, T.intercalate ";" gatewayStorageNodes, T.intercalate "|" legLines])
+        assertMsg ("the legs are not the ones the block recorded: " <> legsAnswer)
+          (legsAnswer == T.intercalate " " ["ok", b.stateRoot, show b.number, gatewayAddress, show (length legs)])
+        forA_ legs settle
         record <- create BlockRecord with
           number = b.number; blockHash = b.blockHash; parentHash = b.parentHash; ..
         next <- create this with headNumber = b.number; headHash = b.blockHash; headStateRoot = b.stateRoot
         pure (next, record)
 
--- Ask the sidecar how far the balance the terms name rose between the parent block's state and this block's, and settle
--- with what it answered. A leg's condition is a payment in this block, not a balance that happens to be true, so one
--- payment cannot satisfy two terms: at most one leg per token and holder in a block (`seen` is the ones settled so far).
--- The terms must name this chain's operator and confirmer. Authority would not always refuse others: the builder
--- is a controller of `Advance`, so terms that name the builder in one of those roles would otherwise pass.
-settleLeg : Int -> Party -> Party -> Text -> Text -> [(Text, Text)] -> Leg -> Update [(Text, Text)]
-settleLeg chain operator confirmer root parentRoot seen leg = do
-  t <- fetch leg.terms
-  assertMsg "the terms are for another chain" (t.chainId == chain)
-  assertMsg "the terms name another operator than the chain's" (t.operator == operator)
-  assertMsg "the terms name another confirmer than the chain's" (t.confirmer == confirmer)
-  assertMsg "two legs in one block name the same token and holder" ((t.token, t.holder) `notElem` seen)
-  answer <- factCall (T.intercalate "," [root, parentRoot, t.token, t.holder, show t.slot,
-    T.intercalate ";" leg.accountNodes, T.intercalate ";" leg.storageNodes,
-    T.intercalate ";" leg.parentAccountNodes, T.intercalate ";" leg.parentStorageNodes])
-  rise <- case T.splitOn " " answer of
-    ["ok", r, p, token, holder, slot, rise] | r == root && p == parentRoot && token == t.token && holder == t.holder && slot == show t.slot -> pure rise
-    _ -> abort ("the sidecar did not confirm the balance: " <> answer)
-  exercise leg.terms Settle with rise
-  pure ((t.token, t.holder) :: seen)
+-- A contract of a leg must name this chain's id, operator and confirmer. Authority would not always refuse others: the
+-- builder is a controller of `Advance`, so a contract that names the builder in one of those roles would otherwise pass.
+checkChain : Text -> ZkChain -> Int -> Party -> Party -> Update ()
+checkChain what chain chainId operator confirmer = do
+  assertMsg (what <> " is for another chain") (chainId == chain.chainId)
+  assertMsg (what <> " names another operator than the chain's") (operator == chain.operator)
+  assertMsg (what <> " names another confirmer than the chain's") (confirmer == chain.confirmer)
+
+-- ... and, where it has one, the chain's gateway.
+checkGateway : Text -> ZkChain -> Party -> Update ()
+checkGateway what chain gateway = assertMsg (what <> " names another gateway than the chain's") (gateway == chain.gateway)
+
+checkToken : ZkChain -> GatewayToken -> Update ()
+checkToken chain t = do
+  checkChain "the token" chain t.chainId t.operator t.confirmer
+  checkGateway "the token" chain t.gateway
+
+-- The sidecar's line of a leg: `kind/id/token/account/amount/party`, in the form README.md describes. A deposit's and a
+-- withdrawal's amount is a Canton amount as Daml writes a Decimal; a payment's is the ERC-20 amount, as 64 hex digits.
+-- `party` is the hex of the receiver's party id for a withdrawal, and empty otherwise.
+legField : Text -> Text -> Text -> Text -> Text -> Text -> Text
+legField kind id token account amount party = T.intercalate "/" [kind, id, token, account, amount, party]
+
+-- What a leg makes the sidecar check. This also refuses, before anything is settled, a leg whose contracts are not this chain's.
+legLine : ZkChain -> Leg -> Update Text
+legLine chain (DepositLeg requestCid tokenCid) = do
+  r <- fetch requestCid
+  t <- fetch tokenCid
+  checkChain "the deposit request" chain r.chainId r.operator r.confirmer
+  checkGateway "the deposit request" chain r.gateway
+  checkToken chain t
+  a <- fetch r.allocation
+  let leg = (view a).allocation.transferLeg
+  assertMsg "the deposit is of another instrument than the token's" (leg.instrumentId == t.instrumentId)
+  assertMsg "the deposit is of no amount" (leg.amount > 0.0)
+  pure (legField "deposit" r.depositId t.evmToken r.recipient (show leg.amount) "")
+legLine chain (WithdrawalLeg id tokenCid from amount acceptanceCid _) = do
+  t <- fetch tokenCid
+  w <- fetch acceptanceCid
+  checkChain "the acceptance" chain w.chainId w.operator w.confirmer
+  checkGateway "the acceptance" chain w.gateway
+  checkToken chain t
+  assertMsg "the withdrawal's id must be 64 lowercase hex digits and its burner 40" (hexOfLength 64 id && hexOfLength 40 from)
+  assertMsg "the withdrawal is of no amount" (amount > 0.0)
+  pure (legField "withdrawal" id t.evmToken from (show amount) (toHex (partyToText w.party)))
+legLine chain (PaymentLeg termsCid) = do
+  t <- fetch termsCid
+  checkChain "the DvpTerms contract" chain t.chainId t.operator t.confirmer
+  pure (legField "payment" t.dvpId t.token t.payee t.amount "")
+
+-- Settle a leg that the sidecar has confirmed. Each choice adds the authority of its own contract's signatory to the
+-- authority of `Advance`: the operator, the confirmer and the gateway, who are the signatories of `ZkChain`.
+settle : Leg -> Update ()
+settle (DepositLeg requestCid _) = exercise requestCid Lock
+settle (WithdrawalLeg _ tokenCid _ amount acceptanceCid inputs) =
+  exercise acceptanceCid Receive with token = tokenCid; amount; inputs
+settle (PaymentLeg termsCid) = exercise termsCid Settle
 
 -- One per block: everything a third party needs to replay the chain and re-check each proof.
 template BlockRecord
@@ -154,8 +229,127 @@ template BlockRecord
     signatory operator, confirmer
     observer builder, reader
 
--- "If, in the proven block, the balance of `holder` in `token` rose by exactly `expected`, execute `allocation`." The
--- allocation is the token standard's own, made by u for v with the operator as executor, so it locks u's holding until then.
+-- "This Canton instrument is what this EVM token stands for, and this is its registry's transfer factory." Registering a
+-- token is a decision of the operator, the confirmer and the gateway together, because the gateway runs that registry's
+-- Daml code with its own authority. The proposal is signed by the operator and the gateway and accepted by the confirmer,
+-- who is expected to check that the EVM address is a token the gateway contract made.
+template GatewayTokenProposal
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    evmToken : Text
+    instrumentId : InstrumentId
+    factory : ContractId TransferFactory
+  where
+    signatory operator, gateway
+    observer confirmer
+    ensure chainId > 0 && hexOfLength 40 evmToken && instrumentId.id /= ""
+
+    choice AcceptToken : ContractId GatewayToken
+      controller confirmer
+      do create GatewayToken with ..
+
+template GatewayToken
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    evmToken : Text
+    instrumentId : InstrumentId
+    factory : ContractId TransferFactory
+  where
+    signatory operator, confirmer, gateway
+    observer builder
+
+-- "Deposit this allocation: when the block that records the EVM claim for `depositId` commits, lock it with the gateway."
+-- The depositor made the allocation to the gateway, with the operator as executor. Until the block commits, the depositor
+-- can withdraw it. `recipient` is the EVM address that claims the wrapped token.
+template DepositRequest
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    depositor : Party
+    depositId : Text
+    recipient : Text
+    allocation : ContractId Allocation
+  where
+    signatory depositor
+    observer operator, confirmer, gateway, builder
+    ensure chainId > 0 && hexOfLength 64 depositId && hexOfLength 40 recipient
+
+    -- The operator, the confirmer and the gateway together are the signatories of `ZkChain`, so their authority is present
+    -- inside `Advance` and nowhere else: none of them can lock alone, and the builder cannot lock at all.
+    choice Lock : ()
+      controller operator, confirmer, gateway
+      do
+        a <- fetch allocation
+        let leg = (view a).allocation
+        assertMsg "the allocation's executor is not the operator" (leg.settlement.executor == operator)
+        assertMsg "the allocation is not from the depositor to the gateway" (leg.transferLeg.sender == depositor && leg.transferLeg.receiver == gateway)
+        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+        pure ()
+
+-- "I accept withdrawals": a standing acceptance by a party that wants to receive Canton tokens from the gateway. Made once.
+template WithdrawalAcceptance
+  with
+    party : Party
+    chainId : Int
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+  where
+    signatory party
+    observer operator, confirmer, gateway, builder
+    ensure chainId > 0
+
+    -- The gateway transfers `amount` of the token's instrument from its custody (`inputs`) to `party` through the
+    -- registry's own factory, and `party` accepts in the same transaction. The factory is told the instrument's admin as
+    -- the one it must belong to. A registry that completes the transfer at once is fine too; anything else aborts.
+    nonconsuming choice Receive : ()
+      with
+        token : ContractId GatewayToken
+        amount : Decimal
+        inputs : [ContractId Holding]
+      controller operator, confirmer, gateway
+      do
+        t <- fetch token
+        assertMsg "the token is for another chain, operator, confirmer or gateway than this acceptance's" (t.chainId == chainId && t.operator == operator && t.confirmer == confirmer && t.gateway == gateway)
+        assertMsg "the amount must be more than zero" (amount > 0.0)
+        now <- getTime
+        r <- exercise t.factory TransferFactory_Transfer with
+          expectedAdmin = t.instrumentId.admin
+          transfer = Transfer with
+            sender = gateway; receiver = party; amount; instrumentId = t.instrumentId
+            requestedAt = now; executeBefore = addRelTime now (days 1); inputHoldingCids = inputs; meta = emptyMetadata
+          extraArgs = noExtraArgs
+        case r.output of
+          TransferInstructionResult_Completed _ -> pure ()
+          TransferInstructionResult_Pending offer -> do
+            accepted <- exercise offer TransferInstruction_Accept with extraArgs = noExtraArgs
+            case accepted.output of
+              TransferInstructionResult_Completed _ -> pure ()
+              _ -> abort "the transfer to the receiver did not complete"
+          TransferInstructionResult_Failed -> abort "the registry failed the transfer"
+
+-- The EVM payment id of terms between u and v: the SHA-256 of their two party ids and a label, so only terms that
+-- u and v both signed can carry the id the payer pays against.
+paymentId : Party -> Party -> Text -> Text
+paymentId u v label = T.sha256 (T.intercalate "," [partyToText u, partyToText v, label])
+
+-- "If the gateway records this payment (`dvpId`: `token`, `amount` to `payee`) in the proven block, execute `allocation`."
+-- The allocation is the token standard's own, made by u for v with the operator as executor, so it locks u's holding until
+-- then. `dvpId` is the EVM payment id itself: 64 lowercase hex digits, so the line Daml writes carries exactly the id that
+-- the gateway recorded. It is made from u, v and `label` (`paymentId`), so terms that u and v did not both sign cannot
+-- carry it. The amount is the ERC-20 amount in base units, as 64 hex digits, and is not zero.
 template DvpTerms
   with
     u : Party
@@ -164,25 +358,23 @@ template DvpTerms
     confirmer : Party
     builder : Party
     chainId : Int
+    label : Text
+    dvpId : Text
     token : Text
-    holder : Text
-    slot : Int
-    expected : Text
+    payee : Text
+    amount : Text
     allocation : ContractId Allocation
   where
     signatory u, v
     observer operator, confirmer, builder
-    -- `expected` is the rise, so it is not zero: terms that expect no rise would settle without a payment.
-    ensure all hexField [token, holder, expected] && T.length expected == 64 && T.explode expected /= replicate 64 "0"
+    ensure dvpId == paymentId u v label && hexOfLength 40 token && hexOfLength 40 payee && hexOfLength 64 amount
+      && T.explode amount /= replicate 64 "0"
 
-    -- The operator and the confirmer together are the signatories of ZkChain, so their authority is present inside
-    -- `Advance` and nowhere else: no one of them can settle alone, and the builder cannot settle at all.
+    -- Its controllers, the operator and the confirmer, sign `ZkChain` with the gateway, so their authority is present
+    -- together inside `Advance` and nowhere else: neither can settle alone, and the builder cannot settle at all.
     choice Settle : ()
-      with
-        rise : Text
       controller operator, confirmer
       do
-        assertMsg "the balance did not rise by the amount the terms expect" (rise == expected)
         a <- fetch allocation
         let leg = (view a).allocation
         assertMsg "the allocation's executor is not the operator" (leg.settlement.executor == operator)

@@ -5,7 +5,7 @@ reth's testing and Engine APIs, and saves what the prover input needs.
 Needs: pip install eth-account==0.13.7 websockets==15.0.1
 
   make-block.py fund <state-folder>
-      Makes a test key (kept in the folder, never printed) and a copy of network/ and PINS under
+      Makes a test key (kept in the folder, never printed) and a copy of network/, gateway/ and PINS under
       <state-folder>/run/ whose genesis also gives the key one ether. Start reth from the copy:
         CZE_STATE_DIR=<state-folder>/reth <state-folder>/run/network/reth/launch.sh
 
@@ -43,6 +43,7 @@ def fund(state: Path) -> None:
     shutil.rmtree(run, ignore_errors=True)
     run.mkdir()
     shutil.copytree(ROOT / "network", run / "network")
+    shutil.copytree(ROOT / "gateway", run / "gateway", ignore=shutil.ignore_patterns("tests"))  # make-state.sh adds its code to the genesis
     shutil.copy(ROOT / "PINS", run / "PINS")
     genesis_file = run / "network" / "genesis.json"
     genesis = json.loads(genesis_file.read_text())

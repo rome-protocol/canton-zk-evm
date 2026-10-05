@@ -2,10 +2,10 @@ name: demo
 
 on:
   pull_request:
-    paths: ["demo/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
+    paths: ["demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
   push:
     branches: [main]
-    paths: ["demo/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
+    paths: ["demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
 
 permissions:
   contents: read
@@ -37,7 +37,7 @@ jobs:
       - run: demo/build-token.sh --check
 
   # Everything but the proof: real reth, real Canton and Daml package, real token standard, real builder, the real sidecar for
-  # the balance check; a stand-in prover and a stand-in for the sidecar's proof check (tests/demo_rehearsal.sh says what is real).
+  # the legs check; a stand-in prover and a stand-in for the sidecar's proof check (tests/demo_rehearsal.sh says what is real).
   # The explorer's image is built and run beside the chain, and checked against it.
   rehearsal:
     runs-on: ubuntu-latest

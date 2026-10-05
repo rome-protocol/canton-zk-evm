@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The demo, rehearsed without a GPU: the real reth (through network/reth/launch.sh, discovery off), the real Canton with the real
-# Daml package and the real token standard, the real builder, and the real sidecar for `fact` (the storage proofs), running
-# demo/run.sh start to end: deploy TKA, the good block with its DvP leg, and the block whose proof has one byte flipped.
+# Daml package and the real token standard, the real builder, and the real sidecar for `legs` (the gateway's storage proofs), running
+# demo/run.sh start to end: the setup block, a deposit, a payment, a withdrawal, the gap that is closed, and the block whose proof has one byte flipped.
 # What is not real: the zero-knowledge proof. The prover is a stand-in that writes one fixed proof (tests/demo_fake_prove.sh) and
 # the `verify` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
 # sidecar does. So this checks everything except the proof check itself, which the sidecar's own tests and the GPU session cover.
@@ -59,7 +59,7 @@ CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools")
 CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 "$ROOT/network/canton/dar-id.sh" "$CZE_DAR" > "$NET/dar.txt"
 
-echo "== the sidecars: the real one for fact, the stand-in in front of it for verify"
+echo "== the sidecars: the real one for legs, the stand-in in front of it for verify"
 VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 1344))
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085
@@ -86,10 +86,10 @@ CZE_SOURCE_COMMIT=$(printf 'a%.0s' $(seq 40)) "$ROOT/demo/run.sh"
 
 echo "== the results are complete and consistent"
 "$ROOT/tests/demo_results.sh" "$CZE_DEMO_RESULTS" --stand-in
-# Calls: the stand-ins were asked to verify, and the real sidecar's fact answered the leg.
+# Calls: the stand-ins were asked to verify, and the real sidecar's legs answered for the legs.
 grep -q ' verify submission$' "$FAKE_LOG" || fail "no verify call"
-grep -q '^8086 fact validation$' "$FAKE_LOG" || fail "the confirmer's sidecar was never asked for fact: its participant did not check the leg when it validated"
-grep -q ' fact submission$' "$FAKE_LOG" || fail "no fact call: the leg was never checked against the proven state"
+grep -q '^8086 legs validation$' "$FAKE_LOG" || fail "the confirmer's sidecar was never asked for legs: its participant did not check the legs when it validated"
+grep -q ' legs submission$' "$FAKE_LOG" || fail "no legs call: the legs were never checked against the proven state"
 # Informational: the first call to a service that has just started can time out once, and Canton recovers (the blocks above committed).
 echo "--- Canton's warnings about the external call, if any:"
 { grep -E "WARN|ERROR" "$NET/logs/canton.log" | grep -i 'extension' | cut -c1-300; } || echo "none"
@@ -147,7 +147,7 @@ echo "the faucet sent $payout and refused the same address a second time"
 
 # The coin arrives with the next block: the builder runs once more, as demo/run.sh runs it, and Canton commits the block.
 payout_block=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-  "$CZE_STATE_DIR/venv/bin/python3" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $payout_block"
+  "$CZE_STATE_DIR/venv/bin/python3" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $payout_block"
 echo "$payout_block" | jq -c .
 jq -e --arg h "$payout" '.committed == true and (.transactions | index($h) != null)' <<<"$payout_block" >/dev/null || fail "the builder did not commit a block with the payout: $payout_block"
 for _ in $(seq 1 60); do [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = final ] && break; sleep 1; done

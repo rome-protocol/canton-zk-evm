@@ -4,9 +4,9 @@ pragma solidity 0.8.28;
 
 // TKA, the test token of the demo: a plain ERC-20 whose whole supply goes to one holder when it is deployed.
 // `balanceOf` is the first state variable, so it sits at storage slot 0, and a holder's balance is at
-// keccak256(abi.encode(holder, 0)). The demo's DvP terms name exactly that slot.
+// keccak256(abi.encode(holder, 0)). Nothing in the demo depends on this slot.
 contract TKA {
-    mapping(address => uint256) public balanceOf; // slot 0: keep it first
+    mapping(address => uint256) public balanceOf; // slot 0
     mapping(address => mapping(address => uint256)) public allowance;
     uint256 public totalSupply;
 

@@ -2,10 +2,10 @@ name: sidecar
 
 on:
   pull_request:
-    paths: ["sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
+    paths: ["gateway/**", "sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
   push:
     branches: [main]
-    paths: ["sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
+    paths: ["gateway/**", "sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
 
 permissions:
   contents: read
@@ -28,9 +28,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - run: shellcheck sidecar/tests/*.sh
 
-  # A real block and real balance proofs from the project's own reth, taken fresh on every run: the
-  # tests run against them as well as against the stored copy. reth is started only through
-  # network/reth/launch.sh. The folder is kept as an artifact so the stored test data can be refreshed.
+  # A real block and the gateway's real proofs for four blocks (one with every kind of leg) from the project's own reth,
+  # with the gateway in its genesis, taken fresh on every run: the tests run against them as well as against the stored
+  # copy. reth is started only through network/reth/launch.sh and checked with network/reth/check.sh. The folder is kept as an artifact so the stored test data can be refreshed.
   fresh-reth-data:
     runs-on: ubuntu-latest
     steps:
@@ -40,7 +40,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install eth-account==0.13.7 websockets==15.0.1
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
-      - name: Take a block and balance proofs from reth
+      - name: Take a block and the gateway's proofs from reth
         run: sidecar/tests/capture_fixtures.sh "$RUNNER_TEMP/fresh"
       - name: Run every test against the fresh data too
         run: SIDECAR_FIXTURES="$RUNNER_TEMP/fresh" cargo test --locked --manifest-path sidecar/Cargo.toml

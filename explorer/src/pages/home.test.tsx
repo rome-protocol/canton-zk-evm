@@ -168,7 +168,7 @@ describe("what this explorer can and cannot show", () => {
     await home();
     const box = within(screen.getByRole("region", { name: "What this explorer can and cannot show" }));
     expect(box.getByText("Every EVM block, transaction and address, and for each final block its record on Canton: the update id, the commit time and the proof.")).toBeInTheDocument();
-    expect(box.getByText("Anything else on Canton. Daml legs settled with a block are not shown to the public. Only the two traders and the chain's operator, confirmer and builder see them, and each token's registry sees its own token move.")).toBeInTheDocument();
+    expect(box.getByText("Anything else on Canton. Daml legs settled with a block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.")).toBeInTheDocument();
     expect(box.getByText("Every block is proven with ZisK 1.3.1 (a 1,344-byte proof) and checked by Canton's confirmers before it commits. Each block page can run that same check again, in your browser.")).toBeInTheDocument();
   });
 

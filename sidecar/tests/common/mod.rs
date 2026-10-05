@@ -71,48 +71,163 @@ pub fn reth_block() -> RethBlock {
     }
 }
 
-/// One holder's balance proof: the state root, the token, the holder, the slot of the balance
-/// mapping, the value reth reports, and the two node lists.
-pub struct Balance {
-    pub state_root: String,
+/// One leg a block recorded, in the form the sidecar's `legs` reads: `kind/id/token/account/amount/party`.
+#[derive(Clone)]
+pub struct Leg {
+    pub kind: String,
+    pub id: String,
     pub token: String,
-    pub holder: String,
-    pub slot: u64,
+    pub account: String,
+    pub amount: String,
+    pub party: String,
+}
+
+impl Leg {
+    pub fn text(&self) -> String {
+        [
+            &self.kind,
+            &self.id,
+            &self.token,
+            &self.account,
+            &self.amount,
+            &self.party,
+        ]
+        .map(String::as_str)
+        .join("/")
+    }
+}
+
+/// The gateway's proofs for one block, and the legs the block recorded.
+#[derive(Clone)]
+pub struct GatewayBlock {
+    pub number: u64,
+    pub state_root: String,
+    pub gateway: String,
+    /// What the gateway stores for the block, as 64 hex digits (zeros when it recorded no legs).
     pub value: String,
     pub account_nodes: Vec<String>,
     pub storage_nodes: Vec<String>,
+    pub legs: Vec<Leg>,
 }
 
-impl Balance {
-    /// The `fact` input line: this balance is the one in the new block, `parent` the one in the
-    /// parent block (the token, holder and slot are this one's).
-    pub fn line(&self, parent: &Balance) -> String {
+impl GatewayBlock {
+    /// The `legs` input line with the legs this block recorded.
+    pub fn line(&self) -> String {
+        self.line_with(&self.legs)
+    }
+
+    /// The `legs` input line with other legs attached.
+    pub fn line_with(&self, legs: &[Leg]) -> String {
+        self.line_of(&legs.iter().map(Leg::text).collect::<Vec<_>>().join("|"))
+    }
+
+    /// The `legs` input line with this text as its last field.
+    pub fn line_of(&self, legs: &str) -> String {
         format!(
-            "{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{}",
             self.state_root,
-            parent.state_root,
-            self.token,
-            self.holder,
-            self.slot,
+            self.number,
+            self.gateway,
             self.account_nodes.join(";"),
             self.storage_nodes.join(";"),
-            parent.account_nodes.join(";"),
-            parent.storage_nodes.join(";")
+            legs
+        )
+    }
+
+    /// The answer when all is well.
+    pub fn ok(&self) -> String {
+        format!(
+            "ok {} {} {} {}",
+            self.state_root,
+            self.number,
+            self.gateway,
+            self.legs.len()
         )
     }
 }
 
-/// A one-account state written out by hand: the token's account, and in it the holder's balance
-/// at `slot` (`None`: nothing is stored in the account at all). Built with the crate's own RLP
-/// writer, because the chain's own state has no such account.
-pub fn hand_built(token: &str, holder: &str, slot: u64, value: Option<[u8; 32]>) -> Balance {
+/// The blocks of `tests/fixtures/legs.json`, taken from this project's reth with the gateway in its
+/// genesis: `unused` (block 1: the gateway has nothing stored), `registered` (a token is registered,
+/// no leg, but the gateway has storage), `deposit` (one deposit) and `three` (a deposit, a withdrawal
+/// and a payment).
+pub fn gateway_block(which: &str) -> GatewayBlock {
+    let j = fixtures("legs");
+    let b = &j["blocks"][which];
+    assert!(b.is_object(), "no block {which} in legs.json");
+    let text = |v: &Value| v.as_str().unwrap().to_string();
+    let list = |k: &str| -> Vec<String> { b[k].as_array().unwrap().iter().map(text).collect() };
+    GatewayBlock {
+        number: b["number"].as_u64().unwrap(),
+        state_root: text(&b["stateRoot"]),
+        gateway: text(&j["gateway"]),
+        value: text(&b["value"]),
+        account_nodes: list("accountNodes"),
+        storage_nodes: list("storageNodes"),
+        legs: b["legs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| Leg {
+                kind: text(&l["kind"]),
+                id: text(&l["id"]),
+                token: text(&l["token"]),
+                account: text(&l["account"]),
+                amount: text(&l["amount"]),
+                party: text(&l["party"]),
+            })
+            .collect(),
+    }
+}
+
+/// A 32-byte word from a number.
+pub fn word(v: u128) -> [u8; 32] {
+    let mut w = [0u8; 32];
+    w[16..].copy_from_slice(&v.to_be_bytes());
+    w
+}
+
+/// The running hash of a block's legs as the gateway contract makes it, written out here on its own
+/// (the test's own copy, not the sidecar's): each step is the Keccak-256 of seven 32-byte words, the
+/// previous value, kind, id, token, account, amount and the Keccak-256 of the party's bytes. The
+/// amounts are in base units, one 32-byte word for each leg.
+pub fn leg_hash(legs: &[Leg], amounts: &[[u8; 32]]) -> [u8; 32] {
+    assert_eq!(legs.len(), amounts.len());
+    let mut h = [0u8; 32];
+    for (l, amount) in legs.iter().zip(amounts) {
+        let kind = match l.kind.as_str() {
+            "deposit" => 1,
+            "withdrawal" => 2,
+            "payment" => 3,
+            other => panic!("kind {other}"),
+        };
+        let mut preimage = Vec::new();
+        preimage.extend_from_slice(&h);
+        preimage.extend_from_slice(&word(kind));
+        preimage.extend_from_slice(&unhex(&l.id));
+        preimage.extend_from_slice(&[&[0u8; 12][..], &unhex(&l.token)].concat());
+        preimage.extend_from_slice(&[&[0u8; 12][..], &unhex(&l.account)].concat());
+        preimage.extend_from_slice(amount);
+        preimage.extend_from_slice(&keccak(&unhex(&l.party)));
+        h = keccak(&preimage);
+    }
+    h
+}
+
+/// A one-account state written out by hand: the gateway's account, and in it the record of block
+/// `number` with this value (`None`: nothing is stored in the account at all). Built with the
+/// crate's own RLP writer, so the tests can choose the legs and hash them themselves.
+pub fn hand_built(
+    gateway: &str,
+    number: u64,
+    value: Option<[u8; 32]>,
+    legs: Vec<Leg>,
+) -> GatewayBlock {
     let storage_nodes = value.map(|v| {
-        let mut preimage = [0u8; 64];
-        preimage[12..32].copy_from_slice(&unhex(holder));
-        preimage[56..].copy_from_slice(&slot.to_be_bytes());
+        // Where a Solidity mapping at slot 0 keeps the entry of `number`: keccak256(number . 0).
+        let slot = keccak(&[word(number as u128), word(0)].concat());
         let trimmed: Vec<u8> = v.iter().copied().skip_while(|&b| b == 0).collect();
-        // The storage trie's key is the hash of the mapping entry's slot.
-        let path = [vec![0x20], keccak(&keccak(&preimage)).to_vec()].concat();
+        // The storage trie's key is the hash of the slot.
+        let path = [vec![0x20], keccak(&slot).to_vec()].concat();
         rlp::list_of(&[rlp::string(&path), rlp::string(&rlp::string(&trimmed))].concat())
     });
     let storage_root = keccak(storage_nodes.as_deref().unwrap_or(&[0x80]));
@@ -125,45 +240,16 @@ pub fn hand_built(token: &str, holder: &str, slot: u64, value: Option<[u8; 32]>)
         ]
         .concat(),
     );
-    let path = [vec![0x20], keccak(&unhex(token)).to_vec()].concat();
+    let path = [vec![0x20], keccak(&unhex(gateway)).to_vec()].concat();
     let leaf = rlp::list_of(&[rlp::string(&path), rlp::string(&account)].concat());
-    Balance {
+    GatewayBlock {
+        number,
         state_root: hex(&keccak(&leaf)),
-        token: token.to_string(),
-        holder: holder.to_string(),
-        slot,
+        gateway: gateway.to_string(),
         value: hex(&value.unwrap_or([0; 32])),
         account_nodes: vec![hex(&leaf)],
         storage_nodes: storage_nodes.iter().map(|n| hex(n)).collect(),
-    }
-}
-
-/// A 256-bit value from a small one, as the 32 bytes a balance has.
-pub fn word(v: u128) -> [u8; 32] {
-    let mut w = [0u8; 32];
-    w[16..].copy_from_slice(&v.to_be_bytes());
-    w
-}
-
-/// The holder who has a balance (`present`) and the one who has none (`absent`).
-pub fn reth_balance(which: &str) -> Balance {
-    let j = fixtures("balances");
-    let h = &j[which];
-    let list = |k: &str| -> Vec<String> {
-        h[k].as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_str().unwrap().to_string())
-            .collect()
-    };
-    Balance {
-        state_root: j["stateRoot"].as_str().unwrap().to_string(),
-        token: j["token"].as_str().unwrap().to_string(),
-        holder: h["holder"].as_str().unwrap().to_string(),
-        slot: j["slot"].as_u64().unwrap(),
-        value: h["value"].as_str().unwrap().to_string(),
-        account_nodes: list("accountNodes"),
-        storage_nodes: list("storageNodes"),
+        legs,
     }
 }
 

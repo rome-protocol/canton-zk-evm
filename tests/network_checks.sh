@@ -110,4 +110,42 @@ grep -q "$REC" <<<"$out" || fail "the refusal does not show the recorded key"
 "$ROOT/network/check-program-vk.sh" "" >/dev/null 2>&1 && fail "check-program-vk.sh accepted an empty key"
 printf 'zisk=1\n' > "$WORK/session.txt"
 "$ROOT/network/check-program-vk.sh" "0x$REC" >/dev/null 2>&1 && fail "check-program-vk.sh accepted a session file with no recorded key"
+# --- make-state.sh puts the gateway into each run's genesis, and into nothing else
+# shellcheck disable=SC1091
+GATEWAY_ADDRESS=$(. "$ROOT/PINS"; echo "$GATEWAY_ADDRESS")
+CODE=0x$(cat "$ROOT/gateway/Gateway.bin-runtime")
+gw() { jq -c --arg a "$GATEWAY_ADDRESS" '.alloc[$a]' "$1"; }
+# The plain genesis: the gateway is added, with nonce 1 and no storage, and nothing else changes.
+CZE_STATE_DIR=$WORK/g1 "$ROOT/network/make-state.sh"
+[ "$(jq -c --arg a "$GATEWAY_ADDRESS" '.alloc[$a] | {code, nonce, balance, storage: (.storage // null)}' "$WORK/g1/genesis.json")" \
+  = "$(jq -nc --arg c "$CODE" '{code: $c, nonce: "0x1", balance: "0x0", storage: null}')" ] \
+  || fail "make-state.sh did not put the gateway's runtime code, nonce 1, no balance and no storage at GATEWAY_ADDRESS: $(gw "$WORK/g1/genesis.json" | cut -c1-120)"
+[ "$(jq -S --arg a "$GATEWAY_ADDRESS" 'del(.alloc[$a])' "$WORK/g1/genesis.json")" = "$(jq -S . "$ROOT/network/genesis.json")" ] \
+  || fail "make-state.sh changed more than the gateway's account"
+[ "$(gw "$ROOT/network/genesis.json")" = null ] || fail "network/genesis.json holds the gateway"
+# A named genesis (the demo's funded one) gets the gateway too, and keeps its own accounts.
+jq '.alloc["0x00000000000000000000000000000000000000aa"] = {"balance": "0x1"}' "$ROOT/network/genesis.json" > "$WORK/funded.json"
+CZE_STATE_DIR=$WORK/g2 CZE_GENESIS_FILE=$WORK/funded.json "$ROOT/network/make-state.sh"
+[ "$(gw "$WORK/g2/genesis.json")" = "$(gw "$WORK/g1/genesis.json")" ] || fail "a named genesis did not get the same gateway account"
+[ "$(jq -c '.alloc["0x00000000000000000000000000000000000000aa"]' "$WORK/g2/genesis.json")" = '{"balance":"0x1"}' ] || fail "make-state.sh lost the named genesis's own account"
+# Running it again on the same state folder gives the same genesis.
+CZE_STATE_DIR=$WORK/g2 CZE_GENESIS_FILE=$WORK/funded.json "$ROOT/network/make-state.sh"
+[ "$(jq -S . "$WORK/g2/genesis.json")" = "$(jq -S --arg a "$GATEWAY_ADDRESS" --argjson g "$(gw "$WORK/g1/genesis.json")" '.alloc[$a] = $g' "$WORK/funded.json")" ] || fail "a second make-state.sh run changed the genesis"
+# A genesis that already holds something else at that address is refused, and nothing is written.
+jq --arg a "$GATEWAY_ADDRESS" '.alloc[$a] = {"balance": "0x0", "code": "0x00", "nonce": "0x1"}' "$ROOT/network/genesis.json" > "$WORK/other-code.json"
+CZE_STATE_DIR=$WORK/g3 CZE_GENESIS_FILE=$WORK/other-code.json "$ROOT/network/make-state.sh" >/dev/null 2>&1 && fail "make-state.sh accepted a genesis with other code at the gateway's address"
+[ ! -e "$WORK/g3/genesis.json" ] || fail "make-state.sh wrote a genesis it had refused"
+jq --arg a "$GATEWAY_ADDRESS" '.alloc[$a] = {"balance": "0x5"}' "$ROOT/network/genesis.json" > "$WORK/funded-gw.json"
+CZE_STATE_DIR=$WORK/g4 CZE_GENESIS_FILE=$WORK/funded-gw.json "$ROOT/network/make-state.sh" >/dev/null 2>&1 && fail "make-state.sh accepted a genesis that funds the gateway's address"
+# The same address written with capital letters, or without the 0x, is still that address and is refused.
+for key in "0x$(tr a-f A-F <<<"${GATEWAY_ADDRESS#0x}")" "${GATEWAY_ADDRESS#0x}"; do
+  jq --arg k "$key" '.alloc[$k] = {"balance": "0x5"}' "$ROOT/network/genesis.json" > "$WORK/spelled.json"
+  rm -rf "$WORK/g4b"
+  CZE_STATE_DIR=$WORK/g4b CZE_GENESIS_FILE=$WORK/spelled.json "$ROOT/network/make-state.sh" >/dev/null 2>&1 && fail "make-state.sh accepted a genesis that holds the gateway's address spelled $key"
+  [ ! -e "$WORK/g4b/genesis.json" ] || fail "make-state.sh wrote a genesis it had refused ($key)"
+done
+# Missing runtime code: refused, not skipped.
+mkdir -p "$WORK/norepo/network" "$WORK/norepo/gateway"
+cp "$ROOT/network/make-state.sh" "$ROOT/network/genesis.json" "$WORK/norepo/network/"; cp "$ROOT/PINS" "$WORK/norepo/"
+CZE_STATE_DIR=$WORK/g5 "$WORK/norepo/network/make-state.sh" >/dev/null 2>&1 && fail "make-state.sh went on without the gateway's runtime code"
 echo "network checks passed"

@@ -124,53 +124,79 @@ fn verify_refuses_the_session_proof_with_a_flipped_byte() {
 }
 
 #[test]
-fn fact_answers_in_hex() {
+fn legs_answers_in_hex() {
     let addr = start(config_accepting_any());
-    let b = reth_balance("present");
-    let parent = hand_built(&b.token, &b.holder, b.slot, None);
+    let b = gateway_block("three");
     let (status, body) = request(
         &addr,
         "POST",
         "/api/v1/external-call",
-        Some("fact"),
-        &hex(b.line(&parent).as_bytes()),
+        Some("legs"),
+        &hex(b.line().as_bytes()),
     );
     assert_eq!(status, 200);
-    let expected = format!(
-        "ok {} {} {} {} {} {}",
-        b.state_root, parent.state_root, b.token, b.holder, b.slot, b.value
-    );
-    assert_eq!(text_of_hex(&body), expected);
-    let mut bad = reth_balance("present");
+    assert_eq!(text_of_hex(&body), b.ok());
+    let mut bad = gateway_block("three");
     bad.state_root = "00".repeat(32);
     let (status, body) = request(
         &addr,
         "POST",
         "/api/v1/external-call",
-        Some("fact"),
-        &hex(bad.line(&parent).as_bytes()),
+        Some("legs"),
+        &hex(bad.line().as_bytes()),
     );
     assert_eq!(
         (status, text_of_hex(&body)),
         (200, "no the account proof does not verify".to_string())
     );
+    // a block with no legs is answered too
+    let none = gateway_block("registered");
+    let (status, body) = request(
+        &addr,
+        "POST",
+        "/api/v1/external-call",
+        Some("legs"),
+        &hex(none.line().as_bytes()),
+    );
+    assert_eq!((status, text_of_hex(&body)), (200, none.ok()));
+}
+
+#[test]
+fn fact_is_no_longer_a_function() {
+    let addr = start(config_accepting_any());
+    let b = gateway_block("three");
+    let (status, body) = request(
+        &addr,
+        "POST",
+        "/api/v1/external-call",
+        Some("fact"),
+        &hex(b.line().as_bytes()),
+    );
+    assert_eq!(status, 400);
+    assert_eq!(body, "the function is not verify or legs");
 }
 
 #[test]
 fn a_wrong_function_id_or_a_bad_request_is_refused() {
     let addr = start(config_accepting_any());
     let body = hex(b"x");
-    for function in [Some("execute"), Some("Verify"), Some(""), None] {
+    for function in [
+        Some("execute"),
+        Some("Verify"),
+        Some("Legs"),
+        Some(""),
+        None,
+    ] {
         let (status, _) = request(&addr, "POST", "/api/v1/external-call", function, &body);
         assert_eq!(status, 400, "{function:?}");
     }
     // a body that is not lowercase hex
     for body in ["xyz", "ABCD", "abc"] {
-        let (status, _) = request(&addr, "POST", "/api/v1/external-call", Some("fact"), body);
+        let (status, _) = request(&addr, "POST", "/api/v1/external-call", Some("legs"), body);
         assert_eq!(status, 400, "{body}");
     }
     assert_eq!(
-        request(&addr, "GET", "/api/v1/external-call", Some("fact"), "").0,
+        request(&addr, "GET", "/api/v1/external-call", Some("legs"), "").0,
         405
     );
     assert_eq!(request(&addr, "POST", "/api/v1/version", None, "").0, 405);

@@ -2,7 +2,7 @@
 """A stand-in for the sidecar, for the demo rehearsal only (tests/demo_rehearsal.sh). There is no GPU in CI, so there is no real
 proof. This answers `verify` itself: the proof is accepted only if it is the one stand-in proof the rehearsal's fake prover writes, and
 then the rest of the answer is read from the header and the transaction list exactly as the real sidecar reads it. Every other
-call, `fact` in particular, is passed to the REAL sidecar, which checks the storage proofs against the block's state root.
+call, `legs` in particular, is passed to the REAL sidecar, which checks the gateway's storage proofs against the block's state root.
 So the rehearsal runs everything but the zero-knowledge proof check.
 
 Usage: demo_sidecar.py <port> <real sidecar port> <program-vk hex> <root-c hex> <the accepted proof, hex>"""

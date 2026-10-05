@@ -5,7 +5,7 @@
 #   - demo/prove-tampered.sh changes exactly one hex digit of the proof, and nothing else, and refuses what it cannot tamper with
 #   - the demo's genesis override keeps the chain settings and refuses a genesis with other ones
 #   - demo/prepare.sh stops, before it installs anything, when the Python of the builder's venv is older than 3.12
-#   - the recorded results, if there are any, are complete and consistent
+#   - the recorded results of the present demo, if there are any, are complete and consistent
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
@@ -16,7 +16,6 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ ${SOLC_IMAGE:-} =~ @sha256:[0-9a-f]{64}$ ]] || fail "SOLC_IMAGE is not pinned by digest"
 [[ $(cat "$ROOT/demo/TKA.bin") =~ ^[0-9a-f]{200,}$ ]] || fail "demo/TKA.bin is not creation code in hex"
 grep -q "pragma solidity $SOLC_VERSION;" "$ROOT/demo/TKA.sol" || fail "demo/TKA.sol does not pin solc $SOLC_VERSION"
-grep -q 'balanceOf; // slot 0: keep it first' "$ROOT/demo/TKA.sol" || fail "TKA's balances are not at slot 0, which demo/canton.py names in the terms"
 
 others=$(grep -rIlE 'RETH_IMAGE|paradigmxyz|reth node' "$ROOT/demo" "$ROOT"/tests/demo_* 2>/dev/null | grep -v 'tests/demo_static.sh$' || true)
 [ -z "$others" ] || fail "something in the demo starts or names reth's image: $others"
@@ -57,23 +56,28 @@ SHORT
 chmod +x "$WORK/short"
 CZE_TAMPER_REAL_PROVE_CMD=$WORK/short "$ROOT/demo/prove-tampered.sh" "$WORK/in.bin" "$WORK/out4" >/dev/null 2>&1 && fail "prove-tampered.sh tampered with a proof of the wrong size"
 
-# make-state.sh: the demo's funded genesis is taken as it is; one with other chain settings is refused; no override copies network/genesis.json.
+# make-state.sh: the demo's funded genesis is taken as it is, plus the gateway; one with other chain settings is refused; no override copies network/genesis.json plus the gateway.
+without_gateway() { jq -S --arg a "$GATEWAY_ADDRESS" 'del(.alloc[$a])' "$1"; }
 cp "$ROOT/network/genesis.json" "$WORK/funded.json"
 jq '.alloc["0x00000000000000000000000000000000000000aa"] = {"balance": "0x1"}' "$ROOT/network/genesis.json" > "$WORK/funded.json"
 CZE_STATE_DIR=$WORK/s1 CZE_GENESIS_FILE=$WORK/funded.json "$ROOT/network/make-state.sh"
-cmp -s "$WORK/funded.json" "$WORK/s1/genesis.json" || fail "make-state.sh did not use CZE_GENESIS_FILE"
+[ "$(without_gateway "$WORK/s1/genesis.json")" = "$(jq -S . "$WORK/funded.json")" ] || fail "make-state.sh did not use CZE_GENESIS_FILE"
 jq '.config.chainId = 1' "$ROOT/network/genesis.json" > "$WORK/other.json"
 CZE_STATE_DIR=$WORK/s2 CZE_GENESIS_FILE=$WORK/other.json "$ROOT/network/make-state.sh" >/dev/null 2>&1 && fail "make-state.sh accepted a genesis with other chain settings"
 CZE_STATE_DIR=$WORK/s3 "$ROOT/network/make-state.sh"
-cmp -s "$ROOT/network/genesis.json" "$WORK/s3/genesis.json" || fail "make-state.sh without an override did not copy network/genesis.json"
+[ "$(without_gateway "$WORK/s3/genesis.json")" = "$(jq -S . "$ROOT/network/genesis.json")" ] || fail "make-state.sh without an override did not copy network/genesis.json"
 
 # tests/demo_results.sh accepts results that say what the runs must show, and refuses each of the ones that do not.
 "$ROOT/tests/demo_results_selftest.sh"
 
-# The recorded results, if the demo has been run.
-if [ -f "$ROOT/demo/results/run1.txt" ] || [ -f "$ROOT/demo/results/run2.txt" ]; then
+# The recorded results, once the demo has been run in its present form (a setup block and five runs). The results of the first
+# version of the demo, which had two runs and no setup, stay in demo/results/ until a GPU session replaces them.
+R=$ROOT/demo/results
+if [ -f "$R/setup.txt" ] || { [ -f "$R/run1.txt" ] && ! grep -qx 'format=1' "$R/run1.txt"; }; then
   "$ROOT/tests/demo_results.sh"
+elif [ -f "$R/run1.txt" ]; then
+  echo "the recorded results are the first version's (format 1); a GPU run replaces them"
 else
-  echo "no recorded demo results yet"
+  echo "no recorded results of the present demo yet"
 fi
 echo "demo static checks passed"
