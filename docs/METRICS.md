@@ -46,9 +46,9 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | solc (the demo's test token) | 0.8.28 | `PINS` |
 | Chain id | 770101 | `PINS` |
 
-The guest of the first proof has this ELF SHA-256: `44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf`. Its programVK is `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`. The results files were written from source commit `99b2c17161d099cf9f37ccc2e1c082511d8d6ef1`. That commit is from this code's history before the repository was published, so it is not in this repository.
+The guest of the first proof has this ELF SHA-256: `44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf`. Its programVK is `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`. The results files were written on 2026-10-04 from this repository's first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9`; they record it under its earlier id, `3c17de6e007ccf31b7b4f58c4b13916e849cbd8d` (see [demo/README.md](../demo/README.md#results)).
 
-The recorded GPU runs used an earlier version whose leg condition was a balance the holder had to reach. The current rule requires the holder's balance to rise by exactly the expected amount in this block. The Daml tests and the CI rehearsal with a stand-in proof check that rule; it has not had a GPU run. See [demo/README.md](../demo/README.md#results) for the tests. The recorded DAR hash and package id describe the earlier Daml package, not a build of the current one. `network/up.sh` checks each guest build against the recorded programVK, rootC and rules hash before starting the network.
+The recorded GPU runs use the current leg rule: a leg settles only if the holder's balance rose by exactly the expected amount in the proven block. The recorded DAR hash and package id describe the Daml package built from that commit. `network/up.sh` checks each guest build against the recorded programVK, rootC and rules hash before starting the network.
 
 ## The prover benchmark
 
@@ -109,18 +109,18 @@ The GPU peak says little about what is required: the prover takes one large buff
 
 These results come from [`demo/results/`](../demo/results/) and [`prover/fixtures/session.txt`](../prover/fixtures/session.txt). Each test ran once on 2026-10-04 on the local Canton network, with the prover already running. These are individual test results, not a benchmark.
 
-The demo used an earlier leg condition: a balance the holder had to reach. It does not validate the current rule that the holder's balance rose by exactly the expected amount in this block. That rule is checked by the Daml tests and the CI rehearsal with a stand-in proof, not yet by a GPU run. [demo/README.md](../demo/README.md#results) names the tests.
+The demo ran with the current leg rule: a leg settles only if the holder's balance rose by exactly the expected amount in the proven block. Run 1 settled a leg under that rule. The refusals (a balance that did not rise, one that rose by another amount, one that fell) are checked by the Daml tests, not by the GPU runs or the CI rehearsal. [demo/README.md](../demo/README.md#results) names the tests.
 
 | | Smoke test | Run 1, the good block | Run 2, the tampered proof |
 |---|---|---|---|
 | Source | `smoke.txt` | `run1.txt` | `run2.txt` |
-| Time of the record (UTC) | 01:36:46 | 01:37:16 | 01:37:26 |
+| Time of the record (UTC) | 20:31:31 | 20:34:01 | 20:34:10 |
 | Block | 1, empty | 3, one transfer of 10 TKA | 4, one transfer, built and proven but not committed |
 | Gas used | 0 | 51,698 | not recorded |
-| Proof time | 6.34 s | 6.66 s | 6.72 s |
+| Proof time | 6.34 s | 6.76 s | 6.66 s |
 | Proof size | 1,344 bytes | 1,344 bytes (`run1-proof.hex`) | 1,344 bytes, then one hex digit (byte 100) changed |
-| From the finished proof file to the end of the builder's run | 0.57 s | 0.74 s | refused by Canton; not timed |
-| The builder's whole run | 89.94 s | 8.08 s | 7.60 s |
+| From the finished proof file to the end of the builder's run | 0.51 s | 0.83 s | refused by Canton; not timed |
+| The builder's whole run | 143.73 s | 8.28 s | 7.51 s |
 | Outcome | Canton head 1; the block record was seen by the reader; reth marked the block final | Canton head 2 to 3 in the same update as V's new TKB holding; reth marked block 3 final | `Advance` refused with "the sidecar refused the block: no the proof does not verify"; head stayed at 3; reth went back to block 3 |
 
 The time "from the finished proof file to the end of the builder's run" includes assembling the Daml legs (the builder's Ledger reads and, for each leg, an `eth_getProof` call to reth), the `Advance` call, its commit on both confirmers, and reth marking the block final. It is therefore more than Canton's commit alone. The smoke test's full builder run also includes the witness, the input and the prover's one-time program setup, and, if the machine had not built the input tool before, that build as well. Separate times for these steps are not recorded.

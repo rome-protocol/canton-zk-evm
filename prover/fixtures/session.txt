@@ -1,6 +1,5 @@
 # The first proof of this chain: a block with one plain transfer, proved by ZisK on one GPU.
 # Recorded on 2026-10-04, from the guest that prover/build-guest.sh builds (the same ELF from two source folders; see guest/README.md).
-# It replaces the first session's record, whose ELF was built before the build became independent of the source folder.
 # Plain facts, one key=value per line. transfer-proof.json is the proof (the four fields of
 # cargo-zisk-dev export-solidity-calldata); wrapped-proof.hex is the same four one after the other.
 zisk=1.3.1-alpha

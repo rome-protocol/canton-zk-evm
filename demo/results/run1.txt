@@ -1,11 +1,11 @@
 # Run 1, the good block: V sends U 10 TKA on the EVM, and in the same Canton transaction U's allocation of 10 TKB goes to V.
-# The terms U and V signed: if U's address holds 10 TKA (TKA's balance mapping, slot 0) in the proven block, execute the allocation.
+# The terms U and V signed: if U's TKA balance (TKA's balance mapping, slot 0) rose by 10 in the proven block, execute the allocation.
 # Contract ids are shortened to their first 16 hex digits. after_proof_seconds runs from the moment the proof file was written to the end of the builder's run.
 format=1
-date=2026-10-04T01:37:16Z
-source_commit=99b2c17161d099cf9f37ccc2e1c082511d8d6ef1
-dar_sha256=aaa299449116187095276136685acb665965dde45fcab0d69ab99a6be3be4489
-package_id=6769d912ca489006816d037b2d13b54141b9129d1e5ba2c3b3741a4d037f39a3
+date=2026-10-04T20:34:01Z
+source_commit=3c17de6e007ccf31b7b4f58c4b13916e849cbd8d
+dar_sha256=0f02efe52c8978acf9e780198bed8c0a64ea0824f9280821f363f0d7b2ffd5e3
+package_id=38d8500135f772cdf1235e36fcd337dbfbf7604b3e5f5729e07d242a9e752f79
 chain_id=770101
 guest_elf_sha256=44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf
 programVK=0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f
@@ -16,23 +16,23 @@ zisk=1.3.1-alpha
 reth=2.5.2
 gpu=NVIDIA RTX PRO 6000 Blackwell Server Edition, 580.178.04
 block=3
-block_hash=0x35f48db79e6fdd1cf17ea03b943a624881495e2730bf814dc8a3bce94d39bbb7
-token=0xcb010295356690c18d6873ca7083545cfaeb0d8d
-evm_transfer_tx=0xf69b40c2042ebe0799ca49a607137a646a46a87dc06d5941a14bdc91a14a5c98
+block_hash=0x7ca88b3918a6fea0ffeab97894af53b15936b680114955bc67227f536dc2fb14
+token=0x853711e71e55c25ae675ea33ee33012a102f76fd
+evm_transfer_tx=0x4079b00d30e246e7ac65977b1d9871b7fab3c2dc0e5ca853bf1b9f4d1b7be873
 transactions=1
 gas_used=51698
 legs=1
-terms=00ed670f5c7e344a
-allocation=0018491d263283dc
-proof_seconds=6.66
-after_proof_seconds=0.74
-builder_total_seconds=8.08
-proof_sha256=d03a2b6260ff0479886a0e48e7b7b632535ac1937ecb4714c3625068b8a7b676
+terms=00a4d8bdde327fe6
+allocation=006cc9cf6eb3127d
+proof_seconds=6.76
+after_proof_seconds=0.83
+builder_total_seconds=8.28
+proof_sha256=87141b731f8bbdb47705b8602c3885378a55b59e9d800c91568921a3553a290d
 canton_head_before=2
 canton_head_after=3
-canton_head_hash=0x35f48db79e6fdd1cf17ea03b943a624881495e2730bf814dc8a3bce94d39bbb7
+canton_head_hash=0x7ca88b3918a6fea0ffeab97894af53b15936b680114955bc67227f536dc2fb14
 block_record_holds_the_proof=yes
-canton_update=122019f35393971aab82f5a9e1043c88e37d3ab7c8f66d936adffe1c3394d2ca9714
+canton_update=1220fdd6f7ca9fbdd069a56e3d7db2af5733cf944e7974dbce626384a524ad6268b6
 block_record_and_v_holding_in_one_update=yes
 tkb_u_before=90
 tkb_v_before=0

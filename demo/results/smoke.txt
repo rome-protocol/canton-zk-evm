@@ -1,24 +1,24 @@
 # The smoke test of the network: one empty block, proven, committed on Canton, final in reth.
 # advance_seconds runs from the moment the proof file was written to the end of the builder's run:
-# reading Canton's head, Advance, its commit on every confirmer, and reth marking the block final.
+# assembling the Daml legs (the builder's Ledger reads, and eth_getProof calls when there are terms to settle), Advance, its commit on every confirmer, and reth marking the block final.
 # proof_seconds is the prover's time for the proof with the prover already running, as in prover/fixtures/session.txt.
 # builder_total_seconds is the whole run, which also holds the witness, the input and, the first time the prover sees
 # the program, its one-time setup; on a machine that has not built the input tool yet it holds that build too.
 format=2
-date=2026-10-04T01:36:46Z
-source_commit=99b2c17161d099cf9f37ccc2e1c082511d8d6ef1
-dar_sha256=aaa299449116187095276136685acb665965dde45fcab0d69ab99a6be3be4489
-package_id=6769d912ca489006816d037b2d13b54141b9129d1e5ba2c3b3741a4d037f39a3
+date=2026-10-04T20:31:31Z
+source_commit=3c17de6e007ccf31b7b4f58c4b13916e849cbd8d
+dar_sha256=0f02efe52c8978acf9e780198bed8c0a64ea0824f9280821f363f0d7b2ffd5e3
+package_id=38d8500135f772cdf1235e36fcd337dbfbf7604b3e5f5729e07d242a9e752f79
 chain_id=770101
 block=1
-block_hash=0xd69e2babdf02852da30ab43575738a40291054960a18c9c7e57ce805f3a311b3
+block_hash=0x93f566cdd94be7ef33cf348df81552599c679a4eeb88dff2c265a7661ae97a88
 transactions=0
 gas_used=0
 proof_seconds=6.34
-advance_seconds=0.57
-builder_total_seconds=89.94
+advance_seconds=0.51
+builder_total_seconds=143.73
 canton_head_number=1
-canton_head_hash=0xd69e2babdf02852da30ab43575738a40291054960a18c9c7e57ce805f3a311b3
+canton_head_hash=0x93f566cdd94be7ef33cf348df81552599c679a4eeb88dff2c265a7661ae97a88
 block_record_seen_by_reader=yes
 reth_finalized=yes
 wrapped_proof_bytes=1344

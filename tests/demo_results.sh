@@ -21,7 +21,7 @@ for f in "$R1" "$R2"; do
   [[ $(v "$f" guest_elf_sha256) =~ ^[0-9a-f]{64}$ ]] || fail "$(basename "$f"): guest_elf_sha256 is not a SHA-256"
   [[ $(v "$f" programVK) =~ ^0x[0-9a-f]{64}$ ]] || fail "$(basename "$f"): programVK is not 0x and 64 hex digits"
   [[ $(v "$f" token) =~ ^0x[0-9a-f]{40}$ ]] || fail "$(basename "$f"): token is not an address"
-  # Generic only: no email address, no IPv4 address. (Names that are private to the people who run the demo are scanned for outside this repo.)
+  # Generic only: no email address, no IPv4 address.
   ! grep -qE '@|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}([^0-9.]|$)' "$f" || fail "$(basename "$f") has an email address or an IPv4 address"
 done
 for k in source_commit dar_sha256 package_id programVK rootC guest_elf_sha256 token; do

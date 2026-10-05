@@ -46,8 +46,7 @@ check_smoke() {
   [ "$(sed -n 's/^block_hash=//p' "$R")" = "$(sed -n 's/^canton_head_hash=//p' "$R")" ] || { bad "Canton's head is not the block"; return 1; }
   [ "$(sed -n 's/^canton_head_number=//p' "$R")" = 1 ] || { bad "Canton's head is not 1"; return 1; }
   [ "$(sed -n 's/^reth_finalized=//p' "$R")" = yes ] || { bad "reth did not finalize the block"; return 1; }
-  # Generic only: no email address and no IPv4 address. (What is private to the people who run the demo is scanned for
-  # outside this repo.)
+  # Generic only: no email address and no IPv4 address.
   ! grep -qE '@|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}([^0-9.]|$)' "$R" || { bad "an email address or an IPv4 address"; return 1; }
   # Format 2 (what network/smoke.sh writes): the result also names the source commit it ran, the DAR and the package id,
   # and its programVK is the recorded one. These checks always run; a result without a format line is refused.

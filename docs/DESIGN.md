@@ -29,7 +29,7 @@ flowchart LR
 | **Builder** | Picks the transactions, asks reth for the block, sends it to the prover, and submits the proven block to Canton. It cannot finalize anything or change Canton's order. |
 | **Prover** | ZisK 1.3.1 running our copy of its EVM program, with our chain's rules built in. It outputs a small wrapped proof (1,344 bytes) that commits to the block's hash. |
 | **Daml package** | The chain's one state contract (its current head), a record per block, and the terms of a Daml action tied to a block. |
-| **Sidecar** | A small Rust program beside each confirming participant. It does two things: checks a proof, and checks how far a balance rose in the proven EVM state (two storage proofs, one at the block and one at its parent). |
+| **Sidecar** | A small Rust program beside each confirming participant. It does two things: checks a proof, and checks how far a balance rose in the proven EVM state (an account proof and a storage proof at the block and at its parent). |
 | **Canton network** | A local network of our own for the first proof. |
 | **Explorer** | Shows each EVM block next to its Canton record, read as the reader party. Its Verify button runs the sidecar's block check in the browser through WebAssembly. Its faucet sends the test coin, tROME, through reth. |
 
@@ -41,7 +41,7 @@ flowchart LR
 4. The builder submits one Canton transaction: block n, its proof, and any Daml action tied to it.
 5. Each confirmer's sidecar verifies the proof. Daml checks that block n's parent is the current head, that the proof came from our program and ZisK release, and that the block is within the gas cap.
 6. If a Daml action is attached, the sidecar checks its condition against the proven state: the holder's balance rose by exactly the expected amount in this block (for example, "U's balance of the token rose by 10"), worked out from block n's state and its parent's. Daml then performs the action. At most one action per token and holder settles in a block, so one payment cannot satisfy two of them.
-7. Canton commits everything at once: the chain record moves to block n, the block is recorded, and the Daml action settles. If any check fails, nothing changes; the builder rebuilds and proves again.
+7. Canton commits everything at once: the chain record moves to block n, the block is recorded, and the Daml action settles. If any check fails, nothing changes; the next builder run builds and proves again.
 
 ## Why it holds
 
@@ -69,10 +69,10 @@ The machine, the versions and every measurement, with dates and sources, are in 
 
 - Proof: 6.7 s (1 transfer) to 21.2 s (5,000 transfers) on one NVIDIA RTX PRO 6000, with a prover that stays running. Measured in the prover benchmark on the upstream reth guest, not on this repository's guest; see [METRICS.md](METRICS.md).
 - Proof size: 1,344 bytes. Measured.
-- On this chain, in the demo (2026-10-04, one machine): a block proved in 6.3 to 6.8 s (the tampered-proof run, run 2, took 6.72 s). The time from the finished proof to Canton's commit on both confirmers and reth marking the block final was 0.57 s for an empty block and 0.74 s for a block with one transfer and one Daml leg. That interval also includes assembling the Daml legs (the builder's Ledger reads and `eth_getProof` calls to reth), so it is more than Canton's commit alone. Measured; see [demo/results/](../demo/results/).
+- On this chain, in the demo (2026-10-04, one machine): a block proved in 6.3 to 6.8 s (the tampered-proof run, run 2, took 6.66 s). The time from the finished proof to Canton's commit on both confirmers and reth marking the block final was 0.51 s for an empty block and 0.83 s for a block with one transfer and one Daml leg. That interval also includes assembling the Daml legs (the builder's Ledger reads and `eth_getProof` calls to reth), so it is more than Canton's commit alone. Measured; see [demo/results/](../demo/results/).
 - Not yet measured on their own: building the witness on a warm machine, the sidecar's proof check run natively, and the Canton commit of a large block. The WebAssembly build took 8 to 32 ms in Node on CI runners for verifying a proof and rejecting a mismatched header; see [explorer/verify/README.md](../explorer/verify/README.md).
 
-The recorded GPU demo used an earlier version whose leg condition was a balance the holder had to reach. The current rule requires the holder's balance to rise by exactly the expected amount in this block. The Daml tests and the CI rehearsal with a stand-in proof check that rule; it has not had a GPU run. See [demo/README.md](../demo/README.md#results) for the tests and the recorded runs.
+The recorded GPU demo ran from this repository's first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9`, with the current leg rule: a leg settles only if the holder's balance rose by exactly the expected amount in the proven block. The Daml tests check the refusals of that rule; the GPU runs and the CI rehearsal do not. See [demo/README.md](../demo/README.md#results) for the tests and the recorded runs.
 
 ## Rules
 

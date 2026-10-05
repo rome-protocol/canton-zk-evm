@@ -18,7 +18,7 @@ done
 [[ $RETH_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || fail "RETH_IMAGE is not pinned by digest"
 [[ $BUSYBOX_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || fail "BUSYBOX_IMAGE is not pinned by digest"
 [[ ${EXPLORER_NODE_IMAGE:-} =~ @sha256:[0-9a-f]{64}$ ]] || fail "EXPLORER_NODE_IMAGE is missing or not pinned by digest"
-[ -z "${FOUNDRY_IMAGE:-}${FOUNDRY_VERSION:-}" ] || fail "PINS still pins Foundry; the chain has no funded test accounts"
+[ -z "${FOUNDRY_IMAGE:-}${FOUNDRY_VERSION:-}" ] || fail "PINS must not pin Foundry: the chain has no funded test accounts"
 [[ $ZISK_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_COMMIT is not a full commit hash"
 [[ $ZISK_ETH_CLIENT_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_ETH_CLIENT_COMMIT is not a full commit hash"
 
