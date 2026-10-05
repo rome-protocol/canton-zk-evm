@@ -6,7 +6,7 @@ Every EVM block becomes one Canton transaction, and only once it is proven. That
 
 ## Status
 
-Ostia is a research prototype on a local, throwaway network. It uses one builder, one operator and one confirmer. This code and ZisK 1.3.1-alpha are unaudited. tROME is a test coin with no value. Do not use this prototype for anything of value.
+Ostia is an early release. It runs on a local test network that keeps no state between runs, with one builder, one operator and one confirmer. This code and ZisK 1.3.1-alpha are not yet audited. tROME is a test coin with no value. Do not use Ostia for anything of value.
 
 The repository also has a local Canton network, a settlement demo that runs on it, and a block explorer with a tROME faucet and an in-browser proof check. The demo (`demo/`) ran on a GPU on 2026-10-04. A rehearsal also runs in CI without a GPU.
 
@@ -14,7 +14,7 @@ The guest and prover proved the first block on a GPU: one plain transfer on this
 
 Network: on one machine with a GPU, the builder made one empty block, the prover proved it, `Advance` committed it on a local Canton with the real external call, the chain's head moved to 1 and reth marked the block final. The facts are in [demo/results/smoke.txt](demo/results/smoke.txt). The Canton and the Daml compiler are 3.6 snapshots, because no release has the external call yet; [network/README.md](network/README.md) says which, and how they are pinned. It ran on 2026-10-04, after `up.sh` had checked that the guest it built has the recorded program key.
 
-Both demo runs passed their checks on 2026-10-04, from this repository's first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9` (the results files record it under an earlier id; see [demo/README.md](demo/README.md#results)), on one machine with one NVIDIA RTX PRO 6000 GPU. A leg settles only if the holder's balance rose by exactly the expected amount in the proven block. See [demo/README.md](demo/README.md#results) for the tests and the recorded runs. In run 1, V's 10-TKA transfer was proven and committed in block 3. In the same Canton update, U's 10-TKB allocation became V's holding (U 90 TKB, V 10 TKB; U 10 TKA, V 990 TKA). In run 2, one hex digit of the proof was flipped. Canton refused `Advance` with the sidecar's answer "no the proof does not verify". Nothing moved on Canton and reth went back to block 3. This used one local network, one operator, test tokens and keys made for the run. It is not a live chain. The results, proof and versions are in [demo/results/](demo/results/).
+Both demo runs passed their checks on 2026-10-04, from this repository's first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9` (the results files record it under an earlier id; see [demo/README.md](demo/README.md#results)), on one machine with one NVIDIA RTX PRO 6000 GPU. A leg settles only if the holder's balance rose by exactly the expected amount in the proven block. See [demo/README.md](demo/README.md#results) for the tests and the recorded runs. In run 1, V's 10-TKA transfer was proven and committed in block 3. In the same Canton update, U's 10-TKB allocation became V's holding (U 90 TKB, V 10 TKB; U 10 TKA, V 990 TKA). In run 2, one hex digit of the proof was flipped. Canton refused `Advance` with the sidecar's answer "no the proof does not verify". Nothing moved on Canton and reth went back to block 3. This used one local network, one operator, test tokens and keys made for the run; Ostia does not yet run as a standing network. The results, proof and versions are in [demo/results/](demo/results/).
 
 ## Layout
 

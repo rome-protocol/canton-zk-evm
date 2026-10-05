@@ -61,7 +61,7 @@ On our own local Canton network:
 - **One good block:** V's 10-token EVM transfer and U's Canton holding move together in one Canton transaction.
 - **One bad block:** a tampered proof is refused, and nothing moves.
 
-This first proof is not a live chain.
+This first proof ran on a local network started for the run; Ostia does not yet run as a standing network.
 
 ## Numbers we have
 

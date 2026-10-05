@@ -125,14 +125,14 @@ The demo ran with the current leg rule: a leg settles only if the holder's balan
 
 The time "from the finished proof file to the end of the builder's run" includes assembling the Daml legs (the builder's Ledger reads and, for each leg, an `eth_getProof` call to reth), the `Advance` call, its commit on both confirmers, and reth marking the block final. It is therefore more than Canton's commit alone. The smoke test's full builder run also includes the witness, the input and the prover's one-time program setup, and, if the machine had not built the input tool before, that build as well. Separate times for these steps are not recorded.
 
-**The first proof of a transfer** ([`session.txt`](../prover/fixtures/session.txt), recorded 2026-10-04): one plain transfer of 21,000 gas as block 1 on a throwaway copy of the genesis, 385,277 steps. The proof times were 6.33, 6.75 and 6.69 s. It was checked with ZisK's own verifier (`cargo-zisk`) and with the verifier crate in this repository. The same input with the chain id changed to 1 was refused by the guest with "Chain config is not this chain's", and the prover returned no proof.
+**The first proof of a transfer** ([`session.txt`](../prover/fixtures/session.txt), recorded 2026-10-04): one plain transfer of 21,000 gas as block 1 on a temporary copy of the genesis, 385,277 steps. The proof times were 6.33, 6.75 and 6.69 s. It was checked with ZisK's own verifier (`cargo-zisk`) and with the verifier crate in this repository. The same input with the chain id changed to 1 was refused by the guest with "Chain config is not this chain's", and the prover returned no proof.
 
 **Setup times:**
 
 - Building the guest with `prover/build-guest.sh` from an empty build folder, dependency download included: 125 s (`session.txt`). Two fresh checkouts gave 133 s and 126 s ([`guest/README.md`](../guest/README.md)). Both gave the same ELF and the same programVK.
 - The prover's first setup of the program: 43 s (`session.txt`). This is a one-time cost on a prover.
 
-The step count of 385,277 here is for this repository's guest and its own throwaway genesis. It should not be compared with the benchmark's step counts, which are for the upstream guest and different blocks.
+The step count of 385,277 here is for this repository's guest and its own temporary genesis. It should not be compared with the benchmark's step counts, which are for the upstream guest and different blocks.
 
 ## What CI runs
 

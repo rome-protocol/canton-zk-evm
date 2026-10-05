@@ -6,7 +6,7 @@ The first proof of Ostia, a Canton zkEVM (chain id 770101), run on one machine w
 
 **Run 2, a tampered proof.** The same again, with a second transfer and a second allocation, but one byte of the proof is flipped on its way to the builder. `Advance` is refused, nothing moves on Canton, and reth goes back to the parent block.
 
-The demo is limited to these two runs on one local network with one operator, one builder, test tokens and keys made for the run. It is not a live chain. See [docs/DESIGN.md](../docs/DESIGN.md) ("The first proof") for the design.
+The demo is limited to these two runs on one local network with one operator, one builder, test tokens and keys made for the run. Ostia does not yet run as a standing network; each run starts a new one. See [docs/DESIGN.md](../docs/DESIGN.md) ("The first proof") for the design.
 
 ## What is here
 
