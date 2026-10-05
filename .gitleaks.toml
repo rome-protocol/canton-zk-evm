@@ -10,7 +10,7 @@ paths = ['''mpt/fixtures/[a-z_]+\.json''']
 [[allowlists]]
 description = "The test token's contract address in the demo's results: a public address on the local chain, not a secret"
 condition = "AND"
-paths = ['''demo/results/run[12]\.txt''']
+paths = ['''demo/results/run[1245]\.txt''']
 regexTarget = "line"
 regexes = ['''token=0x[0-9a-f]{40}$''']
 
@@ -20,3 +20,9 @@ condition = "AND"
 paths = ['''sidecar/tests/fixtures/legs\.json''']
 regexTarget = "line"
 regexes = ['''"token": "[0-9a-f]{40}",?$''']
+
+[[allowlists]]
+description = "The program key in the demo README's prose: the public key of the proven program, not a secret"
+condition = "AND"
+paths = ['''demo/README\.md''']
+regexes = ['''db79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f''']

@@ -72,6 +72,12 @@ On a real reth, with a funded genesis whose keys are made for the run:
 
 Run it with `gateway/tests/run.sh`. It needs Docker, `curl`, `jq` and Python 3 with the packages in `demo/requirements.txt`.
 
+## In the demo
+
+The demo ([demo/README.md](../demo/README.md#results)) proved blocks that held gateway calls on a GPU on 2026-10-05, from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507). Its code hash in the results files is `0xaba3bb1e3a76203fc9a546f93ff08985734ff78ea3c6f79b541acb91d0c08643`, which `network/up.sh` checks against block 0 of reth before it starts the chain. The runs used all three kinds of leg: `claim` (10 TKB deposited on Canton, 10 wTKB minted on the EVM), `pay` (a payment of 10 TKA, in a block that also held a plain transfer of 1 TKA, which made no leg) and `withdraw` (4 wTKB). In runs 1 to 3, each block committed together with the Canton side of its leg. Runs 4 and 5 tested refusals.
+
+The Canton tokens that are locked for a wrapped token are held by the gateway party on Canton, not by this contract. That party is hosted on the operator's participant, so whoever runs that participant can move the locked tokens. See [docs/DESIGN.md](../docs/DESIGN.md#why-it-holds).
+
 ## Not covered
 
 Tokens sent straight to the gateway's address are lost: the gateway has no way to give them back. A token that takes a fee on transfer, or that otherwise does not move exactly what it was asked to, is not a plain ERC-20, and the leg records what `pay` was asked for, not what moved.

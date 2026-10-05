@@ -1,20 +1,20 @@
 # demo
 
-The first proof of Ostia, a Canton zkEVM (chain id 770101), run on one machine with a local Canton network. It has a setup block and five runs. Two test tokens are used: TKA lives on the EVM, and TKB on Canton (a test token of the Canton token standard). wTKB is TKB's form on the EVM, made by the gateway contract.
+This demo runs Ostia, a Canton zkEVM (chain id 770101), on one machine with a local Canton network. It has a setup block and five runs. Two test tokens are used: TKA lives on the EVM, and TKB on Canton (a test token of the Canton token standard). wTKB is TKB's form on the EVM, made by the gateway contract.
 
 **Setup.** In one block V deploys TKA and the gateway makes wTKB. On Canton, U gets 100 TKB, wTKB is registered as the EVM form of TKB, and U signs a standing acceptance of withdrawals.
 
 **Run 1, a deposit.** U puts 10 TKB aside for the gateway and signs a deposit request, and U's EVM address claims 10 wTKB. Canton commits the block and moves the 10 TKB into the gateway's custody in one transaction. U holds 10 wTKB, and the supply of wTKB is 10, as is the custody.
 
-**Run 2, a payment.** U puts 10 TKB aside for V, and U and V sign terms for one payment, identified by an id. V pays U 10 TKA through the gateway with that id, and in the same block sends U 1 TKA by a plain transfer. Canton commits the block and moves the 10 TKB to V in the same transaction. The plain transfer is not the payment, so it settles nothing, and it is no obstacle.
+**Run 2, a payment.** U puts 10 TKB aside for V, and U and V sign terms for one payment, identified by an id. V pays U 10 TKA through the gateway with that id, and in the same block sends U 1 TKA by a plain transfer. Canton commits the block and moves the 10 TKB to V in the same transaction. The plain transfer is not the payment: it moves 1 TKA on the EVM and settles nothing on Canton, and it does not get in the way.
 
 **Run 3, a withdrawal.** U's address withdraws 4 wTKB to U's Canton party. Canton commits the block, the gateway pays 4 TKB to U in the same transaction, and the supply and the custody fall to 6.
 
-**Run 4, the gap is closed.** V pays U 10 TKA for a second payment. U also asks to withdraw 1 wTKB to a party that has not accepted withdrawals, so the builder leaves that transaction out before it proves anything. After the proof is made, U takes its allocation back. `Advance` is refused, nothing moves on Canton, and reth goes back to the last block, so V's payment is not final. The same proven block, sent again without its leg, is refused too. The next builder run leaves the payment out and commits what is left, and TKA, TKB and wTKB are all as after run 3.
+**Run 4, an allocation taken back.** V pays U 10 TKA for a second payment. U also asks to withdraw 1 wTKB to a party that has not accepted withdrawals, so the builder leaves that transaction out before it proves anything. After the proof is made, U takes its allocation back. `Advance` is refused, nothing moves on Canton, and reth goes back to the last block, so V's payment is not final. The same proven block, sent again without its leg, is refused too. The next builder run leaves the payment out and commits what is left, and TKA, TKB and wTKB are all as after run 3.
 
 **Run 5, a tampered proof.** U allocates again for the payment that is still waiting, and one byte of the proof is flipped on its way to the builder. `Advance` is refused, nothing moves on Canton, and reth goes back to the parent block.
 
-The demo is limited to these runs on one local network with one operator, one builder, test tokens and keys made for the run. Ostia does not yet run as a standing network; each run starts a new one. The gateway party that holds the locked TKB is hosted on the operator's participant, so whoever runs that participant can move the custody; this is a local proof where one party runs everything. See [docs/DESIGN.md](../docs/DESIGN.md) ("The first proof") for the first version of the design.
+The demo is limited to these runs on one local network with one operator, one builder, test tokens and keys made for the run. Ostia does not yet run as a standing network; each run starts a new one. The gateway party that holds the locked TKB is hosted on the operator's participant, so whoever runs that participant can move the custody; this is a local proof where one party runs everything. See [docs/DESIGN.md](../docs/DESIGN.md) for the design.
 
 ## What is here
 
@@ -122,20 +122,35 @@ It also builds the explorer's image and runs it beside the chain (`explorer/run.
 
 ## Results
 
-**The recorded results below are those of the first version of the demo.** That version had two runs and a different rule for a leg: it settled when the holder's balance rose by exactly the expected amount in the proven block, checked with the sidecar's `fact`. `run.sh` now runs the setup and five runs described above, and its results (`setup.txt`, `run1.txt` to `run5.txt`, and the proofs of the blocks that committed) replace these when they are recorded on a GPU. Until then the files in `results/` and the table below describe the first version only.
+The demo passed all its checks on a GPU on 2026-10-05, from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507): one machine, one NVIDIA RTX PRO 6000 Blackwell Server Edition (driver 580.178.04), ZisK 1.3.1-alpha, reth 2.5.2 and Canton 3.6.0-snapshot.20260930.20337.0.ve610bc8f. `network/up.sh` built the guest and found it has the recorded programVK, `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`. The gateway's code hash is `0xaba3bb1e3a76203fc9a546f93ff08985734ff78ea3c6f79b541acb91d0c08643`. The files in `results/` are what `network/smoke.sh` and `demo/run.sh` wrote, between 13:38:44 UTC (the smoke test) and 13:40:03 UTC (run 5), with the versions and the source commit. `tests/demo_results.sh` checks that they are complete and agree with each other, and `tests/demo_static.sh` runs that check.
 
-The demo passed its checks on a GPU on 2026-10-04 (run 1's results written at 20:34:01 UTC, run 2's at 20:34:10 UTC): one machine, one NVIDIA RTX PRO 6000, ZisK 1.3.1-alpha, the pinned Canton and reth. It ran from this repository's first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9`. The results files name that commit `3c17de6e007ccf31b7b4f58c4b13916e849cbd8d`, the id it had before it was published with Rome Protocol as its author. The files are the same: both ids have the tree `fb352451ecdb0b3bfc1118c2cfae9a0e8b38e63e` (`git rev-parse c6d81619c05a^{tree}`). The files in `results/` are what the run wrote, with the versions and source commit. These files are in the first version's format. `tests/demo_results.sh` now checks the present demo's results, and `tests/demo_static.sh` leaves these unchecked until a GPU run replaces them.
+| | EVM block | What happened | Proof | From the proof file to the end of the builder's run | The builder's whole run |
+|---|---|---|---|---|---|
+| Smoke test | 1, empty | `Advance` committed it; the head moved to 1; the block record was seen by the reader; reth marked it final | 6.31 s | 0.49 s | 155.20 s |
+| Setup | 2, V's deploy of TKA and the registration of wTKB; no legs | committed; wTKB registered on Canton; U has 100 TKB | 6.71 s | not recorded | 8.00 s |
+| Run 1, a deposit | 3, U's claim of 10 wTKB; 122,308 gas | one deposit leg; committed; head 2 to 3; the block record and the gateway's new 10 TKB holding were made by one Canton update | 6.72 s | 0.66 s | 8.14 s |
+| Run 2, a payment | 4, V's approval, V's payment of 10 TKA and V's plain transfer of 1 TKA; 185,307 gas | one payment leg; committed; head 3 to 4; the block record and V's new 10 TKB holding were made by one update | 6.72 s | 0.42 s | 7.87 s |
+| Run 3, a withdrawal | 5, U's withdrawal of 4 wTKB; 90,345 gas | one withdrawal leg; committed; head 4 to 5; the block record and U's new 4 TKB holding were made by one update | 6.72 s | 0.58 s | 8.02 s |
+| Run 4, an allocation taken back | 6, built as `0x11461bde...0622`, refused; then built again and committed as `0x10c492ad...21d5` | the withdrawal to the party without an acceptance was left out before proving. U took its allocation back after the proof: the builder exited with status 2, Canton refused with `CONTRACT_NOT_FOUND` for U's dvp-2 allocation, and the head stayed at 5. The saved block, sent again without its leg, was refused with "the legs are not the ones the block recorded". The next builder run left out the payment and the withdrawal, and committed V's approval alone, with no leg; head 6 | 6.75 s (first build) | refused; not timed | 8.09 s, then 8.04 s |
+| Run 5, a tampered proof | 7, built as `0xb6b7ce4a...3612`, never committed | the builder exited with status 2; `Advance` was refused with "the sidecar refused the block: no the proof does not verify"; the head stayed at 6 and the block records at 6; U's new allocation for dvp-2 is still active | 6.74 s; byte 100 changed after it was made | refused; not timed | 7.57 s |
 
-| | First version, run 1: the good block | First version, run 2: the tampered proof |
-|---|---|---|
-| EVM block | 3, `0x7ca88b39...fb14`, one transfer of 10 TKA, 51,698 gas | 4, built as `0x68b498b6...4ece`, never committed |
-| Proof | made in 6.76 s; 1,344 bytes | made in 6.66 s; byte 100 changed after it was made |
-| Canton | `Advance` committed; head 2 to 3; the `BlockRecord` holds the proof; the record and V's TKB holding were made by one update (`canton_update` in `run1.txt`) | `Advance` refused with "the sidecar refused the block: no the proof does not verify"; head stays at 3; no new record |
-| TKB (U, V) | 90, 0 before the block; 90, 10 after | 80, 10 before and after |
-| TKA (U, V) | 0, 1,000 before; 10, 990 after | 10, 990 after |
-| After | allocation and terms gone; reth finalized block 3 | allocation and terms still active; reth's latest and finalized blocks are block 3 |
-| Time | 0.83 s from the proof file to the end of the builder's run; 8.28 s for the builder's whole run | 7.51 s for the builder's whole run |
+The time "from the proof file to the end of the builder's run" includes fetching the gateway's account and storage proofs from reth (one `eth_getProof` call), the `Advance` call, its commit on both confirmers, and reth marking the block final, so it is more than Canton's commit alone. The builder matches the legs to Canton contracts before it proves the block, so that work is not in it. The proof for the second build in run 4 was made and not timed separately. The smoke test's whole builder run includes the witness, the input and the prover's one-time program setup.
 
-The prover was already running, with program setup completed by the smoke test. It ran the guest built by `prover/build-guest.sh`. The programVK and ELF hash in the results files match `prover/fixtures/session.txt`.
+Balances after each run (TKB on Canton, TKA and wTKB on the EVM at the finalized block). Where a run's file does not record a balance, the value is the one the next run recorded before it changed anything:
 
-These results cover one run on one machine, with test tokens, one operator and one builder. Both sidecars use this project's implementation and ran on the same machine as Canton. The block contains one transfer. The timings describe this run, not a benchmark. `results/smoke.txt` records the `network/` smoke test run before the demo.
+| After | TKB: U, V, gateway's custody | TKA: U, V | wTKB: U, supply |
+|---|---|---|---|
+| Setup | 100, 0, 0 | 0, 1,000 | 0, 0 |
+| Run 1 | 90, 0, 10 | 0, 1,000 | 10, 10 |
+| Run 2 | 80, 10, 10 | 11, 989 | 10, 10 |
+| Run 3 | 84, 10, 6 | 11, 989 | 6, 6 |
+| Run 4, after the rebuilt block | 84, 10, 6 | 11, 989 | 6, 6 |
+| Run 5, nothing committed | 74, 10, not recorded (U's new allocation of 10 TKB is active) | 11, 989 | not recorded |
+
+The prover was already running, and the smoke test had done its one-time program setup. It ran the guest built by `prover/build-guest.sh`; the programVK and the ELF hash in the results files match `prover/fixtures/session.txt`. The `rootC` in the results is `0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4`.
+
+After the runs, the explorer was started on the same chain (`explorer/run.sh start`, with no restart of the network and without the faucet's setup) and opened in a browser. It was healthy, its pins were this run's, and it listed blocks 1 to 6 as Final. On block 3's page, Verify answered "Passed.": the check ran in the browser in 13 ms, and about 0.35 s passed from the click to the answer. The panel says that the proof verifies under ZisK 1.3.1's key, that program `0xdb79...6d3f` and ZisK release `0xc3f1...1ac4` made it, and that it commits to block hash `0x4a1e...3f1d`. The faucet page loaded and said that the faucet was off, because the faucet was not set up for this run. There were no errors in the browser console. This walk is not recorded in `results/`.
+
+These results cover one run on one machine, with test tokens, one operator and one builder. Both sidecars use this project's implementation and ran on the same machine as Canton. The timings describe this run, not a benchmark. Run 4 checks that a block sent again without its leg is refused. The Daml tests check more refusals than the GPU runs do (an extra leg, another chain's contracts, another instrument, an acceptance of another party); the CI rehearsal runs the same steps with a stand-in proof.
+
+The results of an earlier version of the demo, which had two runs and a different rule for a leg (a leg settled when the holder's balance rose by the expected amount in the proven block), are in this repository's history at its first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9`. They no longer describe how the chain works.

@@ -91,7 +91,7 @@ ok stateRoot number gateway count
 
 ## Left out on purpose
 
-The first version has these limits:
+This version has these limits:
 
 - `BlockRecord` does not carry the state root, the timestamp or the legs settled in the block; the header it holds has the first two.
 - There is no `DvpProposal` step: the two parties sign `DvpTerms` directly.

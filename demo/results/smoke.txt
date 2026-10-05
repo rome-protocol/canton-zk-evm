@@ -5,20 +5,20 @@
 # builder_total_seconds is the whole run, which also holds the witness, the input and, the first time the prover sees
 # the program, its one-time setup; on a machine that has not built the input tool yet it holds that build too.
 format=2
-date=2026-10-04T20:31:31Z
-source_commit=3c17de6e007ccf31b7b4f58c4b13916e849cbd8d
-dar_sha256=0f02efe52c8978acf9e780198bed8c0a64ea0824f9280821f363f0d7b2ffd5e3
-package_id=38d8500135f772cdf1235e36fcd337dbfbf7604b3e5f5729e07d242a9e752f79
+date=2026-10-05T13:38:44Z
+source_commit=6b445073163832e9023850f53678617d90dfc808
+dar_sha256=870324fdc31122b5a14340bbc3e92be934bf29fd0814f83b0d3aa8a56e2280c7
+package_id=ccd743bc3d2c8e0f59dc418d1180fa73e6c942314e6bc4245ab5e5b13ae42a10
 chain_id=770101
 block=1
-block_hash=0x93f566cdd94be7ef33cf348df81552599c679a4eeb88dff2c265a7661ae97a88
+block_hash=0x773262a6fe34f9b76178a0d6a0dc3c2c9d9e9737627f7e154642e8667e2a1747
 transactions=0
 gas_used=0
-proof_seconds=6.34
-advance_seconds=0.51
-builder_total_seconds=143.73
+proof_seconds=6.31
+advance_seconds=0.49
+builder_total_seconds=155.20
 canton_head_number=1
-canton_head_hash=0x93f566cdd94be7ef33cf348df81552599c679a4eeb88dff2c265a7661ae97a88
+canton_head_hash=0x773262a6fe34f9b76178a0d6a0dc3c2c9d9e9737627f7e154642e8667e2a1747
 block_record_seen_by_reader=yes
 reth_finalized=yes
 wrapped_proof_bytes=1344

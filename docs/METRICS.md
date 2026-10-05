@@ -5,13 +5,13 @@ This page records test results, hardware and software versions for Ostia, a Cant
 Two sets of measurements are reported:
 
 - **The prover benchmark** (2026-10-03). ZisK 1.3.1-alpha proving blocks of three sizes. It used the unmodified reth guest that ships with zisk-eth-client v0.13.1, not this repository's guest, which adds a check of the chain's rules. Its raw logs are not in this repository.
-- **The first proof on this chain** (2026-10-04). This repository's own guest, on the local Canton network, from the files in [`demo/results/`](../demo/results/) and [`prover/fixtures/session.txt`](../prover/fixtures/session.txt).
+- **The runs on this chain** (2026-10-05). This repository's own guest, on the local Canton network, with the gateway: a smoke test, a setup block and five runs, from the files in [`demo/results/`](../demo/results/). The one-transfer proof of 2026-10-04 is in [`prover/fixtures/session.txt`](../prover/fixtures/session.txt).
 
 ## The machine
 
-Both sets ran on a machine with one NVIDIA RTX PRO 6000 GPU. The benchmark's machine is described below; for the first proof only the GPU and the driver were recorded.
+Both sets ran on a machine with one NVIDIA RTX PRO 6000 GPU. The benchmark's machine is described below; for the runs on this chain only the GPU and the driver were recorded.
 
-| | Prover benchmark, 2026-10-03 | First proof on this chain, 2026-10-04 |
+| | Prover benchmark, 2026-10-03 | Runs on this chain, 2026-10-05 |
 |---|---|---|
 | CPU | AMD EPYC 9B45, 48 vCPUs (1 socket, 2 threads per core) | not recorded |
 | RAM | 176 GiB as the machine reported it | not recorded |
@@ -21,13 +21,13 @@ Both sets ran on a machine with one NVIDIA RTX PRO 6000 GPU. The benchmark's mac
 | Operating system | Ubuntu 22.04.5, 500 GB boot disk | not recorded |
 | Also installed | Node 20.18.0 and snarkjs 0.7.6 (ZisK's verify command runs snarkjs to check the wrapped proof) | not recorded |
 
-The GPU and driver are written into every results file of the first proof. Nothing else about its hardware was recorded.
+The GPU and driver are written into the results files of the runs. Nothing else about their hardware was recorded.
 
 Everything else in this repository's tests runs on GitHub-hosted runners with no GPU. See "What CI runs" below.
 
 ## Software versions
 
-The scripts read most of these versions from [`PINS`](../PINS), and CI checks them. The last column says where each row comes from. The first-proof results files record `canton`, `daml_sdk`, `zisk` and `reth` versions that match `PINS`.
+The scripts read most of these versions from [`PINS`](../PINS), and CI checks them. The last column says where each row comes from. The results files record `canton`, `daml_sdk`, `zisk` and `reth` versions that match `PINS`.
 
 | What | Version | Source |
 |---|---|---|
@@ -46,9 +46,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | solc (the demo's test token) | 0.8.28 | `PINS` |
 | Chain id | 770101 | `PINS` |
 
-The guest of the first proof has this ELF SHA-256: `44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf`. Its programVK is `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`. The results files were written on 2026-10-04 from this repository's first commit, `c6d81619c05ad8efa76cd0345178f01410a3dac9`; they record it under its earlier id, `3c17de6e007ccf31b7b4f58c4b13916e849cbd8d` (see [demo/README.md](../demo/README.md#results)).
-
-The recorded GPU runs use the current leg rule: a leg settles only if the holder's balance rose by exactly the expected amount in the proven block. The recorded DAR hash and package id describe the Daml package built from that commit. `network/up.sh` checks each guest build against the recorded programVK, rootC and rules hash before starting the network.
+The guest has this ELF SHA-256: `44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf`. Its programVK is `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`, and its rootC is `0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4`. They are the same as in the one-transfer proof of 2026-10-04: adding the gateway did not change the proven program. The results files were written on 2026-10-05 from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507). The DAR hash in them is `870324fdc31122b5a14340bbc3e92be934bf29fd0814f83b0d3aa8a56e2280c7` and the package id `ccd743bc3d2c8e0f59dc418d1180fa73e6c942314e6bc4245ab5e5b13ae42a10`; they identify the Daml package built from that commit. `network/up.sh` checks each guest build against the recorded programVK, rootC and rules hash before starting the network.
 
 ## The prover benchmark
 
@@ -105,25 +103,27 @@ The GPU peak says little about what is required: the prover takes one large buff
 
 **The older release, ZisK 1.2.0-alpha,** was measured as a baseline on the same machine and the same blocks. The guest it used was the one from zisk-eth-client v0.12.0, not v0.13.1. A fresh process took 6.0, 9.2 and 23.8 s for the proof with the wrap, and 18.4, 21.8 and 36.9 s for the whole process, for the three block sizes. A prover that stays running could not produce a wrapped proof at all: each request failed to wrap and returned the 414 KB STARK proof, with the error `Failed to wrap Plonk proof ... Error generating witness for instance id 0 [0:0] of type RecursiveF` in the worker log. 1.3.1-alpha is the release this repository uses. Its authors mark it as still in security and correctness audit.
 
-## The first proof on this chain
+## The runs on this chain
 
-These results come from [`demo/results/`](../demo/results/) and [`prover/fixtures/session.txt`](../prover/fixtures/session.txt). Each test ran once on 2026-10-04 on the local Canton network, with the prover already running. These are individual test results, not a benchmark.
+These results come from [`demo/results/`](../demo/results/). Each test ran once on 2026-10-05, from commit `6b445073163832e9023850f53678617d90dfc808`, on the local Canton network, with the prover already running. These are individual test results, not a benchmark. The runs use the gateway: a block's Canton legs are the ones the gateway recorded in the proven state. [demo/README.md](../demo/README.md#results) has what each run did and the balances it left.
 
-The demo ran with the current leg rule: a leg settles only if the holder's balance rose by exactly the expected amount in the proven block. Run 1 settled a leg under that rule. The refusals (a balance that did not rise, one that rose by another amount, one that fell) are checked by the Daml tests, not by the GPU runs or the CI rehearsal. [demo/README.md](../demo/README.md#results) names the tests.
+| | Smoke test | Setup | Run 1, a deposit | Run 2, a payment | Run 3, a withdrawal | Run 4, an allocation taken back | Run 5, the tampered proof |
+|---|---|---|---|---|---|---|---|
+| Source | `smoke.txt` | `setup.txt` | `run1.txt` | `run2.txt` | `run3.txt` | `run4.txt` | `run5.txt` |
+| Time of the record (UTC) | 13:38:44 | 13:39:02 | 13:39:12 | 13:39:23 | 13:39:32 | 13:39:53 | 13:40:03 |
+| Block | 1, empty | 2, two transactions, no legs | 3, one transaction, one deposit leg | 4, three transactions, one payment leg | 5, one transaction, one withdrawal leg | 6, refused; then built again and committed with one transaction and no leg | 7, built and proven but not committed |
+| Gas used | 0 | not recorded | 122,308 | 185,307 | 90,345 | not recorded | not recorded |
+| Proof time | 6.31 s | 6.71 s | 6.72 s | 6.72 s | 6.72 s | 6.75 s (first build); the second build's proof is not timed on its own | 6.74 s |
+| Proof size | 1,344 bytes | 1,344 bytes (`setup-proof.hex`) | 1,344 bytes (`run1-proof.hex`) | 1,344 bytes (`run2-proof.hex`) | 1,344 bytes (`run3-proof.hex`) | 1,344 bytes (`run4-proof.hex`) | 1,344 bytes, then one hex digit (byte 100) changed |
+| From the finished proof file to the end of the builder's run | 0.49 s | not recorded | 0.66 s | 0.42 s | 0.58 s | refused; not timed | refused; not timed |
+| The builder's whole run | 155.20 s | 8.00 s | 8.14 s | 7.87 s | 8.02 s | 8.09 s (refused), then 8.04 s (committed) | 7.57 s |
+| Outcome | Canton head 1; the block record was seen by the reader; reth marked the block final | committed; head 2 | committed; head 3, in the same update as the gateway's new TKB holding | committed; head 4, in the same update as V's new TKB holding | committed; head 5, in the same update as U's new TKB holding | `Advance` refused with `CONTRACT_NOT_FOUND`; head stayed at 5; the block, sent again without its leg, was refused too; the next build committed and moved the head to 6 | `Advance` refused with "the sidecar refused the block: no the proof does not verify"; head stayed at 6 |
 
-| | Smoke test | Run 1, the good block | Run 2, the tampered proof |
-|---|---|---|---|
-| Source | `smoke.txt` | `run1.txt` | `run2.txt` |
-| Time of the record (UTC) | 20:31:31 | 20:34:01 | 20:34:10 |
-| Block | 1, empty | 3, one transfer of 10 TKA | 4, one transfer, built and proven but not committed |
-| Gas used | 0 | 51,698 | not recorded |
-| Proof time | 6.34 s | 6.76 s | 6.66 s |
-| Proof size | 1,344 bytes | 1,344 bytes (`run1-proof.hex`) | 1,344 bytes, then one hex digit (byte 100) changed |
-| From the finished proof file to the end of the builder's run | 0.51 s | 0.83 s | refused by Canton; not timed |
-| The builder's whole run | 143.73 s | 8.28 s | 7.51 s |
-| Outcome | Canton head 1; the block record was seen by the reader; reth marked the block final | Canton head 2 to 3 in the same update as V's new TKB holding; reth marked block 3 final | `Advance` refused with "the sidecar refused the block: no the proof does not verify"; head stayed at 3; reth went back to block 3 |
+The time "from the finished proof file to the end of the builder's run" includes fetching the gateway's account and storage proofs from reth (one `eth_getProof` call), the `Advance` call with the sidecar's `legs` check, its commit on both confirmers, and reth marking the block final. It is therefore more than Canton's commit alone. The builder matches the legs to Canton contracts before it proves the block, so that work is not in it. The smoke test's full builder run also includes the witness, the input and the prover's one-time program setup, and, if the machine had not built the input tool before, that build as well. Separate times for these steps are not recorded.
 
-The time "from the finished proof file to the end of the builder's run" includes assembling the Daml legs (the builder's Ledger reads and, for each leg, an `eth_getProof` call to reth), the `Advance` call, its commit on both confirmers, and reth marking the block final. It is therefore more than Canton's commit alone. The smoke test's full builder run also includes the witness, the input and the prover's one-time program setup, and, if the machine had not built the input tool before, that build as well. Separate times for these steps are not recorded.
+The six proof times that the runs recorded are 6.71 to 6.75 s, for blocks of one to three transactions; the empty block's was 6.31 s. The runs do not show how the time grows with the block. The benchmark above does, for plain transfers.
+
+After the runs, the explorer was opened in a browser on block 3. Its Verify button answered "Passed.". The check ran in the browser in 13 ms, and about 0.35 s passed from the click to the answer. It is not a benchmark and is not recorded in `demo/results/`.
 
 **The first proof of a transfer** ([`session.txt`](../prover/fixtures/session.txt), recorded 2026-10-04): one plain transfer of 21,000 gas as block 1 on a temporary copy of the genesis, 385,277 steps. The proof times were 6.33, 6.75 and 6.69 s. It was checked with ZisK's own verifier (`cargo-zisk`) and with the verifier crate in this repository. The same input with the chain id changed to 1 was refused by the guest with "Chain config is not this chain's", and the prover returned no proof.
 
@@ -141,7 +141,8 @@ CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof 
 - **Secrets:** a gitleaks scan of the whole history.
 - **Static checks:** shellcheck on the scripts; the pins and the genesis agree (`tests/static.sh`); the recorded smoke result and the demo results are complete and agree with each other.
 - **reth:** the launch refuses a missing or wrong discovery flag; the pinned reth starts with no peers; the UDP check works.
-- **Rust:** `cargo fmt`, `clippy` and `cargo test` for the verifier, `mpt/` and the sidecar; the chain rules' tests; a real proof taken from the project's own reth is checked by `mpt/`; the sidecar's tests run again on a fresh block and fresh balance proofs from reth.
+- **Gateway:** `.github/workflows/gateway.yml` checks that the committed gateway code is what the pinned solc makes of `Gateway.sol`, and runs the contract on a real reth (started only through `network/reth/launch.sh`, peer discovery off): every function, every refusal, and each block's leg hash worked out in Python and compared with the storage proof.
+- **Rust:** `cargo fmt`, `clippy` and `cargo test` for the verifier, `mpt/` and the sidecar; the chain rules' tests; a real proof taken from the project's own reth is checked by `mpt/`; the sidecar's tests run again on a fresh block, with legs, and fresh gateway proofs from a reth whose genesis holds the gateway.
 - **The recorded proof:** `tests/fixtures.sh` checks that the recorded 1,344-byte proof is consistent with its facts. It does not make a proof.
 - **The guest build:** `tests/guest-repro.sh` runs the real build script against stand-ins for the ZisK tools, to show that the build happens in one fixed folder. It does not show that a real ZisK build gives the same ELF; the run on 2026-10-04 did that once (see `guest/README.md`).
 - **Daml:** `.github/workflows/daml.yml` checks the token-standard packages against their hashes. It builds the stub form with Daml SDK 3.5.12 from `daml/daml.yaml` and runs the Daml Script tests.
@@ -149,17 +150,17 @@ CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof 
 - **Builder:** its tests, on Python 3.12.
 - **Explorer:** `.github/workflows/explorer.yml` runs type-checks, tests against fakes and the pages' build in `EXPLORER_NODE_IMAGE`. Its `ledger-api` job checks the explorer's requests against the pinned Canton's OpenAPI document. Its `verify-wasm` job checks shared crate versions against the sidecar's lockfile, runs Rust formatting, lint and tests, and builds the Verify module for WebAssembly. It tests the built module through the loader and panel in Node and checks that the pages' build serves it.
 - **Demo checks:** the `checks` job in `.github/workflows/demo.yml` runs shellcheck, `tests/demo_static.sh` and `tests/demo_explorer_static.sh`. It tests the EVM side against a fake reth, the Canton helpers, the sidecar stand-in and the request logger. The `token` job checks that the pinned solc rebuilds `demo/TKA.bin` from `demo/TKA.sol`.
-- **The demo's rehearsal:** the whole demo without a GPU, using a stand-in for the proof. It runs the real reth, Canton, token standard, builder and sidecar balance check, and runs the explorer beside the chain. It checks the block page, Verify's rejection of the stand-in proof, the tROME faucet and the explorer's requests. It does not prove a block or check a real proof.
+- **The demo's rehearsal:** the whole demo without a GPU, using a stand-in for the proof. It runs the real reth, Canton, token standard, builder and the sidecar's `legs` check, and runs the explorer beside the chain. It checks the block page, Verify's rejection of the stand-in proof, the tROME faucet and the explorer's requests. It does not prove a block or check a real proof.
 
 ## What is not measured yet
 
-- **A systematic benchmark of contract calls or precompiles.** The benchmark blocks are plain transfers. The demo records one ERC-20 transfer. The cost per gas depends on the mix of work, so the plain-transfer figures do not establish the cost of contract calls.
+- **A systematic benchmark of contract calls or precompiles.** The benchmark blocks are plain transfers. The demo records ERC-20 transfers, an approval, and calls to the gateway. The cost per gas depends on the mix of work, so the plain-transfer figures do not establish the cost of contract calls.
 - **Blocks above 105 Mgas**, or the benchmark's sizes with this repository's guest (the one with the chain-rules check). The benchmark used the upstream guest.
 - **More than one block in flight,** and more than one GPU. The benchmark sent one request at a time to a free GPU.
 - **Building the witness from the chain.** The benchmark's "input to proof" starts from a witness file that already exists. On this chain, building the witness on a warm machine has not been timed on its own.
 - **The sidecar's proof check run natively.** Native verification latency has not been measured. The WebAssembly build took 8 to 32 ms in Node on CI runners for verifying the proof and rejecting a mismatched header. That is not a successful full-block check or a browser measurement; see [explorer/verify/README.md](../explorer/verify/README.md).
-- **Canton's commit of a large block.** The commits above are for an empty block and a block with one transfer.
-- **Repeat runs of the first proof.** Each run was done once, on one machine, with one operator and one builder. There is no spread to report.
-- **The hardware of the first proof's machine beyond the GPU and driver** (CPU model, RAM, operating system), and which Node it used.
+- **Canton's commit of a large block.** The commits above are for an empty block and blocks of one to three transactions, with at most one leg.
+- **Repeat runs on this chain.** Each run was done once, on one machine, with one operator and one builder. There is no spread to report.
+- **The rest of the runs' machine.** Its CPU model, RAM, operating system and Node version were not recorded; only the GPU and driver were.
 - **ZisK's hints build.** The build did not complete, so no performance measurements are available. The cause has not been established.
 - **Another machine or user building the guest.** Whether they get the same ELF is only confirmed by reproducing the recorded programVK there.
