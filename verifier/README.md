@@ -31,4 +31,4 @@ cd verifier             # from the repository root
 cargo test
 ```
 
-Originally written by Rome Protocol.
+Copyright 2026 Rome Protocol. Licensed under the Apache License 2.0.

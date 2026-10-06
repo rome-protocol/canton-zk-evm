@@ -3,7 +3,7 @@ name = "zk-sidecar"
 description = "The service Canton calls through its external-call extension: checks a proven block, and that the Canton legs attached to a block are the ones the gateway contract recorded in it."
 version = "0.1.0"
 edition = "2021"
-license-file = "../LICENSE"
+license = "Apache-2.0"
 publish = false
 
 [features]

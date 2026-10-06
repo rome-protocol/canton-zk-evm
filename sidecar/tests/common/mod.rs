@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Shared by the test files: the stored test data, and small helpers.
 //!
 //! The stored data in `tests/fixtures/` came from this project's own reth (see

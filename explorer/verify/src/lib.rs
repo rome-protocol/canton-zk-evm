@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The sidecar's block check, for a browser.
 //!
 //! `zk_sidecar::verify` is the one function each confirmer's sidecar runs on a block. This crate
@@ -7,8 +9,6 @@
 //! The caller copies its input into the module's memory with `alloc`, calls `verify_block`, reads
 //! the answer's length from the result and its bytes from `answer_ptr`, and gives its input back
 //! with `dealloc`. The answer stays where it is until the next call.
-//!
-//! Originally written by Rome Protocol.
 
 use std::cell::RefCell;
 use zk_sidecar::{verify, Config};

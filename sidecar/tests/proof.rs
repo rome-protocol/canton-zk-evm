@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The proof half of `verify`, on real proofs: the session's proof of block 1 of our chain, and the
 //! verifier crate's six.
 

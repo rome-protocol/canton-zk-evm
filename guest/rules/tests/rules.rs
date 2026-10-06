@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 use alloy_genesis::ChainConfig;
 use cze_rules::{canonical_encoding, chain_config, check, rules_hash, CHAIN_ID};
 use serde::{Deserialize, Serialize};

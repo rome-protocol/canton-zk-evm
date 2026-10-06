@@ -3,7 +3,7 @@ name = "zk-verifier"
 description = "Checks the wrapped ZisK proof (a PLONK proof over BN254) in plain Rust."
 version = "0.1.0"
 edition = "2021"
-license-file = "../LICENSE"
+license = "Apache-2.0"
 publish = false
 
 [features]

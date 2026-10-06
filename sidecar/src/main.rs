@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! `zk-sidecar --program-vk <64 hex digits> --root-c <64 hex digits> [--listen 127.0.0.1:8085]`
-//!
-//! Originally written by Rome Protocol.
 
 use zk_sidecar::{http, unhex, Config};
 

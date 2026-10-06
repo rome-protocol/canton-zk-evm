@@ -4,7 +4,7 @@ The EVM program that gets proven: a stateless reth block validator for the ZisK 
 
 ## Where it comes from
 
-This is a copy of part of [zisk-eth-client](https://github.com/0xPolygonHermez/zisk-eth-client), tag `v0.13.1` (commit `edf8adcda75c015f4225abe3aabb3bed03e21beb`, the one in `PINS`). Upstream's code here is licensed under Apache-2.0 or MIT, at your option; the two licence files, `LICENSE-APACHE` and `LICENSE-MIT`, are upstream's and stay with the code. `rules/`, `fixtures/`, this README and the two changes marked `canton-zk-evm change` are Rome Protocol's, under the repository's [LICENSE](../LICENSE); see [NOTICE](../NOTICE).
+This is a copy of part of [zisk-eth-client](https://github.com/0xPolygonHermez/zisk-eth-client), tag `v0.13.1` (commit `edf8adcda75c015f4225abe3aabb3bed03e21beb`, the one in `PINS`). Upstream's code here is licensed under Apache-2.0 or MIT, at your option; the two licence files, `LICENSE-APACHE` and `LICENSE-MIT`, are upstream's and stay with the code. `rules/`, `fixtures/`, this README, the trimmed `Cargo.toml`, the two changes marked `canton-zk-evm change` and the two added lockfile entries are Rome Protocol's, under the repository's [LICENSE](../LICENSE); see [NOTICE](../NOTICE).
 
 Only what is needed to build the reth guest is here:
 
@@ -20,7 +20,9 @@ Only what is needed to build the reth guest is here:
 The chain-rules check has two marked changes, each labelled `canton-zk-evm change` in the code:
 
 - `crates/clients/reth/guest/src/run.rs` calls `cze_rules::check` right after it reads the chain config from the input, and the guest stops with an error if the config is not this chain's.
-- `crates/clients/reth/guest/Cargo.toml` adds the `cze-rules` dependency, and `bin/guests/stateless-validator-reth/Cargo.lock` has the matching two entries.
+- `crates/clients/reth/guest/Cargo.toml` adds the `cze-rules` dependency.
+
+The lockfile `bin/guests/stateless-validator-reth/Cargo.lock` is changed too: it has two entries that upstream's does not, the `cze-rules` package and the `cze-rules` line in the reth guest's dependencies. The file carries no marking of its own; this README and [NOTICE](../NOTICE) record the change.
 
 Upstream's guest accepts the chain config supplied in the input. This guest accepts only chain id 770101 with every fork from genesis up to Prague, the `config` of `network/genesis.json`. The check is part of the program, so the programVK identifies a program that rejects blocks under any other rules.
 

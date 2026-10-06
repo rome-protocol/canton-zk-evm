@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The real proofs: three test blocks proven with ZisK 1.2.0 and the same three with ZisK 1.3.1.
 //! Each release has its own verifying key, so a proof is accepted under its own key and refused
 //! under the other release's key.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Builds the prover input for one block.
 //!
 //! Usage: cze-make-input <block.json> <witness.json> <genesis.json> <out.bin>

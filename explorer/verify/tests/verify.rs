@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The crate answers exactly as the sidecar's `verify` does, on the recorded session proof (a real
 //! proof of block 1 of a throwaway copy of the chain) and on blocks that do not belong to it. The
 //! last test goes through the exported functions the browser calls.

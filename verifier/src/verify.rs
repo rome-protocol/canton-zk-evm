@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The verification computation: validate the input, rebuild the transcript, then the PLONK checks and
 //! one pairing.
-//!
-//! Originally written by Rome Protocol.
 
 use crate::field::Fr;
 use crate::g1::{self, G1};

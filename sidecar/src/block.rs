@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The block half of `verify`: a header and a transaction list against the hash a proof commits to.
-//!
-//! Originally written by Rome Protocol.
 
 use crate::{keccak, rlp, trie};
 

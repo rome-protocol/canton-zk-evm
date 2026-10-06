@@ -43,7 +43,7 @@ done
 [[ $GATEWAY_ADDRESS > 0x0000000000000000000000000000000000ffffff ]] || fail "GATEWAY_ADDRESS is in the range of the precompiles"
 [ "$(jq --arg a "$GATEWAY_ADDRESS" '.alloc | has($a)' "$ROOT/network/genesis.json")" = false ] || fail "network/genesis.json holds the gateway: it belongs in each run's genesis, not in this file"
 GW=$ROOT/gateway/Gateway.sol
-head -n 2 "$GW" | grep -q '^// SPDX-License-Identifier: LicenseRef-Rome-Protocol$' || fail "gateway/Gateway.sol does not carry the Rome Protocol licence identifier"
+head -n 2 "$GW" | grep -q '^// SPDX-License-Identifier: Apache-2.0$' || fail "gateway/Gateway.sol does not carry the Apache-2.0 licence identifier"
 grep -q "pragma solidity $SOLC_VERSION;" "$GW" || fail "gateway/Gateway.sol does not pin solc $SOLC_VERSION"
 [[ ${SOLC_IMAGE:-} =~ @sha256:[0-9a-f]{64}$ ]] || fail "SOLC_IMAGE is not pinned by digest"
 # The storage layout is part of the contract's interface: the sidecar reads legs[n] at slot 0. These four come first, in this order.
@@ -82,16 +82,18 @@ grep -q 'network/reth/stop.sh' <<<"$cap_code" || fail "sidecar/tests/capture_fix
 [ "$(jq '[.alloc[] | select((.balance // "0x0") != "0x0")] | length' "$ROOT/network/genesis.json")" = 0 ] || fail "genesis funds an account"
 # A rough guard only: it looks for the word "private" and cannot tell a key from other text.
 ! grep -qi 'private' "$ROOT/network/genesis.json" || fail "genesis mentions a private key"
-# Our code is under the repository's LICENSE: each of our crates points at that file, and none claims another licence.
+# Our code is under the Apache License 2.0 (the repository's LICENSE): each of our crates says so, and none points at another licence.
 # (guest/ keeps upstream's own licence files; NOTICE lists them.)
-for toml in sidecar verifier mpt guest/rules prover/make-input; do
-  grep -q '^license-file = "\(\.\./\)*LICENSE"$' "$ROOT/$toml/Cargo.toml" || fail "$toml/Cargo.toml does not point at the repository's LICENSE"
-  [ -f "$ROOT/$toml/$(sed -n 's/^license-file = "\(.*\)"$/\1/p' "$ROOT/$toml/Cargo.toml")" ] || fail "$toml/Cargo.toml's license-file is not a file"
-  ! grep -q '^license *= ' "$ROOT/$toml/Cargo.toml" || fail "$toml/Cargo.toml names a licence of its own"
+for toml in sidecar verifier mpt guest/rules prover/make-input explorer/verify; do
+  grep -q '^license = "Apache-2.0"$' "$ROOT/$toml/Cargo.toml" || fail "$toml/Cargo.toml does not say license = \"Apache-2.0\""
+  ! grep -q '^license-file *= ' "$ROOT/$toml/Cargo.toml" || fail "$toml/Cargo.toml still points at a licence file"
 done
-head -n 2 "$ROOT/demo/TKA.sol" | grep -q '^// SPDX-License-Identifier: LicenseRef-Rome-Protocol$' || fail "demo/TKA.sol does not carry the Rome Protocol licence identifier"
-# The explorer is private to this repository's licence, and every dependency is pinned to one exact version (the lockfile pins the rest).
-[ "$(jq -r .license "$ROOT/explorer/package.json")" = "SEE LICENSE IN LICENSE" ] || fail "explorer/package.json does not point at the repository's LICENSE"
+head -n 2 "$ROOT/demo/TKA.sol" | grep -q '^// SPDX-License-Identifier: Apache-2.0$' || fail "demo/TKA.sol does not carry the Apache-2.0 licence identifier"
+# LICENSE is the Apache License 2.0 text, unchanged (the SHA-256 of the file the Apache Software Foundation publishes).
+if command -v sha256sum >/dev/null; then lic_sha=$(sha256sum "$ROOT/LICENSE" | cut -d' ' -f1); else lic_sha=$(shasum -a 256 "$ROOT/LICENSE" | cut -d' ' -f1); fi
+[ "$lic_sha" = cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30 ] || fail "LICENSE is not the Apache License 2.0 text"
+# The explorer carries the same licence, and every dependency is pinned to one exact version (the lockfile pins the rest).
+[ "$(jq -r .license "$ROOT/explorer/package.json")" = "Apache-2.0" ] || fail "explorer/package.json does not say Apache-2.0"
 [ "$(jq .private "$ROOT/explorer/package.json")" = true ] || fail "explorer/package.json is not private"
 [ "$(jq '[.dependencies, .devDependencies | to_entries[] | select(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)] | length' "$ROOT/explorer/package.json")" = 0 ] || fail "an explorer dependency is not pinned to one exact version"
 echo "static checks passed"

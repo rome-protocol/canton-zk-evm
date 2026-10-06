@@ -2,7 +2,7 @@
   "name": "canton-zk-evm-explorer",
   "version": "0.1.0",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "description": "A block explorer and faucet for Ostia, a Canton zkEVM.",
   "type": "module",
   "engines": {

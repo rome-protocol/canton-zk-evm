@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! A small, bounded RLP decoder: this crate's own, not `alloy-rlp`.
-//!
-//! Originally written by Rome Protocol.
 //!
 //! **Why not `alloy-rlp`:** the contract this crate needs is bound-first. Every trie node the verifier
 //! looks at has already been checked against [`crate::MAX_NODE_BYTES`] and [`crate::MAX_NODES`] before a

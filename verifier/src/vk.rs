@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The verifying key of ZisK's final PLONK wrapping circuit for release 1.3.1, and the curve and
 //! circuit constants every release shares. The key is read from ZisK's own generated
 //! `PlonkVerifier.sol`. The 1.2.0 key is here too, but only for the tests; the shared constants are
 //! identical in both releases' files.
-//!
-//! Originally written by Rome Protocol.
 
 /// Parses a hex string (no prefix) into bytes, at compile time.
 const fn hex<const N: usize>(s: &str) -> [u8; N] {

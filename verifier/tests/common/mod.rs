@@ -1,5 +1,5 @@
-//! Originally written by Rome Protocol.
-//!
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Shared by the test files: the proof fixtures, and plain big-number arithmetic on 32-byte
 //! words. The arithmetic is slow on purpose and shares no code with the crate or with arkworks, so
 //! the tests can work out for themselves what a changed proof should give.

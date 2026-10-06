@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Just enough RLP: read one item or one list, and write strings and lists.
 //!
 //! A block header and a transaction list must be written in canonical RLP: `is_canonical` reads an
 //! item and writes it again, and accepts it only if the result is the same bytes.
-//!
-//! Originally written by Rome Protocol.
 
 /// One RLP item: its whole encoding, its payload, and whether it is a list.
 pub struct Item<'a> {

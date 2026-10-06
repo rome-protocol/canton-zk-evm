@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The tests: real `eth_getProof` answers from a local node (`fixtures/`), hand-built tries for the
 //! shapes real nodes rarely produce, and one proof taken from the project's own reth in CI.
-//!
-//! Originally written by Rome Protocol.
 
 use super::*;
 use serde::Deserialize;

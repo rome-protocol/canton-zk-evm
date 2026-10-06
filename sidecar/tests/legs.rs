@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! `legs`: whether the legs attached to `Advance` are exactly the ones a block recorded in the gateway,
 //! on the gateway's real proofs from our reth, on states written out by hand, and the refusals.
 

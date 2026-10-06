@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Rome-Protocol
-// The licence is the LICENSE file at the root of this repository.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 pragma solidity 0.8.28;
 
 // TKA, the test token of the demo: a plain ERC-20 whose whole supply goes to one holder when it is deployed.

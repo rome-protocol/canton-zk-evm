@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: LicenseRef-Rome-Protocol
-// The licence is the LICENSE file at the root of this repository.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 pragma solidity 0.8.28;
 
 // Four tokens that are not the gateway's own wrapped tokens, for the gateway's tests only. They are compiled by run.sh and deployed by check.py.

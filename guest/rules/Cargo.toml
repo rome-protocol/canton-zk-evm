@@ -3,7 +3,7 @@ name = "cze-rules"
 description = "The chain settings the guest is built for, and the rules hash that stands for them."
 version = "0.1.0"
 edition = "2021"
-license-file = "../../LICENSE"
+license = "Apache-2.0"
 publish = false
 
 # Its own workspace, so that it can be built and tested on its own, without the guest's

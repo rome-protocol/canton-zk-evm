@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The block half of `verify`: the header and the transactions against the hash the proof commits
 //! to, on a real block from our reth, and the transactions root against an independent
 //! implementation.

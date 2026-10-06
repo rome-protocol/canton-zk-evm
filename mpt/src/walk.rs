@@ -1,10 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The trie walk shared by [`crate::verify_account`] and [`crate::verify_storage`]: follow `nodes` from
 //! `root` down to `key_nibbles`, verifying every hash-referenced node's own keccak against the reference
 //! that led to it before ever looking inside it, and following an embedded (inline) child directly by its
 //! own bytes with no hash check at all — its integrity is already covered by its parent's own hash, which
 //! *was* checked, exactly as the Yellow Paper's rule intends.
-//!
-//! Originally written by Rome Protocol.
 
 use crate::nibbles::decode_compact_path;
 use crate::rlp::{decode_top_level_list, Item};

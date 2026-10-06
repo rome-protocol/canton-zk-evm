@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Prime-field arithmetic for the BN254 scalar field, in Montgomery form on four 64-bit limbs. The
 //! modulus is below 2^254, which lets the multiplication skip the extra carry word. Every operation
 //! keeps its result fully reduced, so equality is limb equality.
-//!
-//! Originally written by Rome Protocol.
 
 pub type Limbs = [u64; 4];
 

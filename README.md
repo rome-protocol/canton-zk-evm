@@ -71,4 +71,10 @@ Settings such as ports and the state folder come from environment variables; see
 
 ## Licence
 
-Copyright © 2026 Coin Vesting Inc. d/b/a Rome Protocol. All rights reserved. See [LICENSE](LICENSE): personal, non-commercial use only; any commercial use needs Rome Protocol's written permission. Third-party parts keep their own licences; [NOTICE](NOTICE) lists them.
+Ostia is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Rome Protocol. [NOTICE](NOTICE) lists the third-party parts, which keep their own licences.
+
+Rome, Rome Protocol and Ostia, and the Rome logo, are trademarks of Rome Protocol. The licence grants no right to use them.
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) says how to build and test, how to sign your commits (we use the Developer Certificate of Origin) and how pull requests are reviewed. Please read the [Code of Conduct](CODE_OF_CONDUCT.md). To report a security problem, follow [SECURITY.md](SECURITY.md).

@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The root of an Ethereum "ordered" trie: the one the transactions root is. The key of item `i` is
 //! the RLP of `i`; the value is the item's bytes.
-//!
-//! Originally written by Rome Protocol.
 
 use crate::{keccak, rlp};
 

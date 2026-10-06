@@ -1,5 +1,5 @@
-//! Originally written by Rome Protocol.
-//!
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Inputs the verifier must refuse, and what each one must give. Every test changes block 14's
 //! ZisK 1.3.1 proof and checks the answer against the rule the change breaks:
 //!

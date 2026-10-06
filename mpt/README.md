@@ -14,4 +14,4 @@ cargo test
 
 `fixtures/README.md` says where the test data comes from. One more test takes a real proof from this project's own reth; CI runs it (see `tests/capture_proof.sh` and `.github/workflows/verifier.yml`).
 
-Originally written by Rome Protocol.
+Copyright 2026 Rome Protocol. Licensed under the Apache License 2.0.

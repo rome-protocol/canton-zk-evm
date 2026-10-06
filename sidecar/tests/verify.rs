@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! `verify` as a whole: the proof half (real proofs) and the block half (a real block) together,
 //! and the answer's format.
 

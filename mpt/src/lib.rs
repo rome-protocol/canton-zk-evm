@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! A bounded Ethereum Merkle-Patricia (MPT) proof checker. [`verify_account`] proves an account's fields
 //! against a state root; [`verify_storage`] proves a storage slot's value, or that the slot was never
 //! written, against an account's storage root. Both take the node lists that `eth_getProof` returns.
-//!
-//! Originally written by Rome Protocol.
 //!
 //! ## What this crate does not check
 //! It assumes the state root (or storage root) is one the caller already trusts. It only proves that

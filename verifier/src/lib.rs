@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Checks the wrapped ZisK proof: a PLONK proof over BN254, in plain Rust.
 //!
 //! The input is 1,344 bytes: the proof (768), the program key (32), the root of the final
@@ -6,8 +8,6 @@
 //!
 //! Each ZisK release has its own verifying key (see [`vk`]), so the caller says which release a
 //! proof must come from by choosing the key.
-//!
-//! Originally written by Rome Protocol.
 
 use field::Fr;
 use sha2::{Digest, Sha256};

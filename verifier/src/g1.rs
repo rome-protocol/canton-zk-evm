@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! G1 points as 64-byte big-endian `x || y` strings, and the three curve operations the check needs
 //! (add, multiply, pairing), done with arkworks. The all-zero string is the point at infinity.
-//!
-//! Originally written by Rome Protocol.
 
 use crate::field::{geq, limbs_from_be, limbs_to_be, sub_raw, Limbs};
 use crate::Error;

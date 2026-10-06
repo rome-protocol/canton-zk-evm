@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Canton's HTTP contract for an external-call service: `GET /api/v1/version` answers JSON, and
 //! `POST /api/v1/external-call` takes the function in the `X-Daml-External-Function-Id` header and
 //! the hex of the input line as its body, and answers the hex of the answer line.
-//!
-//! Originally written by Rome Protocol.
 
 use crate::{hex, legs, unhex, verify, Config};
 use std::io::Read;

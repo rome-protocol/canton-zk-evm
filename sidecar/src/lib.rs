@@ -1,10 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The service Canton calls through its external-call extension, one beside each confirming
 //! participant. Two functions, each a pure function of its input line (no state, no network, no
 //! clock): `verify` checks a proven block, `legs` checks that the Canton legs attached to a block are
 //! exactly the ones the block recorded in the gateway contract. The lines and the answers are those
 //! of `daml/README.md`.
-//!
-//! Originally written by Rome Protocol.
 
 pub mod block;
 pub mod http;

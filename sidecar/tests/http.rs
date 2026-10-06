@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! The HTTP side: Canton's contract, over a real socket.
 
 mod common;

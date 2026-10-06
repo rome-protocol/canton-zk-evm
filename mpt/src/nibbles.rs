@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Rome Protocol
 //! Nibble-path helpers: turning a 32-byte trie key into its 64 nibbles, and decoding the hex-prefix
 //! ("compact") encoding a leaf/extension node's path is stored in (Yellow Paper appendix D).
-//!
-//! Originally written by Rome Protocol.
 
 /// Splits `bytes` into big-endian nibbles, high nibble first per byte (a 32-byte key becomes 64 nibbles —
 /// every Ethereum state/storage trie key is `keccak256(...)`, always 32 bytes).

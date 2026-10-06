@@ -94,4 +94,4 @@ Canonical encoding: `verify` reads the header and the transaction list, writes t
 
 The header and transactions of block 1, which the recorded proof covers, were not saved. The proof and block checks in `verify` are therefore tested separately: real proofs for the proof check, and a real block from this project's reth for the block check. A combined test uses the stand-in proof above with a proof check that accepts anything. This replacement requires the `test-proof-check` cargo feature, enabled by the crate's own dev-dependency. The program is built without that feature. It always checks proofs with ZisK 1.3.1, and that check cannot be replaced.
 
-Originally written by Rome Protocol.
+Copyright 2026 Rome Protocol. Licensed under the Apache License 2.0.
