@@ -34,7 +34,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` | `PINS` |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
-| Canton | 3.6.0-snapshot.20260930.20337.0.ve610bc8f (a snapshot; no release has the external call yet) | `PINS` |
+| Canton | 3.6.0-snapshot.20260930.20337.0.ve610bc8f (a snapshot, pinned before Canton 3.6.1, the first release with the external call, came out on 2026-10-05) | `PINS` |
 | Daml SDK | 3.5.13-snapshot.20261001.145.0.v852bdd82, from the weekly snapshot `weekly-snapshot-3.6.0-snapshot.20261001` | `PINS` |
 | Daml compiler | 3.6.0-snapshot.20260915.14804.0.v53478765, building to Daml-LF 2.4 | `PINS` |
 | Daml SDK (Daml Script tests) | 3.5.12, building the stub form to Daml-LF 2.1 | `daml/daml.yaml`; `.github/workflows/daml.yml` |

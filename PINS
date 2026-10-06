@@ -19,8 +19,9 @@ EXPLORER_NODE_IMAGE=public.ecr.aws/docker/library/node@sha256:ebfe2f90462722a7a4
 # The explorer's image builds the Verify check for WebAssembly with the toolchain rust-toolchain.toml pins (Rust 1.94.1): this is rust:1.94.1-slim,
 # pinned by digest (the multi-arch index). tests/demo_explorer_static.sh checks that its version is the one rust-toolchain.toml names.
 EXPLORER_RUST_IMAGE=public.ecr.aws/docker/library/rust:1.94.1-slim@sha256:cf09adf8c3ebaba10779e5c23ff7fe4df4cccdab8a91f199b0c142c53fef3e1a
-# Canton with the external call, and the Daml compiler that can call it. No release has it yet (the latest, 3.5, does
-# not), so these are Digital Asset's own published 3.6 snapshots from its public registry. DPM_REGISTRY is where they
+# Canton with the external call, and the Daml compiler that can call it. These were pinned before any release had it
+# (open-source Canton 3.6.1, released 2026-10-05, is the first), so they are Digital Asset's own published 3.6 snapshots
+# from its public registry. DPM_REGISTRY is where they
 # are; DAML_SDK_TAG is the weekly snapshot that names the set of components. network/canton/fetch.sh checks every
 # SHA-256 below. The jar is one file for every platform; the SDK manifest lists the exact version of each component.
 DPM_REGISTRY=europe-docker.pkg.dev/da-images/public-unstable
