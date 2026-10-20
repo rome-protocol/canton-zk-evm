@@ -7,11 +7,14 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `genesis.json`, `make-state.sh` | The chain's genesis, and the per-run state (the Engine secret, and the genesis that reth reads: the chain's genesis, or the one `CZE_GENESIS_FILE` names, plus the gateway contract from `gateway/` at `GATEWAY_ADDRESS`) |
 | `reth/` | `launch.sh` is the only way reth is started. Peer discovery is always off. `check.sh` proves it is off, `stop.sh` stops it |
 | `canton/canton.conf` | One synchronizer and three participants, all in memory, all on localhost |
+| `canton/canton-persistent.conf`, `postgres.sh` | The persistent mode: the same nodes in PostgreSQL, and the database that holds them (see [Keeping the chain across restarts](#keeping-the-chain-across-restarts)) |
 | `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties (the gateway party among them) and Ledger API users, uploads and vets the Daml package |
+| `canton/run.sh`, `canton/resume.canton` | Start Canton and wait until it is ready: `run.sh bootstrap` runs `bootstrap.canton`, and `run.sh resume` (persistent mode only) starts the nodes on the databases they kept and runs `resume.canton`, which creates nothing |
 | `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
 | `canton/fetch.sh`, `canton/fetch-jar.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
-| `up.sh`, `down.sh` | Start and stop everything |
+| `up.sh`, `down.sh`, `persist-settings.sh` | Start and stop everything. `down.sh` keeps a persistent chain's data, and `down.sh --wipe` removes it, says "wiped" only when the database and reth's data are really gone, and otherwise says what is left and exits with an error (`persist.env` stays, so it can be run again) |
+| `restart.sh`, `sync_reth.py` | Bring a persistent chain back after a restart, and make reth's head Canton's head |
 | `smoke.sh`, `prove-timed.sh` | The smoke test, and the prover command it hands the builder (it keeps the prover's output so the proof time can be read) |
 
 ## The Canton network
@@ -24,7 +27,7 @@ One synchronizer (a sequencer and a mediator) and three participants:
 | `confirmer` | the confirmer | yes, on 8086 |
 | `users` | U, V, the test token's registry and the reader | none |
 
-The Daml package calls the extension `canton-zk-evm` (`DA.ExternalCall`). Each confirming participant sends that extension to its own sidecar: the operator's to 8085, the confirmer's to 8086. The users participant has no extension, because it is never asked to run the call: it only receives the block record, as an observer. Everything is in memory, so a restart is a new network, and everything listens on 127.0.0.1. The network runs without Ledger API authentication; it is for one machine and one run.
+The Daml package calls the extension `canton-zk-evm` (`DA.ExternalCall`). Each confirming participant sends that extension to its own sidecar: the operator's to 8085, the confirmer's to 8086. The users participant has no extension, because it is never asked to run the call: it only receives the block record, as an observer. By default everything is in memory, so a restart is a new network (with `CZE_PERSIST=1` it is not: see below), and everything listens on 127.0.0.1. The network runs without Ledger API authentication; it is for one machine and one run.
 
 The gateway is the party that holds the Canton tokens that are locked for their wrapped forms on the EVM. It lives on the operator's participant, and the operator's Ledger API user acts as both the operator and the gateway, because the two sign the chain and each token's registration together. The builder reads as the operator and the gateway and acts as neither. The custody is therefore only as safe as that participant: whoever runs it can move what the gateway holds. That is acceptable for a local network where we run every party, and it is not for anything of value.
 
@@ -62,6 +65,36 @@ For a source export without `.git`, set `CZE_SOURCE_COMMIT` to the full hash of 
 
 `up.sh` also builds the guest. ZisK's root key, the chain rules' hash and the program key (`programVK`) must all be the ones recorded in `prover/fixtures/session.txt`, or it stops before it starts anything, and says which key it built and which is recorded. The sidecars and the chain are pinned to that key. The program key is that of the ELF. The guest build does not depend on the folder it is run from (`prover/build-guest.sh`; two fresh checkouts gave the same key on real ZisK on 2026-10-04, see `guest/README.md`), but that was shown for one machine and one user, so a build that gives another key is refused rather than run. The chain is proposed with genesis = reth's block 0: its hash and its state root, which is the parent state of the first block.
 
+## Keeping the chain across restarts
+
+A chain that people use must come back with its history after a process crash, a reboot, or a machine that was stopped and started. By default `up.sh` makes a new chain on every run, so nothing survives. With `CZE_PERSIST=1` the chain is kept:
+
+```sh
+CZE_PERSIST=1 network/up.sh          # the first start: a new chain, kept
+network/down.sh                      # stops everything and keeps the data
+network/restart.sh                   # after a reboot: the same chain comes back
+network/down.sh --wipe               # stops everything and removes the chain for good
+```
+
+What persistent mode changes, and what it does not:
+
+- **Canton** keeps the synchronizer, the sequencer, the mediator and the three participants in PostgreSQL, one database each (`canton/canton-persistent.conf`, added as a second `-c`). The ZkChain contract, every block record and every Canton holding are in those databases. The Daml package, the parties and the Ledger API users are too.
+- **The database** is one PostgreSQL, started by `postgres.sh`. Its image is pinned by digest in `PINS` (`POSTGRES_IMAGE`). It listens on 127.0.0.1 only (port 5432, or `CZE_PG_PORT`), and its data is in the Docker volume `cze-postgres-data`. Its password is made on the machine, once, into `$CZE_STATE_DIR/postgres.env` (mode 0600). It is never printed and never committed. Docker reads it from that file, and Canton gets it through its environment.
+- **reth** keeps its data in `$CZE_STATE_DIR/reth-data` instead of the Docker volume that a normal stop removes. It also writes every block to disk as soon as it imports it (`--engine.persistence-threshold 0` and `--engine.memory-block-buffer-target 0`, which `launch.sh` requires in this mode). reth's default keeps the newest seven blocks in memory, and a hard kill, an out-of-memory kill or a power loss would then leave it behind Canton, which has already committed those blocks. The builder imports a block about 7 s before Canton commits it, so this costs no block time. `reth/launch.sh` is still the only way reth is started: peer discovery is off, there are no peers and no published p2p port, and every check in `launch.sh` and `check.sh` runs on a restart as on the first start.
+- **The Engine secret and the genesis** stay in `$CZE_STATE_DIR` (`jwt.hex`, `genesis.json`), and a restart reuses them. `persist.env` there records the Canton version, the chain id, and the names and ports of the database container and of reth's container (`persist-settings.sh`). `restart.sh` and `down.sh` use those, so they act on the same containers as the run that made the chain, and refuse an environment variable that names another. It marks the folder as a persistent chain: `up.sh` will not start a new chain over it, with or without `CZE_PERSIST`.
+
+`restart.sh` starts, in this order: the database, reth on its data, both sidecars (Canton asks them when it starts), the prover, and Canton (`run.sh resume`). It proposes no chain, makes no secret, builds no guest and does not run `bootstrap.canton` again. It stops if there is no persistent state (it says what is missing and how to start a chain), if the databases were made by another Canton version than the one in `PINS`, or if a service is still running. When Canton is back it checks that the DAR's package is on the operator's participant, and then makes reth's head, safe and finalized block Canton's head, which is what the builder does before it builds (`sync_reth.py`), and prints the head:
+
+| reth after the restart | What happens |
+|---|---|
+| on Canton's head | nothing moves |
+| ahead of Canton (it built a block that Canton never committed, usually because the stop came while a block was being proved) | reth is moved back to Canton's head and the block is dropped, but its transactions are not: they are read first and sent to reth again afterwards, and `restart.sh` prints how many (`dropped_transactions`, `resent_transactions`). One that reth refuses, because its nonce is used already, is skipped |
+| behind Canton (Canton committed a block that reth lost) | an error. reth cannot build the next block from data that lacks Canton's head, so this stops with both heads named. A graceful stop writes everything out, and so does a crash of reth in this mode, so this means reth's folder is older than the chain's (a restored backup of the folder, say) |
+
+The chain's history is as safe as the machine's disk. Back up the databases (`pg_dump` of the five) and `$CZE_STATE_DIR/reth-data` together, taken while the network is stopped, if you need a copy.
+
+`tests/canton_persist.sh` runs this on the real Canton: one Advance, then Canton killed (`kill -9`) and the database stopped, both started again the way `restart.sh` does, and the chain must be the same contract at the same head with the same block hash, with the block record still visible to the reader, the party list unchanged, and no second bootstrap.
+
 ## The smoke test
 
 `smoke.sh` runs the builder once, with no transactions in the pool. It checks that
@@ -81,6 +114,8 @@ The Canton side is tested without a GPU:
 tests/network_static.sh      # reth only through launch.sh; the extension only on the two confirming participants; the recorded smoke result
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
 python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
+tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
+tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
 ```
 
@@ -89,5 +124,5 @@ tests/canton_network.sh      # the pinned Canton, the real Daml package, a regis
 ## Not here
 
 - Blocks with transactions and legs (a deposit, a payment and a withdrawal), a refused submission and a tampered proof are covered by [demo/](../demo/README.md), which runs on this network. The smoke test here is one empty block.
-- Persistence. Everything restarts from nothing.
+- Persistence is optional (`CZE_PERSIST=1`, above); without it everything restarts from nothing. There is no replication: one machine, one copy of the data.
 - Authentication, TLS and more than one machine.

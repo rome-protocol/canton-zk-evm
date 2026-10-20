@@ -1,0 +1,26 @@
+// Brings a persistent Canton network back (CZE_PERSIST=1, network/restart.sh): starts the nodes on the databases they kept, and checks that
+// every participant is connected to the synchronizer again. It creates nothing: the parties, the Ledger API users, the Daml package and
+// the chain are in the databases already, and bootstrap.canton is not run a second time. Stops with an error if a participant does not
+// reconnect, or if the party list that bootstrap.canton wrote is gone.
+
+val stateDir = sys.env.getOrElse("CZE_STATE_DIR", "state")
+val partiesFile = java.nio.file.Path.of(stateDir, "canton", "parties.env")
+if (!java.nio.file.Files.exists(partiesFile)) sys.error(s"$partiesFile is missing: this is not a network that bootstrap.canton made")
+
+nodes.local.start()
+
+// A participant reconnects to its synchronizer by itself after it starts; give it a minute, then ask once.
+Seq(operator, confirmer, users).foreach { p =>
+  var waited = 0
+  while (p.synchronizers.list_connected().isEmpty && waited < 60) { Thread.sleep(1000); waited += 1 }
+  if (p.synchronizers.list_connected().isEmpty) p.synchronizers.reconnect_all()
+  if (p.synchronizers.list_connected().isEmpty) sys.error(s"${p.name} is not connected to the synchronizer")
+}
+// The Ledger API users that bootstrap.canton made are still there. Canton makes its own built-in user on every participant, so a list that is
+// not empty proves nothing: the named users do (a participant on an empty database has none of them).
+Seq((operator, Seq("operator", "builder")), (confirmer, Seq("confirmer")), (users, Seq("u", "v", "registry", "reader"))).foreach { case (p, names) =>
+  val have = p.ledger_api.users.list().users.map(_.id).toSet
+  val gone = names.filterNot(have.contains)
+  if (gone.nonEmpty) sys.error(s"${p.name} has no Ledger API user ${gone.mkString(", ")}: its database is not the one the chain was made in")
+}
+println("RESUME DONE")

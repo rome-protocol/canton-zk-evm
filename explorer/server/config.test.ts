@@ -36,6 +36,25 @@ describe("settings", () => {
     expect(() => load({ TRACKER_PER_SENDER: "0" })).toThrow(/TRACKER_PER_SENDER/);
   });
 
+  it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
+    expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, trustedIpHeader: null });
+    expect(load().tracker).toEqual({ file: null, max: 10000, maxBytes: 16 * 1024 * 1024, perSender: 64, maxPendingMinutes: 60 });
+    for (const off of ["", "0"]) expect(load({ PUBLIC_RPC: off }).publicRpc.on).toBe(false);
+    expect(load({ PUBLIC_RPC: "1" }).publicRpc.on).toBe(true);
+  });
+
+  it("takes the public RPC's settings and the tracker's from the environment, and names a wrong one", () => {
+    const c = load({ PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "60", TRUSTED_IP_HEADER: "X-Real-IP", TRACKER_FILE: "/data/tracker.json", TRACKER_MAX: "50", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "3", TRACKER_MAX_PENDING_MINUTES: "15" });
+    expect(c.publicRpc).toEqual({ on: true, ratePerMinute: 60, trustedIpHeader: "x-real-ip" });
+    expect(c.tracker).toEqual({ file: "/data/tracker.json", max: 50, maxBytes: 4096, perSender: 3, maxPendingMinutes: 15 });
+    expect(() => load({ PUBLIC_RPC: "yes" })).toThrow(/PUBLIC_RPC/);
+    expect(() => load({ RPC_RATE_PER_MINUTE: "0" })).toThrow(/RPC_RATE_PER_MINUTE/);
+    expect(() => load({ TRUSTED_IP_HEADER: "bad header" })).toThrow(/TRUSTED_IP_HEADER/);
+    expect(() => load({ TRACKER_MAX: "2" })).toThrow(/TRACKER_MAX/);
+    expect(() => load({ TRACKER_MAX_BYTES: "10" })).toThrow(/TRACKER_MAX_BYTES/);
+    expect(() => load({ TRACKER_PER_SENDER: "0" })).toThrow(/TRACKER_PER_SENDER/);
+  });
+
   it("takes every setting from the environment", () => {
     const c = load({ EXPLORER_PORT: "9000", RETH_RPC_URL: "http://reth:8545/", FAUCET_KEY_FILE: "/run/faucet/key", FAUCET_AMOUNT: "0.5", READER_PARTY: "reader::1220ab", COIN_SYMBOL: "TEST" });
     expect(c).toMatchObject({ port: 9000, rethUrl: "http://reth:8545", readerParty: "reader::1220ab", coin: { symbol: "TEST" } });

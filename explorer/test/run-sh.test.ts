@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const RUN = resolve(import.meta.dirname, "../run.sh");
+// The tests job runs in the pinned Node image, which has no bash. tests/demo_explorer_static.sh runs the same checks of run.sh on the host.
+const HAS_BASH = spawnSync("bash", ["-c", "true"]).status === 0;
 let state: string;
 beforeEach(() => {
   state = mkdtempSync(join(tmpdir(), "run-sh-"));
@@ -23,10 +25,7 @@ function start(env: Record<string, string> = {}): string {
   return r.stdout.split("\n").find((l) => l.startsWith("docker run -d")) ?? "";
 }
 
-// The tests run in the pinned Node image, which has no bash. Where bash is missing the checks are skipped here, and tests/demo_explorer_static.sh runs the same dry runs on a host that has it.
-const hasBash = spawnSync("bash", ["-c", "true"]).status === 0;
-
-describe.skipIf(!hasBash)("explorer/run.sh start", () => {
+describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
   it("passes the public RPC's and the tracker's settings to the container when they are set", () => {
     const cmd = start({
       PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "120", TRUSTED_IP_HEADER: "x-real-ip", TRACKER_MAX: "500", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "8", TRACKER_MAX_PENDING_MINUTES: "30",
@@ -72,7 +71,7 @@ describe.skipIf(!hasBash)("explorer/run.sh start", () => {
   });
 });
 
-describe.skipIf(!hasBash)("explorer/run.sh stop", () => {
+describe.skipIf(!HAS_BASH)("explorer/run.sh stop", () => {
   it("lets the explorer finish (docker stop -t 30), then removes the container without -f", () => {
     const r = spawnSync("bash", [RUN, "stop"], {
       encoding: "utf8",

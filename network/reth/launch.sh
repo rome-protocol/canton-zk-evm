@@ -18,6 +18,10 @@
 #   RETH_WS_PORT       host port for the builder WS  (default: 8546)
 #   RETH_ENGINE_PORT   host port for the Engine API  (default: 8551)
 #   LAUNCH_DRY_RUN=1   print the Docker command and stop
+#   CZE_PERSIST=1      keep reth's data in $CZE_STATE_DIR/reth-data (not in a Docker volume that stop.sh removes), so the chain survives
+#                      a restart. Discovery stays off and every check below still runs.
+#   CZE_RESUME=1       with CZE_PERSIST=1: start on the genesis, the Engine secret and the data that are there already (network/restart.sh)
+#                      and make no new state; refuse if any of them is missing
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 # shellcheck disable=SC1091
@@ -53,6 +57,16 @@ RETH_ARGS=(
   --rpc.eth-proof-window 1
 )
 
+# In the persistent mode every block is written to disk as soon as it is imported. With reth's default (the newest ~7 blocks stay in
+# memory) a hard kill, an out-of-memory kill or a power loss would leave reth behind Canton, which has already committed those blocks.
+# The builder imports a block about 7 s before Canton commits it, so writing at once costs nothing in the block time.
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  RETH_ARGS+=(
+    --engine.persistence-threshold 0
+    --engine.memory-block-buffer-target 0
+  )
+fi
+
 refuse() {
   echo "refusing to start reth: $*" >&2
   exit 1
@@ -79,6 +93,27 @@ require --engine.allow-unwind-canonical-header
 require --builder.gaslimit "$GAS_CAP"
 require --rpc.eth-proof-window 1
 
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  require --engine.persistence-threshold 0
+  require --engine.memory-block-buffer-target 0
+fi
+
+# The data directory: a Docker volume that stop.sh removes, or, in the persistent mode, a folder in the state folder that stays.
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  DATA_MOUNT=$STATE/reth-data
+  if [ "${CZE_RESUME:-0}" = 1 ]; then
+    have_data=no
+    [ -d "$DATA_MOUNT" ] && [ -n "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ] && have_data=yes
+    if [ ! -s "$STATE/genesis.json" ] || [ ! -s "$STATE/jwt.hex" ] || [ "$have_data" = no ]; then
+      refuse "there is no persistent reth state in $STATE (genesis.json, jwt.hex and reth-data are needed)"
+    fi
+  else
+    [ -z "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ] || refuse "$DATA_MOUNT has data already: use network/restart.sh, or network/down.sh --wipe"
+  fi
+else
+  DATA_MOUNT=$NAME-data
+fi
+
 DOCKER_CMD=(
   docker run -d --name "$NAME" --security-opt no-new-privileges
   -p "127.0.0.1:${RETH_HTTP_PORT:-8545}:8545"
@@ -86,7 +121,7 @@ DOCKER_CMD=(
   -p "127.0.0.1:${RETH_ENGINE_PORT:-8551}:8551"
   -v "$STATE/genesis.json:/genesis.json:ro"
   -v "$STATE/jwt.hex:/jwt.hex:ro"
-  -v "$NAME-data:/data"
+  -v "$DATA_MOUNT:/data"
   "$RETH_IMAGE" "${RETH_ARGS[@]}"
 )
 
@@ -111,5 +146,10 @@ if [ "${LAUNCH_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
-CZE_STATE_DIR=$STATE "$ROOT/network/make-state.sh"
+[ "${CZE_PERSIST:-0}" != 1 ] || mkdir -p "$DATA_MOUNT"
+if [ "${CZE_PERSIST:-0}" = 1 ] && [ "${CZE_RESUME:-0}" = 1 ]; then
+  : # the genesis and the Engine secret are the ones the chain was made with
+else
+  CZE_STATE_DIR=$STATE "$ROOT/network/make-state.sh"
+fi
 "${DOCKER_CMD[@]}"

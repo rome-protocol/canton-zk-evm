@@ -2,7 +2,7 @@
 # The demo, rehearsed without a GPU: the real reth (through network/reth/launch.sh, discovery off), the real Canton with the real
 # Daml package and the real token standard, the real builder, and the real sidecar for `legs` (the gateway's storage proofs), running
 # demo/run.sh start to end: the setup block, a deposit, a payment, a withdrawal, the gap that is closed, and the block whose proof has one byte flipped.
-# What is not real: the zero-knowledge proof. The prover is a stand-in that writes one fixed proof (tests/demo_fake_prove.sh) and
+# What is not real: the zero-knowledge proof. The prover is a stand-in that writes a fixed proof that carries the block hash (tests/demo_fake_prove.sh) and
 # the `verify` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
 # sidecar does. So this checks everything except the proof check itself, which the sidecar's own tests and the GPU session cover.
 # The explorer runs beside it, from its image (explorer/run.sh), and is checked against this chain: the page of run 1's block, the Verify check
@@ -60,7 +60,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 "$ROOT/network/canton/dar-id.sh" "$CZE_DAR" > "$NET/dar.txt"
 
 echo "== the sidecars: the real one for legs, the stand-in in front of it for verify"
-VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 1344))
+VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 832))
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085
 for port in 8085 8086; do
