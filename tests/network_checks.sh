@@ -51,7 +51,8 @@ export FAKE_TARBALL=$WORK/rel.tar.gz FAKE_CURL_LOG=$WORK/jar-curl.log
 tsha=$(sha "$WORK/rel.tar.gz"); jsha=$(sha "$WORK/rel/canton-open-source-$CANTON_VERSION/lib/canton-open-source-$CANTON_VERSION.jar")
 : > "$FAKE_CURL_LOG"
 got=$(PATH="$WORK/jbin:$PATH" "$ROOT/network/canton/fetch-jar.sh" "$WORK/jar1" "$tsha" "$jsha") || fail "fetch-jar.sh refused the pinned tarball and jar"
-[ "$got" = "$WORK/jar1/canton-open-source-$CANTON_VERSION.jar" ] && [ "$(sha "$got")" = "$jsha" ] || fail "fetch-jar.sh did not print the path of the jar it took out ($got)"
+[ "$got" = "$WORK/jar1/canton-open-source-$CANTON_VERSION.jar" ] || fail "fetch-jar.sh did not print the path of the jar it took out ($got)"
+[ "$(sha "$got")" = "$jsha" ] || fail "fetch-jar.sh did not print the path of the jar it took out ($got)"
 grep -q "$CANTON_TARBALL_URL" "$FAKE_CURL_LOG" || fail "fetch-jar.sh did not download the tarball at CANTON_TARBALL_URL"
 [ "$(find "$WORK/jar1" -type f | wc -l | tr -d ' ')" = 1 ] || fail "fetch-jar.sh left files next to the jar"
 : > "$FAKE_CURL_LOG"
