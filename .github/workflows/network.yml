@@ -20,6 +20,8 @@ jobs:
       - run: tests/network_checks.sh
       - name: The proposal script, against a fake Ledger API
         run: python3 -m unittest discover -s tests -p 'test_propose.py' -v
+      - name: Moving reth to Canton's head after a restart, against a fake reth
+        run: python3 -m unittest discover -s tests -p 'test_sync_reth.py' -v
 
   # The Canton side for real: the pinned released Canton and Daml compiler (PINS), the real form of the Daml package,
   # the config and bootstrap, the chain proposal, and one Advance, against a stand-in for the sidecars.
@@ -33,3 +35,16 @@ jobs:
           java-version: "21"
       - name: Canton, the real Daml package and one Advance
         run: tests/canton_network.sh
+
+  # The persistent network for real: Canton in PostgreSQL (the pinned image), one Advance, then Canton killed and the database stopped
+  # as a reboot would, and both started again the way network/restart.sh does. The chain must be the same contract at the same head.
+  canton-persist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: The chain survives a crash of Canton and a stop of the database
+        run: tests/canton_persist.sh

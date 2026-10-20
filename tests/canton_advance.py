@@ -4,7 +4,10 @@ Usage: canton_advance.py <state dir> accepted|refused   One Advance by the build
                                                         Prints the head number after the attempt.
        canton_advance.py <state dir> gateway <address>  Checks that the chain names the gateway party and this address, and that the
                                                         gateway party sees the chain, that the builder's user may read as the gateway and not act
-                                                        as it, and that the operator's user may act as it."""
+                                                        as it, and that the operator's user may act as it.
+       canton_advance.py <state dir> head               Prints the chain's contract id, head number and head hash, and checks that the reader (on the
+                                                        participant with no sidecar) still sees the BlockRecord of block 1. The persistent-network test
+                                                        runs it before and after Canton is stopped and started again."""
 import json, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
@@ -31,6 +34,13 @@ if expect == "gateway":
     assert ("CanReadAs", gw) in b and ("CanActAs", gw) not in b, f"the builder must read as the gateway and not act as it: {b}"
     assert ("CanActAs", gw) in o, f"the operator's user cannot act as the gateway: {o}"
     print("ok")
+    sys.exit(0)
+if expect == "head":
+    reader = propose.Ledger("http://127.0.0.1:7577", "reader", parties["READER_PARTY"])
+    records = reader.active("BlockRecord")
+    assert [r["number"] for r in records] == ["1"], f"the reader sees these block records: {records}"
+    assert records[0]["blockHash"] == chain["headHash"], "the block record is not the chain's head"
+    print(chain["contractId"], chain["headNumber"], chain["headHash"])
     sys.exit(0)
 command = {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "Advance",
                                "choiceArgument": {"headerHex": "01", "txsHex": "", "proofHex": "02",

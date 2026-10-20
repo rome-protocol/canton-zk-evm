@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Several checks look for text that holds a $ (shell variables written in the scripts), so single quotes are meant.
+# shellcheck disable=SC2015,SC2016
 # Checks on the network files that need neither Docker nor Canton:
 #   - reth is started only by network/reth/launch.sh, and network/up.sh checks discovery after starting it
 #   - canton.conf: every node in memory and on localhost, the extension on the operator's and the confirmer's
@@ -12,8 +14,15 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 CONF=$ROOT/network/canton/canton.conf
 
 # reth: nothing but launch.sh names its image or runs it.
-others=$(grep -rIlE --include='*.sh' --include='*.py' --include='*.rs' 'RETH_IMAGE|paradigmxyz|reth node|docker run' "$ROOT/network" "$ROOT/builder" "$ROOT/prover" "$ROOT/sidecar/src" 2>/dev/null | grep -v '^'"$ROOT"'/network/reth/launch.sh$' || true)
+others=$(grep -rIlE --include='*.sh' --include='*.py' --include='*.rs' 'RETH_IMAGE|paradigmxyz|reth node' "$ROOT/network" "$ROOT/builder" "$ROOT/prover" "$ROOT/sidecar/src" 2>/dev/null | grep -v '^'"$ROOT"'/network/reth/launch.sh$' || true)
 [ -z "$others" ] || fail "something other than network/reth/launch.sh starts or names reth's image: $others"
+# Nothing else runs a container, except the database (postgres.sh, the pinned postgres image) and the wipe of reth's folder (reth/stop.sh,
+# the pinned busybox image); neither names another image.
+runners=$(grep -rIlE --include='*.sh' --include='*.py' --include='*.rs' 'docker run' "$ROOT/network" "$ROOT/builder" "$ROOT/prover" "$ROOT/sidecar/src" 2>/dev/null \
+  | grep -v '^'"$ROOT"'/network/reth/launch.sh$' | grep -v '^'"$ROOT"'/network/postgres.sh$' | grep -v '^'"$ROOT"'/network/reth/stop.sh$' || true)
+[ -z "$runners" ] || fail "something other than launch.sh, postgres.sh and reth/stop.sh runs a container: $runners"
+[ "$(grep -c 'docker run' "$ROOT/network/postgres.sh")" = 1 ] && grep -A8 'docker run' "$ROOT/network/postgres.sh" | grep -q '"\$POSTGRES_IMAGE"' || fail "postgres.sh does not run the pinned POSTGRES_IMAGE"
+grep 'docker run' "$ROOT/network/reth/stop.sh" | grep -q '"\$BUSYBOX_IMAGE"' || fail "reth/stop.sh does not run the pinned BUSYBOX_IMAGE"
 grep -q 'network/reth/launch.sh' "$ROOT/network/up.sh" || fail "up.sh does not start reth through launch.sh"
 grep -q 'network/reth/check.sh' "$ROOT/network/up.sh" || fail "up.sh does not check that discovery is off"
 grep -q 'network/reth/stop.sh' "$ROOT/network/down.sh" || fail "down.sh does not stop reth through stop.sh"
@@ -32,6 +41,55 @@ done
 for port in 8085 8086; do grep -q "$port" "$ROOT/network/up.sh" || fail "up.sh does not start a sidecar on $port"; done
 # The Ledger API port the builder defaults to is the operator's.
 grep -A8 '^    operator {' "$CONF" | grep -q 'http-ledger-api.*port = 7575' || fail "the operator's JSON Ledger API is not on 7575"
+
+# The persistent mode (CZE_PERSIST=1): canton.conf stays in memory (the default), canton-persistent.conf puts every node in PostgreSQL,
+# on 127.0.0.1, with the password from the environment; the database is a pinned image, published on localhost only, with the password in
+# a 0600 file made on the machine.
+PCONF=$ROOT/network/canton/canton-persistent.conf
+[ "$(grep -cE '^  (sequencers|mediators|participants)\.[a-z0-9]+\.storage = \$\{_pg\}' "$PCONF")" = 5 ] || fail "canton-persistent.conf does not move all five nodes (1 sequencer, 1 mediator, 3 participants) to PostgreSQL"
+for db in sequencer1 mediator1 operator confirmer users; do
+  grep -q "storage.config.properties.databaseName = \"$db\"" "$PCONF" || fail "canton-persistent.conf has no database for $db"
+  grep -q "$db" "$ROOT/network/postgres.sh" || fail "postgres.sh does not make the database $db"
+done
+grep -q 'type = postgres' "$PCONF" || fail "canton-persistent.conf is not PostgreSQL"
+grep -q 'serverName = "127.0.0.1"' "$PCONF" || fail "canton-persistent.conf does not use the database on 127.0.0.1"
+grep -q 'password = ${CZE_PG_PASSWORD}' "$PCONF" || fail "the database password does not come from the environment"
+! grep -qE 'password *= *"' "$PCONF" || fail "a password is written in canton-persistent.conf"
+! grep -q 'storage.type = memory' "$PCONF" || fail "canton-persistent.conf keeps a node in memory"
+grep -qE '^POSTGRES_IMAGE=.+@sha256:[0-9a-f]{64}$' "$ROOT/PINS" || fail "PINS does not pin POSTGRES_IMAGE by digest"
+PG=$ROOT/network/postgres.sh
+grep -q -- '-p "127.0.0.1:\$PORT:5432"' "$PG" || fail "postgres.sh does not publish the database on 127.0.0.1 only"
+! grep -qE -- '(^|[ "])(-P|--publish-all|--network[= ]host|--net[= ]host)( |"|$)' "$PG" || fail "postgres.sh publishes the database beyond localhost"
+! grep -qE -- '-p "?[0-9]+:' "$PG" || fail "postgres.sh publishes a port without 127.0.0.1"
+grep -q 'openssl rand' "$PG" && grep -q 'chmod 600' "$PG" || fail "postgres.sh does not make the password per machine into a 0600 file"
+grep -q -- '--env-file' "$PG" || fail "postgres.sh does not read the password from its file"
+! grep -qE 'POSTGRES_PASSWORD=[A-Za-z0-9]' "$PG" "$ROOT/network/canton/run.sh" "$ROOT/network/up.sh" "$ROOT/network/restart.sh" || fail "a database password is written down"
+! grep -qE 'echo .*(CZE_PG_PASSWORD|POSTGRES_PASSWORD)' "$ROOT/network/canton/run.sh" "$ROOT/network/up.sh" "$ROOT/network/restart.sh" || fail "a script prints the database password"
+grep -q 'network/canton/run.sh' "$ROOT/network/up.sh" || fail "up.sh does not start Canton through run.sh"
+grep -q 'canton-persistent.conf' "$ROOT/network/canton/run.sh" || fail "run.sh does not use canton-persistent.conf with CZE_PERSIST=1"
+grep -q 'network/postgres.sh' "$ROOT/network/canton/run.sh" || fail "run.sh does not start the database with CZE_PERSIST=1"
+# restart.sh: no new chain, no new secrets, no new guest, no bootstrap; the order that Canton needs (the sidecars before it); the check at the end.
+R=$ROOT/network/restart.sh
+! grep -v '^ *#' "$R" | grep -qE 'propose\.py|make-state\.sh|build-guest\.sh|build-dar\.sh|bootstrap' || fail "restart.sh makes something new: a chain, a secret, a guest or a bootstrap"
+grep -q 'run.sh" resume' "$R" || fail "restart.sh does not resume Canton"
+grep -q 'CZE_RESUME=1' "$R" || fail "restart.sh does not tell reth's launch.sh to resume"
+grep -q 'network/sync_reth.py' "$R" || fail "restart.sh does not check Canton's head against reth"
+[ "$(grep -n 'sidecar-\$port\|run.sh" resume' "$R" | head -1 | grep -c sidecar)" = 1 ] || fail "restart.sh starts Canton before the sidecars"
+# It refuses to run without a persistent chain, and says how to make one.
+EMPTY=$(mktemp -d)
+refusal=$(CZE_STATE_DIR=$EMPTY "$R" 2>&1) && fail "restart.sh ran without a persistent chain"
+grep -q 'there is no persistent chain' <<<"$refusal" || fail "restart.sh's refusal is unclear: $refusal"
+grep -q 'CZE_PERSIST=1 network/up.sh' <<<"$refusal" || fail "restart.sh does not say how to start a persistent chain: $refusal"
+# ... run.sh resume is refused for an in-memory network, and down.sh knows --wipe and nothing else.
+refusal=$(CZE_STATE_DIR=$EMPTY CANTON_JAR=$R "$ROOT/network/canton/run.sh" resume 2>&1) && fail "run.sh resumed an in-memory network"
+grep -q 'resume needs CZE_PERSIST=1' <<<"$refusal" || fail "run.sh's refusal is unclear: $refusal"
+"$ROOT/network/down.sh" --nonsense >/dev/null 2>&1 && fail "down.sh accepted an unknown option"
+rm -rf "$EMPTY"
+# down.sh keeps a persistent chain's data unless it is told to wipe it; up.sh does not replace a chain that is there.
+grep -q -- '--keep-data' "$ROOT/network/down.sh" || fail "down.sh does not keep reth's data for a persistent chain"
+grep -q -- '--wipe)' "$ROOT/network/down.sh" || fail "down.sh has no --wipe"
+grep -q 'persist.env' "$ROOT/network/up.sh" || fail "up.sh does not guard a persistent chain that is here"
+grep -q 'CZE_PERSIST' "$ROOT/network/up.sh" || fail "up.sh does not know CZE_PERSIST"
 
 # No secret is written down: keys, tokens and passwords are made per run (see network/make-state.sh).
 ! grep -rInE '(secret|password|passwd|token|private[-_ ]?key) *[=:] *["'"'"']?[A-Za-z0-9+/]{16,}' "$ROOT/network" || fail "something that looks like a secret in network/"
