@@ -6,7 +6,7 @@ import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
 import { createFaucet, FAUCET_GAS, loadFaucetKey, type Faucet, type FaucetOptions } from "./faucet.ts";
-import { createReth } from "./reth.ts";
+import { createReth, RethError, type Reth } from "./reth.ts";
 import type { Tracked, TxState } from "./tracker.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
 
@@ -27,10 +27,15 @@ const net = (over: Partial<Net> = {}): Net => ({ balance: 1_000_000n * COIN, bas
 function fakeTracker() {
   const tracked = new Map<string, Tracked>();
   const sent: { hash: string; nonce: number; from: string }[] = [];
+  const raws = new Map<string, string>();
   return {
-    sent, tracked,
-    track(_raw: string, hash: string, from: string, nonce: number) {
+    sent, tracked, raws,
+    /** A reason to refuse, when a test wants the tracker to be full. */
+    full: null as string | null,
+    admit(_raw: string, _hash: string, _from: string): string | null { return this.full; },
+    track(raw: string, hash: string, from: string, nonce: number) {
       sent.push({ hash, nonce, from });
+      raws.set(hash, raw);
       tracked.set(hash, { state: "pending", reason: null, from, nonce, block: null, updateId: null, attempts: 1 });
     },
     state: (hash: string) => tracked.get(hash),
@@ -51,7 +56,7 @@ beforeEach(() => {
 });
 afterEach(async () => { vi.restoreAllMocks(); await fake?.close(); fake = undefined; });
 
-type Over = Partial<Omit<FaucetOptions, "reth" | "tracker">> & { down?: boolean; tracked?: boolean };
+type Over = Partial<Omit<FaucetOptions, "reth" | "tracker">> & { down?: boolean; tracked?: boolean; wrap?: (r: Reth) => FaucetOptions["reth"] };
 
 async function faucet(over: Over = {}): Promise<Faucet> {
   fake = await startFakeReth({
@@ -59,16 +64,22 @@ async function faucet(over: Over = {}): Promise<Faucet> {
     eth_gasPrice: "0x3b9aca07",
     eth_maxPriorityFeePerGas: "0x3b9aca00",
     eth_getBalance: () => "0x" + state.balance.toString(16),
+    eth_getTransactionByHash: (p: unknown[]) => {
+      const raw = state.raw.find((r) => keccak256(r as Hex) === p[0]);
+      if (!raw) return null;
+      return { hash: p[0], blockNumber: null, blockHash: null, transactionIndex: null, from: FAUCET, to: ALICE, value: "0x0", nonce: "0x0", type: "0x2", gas: "0x5208", input: "0x" };
+    },
     eth_sendRawTransaction: (p: unknown[]) => {
       if (state.refuse && (state.refuseAt === undefined || state.refuseAt === state.raw.length)) { const r = state.refuse; if (state.refuseAt !== undefined) state.refuse = undefined; throw r; }
       state.raw.push(p[0] as string);
       return keccak256(p[0] as Hex);
     },
   });
-  const { down, tracked, ...rest } = over;
+  const { down, tracked, wrap, ...rest } = over;
+  const reth = createReth(down ? "http://127.0.0.1:1" : fake.url, 5000);
   return createFaucet({
     key: KEY, chainId: 770101, amountWei: COIN, perAddressSeconds: DAY, perIpSeconds: 600, maxPerHour: 100000, batch: 100, queueMax: 5000, stateFile: null, captcha: null,
-    reth: createReth(down ? "http://127.0.0.1:1" : fake.url, 5000), tracker: tracked === false ? undefined : tracker, now: () => clock.now, ...rest,
+    reth: wrap ? wrap(reth) : reth, tracker: tracked === false ? undefined : tracker, now: () => clock.now, ...rest,
   });
 }
 
@@ -210,14 +221,40 @@ describe("a ticket", () => {
     expect(f.ticket(t)).toMatchObject({ status: "final", block: 7, hash, reason: null });
   });
 
-  it("fails, with the tracker's reason, when the transfer was replaced or dropped, and the address may ask again", async () => {
+  it("fails, with the tracker's reason, when the transfer was replaced, or dropped and reth does not have it, and the address may ask again", async () => {
     const f = await faucet();
     const t = ticketOf(await f.request(ALICE, { ip: "2.2.2.2" }));
     expect((await f.request(ALICE, { ip: "3.3.3.3" })).status).toBe(429);
     await f.process();
+    state.raw.length = 0; // reth lost it
     tracker.move(tracker.sent[0]!.hash, "dropped", null, "It was sent to the chain 10 times and went missing each time.");
+    expect(f.ticket(t)).toMatchObject({ status: "sent" }); // not failed on the tracker's word alone
+    await f.process();
     expect(f.ticket(t)).toMatchObject({ status: "failed", reason: "It was sent to the chain 10 times and went missing each time." });
     expect((await f.request(ALICE, { ip: "2.2.2.2" })).status).toBe(202);
+    const u = ticketOf(await f.request(BOB, { ip: "4.4.4.4" }));
+    await f.process();
+    tracker.move(tracker.sent[2]!.hash, "replaced", null, "Another transfer took its place.");
+    expect(f.ticket(u)).toMatchObject({ status: "failed", reason: "Another transfer took its place." });
+  });
+
+  it("is not failed when the tracker only stopped following it and reth still has it: the address keeps its turn", async () => {
+    const f = await faucet();
+    const t = ticketOf(await f.request(ALICE, { ip: "2.2.2.2" }));
+    await f.process();
+    tracker.move(tracker.sent[0]!.hash, "dropped", null, "The explorer was holding too many unconfirmed transactions, so it stopped following this one. It may still be sent on by the chain.");
+    await f.process();
+    expect(f.ticket(t)).toMatchObject({ status: "sent", state: "dropped", reason: null });
+    expect((await f.request(ALICE, { ip: "3.3.3.3" })).body).toMatchObject({ reason: "address" });
+  });
+
+  it("is left as it is when reth cannot say whether it has a transfer the tracker dropped", async () => {
+    const f = await faucet({ wrap: (r) => ({ ...r, transaction: async () => { throw new RethError("down"); } }) });
+    const t = ticketOf(await f.request(ALICE, { ip: "2.2.2.2" }));
+    await f.process();
+    tracker.move(tracker.sent[0]!.hash, "dropped", null, "gone");
+    await f.process();
+    expect(f.ticket(t)).toMatchObject({ status: "sent" });
   });
 
   it("is unknown when there is no such ticket", async () => {
@@ -578,5 +615,244 @@ describe("the key", () => {
 
   it("sends a transfer of exactly 21,000 gas", () => {
     expect(FAUCET_GAS).toBe(21000n);
+  });
+});
+
+describe("a send whose answer is lost", () => {
+  /** Reth takes the transfer, and the answer never comes back: a timeout, a dropped connection, or a proxy's 502. */
+  const loseAnswer = (times: number) => (r: Reth): FaucetOptions["reth"] => {
+    let left = times;
+    return { ...r, sendRaw: async (raw: string) => { const h = await r.sendRaw(raw); if (left-- > 0) throw new RethError("reth did not answer in time"); return h; } };
+  };
+
+  it("pays the address exactly once: the transfer is handed to the tracker, and is never signed again", async () => {
+    const f = await faucet({ wrap: loseAnswer(1) });
+    const t = ticketOf(await f.request(ALICE, { ip: "1.1.1.1" }));
+    await f.process();
+    expect(nonces()).toEqual([5]);
+    expect(f.ticket(t)).toMatchObject({ status: "sent", hash: keccak256(state.raw[0] as Hex) });
+    expect(tracker.sent).toEqual([{ hash: keccak256(state.raw[0] as Hex), nonce: 5, from: FAUCET }]);
+    for (let i = 0; i < 3; i++) await f.process();
+    expect(nonces()).toEqual([5]);
+    tracker.all("final");
+    await f.process();
+    expect(nonces()).toEqual([5]);
+    expect(f.ticket(t)).toMatchObject({ status: "final", block: 100 });
+  });
+
+  it("stops the batch there, keeps the rest queued, and sends them at the next nonces once the tracker has let go", async () => {
+    const f = await faucet({ wrap: loseAnswer(1) });
+    for (let i = 1; i <= 4; i++) await f.request(addr(i), { ip: `9.9.9.${i}` });
+    await f.process();
+    expect(nonces()).toEqual([5]);
+    expect(f.queued()).toBe(3);
+    await f.process();
+    expect(nonces()).toEqual([5]); // the lost one is still pending
+    tracker.all("final");
+    await f.process();
+    expect(nonces()).toEqual([5, 6, 7, 8]);
+    expect(new Set(tos()).size).toBe(4);
+  });
+
+  it("hands over a transfer that reth never got too: the tracker sends it again", async () => {
+    const f = await faucet({ wrap: (r) => ({ ...r, sendRaw: async () => { throw new RethError("connection reset"); } }) });
+    const t = ticketOf(await f.request(ALICE));
+    await f.process();
+    expect(state.raw).toEqual([]);
+    expect(f.ticket(t)).toMatchObject({ status: "sent" });
+    expect(tracker.raws.get(f.ticket(t)!.hash!)).toMatch(/^0x/);
+  });
+});
+
+describe("a stop or a crash in the middle of a batch", () => {
+  const withFile = async (run: (file: string) => Promise<void>) => {
+    const dir = mkdtempSync(join(tmpdir(), "faucet-state-"));
+    try { await run(join(dir, "faucet.json")); } finally { rmSync(dir, { recursive: true, force: true }); }
+  };
+  /** Holds the send number `at` until released. */
+  function gated(at: number) {
+    let n = 0, release!: () => void, reached!: () => void;
+    const open = new Promise<void>((ok) => (release = ok)), arrived = new Promise<void>((ok) => (reached = ok));
+    const wrap = (r: Reth): FaucetOptions["reth"] => ({ ...r, sendRaw: async (raw: string) => { if (n++ === at) { reached(); await open; } return r.sendRaw(raw); } });
+    return { wrap, release, arrived };
+  }
+  const requestAll = async (f: Faucet, n: number) => { for (let i = 1; i <= n; i++) await f.request(addr(i), { ip: `8.8.${i}.1` }); };
+
+  it("a stop waits for the send in hand, sends no more, and keeps every ticket's state, so a restart pays nobody twice", async () => {
+    await withFile(async (stateFile) => {
+      const g = gated(6);
+      const first = await faucet({ stateFile, wrap: g.wrap });
+      await requestAll(first, 20);
+      first.start();
+      await g.arrived;
+      first.stop();
+      const flushed = first.flush();
+      g.release();
+      await flushed;
+      const sentBefore = state.raw.length;
+      expect(sentBefore).toBe(7);
+      await fake!.close();
+      tracker = fakeTracker();
+      const second = await faucet({ stateFile });
+      for (let i = 0; i < 10 && second.queued(); i++) { await second.process(); tracker.all("final"); }
+      expect(state.raw.length).toBe(20);
+      expect(new Set(tos()).size).toBe(20);
+      expect(nonces()).toEqual(Array.from({ length: 20 }, (_, i) => 5 + i));
+    });
+  });
+
+  it("a crash after the batch was written and before it was all sent: the restart hands the unsent ones to the tracker and signs nothing twice", async () => {
+    await withFile(async (stateFile) => {
+      const g = gated(6);
+      const first = await faucet({ stateFile, wrap: g.wrap });
+      await requestAll(first, 20);
+      const dying = first.process();
+      await g.arrived; // six are in reth, the seventh is held: the process "dies" here
+      const reth6 = state.raw.length;
+      expect(reth6).toBe(6);
+      const old = tracker;
+      const afterCrash = fakeTracker(); // the tracker lost what the faucet had not handed it
+      tracker = afterCrash;
+      const second = await faucet({ stateFile });
+      expect(second.queued()).toBe(0); // nobody is waiting for a new signature
+      await second.process();
+      expect(state.raw.length).toBe(reth6); // and nothing new is signed while those are pending
+      // The tracker sends what reth never got.
+      for (const [h, raw] of afterCrash.raws) if (!state.raw.includes(raw)) { state.raw.push(raw); void h; }
+      expect(afterCrash.raws.size).toBe(20); // all 20 were signed and written; the tracker finds the 6 in reth and sends the other 14
+      expect(state.raw.length).toBe(20);
+      expect(new Set(tos()).size).toBe(20);
+      expect(nonces()).toEqual(Array.from({ length: 20 }, (_, i) => 5 + i));
+      void old;
+      g.release();
+      await dying; // the old process is let go, so it cannot send into the next test
+    });
+  });
+});
+
+describe("the tracker's room", () => {
+  it("sends nothing while the tracker says it is full, keeps every request, and sends when there is room", async () => {
+    const f = await faucet();
+    const t = ticketOf(await f.request(ALICE));
+    tracker.full = "This chain is holding as many unconfirmed transactions as it can follow right now. Try again in a moment.";
+    await f.process();
+    expect(state.raw).toEqual([]);
+    expect(f.ticket(t)).toMatchObject({ status: "queued", position: 1 });
+    tracker.full = null;
+    await f.process();
+    expect(f.ticket(t)?.status).toBe("sent");
+  });
+
+  it("stops a batch at the point where the tracker runs out of room, and keeps the rest queued", async () => {
+    const f = await faucet();
+    for (let i = 1; i <= 5; i++) await f.request(addr(i), { ip: `7.7.7.${i}` });
+    let asked = 0;
+    tracker.admit = () => (++asked > 2 ? "full" : null);
+    await f.process();
+    expect(nonces()).toEqual([5, 6]);
+    expect(f.queued()).toBe(3);
+  });
+});
+
+describe("the human check under a flood of junk", () => {
+  const captcha = { secret: "s3cret", verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "site-key", widgetClass: "human-check" };
+  /** Says yes to "good" and no to anything else, after a wait, and counts the calls and the most in flight at once. */
+  function checker(waitMs = 30) {
+    const seen = { calls: 0, inFlight: 0, peak: 0 };
+    const fn = (async (_url: string, init: RequestInit) => {
+      seen.calls++; seen.peak = Math.max(seen.peak, ++seen.inFlight);
+      await new Promise((ok) => setTimeout(ok, waitMs));
+      seen.inFlight--;
+      return new Response(JSON.stringify({ success: (init.body as URLSearchParams).get("response") === "good" }));
+    }) as unknown as typeof fetch;
+    return { seen, fn };
+  }
+
+  it("lets one client's junk fill neither the checks nor the other users' way: 200 junk requests from one client, then an honest one from another", async () => {
+    const c = checker(800);
+    const f = await faucet({ captcha, fetch: c.fn });
+    const junk = await Promise.all(Array.from({ length: 200 }, (_, i) => f.request(addr(1000 + i), { ip: "6.6.6.6", captcha: `junk-${i}` })));
+    expect(c.seen.peak).toBe(1); // one check at a time for one client
+    expect(c.seen.calls).toBeLessThanOrEqual(5);
+    expect(junk.filter((a) => a.status === 503)).toHaveLength(0);
+    expect(junk.every((a) => a.status === 403 || a.status === 429)).toBe(true);
+    const honest = await f.request(ALICE, { ip: "7.7.7.7", captcha: "good" });
+    expect(honest.status).toBe(202);
+  });
+
+  it("turns a client away for a while after a few failed checks, without calling the check, and says how long", async () => {
+    const c = checker(1);
+    const f = await faucet({ captcha, fetch: c.fn });
+    for (let i = 0; i < 5; i++) expect((await f.request(addr(i + 1), { ip: "6.6.6.6", captcha: "junk" })).status).toBe(403);
+    const calls = c.seen.calls;
+    const turned = await f.request(ALICE, { ip: "6.6.6.6", captcha: "good" });
+    expect(turned).toMatchObject({ status: 429, body: { reason: "checks" }, headers: { "Retry-After": expect.stringMatching(/^\d+$/) } });
+    expect(c.seen.calls).toBe(calls);
+    clock.now += 61_000;
+    expect((await f.request(ALICE, { ip: "6.6.6.6", captcha: "good" })).status).toBe(202);
+  });
+
+  it("counts a missing token as a failed check too", async () => {
+    const f = await faucet({ captcha, fetch: checker(1).fn });
+    for (let i = 0; i < 5; i++) expect((await f.request(addr(i + 1), { ip: "6.6.6.6" })).status).toBe(403);
+    expect((await f.request(ALICE, { ip: "6.6.6.6", captcha: "good" })).status).toBe(429);
+  });
+
+  it("does not count a check that passed, or the failures of another client", async () => {
+    const f = await faucet({ captcha, fetch: checker(1).fn, perIpSeconds: 1 });
+    for (let i = 0; i < 4; i++) await f.request(addr(i + 1), { ip: "6.6.6.6", captcha: "junk" });
+    expect((await f.request(ALICE, { ip: "7.7.7.7", captcha: "good" })).status).toBe(202);
+    expect((await f.request(BOB, { ip: "6.6.6.6", captcha: "good" })).status).toBe(202);
+  });
+});
+
+describe("a client's address", () => {
+  it("is one client for a whole IPv6 /64, and an IPv4 address written as IPv6 is the IPv4 address", async () => {
+    const f = await faucet({ perIpSeconds: 600 });
+    expect((await f.request(addr(1), { ip: "2001:db8:1:2::1" })).status).toBe(202);
+    expect((await f.request(addr(2), { ip: "2001:db8:1:2:ffff:ffff:ffff:ffff" })).body).toMatchObject({ reason: "ip" });
+    expect((await f.request(addr(3), { ip: "2001:DB8:1:2:0:0:0:7" })).body).toMatchObject({ reason: "ip" });
+    expect((await f.request(addr(4), { ip: "2001:db8:1:3::1" })).status).toBe(202);
+    expect((await f.request(addr(5), { ip: "1.2.3.4" })).status).toBe(202);
+    expect((await f.request(addr(6), { ip: "::ffff:1.2.3.4" })).body).toMatchObject({ reason: "ip" });
+    expect((await f.request(addr(7), { ip: "::ffff:102:304" })).body).toMatchObject({ reason: "ip" });
+  });
+});
+
+describe("a flood across a restart", () => {
+  it("keeps every limit when the faucet is stopped and started in the middle of the flood, with requests still arriving", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "faucet-state-"));
+    const stateFile = join(dir, "faucet.json");
+    try {
+      let f = await faucet({ stateFile, perIpSeconds: 600, tickMs: 5 });
+      f.start();
+      const results: { ip: string; to: string; status: number }[] = [];
+      for (let round = 0; round < 20; round++) {
+        if (round === 10) {
+          f.stop();
+          await f.flush();
+          await fake!.close();
+          f = await faucet({ stateFile, perIpSeconds: 600, tickMs: 5 });
+          f.start();
+        }
+        await Promise.all(Array.from({ length: 50 }, async (_, k) => {
+          const i = round * 50 + k, ip = `10.0.0.${(i * 7) % 50}`, to = addr(1 + (i % 300));
+          results.push({ ip, to, status: (await f.request(to, { ip })).status });
+        }));
+        tracker.all("final");
+      }
+      const ok = results.filter((r) => r.status === 202);
+      expect(results).toHaveLength(1000);
+      expect(new Set(ok.map((r) => r.ip)).size).toBe(ok.length); // each client once
+      expect(new Set(ok.map((r) => r.to)).size).toBe(ok.length); // each address once
+      expect(ok).toHaveLength(50);
+      f.stop();
+      for (let i = 0; i < 100 && f.queued(); i++) { await f.process(); tracker.all("final"); }
+      await f.flush();
+      expect(new Set(tos()).size).toBe(state.raw.length);
+      expect(state.raw).toHaveLength(50);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

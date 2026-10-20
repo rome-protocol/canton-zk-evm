@@ -125,6 +125,15 @@ describe("a request that is taken", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Not final yet");
   });
 
+  it("says so, and never failed or final, when the explorer stopped following a transfer that the chain may still take", async () => {
+    const user = await open(fake({ tickets: [view({ status: "sent", position: null, hash: HASH, state: "dropped" })] }));
+    await ask(user);
+    const note = await screen.findByText("Sent, and the explorer stopped following it.");
+    expect(note.closest("[role=status]")).toHaveTextContent("The chain may still take it.");
+    expect(screen.queryByText(/tROME is final on Canton/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/were not sent/)).not.toBeInTheDocument();
+  });
+
   it("stops asking once the request is final", async () => {
     const client = fake({ tickets: [view({ status: "final", position: null, hash: HASH, block: 7 })] });
     const user = await open(client);

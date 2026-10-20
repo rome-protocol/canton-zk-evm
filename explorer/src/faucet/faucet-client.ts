@@ -25,7 +25,7 @@ export interface Ticket {
 /** The ways a request for coin can end. `waitSeconds` is the answer's Retry-After, or null when it gave none. */
 export type CoinResult =
   | { kind: "queued"; ticket: string; position: number; to: string; amount: string }
-  | { kind: "limit"; which: "address" | "ip" | "hour"; waitSeconds: number | null; message: string }
+  | { kind: "limit"; which: "address" | "ip" | "hour" | "checks"; waitSeconds: number | null; message: string }
   | { kind: "full"; waitSeconds: number | null; message: string }
   | { kind: "captcha"; message: string }
   | { kind: "problem"; message: string };
@@ -84,7 +84,7 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
           : { kind: "problem", message: UNREADABLE };
       }
       if (status === 429) {
-        const which = body.reason === "address" || body.reason === "ip" ? body.reason : "hour";
+        const which = body.reason === "address" || body.reason === "ip" || body.reason === "checks" ? body.reason : "hour";
         return { kind: "limit", which, waitSeconds: wait, message: message(body, "Try again later.") };
       }
       if (status === 503 && body.reason === "queue") return { kind: "full", waitSeconds: wait, message: message(body, "The line is full. Try again in a little while.") };

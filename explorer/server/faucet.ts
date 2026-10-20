@@ -31,9 +31,9 @@ export interface FaucetOptions {
   stateFile: string | null;
   /** The human check, or null for none. */
   captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
-  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw">;
+  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction">;
   /** Takes each sent transfer, and says where it is. Without one, a ticket never gets past "sent". */
-  tracker?: Pick<Tracker, "track" | "state">;
+  tracker?: Pick<Tracker, "track" | "state"> & Partial<Pick<Tracker, "admit">>;
   /** How often the worker looks at the queue. */
   tickMs?: number;
   /** For the human check's call. A test gives its own. */
@@ -116,21 +116,56 @@ interface View { at: number; balance: bigint; gasPrice: bigint }
 interface Ticket {
   id: string; to: string; ip: string | null; at: number;
   status: TicketStatus; hash: string | null; block: number | null; reason: string | null; tries: number;
+  /**
+   * The signed transfer and its nonce, kept from the moment it is signed until the tracker has it. They are written to disk before the batch is
+   * sent, so a stop or a crash in the middle of a batch never leaves a transfer in reth that no file knows of.
+   */
+  nonce?: number | null; raw?: string | null;
 }
 
 const TICKETS_MAX = 10000;
 const HOUR = 3600_000;
 /** About one block: how long a caller turned away because the line is full is asked to wait, for each batch ahead. */
 const BLOCK_SECONDS = 10;
+/** Failed human checks one client may have in a window, before it is turned away without a check, and how long that window is. */
+const CHECKS_FAILED_MAX = 5;
+const CHECKS_WINDOW = 60_000;
+/** The tracker's per-sender limit is for wallets. The faucet sends its own batches, and asks the tracker only whether it has room, as for a sender with nothing waiting. */
+const NO_SENDER = "0x0000000000000000000000000000000000000000";
 const KNOWN = /already known|known transaction|already imported|already in the pool/i;
 
 /** A refusal also says which limit was hit, so a page can word it without reading the message. */
-type Reason = "address" | "ip" | "hour" | "queue" | "captcha" | "empty";
+type Reason = "address" | "ip" | "hour" | "queue" | "captcha" | "checks" | "empty";
 const answer = (status: number, error: string, headers?: Record<string, string>, reason?: Reason): FaucetAnswer => ({
   status, body: { error, ...(reason ? { reason } : {}) }, ...(headers ? { headers } : {}),
 });
 const seconds = (ms: number) => String(Math.max(1, Math.ceil(ms / 1000)));
 const period = (s: number) => (s % 3600 === 0 ? `${s / 3600} hour${s === 3600 ? "" : "s"}` : s % 60 === 0 ? `${s / 60} minutes` : `${s} seconds`);
+
+/**
+ * What counts as one client. An IPv6 host has a /64 of its own, so its limit is for the whole /64. An IPv4 address written as IPv6 is that IPv4
+ * address. Anything that does not read as an address is kept as it is.
+ */
+export function clientKey(ip: string | undefined): string | undefined {
+  if (ip === undefined) return undefined;
+  let a = ip.trim().toLowerCase().replace(/%.*$/, "");
+  if (!a.includes(":")) return a;
+  const dotted = /^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(a);
+  if (dotted) {
+    const [b0, b1, b2, b3] = [dotted[2]!, dotted[3]!, dotted[4]!, dotted[5]!].map(Number) as [number, number, number, number];
+    if ([b0, b1, b2, b3].some((b) => b > 255)) return a;
+    a = `${dotted[1]}${((b0 << 8) | b1).toString(16)}:${((b2 << 8) | b3).toString(16)}`;
+  }
+  const halves = a.split("::");
+  if (halves.length > 2) return a;
+  const head = halves[0] ? halves[0].split(":") : [], tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  if (halves.length === 1 ? head.length !== 8 : head.length + tail.length > 7) return a;
+  const groups = [...head, ...(halves.length === 2 ? Array(8 - head.length - tail.length).fill("0") : []), ...tail];
+  if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return a;
+  const n = groups.map((g) => parseInt(g, 16));
+  if (n.slice(0, 5).every((g) => g === 0) && n[5] === 0xffff) return `${n[6]! >> 8}.${n[6]! & 255}.${n[7]! >> 8}.${n[7]! & 255}`;
+  return `${n.slice(0, 4).map((g) => g.toString(16)).join(":")}::/64`;
+}
 
 export function createFaucet(o: FaucetOptions): Faucet {
   const now = o.now ?? Date.now;
@@ -148,6 +183,12 @@ export function createFaucet(o: FaucetOptions): Faucet {
   let running: Promise<void> | null = null, timer: ReturnType<typeof setInterval> | undefined, started = false;
   let view: View | null = null, viewing: Promise<View | null> | null = null;
   let verifying = 0;
+  /** Clients with a human check under way, so one client has one at a time. */
+  const checking = new Set<string>();
+  /** Failed human checks for each client in its window, oldest window first. */
+  const checksFailed = new Map<string, { n: number; since: number }>();
+  /** Set by stop() while a batch is going out: the batch ends after the send in hand. */
+  let halted = false;
   let writing: Promise<void> = Promise.resolve(), dirty = false, saving = false;
 
   // --- what is kept across a restart
@@ -174,13 +215,25 @@ export function createFaucet(o: FaucetOptions): Faucet {
     } catch {
       console.error(`faucet: ${o.stateFile} is not a file the faucet wrote, so it starts with no limits`);
     }
+    // A transfer signed before the last stop may or may not have reached reth. Its ticket is sent, never queued again: the tracker holds the signed
+    // bytes, sends them if reth does not have them, and says what became of them. Signing the request again would pay the address twice.
+    for (const t of [...queue]) {
+      if (!t.raw || !t.hash) { t.raw = null; t.nonce = null; continue; }
+      queue.splice(queue.indexOf(t), 1);
+      t.status = "sent"; open.add(t);
+    }
+    for (const t of open) {
+      if (!t.raw || !t.hash) continue;
+      if (o.tracker && !o.tracker.state(t.hash)) o.tracker.track(t.raw, t.hash, address!, t.nonce ?? 0);
+      t.raw = null; t.nonce = null;
+    }
   }
 
   /** Writes the state to a temporary file and renames it over the real one, so a crash never leaves half a file. Writes that pile up become one. */
-  function save(): void {
-    if (!o.stateFile) return;
+  function save(): Promise<void> {
+    if (!o.stateFile) return Promise.resolve();
     dirty = true;
-    if (saving) return;
+    if (saving) return writing;
     saving = true;
     writing = (async () => {
       try {
@@ -197,6 +250,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
         saving = false;
       }
     })();
+    return writing;
   }
 
   // --- the limits
@@ -252,7 +306,24 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const s = o.tracker.state(t.hash);
     if (!s) return void open.delete(t);
     if (s.state === "final") { t.status = "final"; t.block = s.block; open.delete(t); save(); }
-    else if (s.state === "replaced" || s.state === "dropped") fail(t, s.reason ?? "The transfer did not land on the chain.");
+    else if (s.state === "replaced") fail(t, s.reason ?? "The transfer did not land on the chain.");
+    // "dropped" is not a verdict: the tracker also drops what it has no room to follow, and that may still land. pass() asks reth.
+  }
+
+  /** For each transfer the tracker stopped following: failed if reth does not have it, and left as it is, with its turn used, if reth does or cannot say. */
+  async function settleDropped(): Promise<void> {
+    for (const t of [...open]) {
+      const s = t.status === "sent" && t.hash ? o.tracker?.state(t.hash) : undefined;
+      if (s?.state !== "dropped") continue;
+      let found: unknown;
+      try {
+        found = await o.reth.transaction(t.hash!);
+      } catch {
+        continue; // reth cannot say: asked again at the next pass
+      }
+      if (found) open.delete(t);
+      else fail(t, s.reason ?? "The transfer did not land on the chain.");
+    }
   }
 
   function trim(): void {
@@ -266,6 +337,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
   async function pass(): Promise<void> {
     if (!account) return;
     for (const t of open) refresh(t);
+    await settleDropped();
     if (!queue.length) return;
     if (o.tracker) for (const t of open) if (t.hash && o.tracker.state(t.hash)?.state === "pending") return;
     let balance: bigint, nonce: number, gasPrice: bigint, tip: bigint;
@@ -281,52 +353,97 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const afford = balance / cost(gasPrice) < BigInt(batch.length) ? Number(balance / cost(gasPrice)) : batch.length;
     // The coins are gone: the requests that cannot be paid are told so, and may ask again once the faucet is filled.
     for (const t of batch.slice(afford)) { queue.splice(queue.indexOf(t), 1); fail(t, "The faucet ran out of coins before this request was sent."); }
-    for (const t of batch.slice(0, afford)) {
-      let signed: Hex | undefined, hash: string;
-      try {
-        signed = await account.signTransaction({
-          type: "eip1559", chainId: o.chainId, nonce, to: t.to as Hex, value: o.amountWei, gas: FAUCET_GAS, maxFeePerGas, maxPriorityFeePerGas: tip < maxFeePerGas ? tip : maxFeePerGas,
+    const going = batch.slice(0, afford);
+    // The whole batch is signed first, and written to disk with its nonces and bytes before the first send. Whatever happens after that, every
+    // transfer that may be in reth is in a file, and a restart hands it to the tracker instead of signing the request again.
+    try {
+      for (const [i, t] of going.entries()) {
+        const raw = await account.signTransaction({
+          type: "eip1559", chainId: o.chainId, nonce: nonce + i, to: t.to as Hex, value: o.amountWei, gas: FAUCET_GAS, maxFeePerGas, maxPriorityFeePerGas: tip < maxFeePerGas ? tip : maxFeePerGas,
         });
-        hash = await o.reth.sendRaw(signed);
-      } catch (e) {
-        if (!(e instanceof RethError)) { console.error("faucet: a payout failed before it was sent"); break; }
-        console.error(`faucet: ${e.message}`);
-        if (!(e.answered && KNOWN.test(e.message) && signed)) {
-          // Reth did not take it. The nonce is still free, and the next batch is signed again from reth's count, so there is no gap. A transfer refused again and again is given up.
-          if (e.answered && ++t.tries >= 5) { queue.splice(queue.indexOf(t), 1); fail(t, "The chain did not accept the faucet's transfer."); }
-          break;
-        }
-        hash = keccak256(signed);
+        t.raw = raw; t.hash = keccak256(raw); t.nonce = nonce + i;
       }
-      queue.splice(queue.indexOf(t), 1);
-      t.status = "sent"; t.hash = hash; t.reason = null;
-      open.add(t);
-      o.tracker?.track(signed, hash, address!, nonce);
-      nonce++;
+    } catch {
+      console.error("faucet: a payout failed before it was sent");
+      for (const t of going) { t.raw = null; t.hash = null; t.nonce = null; }
+      return;
     }
-    save();
+    await save();
+    for (const t of going) {
+      if (halted) break;
+      const raw = t.raw as Hex, hash = t.hash!;
+      const noRoom = o.tracker?.admit?.(raw, hash, NO_SENDER);
+      if (noRoom) { console.error(`faucet: the tracker has no room: ${noRoom}`); break; }
+      let handOver = true, stopBatch = false;
+      try {
+        await o.reth.sendRaw(raw);
+      } catch (e) {
+        console.error(`faucet: ${(e as Error).message}`);
+        if (e instanceof RethError && e.answered && !KNOWN.test(e.message)) {
+          // Reth did not take it. The nonce is still free, and the next batch is signed again from reth's count, so there is no gap. A transfer refused again and again is given up.
+          handOver = false; stopBatch = true;
+          if (++t.tries >= 5) { queue.splice(queue.indexOf(t), 1); fail(t, "The chain did not accept the faucet's transfer."); }
+        } else if (!(e instanceof RethError && e.answered)) {
+          // Reth did not answer: it may have the transfer all the same. The ticket is sent, the tracker holds the bytes and sends them again if reth lacks them, and the batch stops here.
+          stopBatch = true;
+        }
+      }
+      if (handOver) {
+        queue.splice(queue.indexOf(t), 1);
+        t.status = "sent"; t.reason = null;
+        open.add(t);
+        o.tracker?.track(raw, hash, address!, t.nonce!);
+        t.raw = null; t.nonce = null;
+      }
+      if (stopBatch) break;
+    }
+    // What was not sent goes back to waiting, with no signature kept: it is signed again from reth's count at the next batch.
+    for (const t of going) if (t.status !== "sent") { t.raw = null; t.hash = null; t.nonce = null; }
+    await save();
   }
 
   function process(): Promise<void> {
-    return (running ??= pass().finally(() => { running = null; }));
+    return (running ??= pass().finally(() => { running = null; halted = false; }));
+  }
+
+  /** A client that failed its checks too often in the last minute is turned away before any check is made, so junk costs the verifier nothing. */
+  function tooManyFailures(key: string | undefined, t: number): FaucetAnswer | null {
+    for (const [k, f] of checksFailed) { if (f.since + CHECKS_WINDOW > t) break; checksFailed.delete(k); }
+    const f = key === undefined ? undefined : checksFailed.get(key);
+    if (!f || f.n < CHECKS_FAILED_MAX) return null;
+    return answer(429, "This connection failed the human check several times. Wait a little, then reload the page and try again.", { "Retry-After": seconds(f.since + CHECKS_WINDOW - t) }, "checks");
+  }
+  function checkFailed(key: string | undefined, t: number): void {
+    if (key === undefined) return;
+    const f = checksFailed.get(key);
+    if (f && f.since + CHECKS_WINDOW > t) f.n++;
+    else { checksFailed.delete(key); checksFailed.set(key, { n: 1, since: t }); }
   }
 
   async function human(token: unknown, ip: string | undefined): Promise<FaucetAnswer | null> {
     const c = o.captcha;
     if (!c) return null;
-    if (typeof token !== "string" || !token || token.length > 4096) return answer(403, "Complete the human check first.", undefined, "captcha");
+    const key = clientKey(ip);
+    const cooling = tooManyFailures(key, now());
+    if (cooling) return cooling;
+    if (typeof token !== "string" || !token || token.length > 4096) { checkFailed(key, now()); return answer(403, "Complete the human check first.", undefined, "captcha"); }
+    if (key !== undefined && checking.has(key)) return answer(429, "Your last human check is still being looked at. Wait a moment.", { "Retry-After": "2" }, "checks");
     if (verifying >= 50) return answer(503, "Too many people are being checked at this moment. Try again in a moment.", { "Retry-After": "2" });
     verifying++;
+    if (key !== undefined) checking.add(key);
     try {
       const form = new URLSearchParams({ secret: c.secret, response: token, ...(ip ? { remoteip: ip } : {}) });
       const res = await doFetch(c.verifyUrl, { method: "POST", body: form, headers: { "content-type": "application/x-www-form-urlencoded" }, signal: AbortSignal.timeout(5000) });
       const said = (await res.json()) as { success?: unknown } | null;
-      return said?.success === true ? null : answer(403, "The human check did not pass. Reload the page and try again.", undefined, "captcha");
+      if (said?.success === true) return null;
+      checkFailed(key, now());
+      return answer(403, "The human check did not pass. Reload the page and try again.", undefined, "captcha");
     } catch {
       console.error("faucet: the human check could not be reached");
       return answer(503, "The human check cannot be reached right now. Try again in a moment.", { "Retry-After": "5" });
     } finally {
       verifying--;
+      if (key !== undefined) checking.delete(key);
     }
   }
 
@@ -335,7 +452,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     const s = t.status === "sent" && t.hash ? o.tracker?.state(t.hash) : undefined;
     return {
       ticket: t.id, status: t.status, position: t.status === "queued" ? queue.indexOf(t) + 1 : null, to: t.to, amount: o.amountWei.toString(),
-      hash: t.hash, state: s ? s.state : null, block: t.block ?? s?.block ?? null, reason: t.reason,
+      hash: t.status === "queued" ? null : t.hash, state: s ? s.state : null, block: t.block ?? s?.block ?? null, reason: t.reason,
     };
   }
 
@@ -347,7 +464,11 @@ export function createFaucet(o: FaucetOptions): Faucet {
     served: () => addresses.size,
     queued: () => queue.length,
     process,
-    flush: () => writing,
+    /** Waits for the batch in hand to end, then writes everything as it stands. */
+    flush: async () => {
+      await running?.catch(() => {});
+      await save();
+    },
 
     async info() {
       let balance: string | null = null;
@@ -374,27 +495,29 @@ export function createFaucet(o: FaucetOptions): Faucet {
     stop() {
       if (timer) clearInterval(timer);
       timer = undefined; started = false;
+      if (running) halted = true; // the batch in hand ends after its current send
     },
 
     async request(raw, caller = {}) {
       if (!account) return answer(503, "The faucet is off.");
       const to = typeof raw === "string" ? raw.toLowerCase() : "";
       if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
-      const early = limited(to, caller.ip, now());
+      const ip = clientKey(caller.ip);
+      const early = limited(to, ip, now());
       if (early) return early;
       const refused = await human(caller.captcha, caller.ip);
       if (refused) return refused;
       const seen = await chain();
       // Time has passed while the check and the balance were read: the limits are looked at again, and nothing awaits between that look and the ticket.
       const t = now();
-      const late = limited(to, caller.ip, t);
+      const late = limited(to, ip, t);
       if (late) return late;
       if (seen && seen.balance < BigInt(queue.length + open.size + 1) * cost(seen.gasPrice)) return answer(503, "The faucet is empty.", undefined, "empty");
-      const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: caller.ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0 };
+      const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0 };
       tickets.set(ticket.id, ticket);
       queue.push(ticket);
       addresses.set(to, t);
-      if (caller.ip !== undefined) ips.set(caller.ip, t);
+      if (ip !== undefined) ips.set(ip, t);
       hourly.push(t);
       trim();
       save();

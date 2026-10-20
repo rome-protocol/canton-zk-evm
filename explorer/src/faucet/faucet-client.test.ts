@@ -47,7 +47,7 @@ describe("request", () => {
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ address: ADDRESS, captcha: "tok" });
   });
   it("tells each limit apart, keeps the server's words, and reads the wait from Retry-After", async () => {
-    for (const which of ["address", "ip", "hour"] as const) {
+    for (const which of ["address", "ip", "hour", "checks"] as const) {
       const { faucet } = client(() => json(429, { error: `words ${which}`, reason: which }, { "Retry-After": "85000" }));
       expect(await faucet.request(ADDRESS)).toEqual({ kind: "limit", which, waitSeconds: 85000, message: `words ${which}` });
     }
