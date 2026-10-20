@@ -23,7 +23,10 @@ function start(env: Record<string, string> = {}): string {
   return r.stdout.split("\n").find((l) => l.startsWith("docker run -d")) ?? "";
 }
 
-describe("explorer/run.sh start", () => {
+// The tests run in the pinned Node image, which has no bash. Where bash is missing the checks are skipped here, and tests/demo_explorer_static.sh runs the same dry runs on a host that has it.
+const hasBash = spawnSync("bash", ["-c", "true"]).status === 0;
+
+describe.skipIf(!hasBash)("explorer/run.sh start", () => {
   it("passes the public RPC's and the tracker's settings to the container when they are set", () => {
     const cmd = start({
       PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "120", TRUSTED_IP_HEADER: "x-real-ip", TRACKER_MAX: "500", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "8",

@@ -136,7 +136,7 @@ balance() { rpc eth_getBalance "\"$TO\",\"latest\"" | jq -r .result; }
 [ "$(balance)" = 0x0 ] || fail "the faucet's address already holds coins"
 [ "$(ask)" = 202 ] || fail "the faucet did not take the request: $(cat "$WORK/faucet-body")"
 ticket=$(jq -r .ticket "$WORK/faucet-body")
-[ -n "$ticket" ] && [ "$ticket" != null ] || fail "the faucet's answer has no ticket: $(cat "$WORK/faucet-body")"
+[ "${ticket:-null}" != null ] || fail "the faucet's answer has no ticket: $(cat "$WORK/faucet-body")"
 [ "$(jq -r .amount "$WORK/faucet-body")" = 1000000000000000000 ] || fail "the faucet's answer is not 1 coin: $(cat "$WORK/faucet-body")"
 [ "$(jq -r .to "$WORK/faucet-body" | tr A-F a-f)" = "$TO" ] || fail "the faucet's answer is not for the address: $(cat "$WORK/faucet-body")"
 # The worker sends the queue within a few seconds. Until the block is final on Canton the ticket must say sent, never final.
