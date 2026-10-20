@@ -15,21 +15,22 @@ try {
   const config = loadConfig();
   const reth = createReth(config.rethUrl, config.rpcTimeoutMs);
   const ledger = createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty);
-  const faucet = createFaucet({ ...config.faucet, key: loadFaucetKey(config.faucet.keyFile), chainId: config.chainId, reth });
   const index = createChainIndex(reth, ledger, config.pins, config.pollMs);
   const tracker = createTracker({ reth, index, file: config.tracker.file, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, pollMs: config.pollMs });
+  const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), chainId: config.chainId, reth, tracker });
   const rpc = config.publicRpc.on
     ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
     : undefined;
   const dist = process.env.EXPLORER_DIST || resolve(fileURLToPath(new URL(".", import.meta.url)), "../dist");
   let stopIndex: () => void = () => {};
-  const server = createHttpServer(createApi({ config, reth, ledger, index, faucet, tracker }), dist, rpc);
+  const server = createHttpServer(createApi({ config, reth, ledger, index, faucet, tracker }), dist, rpc, config.publicRpc.trustedIpHeader);
   server.listen(config.port, config.host, () => {
     console.log(`explorer for ${config.chainName} listening on http://${config.host}:${config.port}`);
     stopIndex = index.start();
     tracker.start();
+    faucet.start();
   });
-  onShutdown({ stop: [() => tracker.stop(), () => stopIndex()], server, tracker });
+  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => stopIndex()], server, tracker });
 } catch (e) {
   if (!(e instanceof ConfigError)) throw e;
   console.error(`explorer: ${e.message}`);

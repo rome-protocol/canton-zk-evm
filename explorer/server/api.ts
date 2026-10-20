@@ -18,8 +18,12 @@ export const FIELDS = {
   signers: ["operator", "confirmer"],
   faucet: ["on"],
   /** What the faucet shows about itself, and what it answers a request with. */
-  faucetInfo: ["on", "address", "balance", "amount", "perAddressSeconds"],
-  faucetSent: ["hash", "to", "amount"],
+  faucetInfo: ["on", "address", "balance", "amount", "perAddressSeconds", "perIpSeconds", "maxPerHour", "queue", "captcha"],
+  faucetCaptcha: ["siteKey", "scriptUrl", "widgetClass"],
+  /** What a request is answered with: a ticket, and its place in line. */
+  faucetQueued: ["ticket", "position", "to", "amount"],
+  /** Where a ticket is. */
+  faucetTicket: ["ticket", "status", "position", "to", "amount", "hash", "state", "block", "reason"],
   block: ["status", "number", "hash", "parentHash", "timestamp", "txCount", "gasUsed", "gasLimit", "baseFee", "miner", "stateRoot", "genesisReferenced", "canton", "transactions"],
   canton: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch", "headerHex", "txsHex", "proofHex"],
   /** The proof's three facts, each of which is a {value, ok} pair. */
@@ -43,8 +47,8 @@ const proofOf = (p: ProofCheck | null) => p && { programVK: fact(p.programVK), r
 export const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
 export interface Answer { status: number; body: unknown; headers?: Record<string, string> }
-/** `body` is the text of a POST's body. */
-export type Api = (method: string, target: string, body?: string) => Promise<Answer>;
+/** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. */
+export type Api = (method: string, target: string, body?: string, ip?: string) => Promise<Answer>;
 /** With no `faucet`, the faucet is off. */
 export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; index: ChainIndex; faucet?: Faucet; tracker?: Tracker }
 
@@ -55,7 +59,7 @@ const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string): Answer => ({ status, body: { error } });
 const dec = (n: bigint | number) => n.toString();
 
-export function createApi({ config, reth, ledger, index, tracker, faucet = createFaucet({ ...config.faucet, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
+export function createApi({ config, reth, ledger, index, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
   // What reth said about a token, as the promise, so that the transfers of one block share one set of calls. It is dropped when the index starts a new run.
   let seen = new Map<string, Promise<TokenInfo | null>>(), seenRun = index.status().run;
   /** A token's name, symbol and decimals: from the index when a block created it, else asked of reth once per run. */
@@ -165,8 +169,8 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
     return byUpdate ? go(`/block/${byUpdate.number}`) : fail(404, NOT_FOUND);
   }
 
-  /** Gives the coin to the address in the body, `{"address": "0x…"}`. The faucet answers every case itself. */
-  async function giveCoin(body: string | undefined): Promise<Answer> {
+  /** Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. The faucet answers every case itself. */
+  async function giveCoin(body: string | undefined, ip: string | undefined): Promise<Answer> {
     if (!faucet.on) return faucet.request(undefined);
     let asked: unknown;
     try {
@@ -174,11 +178,17 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
     } catch {
       return fail(400, 'Send a JSON body such as {"address": "0x…"}.');
     }
-    const result = await faucet.request(typeof asked === "object" && asked !== null ? (asked as { address?: unknown }).address : undefined);
-    return result.status === 200 ? { ...result, body: pick(result.body as { hash: string; to: string; amount: string }, FIELDS.faucetSent) } : result;
+    const given = typeof asked === "object" && asked !== null ? (asked as { address?: unknown; captcha?: unknown }) : {};
+    const result = await faucet.request(given.address, { ip, captcha: given.captcha });
+    return result.status === 202 ? { ...result, body: pick(result.body as { ticket: string; position: number; to: string; amount: string }, FIELDS.faucetQueued) } : result;
   }
 
-  return async (method, target, body) => {
+  function ticket(id: string): Answer {
+    const t = faucet.ticket(id);
+    return t ? ok(pick(t, FIELDS.faucetTicket)) : fail(404, "No such ticket. A ticket is kept for a while after its coin is final, and is lost if the explorer is rebuilt.");
+  }
+
+  return async (method, target, body, ip) => {
     let url: URL, parts: string[];
     try {
       if (!/^\/(?!\/)/.test(target)) throw new Error("not a path");
@@ -190,10 +200,14 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
     const [root, name, arg] = parts;
     try {
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
-      if (root !== "api" || parts.length > 3) return fail(404, "No such route.");
+      const isTicket = name === "faucet" && arg === "ticket" && parts.length === 4;
+      if (root !== "api" || parts.length > (isTicket ? 4 : 3)) return fail(404, "No such route.");
+      if (isTicket) return method === "GET" ? ticket(parts[3]!) : fail(405, "Use GET.");
       if (name === "faucet" && parts.length === 2) {
-        if (method === "POST") return await giveCoin(body);
-        return method === "GET" ? ok(pick(await faucet.info(), FIELDS.faucetInfo)) : fail(405, "Use GET or POST.");
+        if (method === "POST") return await giveCoin(body, ip);
+        if (method !== "GET") return fail(405, "Use GET or POST.");
+        const info = await faucet.info();
+        return ok({ ...pick(info, FIELDS.faucetInfo), captcha: info.captcha && pick(info.captcha, FIELDS.faucetCaptcha) });
       }
       const read = new Map<string, (() => Promise<Answer>) | undefined>([
         ["status", parts.length === 2 ? status : undefined],
