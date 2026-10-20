@@ -49,4 +49,20 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json
 [ "$code" = 401 ] || { echo "FAIL: Engine API answered $code without a token" >&2; exit 1; }
 
 "$ROOT/network/reth/check.sh" "$RETH_CONTAINER"
+# The persistent mode: reth keeps its data in $CZE_STATE_DIR/reth-data, discovery is still off after it is started again on that data
+# (CZE_RESUME=1, as network/restart.sh does), the same chain is there, and --wipe-persistent removes the data.
+"$ROOT/network/reth/stop.sh"
+export CZE_PERSIST=1
+wait_for_reth() { for _ in $(seq 1 60); do rpc eth_chainId >/dev/null 2>&1 && return 0; sleep 1; done; echo "FAIL: reth does not answer" >&2; exit 1; }
+"$ROOT/network/reth/launch.sh"; wait_for_reth
+"$ROOT/network/reth/check.sh" "$RETH_CONTAINER"
+genesis=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)
+"$ROOT/network/reth/stop.sh" --keep-data
+[ -n "$(ls -A "$CZE_STATE_DIR/reth-data")" ] || { echo "FAIL: reth-data is empty after a stop that keeps the data" >&2; exit 1; }
+CZE_RESUME=1 "$ROOT/network/reth/launch.sh"; wait_for_reth
+"$ROOT/network/reth/check.sh" "$RETH_CONTAINER"
+[ "$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .result.hash)" = "$genesis" ] || { echo "FAIL: another chain after the restart" >&2; exit 1; }
+[ "$(rpc eth_chainId | jq -r .result)" = "$want" ] || { echo "FAIL: wrong chain id after the restart" >&2; exit 1; }
+"$ROOT/network/reth/stop.sh" --wipe-persistent
+[ ! -e "$CZE_STATE_DIR/reth-data" ] || { echo "FAIL: --wipe-persistent left reth-data" >&2; exit 1; }
 echo "discovery test passed"

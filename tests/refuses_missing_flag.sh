@@ -54,6 +54,38 @@ while read -r p; do
 done < <(grep -oE -- '-p [^ ]+' <<<"$out" | cut -d' ' -f2)
 ! grep -q -- ':30303' <<<"$out" || { echo "FAIL: p2p port is published" >&2; exit 1; }
 
+# 1b. The persistent mode (CZE_PERSIST=1) keeps reth's data in the state folder and changes nothing else: every flag above is still
+#     there, the ports are still on 127.0.0.1 only, and the dry run makes no folder. Resuming without state, and starting a new chain on
+#     data that is there already, are refused before Docker is reached.
+fresh_copy
+persist_out=$(PATH="$WORK/bin:$PATH" CZE_STATE_DIR="$WORK/pstate" CZE_PERSIST=1 LAUNCH_DRY_RUN=1 "$WORK/repo/network/reth/launch.sh")
+for f in --disable-discovery "--nat none" "--max-outbound-peers 0" "--max-inbound-peers 0" "--addr 127.0.0.1" --ipcdisable \
+    --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header "--rpc.eth-proof-window 1" "--builder.gaslimit $GAS_CAP"; do
+  grep -q -- "$f" <<<"$persist_out" || { echo "FAIL: persistent dry run lacks $f" >&2; exit 1; }
+done
+# A hard kill must not lose blocks Canton has already committed: reth writes every block to disk as soon as it is imported.
+grep -q -- " --engine.persistence-threshold 0 " <<<"$persist_out " || { echo "FAIL: persistent dry run lacks --engine.persistence-threshold 0" >&2; exit 1; }
+grep -q -- " --engine.memory-block-buffer-target 0 " <<<"$persist_out " || { echo "FAIL: persistent dry run lacks --engine.memory-block-buffer-target 0" >&2; exit 1; }
+! grep -q -- "engine.persistence-threshold" <<<"$out" || { echo "FAIL: the default mode changed reth's persistence settings" >&2; exit 1; }
+grep -q -- " -v $WORK/pstate/reth-data:/data " <<<"$persist_out " || { echo "FAIL: persistent dry run does not keep reth's data in the state folder" >&2; exit 1; }
+! grep -q -- 'cze-reth-data' <<<"$persist_out" || { echo "FAIL: persistent dry run uses the Docker volume that stop.sh removes" >&2; exit 1; }
+while read -r p; do
+  [[ $p == 127.0.0.1:* ]] || { echo "FAIL: persistent mode publishes a port beyond localhost: $p" >&2; exit 1; }
+done < <(grep -oE -- '-p [^ ]+' <<<"$persist_out" | cut -d' ' -f2)
+[ ! -e "$WORK/pstate/reth-data" ] || { echo "FAIL: the dry run made the data folder" >&2; exit 1; }
+expect_persistent_refusal() {
+  local label=$1 want=$2; shift 2
+  if env "$@" PATH="$WORK/bin:$PATH" "$WORK/repo/network/reth/launch.sh" >"$WORK/out" 2>"$WORK/err"; then
+    echo "FAIL: launch.sh started: $label" >&2; exit 1
+  fi
+  grep -qF -- "$want" "$WORK/err" || { echo "FAIL: refusal does not name '$want' ($label): $(cat "$WORK/err")" >&2; exit 1; }
+  ! grep -q "docker was called" "$WORK/err" "$WORK/out" || { echo "FAIL: Docker was reached: $label" >&2; exit 1; }
+  echo "ok: refused $label"
+}
+expect_persistent_refusal "a resume without state" "no persistent reth state" CZE_STATE_DIR="$WORK/empty" CZE_PERSIST=1 CZE_RESUME=1
+mkdir -p "$WORK/full/reth-data"; touch "$WORK/full/reth-data/db"
+expect_persistent_refusal "a new persistent chain on data that is there" "has data already" CZE_STATE_DIR="$WORK/full" CZE_PERSIST=1
+
 # 2. Remove each required flag in turn; every variant must be refused.
 for flag in --disable-discovery --nat --max-outbound-peers --max-inbound-peers --addr --ipcdisable \
     --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header --builder.gaslimit --rpc.eth-proof-window; do
@@ -63,6 +95,19 @@ for flag in --disable-discovery --nat --max-outbound-peers --max-inbound-peers -
     echo "FAIL: test could not remove $flag" >&2; exit 1
   fi
   expect_refusal "without $flag" "$flag"
+done
+
+# 2b. In the persistent mode the two persistence flags are required too, with the value 0.
+for flag in --engine.persistence-threshold --engine.memory-block-buffer-target; do
+  fresh_copy
+  sed -E -i.bak "/^ *$flag( |\$)/d" "$WORK/repo/network/reth/launch.sh"
+  if grep -qE -- "^ *$flag( |\$)" "$WORK/repo/network/reth/launch.sh"; then
+    echo "FAIL: test could not remove $flag" >&2; exit 1
+  fi
+  expect_persistent_refusal "persistent without $flag" "$flag" CZE_STATE_DIR="$WORK/pstate2" CZE_PERSIST=1
+  fresh_copy
+  sed -E -i.bak "s/^( *$flag) 0\$/\1 7/" "$WORK/repo/network/reth/launch.sh"
+  expect_persistent_refusal "persistent with $flag 7" "$flag 0" CZE_STATE_DIR="$WORK/pstate2" CZE_PERSIST=1
 done
 
 # 3. A wrong value is refused as well as a missing flag. The refusal names the flag and
