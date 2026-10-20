@@ -34,9 +34,9 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` | `PINS` |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
-| Canton | 3.6.0-snapshot.20260930.20337.0.ve610bc8f (a snapshot, pinned before Canton 3.6.1, the first release with the external call, came out on 2026-10-05) | `PINS` |
-| Daml SDK | 3.5.13-snapshot.20261001.145.0.v852bdd82, from the weekly snapshot `weekly-snapshot-3.6.0-snapshot.20261001` | `PINS` |
-| Daml compiler | 3.6.0-snapshot.20260915.14804.0.v53478765, building to Daml-LF 2.4 | `PINS` |
+| Canton | 3.6.2, the open-source release of 2026-10-15 (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f) | `PINS` |
+| Daml SDK | 3.6.0, the release of 2026-10-08 (the recorded runs used 3.5.13-snapshot.20261001.145.0.v852bdd82) | `PINS` |
+| Daml compiler | 3.6.2, building to Daml-LF 2.4 (the recorded runs used 3.6.0-snapshot.20260915.14804.0.v53478765) | `PINS` |
 | Daml SDK (Daml Script tests) | 3.5.12, building the stub form to Daml-LF 2.1 | `daml/daml.yaml`; `.github/workflows/daml.yml` |
 | Java | 21 | `PINS` (`JAVA_MAJOR`) |
 | Rust | 1.94.1 | `rust-toolchain.toml` |
@@ -146,7 +146,7 @@ CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof 
 - **The recorded proof:** `tests/fixtures.sh` checks that the recorded 1,344-byte proof is consistent with its facts. It does not make a proof.
 - **The guest build:** `tests/guest-repro.sh` runs the real build script against stand-ins for the ZisK tools, to show that the build happens in one fixed folder. It does not show that a real ZisK build gives the same ELF; the run on 2026-10-04 did that once (see `guest/README.md`).
 - **Daml:** `.github/workflows/daml.yml` checks the token-standard packages against their hashes. It builds the stub form with Daml SDK 3.5.12 from `daml/daml.yaml` and runs the Daml Script tests.
-- **Canton:** the Canton job in `.github/workflows/network.yml` builds the external form with the pinned 3.6 snapshot compiler. It starts the pinned Canton with that package. One `Advance` is committed and one refused, against a stand-in for the sidecars.
+- **Canton:** the Canton job in `.github/workflows/network.yml` builds the external form with the pinned released 3.6 compiler. It starts the pinned Canton with that package. One `Advance` is committed and one refused, against a stand-in for the sidecars.
 - **Builder:** its tests, on Python 3.12.
 - **Explorer:** `.github/workflows/explorer.yml` runs type-checks, tests against fakes and the pages' build in `EXPLORER_NODE_IMAGE`. Its `ledger-api` job checks the explorer's requests against the pinned Canton's OpenAPI document. Its `verify-wasm` job checks shared crate versions against the sidecar's lockfile, runs Rust formatting, lint and tests, and builds the Verify module for WebAssembly. It tests the built module through the loader and panel in Node and checks that the pages' build serves it.
 - **Demo checks:** the `checks` job in `.github/workflows/demo.yml` runs shellcheck, `tests/demo_static.sh` and `tests/demo_explorer_static.sh`. It tests the EVM side against a fake reth, the Canton helpers, the sidecar stand-in and the request logger. The `token` job checks that the pinned solc rebuilds `demo/TKA.bin` from `demo/TKA.sol`.

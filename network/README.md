@@ -9,7 +9,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `canton/canton.conf` | One synchronizer and three participants, all in memory, all on localhost |
 | `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties (the gateway party among them) and Ledger API users, uploads and vets the Daml package |
 | `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
-| `canton/fetch.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
+| `canton/fetch.sh`, `canton/fetch-jar.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
 | `up.sh`, `down.sh` | Start and stop everything |
 | `smoke.sh`, `prove-timed.sh` | The smoke test, and the prover command it hands the builder (it keeps the prover's output so the proof time can be read) |
@@ -40,11 +40,11 @@ Registering a token is a trust decision, because the gateway runs that registry'
 
 The JSON Ledger API of each participant is on 7575 (operator, the one the builder uses), 7576 (confirmer) and 7577 (users).
 
-### Which Canton, and why a snapshot
+### Which Canton
 
-The external call requires Canton 3.6 and Daml-LF 2.4. Neither is released yet: the latest Canton release is 3.5, and Daml 3.5 has no `DA.ExternalCall`. This repository uses snapshots that Digital Asset publishes in its public registry. `PINS` records the exact versions and SHA-256 hashes of the Canton jar, the `dpm` program and the SDK manifest. The SDK manifest names every other component, including the compiler, by exact version. Snapshot version tags can be replaced with different contents. `PINS` therefore also records the compiler's registry manifest SHA-256 (`DAMLC_LINUX_AMD64_MANIFEST_SHA256`). That manifest lists every compiler file by SHA-256, which `dpm` checks on download. `canton/fetch.sh` checks all these pins and refuses changed snapshots. It uses `canton/check-damlc.sh` to check the compiler before and after installation. `smoke.txt` records the built DAR's SHA-256 and main package id.
+The external call requires Canton 3.6 and Daml-LF 2.4. Both are released: open-source Canton 3.6.2 (2026-10-15; the external call first came in 3.6.1) and the Daml 3.6 SDK, whose compiler is damlc 3.6.2. `PINS` records the exact versions and SHA-256 hashes of the Canton release tarball and its jar, the `dpm` program and the SDK manifest. The jar is taken out of the release tarball by `canton/fetch-jar.sh`, which checks the tarball before it opens it and the jar after, and refuses either one if it has changed. The SDK manifest names every other component, including the compiler, by exact version; its own Canton (3.6.1) is not the one the network runs. A registry tag can be replaced with different contents, so `PINS` also records the compiler's registry manifest SHA-256 (`DAMLC_LINUX_AMD64_MANIFEST_SHA256`). That manifest lists every compiler file by SHA-256, which `dpm` checks on download. `canton/fetch.sh` checks all these pins and uses `canton/check-damlc.sh` to check the compiler before and after installation. `smoke.txt` records the built DAR's SHA-256 and main package id.
 
-The network uses the open-source Canton jar. The snapshot compiler builds the Daml package to LF 2.4 (`daml/build.sh external` defaults to that target) with the real external call. Both snapshots are intended only for this early release. The pins will move to Canton 3.6 and Daml 3.6 when those releases are available.
+The network uses the open-source Canton jar. The compiler builds the Daml package to LF 2.4 (`daml/build.sh external` defaults to that target) with the real external call. Canton 3.6.2 supports protocol versions 34, 35 and 36, and `canton.conf` sets none of them, so the network runs on the release's default and needs no development flags. `bootstrap.canton` reads the synchronizer's protocol version and stops unless it is 36, the one the Canton Network adopts with Canton 3.6, and `tests/canton_network.sh` checks that the log says so. The recorded runs in `demo/results/` were made before this move, on 3.6 snapshots of Canton and the compiler; their files name the snapshot versions and are left as they were.
 
 ## Running it
 

@@ -11,7 +11,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 for k in CHAIN_ID GAS_CAP RETH_VERSION RETH_IMAGE BUSYBOX_IMAGE \
          ZISK_VERSION ZISK_COMMIT ZISK_ETH_CLIENT_VERSION ZISK_ETH_CLIENT_COMMIT \
-         CANTON_VERSION CANTON_JAR_SHA256 DAML_SDK_TAG DAML_SDK_VERSION DAML_SDK_MANIFEST_SHA256 DAMLC_VERSION \
+         CANTON_VERSION CANTON_TARBALL_URL CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DAML_SDK_TAG DAML_SDK_VERSION DAML_SDK_MANIFEST_SHA256 DAMLC_VERSION \
          DAMLC_LINUX_AMD64_MANIFEST_SHA256 DPM_VERSION DPM_LINUX_AMD64_SHA256 DPM_REGISTRY DAML_TARGET JAVA_MAJOR GATEWAY_ADDRESS SOLC_VERSION SOLC_IMAGE; do
   [ -n "${!k:-}" ] || fail "PINS is missing $k"
 done
@@ -22,12 +22,16 @@ done
 [[ $ZISK_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_COMMIT is not a full commit hash"
 [[ $ZISK_ETH_CLIENT_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_ETH_CLIENT_COMMIT is not a full commit hash"
 
-# The Canton and Daml toolchain is pinned by content: a SHA-256 for the Canton jar, the dpm program, the SDK manifest and the compiler's registry manifest.
-for k in CANTON_JAR_SHA256 DPM_LINUX_AMD64_SHA256 DAML_SDK_MANIFEST_SHA256 DAMLC_LINUX_AMD64_MANIFEST_SHA256; do
+# The Canton and Daml toolchain is pinned by content: a SHA-256 for the Canton tarball and jar, the dpm program, the SDK manifest and the compiler's registry manifest.
+for k in CANTON_TARBALL_SHA256 CANTON_JAR_SHA256 DPM_LINUX_AMD64_SHA256 DAML_SDK_MANIFEST_SHA256 DAMLC_LINUX_AMD64_MANIFEST_SHA256; do
   [[ ${!k} =~ ^[0-9a-f]{64}$ ]] || fail "$k is not a SHA-256"
 done
 [[ $CANTON_VERSION == 3.6.* ]] || fail "CANTON_VERSION is not a 3.6 build (the external call is in 3.6)"
-[[ $DAML_SDK_TAG == weekly-snapshot-3.6.* ]] || fail "DAML_SDK_TAG is not a 3.6 weekly snapshot"
+[[ $CANTON_VERSION =~ ^3\.6\.[0-9]+$ ]] || fail "CANTON_VERSION is not a released 3.6 version"
+[ "$CANTON_TARBALL_URL" = "https://github.com/digital-asset/canton/releases/download/v$CANTON_VERSION/canton-open-source-$CANTON_VERSION.tar.gz" ] || fail "CANTON_TARBALL_URL is not the release tarball of CANTON_VERSION"
+[[ $DAML_SDK_TAG =~ ^3\.6\.[0-9]+$ && $DAML_SDK_VERSION == "$DAML_SDK_TAG" ]] || fail "DAML_SDK_TAG and DAML_SDK_VERSION are not one released 3.6 SDK"
+[[ $DAMLC_VERSION =~ ^3\.6\.[0-9]+$ && $DPM_VERSION =~ ^[0-9.]+$ ]] || fail "DAMLC_VERSION or DPM_VERSION is not a release (no snapshot)"
+[ "$DPM_REGISTRY" = europe-docker.pkg.dev/da-images/public ] || fail "DPM_REGISTRY is not the public registry (the unstable one holds snapshots)"
 [[ $DAMLC_VERSION == 3.6.* ]] || fail "DAMLC_VERSION is not a 3.6 build"
 [ "$DAML_TARGET" = 2.4 ] || fail "DAML_TARGET is not LF 2.4, the first version with the external call"
 [[ $JAVA_MAJOR =~ ^[0-9]+$ ]] || fail "JAVA_MAJOR is not a number"

@@ -21,7 +21,7 @@ jobs:
       - name: The proposal script, against a fake Ledger API
         run: python3 -m unittest discover -s tests -p 'test_propose.py' -v
 
-  # The Canton side for real: the pinned Canton 3.6 snapshot and Daml compiler, the real form of the Daml package,
+  # The Canton side for real: the pinned released Canton and Daml compiler (PINS), the real form of the Daml package,
   # the config and bootstrap, the chain proposal, and one Advance, against a stand-in for the sidecars.
   canton:
     runs-on: ubuntu-latest

@@ -2,6 +2,7 @@
 # The Canton side of the network, on its own and for real: the pinned Canton and Daml tools, the real (external-call)
 # form of the Daml package, network/canton/canton.conf and bootstrap.canton, propose.py, and one Advance, against a
 # stand-in for the sidecars (tests/fake_sidecar.py) and for reth (tests/fake_reth.py). It checks that
+#   - the synchronizer runs protocol version 36;
 #   - the bootstrap, the upload and the vetting work, the main package id that dar-id.sh reads from the DAR is in the
 #     operator participant's package list (GET /v2/packages), and the chain is proposed and accepted;
 #   - the chain names the gateway party and the gateway contract's address from PINS, and the users' rights on the Ledger API are the right ones: the builder's user reads as the gateway and cannot act as it, the operator's acts as it;
@@ -53,6 +54,8 @@ java -Xmx3g -jar "$CANTON_JAR" daemon -c "$ROOT/network/canton/canton.conf" --bo
 pids+=($!)
 for _ in $(seq 1 300); do grep -q "BOOTSTRAP DONE" "$WORK/canton.log" && break; kill -0 "${pids[-1]}" 2>/dev/null || fail "Canton stopped"; sleep 1; done
 grep -q "BOOTSTRAP DONE" "$WORK/canton.log" || fail "the bootstrap did not finish"
+# The synchronizer runs protocol version 36, the one the Canton Network adopts with Canton 3.6 (bootstrap.canton refuses another).
+grep -q "SYNCHRONIZER PROTOCOL VERSION 36" "$WORK/canton.log" || fail "the synchronizer is not on protocol version 36"
 
 # The package id that dar-id.sh reads from the DAR is a package the operator participant holds (what smoke.sh checks
 # before it records the id).
