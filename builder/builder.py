@@ -582,7 +582,10 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
         try:
             return _build(cfg, reth, chain, head, set(exclude), prove_empty, unknown_pairs, lost_so_far)
         except BaseException as e:
-            reth.forkchoice(head, head, head)
+            try:
+                reth.forkchoice(head, head, head)
+            except Exception as rewind:   # the error that brought us here is the one to report; the failed move back rides along as rewindError
+                e.rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
             # what _build's left-out rebuilds could not put back, what the error already carries, and what the last put-back loses
             e.lost_transactions = [*lost_so_far, *getattr(e, "lost_transactions", [])]
             try:
@@ -859,6 +862,8 @@ def failure_report(e: Exception) -> dict:
     report = {"committed": False, "error": str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"}
     if getattr(e, "lost_transactions", None):
         report["lostTransactions"] = e.lost_transactions
+    if getattr(e, "rewind_error", None):   # moving reth back after the failure failed too: the original stays in "error"
+        report["rewindError"] = e.rewind_error
     return report
 
 
@@ -977,6 +982,8 @@ class Producer:
         self.failures += 1
         self.previous_kept = set()
         self.last_error = {"time": iso(self.clock()), "error": report.get("error") or report.get("reason", "")}
+        if report.get("rewindError"):
+            self.last_error["rewindError"] = report["rewindError"]
         self.emit(report)
         self.write_status()
         self.wait(min(BACKOFF_CAP, 2.0 ** min(self.failures - 1, 5)))   # the exponent is capped: it never overflows

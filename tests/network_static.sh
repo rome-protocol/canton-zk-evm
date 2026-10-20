@@ -90,6 +90,15 @@ grep -q -- '--keep-data' "$ROOT/network/down.sh" || fail "down.sh does not keep 
 grep -q -- '--wipe)' "$ROOT/network/down.sh" || fail "down.sh has no --wipe"
 grep -q 'persist.env' "$ROOT/network/up.sh" || fail "up.sh does not guard a persistent chain that is here"
 grep -q 'CZE_PERSIST' "$ROOT/network/up.sh" || fail "up.sh does not know CZE_PERSIST"
+# A new persistent chain commits an empty block 1 right after it is proposed (reth cannot move back to genesis in that mode), and stops if it fails;
+# restart.sh does not build anything.
+propose_line=$(grep -n 'network/canton/propose.py' "$ROOT/network/up.sh" | head -1 | cut -d: -f1)
+first_line=$(grep -n 'builder/builder.py" once' "$ROOT/network/up.sh" | head -1 | cut -d: -f1)
+[ -n "$propose_line" ] && [ -n "$first_line" ] && [ "$first_line" -gt "$propose_line" ] || fail "up.sh does not run the builder once after it proposes the chain"
+sed -n "$((first_line - 8)),$((first_line - 1))p" "$ROOT/network/up.sh" | grep -q 'CZE_PERSIST:-0}" = 1' || fail "up.sh's first block is not only for a persistent chain"
+sed -n "$((first_line)),\$p" "$ROOT/network/up.sh" | grep -q 'block 1 was not committed' || fail "up.sh does not stop when block 1 is not committed"
+! grep -q 'builder/builder.py' "$ROOT/network/restart.sh" || fail "restart.sh builds a block"
+grep -q 'never rests at head 0' "$ROOT/network/README.md" || fail "network/README.md does not state the first-block rule"
 
 # No secret is written down: keys, tokens and passwords are made per run (see network/make-state.sh).
 ! grep -rInE '(secret|password|passwd|token|private[-_ ]?key) *[=:] *["'"'"']?[A-Za-z0-9+/]{16,}' "$ROOT/network" || fail "something that looks like a secret in network/"

@@ -85,6 +85,7 @@ class FakeReth:
         self.block_txs: dict = {}   # block hash -> the hashes of its transactions
         self.bad_log_data = None   # bytes to put in place of the first log's data
         self.refuse_resend = False   # eth_sendRawTransaction answers an error for every transaction
+        self.no_state_for_genesis = False   # a persistent reth cannot move back to the genesis block once a block is built: the forkchoice to it is an error
         self.sync_on_final = False   # the forkchoice that makes a new block head, safe and finalized at once answers SYNCING (once)
         self.ws = serve(self._ws, "127.0.0.1", 0, max_size=None)
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._engine_handler())
@@ -216,6 +217,14 @@ class FakeReth:
                 status = "VALID"
                 if body["method"].startswith("engine_forkchoiceUpdated"):
                     state = body["params"][0]
+                    if (reth.no_state_for_genesis and state["headBlockHash"] == HEAD_HASH
+                            and any(m.startswith("engine_newPayload") for m, _ in reth.engine_calls)):
+                        out = json.dumps({"jsonrpc": "2.0", "id": body["id"], "error": {"code": -38002, "message": f"no state found for block {HEAD_HASH}"}}).encode()
+                        self.send_response(200)
+                        self.send_header("content-length", str(len(out)))
+                        self.end_headers()
+                        self.wfile.write(out)
+                        return
                     if (reth.sync_on_final and state["headBlockHash"] == state["safeBlockHash"] == state["finalizedBlockHash"]
                             and state["headBlockHash"] != HEAD_HASH):
                         reth.sync_on_final, status = False, "SYNCING"

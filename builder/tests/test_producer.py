@@ -369,6 +369,25 @@ class NeverDies(Loop):
         self.assertEqual(self.waits, [30, 30])
         self.assertEqual(self.status()["consecutiveFailures"], 1102)
 
+    def test_the_status_keeps_the_original_error_when_moving_reth_back_fails_too(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True
+        p = self.producer(s)
+        p.step()
+        self.assertIn("prove", self.reports[-1]["error"])
+        self.assertNotIn("no state found", self.reports[-1]["error"])
+        self.assertIn("no state found", self.reports[-1]["rewindError"])
+        err = self.status()["lastError"]
+        self.assertIn("prove", err["error"])
+        self.assertNotIn("no state found", err["error"])
+        self.assertIn("no state found", err["rewindError"])
+
+    def test_a_failure_without_a_failed_move_back_has_no_rewind_error_in_the_status(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        p = self.producer(s)
+        p.step()
+        self.assertNotIn("rewindError", self.status()["lastError"])
+
     def test_a_log_pipe_that_is_gone_does_not_stop_the_loop(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         def gone(report): raise BrokenPipeError("the collector died")

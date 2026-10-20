@@ -814,6 +814,25 @@ class Refusal(Case):
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
         self.assertEqual(s.ledger.submitted, [])
 
+    def test_a_failed_move_back_does_not_hide_the_error_that_made_it_necessary(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True
+        with self.assertRaises(b.ProvingError) as raised:
+            b.build_block(s.cfg)
+        self.assertIn("prove", str(raised.exception))
+        self.assertNotIn("no state found", str(raised.exception))
+        self.assertIn("no state found", raised.exception.rewind_error)
+        report = b.failure_report(raised.exception)
+        self.assertIn("prove", report["error"])
+        self.assertNotIn("no state found", report["error"])
+        self.assertIn("no state found", report["rewindError"])
+
+    def test_a_report_without_a_failed_move_back_has_no_rewind_error(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        with self.assertRaises(b.BuilderError) as raised:
+            b.build_block(s.cfg)
+        self.assertNotIn("rewindError", b.failure_report(raised.exception))
+
     def test_a_proof_left_by_an_earlier_run_is_never_used(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_writes_nothing=True)
         stale = Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}" / "out" / "wrapped-proof.hex"
@@ -1042,6 +1061,14 @@ class CommandLine(Case):
 
     def test_a_failing_prover_is_one_json_line(self):
         self.assert_failure(self.run_main(self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)), "prove")
+
+    def test_once_reports_the_original_error_and_the_failed_move_back(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True
+        code, out = self.run_main(s)
+        self.assert_failure((code, out), "prove")
+        self.assertNotIn("no state found", out["error"])
+        self.assertIn("no state found", out["rewindError"])
 
 
 class Pieces(unittest.TestCase):
