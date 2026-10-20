@@ -20,9 +20,10 @@ export function formatWait(seconds: number): string {
   return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
-/** The faucet's window in words: 24 hours, 1 hour, 90 seconds. */
+/** The faucet's window in words: 24 hours, 1 hour, 10 minutes, 90 seconds. */
 export function formatPeriod(seconds: number): string {
   if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : `${seconds / 3600} hours`;
+  if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : `${seconds / 60} minutes`;
   return `${seconds} seconds`;
 }
 

@@ -55,4 +55,18 @@ describe("the shutdown", () => {
     expect(log.at(-1)).toBe("exit 0");
     vi.restoreAllMocks();
   });
+
+  it("also waits for the faucet's last write", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { p, log, handlers, release } = parts();
+    let faucetDone = false;
+    onShutdown({ ...p, also: [{ flush: async () => { await new Promise((ok) => setTimeout(ok, 30)); faucetDone = true; log.push("faucet written"); } }] });
+    handlers.get("SIGINT")!();
+    release();
+    await new Promise((ok) => setTimeout(ok, 10));
+    expect(log).not.toContain("exit 0");
+    await new Promise((ok) => setTimeout(ok, 60));
+    expect(faucetDone).toBe(true);
+    expect(log.at(-1)).toBe("exit 0");
+  });
 });

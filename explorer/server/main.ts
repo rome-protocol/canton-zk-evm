@@ -30,7 +30,7 @@ try {
     tracker.start();
     faucet.start();
   });
-  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => stopIndex()], server, tracker });
+  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => stopIndex()], server, tracker, also: [faucet] });
 } catch (e) {
   if (!(e instanceof ConfigError)) throw e;
   console.error(`explorer: ${e.message}`);

@@ -7,6 +7,8 @@ export interface ShutdownParts {
   stop: Array<() => void>;
   server: { close(): unknown; closeIdleConnections?(): void };
   tracker: { flush(): Promise<void> };
+  /** Others with something to write before the exit, such as the faucet's limits and waiting requests. */
+  also?: Array<{ flush(): Promise<void> }>;
   process?: Pick<NodeJS.Process, "on">;
   exit?: (code: number) => void;
 }
@@ -16,12 +18,12 @@ export function onShutdown(p: ShutdownParts): (signal: string) => Promise<void> 
   const exit = p.exit ?? ((c: number) => process.exit(c));
   let leaving: Promise<void> | undefined;
   const leave = (signal: string): Promise<void> => (leaving ??= (async () => {
-    console.log(`explorer: ${signal}, writing the tracker's list before it stops`);
+    console.log(`explorer: ${signal}, writing what it keeps before it stops`);
     for (const stop of p.stop) stop();
     p.server.close();
     p.server.closeIdleConnections?.();
     try {
-      await p.tracker.flush();
+      await Promise.all([p.tracker, ...(p.also ?? [])].map((w) => w.flush()));
     } finally {
       exit(0);
     }
