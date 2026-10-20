@@ -87,8 +87,11 @@ require --rpc.eth-proof-window 1
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
   DATA_MOUNT=$STATE/reth-data
   if [ "${CZE_RESUME:-0}" = 1 ]; then
-    [ -s "$STATE/genesis.json" ] && [ -s "$STATE/jwt.hex" ] && [ -d "$DATA_MOUNT" ] && [ -n "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ] \
-      || refuse "there is no persistent reth state in $STATE (genesis.json, jwt.hex and reth-data are needed)"
+    have_data=no
+    [ -d "$DATA_MOUNT" ] && [ -n "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ] && have_data=yes
+    if [ ! -s "$STATE/genesis.json" ] || [ ! -s "$STATE/jwt.hex" ] || [ "$have_data" = no ]; then
+      refuse "there is no persistent reth state in $STATE (genesis.json, jwt.hex and reth-data are needed)"
+    fi
   else
     [ -z "$(ls -A "$DATA_MOUNT" 2>/dev/null)" ] || refuse "$DATA_MOUNT has data already: use network/restart.sh, or network/down.sh --wipe"
   fi
