@@ -48,7 +48,7 @@ describe("the http server", () => {
   });
 
   it("answers 413, and does not call the api, for a body that is too big", async () => {
-    const big = await get("/api/faucet", { method: "POST", body: "x".repeat(5000) });
+    const big = await get("/api/faucet", { method: "POST", body: "x".repeat(20000) });
     expect(big.status).toBe(413);
     expect(await big.json()).toEqual({ error: "That request is too big." });
     expect((await get("/healthz")).status).toBe(503);

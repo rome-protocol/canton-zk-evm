@@ -10,7 +10,8 @@ const TYPES: Record<string, string> = {
 };
 
 /** The biggest request body the server reads. The faucet's is one address. */
-const MAX_BODY = 1024;
+/** Room for a human check's token, which can be a few thousand characters. */
+const MAX_BODY = 8192;
 
 /** The body as text, or null when it is bigger than the limit (what is left is thrown away). */
 function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null> {

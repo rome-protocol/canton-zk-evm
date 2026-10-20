@@ -45,7 +45,12 @@ The server takes its settings from environment variables. A wrong value stops it
 | `TRACKER_MAX`, `TRACKER_MAX_BYTES`, `TRACKER_PER_SENDER` | `10000`, `16777216`, `64` | The most entries the tracker holds, the most characters of signed transactions it holds for open entries, and the most open entries one sender may have. See [The transaction tracker](#the-transaction-tracker) |
 | `FAUCET_KEY_FILE` | none | The faucet's key. With none, the faucet is off |
 | `FAUCET_AMOUNT` | `1` | Coins given per request |
-| `FAUCET_PER_ADDRESS_SECONDS`, `FAUCET_MIN_INTERVAL_MS` | `86400`, `2000` | One request per address per day, and the least time between two sends |
+| `FAUCET_PER_ADDRESS_SECONDS`, `FAUCET_PER_IP_SECONDS` | `86400`, `600` | One request per address per day, and one per client address (see `TRUSTED_IP_HEADER`) per 10 minutes |
+| `FAUCET_MAX_PER_HOUR` | `5000` | The most requests the faucet accepts in any hour, from everyone |
+| `FAUCET_BATCH`, `FAUCET_QUEUE_MAX` | `100`, `5000` | The most transfers sent in one batch, and the most requests waiting for a batch. Past the second the faucet answers 503 |
+| `FAUCET_STATE_FILE` | none | Where the faucet keeps its limits and the requests still waiting, across restarts. With none, they are in memory only. `run.sh` sets `/var/lib/explorer/faucet.json` |
+| `CAPTCHA_SECRET` | none | Turns on the human check. With it set, the four settings below are required. With none, there is no check |
+| `CAPTCHA_VERIFY_URL`, `CAPTCHA_SCRIPT_URL`, `CAPTCHA_SITE_KEY`, `CAPTCHA_WIDGET_CLASS` | none | Where the explorer verifies a token, the script the page loads, the site key it gives that script, and the class name the script looks for to put its widget in |
 
 ## What it reads from reth
 
@@ -81,7 +86,8 @@ A new run is noticed when reth's genesis changes, when reth's block of the newes
 | `GET /api/address/:address` | Balance, count of sent transactions, whether it is an account, a contract or a token, and the transaction that created it, if a block the index holds did |
 | `GET /api/search?q=` | The page to open for what was typed (a block number, a block or transaction hash, an address or a Canton update id), or 404 |
 | `GET /api/faucet` | Whether the faucet is on, its address, its balance, what it gives per request and how long an address waits between requests |
-| `POST /api/faucet` | Gives the coin to the address in the body, `{"address": "0x…"}`. See [The faucet](#the-faucet) |
+| `POST /api/faucet` | Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. Answers 202 with a ticket. See [The faucet](#the-faucet) |
+| `GET /api/faucet/ticket/<id>` | Where a request is: queued (with its place in line), sent (with the transaction hash and the tracker's word), final (with the block), or failed (with the reason) |
 
 Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/api.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
 
@@ -144,22 +150,33 @@ The fonts are IBM Plex Sans and IBM Plex Mono, served by the explorer from `publ
 
 ## The faucet
 
-It gives the chain's own test coin, and nothing else: 1 tROME per request (`FAUCET_AMOUNT`). There is no login and no captcha, because the coin has no value. Two limits keep it from being drained, and both live in memory, so a restart forgets them:
+It gives the chain's own test coin, and nothing else: 1 tROME per request (`FAUCET_AMOUNT`). The coin has no value, so there is no login. What matters is that the faucet keeps answering honestly when many people ask at once, and that it never says a coin was sent when it was not.
+
+**A queue, not a lock.** A valid request is taken at once and answered with a ticket (202), never with "busy". A worker drains the queue in batches of up to `FAUCET_BATCH` transfers. A batch takes consecutive nonces from the faucet's pending count in reth, sends them, and hands each to the transaction tracker, so one that is lost from the pool is sent again. The next batch starts when the last one has left the pool. If `FAUCET_QUEUE_MAX` requests are already waiting, the faucet turns the next one away with 503, says so in plain words (nothing was taken, nothing is lost) and gives a `Retry-After`.
+
+**Limits.** All of them are written to `FAUCET_STATE_FILE` (through a temporary file and a rename, so a crash never leaves half a file) and are written again at shutdown, so a restart keeps them and the requests still waiting:
 
 - one request per address per 24 hours (`FAUCET_PER_ADDRESS_SECONDS`);
-- one send at a time, at least 2 seconds apart (`FAUCET_MIN_INTERVAL_MS`).
+- one request per client address per 10 minutes (`FAUCET_PER_IP_SECONDS`). The client address is the connection's, or the header `TRUSTED_IP_HEADER` names when the explorer sits behind a proxy that sets it;
+- `FAUCET_MAX_PER_HOUR` requests in any hour, from everyone;
+- a balance floor: the faucet counts what it has already promised, and when the balance cannot cover one more transfer and its fee it answers 503 "empty". When the balance runs out under a batch, the requests it cannot pay fail with that reason.
 
-At those settings the faucet can give away about 43,000 coins a day, out of the million it starts with. A limit per IP address waits until the explorer has a public address.
+A request that comes to nothing (refused by the chain, or its transfer was replaced or dropped) gives the address and the client their turn back.
+
+**The human check (optional).** With `CAPTCHA_SECRET` set, a request must carry a token. The explorer verifies it by posting `secret`, `response` and `remoteip` (form-encoded) to `CAPTCHA_VERIFY_URL` and reading `{"success": true}`. The faucet page loads `CAPTCHA_SCRIPT_URL` and puts its widget, with `CAPTCHA_SITE_KEY`, in the form (`GET /api/faucet` gives the page the script, key and class, never the secret). The names are vendor-neutral: any check that answers this way will do. If the check cannot be reached, the faucet says so and lets nobody in. With no `CAPTCHA_SECRET` the check is off.
+
+**A ticket, and what final means.** `GET /api/faucet/ticket/<id>` says where a request is. A ticket is **final** only when the tracker says its transfer is final on Canton, never before. While the transfer is sent but not final it stays **sent**, with the transaction's hash and the tracker's word (pending or proving). A ticket whose transfer was replaced or dropped is **failed**, with the reason.
 
 | Answer | When |
 |---|---|
-| 200 | The coin was sent. The body has the transaction's `hash`, the address (`to`) and the `amount` in the coin's smallest unit |
+| 202 | The request is taken. The body has the `ticket`, the place in line (`position`), the address (`to`) and the `amount` in the coin's smallest unit |
 | 400 | The body is not JSON, or has no address, or the address is not 0x and 40 hex digits |
-| 429, with `Retry-After` in seconds | The address was served in the last 24 hours (`reason` is `address`), or another send is under way or finished less than 2 seconds ago (`reason` is `busy`) |
-| 503 | The faucet is off (no key), empty, or cannot reach reth, or reth refused the transfer |
-| 413 | The request body is bigger than 1 KB |
+| 403 | The human check is on and the token is missing or did not pass (`reason` is `captcha`) |
+| 429, with `Retry-After` in seconds | The address (`reason` is `address`), the client (`ip`) or the faucet as a whole (`hour`) has had its share |
+| 503, with `Retry-After` | The line is full (`reason` is `queue`), or the faucet is empty (`empty`), or off (no key), or the human check cannot be reached |
+| 413 | The request body is bigger than 8 KB |
 
-Each payout is a plain transfer of 21,000 gas, an EIP-1559 transaction signed with viem. Its nonce is reth's pending count, so if Canton refuses a block and the payout disappears, the next send takes the same nonce. The coin arrives with the next proven block: blocks are made only while the chain's builder runs.
+Each payout is a plain transfer of 21,000 gas, an EIP-1559 transaction signed with viem. Its nonce is reth's pending count, so if reth refuses one in the middle of a batch, or Canton refuses a block and a payout disappears, the next batch is signed again from reth's count and there is no gap. A transfer reth refuses five times is given up, and its request fails. A block is final on Canton only once its proof is settled: blocks are made only while the chain's builder runs.
 
 **The key.** `faucet-setup.sh` makes a fresh key for each run in `<state>/faucet/key` (readable by its owner only, never printed, never committed) and writes a copy of the run's genesis that also funds it with 1,000,000 coins (`FAUCET_FUND` sets the amount). The genesis it copies is the one `CZE_GENESIS_FILE` names when that is set, and `network/genesis.json` otherwise. Run it before the network starts, because reth starts from the file `CZE_GENESIS_FILE` names; `network/make-state.sh` still refuses a genesis whose chain settings differ, so funding an account cannot change the rules the proof pins.
 
@@ -208,13 +225,15 @@ The check holds the page while it runs. In Node on GitHub's CI runners, one chec
 
 ## The faucet page
 
-`src/faucet/FaucetPage.tsx` is the page's content: the form, and each way a request can end. It sends the address typed, then shows one of these:
+`src/faucet/FaucetPage.tsx` is the page's content: the form, and each way a request can end. It sends the address typed (with the human check's token when the faucet asks for one), and then follows the ticket every two seconds until it is final or failed, in plain words:
 
-- sent: the transaction's link and the word Waiting, which the transaction's page moves on to Being proven and Final;
-- the address has had its coin in the last 24 hours, with the wait from `Retry-After`;
-- another request is being sent, with the wait, and the button stays off until it is over;
-- not an address, or the faucet is empty or cannot reach the chain, in the server's own words.
+- taken: "You are number N in line";
+- sent: the transaction's link and Waiting or Being proven, with the note that it is not final yet;
+- final: "is final on Canton", with the block. This is the only word of success, and the page says it only when the explorer's ticket says final;
+- failed: the reason, and that the address may ask again;
+- the address, the client or the faucet as a whole has had its share, or the line is full: the server's own words, with the wait from `Retry-After` (after a full line the button stays off until it is over);
+- not an address, or the faucet is empty or cannot reach the chain, in the server's own words. If the explorer cannot be reached while the page follows a request, it says so and keeps asking.
 
-It also says whether the faucet is on. With no key it shows that the faucet is off and no form. It shows the faucet's address and balance from `GET /api/faucet`, and reads the balance again after a send. The page takes the coin's name and decimals as a prop (the status answer has them), and a client for the two routes (`src/faucet/faucet-client.ts`) as another, so a test can give its own.
+It also says whether the faucet is on. With no key it shows that the faucet is off and no form. It shows the faucet's address and balance from `GET /api/faucet`, how many requests are waiting, and reads the balance again when a request ends. The page takes the coin's name and decimals as a prop (the status answer has them), and a client for the routes (`src/faucet/faucet-client.ts`) as another, so a test can give its own.
 
 The Faucet route renders it with the coin from `/api/status`. The page is a component, rendered inside the explorer's router and shell: it draws no header or footer. Its styles are in `src/faucet/faucet.css`, all under `.faucet-page`. Its colours are the explorer's own names and values, set at the lowest weight, so the shell's set wins where it has one.
