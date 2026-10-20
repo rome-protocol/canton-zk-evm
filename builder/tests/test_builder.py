@@ -122,7 +122,8 @@ class OneBlock(Case):
         self.assertEqual((ex["contractId"], ex["choice"]), ("chain-cid", "Advance"))
         self.assertTrue(ex["templateId"].endswith(":Zk.Chain:ZkChain"))
         arg = ex["choiceArgument"]
-        self.assertEqual(arg["proofHex"], "ab" * 1344)
+        self.assertEqual(arg["proofHex"][:1664], "ab" * 832)
+        self.assertEqual(b.committed_hash(arg["proofHex"]), n_hash)   # the proof's public values carry this block's hash
         self.assertEqual(keccak256(bytes.fromhex(arg["headerHex"])).hex(), n_hash[2:])
         self.assertEqual(arg["txsHex"], rlp([bytes.fromhex(raw_of(t1)[2:]), bytes.fromhex(raw_of(t2)[2:])]).hex())
         self.assertEqual((arg["gatewayAccountNodes"], arg["gatewayStorageNodes"]), (["aa01", "aa02"], ["bb01"]))
@@ -828,8 +829,44 @@ class Refusal(Case):
         stale = Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}" / "out" / "wrapped-proof.hex"
         stale.parent.mkdir(parents=True)
         stale.write_text("cd" * 1344)
-        self.assertTrue(b.build_block(s.cfg)["committed"])
-        self.assertEqual(s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["proofHex"], "ab" * 1344)
+        result = b.build_block(s.cfg)
+        self.assertTrue(result["committed"])
+        proof = s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["proofHex"]
+        self.assertEqual((proof[:1664], b.committed_hash(proof)), ("ab" * 832, result["blockHash"]))
+        self.assertNotEqual(stale.read_text(), "cd" * 1344)   # every attempt has a folder of its own; the accepted one becomes `out`
+        self.assertEqual(stale.read_text(), proof)
+        self.assertEqual([x.name for x in stale.parent.parent.glob("out*")], ["out"])
+
+    def test_a_proof_of_another_block_is_never_submitted(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        os.environ["FAKE_PROVER_WRONG_BLOCK"] = "1"   # the prover hands back a proof of some other block
+        self.addCleanup(os.environ.pop, "FAKE_PROVER_WRONG_BLOCK", None)
+        with self.assertRaises(b.ProvingError) as raised:
+            b.build_block(s.cfg)
+        self.assertIn("not this block's", str(raised.exception))
+        self.assertEqual(len(raised.exception.kept), 1)
+        self.assertEqual(s.ledger.submitted, [])
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
+
+    def test_each_attempt_has_an_output_folder_of_its_own(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        work = Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}"
+        outs = []
+        for _ in range(2):
+            with self.assertRaises(b.BuilderError):
+                b.build_block(s.cfg)
+            outs.append([x for x in (log.split()[2] for log in s.log.read_text().splitlines() if log.startswith("prove"))][-1])
+        self.assertNotEqual(outs[0], outs[1])   # the prover is given a new folder each time
+        self.assertTrue(all(Path(o).parent == work and Path(o).name.startswith("out-") for o in outs))
+
+    def test_the_committed_hash_reads_the_public_values(self):
+        h = "11" * 32
+        words = (bytes([0x20]) + bytes.fromhex(h)).ljust(256, b"\0")
+        public = b"".join(words[i:i + 4] + b"\0" * 4 for i in range(0, 256, 4))
+        proof = (b"\xab" * 832 + public).hex()
+        self.assertEqual(b.committed_hash(proof), "0x" + h)
+        self.assertIsNone(b.committed_hash("ab" * 1344))   # not the layout
+        self.assertIsNone(b.committed_hash(proof[:-2] + "01"))   # a non-zero byte in a slot's padding
 
     def test_excluded_transaction_and_its_followers_are_left_out(self):
         t0, t1, other = tx(ALICE, 0), tx(ALICE, 1), tx(BOB, 0)

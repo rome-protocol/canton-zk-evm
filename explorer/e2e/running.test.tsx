@@ -54,7 +54,8 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
 
   it("shows the proof's own facts against this explorer's pins, which came from the run's guest.txt, with each mismatch said", async () => {
     await openRun1Block();
-    // The rehearsal's proof is a stand-in made of one repeated byte, and its pins are 0xcd... and 0xef..., so every fact here is red. If the explorer
+    // The rehearsal's proof is a stand-in: its program key and release are one repeated byte and its pins are 0xcd... and 0xef..., so those two facts are red.
+    // Its public values do commit to the block's own hash (the builder checks that before it submits), so that fact is the one that matches. If the explorer
     // had fallen back to the pins it carries, the pins named here and the file they came from would be different.
     const group = screen.getByRole("group", { name: "Facts read from the proof" });
     const read = (label: string) => within(group).getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
@@ -63,7 +64,8 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
     expect(verdict("Program key")).toHaveTextContent("does not match this explorer's pin 0xcdcd…cdcd");
     expect(read("ZisK release")).toHaveTextContent("0xeeee…eeee");
     expect(verdict("ZisK release")).toHaveTextContent("does not match this explorer's pin 0xefef…efef");
-    expect(verdict("Block hash")).toHaveTextContent("not this block's hash");
+    expect(verdict("Block hash")).toHaveTextContent("this block");
+    expect(verdict("Block hash")).not.toHaveTextContent("not this block's hash");
     expect(screen.getByText(/Read from the proof's own bytes and compared with this explorer's pins, from/)).toHaveTextContent(/compared with this explorer's pins, from guest\.txt\./);
   }, 90_000);
 
