@@ -34,24 +34,34 @@ describe("info", () => {
 });
 
 describe("request", () => {
-  it("posts the address as JSON and reads the sent coin", async () => {
-    const { faucet, calls } = client(() => json(200, { hash: "0x" + "ab".repeat(32), to: ADDRESS, amount: "1000000000000000000" }));
-    expect(await faucet.request(ADDRESS)).toEqual({ kind: "sent", hash: "0x" + "ab".repeat(32), to: ADDRESS, amount: "1000000000000000000" });
+  it("posts the address as JSON and reads the ticket and the place in line", async () => {
+    const { faucet, calls } = client(() => json(202, { ticket: "ab12", position: 7, to: ADDRESS, amount: "1000000000000000000" }));
+    expect(await faucet.request(ADDRESS)).toEqual({ kind: "queued", ticket: "ab12", position: 7, to: ADDRESS, amount: "1000000000000000000" });
     expect(calls[0]?.url).toBe("/api/faucet");
     expect(calls[0]?.init?.method).toBe("POST");
     expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ address: ADDRESS });
   });
-  it("tells the address limit from a send under way, and reads the wait from Retry-After", async () => {
-    const limit = client(() => json(429, { error: "x", reason: "address" }, { "Retry-After": "85000" }));
-    expect(await limit.faucet.request(ADDRESS)).toEqual({ kind: "limit", waitSeconds: 85000 });
-    const busy = client(() => json(429, { error: "x", reason: "busy" }, { "Retry-After": "2" }));
-    expect(await busy.faucet.request(ADDRESS)).toEqual({ kind: "busy", waitSeconds: 2 });
+  it("sends the human check's token with the address when there is one", async () => {
+    const { faucet, calls } = client(() => json(202, { ticket: "ab12", position: 1, to: ADDRESS, amount: "1" }));
+    await faucet.request(ADDRESS, "tok");
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({ address: ADDRESS, captcha: "tok" });
+  });
+  it("tells each limit apart, keeps the server's words, and reads the wait from Retry-After", async () => {
+    for (const which of ["address", "ip", "hour", "checks"] as const) {
+      const { faucet } = client(() => json(429, { error: `words ${which}`, reason: which }, { "Retry-After": "85000" }));
+      expect(await faucet.request(ADDRESS)).toEqual({ kind: "limit", which, waitSeconds: 85000, message: `words ${which}` });
+    }
   });
   it("copes with a 429 that has no usable wait or no reason", async () => {
-    expect(await client(() => json(429, { error: "x", reason: "address" }, { "Retry-After": "soon" })).faucet.request(ADDRESS)).toEqual({ kind: "limit", waitSeconds: null });
-    expect(await client(() => json(429, { error: "x" })).faucet.request(ADDRESS)).toEqual({ kind: "busy", waitSeconds: null });
+    expect(await client(() => json(429, { error: "x", reason: "address" }, { "Retry-After": "soon" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", waitSeconds: null });
+    expect(await client(() => json(429, { error: "x" })).faucet.request(ADDRESS)).toMatchObject({ kind: "limit", which: "hour" });
   });
-  it("hands the server's message on for a bad address, an off or empty faucet, and anything else", async () => {
+  it("tells a full line from other 503s, and a failed human check from other 403s", async () => {
+    expect(await client(() => json(503, { error: "full", reason: "queue" }, { "Retry-After": "30" })).faucet.request(ADDRESS)).toEqual({ kind: "full", waitSeconds: 30, message: "full" });
+    expect(await client(() => json(403, { error: "check", reason: "captcha" })).faucet.request(ADDRESS)).toEqual({ kind: "captcha", message: "check" });
+    expect(await client(() => json(503, { error: "The faucet is empty.", reason: "empty" })).faucet.request(ADDRESS)).toEqual({ kind: "problem", message: "The faucet is empty." });
+  });
+  it("hands the server's message on for a bad address, an off faucet, and anything else", async () => {
     for (const status of [400, 503, 502, 413]) {
       const { faucet } = client(() => json(status, { error: `message ${status}` }));
       expect(await faucet.request(ADDRESS)).toEqual({ kind: "problem", message: `message ${status}` });
@@ -61,8 +71,23 @@ describe("request", () => {
     const { faucet } = client(() => Promise.reject(new TypeError("fetch failed")));
     expect(await faucet.request(ADDRESS)).toMatchObject({ kind: "problem", message: expect.stringMatching(/cannot be reached/) });
   });
-  it("does not trust a 200 without a transaction hash", async () => {
-    const { faucet } = client(() => json(200, { nothing: true }));
+  it("does not trust a 202 without a ticket", async () => {
+    const { faucet } = client(() => json(202, { nothing: true }));
     expect((await faucet.request(ADDRESS)).kind).toBe("problem");
+  });
+});
+
+describe("ticket", () => {
+  const view = { ticket: "ab12", status: "sent", position: null, to: ADDRESS, amount: "1", hash: "0x" + "ab".repeat(32), state: "proving", block: null, reason: null };
+  it("reads GET /api/faucet/ticket/<id>", async () => {
+    const { faucet, calls } = client(() => json(200, view));
+    expect(await faucet.ticket("ab12")).toEqual({ kind: "ticket", ticket: view });
+    expect(calls[0]?.url).toBe("/api/faucet/ticket/ab12");
+  });
+  it("says a 404 is a ticket the explorer does not know, and anything it cannot read is only unreachable, so the page keeps asking", async () => {
+    expect(await client(() => json(404, { error: "No such ticket." })).faucet.ticket("zz")).toEqual({ kind: "unknown" });
+    expect(await client(() => json(502, { error: "x" })).faucet.ticket("zz")).toEqual({ kind: "unreachable" });
+    expect(await client(() => json(200, { status: "weird" })).faucet.ticket("zz")).toEqual({ kind: "unreachable" });
+    expect(await client(() => Promise.reject(new TypeError("fetch failed"))).faucet.ticket("zz")).toEqual({ kind: "unreachable" });
   });
 });

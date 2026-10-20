@@ -10,7 +10,8 @@ const TYPES: Record<string, string> = {
 };
 
 /** The biggest request body the server reads. The faucet's is one address. */
-const MAX_BODY = 1024;
+/** Room for a human check's token, which can be a few thousand characters. */
+const MAX_BODY = 8192;
 
 /** The body as text, or null when it is bigger than the limit (what is left is thrown away). */
 function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null> {
@@ -40,8 +41,8 @@ function clientIp(req: IncomingMessage, ipHeader: string | null): string {
   return last || req.socket.remoteAddress || "unknown";
 }
 
-/** Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
-export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor): Server {
+/** `ipHeader` names the header that carries the client's address for the faucet's limits, and is the public RPC's when none is given. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null): Server {
   const root = resolve(dist);
   async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
@@ -88,7 +89,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor): Server 
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
-        const { status, body, headers } = await api(method, target, sent);
+        const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
         res.writeHead(status, { ...headers, "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
       } else if (method !== "GET" && method !== "HEAD") {
         res.writeHead(405, { allow: "GET, HEAD" }).end();

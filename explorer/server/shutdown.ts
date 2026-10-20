@@ -7,6 +7,8 @@ export interface ShutdownParts {
   stop: Array<() => void>;
   server: { close(): unknown; closeIdleConnections?(): void };
   tracker: { flush(): Promise<void> };
+  /** Others with something to write before the exit, such as the faucet's limits and waiting requests. They are flushed one by one, before the tracker, because they may hand the tracker one more transfer. */
+  also?: Array<{ flush(): Promise<void> }>;
   process?: Pick<NodeJS.Process, "on">;
   exit?: (code: number) => void;
 }
@@ -16,11 +18,13 @@ export function onShutdown(p: ShutdownParts): (signal: string) => Promise<void> 
   const exit = p.exit ?? ((c: number) => process.exit(c));
   let leaving: Promise<void> | undefined;
   const leave = (signal: string): Promise<void> => (leaving ??= (async () => {
-    console.log(`explorer: ${signal}, writing the tracker's list before it stops`);
+    console.log(`explorer: ${signal}, writing what it keeps before it stops`);
     for (const stop of p.stop) stop();
     p.server.close();
     p.server.closeIdleConnections?.();
     try {
+      // In this order: the faucet ends the send in hand and hands it to the tracker, so the tracker is written after it, never beside it.
+      for (const w of p.also ?? []) await w.flush();
       await p.tracker.flush();
     } finally {
       exit(0);

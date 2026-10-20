@@ -134,16 +134,24 @@ ask() { curl -s -D "$WORK/faucet-headers" -o "$WORK/faucet-body" -w '%{http_code
 balance() { rpc eth_getBalance "\"$TO\",\"latest\"" | jq -r .result; }
 [ "$(curl -sf "$EXPLORER/api/faucet" | jq -r .on)" = true ] || fail "the faucet is off"
 [ "$(balance)" = 0x0 ] || fail "the faucet's address already holds coins"
-[ "$(ask)" = 200 ] || fail "the faucet did not send: $(cat "$WORK/faucet-body")"
+[ "$(ask)" = 202 ] || fail "the faucet did not take the request: $(cat "$WORK/faucet-body")"
+ticket=$(jq -r .ticket "$WORK/faucet-body")
+[ "${ticket:-null}" != null ] || fail "the faucet's answer has no ticket: $(cat "$WORK/faucet-body")"
 [ "$(jq -r .amount "$WORK/faucet-body")" = 1000000000000000000 ] || fail "the faucet's answer is not 1 coin: $(cat "$WORK/faucet-body")"
 [ "$(jq -r .to "$WORK/faucet-body" | tr A-F a-f)" = "$TO" ] || fail "the faucet's answer is not for the address: $(cat "$WORK/faucet-body")"
-payout=$(jq -r .hash "$WORK/faucet-body")
+# The worker sends the queue within a few seconds. Until the block is final on Canton the ticket must say sent, never final.
+for _ in $(seq 1 30); do
+  curl -sf "$EXPLORER/api/faucet/ticket/$ticket" > "$WORK/ticket" || fail "the ticket cannot be read"
+  [ "$(jq -r .status "$WORK/ticket")" = queued ] || break
+  sleep 1
+done
+[ "$(jq -r .status "$WORK/ticket")" = sent ] || fail "the ticket is not sent after the worker ran: $(cat "$WORK/ticket")"
+payout=$(jq -r .hash "$WORK/ticket")
 [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = waiting ] || fail "the payout $payout is not Waiting before the builder has run"
-sleep 3   # past the faucet's pause between sends, so that a refusal below is for the address
 [ "$(ask)" = 429 ] || fail "a second request from the same address was not refused: $(cat "$WORK/faucet-body")"
 [ "$(jq -r .reason "$WORK/faucet-body")" = address ] || fail "the second request was refused, but not for the address: $(cat "$WORK/faucet-body")"
 grep -qi '^retry-after: [0-9]' "$WORK/faucet-headers" || fail "the refusal does not say how long to wait"
-echo "the faucet sent $payout and refused the same address a second time"
+echo "the faucet took the request, sent $payout and refused the same address a second time"
 
 # The coin arrives with the next block: the builder runs once more, as demo/run.sh runs it, and Canton commits the block.
 payout_block=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
@@ -152,6 +160,8 @@ echo "$payout_block" | jq -c .
 jq -e --arg h "$payout" '.committed == true and (.transactions | index($h) != null)' <<<"$payout_block" >/dev/null || fail "the builder did not commit a block with the payout: $payout_block"
 for _ in $(seq 1 60); do [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = final ] && break; sleep 1; done
 [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = final ] || fail "the explorer does not show the payout as Final"
+for _ in $(seq 1 60); do [ "$(curl -sf "$EXPLORER/api/faucet/ticket/$ticket" | jq -r .status)" = final ] && break; sleep 1; done
+[ "$(curl -sf "$EXPLORER/api/faucet/ticket/$ticket" | jq -r .status)" = final ] || fail "the ticket is not final after the block is final on Canton: $(curl -s "$EXPLORER/api/faucet/ticket/$ticket")"
 [ "$(balance)" = 0xde0b6b3a7640000 ] || fail "the address does not hold 1 tROME after the payout: $(balance)"
 [ "$(ask)" = 429 ] || fail "the faucet sent to the same address again"
 

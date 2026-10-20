@@ -55,4 +55,32 @@ describe("the shutdown", () => {
     expect(log.at(-1)).toBe("exit 0");
     vi.restoreAllMocks();
   });
+
+  it("also waits for the faucet's last write", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { p, log, handlers, release } = parts();
+    let faucetDone = false;
+    onShutdown({ ...p, also: [{ flush: async () => { await new Promise((ok) => setTimeout(ok, 30)); faucetDone = true; log.push("faucet written"); } }] });
+    handlers.get("SIGINT")!();
+    release();
+    await new Promise((ok) => setTimeout(ok, 10));
+    expect(log).not.toContain("exit 0");
+    await new Promise((ok) => setTimeout(ok, 60));
+    expect(faucetDone).toBe(true);
+    expect(log.at(-1)).toBe("exit 0");
+  });
+
+  it("flushes the faucet first and the tracker after it, so a transfer the faucet hands over on its way out is written too", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { p, log, release } = parts();
+    release();
+    const tracker = { flush: async () => { log.push("tracker written"); } };
+    const also = [{ flush: async () => { await new Promise((ok) => setTimeout(ok, 20)); log.push("faucet written"); } }];
+    await onShutdown({ ...p, tracker, also })("SIGTERM");
+    const at = (l: string) => log.indexOf(l);
+    expect(at("faucet written")).toBeGreaterThan(-1);
+    expect(at("tracker written")).toBeGreaterThan(at("faucet written"));
+    expect(log.at(-1)).toBe("exit 0");
+    vi.restoreAllMocks();
+  });
 });

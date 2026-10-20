@@ -45,7 +45,8 @@ describe("formatPeriod", () => {
     expect(formatPeriod(86400)).toBe("24 hours");
     expect(formatPeriod(3600)).toBe("1 hour");
     expect(formatPeriod(90)).toBe("90 seconds");
-  });
+    expect(formatPeriod(600)).toBe("10 minutes");
+    expect(formatPeriod(60)).toBe("1 minute");  });
 });
 
 describe("shortHash", () => {

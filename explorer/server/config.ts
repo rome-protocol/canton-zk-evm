@@ -52,8 +52,26 @@ export interface Config {
     keyFile: string | null;
     amountWei: bigint;
     perAddressSeconds: number;
-    minIntervalMs: number;
+    /** One request per client address in this many seconds. */
+    perIpSeconds: number;
+    /** The most requests accepted in any hour, from everyone. */
+    maxPerHour: number;
+    /** The most transfers sent to reth in one batch. */
+    batch: number;
+    /** The most requests waiting for a batch. A request past it is turned away. */
+    queueMax: number;
+    /** Where the limits and the waiting requests are kept across restarts. Null keeps them in memory only. */
+    stateFile: string | null;
   };
+  /** The optional human check. Null when CAPTCHA_SECRET is not set. */
+  captcha: {
+    secret: string;
+    verifyUrl: string;
+    scriptUrl: string;
+    siteKey: string;
+    /** The class name the check's script looks for, to put its widget in. */
+    widgetClass: string;
+  } | null;
 }
 
 type Env = Record<string, string | undefined>;
@@ -94,6 +112,19 @@ function url(env: Env, name: string, fallback: string): string {
     throw new ConfigError(`${name} must be an http or https address, not "${raw}"`);
   }
   return raw.replace(/\/+$/, "");
+}
+
+/** The human check is on when CAPTCHA_SECRET is set, and then its other four settings must be too. */
+function captcha(env: Env): Config["captcha"] {
+  if (!env.CAPTCHA_SECRET) return null;
+  for (const name of ["CAPTCHA_VERIFY_URL", "CAPTCHA_SCRIPT_URL", "CAPTCHA_SITE_KEY", "CAPTCHA_WIDGET_CLASS"]) {
+    if (!env[name]) throw new ConfigError(`${name} must be set when CAPTCHA_SECRET is set`);
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(env.CAPTCHA_WIDGET_CLASS!)) throw new ConfigError(`CAPTCHA_WIDGET_CLASS must be one class name, not "${env.CAPTCHA_WIDGET_CLASS}"`);
+  return {
+    secret: env.CAPTCHA_SECRET, verifyUrl: url(env, "CAPTCHA_VERIFY_URL", ""), scriptUrl: url(env, "CAPTCHA_SCRIPT_URL", ""),
+    siteKey: env.CAPTCHA_SITE_KEY!, widgetClass: env.CAPTCHA_WIDGET_CLASS!,
+  };
 }
 
 /** Reads `key=value` lines, ignoring blank lines and lines that start with #, and returns the two pins. */
@@ -154,7 +185,12 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       keyFile: env.FAUCET_KEY_FILE || null,
       amountWei,
       perAddressSeconds: whole(env, "FAUCET_PER_ADDRESS_SECONDS", 86400, 1),
-      minIntervalMs: whole(env, "FAUCET_MIN_INTERVAL_MS", 2000, 0),
+      perIpSeconds: whole(env, "FAUCET_PER_IP_SECONDS", 600, 1),
+      maxPerHour: whole(env, "FAUCET_MAX_PER_HOUR", 5000, 1),
+      batch: whole(env, "FAUCET_BATCH", 100, 1),
+      queueMax: whole(env, "FAUCET_QUEUE_MAX", 5000, 1),
+      stateFile: env.FAUCET_STATE_FILE || null,
     },
+    captcha: captcha(env),
   };
 }

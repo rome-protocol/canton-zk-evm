@@ -7,6 +7,7 @@ import { loadConfig } from "./config.ts";
 import { createLedger } from "./ledger.ts";
 import { createFaucet } from "./faucet.ts";
 import { createTracker } from "./tracker.ts";
+import type { Tracked } from "./tracker.ts";
 import { ALLOWED_METHODS, createReth, RethError } from "./reth.ts";
 import { FakeChain, hashOf, txHash, updateIdOf } from "../test/fake-chain.ts";
 import { FAKE_CONFIRMER, FAKE_OPERATOR, FAKE_READER, startFakeLedger, type FakeLedger } from "../test/fake-ledger.ts";
@@ -73,8 +74,10 @@ async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = fal
     contract: (a) => (leak ? leaky(built.contract(a)) : built.contract(a)),
   };
   const key = faucet ? FAUCET_KEY : null;
-  const api = createApi({ config, reth: r, ledger: l, index, tracker, faucet: createFaucet({ key, chainId: real.chainId, ...real.faucet, reth: r }) });
-  return { api, look, get: (target: string) => api("GET", target) };
+  const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number) => {}, state: (_hash: string): Tracked | undefined => undefined };
+  const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
+  const api = createApi({ config, reth: r, ledger: l, index, tracker, faucet: faucetOf });
+  return { api, look, get: (target: string) => api("GET", target), faucet: faucetOf, tracker: faucetTracker };
 }
 
 const chain = () => {
@@ -312,27 +315,52 @@ describe("fields", () => {
 });
 
 describe("the faucet routes", () => {
-  const ask = (api: Awaited<ReturnType<typeof boot>>["api"], address: unknown) => api("POST", "/api/faucet", JSON.stringify({ address }));
+  const ask = (api: Awaited<ReturnType<typeof boot>>["api"], address: unknown, ip?: string, extra: object = {}) => api("POST", "/api/faucet", JSON.stringify({ address, ...extra }), ip);
 
-  it("gives the coin and answers with the transaction's hash, the address and the amount, and nothing else", async () => {
+  it("takes a request with 202 and answers with a ticket, its place in line, the address and the amount, and nothing else", async () => {
     const { api } = await boot(chain(), { faucet: true });
     const answer = await ask(api, BOB);
-    expect(answer.status).toBe(200);
-    same(answer.body, FIELDS.faucetSent);
-    expect(answer.body).toMatchObject({ to: BOB, amount: (10n ** 18n).toString() });
-    expect((answer.body as Obj).hash).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(answer.status).toBe(202);
+    same(answer.body, FIELDS.faucetQueued);
+    expect(answer.body).toMatchObject({ position: 1, to: BOB, amount: (10n ** 18n).toString() });
+    expect((answer.body as Obj).ticket).toMatch(/^[0-9a-f]{24}$/);
   });
 
-  it("answers 429 with Retry-After for an address that was served, and for a send close behind another", async () => {
+  it("answers a ticket's status with exactly its fields: queued with a place, then sent with the transaction, then final with the block", async () => {
+    const { api, faucet, tracker } = await boot(chain(), { faucet: true });
+    const id = ((await ask(api, BOB)).body as Obj).ticket as string;
+    const queued = await api("GET", `/api/faucet/ticket/${id}`);
+    expect(queued.status).toBe(200);
+    same(queued.body, FIELDS.faucetTicket);
+    expect(queued.body).toEqual({ ticket: id, status: "queued", position: 1, to: BOB, amount: (10n ** 18n).toString(), hash: null, state: null, block: null, reason: null });
+    let tracked: Tracked | undefined;
+    tracker.track = (_raw, _hash, from, nonce) => { tracked = { state: "pending", reason: null, from, nonce, block: null, updateId: null, attempts: 1 }; };
+    tracker.state = () => tracked;
+    await faucet.process();
+    const sent = (await api("GET", `/api/faucet/ticket/${id}`)).body as Obj;
+    expect(sent).toMatchObject({ status: "sent", position: null, state: "pending", block: null });
+    expect(sent.hash).toMatch(/^0x[0-9a-f]{64}$/);
+    Object.assign(tracked!, { state: "final", block: 3 });
+    expect((await api("GET", `/api/faucet/ticket/${id}`)).body).toMatchObject({ status: "final", block: 3, hash: sent.hash });
+  });
+
+  it("answers 404 to a ticket that is not known, 405 to other methods on it, and 404 to longer paths", async () => {
     const { api } = await boot(chain(), { faucet: true });
-    await ask(api, BOB);
-    const again = await ask(api, BOB);
+    expect((await api("GET", "/api/faucet/ticket/" + "ab".repeat(12))).status).toBe(404);
+    expect((await api("POST", "/api/faucet/ticket/" + "ab".repeat(12), "{}")).status).toBe(405);
+    expect((await api("GET", "/api/faucet/ticket/a/b")).status).toBe(404);
+    expect((await api("GET", "/api/faucet/ticket")).status).toBe(404);
+  });
+
+  it("answers 429 with Retry-After for an address that was served and for a client that asked a moment ago, saying which", async () => {
+    const { api } = await boot(chain(), { faucet: true });
+    await ask(api, BOB, "9.9.9.9");
+    const again = await ask(api, BOB, "8.8.8.8");
     expect(again).toMatchObject({ status: 429, headers: { "Retry-After": expect.stringMatching(/^\d+$/) } });
     expect(Object.keys(again.body as object)).toEqual(["error", "reason"]);
     expect(again.body).toMatchObject({ reason: "address" });
-    const close = await ask(api, ALICE);
-    expect(close.status).toBe(429);
-    expect(close.body).toMatchObject({ reason: "busy" });
+    const close = await ask(api, ALICE, "9.9.9.9");
+    expect(close).toMatchObject({ status: 429, body: { reason: "ip" } });
   });
 
   it("answers 400 to a body that is not JSON, to no address, and to a bad address", async () => {
@@ -354,10 +382,10 @@ describe("the faucet routes", () => {
     const on = await (await boot(chain(), { faucet: true })).get("/api/faucet");
     expect(on.status).toBe(200);
     same(on.body, FIELDS.faucetInfo);
-    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), amount: (10n ** 18n).toString(), perAddressSeconds: 86400 });
+    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, captcha: null });
     await reth?.close(); await ledger?.close();
     const off = await (await boot(chain())).get("/api/faucet");
-    expect(off.body).toEqual({ on: false, address: null, balance: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400 });
+    expect(off.body).toEqual({ on: false, address: null, balance: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, captcha: null });
   });
 
   it("says in the status whether the faucet is on", async () => {

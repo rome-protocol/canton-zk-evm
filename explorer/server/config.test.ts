@@ -13,7 +13,8 @@ describe("settings", () => {
       host: "127.0.0.1", port: 8088, chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 },
       rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", pollMs: 2000,
     });
-    expect(c.faucet).toEqual({ keyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, minIntervalMs: 2000 });
+    expect(c.faucet).toEqual({ keyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null });
+    expect(c.captcha).toBeNull();
   });
 
   it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
@@ -39,6 +40,24 @@ describe("settings", () => {
     const c = load({ EXPLORER_PORT: "9000", RETH_RPC_URL: "http://reth:8545/", FAUCET_KEY_FILE: "/run/faucet/key", FAUCET_AMOUNT: "0.5", READER_PARTY: "reader::1220ab", COIN_SYMBOL: "TEST" });
     expect(c).toMatchObject({ port: 9000, rethUrl: "http://reth:8545", readerParty: "reader::1220ab", coin: { symbol: "TEST" } });
     expect(c.faucet).toMatchObject({ keyFile: "/run/faucet/key", amountWei: 5n * 10n ** 17n });
+  });
+
+  it("takes the faucet's limits, batch, line and state file from the environment", () => {
+    const c = load({ FAUCET_PER_IP_SECONDS: "60", FAUCET_MAX_PER_HOUR: "100", FAUCET_BATCH: "10", FAUCET_QUEUE_MAX: "20", FAUCET_STATE_FILE: "/data/faucet.json" });
+    expect(c.faucet).toMatchObject({ perIpSeconds: 60, maxPerHour: 100, batch: 10, queueMax: 20, stateFile: "/data/faucet.json" });
+    for (const name of ["FAUCET_PER_IP_SECONDS", "FAUCET_MAX_PER_HOUR", "FAUCET_BATCH", "FAUCET_QUEUE_MAX"]) {
+      expect(() => load({ [name]: "0" })).toThrow(name);
+      expect(() => load({ [name]: "many" })).toThrow(name);
+    }
+  });
+
+  it("turns the human check on only with all five settings, and names the one that is missing", () => {
+    const all = { CAPTCHA_SECRET: "s", CAPTCHA_VERIFY_URL: "https://check.example/verify", CAPTCHA_SCRIPT_URL: "https://check.example/api.js", CAPTCHA_SITE_KEY: "key", CAPTCHA_WIDGET_CLASS: "human-check" };
+    expect(load(all).captcha).toEqual({ secret: "s", verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "key", widgetClass: "human-check" });
+    for (const name of Object.keys(all).filter((n) => n !== "CAPTCHA_SECRET")) expect(() => load({ ...all, [name]: "" })).toThrow(name);
+    expect(() => load({ ...all, CAPTCHA_VERIFY_URL: "check.example" })).toThrow(/CAPTCHA_VERIFY_URL/);
+    expect(() => load({ ...all, CAPTCHA_WIDGET_CLASS: "two classes" })).toThrow(/CAPTCHA_WIDGET_CLASS/);
+    expect(load({ ...all, CAPTCHA_SECRET: "" }).captcha).toBeNull();
   });
 
   it("names the setting that is wrong", () => {
