@@ -578,16 +578,20 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
         head = "0x" + chain["headHash"]
         # reth's head, safe and finalized are Canton's head before anything is built (also after a crash).
         reth.forkchoice(head, head, head)
+        lost_so_far: list = []   # the transactions _build's left-out rebuilds could not put back: they must reach the report even when a later step fails
         try:
-            return _build(cfg, reth, chain, head, set(exclude), prove_empty, unknown_pairs)
+            return _build(cfg, reth, chain, head, set(exclude), prove_empty, unknown_pairs, lost_so_far)
         except BaseException as e:
             reth.forkchoice(head, head, head)
+            # what _build's left-out rebuilds could not put back, what the error already carries, and what the last put-back loses
+            e.lost_transactions = [*lost_so_far, *getattr(e, "lost_transactions", [])]
             try:
-                lost = put_back(reth)
-                if lost:
-                    e.lost_transactions = lost   # the loop reports them with the failure
+                e.lost_transactions += put_back(reth)   # the loop reports them with the failure
+                e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
             except Exception:   # the error that brought us here is the one to report; the saved copy stays for the next start
                 pass
+            if not e.lost_transactions:
+                del e.lost_transactions
             raise
 
 
@@ -622,11 +626,13 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     return payload, pairs
 
 
-def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None) -> dict:
+def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None,
+           lost: list | None = None) -> dict:
     n = int(chain["headNumber"]) + 1
     if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
         raise BuilderError("the chain record's gateway address is not 40 lowercase hex digits")
-    left_out, pairs, lost = [], None, []   # the transactions left out because a leg of theirs had no Canton side, each with the reason; the last build's transactions; the ones reth would not take back
+    left_out, pairs = [], None   # the transactions left out because a leg of theirs had no Canton side, each with the reason; the last build's transactions
+    lost = [] if lost is None else lost   # the ones reth would not take back (the caller's list, so that a failure keeps them)
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
@@ -876,6 +882,10 @@ class Producer:
         self.proof_kept: set = set()      # the transactions of the last block the input tool or the prover failed on, when it was the one before
         self.hunt = None                  # looking for the transaction that cannot be proven: {"live", "probe", "parked"}
         self.excluded_why: dict = {}      # transaction hash -> why it is held back, for the ones held back because they could not be proven
+        self.convictions: dict = {}       # transaction hash -> how many times it was held back as unprovable: each time the cool-down doubles
+        self.passes = 0                   # blocks that passed the input tool and the prover: the proof that the service works
+        self.mark = 0                     # `passes` when the failures now being counted began
+        self.control = None               # a conviction waiting for a block without the candidates to pass the prover: {"tx", "why"}
         self.reported_left = set()        # the left-out transactions the last "skipped" line named
         self.unresolved = None            # the block whose outcome was not known: {"number", "hash", "pairs"}
         self.lost: list = []              # transactions that could not be put back in reth's pool after such a block
@@ -933,21 +943,28 @@ class Producer:
                 return self.settle_unknown()
             if saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
                 self.restore()
-            trigger = self.due(now)
+            trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
             if trigger is None:
                 if now - self.last_written >= 5:   # tells a monitor the loop is alive
                     self.write_status()
                 self.wait(self.idle)
                 return
             exclude = set(self.excluded) | {h for h in self.suspects if h != self.probe} | self.hunt_out()
+            if self.control:   # the control block: without the candidates, and made even when it holds nothing, to see the prover work
+                exclude |= {self.control["tx"]}
             pairs: list = []
             result = self.build(self.cfg, exclude, prove_empty=trigger == "heartbeat", unknown_pairs=pairs)
         except Exception as e:   # not a block Canton answered: reth, the ledger, the prover or the pending check failed
             if isinstance(e, ProvingError):
-                self.proving_failed(e, now)
+                if self.control:   # the prover failed without the candidates too: the service is not shown to work, so nobody is blamed
+                    self.control, self.hunt, self.proof_kept = None, None, set()
+                else:
+                    self.proving_failed(e, now)
             self.fail(failure_report(e))
             return
         self.note_lost(result.get("lostTransactions"), now)
+        if "proveSeconds" in result:
+            self.proof_passed([h.lower() for h in result.get("transactions", result.get("keptTransactions", []))], now)
         if result.get("skipped"):
             self.skipped(result, now)
         elif result["committed"] is False and not result.get("rejected"):
@@ -1007,6 +1024,8 @@ class Producer:
         culprit is one of the common ones: one alone is held back for the cool-down; several are narrowed down by half, each half in a
         block of its own, so that an honest transaction beside a bad one is not held back with it."""
         kept = list(dict.fromkeys(e.kept))
+        if not self.proof_kept and not self.hunt:
+            self.mark = self.passes   # the failures begin here: a pass after this is the proof that the service works
         h = self.hunt
         if h:
             under_test = [x for x in h["probe"] if x in kept]
@@ -1041,11 +1060,30 @@ class Producer:
             return
         self.narrow()
 
-    def unprovable(self, tx: str, now: float, why: str) -> None:
-        self.hunt, self.proof_kept = None, set()
-        self.excluded[tx] = now + self.cooldown
+    def proof_passed(self, held: list, now: float) -> None:
+        """A block went past the input tool and the prover: the service works, and what the block held is cleared of blame. A conviction
+        that waited for this is made now."""
+        self.passes += 1
+        self.proof_kept -= set(held)
+        if self.control:
+            tx, why = self.control["tx"], self.control["why"]
+            self.control = None
+            self.unprovable(tx, now, why, shown=True)
+
+    def unprovable(self, tx: str, now: float, why: str, shown: bool = False) -> None:
+        """Holds a transaction back. Not before a block has passed the prover since the failures began: a service that is down fails every
+        block, and the transactions waiting would be blamed. Until one has, a block without the candidates is made first. A transaction
+        convicted again is held back twice as long as the last time (up to a day)."""
+        if not shown and self.passes <= self.mark:
+            self.control = {"tx": tx, "why": why}
+            return
+        remaining = [x for x in (self.hunt["live"] + self.hunt["parked"] if self.hunt else []) if x != tx]
+        self.hunt, self.proof_kept = None, set(remaining)   # the others the failures named stay counted: one more failure and the hunt goes on
+        self.convictions[tx] = self.convictions.get(tx, 0) + 1
+        cooldown = min(self.cooldown * 2 ** (self.convictions[tx] - 1), max(self.cooldown, 86400))
+        self.excluded[tx] = now + cooldown
         self.excluded_why[tx] = f"it could not be proven: {why[:200]}"
-        self.emit({"excluded": tx, "until": iso(now + self.cooldown), "reason": self.excluded_why[tx]})
+        self.emit({"excluded": tx, "until": iso(now + cooldown), "reason": self.excluded_why[tx]})
 
     def settle_unknown(self) -> None:
         """After a block whose outcome was not known: find out. If Canton has it, it counts as committed. If not, reth goes back to
@@ -1194,14 +1232,16 @@ def main() -> int:
             if args.command == "run":
                 return produce(cfg, args)
             recovered = recover_saved(cfg)   # a block cut short earlier: its transactions go back to reth first
-            result = build_block(cfg, {h.lower() for h in args.exclude})
-            if recovered and recovered["lostTransactions"]:
-                result["lostTransactions"] = [*recovered["lostTransactions"], *result.get("lostTransactions", [])]
-    except BuilderError as e:
-        print(json.dumps({"committed": False, "error": str(e)}))
-        return 1
-    except Exception as e:   # an unreachable service, a reply that is not JSON or not what was expected, and the like
-        print(json.dumps({"committed": False, "error": f"{type(e).__name__}: {e}"}))
+            before = recovered["lostTransactions"] if recovered else []
+            try:
+                result = build_block(cfg, {h.lower() for h in args.exclude})
+            except Exception as e:   # the failure names the transactions lost on the way, and the ones the recovery could not resend
+                e.lost_transactions = [*before, *getattr(e, "lost_transactions", [])]
+                raise
+            if before:
+                result["lostTransactions"] = [*before, *result.get("lostTransactions", [])]
+    except Exception as e:   # a BuilderError, an unreachable service, a reply that is not JSON or not what was expected, and the like
+        print(json.dumps(failure_report(e)))
         return 1
     print(json.dumps(result))
     return 0 if result["committed"] else 2

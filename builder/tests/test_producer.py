@@ -544,7 +544,7 @@ class Unprovable(Loop):
         p = self.producer(s, cooldown=600)
         p.step()
         self.assertEqual(p.excluded, {})   # once is a failure of the service
-        p.step()
+        p.step(); p.step()   # twice, and a block without it has passed the prover
         self.assertEqual(list(p.excluded), [bad["hash"]])
         st = self.status()
         (ex,) = st["excluded"]
@@ -565,7 +565,7 @@ class Unprovable(Loop):
         s = self.setup({ALICE: [bad], BOB: [good]})
         self.input_fails_for(bad["hash"])
         p = self.producer(s, cooldown=600)
-        for _ in range(4):
+        for _ in range(5):
             p.step()
         self.assertEqual(list(p.excluded), [bad["hash"]])
         self.assertEqual(self.committed(), [good["hash"]])
@@ -584,6 +584,68 @@ class Unprovable(Loop):
         self.assertEqual(list(p.excluded), [txs[2]["hash"]])
         self.assertEqual(sorted(self.committed()), sorted(t["hash"] for t in (txs[0], txs[1], txs[3])))
         self.assertEqual(self.in_pool(s), {txs[2]["hash"]})
+
+    def test_a_prover_that_is_down_for_a_moment_blames_nobody(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, prover_fails=True)
+        p = self.producer(s, cooldown=600)
+        for _ in range(4):   # the prover fails every block: no block has shown that it works, so nobody is blamed
+            p.step()
+        self.assertEqual(p.excluded, {})
+        os.environ["FAKE_PROVER_FAILS"] = ""
+        p.step()
+        self.assertEqual((p.excluded, self.committed()), ({}, [t["hash"]]))
+
+    def test_a_prover_outage_in_the_middle_of_a_hunt_blames_nobody(self):
+        txs = [tx(f"0x{i:040x}", 0, price=40 - 10 * i) for i in range(4)]
+        s = self.setup({t["from"]: [t] for t in txs}, prover_fails=True)
+        p = self.producer(s, cooldown=600)
+        for _ in range(8):   # the prover is down the whole time, through the halving
+            p.step()
+        self.assertEqual(p.excluded, {})
+        os.environ["FAKE_PROVER_FAILS"] = ""
+        for _ in range(6):
+            p.step()
+        self.assertEqual((p.excluded, set(self.committed())), ({}, {t["hash"] for t in txs}))
+
+    def test_a_conviction_waits_for_a_block_without_the_candidate_to_pass_the_prover(self):
+        bad = tx(ALICE, 0)
+        s = self.setup({ALICE: [bad]})
+        self.input_fails_for(bad["hash"])
+        p = self.producer(s, cooldown=600)
+        p.step(); p.step()
+        self.assertEqual(p.excluded, {})   # twice, but the service has not been shown to work
+        p.step()   # a block without it passes
+        self.assertEqual(list(p.excluded), [bad["hash"]])
+
+    def test_a_transaction_convicted_again_is_held_back_twice_as_long(self):
+        bad = tx(ALICE, 0)
+        s = self.setup({ALICE: [bad]})
+        self.input_fails_for(bad["hash"])
+        p = self.producer(s, cooldown=600)
+        for _ in range(3):
+            p.step()
+        self.assertEqual(p.excluded[bad["hash"]], self.now[0] + 600)
+        self.now[0] += 601
+        for _ in range(3):
+            p.step()
+        self.assertEqual(p.excluded[bad["hash"]], self.now[0] + 1200)
+        self.now[0] += 1201
+        for _ in range(3):
+            p.step()
+        self.assertEqual(p.excluded[bad["hash"]], self.now[0] + 2400)
+        self.assertEqual([r["until"] for r in self.reports if r.get("excluded")][-1], b.iso(self.now[0] + 2400))
+
+    def test_two_culprits_among_many_are_both_found_and_the_rest_go_in(self):
+        txs = [tx(f"0x{i:040x}", 0, price=60 - 10 * i) for i in range(5)]
+        s = self.setup({t["from"]: [t] for t in txs})
+        self.input_fails_for(txs[1]["hash"], txs[3]["hash"])
+        p = self.producer(s, cooldown=600)
+        for _ in range(12):
+            p.step()
+        self.assertEqual(set(p.excluded), {txs[1]["hash"], txs[3]["hash"]})
+        self.assertEqual(set(self.committed()), {t["hash"] for t in (txs[0], txs[2], txs[4])})
+        self.assertEqual(self.in_pool(s), {txs[1]["hash"], txs[3]["hash"]})
 
     def test_a_service_failure_that_goes_away_blames_nobody(self):
         a, c = tx(ALICE, 0), tx(BOB, 0, price=5)
@@ -758,6 +820,39 @@ class LostTransactions(Loop):
         p = self.producer(s)
         p.step()
         self.assertEqual([x["transaction"] for x in self.reports[0]["lostTransactions"]], [t["hash"]])
+
+    def test_a_left_out_transaction_reth_will_not_take_back_is_reported_when_the_prover_then_fails(self):
+        a, bob = tx(ALICE, 0), tx(BOB, 0)
+        s = self.setup({ALICE: [a], BOB: [bob]}, prover_fails=True)   # BOB's pay leg has no Canton side: it is left out and lost
+        s.reth.tx_legs[bob["hash"]] = [tb.PAY]
+        s.reth.refuse_resend = True
+        p = self.producer(s)
+        p.step()
+        self.assertEqual(sorted(x["transaction"] for x in self.reports[0]["lostTransactions"]), sorted([a["hash"], bob["hash"]]))
+        self.assertEqual(sorted(x["transaction"] for x in self.status()["lostTransactions"]), sorted([a["hash"], bob["hash"]]))
+
+    def once(self, s):
+        return subprocess.run([sys.executable, str(HERE.parent / "builder.py"), "once"], env=self.env(s), capture_output=True, text=True)
+
+    def test_once_names_the_lost_transactions_when_the_prover_fails(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, prover_fails=True)
+        s.reth.refuse_resend = True
+        proc = self.once(s)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        out = json.loads(proc.stdout)
+        self.assertEqual((out["committed"], [x["transaction"] for x in out["lostTransactions"]]), (False, [t["hash"]]))
+        self.assertIn("prover is down", out["error"])
+
+    def test_once_names_the_ones_the_recovery_could_not_resend_when_the_block_then_fails(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, prover_fails=True)
+        SavedBlock.cut_short(self, s)
+        s.reth.refuse_resend = True
+        proc = self.once(s)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        out = json.loads(proc.stdout)
+        self.assertEqual([x["transaction"] for x in out["lostTransactions"]], [t["hash"]])
 
 
 class IdleChecks(Loop):
