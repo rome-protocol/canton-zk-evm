@@ -18,6 +18,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - run: tests/network_static.sh
       - run: tests/network_checks.sh
+      - name: The stop and restart scripts of the persistent network, against a fake Docker
+        run: tests/persist_scripts.sh
       - name: The proposal script, against a fake Ledger API
         run: python3 -m unittest discover -s tests -p 'test_propose.py' -v
       - name: Moving reth to Canton's head after a restart, against a fake reth

@@ -63,6 +63,10 @@ for f in --disable-discovery "--nat none" "--max-outbound-peers 0" "--max-inboun
     --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header "--rpc.eth-proof-window 1" "--builder.gaslimit $GAS_CAP"; do
   grep -q -- "$f" <<<"$persist_out" || { echo "FAIL: persistent dry run lacks $f" >&2; exit 1; }
 done
+# A hard kill must not lose blocks Canton has already committed: reth writes every block to disk as soon as it is imported.
+grep -q -- " --engine.persistence-threshold 0 " <<<"$persist_out " || { echo "FAIL: persistent dry run lacks --engine.persistence-threshold 0" >&2; exit 1; }
+grep -q -- " --engine.memory-block-buffer-target 0 " <<<"$persist_out " || { echo "FAIL: persistent dry run lacks --engine.memory-block-buffer-target 0" >&2; exit 1; }
+! grep -q -- "engine.persistence-threshold" <<<"$out" || { echo "FAIL: the default mode changed reth's persistence settings" >&2; exit 1; }
 grep -q -- " -v $WORK/pstate/reth-data:/data " <<<"$persist_out " || { echo "FAIL: persistent dry run does not keep reth's data in the state folder" >&2; exit 1; }
 ! grep -q -- 'cze-reth-data' <<<"$persist_out" || { echo "FAIL: persistent dry run uses the Docker volume that stop.sh removes" >&2; exit 1; }
 while read -r p; do
@@ -91,6 +95,19 @@ for flag in --disable-discovery --nat --max-outbound-peers --max-inbound-peers -
     echo "FAIL: test could not remove $flag" >&2; exit 1
   fi
   expect_refusal "without $flag" "$flag"
+done
+
+# 2b. In the persistent mode the two persistence flags are required too, with the value 0.
+for flag in --engine.persistence-threshold --engine.memory-block-buffer-target; do
+  fresh_copy
+  sed -E -i.bak "/^ *$flag( |\$)/d" "$WORK/repo/network/reth/launch.sh"
+  if grep -qE -- "^ *$flag( |\$)" "$WORK/repo/network/reth/launch.sh"; then
+    echo "FAIL: test could not remove $flag" >&2; exit 1
+  fi
+  expect_persistent_refusal "persistent without $flag" "$flag" CZE_STATE_DIR="$WORK/pstate2" CZE_PERSIST=1
+  fresh_copy
+  sed -E -i.bak "s/^( *$flag) 0\$/\1 7/" "$WORK/repo/network/reth/launch.sh"
+  expect_persistent_refusal "persistent with $flag 7" "$flag 0" CZE_STATE_DIR="$WORK/pstate2" CZE_PERSIST=1
 done
 
 # 3. A wrong value is refused as well as a missing flag. The refusal names the flag and

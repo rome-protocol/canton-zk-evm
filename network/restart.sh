@@ -30,6 +30,10 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo "Start one with: CZE_PERSIST=1 network/up.sh   (a plain network/up.sh makes a chain that does not survive a restart)" >&2
   exit 1
 fi
+# The database container, reth's container and their ports are the ones up.sh used (network/persist-settings.sh).
+# shellcheck disable=SC1091
+. "$ROOT/network/persist-settings.sh"
+load_persist_settings "$STATE" || exit 1
 [ "$(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env")" = "$CHAIN_ID" ] || fail "this state is for chain $(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env"), not $CHAIN_ID"
 # The databases were made by one Canton version, and only that one reads them: a newer jar needs its own upgrade, not a silent start.
 [ "$(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env")" = "$CANTON_VERSION" ] \

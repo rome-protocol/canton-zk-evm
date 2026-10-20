@@ -50,5 +50,5 @@ SOLC_IMAGE=ethereum/solc@sha256:b3b83d65e1eae916b58e0c19b9051afa7ffc93e00f821019
 # The address is far from the low addresses Ethereum uses for precompiles and system contracts.
 GATEWAY_ADDRESS=0xa7e0000000000000000000000000000000000000
 # The database of the persistent network (network/postgres.sh, CZE_PERSIST=1): postgres 16.10 on Alpine, pinned by digest (the multi-arch
-# index, the same digest on Docker Hub and on ECR Public). tests/network_static.sh checks it is pinned by digest.
+# index). tests/network_static.sh checks it is pinned by digest.
 POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297

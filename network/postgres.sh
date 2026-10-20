@@ -51,6 +51,11 @@ start() {
 case ${1:-} in
   start) start ;;
   stop) docker stop -t 60 "$NAME" >/dev/null 2>&1 || true ;;
-  wipe) docker rm -f "$NAME" >/dev/null 2>&1 || true; docker volume rm -f "$NAME-data" >/dev/null 2>&1 || true; rm -f "$ENV_FILE" ;;
+  wipe)
+    # Says so, and fails, if the container or the volume is still there afterwards: down.sh --wipe must not claim a wipe that did not happen.
+    docker info >/dev/null 2>&1 || fail "docker does not answer, so nothing was wiped"
+    if exists; then docker rm -f "$NAME" >/dev/null || fail "could not remove the container $NAME"; fi
+    if docker volume inspect "$NAME-data" >/dev/null 2>&1; then docker volume rm -f "$NAME-data" >/dev/null || fail "could not remove the volume $NAME-data"; fi
+    rm -f "$ENV_FILE" ;;
   *) echo "usage: postgres.sh start|stop|wipe" >&2; exit 2 ;;
 esac

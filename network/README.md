@@ -13,7 +13,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
 | `canton/fetch.sh`, `canton/fetch-jar.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
-| `up.sh`, `down.sh` | Start and stop everything. `down.sh` keeps a persistent chain's data, and `down.sh --wipe` removes it |
+| `up.sh`, `down.sh`, `persist-settings.sh` | Start and stop everything. `down.sh` keeps a persistent chain's data, and `down.sh --wipe` removes it, says "wiped" only when the database and reth's data are really gone, and otherwise says what is left and exits with an error (`persist.env` stays, so it can be run again) |
 | `restart.sh`, `sync_reth.py` | Bring a persistent chain back after a restart, and make reth's head Canton's head |
 | `smoke.sh`, `prove-timed.sh` | The smoke test, and the prover command it hands the builder (it keeps the prover's output so the proof time can be read) |
 
@@ -80,16 +80,16 @@ What persistent mode changes, and what it does not:
 
 - **Canton** keeps the synchronizer, the sequencer, the mediator and the three participants in PostgreSQL, one database each (`canton/canton-persistent.conf`, added as a second `-c`). The ZkChain contract, every block record and every Canton holding are in those databases. The Daml package, the parties and the Ledger API users are too.
 - **The database** is one PostgreSQL, started by `postgres.sh`. Its image is pinned by digest in `PINS` (`POSTGRES_IMAGE`). It listens on 127.0.0.1 only (port 5432, or `CZE_PG_PORT`), and its data is in the Docker volume `cze-postgres-data`. Its password is made on the machine, once, into `$CZE_STATE_DIR/postgres.env` (mode 0600). It is never printed and never committed. Docker reads it from that file, and Canton gets it through its environment.
-- **reth** keeps its data in `$CZE_STATE_DIR/reth-data` instead of the Docker volume that a normal stop removes. `reth/launch.sh` is still the only way reth is started: peer discovery is off, there are no peers and no published p2p port, and every check in `launch.sh` and `check.sh` runs on a restart as on the first start.
-- **The Engine secret and the genesis** stay in `$CZE_STATE_DIR` (`jwt.hex`, `genesis.json`), and a restart reuses them. `persist.env` there records the Canton version and the chain id, and marks the folder as a persistent chain: `up.sh` will not start a new chain over it, with or without `CZE_PERSIST`.
+- **reth** keeps its data in `$CZE_STATE_DIR/reth-data` instead of the Docker volume that a normal stop removes. It also writes every block to disk as soon as it imports it (`--engine.persistence-threshold 0` and `--engine.memory-block-buffer-target 0`, which `launch.sh` requires in this mode). reth's default keeps the newest seven blocks in memory, and a hard kill, an out-of-memory kill or a power loss would then leave it behind Canton, which has already committed those blocks. The builder imports a block about 7 s before Canton commits it, so this costs no block time. `reth/launch.sh` is still the only way reth is started: peer discovery is off, there are no peers and no published p2p port, and every check in `launch.sh` and `check.sh` runs on a restart as on the first start.
+- **The Engine secret and the genesis** stay in `$CZE_STATE_DIR` (`jwt.hex`, `genesis.json`), and a restart reuses them. `persist.env` there records the Canton version, the chain id, and the names and ports of the database container and of reth's container (`persist-settings.sh`). `restart.sh` and `down.sh` use those, so they act on the same containers as the run that made the chain, and refuse an environment variable that names another. It marks the folder as a persistent chain: `up.sh` will not start a new chain over it, with or without `CZE_PERSIST`.
 
 `restart.sh` starts, in this order: the database, reth on its data, both sidecars (Canton asks them when it starts), the prover, and Canton (`run.sh resume`). It proposes no chain, makes no secret, builds no guest and does not run `bootstrap.canton` again. It stops if there is no persistent state (it says what is missing and how to start a chain), if the databases were made by another Canton version than the one in `PINS`, or if a service is still running. When Canton is back it checks that the DAR's package is on the operator's participant, and then makes reth's head, safe and finalized block Canton's head, which is what the builder does before it builds (`sync_reth.py`), and prints the head:
 
 | reth after the restart | What happens |
 |---|---|
 | on Canton's head | nothing moves |
-| ahead of Canton (it built a block that Canton never committed) | reth is moved back to Canton's head; the uncommitted block is dropped |
-| behind Canton (Canton committed a block that reth lost) | an error. reth cannot build the next block from data that lacks Canton's head, so this stops with both heads named. Stopping reth with `down.sh` writes its data out, so this happens only after a crash of reth itself |
+| ahead of Canton (it built a block that Canton never committed, usually because the stop came while a block was being proved) | reth is moved back to Canton's head and the block is dropped, but its transactions are not: they are read first and sent to reth again afterwards, and `restart.sh` prints how many (`dropped_transactions`, `resent_transactions`). One that reth refuses, because its nonce is used already, is skipped |
+| behind Canton (Canton committed a block that reth lost) | an error. reth cannot build the next block from data that lacks Canton's head, so this stops with both heads named. A graceful stop writes everything out, and so does a crash of reth in this mode, so this means reth's folder is older than the chain's (a restored backup of the folder, say) |
 
 The chain's history is as safe as the machine's disk. Back up the databases (`pg_dump` of the five) and `$CZE_STATE_DIR/reth-data` together, taken while the network is stopped, if you need a copy.
 
@@ -114,6 +114,7 @@ The Canton side is tested without a GPU:
 tests/network_static.sh      # reth only through launch.sh; the extension only on the two confirming participants; the recorded smoke result
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
 python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
+tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
 ```

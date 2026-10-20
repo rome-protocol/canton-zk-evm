@@ -63,7 +63,10 @@ PROGRAM_VK=${PROGRAM_VK#0x}; ROOT_C=${ROOT_C#0x}
 
 # From here on the run makes state that must be kept or wiped on purpose, so the marker that restart.sh and down.sh look for is written.
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
-  printf 'CZE_PERSIST=1\nCANTON_VERSION=%s\nCHAIN_ID=%s\n' "$CANTON_VERSION" "$CHAIN_ID" > "$CZE_STATE_DIR/persist.env"
+  # The names and ports of the containers go in too, so that restart.sh and down.sh act on the same ones (network/persist-settings.sh).
+  printf 'CZE_PERSIST=1\nCANTON_VERSION=%s\nCHAIN_ID=%s\nCZE_PG_CONTAINER=%s\nCZE_PG_PORT=%s\nRETH_CONTAINER=%s\nRETH_HTTP_PORT=%s\nRETH_WS_PORT=%s\nRETH_ENGINE_PORT=%s\n' \
+    "$CANTON_VERSION" "$CHAIN_ID" "${CZE_PG_CONTAINER:-cze-postgres}" "${CZE_PG_PORT:-5432}" "${RETH_CONTAINER:-cze-reth}" \
+    "${RETH_HTTP_PORT:-8545}" "${RETH_WS_PORT:-8546}" "${RETH_ENGINE_PORT:-8551}" > "$CZE_STATE_DIR/persist.env"
 fi
 step "reth, through launch.sh"
 "$ROOT/network/reth/launch.sh"

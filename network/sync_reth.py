@@ -3,11 +3,13 @@
 Used by network/restart.sh after a restart, when reth may be behind Canton, ahead of it, or on the same block.
 
   ahead of Canton   reth's blocks after Canton's head were never committed on Canton: reth is moved back to Canton's head
-                    (reth runs with --engine.allow-unwind-canonical-header for this)
+                    (reth runs with --engine.allow-unwind-canonical-header for this). reth does not return an unwound block's transactions
+                    to its pool, so they are read first and sent again afterwards, the way the builder does (errors are ignored: a
+                    transaction whose nonce is used already is not a problem). Nobody's transaction is lost to a planned restart.
   on Canton's head  nothing moves
   behind Canton     Canton committed a block that reth does not have, so reth cannot continue this chain: this stops with an error
 
-Prints key=value lines: canton_head, canton_hash, reth_latest_before, reth_finalized_before, reth_latest, reth_finalized, moved.
+Prints key=value lines: canton_head, canton_hash, reth_latest_before, reth_finalized_before, reth_latest, reth_finalized, moved, dropped_transactions, resent_transactions.
 Exits 0 only if reth's latest and finalized block are Canton's head. Reads the same environment as the builder (CZE_STATE_DIR, CZE_LEDGER_USER,
 CZE_BUILDER_PARTY, CZE_FEE_RECIPIENT, RETH_HTTP_PORT, ...)."""
 import json, sys, urllib.request
@@ -32,7 +34,21 @@ def reconcile(canton_number: int, canton_hash: str, call, forkchoice) -> dict:
                         f"{before_latest['number']}): reth is behind Canton and cannot continue this chain from this data")
     if int(wanted["number"], 16) != canton_number:
         raise SyncError(f"reth has block {canton_hash} as number {int(wanted['number'], 16)}, Canton says {canton_number}")
+    # The transactions of the blocks above Canton's head, read before the move (afterwards reth no longer has them).
+    raws = []
+    for n in range(canton_number + 1, (before_latest["number"] or 0) + 1):
+        for tx_hash in (call("eth_getBlockByNumber", [hex(n), False]) or {}).get("transactions", []):
+            raw = call("eth_getRawTransactionByHash", [tx_hash])
+            if raw:
+                raws.append(raw)
     forkchoice(canton_hash, canton_hash, canton_hash)
+    resent = 0
+    for raw in raws:
+        try:
+            call("eth_sendRawTransaction", [raw])
+            resent += 1
+        except SyncError:
+            pass
     after_latest, after_final = block("latest"), block("finalized")
     for name, b in (("latest", after_latest), ("finalized", after_final)):
         if b["hash"] != canton_hash:
@@ -40,7 +56,7 @@ def reconcile(canton_number: int, canton_hash: str, call, forkchoice) -> dict:
     moved = (before_latest["hash"], before_final["hash"]) != (canton_hash, canton_hash)
     return {"canton_head": canton_number, "canton_hash": canton_hash, "reth_latest_before": before_latest["number"],
             "reth_finalized_before": before_final["number"], "reth_latest": after_latest["number"], "reth_finalized": after_final["number"],
-            "moved": "yes" if moved else "no"}
+            "moved": "yes" if moved else "no", "dropped_transactions": len(raws), "resent_transactions": resent}
 
 
 def main() -> int:
@@ -54,8 +70,11 @@ def main() -> int:
         def call(method, params):
             request = urllib.request.Request(url, json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
                                              {"content-type": "application/json"})
-            with urllib.request.urlopen(request, timeout=60) as r:
-                reply = json.load(r)
+            try:
+                with urllib.request.urlopen(request, timeout=60) as r:
+                    reply = json.load(r)
+            except OSError as e:
+                raise SyncError(f"{method}: reth does not answer: {e}")
             if "error" in reply:
                 raise SyncError(f"{method} failed: {reply['error']}")
             return reply["result"]

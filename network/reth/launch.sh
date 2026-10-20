@@ -57,6 +57,16 @@ RETH_ARGS=(
   --rpc.eth-proof-window 1
 )
 
+# In the persistent mode every block is written to disk as soon as it is imported. With reth's default (the newest ~7 blocks stay in
+# memory) a hard kill, an out-of-memory kill or a power loss would leave reth behind Canton, which has already committed those blocks.
+# The builder imports a block about 7 s before Canton commits it, so writing at once costs nothing in the block time.
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  RETH_ARGS+=(
+    --engine.persistence-threshold 0
+    --engine.memory-block-buffer-target 0
+  )
+fi
+
 refuse() {
   echo "refusing to start reth: $*" >&2
   exit 1
@@ -82,6 +92,11 @@ require --engine.always-process-payload-attributes-on-canonical-head
 require --engine.allow-unwind-canonical-header
 require --builder.gaslimit "$GAS_CAP"
 require --rpc.eth-proof-window 1
+
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  require --engine.persistence-threshold 0
+  require --engine.memory-block-buffer-target 0
+fi
 
 # The data directory: a Docker volume that stop.sh removes, or, in the persistent mode, a folder in the state folder that stays.
 if [ "${CZE_PERSIST:-0}" = 1 ]; then

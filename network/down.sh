@@ -15,7 +15,13 @@ case ${1:-} in
   *) echo "usage: down.sh [--wipe]" >&2; exit 2 ;;
 esac
 PERSISTENT=0
-[ ! -e "$STATE/persist.env" ] || PERSISTENT=1
+if [ -e "$STATE/persist.env" ]; then
+  PERSISTENT=1
+  # The containers and ports the chain was made with, not whatever this shell has set (network/persist-settings.sh).
+  # shellcheck disable=SC1091
+  . "$ROOT/network/persist-settings.sh"
+  load_persist_settings "$STATE" || exit 1
+fi
 
 stop() {   # a process by its pid file, if that pid is still the process that was started (after a reboot another one may have it)
   local f=$1 pid
@@ -37,9 +43,16 @@ stop "$PROVER/coordinator.pid" 'zisk-coordinator'
 if [ "$PERSISTENT" = 1 ]; then
   CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" stop
   if [ "$WIPE" = 1 ]; then
-    CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --wipe-persistent
-    CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" wipe
-    rm -rf "$NET" "$STATE/canton" "$STATE/persist.env" "$STATE/jwt.hex" "$STATE/genesis.json"
+    # persist.env goes last, and only if everything else is gone: it is what tells restart.sh and down.sh that there is a chain to look after.
+    left=()
+    CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --wipe-persistent || left+=("reth's data")
+    CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" wipe || left+=("the database")
+    rm -rf "$NET" "$STATE/canton" "$STATE/jwt.hex" "$STATE/genesis.json"
+    if [ ${#left[@]} -gt 0 ]; then
+      echo "NOT wiped: ${left[*]} could not be removed and is still there (see above). persist.env is kept: fix the cause and run network/down.sh --wipe again." >&2
+      exit 1
+    fi
+    rm -f "$STATE/persist.env"
     echo "stopped; the persistent chain is wiped"
   else
     CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --keep-data
