@@ -50,7 +50,7 @@ wait_for_head() {   # until the operator's ZkChain is at head 1, up to 60 s
   return 1
 }
 
-[ "$(active "$OPERATOR_API" "$OPERATOR_PARTY" ZkChain | jq -r '.[0].headNumber')" = 0 ] || fail "the chain is not at head 0: this smoke test is for a fresh network"
+[ "$(active "$OPERATOR_API" "$OPERATOR_PARTY" ZkChain | jq -r '.[0].headNumber')" = 0 ] || fail "the chain is not at head 0: this smoke test is for a fresh network without CZE_PERSIST (a persistent chain already has its empty block 1 from up.sh)"
 
 export CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee
 export CZE_PROVE_CMD=$ROOT/network/prove-timed.sh

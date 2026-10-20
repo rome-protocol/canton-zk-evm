@@ -621,6 +621,25 @@ class Rebuilding(LegCase):
         self.assertEqual((result["legs"], result["transactions"]), (1, [honest["hash"]]))
         self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
 
+    def test_a_broken_connection_while_putting_left_out_transactions_back_keeps_the_saved_copy(self):
+        """The left-out rebuild empties nothing before the resend has returned: when the resend dies at the transport level, the
+        failure handler sends everything again and clears the copy only if that works; here the connection is gone for good."""
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        honest = self.leg_tx(s, PAY, ALICE, price=9)
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), BOB, price=1)   # no terms: left out, then put back
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [honest], [bad]
+        s.reth.crash_on_send = True
+        with self.assertRaises(Exception) as raised:
+            self.build(s)
+        self.assertNotIsInstance(raised.exception, b.BuilderError)
+        self.assertFalse(hasattr(raised.exception, "lost_transactions"))
+        self.assertFalse(hasattr(raised.exception, "rewind_error"))
+        self.assertTrue(b.saved_path(s.cfg).exists())   # the transactions are on disk although the pool has none
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["lostTransactions"]), (2, []))
+        self.assertEqual(self.in_pool(s), {honest["hash"], bad["hash"]})
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
     def test_a_transaction_that_is_left_out_does_not_take_an_allocation_from_another(self):
         twin = ("terms-2", {**TERMS[1], "dvpId": "fe" * 32})
         s = self.setup({ALICE: [], BOB: []}, terms=[TERMS, twin])
@@ -813,6 +832,39 @@ class Refusal(Case):
             b.build_block(s.cfg)
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
         self.assertEqual(s.ledger.submitted, [])
+
+    def test_a_failed_move_back_does_not_hide_the_error_that_made_it_necessary(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True
+        with self.assertRaises(b.ProvingError) as raised:
+            b.build_block(s.cfg)
+        self.assertIn("prove", str(raised.exception))
+        self.assertNotIn("no state found", str(raised.exception))
+        self.assertIn("no state found", raised.exception.rewind_error)
+        report = b.failure_report(raised.exception)
+        self.assertIn("prove", report["error"])
+        self.assertNotIn("no state found", report["error"])
+        self.assertIn("no state found", report["rewindError"])
+
+    def test_a_refusal_keeps_canton_reason_when_moving_reth_back_fails(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="the sidecar refused the proof: wrong program key")
+        s.reth.no_state_for_genesis = True
+        result = b.build_block(s.cfg)
+        self.assertIs(result["committed"], False)
+        self.assertIn("wrong program key", result["reason"])
+        self.assertNotIn("no state found", result["reason"])
+        self.assertIn("no state found", result["rewindError"])
+        self.assertEqual(len(result["keptTransactions"]), 1)
+
+    def test_a_refusal_without_a_failed_move_back_has_no_rewind_error(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="no")
+        self.assertNotIn("rewindError", b.build_block(s.cfg))
+
+    def test_a_report_without_a_failed_move_back_has_no_rewind_error(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        with self.assertRaises(b.BuilderError) as raised:
+            b.build_block(s.cfg)
+        self.assertNotIn("rewindError", b.failure_report(raised.exception))
 
     def test_a_proof_left_by_an_earlier_run_is_never_used(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_writes_nothing=True)
@@ -1042,6 +1094,23 @@ class CommandLine(Case):
 
     def test_a_failing_prover_is_one_json_line(self):
         self.assert_failure(self.run_main(self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)), "prove")
+
+    def test_once_reports_the_original_error_and_the_failed_move_back(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True
+        code, out = self.run_main(s)
+        self.assert_failure((code, out), "prove")
+        self.assertNotIn("no state found", out["error"])
+        self.assertIn("no state found", out["rewindError"])
+
+    def test_once_reports_the_refusal_and_the_failed_move_back(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="the sidecar refused the proof: wrong program key")
+        s.reth.no_state_for_genesis = True
+        code, out = self.run_main(s)
+        self.assertEqual((code, out["committed"]), (2, False))
+        self.assertIn("wrong program key", out["reason"])
+        self.assertNotIn("no state found", out["reason"])
+        self.assertIn("no state found", out["rewindError"])
 
 
 class Pieces(unittest.TestCase):

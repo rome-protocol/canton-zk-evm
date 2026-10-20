@@ -9,6 +9,9 @@
 #   6. Canton: one synchronizer, three participants (network/canton/), the Daml package uploaded and vetted
 #   7. the chain: the operator and the gateway propose it with genesis = reth's block 0, which holds the gateway contract's
 #      code at GATEWAY_ADDRESS, and the confirmer accepts
+#   8. with CZE_PERSIST=1 only: an empty block 1, built, proven and committed right away, before anything else may build. A
+#      persistent reth cannot move its head back to the genesis block ("no state found for block 0x00..00"), so a first block that
+#      failed would leave the producer stuck at genesis for good. Once block 1 is committed, every later failure rewinds to block 1 or later.
 # With CZE_PERSIST=1 the chain survives a restart: Canton keeps everything in PostgreSQL (network/postgres.sh, a pinned image on 127.0.0.1,
 # its password made on this machine into $CZE_STATE_DIR/postgres.env) and reth keeps its data in $CZE_STATE_DIR/reth-data. After a reboot,
 # network/restart.sh brings the same chain back; network/down.sh stops it and keeps the data, and network/down.sh --wipe removes it.
@@ -105,4 +108,26 @@ CANTON_JAR=$CANTON_JAR "$ROOT/network/canton/run.sh" bootstrap
 step "the chain: genesis $GENESIS_HASH, state root $GENESIS_STATE_ROOT"
 python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --genesis-state-root "${GENESIS_STATE_ROOT#0x}" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" \
   --rules-hash "$RULES_HASH" --gateway-address "${GATEWAY_ADDRESS#0x}" | tee "$NET/chain.json"
-echo "== up ($(date -u +%T)); smoke test: network/smoke.sh"
+
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  step "the first block: an empty block 1, so that reth never has to move back to genesis"
+  # Same builder settings as smoke.sh; the prover is the builder's default command (prove-one.sh). Nothing else builds before this: the
+  # producer is started by the operator afterwards.
+  # shellcheck disable=SC1091
+  . "$CZE_STATE_DIR/canton/parties.env"
+  set +e
+  first=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+    "$CZE_STATE_DIR/venv/bin/python3" "$ROOT/builder/builder.py" once)
+  first_status=$?
+  set -e
+  echo "$first" | tee "$NET/block1.json"
+  if [ "$first_status" != 0 ] || [ "$(jq -r .committed <<<"$first" 2>/dev/null)" != true ] || [ "$(jq -r .number <<<"$first" 2>/dev/null)" != 1 ] \
+     || [ "$(jq -r '.transactions | length' <<<"$first" 2>/dev/null)" != 0 ]; then
+    fail "block 1 was not committed (see the report above). This persistent chain cannot be used: network/down.sh --wipe, fix the cause, and start again"
+  fi
+fi
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  echo "== up ($(date -u +%T)); block 1 is committed (report: $NET/block1.json); network/smoke.sh is for in-memory networks and needs head 0"
+else
+  echo "== up ($(date -u +%T)); smoke test: network/smoke.sh"
+fi

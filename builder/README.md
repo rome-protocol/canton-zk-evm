@@ -31,7 +31,7 @@ A transaction reth will not take back (for any reason other than already having 
 
 **A restart in the middle of a block.** Every start moves reth to Canton's head, and reth does not give back the transactions of a block it unwound. So the transactions of a block in the making are on disk (`kept-transactions.json`) from before reth drops them from its pool. At start (and whenever the file is found later, after a fault that cut the putting back short) `run`, and `once`, move reth to Canton's head and send every transaction in the file to the pool again, then remove the file. A transaction of a block Canton did commit has a used nonce and reth says so; that is ignored. One that reth refuses for another reason is named in `lostTransactions`. A line `{"recovered": <count>, "lostTransactions": [...]}` says it was done. A file that cannot be read is moved to `kept-transactions.json.unreadable` and reported once.
 
-Exit status: 0 committed, 2 not committed (refused by Canton, or not accepted because a service failed) or not known (`"committed": null`), 1 any other failure. Every run prints exactly one JSON line on stdout, failures included (a missing setting, an unreadable secret, no `ZkChain` contract or two of them, a reply that is not JSON, a failing prover): `{"committed": false, "error": "..."}` and exit 1.
+Exit status: 0 committed, 2 not committed (refused by Canton, or not accepted because a service failed) or not known (`"committed": null`), 1 any other failure. Every run prints exactly one JSON line on stdout, failures included (a missing setting, an unreadable secret, no `ZkChain` contract or two of them, a reply that is not JSON, a failing prover): `{"committed": false, "error": "..."}` and exit 1. A failure whose move of reth back also failed carries `rewindError` next to the original `error`; a block Canton refused, when that move back fails, keeps Canton's `reason` and carries `rewindError` too.
 
 ### The report
 
@@ -114,7 +114,7 @@ What it does after a block:
 
 A refused block and a failed block do not count as two in a row for the leaving out. Only two refusals next to each other do. A suspect that was held back wrongly (for example, a new bad transaction came into the block of its trial) is tried again when its cool-down ends.
 
-One JSON line goes to stdout for every block, the same report `once` prints (a failure prints `{"committed": false, "error": "..."}`), so it can be followed with `tail -f` or sent to a log collector. A stdout that is closed does not stop the loop.
+One JSON line goes to stdout for every block, the same report `once` prints (a failure prints `{"committed": false, "error": "..."}`, with `rewindError` next to `error` when the move of reth back failed too), so it can be followed with `tail -f` or sent to a log collector. A stdout that is closed does not stop the loop.
 
 **Stopping.** `SIGTERM` or `SIGINT` (Ctrl-C) finishes the block in progress, writes the status, and exits 0. The input tool and the prover run in their own session, so a Ctrl-C at the terminal, which reaches the whole process group, does not cut a proof short. A second signal acts as it usually does. A block cut off in the middle is the same as after a crash: the next start goes back to Canton's head. Run it under a service manager that restarts it, and it is safe to restart at any time. A service manager that signals every process of the service when it stops must be set to signal the builder first and the rest only at the end (for a Linux init system: a kill mode of `mixed`), and its stop timeout must be longer than a proof and the Canton answer put together, or it will end a block in progress. Set it to restart the builder after any exit.
 
@@ -129,7 +129,7 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 | `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |
 | `blocksCommitted`, `blocksRefused`, `blocksUnknown` | counts since the loop started |
 | `consecutiveFailures` | failures since the last answered block |
-| `lastError` | `{time, error}`: the last refusal reason, unknown outcome or failure |
+| `lastError` | `{time, error}`: the last refusal reason, unknown outcome or failure. If moving reth back after the failure or the refusal failed too, `error` is still the original and `rewindError` holds the second |
 | `excluded` | the transactions left out now, each as `{transaction, until}`, and `reason` for one the prover could not finish |
 | `searchingForUnprovable` | `{candidates}` while the loop looks for a transaction the prover cannot finish, else `null` |
 | `waitingToBeResolved` | `{number, hash}` of a block whose outcome is not known yet, or `null` |

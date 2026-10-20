@@ -176,9 +176,10 @@ def clear_saved(cfg: Config) -> None:
 def put_back(reth: Reth) -> list:
     """reth does not return an unwound block's transactions to its pool, so the builder sends them again. A transaction the pool already
     has, or one whose nonce is used, is not a problem. Returns [{transaction, error}] for the ones reth refused for another reason: they
-    are not in the pool, and the caller reports them. The saved copy is cleared when the transactions have been sent."""
-    pairs, reth.imported = reth.imported, []
-    lost = resend(reth, pairs)
+    are not in the pool, and the caller reports them. The saved copy is cleared when the transactions have been sent; when sending raises, nothing is forgotten
+    (the list and the saved copy stay), so a second put_back or the next start's recover_saved sends them all again."""
+    lost = resend(reth, reth.imported)
+    reth.imported = []   # only after the resend returned: if it dies midway, the failure handler's put_back sends everything again
     clear_saved(reth.cfg)
     return lost
 
@@ -582,14 +583,21 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
         try:
             return _build(cfg, reth, chain, head, set(exclude), prove_empty, unknown_pairs, lost_so_far)
         except BaseException as e:
-            reth.forkchoice(head, head, head)
+            try:
+                reth.forkchoice(head, head, head)
+            except Exception as rewind:   # the error that brought us here is the one to report; the failed move back rides along as rewindError
+                e.rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
             # what _build's left-out rebuilds could not put back, what the error already carries, and what the last put-back loses
             e.lost_transactions = [*lost_so_far, *getattr(e, "lost_transactions", [])]
-            try:
-                e.lost_transactions += put_back(reth)   # the loop reports them with the failure
-                e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
-            except Exception:   # the error that brought us here is the one to report; the saved copy stays for the next start
-                pass
+            # When the move back failed, reth's head is still the failed block and answers "nonce too low" for every one of its
+            # transactions: sending them would look like success and clear the saved copy. The copy stays; the next start's
+            # recover_saved moves reth back first and sends them then.
+            if not getattr(e, "rewind_error", None):
+                try:
+                    e.lost_transactions += put_back(reth)   # the loop reports them with the failure
+                    e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
+                except Exception:   # the error that brought us here is the one to report; the saved copy stays for the next start
+                    pass
             if not e.lost_transactions:
                 del e.lost_transactions
             raise
@@ -717,10 +725,21 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
                     "reason": f"{reason}; and Canton's head could not be read afterwards ({e}), so it is not known whether the block committed",
                     "keptTransactions": [t["hash"] for t in chosen]}
         if now != block_hash[2:]:
-            reth.forkchoice(head, head, head)
-            put_back_lost = put_back(reth)
+            rewind_error = None
+            try:
+                reth.forkchoice(head, head, head)
+            except Exception as rewind:   # Canton's answer is the one to report; the failed move back rides along as rewindError
+                rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
+            put_back_lost = []
+            if not rewind_error:   # after a failed move back reth's head is still this block, which would "have" every transaction (nonce too low):
+                try:              # they stay in reth.imported and in the saved copy for the next start's recover_saved, which moves reth back first
+                    put_back_lost = put_back(reth)
+                except Exception as again:
+                    rewind_error = str(again) if isinstance(again, BuilderError) else f"{type(again).__name__}: {again}"
             if put_back_lost:
                 report["lostTransactions"] = [*report.get("lostTransactions", []), *put_back_lost]
+            if rewind_error:
+                report["rewindError"] = rewind_error
             return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(block_hash, block_hash, block_hash)
@@ -859,6 +878,8 @@ def failure_report(e: Exception) -> dict:
     report = {"committed": False, "error": str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"}
     if getattr(e, "lost_transactions", None):
         report["lostTransactions"] = e.lost_transactions
+    if getattr(e, "rewind_error", None):   # moving reth back after the failure failed too: the original stays in "error"
+        report["rewindError"] = e.rewind_error
     return report
 
 
@@ -977,6 +998,8 @@ class Producer:
         self.failures += 1
         self.previous_kept = set()
         self.last_error = {"time": iso(self.clock()), "error": report.get("error") or report.get("reason", "")}
+        if report.get("rewindError"):
+            self.last_error["rewindError"] = report["rewindError"]
         self.emit(report)
         self.write_status()
         self.wait(min(BACKOFF_CAP, 2.0 ** min(self.failures - 1, 5)))   # the exponent is capped: it never overflows
@@ -1127,6 +1150,8 @@ class Producer:
             prune_work(self.cfg.work_dir, result["number"])
         else:
             self.last_error = {"time": iso(now), "error": result.get("reason", "")}
+            if result.get("rewindError"):
+                self.last_error["rewindError"] = result["rewindError"]
             if result["committed"] is False:
                 self.refused += 1
                 self.refusals_in_row += 1
