@@ -79,6 +79,7 @@ class FakeReth:
         self.ws_calls: list = []       # (method, params)
         self.blocks = {HEAD_HASH: {"number": HEAD_NUMBER, "timestamp": HEAD_TIME, "gasLimit": gas_limit}}
         self.raw_blocks: dict = {}
+        self.by_number: dict = {}   # number -> the hash of the block most recently built at that height
         self.jwt_failures = 0
         self.tx_legs: dict = {}   # transaction hash -> the Leg events that transaction makes, in order, when it is in a block (or a function from the block's transaction hashes to them)
         self.block_txs: dict = {}   # block hash -> the hashes of its transactions
@@ -157,7 +158,7 @@ class FakeReth:
         if method == "debug_getRawBlock":
             return self.raw_blocks[int(params[0], 16)]
         if method == "eth_getBlockByNumber":
-            return {"number": params[0], "transactions": []}
+            return {"number": params[0], "hash": self.by_number.get(int(params[0], 16)), "transactions": []}
         if method == "debug_executionWitness":
             return {"state": [], "codes": [], "keys": [], "headers": []}
         if method == "eth_getLogs":
@@ -175,6 +176,7 @@ class FakeReth:
         h = "0x" + keccak256(header).hex()
         self.blocks[h] = {"number": number, "timestamp": int(attributes["timestamp"], 16), "gasLimit": self.gas_limit}
         self.block_txs[h] = ["0x" + r[4:] for r in raws]
+        self.by_number[number] = h
         self.raw_blocks[number] = "0x" + rlp([Raw(header), [bytes.fromhex(r[2:]) for r in raws], [], []]).hex()
         payload = {"parentHash": parent, "blockNumber": hex(number), "blockHash": h, "gasLimit": hex(self.gas_limit),
                    "gasUsed": hex(gas_used), "timestamp": attributes["timestamp"], "transactions": raws}

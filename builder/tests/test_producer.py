@@ -314,14 +314,19 @@ class Refusals(Loop):
 
 class Failures(Loop):
     def test_a_failing_block_backs_off_up_to_thirty_seconds_and_a_good_one_resets_it(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
-        p = self.producer(s)
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        down = [True]
+        def building(cfg, exclude, **k):
+            if down[0]:
+                raise b.BuilderError("reth is down")
+            return b.build_block(cfg, exclude, **k)
+        p = self.producer(s, build=building)
         for _ in range(8):
             p.step()
         self.assertEqual(self.waits, [1, 2, 4, 8, 16, 30, 30, 30])
         self.assertTrue(all(r["committed"] is False and "error" in r for r in self.reports))
         self.assertEqual(self.status()["consecutiveFailures"], 8)
-        os.environ["FAKE_PROVER_FAILS"] = ""
+        down[0] = False
         p.step()
         self.assertTrue(self.reports[-1]["committed"])
         self.assertEqual(self.status()["consecutiveFailures"], 0)

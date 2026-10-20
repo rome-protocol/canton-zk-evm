@@ -122,7 +122,8 @@ class OneBlock(Case):
         self.assertEqual((ex["contractId"], ex["choice"]), ("chain-cid", "Advance"))
         self.assertTrue(ex["templateId"].endswith(":Zk.Chain:ZkChain"))
         arg = ex["choiceArgument"]
-        self.assertEqual(arg["proofHex"], "ab" * 1344)
+        self.assertEqual(arg["proofHex"][:1664], "ab" * 832)
+        self.assertEqual(b.committed_hash(arg["proofHex"]), n_hash)   # the proof's public values carry this block's hash
         self.assertEqual(keccak256(bytes.fromhex(arg["headerHex"])).hex(), n_hash[2:])
         self.assertEqual(arg["txsHex"], rlp([bytes.fromhex(raw_of(t1)[2:]), bytes.fromhex(raw_of(t2)[2:])]).hex())
         self.assertEqual((arg["gatewayAccountNodes"], arg["gatewayStorageNodes"]), (["aa01", "aa02"], ["bb01"]))
@@ -828,8 +829,11 @@ class Refusal(Case):
         stale = Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}" / "out" / "wrapped-proof.hex"
         stale.parent.mkdir(parents=True)
         stale.write_text("cd" * 1344)
-        self.assertTrue(b.build_block(s.cfg)["committed"])
-        self.assertEqual(s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["proofHex"], "ab" * 1344)
+        result = b.build_block(s.cfg)
+        self.assertTrue(result["committed"])
+        proof = s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["proofHex"]
+        self.assertEqual((proof[:1664], b.committed_hash(proof)), ("ab" * 832, result["blockHash"]))
+        self.assertFalse(stale.exists())   # every attempt has a folder of its own; the old ones are removed
 
     def test_excluded_transaction_and_its_followers_are_left_out(self):
         t0, t1, other = tx(ALICE, 0), tx(ALICE, 1), tx(BOB, 0)
