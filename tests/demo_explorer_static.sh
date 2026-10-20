@@ -35,6 +35,11 @@ has() { grep -qF -- "$2" <<<"$1" || fail "$3: no \"$2\" in: $1"; }
 lacks() { ! grep -qF -- "$2" <<<"$1" || fail "$3: \"$2\" is in: $1"; }
 
 start=$(dry start)
+# The public RPC's and the tracker's settings reach the container when they are set.
+rpc=$(PUBLIC_RPC=1 RPC_RATE_PER_MINUTE=120 TRACKER_MAX=500 dry start)
+has "$rpc" " -e PUBLIC_RPC=1" "the public RPC switch is passed on"
+has "$rpc" " -e RPC_RATE_PER_MINUTE=120" "the rate limit is passed on"
+has "$rpc" " -e TRACKER_MAX=500" "the tracker's size is passed on"
 has "$start" "docker build" "start builds the image"
 has "$start" "--build-arg EXPLORER_NODE_IMAGE=$EXPLORER_NODE_IMAGE" "the build takes the Node image from PINS"
 has "$start" "--build-arg EXPLORER_RUST_IMAGE=$EXPLORER_RUST_IMAGE" "the build takes the Rust image from PINS"
@@ -97,6 +102,13 @@ named=$(CZE_GENESIS_FILE=$WORK/g.json dry setup)
 has "$named" "-e CZE_GENESIS_FILE=$WORK/g.json" "the genesis the caller names"
 
 # stop, and what it is not given.
-has "$(dry stop)" "docker rm -f cze-explorer" "stop"
+# Never docker rm -f: SIGKILL would skip the explorer's shutdown, which writes the tracker's list and lets the faucet finish its send.
+stopped=$(dry stop)
+has "$stopped" "docker stop -t 30 cze-explorer" "stop is graceful"
+has "$stopped" "docker rm cze-explorer" "stop removes the container after it has stopped"
+lacks "$stopped" " -f" "stop never kills"
+lacks "$start" "rm -f" "start never kills the old container"
+order=$(grep -n "^docker stop -t 30 \|^docker run -d" <<<"$start" | cut -d: -f2 | cut -d' ' -f1-2 | tr '\n' ',')
+[ "$order" = "docker stop,docker run," ] || fail "start must stop the old container before it runs the new one: $order"
 if dry nonsense >/dev/null 2>&1; then fail "run.sh accepted a command it does not have"; fi
 echo "explorer run checks passed"
