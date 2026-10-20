@@ -125,4 +125,8 @@ if [ "${CZE_PERSIST:-0}" = 1 ]; then
     fail "block 1 was not committed (see the report above). This persistent chain cannot be used: network/down.sh --wipe, fix the cause, and start again"
   fi
 fi
-echo "== up ($(date -u +%T)); smoke test: network/smoke.sh"
+if [ "${CZE_PERSIST:-0}" = 1 ]; then
+  echo "== up ($(date -u +%T)); block 1 is committed (report: $NET/block1.json); network/smoke.sh is for in-memory networks and needs head 0"
+else
+  echo "== up ($(date -u +%T)); smoke test: network/smoke.sh"
+fi

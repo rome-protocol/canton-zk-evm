@@ -382,6 +382,20 @@ class NeverDies(Loop):
         self.assertNotIn("no state found", err["error"])
         self.assertIn("no state found", err["rewindError"])
 
+    def test_a_refusal_keeps_canton_reason_in_the_status_when_moving_reth_back_fails_too(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="the sidecar refused the proof: wrong program key")
+        s.reth.no_state_for_genesis = True
+        p = self.producer(s)
+        p.step()
+        self.assertIs(self.reports[-1]["committed"], False)
+        self.assertIn("wrong program key", self.reports[-1]["reason"])
+        self.assertIn("no state found", self.reports[-1]["rewindError"])
+        status = self.status()
+        err = status["lastError"]
+        self.assertIn("wrong program key", err["error"])
+        self.assertNotIn("no state found", err["error"])
+        self.assertIn("no state found", err["rewindError"])
+
     def test_a_failure_without_a_failed_move_back_has_no_rewind_error_in_the_status(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
         p = self.producer(s)

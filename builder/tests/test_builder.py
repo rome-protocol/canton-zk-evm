@@ -827,6 +827,20 @@ class Refusal(Case):
         self.assertNotIn("no state found", report["error"])
         self.assertIn("no state found", report["rewindError"])
 
+    def test_a_refusal_keeps_canton_reason_when_moving_reth_back_fails(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="the sidecar refused the proof: wrong program key")
+        s.reth.no_state_for_genesis = True
+        result = b.build_block(s.cfg)
+        self.assertIs(result["committed"], False)
+        self.assertIn("wrong program key", result["reason"])
+        self.assertNotIn("no state found", result["reason"])
+        self.assertIn("no state found", result["rewindError"])
+        self.assertEqual(len(result["keptTransactions"]), 1)
+
+    def test_a_refusal_without_a_failed_move_back_has_no_rewind_error(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="no")
+        self.assertNotIn("rewindError", b.build_block(s.cfg))
+
     def test_a_report_without_a_failed_move_back_has_no_rewind_error(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
         with self.assertRaises(b.BuilderError) as raised:
@@ -1068,6 +1082,15 @@ class CommandLine(Case):
         code, out = self.run_main(s)
         self.assert_failure((code, out), "prove")
         self.assertNotIn("no state found", out["error"])
+        self.assertIn("no state found", out["rewindError"])
+
+    def test_once_reports_the_refusal_and_the_failed_move_back(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="the sidecar refused the proof: wrong program key")
+        s.reth.no_state_for_genesis = True
+        code, out = self.run_main(s)
+        self.assertEqual((code, out["committed"]), (2, False))
+        self.assertIn("wrong program key", out["reason"])
+        self.assertNotIn("no state found", out["reason"])
         self.assertIn("no state found", out["rewindError"])
 
 

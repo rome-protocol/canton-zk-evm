@@ -720,10 +720,20 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
                     "reason": f"{reason}; and Canton's head could not be read afterwards ({e}), so it is not known whether the block committed",
                     "keptTransactions": [t["hash"] for t in chosen]}
         if now != block_hash[2:]:
-            reth.forkchoice(head, head, head)
-            put_back_lost = put_back(reth)
+            rewind_error = None
+            try:
+                reth.forkchoice(head, head, head)
+            except Exception as rewind:   # Canton's answer is the one to report; the failed move back rides along as rewindError
+                rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
+            try:
+                put_back_lost = put_back(reth)
+            except Exception as again:
+                put_back_lost = []
+                rewind_error = rewind_error or (str(again) if isinstance(again, BuilderError) else f"{type(again).__name__}: {again}")
             if put_back_lost:
                 report["lostTransactions"] = [*report.get("lostTransactions", []), *put_back_lost]
+            if rewind_error:
+                report["rewindError"] = rewind_error
             return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(block_hash, block_hash, block_hash)
@@ -1134,6 +1144,8 @@ class Producer:
             prune_work(self.cfg.work_dir, result["number"])
         else:
             self.last_error = {"time": iso(now), "error": result.get("reason", "")}
+            if result.get("rewindError"):
+                self.last_error["rewindError"] = result["rewindError"]
             if result["committed"] is False:
                 self.refused += 1
                 self.refusals_in_row += 1
