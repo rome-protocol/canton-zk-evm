@@ -1,6 +1,8 @@
 # builder
 
-Makes one block, gets it proven and submits it to Canton. Only Canton's commit can finalize the block and determine its order. See [docs/DESIGN.md](../docs/DESIGN.md) ("One block") for the flow. The builder follows the Daml interface in [daml/README.md](../daml/README.md).
+Makes blocks, gets each one proven and submits it to Canton. Only Canton's commit can finalize the block and determine its order. See [docs/DESIGN.md](../docs/DESIGN.md) ("One block") for the flow. The builder follows the Daml interface in [daml/README.md](../daml/README.md).
+
+One run makes one block (`once`); `run` keeps making them (see "Running it all the time").
 
 ## What one run does
 
@@ -40,6 +42,7 @@ The line a run prints when Canton answered (or may have) has these fields beside
 | `legTransactions` | the hashes of the transactions that recorded legs, in the order of the legs |
 | `leftOut` | the transactions left out because a leg of theirs had no Canton side, each as `{"transaction": ..., "reason": ...}`. A transaction named with `--exclude` is not listed. |
 | `reason` | why Canton refused, or why the outcome is not known |
+| `proveSeconds`, `advanceSeconds` | how long making the proof's input and proving took, and how long Canton took to answer the `Advance` |
 
 A transaction left out is put back in reth's pool, where it waits. It goes into a later block once its leg has a Canton side, and its sender can replace it. A refusal the builder could not see coming, such as a token registry's own rule, still needs `--exclude` on the next run: the builder does not remember anything from one run to the next.
 
@@ -80,12 +83,54 @@ All from the environment.
 
 The prover is whatever `CZE_PROVE_CMD` runs. By default that is `prove-one.sh`, which sends the input to the prover through ZisK's own remote client, so `ZISK_COORDINATOR_URL` says which prover host. `prove-one.sh` also runs `cargo-zisk verify` on the proof; that check is not made under the pinned keys (`programVK`, `rootC`). The check under the pinned keys is the sidecar's, in Canton's confirmers. Any other command with the same two arguments works, for example a script that copies the input to the prover host over SSH and brings the proof back.
 
+## Running it all the time
+
+```sh
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--idle-ms 500] [--empty-every-seconds 0] [--status-file <path>] [--exclude-cooldown-seconds 600]
+```
+
+`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as` and `--disclosed` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it makes one block with exactly the code `once` runs: from Canton's head, proved, submitted. If the pool is empty it waits `--idle-ms` and looks again. With `--empty-every-seconds N` greater than 0 it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive.
+
+What it does after a block:
+
+| Outcome | What the loop does |
+|---|---|
+| Committed (`once` exits 0) | Goes on at once. |
+| Refused by Canton (2) | Goes on after a short wait. The transactions are back in reth's pool, as after `once`. A transaction that was in the kept list of two refused blocks in a row is left out, as `--exclude` does, for `--exclude-cooldown-seconds` (600 by default), and is listed in the status. One bad transaction cannot stall the chain, and it is tried again once the cool-down is over. |
+| Not known (2, `"committed": null`) | Goes on. The next block starts from Canton's head, whichever it is, as the builder always does. |
+| Any other failure (1), or a pool that cannot be read | Waits 1 second, then 2, 4, 8 and so on up to 30 seconds while it keeps failing, and tries again. A block that is answered sets the wait back to 1 second. |
+
+A block that is refused and a block that failed do not count as two in a row for the leaving out. Only two refusals next to each other do.
+
+If every waiting transaction is held back or does not fit, the block would be empty. The loop makes that one block and then waits until the pool's count changes or a cool-down ends, so it does not fill the chain with empty blocks.
+
+One JSON line goes to stdout for every block, the same report `once` prints (a failure prints `{"committed": false, "error": "..."}`), so it can be followed with `tail -f` or sent to a log collector.
+
+**Stopping.** `SIGTERM` or `SIGINT` (Ctrl-C) finishes the block in progress, writes the status, and exits 0. A second signal acts as it usually does. A block cut off in the middle is the same as after a crash: the next start goes back to Canton's head. Run it under a service manager that restarts it, and it is safe to restart at any time.
+
+**The status file.** `--status-file` (default `status.json` in the work folder) is JSON, replaced atomically after every block, at start, at stop, and every few seconds while idle, so its `updatedAt` shows the loop is alive:
+
+| Field | What it holds |
+|---|---|
+| `state` | `running` or `stopped` |
+| `startedAt`, `updatedAt` | UTC times |
+| `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |
+| `blocksCommitted`, `blocksRefused`, `blocksUnknown` | counts since the loop started |
+| `consecutiveFailures` | failures since the last answered block |
+| `lastError` | `{time, error}`: the last refusal reason, unknown outcome or failure |
+| `excluded` | the transactions left out now, each as `{transaction, until}` |
+| `averageProveSeconds`, `averageAdvanceSeconds` | averages over the blocks that were proven, or `null` before the first |
+
+A status file that cannot be written is reported on stderr and does not stop the chain.
+
 ## Tests
 
 ```sh
 pip install --require-hashes -r builder/requirements.txt    # the WebSocket client, pinned
 python3 -m unittest discover -s builder/tests
 ```
+
+The loop's tests are in `test_producer.py`: idle on an empty pool, a block when there is a transaction, the heartbeat, refusal and retry, leaving out after two refusals and its expiry, backoff, an unknown outcome, the status file, and a real `run` process that is sent `SIGTERM` in the middle of a block.
 
 Python 3.12, standard library plus `websockets`. The tests use only fakes in `builder/tests/`: reth's WebSocket and Engine ports (with the gateway's `Leg` logs and proofs), the Ledger API, and shell scripts for the prover and input tool. The fake Engine port checks the token as reth does. Tests cover a good block end to end, a refusal and the move back, a failing prover, the token, the explicit transaction list and the gas cap.
 
@@ -95,7 +140,7 @@ Leg tests cover each kind. For a payment: no terms, terms for another id, token,
 
 - No check of the proof under the pinned keys before submitting it; the builder checks only its size and form. Canton's confirmers check it.
 - No step cap before proving. A block the prover cannot finish stops the run at the prover.
-- One block per run. No loop over blocks.
-- No memory from one run to the next. A refusal for a reason the builder cannot see (a registry's own rule) is handled by hand, with `--exclude`.
+- `once` makes one block. The loop is `run`.
+- No memory from one `once` to the next. A refusal for a reason the builder cannot see (a registry's own rule) is handled by `run` after two refusals in a row, or by hand with `--exclude` when using `once`. `run` keeps its list of left-out transactions in memory only: a restart forgets it.
 - The builder cannot see everything about a leg. It judges the settle-before time by its own clock, and an allocation can be withdrawn between its check and the commit. Then Canton refuses the block, nothing moves, and the next run sees the allocation is gone.
 - The builder needs read access to the contracts of the legs it settles: the requests, tokens, acceptances, terms, allocations and the gateway's holdings. This repository uses `--read-as` to give it the view of the parties that hold them. A deployment must grant that access; a leg whose contracts the builder cannot see has no Canton side, and its transaction is left out.

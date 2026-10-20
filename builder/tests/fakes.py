@@ -143,6 +143,8 @@ class FakeReth:
     def _rpc(self, method, params):
         if method == "txpool_content":
             return {"pending": {s: {str(int(t["nonce"], 16)): t for t in ts} for s, ts in self.pool.items()}, "queued": {}}
+        if method == "txpool_status":
+            return {"pending": hex(sum(len(ts) for ts in self.pool.values())), "queued": "0x0"}
         if method == "eth_getRawTransactionByHash":
             return next(raw_of(t) for ts in self.pool.values() for t in ts if t["hash"] == params[0])
         if method == "eth_sendRawTransaction":
