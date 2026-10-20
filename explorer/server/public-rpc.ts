@@ -88,7 +88,8 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     buckets.delete(ip);
     buckets.set(ip, b); // the newest at the end
     if (buckets.size > 10000) {
-      for (const [k, v] of buckets) if (v.tokens + (t - v.at) * perMs >= cap || buckets.size > 10000) buckets.delete(k);
+      // Never the client in hand: its bucket is deducted from below, and a deleted one would give it a free request and a fresh bucket.
+      for (const [k, v] of buckets) if (k !== ip && (v.tokens + (t - v.at) * perMs >= cap || buckets.size > 10000)) buckets.delete(k);
     }
     if (b.tokens < cost) return Math.max(1, Math.ceil((Math.min(cost, cap) - b.tokens) / perMs / 1000));
     b.tokens -= cost;
@@ -180,13 +181,21 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     if (tx.chainId === undefined) return err(-32000, `This transaction is not tied to a chain. Sign it for chain ${chainId}.`);
     if (tx.chainId !== chainId) return err(-32000, `This transaction is signed for chain ${tx.chainId}. This chain is ${chainId}.`);
     const hash = keccak256(raw as Hex), lower = raw.toLowerCase();
+    // A transaction ahead of the sender's next nonce cannot go into a block yet. Following it would fill the tracker's list with
+    // entries that wait for something the sender may never send, so it is refused here, before the tracker or reth see it.
+    const nonce = tx.nonce ?? 0;
+    const pool = await up("eth_getTransactionCount", [from, "pending"]);
+    if ("error" in pool) return pool;
+    const next = quantity(pool.result);
+    if (Number.isNaN(next)) throw new Unreachable("eth_getTransactionCount: not a number");
+    if (nonce > next) return err(-32000, `nonce gap: send the missing transactions first. This transaction has nonce ${nonce}, and the chain expects ${next} next.`);
     // Ask before reth takes it: a transaction that cannot be followed is refused, not accepted and then forgotten.
     const full = tracker.admit(lower, hash, from);
     if (full) return err(-32005, full);
     /** The tracker is a safety net. Its failure never turns a send that reth took into an error. */
     const follow = (): void => {
       try {
-        tracker.track(lower, hash, from, tx.nonce ?? 0);
+        tracker.track(lower, hash, from, nonce);
       } catch (e) {
         console.error(`rpc: cannot follow ${hash}: ${(e as Error).message}`);
       }
@@ -240,7 +249,9 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
         const r = await up(method, params);
         if (!("result" in r) || !isObject(r.result) || r.result.blockNumber === null) return r; // in the pool: no block yet, which is the honest answer
         const n = quantity(r.result.blockNumber);
-        return n <= f && (await canonical(n, r.result.blockHash)) ? r : { result: null };
+        if (n <= f) return (await canonical(n, r.result.blockHash)) ? r : { result: null }; // not the block at that height: not shown
+        // Its block is still being proven: until it is final the transaction is shown as the pool's are, with no block yet.
+        return { result: { ...r.result, blockHash: null, blockNumber: null, transactionIndex: null } };
       }
       case "eth_getTransactionReceipt": {
         const f = await fin();

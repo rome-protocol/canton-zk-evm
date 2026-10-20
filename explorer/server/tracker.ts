@@ -154,7 +154,7 @@ export function createTracker(o: TrackerOptions): Tracker {
       if (e.from === from.toLowerCase()) mine++;
     }
     if (mine >= maxPerSender) return `This sender has ${mine} transactions waiting to be confirmed. Wait for some of them to be final, then send again.`;
-    if (open >= max || bytes + raw.length > maxBytes) return "This chain is holding as many unconfirmed transactions as it can follow right now. Try again in a moment.";
+    if (open >= max || bytes + raw.length > maxBytes) return `This explorer is following as many unconfirmed transactions as it can follow right now (the limit is ${max} transactions and ${Math.round(maxBytes / 1024)} KiB). Each one is waiting for a block, so try again in a moment.`;
     return null;
   }
 
