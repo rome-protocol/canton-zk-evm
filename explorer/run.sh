@@ -90,14 +90,21 @@ start() {
     PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
-  quietly rm -f "$NAME" 2> /dev/null || true
+  stop_container
   quietly "${ARGS[@]}" "$IMAGE"
+}
+
+# Stops the container gracefully: SIGTERM, then up to 30 seconds for the explorer to write the tracker's list and let the faucet
+# finish the send in hand (server/shutdown.ts). Never docker rm -f, which sends SIGKILL and skips all of that.
+stop_container() {
+  quietly stop -t 30 "$NAME" 2> /dev/null || true
+  quietly rm "$NAME" 2> /dev/null || true
 }
 
 case ${1:-} in
   build) build ;;
   setup) build; setup ;;
   start) build; start ;;
-  stop) quietly rm -f "$NAME" 2> /dev/null || true ;;
+  stop) stop_container ;;
   *) echo "usage: explorer/run.sh setup | start | stop | build" >&2; exit 2 ;;
 esac
