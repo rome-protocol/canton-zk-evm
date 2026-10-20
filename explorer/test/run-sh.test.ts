@@ -19,7 +19,7 @@ function start(env: Record<string, string> = {}): string {
     encoding: "utf8",
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, ...env },
   });
-  expect(r.status, r.stderr).toBe(0);
+  expect(r.status, `${r.error ?? ""} ${r.signal ?? ""} ${r.stderr}`).toBe(0);
   return r.stdout.split("\n").find((l) => l.startsWith("docker run -d")) ?? "";
 }
 
