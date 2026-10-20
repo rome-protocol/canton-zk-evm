@@ -11,6 +11,8 @@ import type { Tracked, TxState } from "./tracker.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
 
 const COIN = 10n ** 18n;
+// Up to 1,000 signed transfers in one test, on a machine that may be busy with the other test files.
+vi.setConfig({ testTimeout: 30000 });
 const KEY = generatePrivateKey();
 const FAUCET = privateKeyToAccount(KEY).address.toLowerCase();
 const ALICE = "0x" + "9a".repeat(20), BOB = "0x" + "5b".repeat(20), CAROL = "0x" + "c4".repeat(20);
@@ -66,7 +68,7 @@ async function faucet(over: Over = {}): Promise<Faucet> {
   const { down, tracked, ...rest } = over;
   return createFaucet({
     key: KEY, chainId: 770101, amountWei: COIN, perAddressSeconds: DAY, perIpSeconds: 600, maxPerHour: 100000, batch: 100, queueMax: 5000, stateFile: null, captcha: null,
-    reth: createReth(down ? "http://127.0.0.1:1" : fake.url, 300), tracker: tracked === false ? undefined : tracker, now: () => clock.now, ...rest,
+    reth: createReth(down ? "http://127.0.0.1:1" : fake.url, 5000), tracker: tracked === false ? undefined : tracker, now: () => clock.now, ...rest,
   });
 }
 

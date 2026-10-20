@@ -97,20 +97,21 @@ describe("a request that is taken", () => {
   });
 
   it("follows the request, in plain words, from the line to final on Canton, with a link to the transaction", async () => {
-    const client = fake({ tickets: [
-      view({ position: 1 }),
-      view({ status: "sent", position: null, hash: HASH, state: "pending" }),
-      view({ status: "sent", position: null, hash: HASH, state: "proving" }),
-      view({ status: "final", position: null, hash: HASH, state: null, block: 42 }),
-    ] });
+    // The test moves the ticket by hand, so no state is gone before it is looked at.
+    let now: TicketResult = view({ position: 1 });
+    const client = fake();
+    client.ticket.mockImplementation(async () => now);
     const user = await open(client);
     await ask(user);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("You are number 1 in line."));
+    now = view({ status: "sent", position: null, hash: HASH, state: "pending" });
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sent, waiting to be proven."));
     expect(within(screen.getByRole("status")).getByRole("link", { name: "0x59c5…48f7" })).toHaveAttribute("href", `/tx/${HASH}`);
     expect(screen.queryByText(/tROME is final on Canton/)).not.toBeInTheDocument();
+    now = view({ status: "sent", position: null, hash: HASH, state: "proving" });
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sent, and being proven."));
     expect(screen.getByRole("status")).toHaveTextContent("Not final yet");
+    now = view({ status: "final", position: null, hash: HASH, state: null, block: 42 });
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("1 tROME is final on Canton. Transaction"));
     expect(screen.getByRole("status")).toHaveTextContent("In block 42.");
   });
@@ -144,11 +145,15 @@ describe("a request that is taken", () => {
   });
 
   it("says so, and keeps asking, when the explorer cannot be reached while it follows a request", async () => {
-    const client = fake({ tickets: [{ kind: "unreachable" }, { kind: "unreachable" }, view({ status: "final", position: null, hash: HASH, block: 9 })] });
+    let now: TicketResult = { kind: "unreachable" };
+    const client = fake();
+    client.ticket.mockImplementation(async () => now);
     const user = await open(client);
     await ask(user);
     await screen.findByText(/The explorer cannot be reached just now\. This page keeps asking\./);
+    now = view({ status: "final", position: null, hash: HASH, block: 9 });
     await screen.findByText(/tROME is final on Canton/);
+    expect(screen.queryByText(/This page keeps asking/)).not.toBeInTheDocument();
   });
 
   it("says the explorer no longer knows a request it has no ticket for, and stops asking", async () => {
