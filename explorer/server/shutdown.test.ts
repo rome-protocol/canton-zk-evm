@@ -69,4 +69,18 @@ describe("the shutdown", () => {
     expect(faucetDone).toBe(true);
     expect(log.at(-1)).toBe("exit 0");
   });
+
+  it("flushes the faucet first and the tracker after it, so a transfer the faucet hands over on its way out is written too", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { p, log, release } = parts();
+    release();
+    const tracker = { flush: async () => { log.push("tracker written"); } };
+    const also = [{ flush: async () => { await new Promise((ok) => setTimeout(ok, 20)); log.push("faucet written"); } }];
+    await onShutdown({ ...p, tracker, also })("SIGTERM");
+    const at = (l: string) => log.indexOf(l);
+    expect(at("faucet written")).toBeGreaterThan(-1);
+    expect(at("tracker written")).toBeGreaterThan(at("faucet written"));
+    expect(log.at(-1)).toBe("exit 0");
+    vi.restoreAllMocks();
+  });
 });
