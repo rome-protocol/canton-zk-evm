@@ -6,7 +6,8 @@ import { createChainIndex } from "./chain-index.ts";
 import { loadConfig } from "./config.ts";
 import { createLedger } from "./ledger.ts";
 import { createFaucet } from "./faucet.ts";
-import { ALLOWED_METHODS, createReth } from "./reth.ts";
+import { createTracker } from "./tracker.ts";
+import { ALLOWED_METHODS, createReth, RethError } from "./reth.ts";
 import { FakeChain, hashOf, txHash, updateIdOf } from "../test/fake-chain.ts";
 import { FAKE_CONFIRMER, FAKE_OPERATOR, FAKE_READER, startFakeLedger, type FakeLedger } from "../test/fake-ledger.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
@@ -47,10 +48,10 @@ function handlers(chain: FakeChain) {
 /** Adds a `leaked` field to every object it holds, as a careless pass-through of the index's or the config's own objects would send it on. */
 const leaky = <T>(x: T): T => (Array.isArray(x) ? (x.map(leaky) as T) : x && typeof x === "object" ? ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, leaky(v)])), leaked: "x" } as T) : x);
 
-interface Options { leak?: boolean; run?: { value: number }; faucet?: boolean; gate?: (method: string) => Promise<void> | void; firstLook?: "wait" | "go" }
+interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; run?: { value: number }; faucet?: boolean; gate?: (method: string) => Promise<void> | void; firstLook?: "wait" | "go" }
 
 /** With `firstLook: "go"` the index's first look is started and not waited for, and `look` is it: the answers are then those of a look in progress. */
-async function boot(chain: FakeChain, { leak = false, run, faucet = false, gate, firstLook = "wait" }: Options = {}) {
+async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = false, gate, firstLook = "wait" }: Options = {}) {
   reth = await startFakeReth(handlers(chain), { gate });
   ledger = await startFakeLedger(chain.items);
   const real = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
@@ -72,7 +73,7 @@ async function boot(chain: FakeChain, { leak = false, run, faucet = false, gate,
     contract: (a) => (leak ? leaky(built.contract(a)) : built.contract(a)),
   };
   const key = faucet ? FAUCET_KEY : null;
-  const api = createApi({ config, reth: r, ledger: l, index, faucet: createFaucet({ key, chainId: real.chainId, ...real.faucet, reth: r }) });
+  const api = createApi({ config, reth: r, ledger: l, index, tracker, faucet: createFaucet({ key, chainId: real.chainId, ...real.faucet, reth: r }) });
   return { api, look, get: (target: string) => api("GET", target) };
 }
 
@@ -94,6 +95,7 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
   same(b, FIELDS[kind]);
   if (kind === "status") {
     same(b.coin, FIELDS.coin); same(b.pins, FIELDS.pins); same(b.faucet, FIELDS.faucet);
+    expect(typeof b.publicRpc).toBe("boolean");
     if (b.final) same(b.final, FIELDS.final);
     if (b.proving) same(b.proving, FIELDS.proving);
     if (b.signers) same(b.signers, FIELDS.signers);
@@ -225,6 +227,48 @@ describe("transactions and addresses", () => {
     expect((await get(`/api/tx/${txHash(3, 0)}`)).body).toMatchObject({ status: "proving", block: { number: 3, updateId: null } });
     expect((await get(`/api/tx/${POOL_TX}`)).body).toMatchObject({ status: "waiting", block: null, success: null, fee: null });
     expect((await get(`/api/tx/0x${"00".repeat(32)}`)).status).toBe(404);
+  });
+
+  it("gives each transaction a state: pending, proving or final, with no reason of its own", async () => {
+    const { get } = await boot(chain());
+    expect((await get(`/api/tx/${txHash(2, 0)}`)).body).toMatchObject({ state: "final", reason: null });
+    expect((await get(`/api/tx/${txHash(3, 0)}`)).body).toMatchObject({ state: "proving", reason: null });
+    expect((await get(`/api/tx/${POOL_TX}`)).body).toMatchObject({ state: "pending", reason: null });
+  });
+
+  it("says what the tracker knows about a transaction reth no longer holds, with the same fields: dropped, replaced, or being sent again", async () => {
+    const lost = hashOf(0x70), gone = hashOf(0x71), sending = hashOf(0x72);
+    const stand = createTracker({
+      reth: { block: async () => ({ number: 2 }) as never, transaction: async () => null, rpc: async () => "0x9" as never, sendRaw: async () => { throw new RethError('eth_sendRawTransaction: reth answered "underpriced"', true); } },
+      index: { byNumber: () => undefined }, retryMs: 0, maxRefusals: 1,
+    });
+    stand.track("0x01", lost, ALICE, 4); // the sender's count is 9: replaced
+    stand.track("0x02", gone, ALICE, 12);
+    stand.track("0x03", sending, ALICE, 12);
+    await stand.poll(); // lost: replaced; the others: refused once, so dropped
+    const { get } = await boot(chain(), { tracker: stand });
+    const replaced = await get(`/api/tx/${lost}`);
+    checkFields("tx", replaced.body);
+    expect(replaced).toMatchObject({ status: 200, body: { hash: lost, status: "replaced", state: "replaced", from: ALICE, nonce: 4, value: null, block: null, logs: [] } });
+    const dropped = await get(`/api/tx/${gone}`);
+    checkFields("tx", dropped.body);
+    expect(dropped.body).toMatchObject({ state: "dropped", reason: expect.stringContaining("underpriced") });
+    expect((await get(`/api/tx/0x${"00".repeat(32)}`)).status).toBe(404);
+    expect((await get(`/api/tx/${sending}`)).body).toMatchObject({ state: "dropped" });
+  });
+
+  it("shows a transaction that is only waiting to be sent again as pending, with the tracker's note", async () => {
+    const hash = hashOf(0x73);
+    const stand = createTracker({ reth: { block: async () => ({ number: 2 }) as never, transaction: async () => null, rpc: async () => "0x0" as never, sendRaw: async () => hashOf(0) }, index: { byNumber: () => undefined }, retryMs: 0 });
+    stand.track("0x01", hash, ALICE, 1);
+    await stand.poll();
+    const { get } = await boot(chain(), { tracker: stand });
+    expect((await get(`/api/tx/${hash}`)).body).toMatchObject({ status: "waiting", state: "pending", reason: expect.stringMatching(/sent to the chain again/) });
+  });
+
+  it("says in the status whether the public RPC is on", async () => {
+    const { get } = await boot(chain());
+    expect((await get("/api/status")).body).toMatchObject({ publicRpc: false });
   });
 
   it("gives an account, a token, and the transaction that made a contract", async () => {
