@@ -168,6 +168,9 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
 
   const STATE_AT: Record<string, number> = { eth_getBalance: 1, eth_getCode: 1, eth_getTransactionCount: 1, eth_call: 1, eth_estimateGas: 1, eth_getStorageAt: 2 };
 
+  /** The tail of each sender's chain of sends, by recovered address. */
+  const lanes = new Map<string, Promise<void>>();
+
   async function sendRaw(params: unknown[]): Promise<Up> {
     const raw = params[0];
     if (params.length !== 1 || typeof raw !== "string" || !/^0x([0-9a-f]{2})+$/i.test(raw)) return err(-32602, "Send the signed transaction as one 0x hex string.");
@@ -180,6 +183,19 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     }
     if (tx.chainId === undefined) return err(-32000, `This transaction is not tied to a chain. Sign it for chain ${chainId}.`);
     if (tx.chainId !== chainId) return err(-32000, `This transaction is signed for chain ${tx.chainId}. This chain is ${chainId}.`);
+    // One sender's sends go through reth one after another, in the order they arrive: the nonce check below reads reth's pool, so the
+    // second transaction of a batch (or of two overlapping requests) has to read it after the first is in the pool.
+    const before = lanes.get(from) ?? Promise.resolve();
+    const mine = before.then(() => sendLocked(raw, tx, from));
+    const tail = mine.then(() => undefined, () => undefined);
+    lanes.set(from, tail);
+    void tail.then(() => {
+      if (lanes.get(from) === tail) lanes.delete(from);
+    });
+    return mine;
+  }
+
+  async function sendLocked(raw: string, tx: ReturnType<typeof parseTransaction>, from: string): Promise<Up> {
     const hash = keccak256(raw as Hex), lower = raw.toLowerCase();
     // A transaction ahead of the sender's next nonce cannot go into a block yet. Following it would fill the tracker's list with
     // entries that wait for something the sender may never send, so it is refused here, before the tracker or reth see it.

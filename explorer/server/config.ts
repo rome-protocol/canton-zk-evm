@@ -45,6 +45,7 @@ export interface Config {
     maxBytes: number;
     /** The most open entries one sender may have. */
     perSender: number;
+    maxPendingMinutes: number;
   };
   faucet: {
     /** Null turns the faucet off. */
@@ -147,6 +148,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       max: whole(env, "TRACKER_MAX", 10000, 10),
       maxBytes: whole(env, "TRACKER_MAX_BYTES", 16 * 1024 * 1024, 1024),
       perSender: whole(env, "TRACKER_PER_SENDER", 64, 1),
+      maxPendingMinutes: whole(env, "TRACKER_MAX_PENDING_MINUTES", 60, 1),
     },
     faucet: {
       keyFile: env.FAUCET_KEY_FILE || null,

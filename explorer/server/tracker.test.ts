@@ -27,7 +27,7 @@ function fakeChain(): Chain {
   return { finalized: 0, where: new Map(), nonce: 0, down: false, send: () => {}, sent: [] };
 }
 
-function make(chain: Chain, o: { file?: string; max?: number; maxBytes?: number; maxPerSender?: number; saveMs?: number; retryMs?: number; maxRefusals?: number; maxAttempts?: number } = {}): { tracker: Tracker; clock: { now: number } } {
+function make(chain: Chain, o: { file?: string; max?: number; maxBytes?: number; maxPerSender?: number; saveMs?: number; retryMs?: number; maxRefusals?: number; maxAttempts?: number; maxPendingMs?: number } = {}): { tracker: Tracker; clock: { now: number } } {
   const clock = { now: 1000 };
   const reach = () => { if (chain.down) throw new RethError("cannot reach reth (down)"); };
   const reth = {
@@ -237,6 +237,33 @@ describe("the tracker", () => {
     expect(tracker.admit(rawOf(3), hashOf(3), SENDER)).toMatch(/waiting to be confirmed/); // sender is at 2
     expect(tracker.admit(rawOf(3), hashOf(3), "0x" + "bb".repeat(20))).toMatch(/as many unconfirmed transactions as it can follow/); // bytes are full
     expect(tracker.admit(rawOf(1), hashOf(1), SENDER)).toBeNull(); // the wallet sends one again that is followed already
+  });
+
+  it("stops following a transaction that reth keeps for too long without a block, so it cannot hold a slot for ever", async () => {
+    const chain = fakeChain();
+    const { tracker, clock } = make(chain, { maxPendingMs: 60000, maxBytes: rawOf(1).length * 3 });
+    const senders = [1, 2, 3].map((n) => "0x" + n.toString(16).repeat(40));
+    senders.forEach((s, i) => { tracker.track(rawOf(i + 1), hashOf(i + 1), s, 0); chain.where.set(hashOf(i + 1), null); });
+    expect(tracker.admit(rawOf(9), hashOf(9), "0x" + "9".repeat(40))).not.toBeNull(); // the byte budget is full
+    clock.now += 30000;
+    await tracker.poll();
+    expect(tracker.state(hashOf(1))?.state).toBe("pending");
+    expect(tracker.admit(rawOf(9), hashOf(9), "0x" + "9".repeat(40))).not.toBeNull();
+    clock.now += 30000;
+    await tracker.poll();
+    expect(tracker.state(hashOf(1))).toMatchObject({ state: "dropped", reason: expect.stringMatching(/without going into a block.*no longer followed/) });
+    expect(tracker.admit(rawOf(9), hashOf(9), "0x" + "9".repeat(40))).toBeNull(); // the slots are free again
+  });
+
+  it("keeps following a transaction that is in a block, however old it is", async () => {
+    const chain = fakeChain();
+    const { tracker, clock } = make(chain, { maxPendingMs: 60000 });
+    tracker.track(rawOf(1), hashOf(1), SENDER, 0);
+    chain.where.set(hashOf(1), 5);
+    chain.finalized = 4;
+    clock.now += 600000;
+    await tracker.poll();
+    expect(tracker.state(hashOf(1))).toMatchObject({ state: "proving", block: 5 });
   });
 
   it("counts only open entries against the limits: a settled transaction frees room", async () => {
