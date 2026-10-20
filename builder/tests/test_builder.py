@@ -833,7 +833,9 @@ class Refusal(Case):
         self.assertTrue(result["committed"])
         proof = s.ledger.submitted[0]["commands"][0]["ExerciseCommand"]["choiceArgument"]["proofHex"]
         self.assertEqual((proof[:1664], b.committed_hash(proof)), ("ab" * 832, result["blockHash"]))
-        self.assertFalse(stale.exists())   # every attempt has a folder of its own; the old ones are removed
+        self.assertNotEqual(stale.read_text(), "cd" * 1344)   # every attempt has a folder of its own; the accepted one becomes `out`
+        self.assertEqual(stale.read_text(), proof)
+        self.assertEqual([x.name for x in stale.parent.parent.glob("out*")], ["out"])
 
     def test_a_proof_of_another_block_is_never_submitted(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})

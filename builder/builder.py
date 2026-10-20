@@ -677,6 +677,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
             raise BuilderError(f"the proof commits to block hash {committed or 'none'}, not this block's {block_hash}")
     except BuilderError as e:
         raise ProvingError(str(e), kept) from e
+    os.replace(out, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
 
     account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])

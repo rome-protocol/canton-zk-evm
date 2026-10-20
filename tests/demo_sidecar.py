@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """A stand-in for the sidecar, for the demo rehearsal only (tests/demo_rehearsal.sh). There is no GPU in CI, so there is no real
-proof. This answers `verify` itself: the proof is accepted only if it is the one stand-in proof the rehearsal's fake prover writes, and
-then the rest of the answer is read from the header and the transaction list exactly as the real sidecar reads it. Every other
+proof. This answers `verify` itself: the proof is accepted only if it is a stand-in proof the rehearsal's fake prover writes (832 fixed
+bytes, then public values that commit to this block's hash, as a real proof's do), and then the rest of the answer is read from the header and the transaction list exactly as the real sidecar reads it. Every other
 call, `legs` in particular, is passed to the REAL sidecar, which checks the gateway's storage proofs against the block's state root.
 So the rehearsal runs everything but the zero-knowledge proof check.
 
-Usage: demo_sidecar.py <port> <real sidecar port> <program-vk hex> <root-c hex> <the accepted proof, hex>"""
+Usage: demo_sidecar.py <port> <real sidecar port> <program-vk hex> <root-c hex> <the fixed first 832 bytes of the stand-in proof, hex>"""
 import http.server, os, sys, urllib.request
 from pathlib import Path
 
@@ -42,14 +42,25 @@ def items(b: bytes) -> list:
     return out
 
 
+def committed_hash(public: bytes) -> str | None:
+    """The block hash public values commit to: 64 slots of a 4-byte word and four zero bytes; the words are 0x20, the hash and zeros."""
+    words = bytearray()
+    for slot in range(64):
+        chunk = public[slot * 8:slot * 8 + 8]
+        if len(chunk) != 8 or any(chunk[4:]):
+            return None
+        words += chunk[:4]
+    return None if words[0] != 0x20 or any(words[33:]) else bytes(words[1:33]).hex()
+
+
 def verify(line: str) -> str:
     fields = line.split(",")
     if len(fields) != 3:
         return "no malformed input"
     proof, header_hex, txs_hex = fields
-    if proof != accepted:
-        return "no the proof does not verify"
     header = bytes.fromhex(header_hex)
+    if len(proof) != 2688 or not proof.startswith(accepted) or committed_hash(bytes.fromhex(proof[len(accepted):])) != keccak256(header).hex():
+        return "no the proof does not verify"
     f = items(header)
     number, ts, gas_limit, gas_used = (int.from_bytes(f[i], "big") for i in (8, 11, 9, 10))
     tx_count = len(items(bytes.fromhex(txs_hex))) if txs_hex else 0
