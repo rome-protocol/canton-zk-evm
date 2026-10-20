@@ -55,4 +55,31 @@ describe.skipIf(!hasBash)("explorer/run.sh start", () => {
   it("takes the caller's TRACKER_FILE when one is given", () => {
     expect(start({ TRACKER_FILE: "/var/lib/explorer/list.json" })).toContain(" -e TRACKER_FILE=/var/lib/explorer/list.json");
   });
+
+  it("stops the old container gracefully before it starts the new one, never with rm -f (SIGKILL)", () => {
+    const r = spawnSync("bash", [RUN, "start"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stdout.split("\n").filter((l) => l.startsWith("docker "));
+    const stopAt = lines.findIndex((l) => /^docker stop -t 30 /.test(l));
+    const runAt = lines.findIndex((l) => l.startsWith("docker run -d"));
+    expect(stopAt).toBeGreaterThanOrEqual(0);
+    expect(stopAt).toBeLessThan(runAt);
+    expect(lines.some((l) => /^docker rm /.test(l) && !/ -f/.test(l))).toBe(true);
+    expect(lines.some((l) => /^docker rm .*-f/.test(l))).toBe(false);
+  });
+});
+
+describe("explorer/run.sh stop", () => {
+  it("lets the explorer finish (docker stop -t 30), then removes the container without -f", () => {
+    const r = spawnSync("bash", [RUN, "stop"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stdout.split("\n").filter((l) => l.startsWith("docker "));
+    expect(lines).toEqual(["docker stop -t 30 cze-explorer", "docker rm cze-explorer"]);
+  });
 });

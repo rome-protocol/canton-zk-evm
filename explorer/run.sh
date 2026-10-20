@@ -93,14 +93,21 @@ start() {
   done
   # The secret is named without a value, so Docker takes it from this shell's environment and it is never in the command line.
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
-  quietly rm -f "$NAME" 2> /dev/null || true
+  stop_container
   quietly "${ARGS[@]}" "$IMAGE"
+}
+
+# Stops the container gracefully: SIGTERM, then up to 30 seconds for the explorer to write the tracker's list and let the faucet
+# finish the send in hand (server/shutdown.ts). Never docker rm -f, which sends SIGKILL and skips all of that.
+stop_container() {
+  quietly stop -t 30 "$NAME" 2> /dev/null || true
+  quietly rm "$NAME" 2> /dev/null || true
 }
 
 case ${1:-} in
   build) build ;;
   setup) build; setup ;;
   start) build; start ;;
-  stop) quietly rm -f "$NAME" 2> /dev/null || true ;;
+  stop) stop_container ;;
   *) echo "usage: explorer/run.sh setup | start | stop | build" >&2; exit 2 ;;
 esac
