@@ -176,9 +176,10 @@ def clear_saved(cfg: Config) -> None:
 def put_back(reth: Reth) -> list:
     """reth does not return an unwound block's transactions to its pool, so the builder sends them again. A transaction the pool already
     has, or one whose nonce is used, is not a problem. Returns [{transaction, error}] for the ones reth refused for another reason: they
-    are not in the pool, and the caller reports them. The saved copy is cleared when the transactions have been sent."""
-    pairs, reth.imported = reth.imported, []
-    lost = resend(reth, pairs)
+    are not in the pool, and the caller reports them. The saved copy is cleared when the transactions have been sent; when sending raises, nothing is forgotten
+    (the list and the saved copy stay), so a second put_back or the next start's recover_saved sends them all again."""
+    lost = resend(reth, reth.imported)
+    reth.imported = []   # only after the resend returned: if it dies midway, the failure handler's put_back sends everything again
     clear_saved(reth.cfg)
     return lost
 

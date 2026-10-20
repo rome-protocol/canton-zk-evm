@@ -621,6 +621,25 @@ class Rebuilding(LegCase):
         self.assertEqual((result["legs"], result["transactions"]), (1, [honest["hash"]]))
         self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
 
+    def test_a_broken_connection_while_putting_left_out_transactions_back_keeps_the_saved_copy(self):
+        """The left-out rebuild empties nothing before the resend has returned: when the resend dies at the transport level, the
+        failure handler sends everything again and clears the copy only if that works; here the connection is gone for good."""
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        honest = self.leg_tx(s, PAY, ALICE, price=9)
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), BOB, price=1)   # no terms: left out, then put back
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [honest], [bad]
+        s.reth.crash_on_send = True
+        with self.assertRaises(Exception) as raised:
+            self.build(s)
+        self.assertNotIsInstance(raised.exception, b.BuilderError)
+        self.assertFalse(hasattr(raised.exception, "lost_transactions"))
+        self.assertFalse(hasattr(raised.exception, "rewind_error"))
+        self.assertTrue(b.saved_path(s.cfg).exists())   # the transactions are on disk although the pool has none
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["lostTransactions"]), (2, []))
+        self.assertEqual(self.in_pool(s), {honest["hash"], bad["hash"]})
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
     def test_a_transaction_that_is_left_out_does_not_take_an_allocation_from_another(self):
         twin = ("terms-2", {**TERMS[1], "dvpId": "fe" * 32})
         s = self.setup({ALICE: [], BOB: []}, terms=[TERMS, twin])

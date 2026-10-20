@@ -86,6 +86,7 @@ class FakeReth:
         self.bad_log_data = None   # bytes to put in place of the first log's data
         self.head = HEAD_HASH   # the block reth's head is at: a forkchoice that fails leaves it where it was
         self.refuse_resend = False   # eth_sendRawTransaction answers an error for every transaction
+        self.crash_on_send = False   # the first eth_sendRawTransaction breaks the WebSocket handler (close code 1011), as a dropped connection would
         self.no_state_for_genesis = False   # a persistent reth cannot move back to the genesis block once a block is built: the forkchoice to it is an error
         self.sync_on_final = False   # the forkchoice that makes a new block head, safe and finalized at once answers SYNCING (once)
         self.ws = serve(self._ws, "127.0.0.1", 0, max_size=None)
@@ -134,6 +135,9 @@ class FakeReth:
     def send_raw(self, raw):
         """eth_sendRawTransaction: a transaction already in the pool is `already known`; one reth never saw is refused."""
         hash_ = "0x" + raw[4:]
+        if self.crash_on_send:
+            self.crash_on_send = False
+            raise RuntimeError("the connection broke")
         if self.refuse_resend:
             raise RpcError("refused")
         if hash_ in self.block_txs.get(self.head, []):   # in the head block: its state has the transaction, so the nonce is used
