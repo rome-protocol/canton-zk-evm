@@ -905,16 +905,17 @@ class Producer:
 
     def due(self, now: float) -> str | None:
         """Only reth's count of waiting transactions is read here (the block's own build reads the transactions). While the pool holds
-        only what was left out last time, the count is looked at on every tick but the pool is built from only when the count has
-        changed (and at least RECHECK_BASE after the last look) or the pause, which grows up to BACKOFF_CAP, is over."""
-        n = self.pending(self.cfg)
-        if n == 0:
-            self.held, self.reported_left = None, set()
-        else:
-            self.snapshot = n   # before the block is made: whatever arrives while it is made is seen as a change
-            h = self.held
-            if h is None or now >= h["next"] or (n != h["count"] and now >= h["last"] + RECHECK_BASE):
-                return "pool"
+        only what was left out last time, the count is not read for RECHECK_BASE after the last look, and afterwards the pool is built
+        from only when the count has changed or the pause, which grows up to BACKOFF_CAP, is over."""
+        h = self.held
+        if h is None or now >= h["last"] + RECHECK_BASE:   # within RECHECK_BASE of the last look the pool is not even counted
+            n = self.pending(self.cfg)
+            if n == 0:
+                self.held, self.reported_left = None, set()
+            else:
+                self.snapshot = n   # before the block is made: whatever arrives while it is made is seen as a change
+                if h is None or now >= h["next"] or n != h["count"]:
+                    return "pool"
         if self.empty_every > 0 and now - self.last_block_at >= self.empty_every:
             return "heartbeat"
         return None

@@ -158,7 +158,8 @@ class FakeReth:
         if method == "debug_getRawBlock":
             return self.raw_blocks[int(params[0], 16)]
         if method == "eth_getBlockByNumber":
-            return {"number": params[0], "hash": self.by_number.get(int(params[0], 16)), "transactions": []}
+            return {"number": params[0], "hash": self.by_number.get(int(params[0], 16)),
+                    "transactions": [{"hash": t} for t in self.block_txs.get(self.by_number.get(int(params[0], 16)), [])]}
         if method == "debug_executionWitness":
             return {"state": [], "codes": [], "keys": [], "headers": []}
         if method == "eth_getLogs":

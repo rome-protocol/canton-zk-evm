@@ -8,7 +8,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
-from fakes import BUILDER, HEAD_NUMBER, JWT_SECRET, LEDGER_TOKEN, tx
+from fakes import BUILDER, HEAD_NUMBER, JWT_SECRET, LEDGER_TOKEN, RpcError, tx
 
 ALICE, BOB = tb.ALICE, tb.BOB
 
@@ -24,6 +24,16 @@ class Loop(tb.Case):
             return False
         opts = dict(idle=0.5, status_file=self.status_file, emit=self.reports.append, clock=lambda: self.now[0], wait=wait)
         return b.Producer(s.cfg, self.stop, **{**opts, **k})
+
+    def env(self, s):
+        state = Path(s.dir) / "state"
+        state.mkdir()
+        (state / "jwt.hex").write_text(JWT_SECRET.hex())
+        return {**os.environ, "CZE_STATE_DIR": str(state), "CZE_LEDGER_URL": s.ledger.url, "CZE_LEDGER_USER": "builder-user",
+                "CZE_LEDGER_TOKEN": LEDGER_TOKEN, "CZE_BUILDER_PARTY": BUILDER, "CZE_FEE_RECIPIENT": "0x" + "fe" * 20,
+                "RETH_WS_PORT": s.reth.ws_url.rsplit(":", 1)[1], "RETH_ENGINE_PORT": s.reth.engine_url.rsplit(":", 1)[1],
+                "CZE_GENESIS": s.cfg.genesis, "CZE_WORK_DIR": s.cfg.work_dir, "CZE_MAKE_INPUT_CMD": s.cfg.make_input_cmd,
+                "CZE_PROVE_CMD": s.cfg.prove_cmd, "FAKE_PROVER_SLEEP": "1.5"}
 
     def built(self, s):
         return [p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"]
@@ -458,16 +468,6 @@ class StatusFile(Loop):
 
 
 class TheCommand(Loop):
-    def env(self, s):
-        state = Path(s.dir) / "state"
-        state.mkdir()
-        (state / "jwt.hex").write_text(JWT_SECRET.hex())
-        return {**os.environ, "CZE_STATE_DIR": str(state), "CZE_LEDGER_URL": s.ledger.url, "CZE_LEDGER_USER": "builder-user",
-                "CZE_LEDGER_TOKEN": LEDGER_TOKEN, "CZE_BUILDER_PARTY": BUILDER, "CZE_FEE_RECIPIENT": "0x" + "fe" * 20,
-                "RETH_WS_PORT": s.reth.ws_url.rsplit(":", 1)[1], "RETH_ENGINE_PORT": s.reth.engine_url.rsplit(":", 1)[1],
-                "CZE_GENESIS": s.cfg.genesis, "CZE_WORK_DIR": s.cfg.work_dir, "CZE_MAKE_INPUT_CMD": s.cfg.make_input_cmd,
-                "CZE_PROVE_CMD": s.cfg.prove_cmd, "FAKE_PROVER_SLEEP": "1.5"}
-
     def test_a_signal_lets_the_block_in_progress_finish_and_exits_zero(self):
         a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)
         s = self.setup({ALICE: [a], BOB: [c]})
@@ -525,6 +525,266 @@ class TheCommand(Loop):
                               env=self.env(s), capture_output=True, text=True)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("--exclude is for once", json.loads(proc.stdout)["error"])
+
+
+class Unprovable(Loop):
+    """A transaction the input tool or the prover cannot finish must not wedge the chain."""
+
+    def input_fails_for(self, *hashes):
+        os.environ["FAKE_INPUT_FAILS_FOR"] = "|".join(h[2:] for h in hashes)
+        self.addCleanup(os.environ.pop, "FAKE_INPUT_FAILS_FOR", None)
+
+    def committed(self):
+        return [h for r in self.reports if r.get("committed") for h in r["transactions"]]
+
+    def test_a_lone_transaction_that_fails_twice_is_left_out_and_the_chain_goes_on(self):
+        bad = tx(ALICE, 0)
+        s = self.setup({ALICE: [bad]})
+        self.input_fails_for(bad["hash"])
+        p = self.producer(s, cooldown=600)
+        p.step()
+        self.assertEqual(p.excluded, {})   # once is a failure of the service
+        p.step()
+        self.assertEqual(list(p.excluded), [bad["hash"]])
+        st = self.status()
+        (ex,) = st["excluded"]
+        self.assertEqual((ex["transaction"], ex["until"]), (bad["hash"], b.iso(self.now[0] + 600)))
+        self.assertIn("could not be proven", ex["reason"])
+        self.assertTrue(any(r.get("excluded") == bad["hash"] for r in self.reports))   # said in the log too
+        good = tx(BOB, 0)
+        s.reth.pool[BOB] = [good]   # the chain is not wedged: a good transaction goes in
+        p.step()
+        self.assertEqual(self.reports[-1]["transactions"], [good["hash"]])
+        self.assertEqual(self.in_pool(s), {bad["hash"]})
+        self.now[0] += 601   # the cool-down is over: it is tried again, and fails again
+        p.step()
+        self.assertEqual(self.reports[-1]["committed"], False)
+
+    def test_a_bad_transaction_beside_a_good_one_is_found_and_the_good_one_goes_in(self):
+        bad, good = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [bad], BOB: [good]})
+        self.input_fails_for(bad["hash"])
+        p = self.producer(s, cooldown=600)
+        for _ in range(4):
+            p.step()
+        self.assertEqual(list(p.excluded), [bad["hash"]])
+        self.assertEqual(self.committed(), [good["hash"]])
+        self.assertEqual(self.in_pool(s), {bad["hash"]})
+        self.assertIsNone(self.status()["searchingForUnprovable"])
+
+    def test_the_culprit_among_many_is_found_by_halves(self):
+        txs = [tx(f"0x{i:040x}", 0, price=40 - 10 * i) for i in range(4)]   # price order: 0, 1, 2, 3
+        s = self.setup({t["from"]: [t] for t in txs})
+        self.input_fails_for(txs[2]["hash"])
+        p = self.producer(s, cooldown=600)
+        p.step(); p.step()   # both blocks hold all four
+        self.assertEqual(self.status()["searchingForUnprovable"], {"candidates": [t["hash"] for t in txs]})
+        for _ in range(6):
+            p.step()
+        self.assertEqual(list(p.excluded), [txs[2]["hash"]])
+        self.assertEqual(sorted(self.committed()), sorted(t["hash"] for t in (txs[0], txs[1], txs[3])))
+        self.assertEqual(self.in_pool(s), {txs[2]["hash"]})
+
+    def test_a_service_failure_that_goes_away_blames_nobody(self):
+        a, c = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [a], BOB: [c]}, prover_fails=True)
+        p = self.producer(s)
+        p.step(); p.step()   # a prover that is down: both blocks hold both
+        os.environ["FAKE_PROVER_FAILS"] = ""
+        for _ in range(4):
+            p.step()
+        self.assertEqual(p.excluded, {})
+        self.assertEqual(sorted(self.committed()), sorted([a["hash"], c["hash"]]))
+        self.assertEqual(self.in_pool(s), set())
+        self.assertIsNone(self.status()["searchingForUnprovable"])
+
+    def test_one_failure_alone_holds_nothing_back(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, prover_fails=True)
+        p = self.producer(s)
+        p.step()
+        os.environ["FAKE_PROVER_FAILS"] = ""
+        p.step()
+        self.assertEqual((p.excluded, self.reports[-1]["transactions"]), ({}, [t["hash"]]))
+
+
+class SavedBlock(Loop):
+    """The transactions of a block are on disk from before it is proven until Canton has it or reth has them back."""
+
+    def saved(self, s):
+        return b.saved_path(s.cfg)
+
+    def cut_short(self, s):
+        """What a crash in the middle of a block leaves: reth has the block as head (its transactions are out of the pool) and the
+        builder is gone, having put nothing back."""
+        with b.connect(s.cfg.ws_url, max_size=None) as ws:
+            reth = b.Reth(s.cfg, ws)
+            chain = b.Ledger(s.cfg).head()
+            head = "0x" + chain["headHash"]
+            reth.forkchoice(head, head, head)
+            b.build_and_import(s.cfg, reth, chain, head, set())
+
+    def test_the_transactions_are_on_disk_while_the_block_is_proven_and_gone_once_it_is_committed(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        seen = Path(s.dir) / "seen"
+        wrapper = Path(s.dir) / "prove-and-look.sh"
+        wrapper.write_text(f'#!/usr/bin/env bash\ncp "{self.saved(s)}" "{seen}"\nexec "{tb.HERE / "fake-prove.sh"}" "$@"\n')
+        wrapper.chmod(0o755)
+        s.cfg.prove_cmd = str(wrapper)
+        self.assertTrue(b.build_block(s.cfg)["committed"])
+        self.assertEqual(json.loads(seen.read_text()), [{"hash": t["hash"], "raw": tb.raw_of(t)}])
+        self.assertFalse(self.saved(s).exists())
+
+    def test_a_refused_block_and_a_failed_one_leave_nothing_on_disk(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, refuse="no")
+        self.assertIs(b.build_block(s.cfg)["committed"], False)
+        self.assertFalse(self.saved(s).exists())
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+        os.environ["FAKE_PROVER_FAILS"] = "1"
+        self.addCleanup(os.environ.__setitem__, "FAKE_PROVER_FAILS", "")
+        with self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertFalse(self.saved(s).exists())
+
+    def test_a_block_whose_outcome_is_not_known_keeps_them_until_it_is_settled(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        p = self.producer(s)
+        p.step()
+        self.assertTrue(self.saved(s).exists())
+        s.ledger.head_fails_after_submit = False
+        p.step()
+        self.assertFalse(self.saved(s).exists())
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_a_restart_in_the_middle_of_a_block_gives_its_transactions_back_before_anything_is_built(self):
+        a, c = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [a], BOB: [c]})
+        self.cut_short(s)
+        self.assertEqual(self.in_pool(s), set())   # reth dropped them and does not give them back
+        self.assertTrue(self.saved(s).exists())
+        p = self.producer(s)   # a new process
+        p.step()
+        self.assertEqual(self.reports[0]["recovered"], 2)
+        self.assertEqual(self.reports[0]["lostTransactions"], [])
+        self.assertFalse(self.saved(s).exists())
+        methods = [m for m, _ in s.reth.ws_calls]
+        self.assertLess(methods.index("eth_sendRawTransaction"), len(methods) - 1 - methods[::-1].index("testing_buildBlockV1"))   # given back before the last build
+        self.assertEqual(sorted(self.reports[-1]["transactions"]), sorted([a["hash"], c["hash"]]))   # and built into a block at once
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_recovery_ignores_transactions_reth_already_has_or_cannot_use(self):
+        a, c = tx(ALICE, 0), tx(BOB, 0)
+        s = self.setup({ALICE: [a], BOB: [c]})
+        self.cut_short(s)
+        s.reth.pool[ALICE] = [a]   # one is back in the pool already
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["lostTransactions"]), (2, []))
+        s2 = self.setup({ALICE: [a]})
+        self.cut_short(s2)
+        s2.reth.refuse_resend = True   # reth will not take it back
+        found = b.recover_saved(s2.cfg)
+        self.assertEqual([x["transaction"] for x in found["lostTransactions"]], [a["hash"]])
+        self.assertFalse(self.saved(s2).exists())
+        self.assertIsNone(b.recover_saved(s2.cfg))   # nothing more to do
+
+    def test_a_lost_transaction_after_a_restart_is_in_the_status(self):
+        a = tx(ALICE, 0)
+        s = self.setup({ALICE: [a]})
+        self.cut_short(s)
+        s.reth.refuse_resend = True
+        p = self.producer(s)
+        p.step()
+        self.assertEqual([x["transaction"] for x in self.status()["lostTransactions"]], [a["hash"]])
+
+    def test_a_block_that_committed_before_the_crash_does_not_come_back_twice(self):
+        a = tx(ALICE, 0)
+        s = self.setup({ALICE: [a]})
+        self.cut_short(s)
+        # Canton did take the block: reth's pool refuses the transaction as already used (nonce too low), which is not a loss.
+        s.reth.send_raw = lambda raw: (_ for _ in ()).throw(RpcError("nonce too low"))
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["lostTransactions"]), (1, []))
+
+    def test_a_file_that_cannot_be_read_is_moved_aside_and_does_not_stop_the_chain(self):
+        s = self.setup({})
+        self.saved(s).parent.mkdir(parents=True, exist_ok=True)
+        self.saved(s).write_text("{not json")
+        p = self.producer(s)
+        p.step()
+        self.assertIn("could not be read", self.reports[0]["error"])
+        self.assertFalse(self.saved(s).exists())
+        self.assertTrue(self.saved(s).with_name(self.saved(s).name + ".unreadable").exists())
+        p.step()
+        self.assertEqual(len(self.reports), 1)
+
+    def test_the_once_command_gives_them_back_too(self):
+        a = tx(ALICE, 0)
+        s = self.setup({ALICE: [a]})
+        self.cut_short(s)
+        proc = subprocess.run([sys.executable, str(HERE.parent / "builder.py"), "once"], env=self.env(s), capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["transactions"], [a["hash"]])
+
+
+class LostTransactions(Loop):
+    def test_a_transaction_reth_will_not_take_back_after_a_refusal_is_reported(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, refuse="no")
+        s.reth.refuse_resend = True
+        p = self.producer(s)
+        p.step()
+        report = self.reports[-1]
+        self.assertEqual([x["transaction"] for x in report["lostTransactions"]], [t["hash"]])
+        self.assertEqual([x["transaction"] for x in self.status()["lostTransactions"]], [t["hash"]])
+
+    def test_a_transaction_reth_will_not_take_back_after_being_left_out_is_reported(self):
+        t = tx(BOB, 0)
+        s = self.setup({BOB: [t]})   # no terms: the leg has no Canton side
+        s.reth.tx_legs[t["hash"]] = [tb.PAY]
+        s.reth.refuse_resend = True
+        p = self.producer(s)
+        p.step()
+        self.assertEqual([x["transaction"] for x in self.reports[0]["lostTransactions"]], [t["hash"]])
+        self.assertEqual([x["transaction"] for x in self.status()["lostTransactions"]], [t["hash"]])
+
+    def test_a_failure_after_which_reth_will_not_take_back_a_transaction_reports_it(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, prover_fails=True)
+        s.reth.refuse_resend = True
+        p = self.producer(s)
+        p.step()
+        self.assertEqual([x["transaction"] for x in self.reports[0]["lostTransactions"]], [t["hash"]])
+
+
+class IdleChecks(Loop):
+    def calls(self, s, method):
+        return len([1 for m, _ in s.reth.ws_calls if m == method])
+
+    def test_waiting_for_the_pool_never_fetches_it(self):
+        s = self.setup({})
+        p = self.producer(s)
+        for _ in range(20):
+            p.step()
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (20, 0))
+
+    def test_a_pool_of_left_out_transactions_is_not_even_counted_between_looks_and_fetched_only_when_built_from(self):
+        t = tx(BOB, 0)
+        s = self.setup({BOB: [t]})
+        s.reth.tx_legs[t["hash"]] = [tb.PAY]
+        p = self.producer(s)
+        p.step()   # one look: the pool is fetched once
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 1))
+        for _ in range(10):
+            p.step()   # the clock has not moved
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 1))
+        self.now[0] += 2.0; p.step()   # the first pause is over: the pool is built from again (and the next pause is 4 s)
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (2, 2))
+        self.now[0] += 2.0; p.step()   # the count is read again; it is unchanged and the pause is not over: no fetch
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (3, 2))
 
 
 if __name__ == "__main__":
