@@ -27,7 +27,7 @@ python3 builder/builder.py once [--exclude <tx hash>]... [--read-as <party>]... 
 
 Any other failure after reth moved also moves reth back to Canton's head, and the transactions of the block it made are sent to the pool again. A `Leg` event that cannot be read is such a failure.
 
-Exit status: 0 committed, 2 refused by Canton or not known (`"committed": null`), 1 any other failure. Every run prints exactly one JSON line on stdout, failures included (a missing setting, an unreadable secret, no `ZkChain` contract or two of them, a reply that is not JSON, a failing prover): `{"committed": false, "error": "..."}` and exit 1.
+Exit status: 0 committed, 2 not committed (refused by Canton, or not accepted because a service failed) or not known (`"committed": null`), 1 any other failure. Every run prints exactly one JSON line on stdout, failures included (a missing setting, an unreadable secret, no `ZkChain` contract or two of them, a reply that is not JSON, a failing prover): `{"committed": false, "error": "..."}` and exit 1.
 
 ### The report
 
@@ -41,7 +41,8 @@ The line a run prints when Canton answered (or may have) has these fields beside
 | `legs` | how many legs went with the block (when it committed) |
 | `legTransactions` | the hashes of the transactions that recorded legs, in the order of the legs |
 | `leftOut` | the transactions left out because a leg of theirs had no Canton side, each as `{"transaction": ..., "reason": ...}`. A transaction named with `--exclude` is not listed. |
-| `reason` | why Canton refused, or why the outcome is not known |
+| `rejected` | with `"committed": false`: `true` if Canton rejected the command (an HTTP 4xx with an error code), `false` if the Ledger API failed (a 5xx, 429, 401 or 403, a lost reply) and nothing committed. `run` treats only the first as a refusal. |
+| `reason` | why Canton refused or did not take the block, or why the outcome is not known |
 | `proveSeconds`, `advanceSeconds` | how long making the proof's input and proving took, and how long Canton took to answer the `Advance` |
 
 A transaction left out is put back in reth's pool, where it waits. It goes into a later block once its leg has a Canton side, and its sender can replace it. A refusal the builder could not see coming, such as a token registry's own rule, still needs `--exclude` on the next run: the builder does not remember anything from one run to the next.
@@ -74,7 +75,8 @@ All from the environment.
 |---|---|
 | `CZE_LEDGER_USER`, `CZE_BUILDER_PARTY`, `CZE_FEE_RECIPIENT` | Required: the Ledger API user, the builder party, the address that gets the block's fees. |
 | `CZE_LEDGER_URL` | JSON Ledger API, default `http://127.0.0.1:7575`. |
-| `CZE_LEDGER_TOKEN` | Bearer token for the Ledger API, if the participant wants one. |
+| `CZE_LEDGER_TOKEN` | Bearer token for the Ledger API, if the participant wants one. It is read once, at start. A token that expires makes every block fail until the builder is restarted, so for `run` use the next setting. |
+| `CZE_LEDGER_TOKEN_FILE` | A file holding the token. It is read again on every Ledger call, so a token that is renewed needs no restart. Replaces `CZE_LEDGER_TOKEN` when set. |
 | `RETH_WS_PORT`, `RETH_ENGINE_PORT` | Ports of the reth that `network/reth/launch.sh` started, as there (8546 and 8551). |
 | `CZE_STATE_DIR` | Where `jwt.hex` is, as for `launch.sh` (default `./state`). Work files go to `$CZE_STATE_DIR/builder` unless `CZE_WORK_DIR` says otherwise. |
 | `CZE_GENESIS` | The genesis file given to `make-input.sh` (default `network/genesis.json`). |
@@ -89,36 +91,43 @@ The prover is whatever `CZE_PROVE_CMD` runs. By default that is `prove-one.sh`, 
 python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--idle-ms 500] [--empty-every-seconds 0] [--status-file <path>] [--exclude-cooldown-seconds 600]
 ```
 
-`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as` and `--disclosed` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it makes one block with exactly the code `once` runs: from Canton's head, proved, submitted. If the pool is empty it waits `--idle-ms` and looks again. With `--empty-every-seconds N` greater than 0 it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive.
+`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as` and `--disclosed` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted. If the pool is empty it waits `--idle-ms` (at least 50) and looks again. With `--empty-every-seconds N` greater than 0 it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
+
+**Only one builder at a time.** `run` and `once` both take an exclusive lock on `builder.lock` in the work folder and refuse to start if another one has it, because two builders would move the same reth and race with their blocks. To make one block by hand while `run` is going, stop `run` first.
+
+**A pool with nothing that can go in.** A transaction can wait in the pool and still not be includable: its leg has no Canton side yet, it is held back, or it does not fit. If a block made for the pool would hold no transaction, the loop does not prove or submit it. reth goes back to Canton's head and the loop looks again a little later: after 2 seconds, then 4, 8 and so on up to 30 seconds while the pool stays the same, and after at most 2 seconds whenever the pool's set of transactions changes (a new one, or a replacement with the same nonce). The look is cheap: it builds and matches the legs but proves nothing. So a transaction whose leg gets its Canton side later goes in without anything else happening, and a transaction that no one will ever settle (a claim of a deposit nobody made, say) costs no proof and no commit. A line `{"skipped": true, "number": ..., "leftOut": [...]}` says which transactions are left out and why, once for each change.
 
 What it does after a block:
 
 | Outcome | What the loop does |
 |---|---|
 | Committed (`once` exits 0) | Goes on at once. |
-| Refused by Canton (2) | Goes on after a short wait. The transactions are back in reth's pool, as after `once`. A transaction that was in the kept list of two refused blocks in a row is left out, as `--exclude` does, for `--exclude-cooldown-seconds` (600 by default), and is listed in the status. One bad transaction cannot stall the chain, and it is tried again once the cool-down is over. |
-| Not known (2, `"committed": null`) | Goes on. The next block starts from Canton's head, whichever it is, as the builder always does. |
-| Any other failure (1), or a pool that cannot be read | Waits 1 second, then 2, 4, 8 and so on up to 30 seconds while it keeps failing, and tries again. A block that is answered sets the wait back to 1 second. |
+| Refused by Canton (`"rejected": true`) | Waits 1 second, then 2, 4 and so on up to 30 seconds while refusals follow each other; a commit sets it back. The transactions are back in reth's pool, as after `once`. A transaction that was in the kept list of two refused blocks in a row is suspected. If it is the only one both blocks had in common it is left out, as `--exclude` does, for `--exclude-cooldown-seconds` (600 by default), and listed in the status. If there are several, the loop makes one block for each of them in turn, with the other suspects kept out of it, and leaves out the one whose block is refused, so an honest transaction that was only next to a bad one is not held back with it. A left-out transaction is tried again once the cool-down is over. |
+| Canton did not take it, and no refusal (`"committed": false, "rejected": false`) | The Ledger API failed: the synchronizer is disconnected, a service is down, a 5xx, 429, 401 or 403, or the reply was lost and Canton's head did not move. This is a failure, not a refusal: it backs off like one below, and no transaction is held back for it. |
+| Not known (2, `"committed": null`) | Nothing else is built. On the next round the loop reads Canton's head, again and again with backoff until it can. If the head is the block, the block counts as committed. If not, reth goes back to Canton's head and the block's transactions are sent to its pool again, so they go into a later block. A line `{"resolved": "committed" or "not committed", ...}` says which. A transaction that reth would not take back is named in `lostTransactions` of that line and of the status. Until then reth's `latest` is a block that Canton may never have committed, so the explorer shows it as being proven. |
+| Any other failure (1), or a pool that cannot be read | Waits 1 second, then 2, 4, 8 and so on up to 30 seconds while it keeps failing, and tries again, with no end to the trying. A block that is answered sets the wait back to 1 second. |
 
-A block that is refused and a block that failed do not count as two in a row for the leaving out. Only two refusals next to each other do.
+A refused block and a failed block do not count as two in a row for the leaving out. Only two refusals next to each other do. A suspect that was held back wrongly (for example, a new bad transaction came into the block of its trial) is tried again when its cool-down ends.
 
-If every waiting transaction is held back or does not fit, the block would be empty. The loop makes that one block and then waits until the pool's count changes or a cool-down ends, so it does not fill the chain with empty blocks.
+One JSON line goes to stdout for every block, the same report `once` prints (a failure prints `{"committed": false, "error": "..."}`), so it can be followed with `tail -f` or sent to a log collector. A stdout that is closed does not stop the loop.
 
-One JSON line goes to stdout for every block, the same report `once` prints (a failure prints `{"committed": false, "error": "..."}`), so it can be followed with `tail -f` or sent to a log collector.
+**Stopping.** `SIGTERM` or `SIGINT` (Ctrl-C) finishes the block in progress, writes the status, and exits 0. The input tool and the prover run in their own session, so a Ctrl-C at the terminal, which reaches the whole process group, does not cut a proof short. A second signal acts as it usually does. A block cut off in the middle is the same as after a crash: the next start goes back to Canton's head. Run it under a service manager that restarts it, and it is safe to restart at any time. A service manager that signals every process of the service when it stops must be set to signal the builder first and the rest only at the end (for a Linux init system: a kill mode of `mixed`), and its stop timeout must be longer than a proof and the Canton answer put together, or it will end a block in progress. Set it to restart the builder after any exit.
 
-**Stopping.** `SIGTERM` or `SIGINT` (Ctrl-C) finishes the block in progress, writes the status, and exits 0. A second signal acts as it usually does. A block cut off in the middle is the same as after a crash: the next start goes back to Canton's head. Run it under a service manager that restarts it, and it is safe to restart at any time.
+**Work folders.** Every block keeps `block-<n>` in the work folder (block, witness, input, proof, `advance.json`). `run` removes the folders of committed blocks that are more than 10 behind the newest one. `once` removes nothing.
 
 **The status file.** `--status-file` (default `status.json` in the work folder) is JSON, replaced atomically after every block, at start, at stop, and every few seconds while idle, so its `updatedAt` shows the loop is alive:
 
 | Field | What it holds |
 |---|---|
-| `state` | `running` or `stopped` |
+| `state` | `running`, `stopped` (a signal) or `crashed` (anything else ended it) |
 | `startedAt`, `updatedAt` | UTC times |
 | `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |
 | `blocksCommitted`, `blocksRefused`, `blocksUnknown` | counts since the loop started |
 | `consecutiveFailures` | failures since the last answered block |
 | `lastError` | `{time, error}`: the last refusal reason, unknown outcome or failure |
 | `excluded` | the transactions left out now, each as `{transaction, until}` |
+| `waitingToBeResolved` | `{number, hash}` of a block whose outcome is not known yet, or `null` |
+| `lostTransactions` | transactions that could not be put back in reth's pool after a block that did not commit, each with the error (the last 100) |
 | `averageProveSeconds`, `averageAdvanceSeconds` | averages over the blocks that were proven, or `null` before the first |
 
 A status file that cannot be written is reported on stderr and does not stop the chain.
@@ -130,7 +139,7 @@ pip install --require-hashes -r builder/requirements.txt    # the WebSocket clie
 python3 -m unittest discover -s builder/tests
 ```
 
-The loop's tests are in `test_producer.py`: idle on an empty pool, a block when there is a transaction, the heartbeat, refusal and retry, leaving out after two refusals and its expiry, backoff, an unknown outcome, the status file, and a real `run` process that is sent `SIGTERM` in the middle of a block.
+The loop's tests are in `test_producer.py`: idle on an empty pool, a block when there is a transaction, the heartbeat, a pool with nothing includable (no block; a leg whose Canton side comes later; a transaction that arrives during a look; a replacement; claims nobody made), refusal and retry with backoff, suspects tried one block each, a service failure that is not a refusal, an unknown outcome (committed, and not committed with the transactions put back), a backoff past a thousand failures, a closed stdout, the status file, work folder pruning, the lock, the token file, and real `run` processes that are sent `SIGTERM` and a group `SIGINT` in the middle of a block.
 
 Python 3.12, standard library plus `websockets`. The tests use only fakes in `builder/tests/`: reth's WebSocket and Engine ports (with the gateway's `Leg` logs and proofs), the Ledger API, and shell scripts for the prover and input tool. The fake Engine port checks the token as reth does. Tests cover a good block end to end, a refusal and the move back, a failing prover, the token, the explicit transaction list and the gas cap.
 
@@ -141,6 +150,7 @@ Leg tests cover each kind. For a payment: no terms, terms for another id, token,
 - No check of the proof under the pinned keys before submitting it; the builder checks only its size and form. Canton's confirmers check it.
 - No step cap before proving. A block the prover cannot finish stops the run at the prover.
 - `once` makes one block. The loop is `run`.
+- `run` holds a block in memory only while its outcome is unknown. If the process itself dies in that time, the next start goes back to Canton's head, and a transaction that reth had dropped as mined is not sent again by the builder (the sender can send it again).
 - No memory from one `once` to the next. A refusal for a reason the builder cannot see (a registry's own rule) is handled by `run` after two refusals in a row, or by hand with `--exclude` when using `once`. `run` keeps its list of left-out transactions in memory only: a restart forgets it.
 - The builder cannot see everything about a leg. It judges the settle-before time by its own clock, and an allocation can be withdrawn between its check and the commit. Then Canton refuses the block, nothing moves, and the next run sees the allocation is gone.
 - The builder needs read access to the contracts of the legs it settles: the requests, tokens, acceptances, terms, allocations and the gateway's holdings. This repository uses `--read-as` to give it the view of the parties that hold them. A deployment must grant that access; a leg whose contracts the builder cannot see has no Canton side, and its transaction is left out.

@@ -28,6 +28,10 @@ class Loop(tb.Case):
     def built(self, s):
         return [p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"]
 
+    def looks(self, s):
+        """How many times the loop has built a block to see what could go in. A left-out transaction makes it build twice."""
+        return len(self.built(s)) // 2
+
     def status(self):
         return json.loads(Path(self.status_file).read_text())
 
@@ -78,18 +82,99 @@ class WhenToBuild(Loop):
         self.now[0] += 10_000; p.step()
         self.assertEqual(self.reports, [])
 
-    def test_a_pool_whose_transactions_are_all_held_back_does_not_make_empty_blocks(self):
+    def test_a_pool_whose_transactions_are_all_held_back_makes_no_block_at_all(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
         p = self.producer(s)
         p.excluded[t["hash"]] = self.now[0] + 600
-        p.step()   # the one block, empty because the only transaction is held back
-        self.assertEqual(self.reports[0]["transactions"], [])
-        p.step(); p.step()
-        self.assertEqual(len(self.reports), 1)
-        self.now[0] += 601   # the cool-down is over: the transaction goes in
+        p.step(); p.step(); p.step()
+        self.assertEqual(s.ledger.submitted, [])   # no proof and no commit is spent on a block with nothing in it
+        self.assertEqual(s.log.exists() and s.log.read_text(), False)
+        self.assertEqual(s.reth.pool[ALICE], [t])
+        self.now[0] += 601   # the cool-down is over: the transaction goes in at once
         p.step()
-        self.assertEqual(self.reports[1]["transactions"], [t["hash"]])
+        self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
+
+    def test_a_leg_that_gets_its_canton_side_later_goes_in_without_any_other_change_of_the_pool(self):
+        t = tx(BOB, 0)
+        s = self.setup({BOB: [t]})   # no terms yet
+        s.reth.tx_legs[t["hash"]] = [tb.PAY]
+        p = self.producer(s)
+        p.step()
+        self.assertEqual(s.ledger.submitted, [])
+        self.assertEqual(self.reports, [{"skipped": True, "number": HEAD_NUMBER + 1,
+                                         "leftOut": [{"transaction": t["hash"], "reason": self.reports[0]["leftOut"][0]["reason"]}]}])
+        p.step(); p.step()   # not looked at again before the pause is over, and not told again
+        self.assertEqual(self.looks(s), 1)
+        self.assertEqual(len(self.reports), 1)
+        s.ledger.terms.append(tb.TERMS)
+        self.now[0] += 2.1; p.step()
+        self.assertTrue(self.reports[-1]["committed"])
+        self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_a_pool_that_stays_the_same_is_looked_at_with_a_growing_pause(self):
+        t = tx(BOB, 0)
+        s = self.setup({BOB: [t]})
+        s.reth.tx_legs[t["hash"]] = [tb.PAY]
+        p = self.producer(s)
+        p.step()
+        looks = [self.looks(s)]
+        for dt in (1.9, 0.2, 3.9, 0.2, 7.9, 0.2):   # looks at 2 s, 6 s and 14 s after the first
+            self.now[0] += dt; p.step(); looks.append(self.looks(s))
+        self.assertEqual(looks, [1, 1, 2, 2, 3, 3, 4])
+
+    def test_a_transaction_that_arrives_while_the_pool_is_being_looked_at_is_not_forgotten(self):
+        waiting, late = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [waiting]})
+        s.reth.tx_legs[waiting["hash"]] = [tb.PAY]
+        arrived = []
+        def building(cfg, exclude, **k):
+            result = b.build_block(cfg, exclude, **k)
+            if not arrived:
+                arrived.append(1)
+                s.reth.pool[BOB] = [late]   # a good transaction comes in while the check runs
+            return result
+        p = self.producer(s, build=building)
+        p.step()
+        self.assertEqual(s.ledger.submitted, [])
+        self.now[0] += 2.1; p.step()
+        self.assertEqual(self.reports[-1]["transactions"], [late["hash"]])
+        self.assertEqual([x["transaction"] for x in self.reports[-1]["leftOut"]], [waiting["hash"]])
+
+    def test_a_replacement_with_the_same_count_is_picked_up(self):
+        old, new = tx(ALICE, 0, name="old"), tx(ALICE, 0, price=20, name="new")
+        s = self.setup({ALICE: [old]})
+        s.reth.tx_legs[old["hash"]] = [tb.PAY]
+        p = self.producer(s)
+        p.step()
+        s.reth.pool[ALICE] = [new]   # same sender and nonce, a higher fee, and no leg
+        self.now[0] += 2.1; p.step()
+        self.assertEqual(self.reports[-1]["transactions"], [new["hash"]])
+
+    def test_transactions_that_only_ask_for_deposits_nobody_made_cost_no_proof_and_no_commit(self):
+        s = self.setup({})
+        spam = []
+        for i in range(5):
+            t = tx("0x" + f"{i + 1:02x}" * 20, 0, name="spam")
+            s.reth.tx_legs[t["hash"]] = [tb.Leg(tb.DEPOSIT, f"{i + 1:064x}", tb.WTKB, tb.PAYEE, 1)]
+            s.reth.pool[t["from"]] = [t]
+            spam.append(t)
+        p = self.producer(s)
+        for _ in range(4):
+            p.step(); self.now[0] += 2.5
+        self.assertEqual(s.ledger.submitted, [])
+        self.assertFalse(s.log.exists())
+        extra = tx("0x" + "77" * 20, 0, name="spam")
+        s.reth.tx_legs[extra["hash"]] = [tb.Leg(tb.DEPOSIT, "99" * 32, tb.WTKB, tb.PAYEE, 1)]
+        s.reth.pool[extra["from"]] = [extra]   # more of it: still no block
+        p.step(); self.now[0] += 2.5; p.step()
+        self.assertEqual(s.ledger.submitted, [])
+        good = tx(BOB, 0, price=5)
+        s.reth.pool[BOB] = [good]   # a real transaction goes in, and the rest stays out of the block
+        self.now[0] += 2.5; p.step()
+        self.assertEqual(self.reports[-1]["transactions"], [good["hash"]])
+        self.assertEqual(len(s.ledger.submitted), 1)
 
 
 class Refusals(Loop):
@@ -105,24 +190,38 @@ class Refusals(Loop):
         self.assertEqual([r["committed"] for r in self.reports], [False, True])
         self.assertEqual(self.reports[1]["transactions"], [t["hash"]])
 
-    def test_a_transaction_in_two_refused_blocks_in_a_row_is_left_out_for_the_cool_down(self):
-        bad, good = tx(ALICE, 0), tx(BOB, 0, price=5)
-        s = self.setup({ALICE: [bad], BOB: [good]}, refuse="the registry says no")
+    def test_a_lone_transaction_in_two_refused_blocks_in_a_row_is_left_out_for_the_cool_down(self):
+        bad = tx(ALICE, 0)
+        s = self.setup({ALICE: [bad]}, refuse="the registry says no")
         p = self.producer(s, cooldown=600)
         p.step()
         self.assertEqual(self.status()["excluded"], [])
-        p.step()   # the second refusal with the same transactions
-        until = b.iso(self.now[0] + 600)
-        self.assertEqual(sorted((e["transaction"], e["until"]) for e in self.status()["excluded"]),
-                         sorted([(bad["hash"], until), (good["hash"], until)]))
+        p.step()   # the second refusal with the same transaction
+        self.assertEqual(self.status()["excluded"], [{"transaction": bad["hash"], "until": b.iso(self.now[0] + 600)}])
         s.ledger.refuse = None
-        p.step()   # both are held back: the block is empty and commits
-        self.assertEqual(self.reports[-1]["transactions"], [])
-        # the cool-down ends and they are tried again
-        self.now[0] += 601
+        p.step()   # it is held back and nothing else waits: no block
+        self.assertEqual([r["committed"] for r in self.reports], [False, False])
+        self.now[0] += 601   # the cool-down ends and it is tried again
         p.step()
-        self.assertEqual(sorted(self.reports[-1]["transactions"]), sorted([bad["hash"], good["hash"]]))
+        self.assertEqual(self.reports[-1]["transactions"], [bad["hash"]])
         self.assertEqual(self.status()["excluded"], [])
+
+    def test_several_transactions_in_two_refused_blocks_are_tried_one_block_each_before_any_is_left_out(self):
+        bad, good = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [bad], BOB: [good]}, refuse="the registry says no")
+        p = self.producer(s, cooldown=600)
+        p.step(); p.step()
+        self.assertEqual((p.excluded, sorted(p.suspects)), ({}, sorted([bad["hash"], good["hash"]])))
+        for _ in range(3):
+            probe = p.probe
+            s.ledger.refuse = "no" if probe == bad["hash"] else None
+            if probe is None:
+                break
+            p.step()
+            self.assertEqual(self.reports[-1]["keptTransactions" if not self.reports[-1]["committed"] else "transactions"], [probe])
+        self.assertEqual(list(p.excluded), [bad["hash"]])   # only the bad one is held back
+        self.assertIn(good["hash"], [h for r in self.reports if r.get("committed") for h in r["transactions"]])
+        self.assertEqual(self.in_pool(s), {bad["hash"]})
 
     def test_refusals_with_a_commit_between_them_are_not_consecutive(self):
         t = tx(ALICE, 0, gas=20_000_000)
@@ -135,17 +234,82 @@ class Refusals(Loop):
         self.assertEqual(p.excluded, {})
         self.assertEqual([r["committed"] for r in self.reports], [False, True, False])
 
-    def test_an_unknown_outcome_goes_on_and_the_next_block_starts_from_cantons_head(self):
+    def test_an_unknown_outcome_that_canton_did_commit_is_counted_and_the_chain_goes_on(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
         s.ledger.head_fails_after_submit = True
         p = self.producer(s)
         p.step()
         self.assertIsNone(self.reports[0]["committed"])
         self.assertEqual(self.status()["blocksUnknown"], 1)
+        self.assertEqual(self.status()["waitingToBeResolved"], {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"]})
         s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False
+        p.step()   # finds out
+        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
+        self.assertEqual((self.status()["blocksCommitted"], self.status()["lastCommitted"]["number"]), (1, HEAD_NUMBER + 1))
         s.reth.pool[ALICE] = [tx(ALICE, 1)]
         p.step()
-        self.assertEqual(self.reports[1]["number"], HEAD_NUMBER + 2)
+        self.assertEqual(self.reports[2]["number"], HEAD_NUMBER + 2)
+
+    def test_an_unknown_outcome_that_canton_did_not_commit_puts_the_transactions_back_and_they_go_in_later(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        p = self.producer(s)
+        p.step()
+        self.assertIsNone(self.reports[0]["committed"])
+        self.assertEqual(self.in_pool(s), set())   # reth holds them as mined and its head is the block that never committed
+        p.step()   # Canton's head cannot be read yet: nothing is built, and the loop backs off
+        self.assertEqual(len(self.built(s)), 1)
+        self.assertIn("error", self.reports[1])
+        self.assertEqual(self.waits[-1], 1)
+        s.ledger.head_fails_after_submit = False
+        p.step()
+        self.assertEqual(self.reports[2], {"resolved": "not committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], tb.HEAD_HASH)   # reth is back on Canton's head
+        s.ledger.garbage_reply, s.ledger.commit = False, True
+        p.step()
+        self.assertEqual((self.reports[-1]["committed"], self.reports[-1]["transactions"]), (True, [t["hash"]]))
+
+    def test_a_transaction_that_cannot_be_put_back_is_listed_in_the_status(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        p = self.producer(s)
+        p.step()
+        s.ledger.head_fails_after_submit = False
+        s.reth.refuse_resend = True
+        p.step()
+        self.assertEqual(self.reports[-1]["lostTransactions"], [{"transaction": t["hash"], "error": self.reports[-1]["lostTransactions"][0]["error"]}])
+        self.assertEqual([x["transaction"] for x in self.status()["lostTransactions"]], [t["hash"]])
+
+    def test_a_service_failure_is_not_a_refusal(self):
+        a, c = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [a], BOB: [c]})
+        s.ledger.fail_but_commit, s.ledger.commit = True, False   # a 503 and nothing committed
+        p = self.producer(s)
+        for _ in range(3):
+            p.step()
+        self.assertEqual([(r["committed"], r["rejected"]) for r in self.reports], [(False, False)] * 3)
+        self.assertEqual(self.waits, [1, 2, 4])
+        self.assertEqual((p.excluded, p.suspects), ({}, []))
+        st = self.status()
+        self.assertEqual((st["blocksRefused"], st["consecutiveFailures"]), (0, 3))
+        s.ledger.fail_but_commit, s.ledger.commit = False, True
+        p.step()
+        self.assertEqual(sorted(self.reports[-1]["transactions"]), sorted([a["hash"], c["hash"]]))
+
+    def test_repeated_refusals_back_off_and_a_commit_resets_the_pause(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, refuse="no")
+        p = self.producer(s, cooldown=600)
+        p.step(); p.step()
+        self.assertEqual(self.waits, [1, 2])
+        self.now[0] += 601
+        s.ledger.refuse = None; p.step()   # commits
+        s.reth.pool[ALICE] = [tx(ALICE, 1)]
+        s.ledger.refuse = "no"; p.step()
+        self.assertEqual(self.waits, [1, 2, 1])
 
 
 class Failures(Loop):
@@ -179,6 +343,74 @@ class Failures(Loop):
         os.environ["FAKE_PROVER_FAILS"] = "1"; p.step()   # a failure between the two refusals
         os.environ["FAKE_PROVER_FAILS"] = ""; p.step()
         self.assertEqual(p.excluded, {})
+
+
+class NeverDies(Loop):
+    def test_a_very_long_outage_never_overflows_the_backoff(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
+        p = self.producer(s)
+        p.failures = 1100
+        p.step(); p.step()
+        self.assertEqual(self.waits, [30, 30])
+        self.assertEqual(self.status()["consecutiveFailures"], 1102)
+
+    def test_a_log_pipe_that_is_gone_does_not_stop_the_loop(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        def gone(report): raise BrokenPipeError("the collector died")
+        p = self.producer(s, emit=gone)
+        p.step()
+        self.assertEqual(self.status()["blocksCommitted"], 1)
+
+    def test_a_fault_of_the_loops_own_is_a_failure_and_a_crash_is_said_in_the_status(self):
+        s = self.setup({})
+        calls = []
+        def pending(cfg):
+            calls.append(1)
+            if len(calls) == 1:
+                raise KeyError("a bug")
+            self.stop.set()
+            return 0
+        p = self.producer(s, pending=pending)
+        p.run()   # the first look fails, the second stops it
+        self.assertEqual(self.status()["state"], "stopped")
+        self.assertEqual(self.reports[0]["error"], "KeyError: 'a bug'")
+        def killed(cfg): raise KeyboardInterrupt()
+        p = self.producer(s, pending=killed)
+        with self.assertRaises(KeyboardInterrupt):
+            p.run()
+        self.assertEqual(self.status()["state"], "crashed")
+
+
+class Housekeeping(Loop):
+    def test_the_work_folders_of_old_committed_blocks_are_removed(self):
+        work = Path(self.setup({}).dir) / "w"
+        for n in (1, 5, 6, 10, 16, 17, 30):
+            (work / f"block-{n}").mkdir(parents=True)
+        (work / "status.json").write_text("{}")
+        b.prune_work(str(work), 16, keep=10)
+        self.assertEqual(sorted(os.listdir(work)), ["block-10", "block-16", "block-17", "block-30", "status.json"])
+
+    def test_one_builder_at_a_time_per_work_folder(self):
+        s = self.setup({})
+        with b.work_lock(s.cfg.work_dir):
+            with self.assertRaises(b.BuilderError) as e:
+                with b.work_lock(s.cfg.work_dir):
+                    pass
+            self.assertIn("another builder is running", str(e.exception))
+        with b.work_lock(s.cfg.work_dir):   # free again
+            pass
+
+    def test_a_token_file_is_read_on_every_call(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)], BOB: [tx(BOB, 0, price=5)]})
+        token = Path(s.dir) / "token"
+        token.write_text(tb.LEDGER_TOKEN + "\n")
+        s.cfg.ledger_token, s.cfg.ledger_token_file = "stale", str(token)
+        self.build(s)
+        self.assertEqual(s.ledger.bad_auth, 0)
+        token.write_text("rotated")   # the fake counts every call that does not carry the one token it knows
+        s.reth.pool[ALICE] = [tx(ALICE, 1)]
+        self.build(s)
+        self.assertGreater(s.ledger.bad_auth, 0)
 
 
 class StatusFile(Loop):
@@ -250,6 +482,37 @@ class TheCommand(Loop):
         st = json.loads(Path(status).read_text())
         self.assertEqual((st["state"], st["blocksCommitted"]), ("stopped", 1))
         self.assertEqual(len(s.ledger.submitted), 1)
+
+    def test_a_ctrl_c_to_the_whole_process_group_does_not_cut_the_proof_short(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        status = str(Path(s.dir) / "status.json")
+        proc = subprocess.Popen([sys.executable, str(HERE.parent / "builder.py"), "run", "--idle-ms", "50", "--status-file", status],
+                                env=self.env(s), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+        deadline = time.time() + 30
+        while not (s.log.exists() and "prove" in s.log.read_text()):
+            self.assertLess(time.time(), deadline, "the block never reached the prover")
+            time.sleep(0.05)
+        os.killpg(proc.pid, signal.SIGINT)   # what a terminal's Ctrl-C does
+        out, err = proc.communicate(timeout=60)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertEqual([json.loads(l)["committed"] for l in out.splitlines()], [True])
+        self.assertEqual(len(s.ledger.submitted), 1)
+
+    def test_a_second_builder_on_the_same_work_folder_is_refused(self):
+        s = self.setup({})
+        env = self.env(s)
+        with b.work_lock(s.cfg.work_dir):
+            for command in ("run", "once"):
+                proc = subprocess.run([sys.executable, str(HERE.parent / "builder.py"), command], env=env, capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 1)
+                self.assertIn("another builder is running", json.loads(proc.stdout)["error"])
+
+    def test_a_busy_loop_is_refused(self):
+        s = self.setup({})
+        proc = subprocess.run([sys.executable, str(HERE.parent / "builder.py"), "run", "--idle-ms", "0"], env=self.env(s), capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("--idle-ms must be at least 50", json.loads(proc.stdout)["error"])
 
     def test_run_does_not_take_exclude(self):
         s = self.setup({})

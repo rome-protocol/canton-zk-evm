@@ -9,11 +9,11 @@ It builds a block, reads the Canton legs the block's transactions asked the gate
 side, and builds the block again without any transaction whose leg has none. Only then does it prove the block and
 submit it, with exactly the legs the block recorded.
 
-Exit status: 0 if Canton committed the block, 2 if Canton refused it (reth is moved back to Canton's head) or if it is
+Exit status: 0 if Canton committed the block, 2 if Canton refused it or did not take it (reth is moved back to Canton's head) or if it is
 not known whether it committed ("committed": null; reth is left where it is), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, functools, hashlib, hmac, http.client, json, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
+import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +58,7 @@ class Config:
     prove_cmd: str         # <input.bin> <out-folder>; leaves <out-folder>/wrapped-proof.hex
     read_as: tuple = ()    # more parties whose contracts the builder may read (--read-as); the builder never acts as them
     disclosed: list = field(default_factory=list)   # contracts passed with Advance as they are (--disclosed)
+    ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -76,7 +77,7 @@ class Config:
             engine_url=f"http://127.0.0.1:{e.get('RETH_ENGINE_PORT', 8551)}",
             jwt_secret=jwt_secret,
             ledger_url=e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"),
-            ledger_user=need("CZE_LEDGER_USER"), ledger_token=e.get("CZE_LEDGER_TOKEN", ""),
+            ledger_user=need("CZE_LEDGER_USER"), ledger_token=e.get("CZE_LEDGER_TOKEN", ""), ledger_token_file=e.get("CZE_LEDGER_TOKEN_FILE", ""),
             party=need("CZE_BUILDER_PARTY"), fee_recipient=need("CZE_FEE_RECIPIENT"),
             genesis=e.get("CZE_GENESIS", str(ROOT / "network" / "genesis.json")),
             work_dir=e.get("CZE_WORK_DIR", str(state / "builder")),
@@ -141,6 +142,22 @@ def put_back(reth: Reth) -> None:
             pass
 
 
+RESENT_ALREADY = ("already known", "known transaction", "nonce too low", "already imported")   # reth's answers that mean the transaction is not lost
+
+
+def resend(reth: Reth, pairs: list) -> list:
+    """Sends (hash, raw transaction) pairs to reth's pool again. Returns [{transaction, error}] for the ones reth refused for a reason
+    other than already having them or the nonce being used: those are not in the pool."""
+    lost = []
+    for hash_, raw in pairs:
+        try:
+            reth.call("eth_sendRawTransaction", [raw])
+        except BuilderError as e:
+            if not any(m in str(e).lower() for m in RESENT_ALREADY):
+                lost.append({"transaction": hash_, "error": str(e)})
+    return lost
+
+
 def without(pairs: list, exclude: set) -> list:
     """The last build's (transaction, raw bytes), less the excluded ones and each such sender's later ones."""
     stopped, kept = set(), []
@@ -202,7 +219,12 @@ def split_block(raw: bytes) -> tuple:
 class Ledger:
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.auth = {"authorization": "Bearer " + cfg.ledger_token} if cfg.ledger_token else {}
+
+    @property
+    def auth(self) -> dict:
+        """The bearer header. A token file is read on every call, so a token that is rotated needs no restart."""
+        token = Path(self.cfg.ledger_token_file).read_text().strip() if self.cfg.ledger_token_file else self.cfg.ledger_token
+        return {"authorization": "Bearer " + token} if token else {}
 
     def readers(self) -> list:
         """The builder, then the parties given with --read-as."""
@@ -261,7 +283,8 @@ class Ledger:
 # ---- the legs a block records ----------------------------------------------------------------------------------
 
 def run(cmd: str, *args: str) -> None:
-    done = subprocess.run([*cmd.split(), *args], capture_output=True, text=True)
+    # Its own session: a Ctrl-C or a service manager's signal to the builder's group must not cut a proof short.
+    done = subprocess.run([*cmd.split(), *args], capture_output=True, text=True, start_new_session=True)
     if done.returncode != 0:
         raise BuilderError(f"{Path(cmd.split()[0]).name} failed: {(done.stderr or done.stdout).strip()[-400:]}")
 
@@ -504,7 +527,10 @@ def match_legs(canton: Canton, events: list) -> tuple:
 
 # ---- one block -------------------------------------------------------------------------------------------------
 
-def build_block(cfg: Config, exclude: set = frozenset()) -> dict:
+def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = True, unknown_pairs: list | None = None) -> dict:
+    """One block, as README.md says. With prove_empty False a block that would hold no transaction is not proven or submitted:
+    reth goes back to Canton's head and the answer is {"skipped": true, ...}. If the outcome is not known, the block's
+    (hash, raw transaction) pairs are appended to unknown_pairs, so that a loop can find out what became of them."""
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
         chain = Ledger(cfg).head()
@@ -512,7 +538,7 @@ def build_block(cfg: Config, exclude: set = frozenset()) -> dict:
         # reth's head, safe and finalized are Canton's head before anything is built (also after a crash).
         reth.forkchoice(head, head, head)
         try:
-            return _build(cfg, reth, chain, head, set(exclude))
+            return _build(cfg, reth, chain, head, set(exclude), prove_empty, unknown_pairs)
         except BaseException:
             reth.forkchoice(head, head, head)
             try:
@@ -551,7 +577,7 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     return payload, pairs
 
 
-def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dict:
+def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None) -> dict:
     n = int(chain["headNumber"]) + 1
     if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
         raise BuilderError("the chain record's gateway address is not 40 lowercase hex digits")
@@ -572,6 +598,9 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dic
                 left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         reth.forkchoice(head, head, head)
         put_back(reth)   # the left-out transactions wait in the pool again; the next build is made from the list in hand
+    if not chosen and not prove_empty:   # nothing to settle: no proof and no commit is spent on it
+        reth.forkchoice(head, head, head)
+        return {"skipped": True, "number": n, "leftOut": left_out}
     block_hash = payload["blockHash"]
     leg_txs = list(dict.fromkeys(e.tx for e in events))
 
@@ -601,13 +630,14 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dic
     (work / "advance.json").write_text(json.dumps(argument))   # kept: the argument of the Advance, as it was sent
     report = {"number": n, "blockHash": block_hash, "legTransactions": leg_txs, "leftOut": left_out, "proveSeconds": prove_seconds}
 
-    reason = None
+    reason, rejected = None, False
     advancing = time.monotonic()
     try:
         Ledger(cfg).advance(chain, argument)
     except urllib.error.HTTPError as e:
         with e:
-            reason = e.read().decode(errors="replace")[:600]
+            text = e.read().decode(errors="replace")
+        reason, rejected = text[:600], definite_rejection(e.code, text)
     except (OSError, ValueError, http.client.HTTPException) as e:   # a dropped connection, a timeout, a reply that is not HTTP or not JSON: the reply is lost
         reason = f"no usable reply from Canton: {e}"
     report["advanceSeconds"] = round(time.monotonic() - advancing, 3)
@@ -617,16 +647,55 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set) -> dic
         except (OSError, ValueError, http.client.HTTPException, BuilderError) as e:
             # Neither a commit nor a refusal is known. reth stays where it is: moving it back could undo a block Canton
             # committed. The next run starts from Canton's head, whichever it is.
+            if unknown_pairs is not None:
+                unknown_pairs.extend((t["hash"], raw) for t, raw in pairs)
             return {"committed": None, **report,
                     "reason": f"{reason}; and Canton's head could not be read afterwards ({e}), so it is not known whether the block committed",
                     "keptTransactions": [t["hash"] for t in chosen]}
         if now != block_hash[2:]:
             reth.forkchoice(head, head, head)
             put_back(reth)
-            return {"committed": False, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
+            return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(block_hash, block_hash, block_hash)
     return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
+
+
+def definite_rejection(code: int, body: str) -> bool:
+    """Whether an HTTP error from submit-and-wait is Canton rejecting the command (a 4xx that carries an error code). A 5xx, a 429
+    (back-pressure), a 401 or 403 (token), a 408 or an answer with no error code is the service failing: the block may be fine."""
+    if not 400 <= code < 500 or code in (401, 403, 408, 429):
+        return False
+    try:
+        return isinstance(json.loads(body).get("code"), str)
+    except (ValueError, AttributeError):
+        return False
+
+
+def reanchor(cfg: Config, block_hash: str, pairs: list) -> tuple:
+    """After a block whose outcome was not known: reads Canton's head. If it is that block, reth's head is made final and it returns
+    (True, []). Otherwise reth goes back to Canton's head, the block's transactions are sent to its pool again, and it returns
+    (False, the ones reth refused). Raises if Canton's head cannot be read."""
+    with connect(cfg.ws_url, max_size=None) as ws:
+        reth = Reth(cfg, ws)
+        head = "0x" + Ledger(cfg).head()["headHash"]
+        if head == block_hash:
+            reth.forkchoice(head, head, head)
+            return True, []
+        reth.forkchoice(head, head, head)
+        return False, resend(reth, pairs)
+
+
+@contextlib.contextmanager
+def work_lock(work_dir: str):
+    """One builder per work folder: two would both move the same reth and race with their blocks."""
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    with open(Path(work_dir) / "builder.lock", "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            raise BuilderError(f"another builder is running with the work folder {work_dir} (it holds builder.lock); only one may drive a reth") from e
+        yield
 
 
 def read_disclosed(path: str) -> list:
@@ -641,13 +710,36 @@ def read_disclosed(path: str) -> list:
 
 # ---- the loop --------------------------------------------------------------------------------------------------
 
-BACKOFF_CAP = 30.0   # the longest pause after a failed block, in seconds
+BACKOFF_CAP = 30.0    # the longest pause after a failed or refused block, in seconds
+RECHECK_BASE = 2.0    # how soon a pool that held nothing includable is looked at again, and the least between two looks
+KEEP_BLOCKS = 10      # the work folders of this many of the newest committed blocks are kept
+MIN_IDLE_MS = 50
 
 
 def pool_pending(cfg: Config) -> int:
     """How many transactions reth's pool holds that could go into the next block (`txpool_status`'s pending count)."""
     with connect(cfg.ws_url, max_size=None) as ws:
         return int(Reth(cfg, ws).call("txpool_status", [])["pending"], 16)
+
+
+def pool_hashes(cfg: Config) -> frozenset:
+    """The hashes of the transactions in reth's pending pool."""
+    with connect(cfg.ws_url, max_size=None) as ws:
+        pending = Reth(cfg, ws).call("txpool_content", [])["pending"]
+    return frozenset(t["hash"] for by_nonce in pending.values() for t in by_nonce.values())
+
+
+def prune_work(work_dir: str, number: int, keep: int = KEEP_BLOCKS) -> None:
+    """Removes the work folders of committed blocks more than `keep` behind `number`. A folder of a block that was not committed has a
+    higher number and is made again by the next try."""
+    try:
+        names = os.listdir(work_dir)
+    except OSError:
+        return
+    for name in names:
+        found = re.fullmatch(r"block-(\d+)", name)
+        if found and int(found[1]) <= number - keep:
+            shutil.rmtree(Path(work_dir) / name, ignore_errors=True)
 
 
 def iso(t: float) -> str:
@@ -659,36 +751,59 @@ def failure_report(e: Exception) -> dict:
 
 
 class Producer:
-    """Makes a block whenever the pool has transactions (and, if asked, every so often when it has none), one block at a time,
-    each by `build_block`, the code `once` runs. See README.md, "Running it all the time"."""
+    """Makes a block whenever the pool has transactions that can go in (and, if asked, every so often when it has none), one block at a
+    time, each by `build_block`, the code `once` runs. See README.md, "Running it all the time"."""
 
     def __init__(self, cfg: Config, stop: threading.Event, idle: float = 0.5, empty_every: float = 0, status_file: str | None = None,
-                 cooldown: float = 600, emit=None, clock=time.time, build=build_block, pending=pool_pending, wait=None):
+                 cooldown: float = 600, emit=None, clock=time.time, build=build_block, pending=pool_pending, hashes=pool_hashes,
+                 resolve=reanchor, wait=None):
         self.cfg, self.stop, self.idle, self.empty_every, self.cooldown = cfg, stop, idle, empty_every, cooldown
         self.status_file = status_file or str(Path(cfg.work_dir) / "status.json")
-        self.emit = emit or (lambda report: print(json.dumps(report), flush=True))
-        self.clock, self.build, self.pending, self.wait = clock, build, pending, wait or stop.wait
-        self.excluded: dict = {}      # transaction hash -> the time its cool-down ends
-        self.previous_kept: set = set()   # the transactions of the last block Canton refused, when the one before it was refused too
-        self.stuck = None             # the pending count at which a block made for the pool came out empty: not tried again until it changes
+        self._emit = emit or (lambda report: print(json.dumps(report), flush=True))
+        self.clock, self.build, self.pending, self.hashes, self.resolve, self.wait = clock, build, pending, hashes, resolve, wait or stop.wait
+        self.excluded: dict = {}          # transaction hash -> the time its cool-down ends
+        self.previous_kept: set = set()   # the transactions of the last block Canton refused, when it was the one before
+        self.suspects: list = []          # transactions that were in two refused blocks together: tried one block each before any is left out
+        self.probe = None                 # the suspect the next block may hold
+        self.held = None                  # the pool holds nothing that can go in: {"hashes", "last", "next", "delay"}
+        self.snapshot = frozenset()       # the pool's hashes as they were when the block now being made was decided on
+        self.reported_left = set()        # the left-out transactions the last "skipped" line named
+        self.unresolved = None            # the block whose outcome was not known: {"number", "hash", "pairs"}
+        self.lost: list = []              # transactions that could not be put back in reth's pool after such a block
         self.started = self.last_block_at = self.last_written = self.clock()
-        self.committed = self.refused = self.unknown = self.failures = 0
+        self.committed = self.refused = self.unknown = self.failures = self.refusals_in_row = 0
         self.last_committed = self.last_error = None
         self.timed, self.prove_total, self.advance_total = 0, 0.0, 0.0
 
+    def emit(self, report: dict) -> None:
+        try:
+            self._emit(report)
+        except Exception:   # a closed pipe to a log collector must not stop the chain
+            pass
+
     # -- the loop
     def run(self) -> None:
-        self.write_status()
-        while not self.stop.is_set():
-            self.step()
-        self.write_status("stopped")
+        state = "crashed"   # what the status says if anything but a stop ends this
+        try:
+            self.write_status()
+            while not self.stop.is_set():
+                try:
+                    self.step()
+                except Exception as e:   # a fault of the loop's own: the chain goes on
+                    self.fail(failure_report(e))
+            state = "stopped"
+        finally:
+            self.write_status(state)
 
     def due(self, now: float) -> str | None:
         n = self.pending(self.cfg)
         if n == 0:
-            self.stuck = None
-        if n > 0 and n != self.stuck:
-            return "pool"
+            self.held, self.reported_left = None, set()
+        else:
+            self.snapshot = self.hashes(self.cfg)   # before the block is made: whatever arrives while it is made is seen as new
+            h = self.held
+            if h is None or now >= h["next"] or (self.snapshot != h["hashes"] and now >= h["last"] + RECHECK_BASE):
+                return "pool"
         if self.empty_every > 0 and now - self.last_block_at >= self.empty_every:
             return "heartbeat"
         return None
@@ -697,30 +812,74 @@ class Producer:
         now = self.clock()
         for h in [h for h, until in self.excluded.items() if until <= now]:
             del self.excluded[h]
-            self.stuck = None   # a transaction that was held back may go in now
+            if self.held:
+                self.held["next"] = 0   # a transaction that was held back may go in now
         try:
+            if self.unresolved:
+                return self.settle_unknown()
             trigger = self.due(now)
             if trigger is None:
                 if now - self.last_written >= 5:   # tells a monitor the loop is alive
                     self.write_status()
                 self.wait(self.idle)
                 return
-            result = self.build(self.cfg, set(self.excluded))
+            exclude = set(self.excluded) | {h for h in self.suspects if h != self.probe}
+            pairs: list = []
+            result = self.build(self.cfg, exclude, prove_empty=trigger == "heartbeat", unknown_pairs=pairs)
         except Exception as e:   # not a block Canton answered: reth, the ledger, the prover or the pending check failed
-            self.fail(e)
+            self.fail(failure_report(e))
             return
-        self.record(result, trigger)
+        if result.get("skipped"):
+            self.skipped(result, now)
+        elif result["committed"] is False and not result.get("rejected"):
+            self.fail(result)   # Canton did not take it, but did not refuse it either: the service failed, the block may be fine
+        else:
+            self.record(result, pairs)
 
-    def fail(self, e: Exception) -> None:
-        report = failure_report(e)
+    def fail(self, report: dict) -> None:
         self.failures += 1
         self.previous_kept = set()
-        self.last_error = {"time": iso(self.clock()), "error": report["error"]}
+        self.last_error = {"time": iso(self.clock()), "error": report.get("error") or report.get("reason", "")}
         self.emit(report)
         self.write_status()
-        self.wait(min(BACKOFF_CAP, 2.0 ** (self.failures - 1)))
+        self.wait(min(BACKOFF_CAP, 2.0 ** min(self.failures - 1, 5)))   # the exponent is capped: it never overflows
 
-    def record(self, result: dict, trigger: str) -> None:
+    def skipped(self, result: dict, now: float) -> None:
+        """The pool holds transactions but none can go in (each is held back, does not fit, or has a leg with no Canton side). No block is
+        made. The pool is looked at again when it changes, and otherwise with a growing pause."""
+        self.failures = 0
+        self.suspects, self.probe = [], None
+        h = self.held
+        delay = min(BACKOFF_CAP, h["delay"] * 2) if h and self.snapshot == h["hashes"] else RECHECK_BASE
+        self.held = {"hashes": self.snapshot, "last": now, "next": now + delay, "delay": delay}
+        left = {x["transaction"] for x in result["leftOut"]}
+        if left != getattr(self, "reported_left", set()):   # said once for each change, not at every look
+            self.reported_left = left
+            self.emit({"skipped": True, "number": result["number"], "leftOut": result["leftOut"]})
+        self.write_status()
+        self.wait(self.idle)
+
+    def settle_unknown(self) -> None:
+        """After a block whose outcome was not known: find out. If Canton has it, it counts as committed. If not, reth goes back to
+        Canton's head and gets the block's transactions again. Nothing else is built until Canton's head can be read."""
+        u = self.unresolved
+        committed, lost = self.resolve(self.cfg, u["hash"], u["pairs"])   # raises while Canton's head cannot be read: backoff
+        now = self.clock()
+        self.failures = 0
+        self.unresolved = None
+        report = {"resolved": "committed" if committed else "not committed", "number": u["number"], "blockHash": u["hash"]}
+        if committed:
+            self.committed += 1
+            self.last_block_at = now
+            self.last_committed = {"number": u["number"], "hash": u["hash"], "time": iso(now)}
+        if lost:
+            report["lostTransactions"] = lost
+            self.lost = (self.lost + [{**x, "time": iso(now)} for x in lost])[-100:]
+        self.held = None
+        self.emit(report)
+        self.write_status()
+
+    def record(self, result: dict, pairs: list) -> None:
         now = self.clock()
         self.failures = 0
         if "proveSeconds" in result:
@@ -729,38 +888,48 @@ class Producer:
             self.advance_total += result.get("advanceSeconds", 0)
         if result["committed"]:
             self.committed += 1
+            self.refusals_in_row = 0
             self.previous_kept = set()
+            self.held = None
             self.last_block_at = now
             self.last_committed = {"number": result["number"], "hash": result["blockHash"], "time": iso(now)}
-            if trigger == "pool" and not result["transactions"]:
-                self.stuck = self.pending_now()   # every waiting transaction is held back or does not fit: do not make empty blocks of it
+            if self.probe is not None:   # the suspect had its block (or was not in the pool): next one
+                self.suspects.remove(self.probe)
+                self.probe = self.suspects[0] if self.suspects else None
+            prune_work(self.cfg.work_dir, result["number"])
         else:
             self.last_error = {"time": iso(now), "error": result.get("reason", "")}
             if result["committed"] is False:
                 self.refused += 1
+                self.refusals_in_row += 1
                 self.refusal(result, now)
             else:
-                self.unknown += 1   # the next block starts from Canton's head, whichever it is
+                self.unknown += 1
                 self.previous_kept = set()
+                self.unresolved = {"number": result["number"], "hash": result["blockHash"], "pairs": pairs}   # the next step finds out
         self.emit(result)
         self.write_status()
-        if not result["committed"]:
-            self.wait(self.idle)
-
-    def pending_now(self):
-        try:
-            return self.pending(self.cfg)
-        except Exception:
-            return None
+        if result["committed"] is False:
+            self.wait(max(self.idle, min(BACKOFF_CAP, 2.0 ** min(self.refusals_in_row - 1, 5))))
 
     def refusal(self, result: dict, now: float) -> None:
-        """A transaction in two refused blocks in a row is held back for the cool-down, so one bad transaction cannot stall the chain."""
+        """Canton refused the block. A transaction in two refused blocks in a row is suspected. A lone suspect is held back for the
+        cool-down. Several are tried one block each (the others kept out of it) before any is held back, so an honest transaction that
+        was only next to a bad one is not held back with it."""
         kept = {h.lower() for h in result.get("keptTransactions", [])}
+        if self.probe is not None:   # the block held this suspect and no other: it is the one
+            if self.probe in kept:
+                self.excluded[self.probe] = now + self.cooldown
+            self.suspects.remove(self.probe)
+            self.probe = self.suspects[0] if self.suspects else None
+            self.previous_kept = set()
+            return
         again = kept & self.previous_kept
-        for h in again:
-            self.excluded[h] = now + self.cooldown
-        if again:
-            self.stuck = None
+        if len(again) == 1:
+            self.excluded[next(iter(again))] = now + self.cooldown
+        elif again:
+            self.suspects = sorted(again)
+            self.probe = self.suspects[0]
         self.previous_kept = kept - again
 
     # -- the status file
@@ -770,6 +939,8 @@ class Producer:
                 "lastCommitted": self.last_committed, "blocksCommitted": self.committed, "blocksRefused": self.refused,
                 "blocksUnknown": self.unknown, "consecutiveFailures": self.failures, "lastError": self.last_error,
                 "excluded": [{"transaction": h, "until": iso(u)} for h, u in sorted(self.excluded.items())],
+                "waitingToBeResolved": self.unresolved and {"number": self.unresolved["number"], "hash": self.unresolved["hash"]},
+                "lostTransactions": self.lost,
                 "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total)}
 
     def write_status(self, state: str = "running") -> None:
@@ -781,7 +952,10 @@ class Producer:
             Path(tmp).write_text(json.dumps(self.status(state), indent=1) + "\n")
             os.replace(tmp, self.status_file)
         except OSError as e:
-            print(f"cannot write the status file {self.status_file}: {e}", file=sys.stderr)
+            try:
+                print(f"cannot write the status file {self.status_file}: {e}", file=sys.stderr)
+            except OSError:
+                pass
 
 
 def produce(cfg: Config, args) -> int:
@@ -809,22 +983,25 @@ def main() -> int:
         ap.add_argument("--exclude", action="append", default=[], metavar="TX_HASH", help="once only: leave this transaction (and its sender's later ones) out")
         ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
         ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
-        ap.add_argument("--idle-ms", type=int, default=500, help="run: how long to wait between looks at an empty pool")
+        ap.add_argument("--idle-ms", type=int, default=500, help=f"run: how long to wait between looks at an empty pool (at least {MIN_IDLE_MS})")
         ap.add_argument("--empty-every-seconds", type=float, default=0, help="run: make an empty block when none was made for this long (0: never)")
         ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
         ap.add_argument("--exclude-cooldown-seconds", type=float, default=600, help="run: how long a transaction in two refused blocks in a row is left out")
         args = ap.parse_args()
         if args.command == "run" and args.exclude:
             raise BuilderError("bad arguments: --exclude is for once; run leaves out the transactions Canton keeps refusing by itself")
-        if min(args.idle_ms, args.empty_every_seconds, args.exclude_cooldown_seconds) < 0:
-            raise BuilderError("bad arguments: --idle-ms, --empty-every-seconds and --exclude-cooldown-seconds cannot be negative")
+        if min(args.empty_every_seconds, args.exclude_cooldown_seconds) < 0:
+            raise BuilderError("bad arguments: --empty-every-seconds and --exclude-cooldown-seconds cannot be negative")
+        if args.idle_ms < MIN_IDLE_MS:
+            raise BuilderError(f"bad arguments: --idle-ms must be at least {MIN_IDLE_MS}: a shorter wait would only keep reth busy")
         cfg = Config.from_env()
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
-        if args.command == "run":
-            return produce(cfg, args)
-        result = build_block(cfg, {h.lower() for h in args.exclude})
+        with work_lock(cfg.work_dir):
+            if args.command == "run":
+                return produce(cfg, args)
+            result = build_block(cfg, {h.lower() for h in args.exclude})
     except BuilderError as e:
         print(json.dumps({"committed": False, "error": str(e)}))
         return 1
