@@ -99,3 +99,26 @@ describe("the http server", () => {
     expect(await (await get("/api/status")).json()).toEqual({ method: "GET", target: "/api/status" });
   });
 });
+
+describe("the client's address for the faucet", () => {
+  async function serve(ipHeader: string | null | undefined) {
+    const api = async (_m: string, _t: string, _b?: string, ip?: string) => ({ status: 200, body: { ip } });
+    const s = ipHeader === undefined ? createHttpServer(api, dir) : createHttpServer(api, dir, undefined, ipHeader);
+    await new Promise<void>((ok) => s.listen(0, "127.0.0.1", ok));
+    const ask = (headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${(s.address() as AddressInfo).port}/api/faucet`, { method: "POST", body: "{}", headers }).then((r) => r.json());
+    return { ask, close: () => new Promise((ok) => s.close(ok)) };
+  }
+
+  it("is the socket's, and a header that nothing is told to trust is ignored", async () => {
+    const s = await serve(undefined);
+    expect(await s.ask({ "x-real-ip": "6.6.6.6" })).toEqual({ ip: "127.0.0.1" });
+    await s.close();
+  });
+
+  it("is the last in the trusted header, which a proxy writes", async () => {
+    const s = await serve("x-forwarded-for");
+    expect(await s.ask({ "x-forwarded-for": "6.6.6.6, 203.0.113.9" })).toEqual({ ip: "203.0.113.9" });
+    expect(await s.ask()).toEqual({ ip: "127.0.0.1" });
+    await s.close();
+  });
+});
