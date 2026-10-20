@@ -269,6 +269,65 @@ describe("eth_sendRawTransaction", () => {
   });
 });
 
+describe("a send that pays less than the base fee", () => {
+  const withBase = (base: string | undefined) => ({ eth_getBlockByNumber: (p: unknown[]) => (p[0] === "finalized" ? block(FINAL) : p[0] === "latest" ? { ...block(HEAD), ...(base === undefined ? {} : { baseFeePerGas: base }) } : Number(p[0]) <= HEAD ? block(Number(p[0])) : null) });
+
+  it("is refused before the tracker or reth see it, with the reason", async () => {
+    const { call, seen, tracked } = await boot(withBase("0x3b9aca00")); // base fee 1 gwei
+    const answer = await call("eth_sendRawTransaction", await signed({ maxFeePerGas: 10n ** 9n - 1n }));
+    expect(answer.error).toMatchObject({ code: -32000, message: expect.stringContaining("max fee per gas is below the current base fee") });
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    expect(tracked).toEqual([]);
+  });
+
+  it("is refused for a legacy transaction by its gas price", async () => {
+    const { call, seen } = await boot(withBase("0x3b9aca00"));
+    const legacy = await ACCOUNT.signTransaction({ type: "legacy", chainId: CHAIN, nonce: 3, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, gasPrice: 5n } as never);
+    expect((await call("eth_sendRawTransaction", legacy)).error?.message).toMatch(/below the current base fee/);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+  });
+
+  it("goes through when it pays exactly the base fee or more", async () => {
+    const { call, tracked } = await boot(withBase("0x3b9aca00"));
+    const raw = await signed({ maxFeePerGas: 10n ** 9n });
+    expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+    expect(tracked).toHaveLength(1);
+  });
+
+  it("goes through when reth gives no base fee, and when it cannot be read: reth's own answer decides", async () => {
+    const none = await boot(withBase(undefined));
+    expect((await none.call("eth_sendRawTransaction", await signed({ maxFeePerGas: 1n }))).result).toBeDefined();
+    await reth!.close();
+    const broken = await boot({ eth_getBlockByNumber: (p: unknown[]) => { if (p[0] === "latest") throw "busy"; return p[0] === "finalized" ? block(FINAL) : null; } });
+    expect((await broken.call("eth_sendRawTransaction", await signed({ maxFeePerGas: 1n }))).result).toBeDefined();
+  });
+
+  it("does not let dust-funded senders with a low fee fill the tracker, and an honest send still goes through", async () => {
+    const tracker = createTracker({ reth: {} as never, index: {} as never, max: 5, maxPerSender: 2 });
+    const { call, seen } = await boot({ ...withBase("0x3b9aca00"), eth_getTransactionCount: "0x0" }, { tracker });
+    for (let i = 0; i < 50; i++) {
+      const dust = privateKeyToAccount(generatePrivateKey());
+      const raw = await dust.signTransaction({ type: "eip1559", chainId: CHAIN, nonce: 0, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, maxFeePerGas: 7n, maxPriorityFeePerGas: 1n } as never);
+      expect((await call("eth_sendRawTransaction", raw)).error?.message).toMatch(/below the current base fee/);
+    }
+    expect(tracker.size()).toBe(0);
+    expect(seen.eth_sendRawTransaction).toBeUndefined();
+    const honest = await signed({ nonce: 0 });
+    expect((await call("eth_sendRawTransaction", honest)).result).toBe(keccak256(honest));
+    expect(tracker.size()).toBe(1);
+  });
+
+  it("reads the base fee once for a burst, for as long as the finalized number is reused", async () => {
+    const { call, seen, clock } = await boot(withBase("0x1"), { ttl: 500 });
+    await call("eth_sendRawTransaction", await signed());
+    await call("eth_sendRawTransaction", await signed());
+    expect(seen.eth_getBlockByNumber!.filter((p) => p[0] === "latest")).toHaveLength(1);
+    clock.now += 600;
+    await call("eth_sendRawTransaction", await signed());
+    expect(seen.eth_getBlockByNumber!.filter((p) => p[0] === "latest")).toHaveLength(2);
+  });
+});
+
 describe("a send ahead of the sender's next nonce", () => {
   it("refuses a nonce gap before the tracker or reth see it, and says what to do", async () => {
     const { call, seen, tracked } = await boot({ eth_getTransactionCount: "0x1" });

@@ -77,6 +77,7 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
   const perMs = o.ratePerMinute / 60000;
   const buckets = new Map<string, { tokens: number; at: number }>();
   let cached: { at: number; value: Promise<number> } | undefined;
+  let fee: { at: number; value: Promise<bigint | null> } | undefined;
   let id = 0;
 
   /** Takes `cost` tokens from the client's bucket: it holds a minute's worth and refills steadily. Returns the wait in seconds when it is short. */
@@ -127,6 +128,24 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     const mine = { at: t, value };
     cached = mine;
     value.catch(() => { if (cached === mine) cached = undefined; });
+    return value;
+  }
+
+  /**
+   * The base fee of reth's newest block, or null when reth does not say (it cannot be reached, or the chain has no base fee). Reused for as long as the
+   * finalized number is. A null never refuses a send: reth's own answer for that send is the answer.
+   */
+  function baseFee(): Promise<bigint | null> {
+    const t = now();
+    if (fee && t - fee.at < finalizedTtlMs) return fee.value;
+    const value = up("eth_getBlockByNumber", ["latest", false]).then(
+      (r) => {
+        const v = "result" in r && isObject(r.result) ? r.result.baseFeePerGas : undefined;
+        return typeof v === "string" && QUANTITY.test(v) ? BigInt(v) : null;
+      },
+      () => null,
+    );
+    fee = { at: t, value };
     return value;
   }
 
@@ -183,6 +202,13 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     }
     if (tx.chainId === undefined) return err(-32000, `This transaction is not tied to a chain. Sign it for chain ${chainId}.`);
     if (tx.chainId !== chainId) return err(-32000, `This transaction is signed for chain ${tx.chainId}. This chain is ${chainId}.`);
+    // reth accepts a transaction that pays less than the base fee and parks it: it is never pending and never built. Following it would hold a place
+    // in the tracker's list for an hour, so ten thousand senders with a little dust each could fill the list. It is refused here, with the reason.
+    const offered = tx.maxFeePerGas ?? tx.gasPrice;
+    if (offered !== undefined) {
+      const base = await baseFee();
+      if (base !== null && offered < base) return err(-32000, `max fee per gas is below the current base fee: this transaction pays at most ${offered} wei per gas, and the base fee is ${base} wei. Sign it again with a higher max fee per gas.`);
+    }
     // One sender's sends go through reth one after another, in the order they arrive: the nonce check below reads reth's pool, so the
     // second transaction of a batch (or of two overlapping requests) has to read it after the first is in the pool.
     const before = lanes.get(from) ?? Promise.resolve();

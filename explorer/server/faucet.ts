@@ -31,7 +31,7 @@ export interface FaucetOptions {
   stateFile: string | null;
   /** The human check, or null for none. */
   captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
-  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction">;
+  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc">>;
   /** Takes each sent transfer, and says where it is. Without one, a ticket never gets past "sent". */
   tracker?: Pick<Tracker, "track" | "state"> & Partial<Pick<Tracker, "admit">>;
   /** How often the worker looks at the queue. */
@@ -121,10 +121,18 @@ interface Ticket {
    * sent, so a stop or a crash in the middle of a batch never leaves a transfer in reth that no file knows of.
    */
   nonce?: number | null; raw?: string | null;
+  /** The nonce the transfer was sent with, kept after it is handed over, so a late payout can be told from one that another transaction took the place of. */
+  sentNonce?: number | null;
+  /** True once the tracker stopped following the transfer: the faucet then follows it by hash itself, until it is final or its nonce is used. */
+  watch?: boolean;
 }
 
 const TICKETS_MAX = 10000;
 const HOUR = 3600_000;
+/** How long the faucet follows, by hash, a transfer the tracker stopped following. After this the ticket says so and is left. */
+const WATCH_MS = 48 * HOUR;
+/** The most late transfers looked at in one pass, oldest look first, so a long list costs reth a few calls a second at most. */
+const WATCH_PER_PASS = 20;
 /** About one block: how long a caller turned away because the line is full is asked to wait, for each batch ahead. */
 const BLOCK_SECONDS = 10;
 /** Failed human checks one client may have in a window, before it is turned away without a check, and how long that window is. */
@@ -180,6 +188,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
   const queue: Ticket[] = [];
   /** Tickets whose transfer is in reth and not yet settled. */
   const open = new Set<Ticket>();
+  /** Tickets whose transfer the tracker stopped following while reth may still mine it. Kept apart from `open`, which counts the transfers the tracker follows. */
+  const watching = new Set<Ticket>();
   let running: Promise<void> | null = null, timer: ReturnType<typeof setInterval> | undefined, started = false;
   let view: View | null = null, viewing: Promise<View | null> | null = null;
   let verifying = 0;
@@ -210,7 +220,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
         if (typeof t.id !== "string" || typeof t.to !== "string") continue;
         tickets.set(t.id, t);
         if (t.status === "queued") queue.push(t);
-        else if (t.status === "sent") open.add(t);
+        else if (t.status === "sent") (t.watch ? watching : open).add(t);
       }
     } catch {
       console.error(`faucet: ${o.stateFile} is not a file the faucet wrote, so it starts with no limits`);
@@ -220,7 +230,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     for (const t of [...queue]) {
       if (!t.raw || !t.hash) { t.raw = null; t.nonce = null; continue; }
       queue.splice(queue.indexOf(t), 1);
-      t.status = "sent"; open.add(t);
+      t.status = "sent"; t.sentNonce = t.nonce ?? null; open.add(t);
     }
     for (const t of open) {
       if (!t.raw || !t.hash) continue;
@@ -284,7 +294,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
   }
 
   const fail = (t: Ticket, reason: string): void => {
-    t.status = "failed"; t.reason = reason; open.delete(t);
+    t.status = "failed"; t.reason = reason; open.delete(t); watching.delete(t); t.watch = false;
     refund(t);
     save();
   };
@@ -300,12 +310,21 @@ export function createFaucet(o: FaucetOptions): Faucet {
   }
   const cost = (gasPrice: bigint) => o.amountWei + FAUCET_GAS * gasPrice * 2n;
 
+  /** The tracker no longer follows this transfer, and reth may still mine it: the faucet follows it by hash from here on. */
+  function late(t: Ticket, nonce?: number): void {
+    open.delete(t);
+    if (t.status !== "sent") return;
+    if (t.sentNonce == null && nonce !== undefined) t.sentNonce = nonce;
+    if (!t.watch) { t.watch = true; save(); }
+    watching.add(t);
+  }
+
   /** Brings a sent ticket up to date from the tracker. Final only when the tracker says the transfer is final. */
   function refresh(t: Ticket): void {
     if (t.status !== "sent" || !t.hash || !o.tracker) return;
     const s = o.tracker.state(t.hash);
-    if (!s) return void open.delete(t);
-    if (s.state === "final") { t.status = "final"; t.block = s.block; open.delete(t); save(); }
+    if (!s) return late(t);
+    if (s.state === "final") { t.status = "final"; t.block = s.block; t.watch = false; open.delete(t); watching.delete(t); save(); }
     else if (s.state === "replaced") fail(t, s.reason ?? "The transfer did not land on the chain.");
     // "dropped" is not a verdict: the tracker also drops what it has no room to follow, and that may still land. pass() asks reth.
   }
@@ -321,15 +340,59 @@ export function createFaucet(o: FaucetOptions): Faucet {
       } catch {
         continue; // reth cannot say: asked again at the next pass
       }
-      if (found) open.delete(t);
+      if (found) late(t, s.nonce);
       else fail(t, s.reason ?? "The transfer did not land on the chain.");
+    }
+  }
+
+  /**
+   * Follows the transfers the tracker stopped following, by hash and cheaply: one look at the transaction, and, when it is in no block, one at
+   * the sender's count as of the finalized block. Final when it is in a finalized block; failed when that count has passed its nonce while it is
+   * in no finalized block, which means another transaction took the nonce. After WATCH_MS the ticket says it is no longer followed.
+   */
+  async function watchLate(): Promise<void> {
+    if (!watching.size) return;
+    const t0 = now();
+    const look: Ticket[] = [];
+    for (const t of [...watching]) {
+      if (t.status !== "sent" || !t.hash) { watching.delete(t); continue; }
+      if (t0 - t.at >= WATCH_MS) {
+        watching.delete(t); t.watch = false;
+        t.reason = "The faucet stopped following this transfer after two days without it being final. Look up the hash on the chain.";
+        save();
+        continue;
+      }
+      if (look.length < WATCH_PER_PASS) look.push(t);
+    }
+    if (!look.length || !o.reth.block || !o.reth.rpc) return;
+    let finalized: number;
+    try {
+      finalized = (await o.reth.block("finalized"))?.number ?? 0;
+    } catch {
+      return; // reth cannot say: asked again at the next pass
+    }
+    for (const t of look) {
+      // Looked at in turn: this one goes behind the rest.
+      watching.delete(t); watching.add(t);
+      try {
+        const found = await o.reth.transaction(t.hash!);
+        if (found && found.blockNumber !== null && found.blockNumber <= finalized) {
+          t.status = "final"; t.block = found.blockNumber; t.watch = false; t.reason = null; watching.delete(t); save();
+          continue;
+        }
+        if (t.sentNonce == null) continue;
+        const used = Number(BigInt(await o.reth.rpc("eth_getTransactionCount", [address, "0x" + finalized.toString(16)]) as string));
+        if (used > t.sentNonce) fail(t, "Another transaction took this transfer's place on the chain, so it did not happen.");
+      } catch {
+        continue; // reth cannot say: asked again at the next pass
+      }
     }
   }
 
   function trim(): void {
     for (const [id, t] of tickets) {
       if (tickets.size <= TICKETS_MAX) break;
-      if (t.status !== "queued" && !open.has(t)) tickets.delete(id);
+      if (t.status !== "queued" && !open.has(t) && !watching.has(t)) tickets.delete(id);
     }
   }
 
@@ -338,6 +401,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (!account) return;
     for (const t of open) refresh(t);
     await settleDropped();
+    await watchLate();
     if (!queue.length) return;
     if (o.tracker) for (const t of open) if (t.hash && o.tracker.state(t.hash)?.state === "pending") return;
     let balance: bigint, nonce: number, gasPrice: bigint, tip: bigint;
@@ -390,7 +454,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       }
       if (handOver) {
         queue.splice(queue.indexOf(t), 1);
-        t.status = "sent"; t.reason = null;
+        t.status = "sent"; t.reason = null; t.sentNonce = t.nonce;
         open.add(t);
         o.tracker?.track(raw, hash, address!, t.nonce!);
         t.raw = null; t.nonce = null;
