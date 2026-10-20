@@ -72,7 +72,7 @@ describe.skipIf(!hasBash)("explorer/run.sh start", () => {
   });
 });
 
-describe("explorer/run.sh stop", () => {
+describe.skipIf(!hasBash)("explorer/run.sh stop", () => {
   it("lets the explorer finish (docker stop -t 30), then removes the container without -f", () => {
     const r = spawnSync("bash", [RUN, "stop"], {
       encoding: "utf8",
