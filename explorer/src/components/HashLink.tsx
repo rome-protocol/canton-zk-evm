@@ -4,7 +4,7 @@ import { party, short, shortUpdate } from "../format.ts";
 import { Icon } from "./Icon.tsx";
 
 /** Copies to the clipboard. Where the browser keeps the clipboard from a page (an address that is not secure), it falls back to selecting a hidden field. */
-async function copyText(value: string): Promise<boolean> {
+export async function copyText(value: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(value);
     return true;

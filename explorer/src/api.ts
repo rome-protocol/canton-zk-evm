@@ -18,6 +18,8 @@ export interface ApiStatus {
   latest: LatestBlock[];
   signers: { operator: string; confirmer: string } | null;
   faucet: { on: boolean };
+  /** True when this explorer serves the public RPC at /rpc. */
+  publicRpc: boolean;
 }
 
 /** One fact read from a proof's own bytes, with whether it matches: the two keys against the explorer's pins, the hash against the block. */
@@ -56,28 +58,45 @@ export interface ApiBlock {
   transactions: BlockRow[];
 }
 export interface Log { address: string; topics: string[]; data: string }
-export interface ApiTx {
+/** Where a transaction is. Pending: in reth's pool. Proving: in a block that is being proven. Final: in a block that is final on Canton. Replaced and dropped: it will not be in a block. */
+export type TxState = "pending" | "proving" | "final" | "replaced" | "dropped";
+interface ApiTxCommon {
   hash: string;
-  status: "final" | "proving" | "waiting";
+  /** The state, with "waiting" for pending. */
+  status: "final" | "proving" | "waiting" | "replaced" | "dropped";
+  state: TxState;
+  /** A plain sentence about why, when there is one. */
+  reason: string | null;
   block: { number: number; hash: string | null; updateId: string | null } | null;
   from: string;
   to: string | null;
-  /** In wei, as a decimal string. */
-  value: string;
   nonce: number;
-  type: number;
-  gas: number;
   gasUsed: number | null;
   gasPrice: string | null;
   fee: string | null;
   success: boolean | null;
-  input: string;
   logs: Log[];
   transfer: Transfer | null;
   toToken: string | null;
   /** The contract this transaction created. */
   created: string | null;
 }
+/** A transaction that reth holds, in its pool or in a block. */
+export interface ApiTxSeen extends ApiTxCommon {
+  /** In wei, as a decimal string. */
+  value: string;
+  type: number;
+  gas: number;
+  input: string;
+}
+/** A transaction the explorer accepted but reth no longer holds: it is being sent again, or it was replaced or dropped. Only who sent it and its nonce are known. */
+export interface ApiTxUnseen extends ApiTxCommon {
+  value: null;
+  type: null;
+  gas: null;
+  input: null;
+}
+export type ApiTx = ApiTxSeen | ApiTxUnseen;
 export interface ApiAddress {
   address: string;
   kind: "account" | "contract" | "token";

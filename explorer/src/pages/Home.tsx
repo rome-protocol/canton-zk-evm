@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { ApiStatus, LatestBlock } from "../api.ts";
+import { AddToWallet } from "../components/AddToWallet.tsx";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
@@ -115,6 +116,7 @@ export function Home() {
   return (
     <>
       <Strip status={data} />
+      <AddToWallet status={data} />
       <Latest blocks={data.latest} />
       <CanCannot />
     </>

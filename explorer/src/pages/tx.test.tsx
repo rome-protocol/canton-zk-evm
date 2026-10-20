@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiTx } from "../api.ts";
-import { addr, fakeApi, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, update, waitingTx } from "../test-utils.tsx";
+import { addr, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, update, waitingTx } from "../test-utils.tsx";
 
 const H = hash(0xf6);
 
@@ -265,5 +265,84 @@ describe("a transaction that cannot be shown", () => {
     renderApp(`/tx/${H}`);
     await screen.findByRole("heading", { name: "Transaction" });
     await waitFor(() => expect(row("Value")).toHaveTextContent("2 TST"));
+  });
+});
+
+describe("the stage, in plain words", () => {
+  const stage = () => document.querySelector(".stage") as HTMLElement;
+
+  it("says each state in its own words, and marks the page with the state", async () => {
+    const cases: Array<[ApiTx, string, string]> = [
+      [waitingTx({ state: "pending" }), "pending", "Waiting to go into a block"],
+      [tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } }), "proving", "In a block that is being proven"],
+      [tx({ state: "final" }), "final", "Final on Canton in block 3"],
+      [goneTx({ status: "replaced", state: "replaced", reason: "Another transaction from the same sender took nonce 7." }), "replaced", "Replaced by another transaction with the same nonce"],
+      [goneTx({ status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: insufficient funds." }), "dropped", "Dropped: The chain refused it 5 times in a row: insufficient funds."],
+    ];
+    for (const [t, state, words] of cases) {
+      await open(t);
+      expect(stage()).toHaveTextContent(words);
+      expect(stage()).toHaveAttribute("data-state", state);
+      expect(stage()).toHaveClass(`s-${state}`);
+      cleanup();
+    }
+  });
+
+  it("says Final without a block number when the server gave none, and a dropped one without a reason", async () => {
+    await open(tx({ state: "final", block: null }));
+    expect(stage()).toHaveTextContent(/^Final on Canton$/);
+    cleanup();
+    await open(goneTx({ reason: null }));
+    expect(stage()).toHaveTextContent("Dropped: no reason was given");
+  });
+});
+
+describe("a transaction the explorer accepted that reth no longer holds", () => {
+  it("shows who sent it and its nonce, and no fact it cannot know", async () => {
+    await open(goneTx({ status: "waiting", state: "pending", reason: "It had gone missing, so it was sent to the chain again (send 2)." }));
+    expect(chip()).toHaveTextContent("Waiting");
+    expect(within(row("From")).getByRole("link", { name: addr(0x5b) })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
+    expect(row("Nonce")).toHaveTextContent("7");
+    expect(row("Note")).toHaveTextContent("sent to the chain again (send 2)");
+    expect(screen.queryByText("Gas used", { selector: "dt" })).toBeNull();
+    expect(screen.queryByText("Value", { selector: "dt" })).toBeNull();
+  });
+
+  it("does not repeat a dropped transaction's reason as a note", async () => {
+    await open(goneTx());
+    expect(screen.queryByText("Note", { selector: "dt" })).toBeNull();
+    expect(chip()).toHaveTextContent("Dropped");
+    expect(chip()).toHaveClass("chip-dropped");
+  });
+});
+
+describe("looking again until the transaction is settled", () => {
+  async function asksAfter(first: ApiTx): Promise<{ before: number; after: number }> {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const calls = fakeApi(route({ tx: () => reply(first) }));
+    renderApp(`/tx/${first.hash}`);
+    await screen.findByRole("heading", { name: "Transaction" });
+    const asked = () => calls.filter((c) => c.startsWith("/api/tx")).length;
+    await tick();
+    const before = asked();
+    await tick(10_000);
+    const after = asked();
+    cleanup();
+    vi.useRealTimers();
+    return { before, after };
+  }
+
+  it("keeps looking while it is pending or proving", async () => {
+    for (const t of [waitingTx(), goneTx({ status: "waiting", state: "pending", reason: null }), tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } })]) {
+      const { before, after } = await asksAfter(t);
+      expect(after).toBeGreaterThan(before);
+    }
+  });
+
+  it("stops looking when it is final, replaced or dropped", async () => {
+    for (const t of [tx(), goneTx({ status: "replaced", state: "replaced" }), goneTx()]) {
+      const { before, after } = await asksAfter(t);
+      expect(after).toBe(before);
+    }
   });
 });
