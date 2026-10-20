@@ -20,7 +20,11 @@
 #   PINS_FILE         the pins to expect, from <state>/net/guest.txt (else the recorded session's, which the image carries)
 #   FAUCET_KEY_FILE   the faucet's key, from <state>/faucet/key (else the faucet is off)
 # And these are passed on when they are set: EXPLORER_HOST, EXPLORER_PORT, RETH_RPC_URL, LEDGER_URL, CHAIN_NAME, COIN_SYMBOL, RPC_TIMEOUT_MS,
-# POLL_MS, FAUCET_AMOUNT, FAUCET_PER_ADDRESS_SECONDS, FAUCET_MIN_INTERVAL_MS and, for setup, FAUCET_FUND and CZE_GENESIS_FILE.
+# POLL_MS, FAUCET_AMOUNT, FAUCET_PER_ADDRESS_SECONDS, FAUCET_MIN_INTERVAL_MS, and the public RPC's settings: PUBLIC_RPC (1 turns on POST /rpc),
+# RPC_RATE_PER_MINUTE, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
+# The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
+# TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
+# TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).
 set -euo pipefail
@@ -69,6 +73,9 @@ setup() {
 
 start() {
   ARGS=(run -d --name "$NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID")
+  # The one place the explorer may write. The caller owns it, as the container runs as the caller.
+  [ "${EXPLORER_DRY_RUN:-0}" = 1 ] || (umask 077; mkdir -p "$STATE/explorer")
+  ARGS+=(-v "$STATE/explorer:/var/lib/explorer" -e "TRACKER_FILE=${TRACKER_FILE:-/var/lib/explorer/tracker.json}")
   local party=${READER_PARTY:-}
   [ -n "$party" ] || party=$(sed -n 's/^READER_PARTY=//p' "$STATE/canton/parties.env" 2>/dev/null || true)
   [ -n "$party" ] || fail "READER_PARTY is not set, and $STATE/canton/parties.env has none: the explorer reads Canton as the reader party only"
@@ -79,7 +86,8 @@ start() {
   local key=${FAUCET_KEY_FILE:-}
   [ -n "$key" ] || { [ ! -f "$STATE/faucet/key" ] || key=$STATE/faucet/key; }
   [ -z "$key" ] || mount_file FAUCET_KEY_FILE "$key"
-  for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_MIN_INTERVAL_MS; do
+  for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_MIN_INTERVAL_MS \
+    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   quietly rm -f "$NAME" 2> /dev/null || true
