@@ -53,7 +53,7 @@ if [ ! -f "$manifest" ]; then
 fi
 [ -f "$manifest" ] || fail "dpm did not install the SDK $DAML_SDK_VERSION from $DAML_SDK_TAG"
 [ "$(sha "$manifest")" = "$DAML_SDK_MANIFEST_SHA256" ] || fail "the SDK manifest does not match DAML_SDK_MANIFEST_SHA256"
-grep -q "version: $DAMLC_VERSION\$" "$manifest" || fail "the SDK does not carry damlc $DAMLC_VERSION"
+"$ROOT/network/canton/check-sdk-damlc.sh" "$manifest" "$DAMLC_VERSION" || fail "the SDK does not carry damlc $DAMLC_VERSION"
 "$ROOT/network/canton/check-damlc.sh" >&2
 
 JAR=$("$ROOT/network/canton/fetch-jar.sh" "$TOOLS/canton")

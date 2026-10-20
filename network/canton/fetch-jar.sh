@@ -19,7 +19,7 @@ JAR=$dir/$name.jar
 if [ ! -f "$JAR" ] || [ "$(sha "$JAR")" != "$jar_sha" ]; then
   mkdir -p "$dir"
   tmp=$(mktemp -d "$dir/fetch.XXXXXX"); trap 'rm -rf "$tmp"' EXIT
-  curl -sSfL -o "$tmp/$name.tar.gz" "$CANTON_TARBALL_URL" || fail "could not download $CANTON_TARBALL_URL"
+  curl -sSfL --retry 3 --retry-all-errors -o "$tmp/$name.tar.gz" "$CANTON_TARBALL_URL" || fail "could not download $CANTON_TARBALL_URL"
   [ "$(sha "$tmp/$name.tar.gz")" = "$tar_sha" ] || fail "the Canton release tarball does not match CANTON_TARBALL_SHA256"
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp" --strip-components=2 "$name/lib/$name.jar" || fail "the tarball has no $name/lib/$name.jar"
   [ "$(sha "$tmp/$name.jar")" = "$jar_sha" ] || fail "the Canton jar does not match CANTON_JAR_SHA256"
