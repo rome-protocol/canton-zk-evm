@@ -20,7 +20,13 @@ const DAY = 86400;
 const addr = (n: number) => "0x" + n.toString(16).padStart(40, "0");
 
 /** A fake reth that holds the faucet's balance, its first nonce, and the raw transactions it was sent. Its pending nonce moves with each one it takes. */
-interface Net { balance: bigint; base: number; raw: string[]; refuse?: string; refuseAt?: number }
+interface Net {
+  balance: bigint; base: number; raw: string[]; refuse?: string; refuseAt?: number;
+  /** The block that holds the transfers, when reth has mined them. */
+  mined?: number;
+  /** The finalized block, and the faucet's count of sent transactions as of it. */
+  finalized?: number; finalNonce?: number;
+}
 const net = (over: Partial<Net> = {}): Net => ({ balance: 1_000_000n * COIN, base: 5, raw: [], ...over });
 
 /** A tracker that the test moves by hand. */
@@ -60,14 +66,18 @@ type Over = Partial<Omit<FaucetOptions, "reth" | "tracker">> & { down?: boolean;
 
 async function faucet(over: Over = {}): Promise<Faucet> {
   fake = await startFakeReth({
-    eth_getTransactionCount: (p: unknown[]) => "0x" + (p[1] === "pending" ? state.base + state.raw.length : state.base).toString(16),
+    eth_getTransactionCount: (p: unknown[]) => "0x" + (p[1] === "pending" ? state.base + state.raw.length : p[1] === "latest" ? state.base : state.finalNonce ?? state.base).toString(16),
+    eth_getBlockByNumber: () => ({
+      number: "0x" + (state.finalized ?? 0).toString(16), hash: "0x" + "ab".repeat(32), parentHash: "0x" + "cd".repeat(32), timestamp: "0x1", gasUsed: "0x0", gasLimit: "0x1c9c380",
+      baseFeePerGas: "0x7", miner: "0x" + "00".repeat(20), stateRoot: "0x" + "ef".repeat(32), transactions: [],
+    }),
     eth_gasPrice: "0x3b9aca07",
     eth_maxPriorityFeePerGas: "0x3b9aca00",
     eth_getBalance: () => "0x" + state.balance.toString(16),
     eth_getTransactionByHash: (p: unknown[]) => {
       const raw = state.raw.find((r) => keccak256(r as Hex) === p[0]);
       if (!raw) return null;
-      return { hash: p[0], blockNumber: null, blockHash: null, transactionIndex: null, from: FAUCET, to: ALICE, value: "0x0", nonce: "0x0", type: "0x2", gas: "0x5208", input: "0x" };
+      return { hash: p[0], blockNumber: state.mined === undefined ? null : "0x" + state.mined.toString(16), blockHash: state.mined === undefined ? null : "0x" + "12".repeat(32), transactionIndex: state.mined === undefined ? null : "0x0", from: FAUCET, to: ALICE, value: "0x0", nonce: "0x0", type: "0x2", gas: "0x5208", input: "0x" };
     },
     eth_sendRawTransaction: (p: unknown[]) => {
       if (state.refuse && (state.refuseAt === undefined || state.refuseAt === state.raw.length)) { const r = state.refuse; if (state.refuseAt !== undefined) state.refuse = undefined; throw r; }
@@ -255,6 +265,120 @@ describe("a ticket", () => {
     tracker.move(tracker.sent[0]!.hash, "dropped", null, "gone");
     await f.process();
     expect(f.ticket(t)).toMatchObject({ status: "sent" });
+  });
+
+  describe("a transfer the tracker stopped following", () => {
+    const WATCH = 48 * 3600_000;
+    const sendOne = async (f: Faucet) => {
+      const t = ticketOf(await f.request(ALICE, { ip: "2.2.2.2" }));
+      await f.process();
+      return { t, hash: tracker.sent[0]!.hash };
+    };
+
+    it("goes final with its block when reth mines it after the tracker dropped it (a prover outage: the transfer sat in the pool too long)", async () => {
+      const f = await faucet();
+      const { t, hash } = await sendOne(f);
+      tracker.move(hash, "dropped", null, "It stayed in the chain's waiting list for 60 minutes without going into a block, so it is no longer followed. The chain may still mine it.");
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent" });
+      state.mined = 50; state.finalized = 49; // mined, not yet final
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent" });
+      state.finalized = 60;
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "final", block: 50, hash, reason: null });
+    });
+
+    it("goes final when the tracker has no entry for it any more (its list was full)", async () => {
+      const f = await faucet();
+      const { t, hash } = await sendOne(f);
+      tracker.tracked.delete(hash);
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent" });
+      state.mined = 7; state.finalized = 8;
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "final", block: 7 });
+    });
+
+    it("fails, and the address may ask again, when another transaction used its nonce", async () => {
+      const f = await faucet();
+      const { t } = await sendOne(f);
+      const hash = tracker.sent[0]!.hash;
+      tracker.move(hash, "dropped", null, "gone");
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent" });
+      state.raw.length = 0; state.finalNonce = state.base + 1; state.finalized = 30; // the nonce is used, by another transaction
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "failed", reason: expect.stringContaining("Another transaction took") });
+      expect((await f.request(ALICE, { ip: "2.2.2.2" })).status).toBe(202);
+    });
+
+    it("is not failed while its nonce is unused, even when reth does not have it", async () => {
+      const f = await faucet();
+      const { t, hash } = await sendOne(f);
+      tracker.tracked.delete(hash);
+      state.raw.length = 0;
+      for (let i = 0; i < 3; i++) await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent" });
+    });
+
+    it("is followed after a restart", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "faucet-late-"));
+      try {
+        const stateFile = join(dir, "faucet.json");
+        const first = await faucet({ stateFile });
+        const { t, hash } = await sendOne(first);
+        tracker.tracked.delete(hash);
+        await first.process();
+        await first.flush();
+        await fake!.close();
+        const second = await faucet({ stateFile });
+        state.mined = 3; state.finalized = 4;
+        await second.process();
+        expect(second.ticket(t)).toMatchObject({ status: "final", block: 3 });
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it("is left alone while reth cannot say, and asked again", async () => {
+      let down = true;
+      const f = await faucet({ wrap: (r) => ({ ...r, block: (async (id: number | string) => { if (down) throw new RethError("down"); return r.block(id); }) as never }) });
+      const { t, hash } = await sendOne(f);
+      tracker.tracked.delete(hash);
+      state.mined = 3; state.finalized = 4;
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent" });
+      down = false;
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "final" });
+    });
+
+    it("is followed for two days at most, then says it is no longer followed, and costs reth nothing after that", async () => {
+      const f = await faucet();
+      const { t, hash } = await sendOne(f);
+      tracker.tracked.delete(hash);
+      await f.process();
+      clock.now += WATCH + 1;
+      await f.process();
+      expect(f.ticket(t)).toMatchObject({ status: "sent", reason: expect.stringContaining("stopped following") });
+      const before = fake!.calls.length;
+      state.mined = 3; state.finalized = 4;
+      await f.process();
+      expect(fake!.calls.length).toBe(before);
+    });
+
+    it("looks at no more than twenty late transfers in one pass, and every one in turn", async () => {
+      const f = await faucet();
+      const ids: string[] = [];
+      for (let i = 0; i < 30; i++) ids.push(ticketOf(await f.request(addr(i + 1), { ip: `9.9.9.${i}` })));
+      await f.process();
+      for (const h of [...tracker.tracked.keys()]) tracker.tracked.delete(h);
+      state.mined = 3; state.finalized = 4;
+      await f.process();
+      const done = () => ids.filter((id) => f.ticket(id)!.status === "final").length;
+      expect(done()).toBe(20);
+      await f.process();
+      expect(done()).toBe(30);
+    });
   });
 
   it("is unknown when there is no such ticket", async () => {
