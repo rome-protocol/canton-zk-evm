@@ -111,7 +111,8 @@ python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --
 
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
   step "the first block: an empty block 1, so that reth never has to move back to genesis"
-  # Same builder settings as smoke.sh. Nothing else builds before this: the producer is started by the operator afterwards.
+  # Same builder settings as smoke.sh; the prover is the builder's default command (prove-one.sh). Nothing else builds before this: the
+  # producer is started by the operator afterwards.
   # shellcheck disable=SC1091
   . "$CZE_STATE_DIR/canton/parties.env"
   set +e

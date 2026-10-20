@@ -588,11 +588,15 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
                 e.rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
             # what _build's left-out rebuilds could not put back, what the error already carries, and what the last put-back loses
             e.lost_transactions = [*lost_so_far, *getattr(e, "lost_transactions", [])]
-            try:
-                e.lost_transactions += put_back(reth)   # the loop reports them with the failure
-                e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
-            except Exception:   # the error that brought us here is the one to report; the saved copy stays for the next start
-                pass
+            # When the move back failed, reth's head is still the failed block and answers "nonce too low" for every one of its
+            # transactions: sending them would look like success and clear the saved copy. The copy stays; the next start's
+            # recover_saved moves reth back first and sends them then.
+            if not getattr(e, "rewind_error", None):
+                try:
+                    e.lost_transactions += put_back(reth)   # the loop reports them with the failure
+                    e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
+                except Exception:   # the error that brought us here is the one to report; the saved copy stays for the next start
+                    pass
             if not e.lost_transactions:
                 del e.lost_transactions
             raise
@@ -725,11 +729,12 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
                 reth.forkchoice(head, head, head)
             except Exception as rewind:   # Canton's answer is the one to report; the failed move back rides along as rewindError
                 rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
-            try:
-                put_back_lost = put_back(reth)
-            except Exception as again:
-                put_back_lost = []
-                rewind_error = rewind_error or (str(again) if isinstance(again, BuilderError) else f"{type(again).__name__}: {again}")
+            put_back_lost = []
+            if not rewind_error:   # after a failed move back reth's head is still this block, which would "have" every transaction (nonce too low):
+                try:              # they stay in reth.imported and in the saved copy for the next start's recover_saved, which moves reth back first
+                    put_back_lost = put_back(reth)
+                except Exception as again:
+                    rewind_error = str(again) if isinstance(again, BuilderError) else f"{type(again).__name__}: {again}"
             if put_back_lost:
                 report["lostTransactions"] = [*report.get("lostTransactions", []), *put_back_lost]
             if rewind_error:

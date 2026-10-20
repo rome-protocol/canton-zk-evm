@@ -84,6 +84,7 @@ class FakeReth:
         self.tx_legs: dict = {}   # transaction hash -> the Leg events that transaction makes, in order, when it is in a block (or a function from the block's transaction hashes to them)
         self.block_txs: dict = {}   # block hash -> the hashes of its transactions
         self.bad_log_data = None   # bytes to put in place of the first log's data
+        self.head = HEAD_HASH   # the block reth's head is at: a forkchoice that fails leaves it where it was
         self.refuse_resend = False   # eth_sendRawTransaction answers an error for every transaction
         self.no_state_for_genesis = False   # a persistent reth cannot move back to the genesis block once a block is built: the forkchoice to it is an error
         self.sync_on_final = False   # the forkchoice that makes a new block head, safe and finalized at once answers SYNCING (once)
@@ -120,6 +121,7 @@ class FakeReth:
     def became_head(self, block_hash):
         """What reth 2.5.2 does when a block becomes head: its transactions leave the pool as mined (and a sender left with none
         is forgotten). Moving the head back to an earlier block puts nothing back."""
+        self.head = block_hash
         for hash_ in self.block_txs.get(block_hash, []):
             for sender in list(self.pool):
                 for t in self.pool[sender]:
@@ -134,6 +136,8 @@ class FakeReth:
         hash_ = "0x" + raw[4:]
         if self.refuse_resend:
             raise RpcError("refused")
+        if hash_ in self.block_txs.get(self.head, []):   # in the head block: its state has the transaction, so the nonce is used
+            raise RpcError("nonce too low")
         if any(t["hash"] == hash_ for ts in self.pool.values() for t in ts):
             raise RpcError("already known")
         if hash_ not in self.mined:

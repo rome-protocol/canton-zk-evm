@@ -786,6 +786,51 @@ class SavedBlock(Loop):
         self.assertFalse(self.saved(s2).exists())
         self.assertIsNone(b.recover_saved(s2.cfg))   # nothing more to do
 
+    def test_a_failed_move_back_after_a_failure_keeps_the_saved_copy_for_the_next_start(self):
+        a = tx(ALICE, 0)
+        s = self.setup({ALICE: [a]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True   # reth stays at the failed block: it answers "nonce too low" for the transaction
+        with self.assertRaises(b.BuilderError) as raised:
+            b.build_block(s.cfg)
+        self.assertIn("no state found", raised.exception.rewind_error)
+        self.assertFalse(hasattr(raised.exception, "lost_transactions"))
+        self.assertTrue(self.saved(s).exists())   # not cleared: nothing was put back
+        self.assertEqual(self.in_pool(s), set())
+        s.reth.no_state_for_genesis = False   # the next start can move reth back
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["lostTransactions"]), (1, []))
+        self.assertEqual(self.in_pool(s), {a["hash"]})
+        self.assertFalse(self.saved(s).exists())
+
+    def test_a_failed_move_back_after_a_refusal_keeps_the_saved_copy_for_the_next_start(self):
+        a = tx(ALICE, 0)
+        s = self.setup({ALICE: [a]}, refuse="the sidecar refused the proof: wrong program key")
+        s.reth.no_state_for_genesis = True
+        result = b.build_block(s.cfg)
+        self.assertIs(result["committed"], False)
+        self.assertIn("no state found", result["rewindError"])
+        self.assertEqual(result["keptTransactions"], [a["hash"]])
+        self.assertNotIn("lostTransactions", result)
+        self.assertTrue(self.saved(s).exists())
+        self.assertEqual(self.in_pool(s), set())
+        s.reth.no_state_for_genesis = False
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["lostTransactions"]), (1, []))
+        self.assertEqual(self.in_pool(s), {a["hash"]})
+
+    def test_the_producer_recovers_after_a_failed_move_back_on_the_next_start(self):
+        a = tx(ALICE, 0)
+        s = self.setup({ALICE: [a]}, prover_fails=True)
+        s.reth.no_state_for_genesis = True
+        self.producer(s).step()
+        self.assertTrue(self.saved(s).exists())
+        self.assertEqual(self.status().get("lostTransactions", []), [])
+        s.reth.no_state_for_genesis = False
+        os.environ["FAKE_PROVER_FAILS"] = ""
+        self.producer(s).step()   # the next start: rewinds, sends the transaction again, builds it
+        self.assertEqual(self.reports[-1]["transactions"], [a["hash"]])
+        self.assertEqual(self.status().get("lostTransactions", []), [])
+
     def test_a_lost_transaction_after_a_restart_is_in_the_status(self):
         a = tx(ALICE, 0)
         s = self.setup({ALICE: [a]})
