@@ -21,7 +21,7 @@
 #   FAUCET_KEY_FILE   the faucet's key, from <state>/faucet/key (else the faucet is off)
 # And these are passed on when they are set: EXPLORER_HOST, EXPLORER_PORT, RETH_RPC_URL, LEDGER_URL, CHAIN_NAME, COIN_SYMBOL, RPC_TIMEOUT_MS,
 # POLL_MS, FAUCET_AMOUNT, FAUCET_PER_ADDRESS_SECONDS, FAUCET_PER_IP_SECONDS, FAUCET_MAX_PER_HOUR, FAUCET_BATCH, FAUCET_QUEUE_MAX, the human check's CAPTCHA_VERIFY_URL, CAPTCHA_SCRIPT_URL, CAPTCHA_SITE_KEY and CAPTCHA_WIDGET_CLASS (and CAPTCHA_SECRET, which is taken from the environment and never put on the command), and the public RPC's settings: PUBLIC_RPC (1 turns on POST /rpc),
-# RPC_RATE_PER_MINUTE, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
+# RPC_RATE_PER_MINUTE, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER, TRACKER_MAX_PENDING_MINUTES. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
@@ -88,7 +88,7 @@ start() {
   [ -z "$key" ] || mount_file FAUCET_KEY_FILE "$key"
   for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_PER_IP_SECONDS FAUCET_MAX_PER_HOUR FAUCET_BATCH FAUCET_QUEUE_MAX \
     CAPTCHA_VERIFY_URL CAPTCHA_SCRIPT_URL CAPTCHA_SITE_KEY CAPTCHA_WIDGET_CLASS \
-    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER; do
+    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   # The secret is named without a value, so Docker takes it from this shell's environment and it is never in the command line.

@@ -319,6 +319,75 @@ describe("a send ahead of the sender's next nonce", () => {
   });
 });
 
+describe("sends from one sender that arrive together", () => {
+  /** A reth whose pending count follows its pool, as the real one's does. */
+  async function pooled(start = 3) {
+    let pool = start;
+    const setup = await boot({
+      eth_getTransactionCount: () => hx(pool),
+      eth_sendRawTransaction: (p: unknown[]) => { pool++; return keccak256(p[0] as Hex); },
+    });
+    return { ...setup, pool: () => pool };
+  }
+  const raws = (...nonces: number[]) => Promise.all(nonces.map((nonce) => signed({ nonce })));
+
+  it("takes the next nonces of a JSON-RPC batch, in order", async () => {
+    const { rpc, tracked, pool } = await pooled();
+    const [a, b, c] = (await raws(3, 4, 5)) as [Hex, Hex, Hex];
+    const body = JSON.stringify([a, b, c].map((raw, i) => ({ jsonrpc: "2.0", id: i + 1, method: "eth_sendRawTransaction", params: [raw] })));
+    const answer = (await rpc(body, "1.2.3.4")).body as { result?: string; error?: unknown }[];
+    expect(answer.map((r) => r.result)).toEqual([a, b, c].map((raw) => keccak256(raw)));
+    expect(pool()).toBe(6);
+    expect(tracked.length).toBe(3);
+  });
+
+  it("takes the next nonces of two overlapping requests", async () => {
+    const { call, pool } = await pooled(5);
+    const [a, b] = (await raws(5, 6)) as [Hex, Hex];
+    const answers = await Promise.all([call("eth_sendRawTransaction", a), call("eth_sendRawTransaction", b)]);
+    expect(answers.map((r) => r.result)).toEqual([keccak256(a), keccak256(b)]);
+    expect(pool()).toBe(7);
+  });
+
+  it("still refuses a real gap inside a batch, and goes on with the sends after it", async () => {
+    const { rpc, pool } = await pooled();
+    const [a, gap, ok] = (await raws(3, 6, 4)) as [Hex, Hex, Hex];
+    const body = JSON.stringify([a, gap, ok].map((raw, i) => ({ jsonrpc: "2.0", id: i + 1, method: "eth_sendRawTransaction", params: [raw] })));
+    const answer = (await rpc(body, "1.2.3.4")).body as { result?: string; error?: { message: string } }[];
+    expect(answer[0]!.result).toBe(keccak256(a));
+    expect(answer[1]!.error?.message).toMatch(/nonce gap.*nonce 6.*expects 4/);
+    expect(answer[2]!.result).toBe(keccak256(ok));
+    expect(pool()).toBe(5);
+  });
+
+  it("does not make one sender wait for another's slow send", async () => {
+    const other = privateKeyToAccount(generatePrivateKey());
+    const slow = other.address.toLowerCase();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((ok) => { release = ok; });
+    const { call } = await boot({
+      eth_getTransactionCount: (p: unknown[]) => (String(p[0]).toLowerCase() === slow ? "0x0" : "0x3"),
+      eth_sendRawTransaction: async (p: unknown[]) => { const t = await import("viem").then((v) => v.parseTransaction(p[0] as Hex)); if (t.nonce === 0) await gate; return keccak256(p[0] as Hex); },
+    });
+    const slowRaw = await other.signTransaction({ type: "eip1559", chainId: CHAIN, nonce: 0, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+    const first = call("eth_sendRawTransaction", slowRaw);
+    const raw = await signed();
+    expect((await call("eth_sendRawTransaction", raw)).result).toBe(keccak256(raw));
+    release();
+    expect((await first).result).toBe(keccak256(slowRaw));
+  });
+
+  it("goes on with the next send after one that failed", async () => {
+    let n = 0;
+    const { rpc } = await boot({ eth_sendRawTransaction: (p: unknown[]) => { if (n++ === 0) throw "insufficient funds"; return keccak256(p[0] as Hex); } });
+    const [a, b] = (await raws(3, 3)) as [Hex, Hex];
+    const body = JSON.stringify([a, b].map((raw, i) => ({ jsonrpc: "2.0", id: i + 1, method: "eth_sendRawTransaction", params: [raw] })));
+    const answer = (await rpc(body, "1.2.3.4")).body as { result?: string; error?: { message: string } }[];
+    expect(answer[0]!.error?.message).toContain("insufficient funds");
+    expect(answer[1]!.result).toBeDefined();
+  });
+});
+
 describe("a send that goes wrong around reth", () => {
   it("refuses a send before reth sees it when the tracker cannot follow it, and tracks nothing", async () => {
     const { call, seen, tracked } = await boot({}, { admit: () => "This sender has 64 transactions waiting to be confirmed." });

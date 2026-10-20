@@ -57,6 +57,8 @@ export interface TrackerOptions {
   maxRefusals?: number;
   /** After this many sends in all, a transaction that keeps disappearing is dropped. */
   maxAttempts?: number;
+  /** An open entry that has had no block for this long is marked dropped and no longer followed, so a transaction reth keeps without mining cannot hold a slot for ever. */
+  maxPendingMs?: number;
   pollMs?: number;
   now?: () => number;
 }
@@ -88,7 +90,7 @@ function refusal(e: RethError): string {
 }
 
 export function createTracker(o: TrackerOptions): Tracker {
-  const { reth, index, file = null, max = 10000, maxBytes = 16 * 1024 * 1024, maxPerSender = 64, saveMs = 1000, retryMs = 5000, maxRefusals = 5, maxAttempts = 10, pollMs = 2000, now = Date.now } = o;
+  const { reth, index, file = null, max = 10000, maxBytes = 16 * 1024 * 1024, maxPerSender = 64, saveMs = 1000, retryMs = 5000, maxRefusals = 5, maxAttempts = 10, pollMs = 2000, maxPendingMs = 60 * 60 * 1000, now = Date.now } = o;
   // Oldest first: a Map keeps the order its keys went in.
   const entries = new Map<string, Entry>();
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -238,7 +240,11 @@ export function createTracker(o: TrackerOptions): Tracker {
     if (t) {
       e.reason = null;
       e.refused = 0;
-      if (t.blockNumber === null) { e.state = "pending"; return; }
+      if (t.blockNumber === null) {
+        if (now() - e.addedAt >= maxPendingMs) return settle(e, "dropped", `It stayed in the chain's waiting list for ${Math.round(maxPendingMs / 60000)} minutes without going into a block, so it is no longer followed. The chain may still mine it.`);
+        e.state = "pending";
+        return;
+      }
       e.block = t.blockNumber;
       e.blockHash = t.blockHash;
       if (t.blockNumber > finalized) { e.state = "proving"; return; }

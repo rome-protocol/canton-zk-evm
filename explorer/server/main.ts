@@ -16,7 +16,7 @@ try {
   const reth = createReth(config.rethUrl, config.rpcTimeoutMs);
   const ledger = createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty);
   const index = createChainIndex(reth, ledger, config.pins, config.pollMs);
-  const tracker = createTracker({ reth, index, file: config.tracker.file, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, pollMs: config.pollMs });
+  const tracker = createTracker({ reth, index, file: config.tracker.file, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, maxPendingMs: config.tracker.maxPendingMinutes * 60000, pollMs: config.pollMs });
   const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), chainId: config.chainId, reth, tracker });
   const rpc = config.publicRpc.on
     ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
