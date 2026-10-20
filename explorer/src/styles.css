@@ -84,6 +84,8 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .chip-proving { color: var(--amber); background: var(--amber-tint); border-color: var(--amber-line); }
 .chip-waiting { color: var(--amber); background: transparent; border-color: var(--amber-line); }
 .chip-waiting .dot { background: transparent; border: 1.5px solid currentColor; width: 8px; height: 8px; }
+.chip-replaced { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
+.chip-dropped { color: var(--bad); background: var(--bad-tint); border-color: var(--bad-line); }
 .chip-genesis { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
 
 /* home: the status strip */
@@ -262,3 +264,16 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
   .txs .c-did { grid-area: did; }
   .rec { padding: 12px 16px; }
 }
+
+.stage { font-size: 16px; font-weight: 500; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+.stage.s-final { color: var(--ok); }
+.stage.s-pending, .stage.s-proving { color: var(--amber); }
+.stage.s-dropped { color: var(--bad); }
+.stage.s-replaced { color: var(--muted); }
+.rpc-card h3 { margin: 0 0 6px; }
+.rpc-card p { margin: 0 0 10px; }
+.rpc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.rpc-url { font-family: var(--mono, ui-monospace, monospace); font-size: 13px; overflow-wrap: anywhere; }
+.rpc-btn { border: 0; border-radius: 8px; background: var(--btn); color: var(--btn-ink); padding: 8px 14px; font: inherit; font-weight: 500; cursor: pointer; }
+.rpc-btn.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.rpc-msg { font-size: 13px; color: var(--muted); }

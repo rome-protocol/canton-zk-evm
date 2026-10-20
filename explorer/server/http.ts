@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
+import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
@@ -12,13 +13,13 @@ const TYPES: Record<string, string> = {
 const MAX_BODY = 1024;
 
 /** The body as text, or null when it is bigger than the limit (what is left is thrown away). */
-function readBody(req: IncomingMessage): Promise<string | null> {
+function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null> {
   return new Promise((ok, fail) => {
     const chunks: Buffer[] = [];
     let size = 0, tooBig = false;
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX_BODY) tooBig = true;
+      if (size > limit) tooBig = true;
       else chunks.push(c);
     });
     req.on("end", () => ok(tooBig ? null : Buffer.concat(chunks).toString("utf8")));
@@ -26,8 +27,21 @@ function readBody(req: IncomingMessage): Promise<string | null> {
   });
 }
 
-/** Serves `/api/*` and `/healthz` from the API, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
-export function createHttpServer(api: Api, dist: string): Server {
+/** The public RPC's door: its handler, and the header that names the client's address when a trusted proxy sets one. */
+export interface RpcDoor { handler: PublicRpc; ipHeader: string | null }
+
+const JSON_TYPE = { "content-type": "application/json" };
+const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" };
+
+/** The client's address: the socket's, or the last one in the trusted header (a proxy adds the client's address at the end). */
+function clientIp(req: IncomingMessage, ipHeader: string | null): string {
+  const sent = ipHeader ? req.headers[ipHeader] : undefined;
+  const last = (Array.isArray(sent) ? sent.join(",") : sent)?.split(",").pop()?.trim();
+  return last || req.socket.remoteAddress || "unknown";
+}
+
+/** Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor): Server {
   const root = resolve(dist);
   async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
@@ -52,6 +66,25 @@ export function createHttpServer(api: Api, dist: string): Server {
       return void res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ error: "That is not a path." }));
     }
     try {
+      if (pathname === "/rpc") {
+        const send = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+          void res.writeHead(status, { ...JSON_TYPE, ...CORS, "cache-control": "no-store", ...headers }).end(JSON.stringify(body));
+        if (!rpc) return send(404, { error: "The public RPC is off on this explorer." });
+        if (method === "OPTIONS") return void res.writeHead(204, CORS).end();
+        if (method !== "POST") return send(405, { error: "Use POST." }, { allow: "POST, OPTIONS" });
+        const tooBig = () => send(413, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "That request is too big." } }, { connection: "close" });
+        if (Number(req.headers["content-length"] ?? 0) > RPC_MAX_BODY) return tooBig();
+        const sent = await readBody(req, RPC_MAX_BODY);
+        if (sent === null) return tooBig();
+        try {
+          const { status, body, headers } = await rpc.handler(sent, clientIp(req, rpc.ipHeader));
+          return send(status, body, headers);
+        } catch (e) {
+          // A browser page gets an error it can read, with the headers that let it read it.
+          console.error(`${method} ${pathname}: ${(e as Error).message}`);
+          return send(200, { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Something went wrong in the RPC. Try again in a moment." } });
+        }
+      }
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));

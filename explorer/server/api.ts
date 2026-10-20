@@ -4,10 +4,11 @@ import { LedgerError, type Ledger } from "./ledger.ts";
 import type { ChainIndex } from "./chain-index.ts";
 import type { FactCheck, ProofCheck } from "./proof.ts";
 import { RethError, type Reth, type Tx, type TokenInfo } from "./reth.ts";
+import type { Tracker, TxState } from "./tracker.ts";
 
 /** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
 export const FIELDS = {
-  status: ["chainId", "chainName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet"],
+  status: ["chainId", "chainName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc"],
   coin: ["symbol", "decimals"],
   pins: ["programVK", "rootC", "file"],
   final: ["number", "hash", "timestamp", "recordTime"],
@@ -28,7 +29,7 @@ export const FIELDS = {
   transfer: ["symbol", "decimals", "to", "value"],
   txBlock: ["number", "hash", "updateId"],
   log: ["address", "topics", "data"],
-  tx: ["hash", "status", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
+  tx: ["hash", "status", "state", "reason", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
   address: ["address", "kind", "balance", "nonce", "token", "createdBy"],
   token: ["name", "symbol", "decimals"],
   createdBy: ["txHash", "block"],
@@ -45,7 +46,7 @@ export interface Answer { status: number; body: unknown; headers?: Record<string
 /** `body` is the text of a POST's body. */
 export type Api = (method: string, target: string, body?: string) => Promise<Answer>;
 /** With no `faucet`, the faucet is off. */
-export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; index: ChainIndex; faucet?: Faucet }
+export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; index: ChainIndex; faucet?: Faucet; tracker?: Tracker }
 
 const HASH = /^0x[0-9a-f]{64}$/, ADDRESS = /^0x[0-9a-f]{40}$/, UPDATE = /^1220[0-9a-f]{64}$/;
 // transfer(address,uint256) with its two arguments, and nothing else
@@ -54,7 +55,7 @@ const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string): Answer => ({ status, body: { error } });
 const dec = (n: bigint | number) => n.toString();
 
-export function createApi({ config, reth, ledger, index, faucet = createFaucet({ ...config.faucet, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
+export function createApi({ config, reth, ledger, index, tracker, faucet = createFaucet({ ...config.faucet, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
   // What reth said about a token, as the promise, so that the transfers of one block share one set of calls. It is dropped when the index starts a new run.
   let seen = new Map<string, Promise<TokenInfo | null>>(), seenRun = index.status().run;
   /** A token's name, symbol and decimals: from the index when a block created it, else asked of reth once per run. */
@@ -91,7 +92,7 @@ export function createApi({ config, reth, ledger, index, faucet = createFaucet({
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: index.latest(10).map((b) => pick(b, FIELDS.latest)),
-        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on },
+        signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on,
       },
     };
   }
@@ -119,16 +120,27 @@ export function createApi({ config, reth, ledger, index, faucet = createFaucet({
     });
   }
 
+  /** What the explorer says about a transaction that reth no longer holds, but the tracker accepted: it is being sent again, or it was replaced or dropped. */
+  function gone(hash: string, tr: ReturnType<Tracker["state"]> & object): Answer {
+    return ok({
+      hash, status: tr.state === "pending" ? "waiting" : tr.state, state: tr.state, reason: tr.reason, block: null, from: tr.from, to: null, value: null, nonce: tr.nonce, type: null, gas: null,
+      gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null,
+    });
+  }
+
   async function transaction(hash: string): Promise<Answer> {
     if (!HASH.test(hash)) return fail(400, "A transaction is named by its 0x hash.");
     const t = await reth.transaction(hash);
-    if (!t) return fail(404, NOT_FOUND);
+    const tr = tracker?.state(hash);
+    if (!t) return tr ? gone(hash, tr) : fail(404, NOT_FOUND);
     const r = t.blockNumber === null ? null : await reth.receipt(hash);
     const final = index.byNumber(index.tx(hash)?.block ?? -1);
     const onCanton = final && final.hash === t.blockHash ? final : null;
     const transfer = await transferOf(t);
+    const status = t.blockNumber === null ? "waiting" : onCanton ? "final" : "proving";
+    const state: TxState = status === "waiting" ? "pending" : status;
     return ok({
-      hash: t.hash, status: t.blockNumber === null ? "waiting" : onCanton ? "final" : "proving",
+      hash: t.hash, status, state, reason: tr?.state === state ? tr.reason : null,
       block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: onCanton?.updateId ?? null },
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,

@@ -28,6 +28,25 @@ export interface Config {
   readerParty: string;
   pollMs: number;
   pins: Pins;
+  publicRpc: {
+    /** The public RPC at POST /rpc. Off unless PUBLIC_RPC=1. */
+    on: boolean;
+    /** Calls per client address per minute. A batch counts each of its calls. */
+    ratePerMinute: number;
+    /** The request header that carries the client's address, set only behind a proxy that is trusted to write it. Lower case; null means the socket's address. */
+    trustedIpHeader: string | null;
+  };
+  tracker: {
+    /** Null keeps the tracker in memory only. */
+    file: string | null;
+    /** The most entries it holds. */
+    max: number;
+    /** The most characters of signed transactions it holds for open entries. */
+    maxBytes: number;
+    /** The most open entries one sender may have. */
+    perSender: number;
+    maxPendingMinutes: number;
+  };
   faucet: {
     /** Null turns the faucet off. */
     keyFile: string | null;
@@ -49,6 +68,21 @@ function whole(env: Env, name: string, fallback: number, min: number): number {
   if (raw === undefined || raw === "") return fallback;
   if (!/^\d+$/.test(raw) || Number(raw) < min) throw new ConfigError(`${name} must be a whole number of at least ${min}, not "${raw}"`);
   return Number(raw);
+}
+
+/** 1 turns a switch on; empty, unset or 0 leaves it off. */
+function flag(env: Env, name: string): boolean {
+  const raw = env[name];
+  if (raw === undefined || raw === "" || raw === "0") return false;
+  if (raw === "1") return true;
+  throw new ConfigError(`${name} must be 1 or 0, not "${raw}"`);
+}
+
+function header(env: Env, name: string): string | null {
+  const raw = env[name]?.trim();
+  if (!raw) return null;
+  if (!/^[A-Za-z0-9-]+$/.test(raw)) throw new ConfigError(`${name} must be a header name such as X-Real-IP, not "${raw}"`);
+  return raw.toLowerCase();
 }
 
 function url(env: Env, name: string, fallback: string): string {
@@ -104,6 +138,18 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     readerParty: env.READER_PARTY,
     pollMs: whole(env, "POLL_MS", 2000, 100),
     pins: parsePins(pinsText, basename(pinsPath)),
+    publicRpc: {
+      on: flag(env, "PUBLIC_RPC"),
+      ratePerMinute: whole(env, "RPC_RATE_PER_MINUTE", 300, 1),
+      trustedIpHeader: header(env, "TRUSTED_IP_HEADER"),
+    },
+    tracker: {
+      file: env.TRACKER_FILE || null,
+      max: whole(env, "TRACKER_MAX", 10000, 10),
+      maxBytes: whole(env, "TRACKER_MAX_BYTES", 16 * 1024 * 1024, 1024),
+      perSender: whole(env, "TRACKER_PER_SENDER", 64, 1),
+      maxPendingMinutes: whole(env, "TRACKER_MAX_PENDING_MINUTES", 60, 1),
+    },
     faucet: {
       keyFile: env.FAUCET_KEY_FILE || null,
       amountWei,

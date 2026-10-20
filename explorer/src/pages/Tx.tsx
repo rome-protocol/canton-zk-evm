@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getTx, type ApiTx, type Log } from "../api.ts";
+import { getTx, type ApiTx, type ApiTxSeen, type ApiTxUnseen, type Log } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
 import { unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
@@ -22,7 +22,7 @@ const Bad = ({ children }: { children: string }) => <span className="fact-bad"><
 type Coin = { symbol: string; decimals: number };
 
 /** A transaction that is not final yet says so, says where it is, and says that the page looks again. Only a transaction page reached by its hash can say Waiting. */
-function NotFinal({ t }: { t: ApiTx }) {
+function NotFinal({ t }: { t: ApiTxSeen }) {
   const where = t.status === "waiting" ? "It is in reth's pool, and no block holds it yet." : "Its block is being proven.";
   return (
     <div className="alert wait-alert" role="status">
@@ -33,7 +33,7 @@ function NotFinal({ t }: { t: ApiTx }) {
 }
 
 /** Waiting, Being proven, Final: where this transaction is on the way. It sits below the facts. */
-function Progress({ t }: { t: ApiTx }) {
+function Progress({ t }: { t: ApiTxSeen }) {
   const at = t.status === "waiting" ? 0 : 1;
   return (
     <ol className="progress" aria-label="Where this transaction is">
@@ -47,7 +47,7 @@ const InCoin = ({ raw, coin }: { raw: string; coin: Coin | undefined }) =>
   coin ? <Amount raw={raw} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>;
 
 /** What the transaction's ERC-20 transfer did. A reverted one moved nothing, and says so. */
-function TransferItem({ t, waiting }: { t: ApiTx; waiting: boolean }) {
+function TransferItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
   const tr = t.transfer;
   if (!tr) return null;
   const amount = <b><Amount raw={tr.value} decimals={tr.decimals} symbol={tr.symbol} /></b>;
@@ -58,13 +58,13 @@ function TransferItem({ t, waiting }: { t: ApiTx; waiting: boolean }) {
   return <Item label="Token moved">{amount} from {from} to {to}</Item>;
 }
 
-function BlockItem({ t }: { t: ApiTx }) {
+function BlockItem({ t }: { t: ApiTxSeen }) {
   if (!t.block) return <span className="muted">None yet</span>;
   const link = <Link className="num" to={`/block/${t.block.number}`}>{t.block.number}</Link>;
   return t.block.updateId ? <>{link}, final on Canton in update <HashLink value={t.block.updateId} kind="update" /></> : <>{link}, not on Canton yet</>;
 }
 
-function Facts({ t, coin }: { t: ApiTx; coin: Coin | undefined }) {
+function Facts({ t, coin }: { t: ApiTxSeen; coin: Coin | undefined }) {
   const waiting = t.status === "waiting";
   const to = t.to && <><HashLink value={t.to} to={`/${t.toToken ? "token" : "address"}/${t.to}`} full />{t.toToken && <span className="tag">{t.toToken}, a token</span>}</>;
   return (
@@ -103,7 +103,7 @@ function Input({ data }: { data: string }) {
   );
 }
 
-function LogEntry({ log, n, t }: { log: Log; n: number; t: ApiTx }) {
+function LogEntry({ log, n, t }: { log: Log; n: number; t: ApiTxSeen }) {
   return (
     <dl className="log" role="group" aria-label={`Log ${n}`}>
       <dt className="log-k">Address</dt>
@@ -116,7 +116,7 @@ function LogEntry({ log, n, t }: { log: Log; n: number; t: ApiTx }) {
   );
 }
 
-function InputAndLogs({ t }: { t: ApiTx }) {
+function InputAndLogs({ t }: { t: ApiTxSeen }) {
   return (
     <section className="card" aria-label="Input and logs">
       <Kv wide>
@@ -127,10 +127,40 @@ function InputAndLogs({ t }: { t: ApiTx }) {
   );
 }
 
+/** The stage in plain words. It is the first thing the page says. */
+export function stageText(t: ApiTx): string {
+  switch (t.state) {
+    case "pending": return "Waiting to go into a block";
+    case "proving": return "In a block that is being proven";
+    case "final": return t.block ? `Final on Canton in block ${t.block.number}` : "Final on Canton";
+    case "replaced": return "Replaced by another transaction with the same nonce";
+    case "dropped": return `Dropped: ${t.reason ?? "no reason was given"}`;
+  }
+}
+
+const settled = (t: ApiTx) => t.state === "final" || t.state === "replaced" || t.state === "dropped";
+
+function Stage({ t }: { t: ApiTx }) {
+  return <p className={`stage s-${t.state}`} aria-live="polite" data-state={t.state}>{stageText(t)}</p>;
+}
+
+/** A transaction that reth no longer holds: all that is known is who sent it, and its nonce. */
+function Unseen({ t }: { t: ApiTxUnseen }) {
+  return (
+    <section className="card" aria-label="Transaction">
+      <Kv wide>
+        <Item label="From"><HashLink value={t.from} to={`/address/${t.from}`} full /></Item>
+        <Item label="Nonce"><span className="mono">{t.nonce}</span></Item>
+        {t.reason && t.state !== "dropped" && <Item label="Note">{t.reason}</Item>}
+      </Kv>
+    </section>
+  );
+}
+
 export function Tx() {
   const { hash = "" } = useParams();
   const coin = useStatus().data?.coin;
-  const q = useFollowing(["tx", hash], () => getTx(hash), (t) => t.status === "final");
+  const q = useFollowing(["tx", hash], () => getTx(hash), settled);
   const wait = unready(q, "Reading the transaction…");
   if (wait) return wait;
   const t = q.data!;
@@ -138,10 +168,12 @@ export function Tx() {
     <>
       <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} /></div>
       <div className="bighash"><HashLink value={t.hash} full /></div>
-      {t.status !== "final" && <NotFinal t={t} />}
-      <Facts t={t} coin={coin} />
+      <Stage t={t} />
+      {t.value === null && <Unseen t={t} />}
+      {t.value !== null && t.status !== "final" && <NotFinal t={t} />}
+      {t.value !== null && <><Facts t={t} coin={coin} />
       {t.status !== "final" && <Progress t={t} />}
-      {t.status !== "waiting" && <InputAndLogs t={t} />}
+      {t.status !== "waiting" && <InputAndLogs t={t} />}</>}
     </>
   );
 }

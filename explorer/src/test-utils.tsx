@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, ApiStatus, ApiTx } from "./api.ts";
+import type { ApiAddress, ApiBlock, ApiStatus, ApiTxSeen, ApiTxUnseen } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -24,7 +24,7 @@ export function status(over: Partial<ApiStatus> = {}): ApiStatus {
       { number: 3, hash: hash(3), timestamp: T0 + 8, txCount: 1, updateId: update(3), recordTime: "2026-10-04T01:37:23.412Z" },
       { number: 2, hash: hash(2), timestamp: T0, txCount: 0, updateId: update(2), recordTime: "2026-10-04T01:37:08.250Z" },
     ],
-    signers: { operator: "operator::1220" + "ab".repeat(32), confirmer: "confirmer::1220" + "cd".repeat(32) }, faucet: { on: false },
+    signers: { operator: "operator::1220" + "ab".repeat(32), confirmer: "confirmer::1220" + "cd".repeat(32) }, faucet: { on: false }, publicRpc: true,
     ...over,
   };
 }
@@ -49,20 +49,22 @@ export function block(over: Partial<ApiBlock> = {}): ApiBlock {
 }
 
 /** The same transaction, final in block 3. */
-export function tx(over: Partial<ApiTx> = {}): ApiTx {
+export function tx(over: Partial<ApiTxSeen> = {}): ApiTxSeen {
   const transfer = { symbol: "TKA", decimals: 18, to: TRANSFER_TO, value: "10000000000000000000" };
   return {
-    hash: hash(0xf6), status: "final", block: { number: 3, hash: hash(3), updateId: update(3) }, from: addr(0x5b), to: addr(0xcb), value: "0", nonce: 1, type: 2, gas: 100000,
+    hash: hash(0xf6), status: "final", reason: null, block: { number: 3, hash: hash(3), updateId: update(3) }, from: addr(0x5b), to: addr(0xcb), value: "0", nonce: 1, type: 2, gas: 100000,
     gasUsed: 51698, gasPrice: "1670000000", fee: "86335660000000", success: true,
     input: "0xa9059cbb" + "0".repeat(24) + "5a".repeat(20) + "0".repeat(48) + "8ac7230489e80000",
     logs: [{ address: addr(0xcb), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "5b".repeat(20), "0x" + "0".repeat(24) + "5a".repeat(20)], data: "0x" + "0".repeat(48) + "8ac7230489e80000" }],
     transfer, toToken: "TKA", created: null,
     ...over,
+    // The state follows the status unless a test names it.
+    state: over.state ?? (over.status === "waiting" ? "pending" : over.status ?? "final"),
   };
 }
 
 /** A transaction in reth's pool: no block yet, so no result, no gas used and no fee. */
-export const waitingTx = (over: Partial<ApiTx> = {}) => tx({ status: "waiting", block: null, gasUsed: null, gasPrice: null, fee: null, success: null, logs: [], ...over });
+export const waitingTx = (over: Partial<ApiTxSeen> = {}) => tx({ status: "waiting", block: null, gasUsed: null, gasPrice: null, fee: null, success: null, logs: [], ...over });
 
 export function account(over: Partial<ApiAddress> = {}): ApiAddress {
   return { address: addr(0x5b), kind: "account", balance: "9997910000000000000", nonce: 3, token: null, createdBy: null, ...over };
@@ -105,4 +107,13 @@ export function renderApp(route = "/") {
 export async function tick(ms = 2000) {
   await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+}
+
+/** A transaction the explorer accepted that reth no longer holds. */
+export function goneTx(over: Partial<ApiTxUnseen> = {}): ApiTxUnseen {
+  return {
+    hash: hash(0xf7), status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: nonce too low.", block: null, from: addr(0x5b), to: null, value: null, nonce: 7, type: null, gas: null,
+    gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null,
+    ...over,
+  };
 }
