@@ -19,7 +19,11 @@ case ${1:-} in
       if [ -d "$STATE/reth-data" ]; then
         # shellcheck disable=SC1091
         . "$ROOT/PINS"
-        docker run --rm --security-opt no-new-privileges -v "$STATE/reth-data:/d" "$BUSYBOX_IMAGE" sh -c 'rm -rf /d/* /d/.[!.]*' >&2 || status=1
+        # reth's own image first: it is on the machine already (it wrote these files), so a wipe needs no download, and a registry's pull limit
+        # cannot stop it. The small image is the fallback.
+        wipe='rm -rf /d/* /d/.[!.]*'
+        docker run --rm --security-opt no-new-privileges --entrypoint sh -v "$STATE/reth-data:/d" "$RETH_IMAGE" -c "$wipe" >&2 2>/dev/null \
+          || docker run --rm --security-opt no-new-privileges -v "$STATE/reth-data:/d" "$BUSYBOX_IMAGE" sh -c "$wipe" >&2 || status=1
         rmdir "$STATE/reth-data" || status=1
       fi
     fi ;;
