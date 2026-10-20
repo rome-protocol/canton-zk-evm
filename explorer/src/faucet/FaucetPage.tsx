@@ -62,6 +62,8 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, pollMs = 2000 }: Fau
   const [cooling, setCooling] = useState(false);
   const [result, setResult] = useState<CoinResult | { kind: "invalid" } | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
+  /** Counts the times the human check's widget was drawn again, because its token was used. */
+  const [widgetRun, setWidgetRun] = useState(0);
   /** The request being followed, as the explorer last described it. */
   const [watch, setWatch] = useState<{ id: string; ticket: Ticket | null; asked: { position: number; amount: string }; reachable: boolean; gone: boolean } | null>(null);
   const watched = watch?.id;
@@ -85,14 +87,17 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, pollMs = 2000 }: Fau
     return () => { clearTimeout(timer); setCooling(false); };
   }, [result]);
 
-  // The human check's script is loaded once, when the faucet asks for one.
-  const check = loaded.state === "ready" ? loaded.info.captcha ?? null : null;
+  // The human check's script draws its widget when it runs, and it draws only into what is on the page at that moment. So it is run again each time the
+  // form is on the page, and again after a request has used up the token, and the widget it drew before is thrown away with the old form field.
+  const check = loaded.state === "ready" && loaded.info.on ? loaded.info.captcha ?? null : null;
+  const scriptUrl = check?.scriptUrl;
   useEffect(() => {
-    if (!check || document.querySelector(`script[src="${check.scriptUrl}"]`)) return;
+    if (!scriptUrl) return;
+    for (const old of Array.from(document.scripts)) if (old.getAttribute("src") === scriptUrl) old.remove();
     const script = document.createElement("script");
-    script.src = check.scriptUrl; script.async = true; script.defer = true;
+    script.src = scriptUrl; script.async = true; script.defer = true;
     document.head.appendChild(script);
-  }, [check]);
+  }, [scriptUrl, widgetRun]);
 
   // A request is followed until it is final or has failed, so the page says what is true now, never what was true when it was sent.
   useEffect(() => {
@@ -129,6 +134,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, pollMs = 2000 }: Fau
     if (!alive.current) return;
     setSending(false);
     setResult(answer);
+    setWidgetRun((n) => n + 1);
     if (answer.kind === "queued") {
       setSentTo(typed);
       setWatch({ id: answer.ticket, ticket: null, asked: { position: answer.position, amount: answer.amount }, reachable: true, gone: false });
@@ -169,7 +175,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, pollMs = 2000 }: Fau
               />
               <button type="submit" className="btn primary" disabled={disabled}>{sending ? "Sending…" : `Request ${amount}`}</button>
             </div>
-            {info.captcha && <div className={info.captcha.widgetClass} data-sitekey={info.captcha.siteKey} />}
+            {info.captcha && <div key={widgetRun} className={info.captcha.widgetClass} data-sitekey={info.captcha.siteKey} />}
           </form>
         ) : (
           <Alert tone="muted" icon="note" role="status"><b>The faucet is off.</b> It runs only when the explorer is given the faucet's key.</Alert>
@@ -213,9 +219,13 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, pollMs = 2000 }: Fau
       case "sent":
         return (
           <Alert tone="wait" icon="note" role="status" id={id}>
-            <b>{t?.state === "proving" ? "Sent, and being proven." : "Sent, waiting to be proven."}</b>{tx}{" "}
-            <span className="chip chip-waiting"><i className="dot" />{t?.state === "proving" ? "Being proven" : "Waiting"}</span>
-            <br /><span className="small">Not final yet. It is final when the block holding it is one Canton transaction. This page updates by itself.</span>{lost}
+            <b>{t?.state === "dropped" ? "Sent, and the explorer stopped following it." : t?.state === "proving" ? "Sent, and being proven." : "Sent, waiting to be proven."}</b>{tx}{" "}
+            <span className="chip chip-waiting"><i className="dot" />{t?.state === "dropped" ? "Not followed" : t?.state === "proving" ? "Being proven" : "Waiting"}</span>
+            <br /><span className="small">
+              {t?.state === "dropped"
+                ? "The chain may still take it. Open the transaction, or look at the address's balance in a few minutes. Your turn is used until then."
+                : "Not final yet. It is final when the block holding it is one Canton transaction. This page updates by itself."}
+            </span>{lost}
           </Alert>
         );
       default: {

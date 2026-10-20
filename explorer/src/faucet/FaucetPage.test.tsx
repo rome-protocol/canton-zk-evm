@@ -226,6 +226,30 @@ describe("the human check", () => {
     expect(client.request).toHaveBeenCalledExactlyOnceWith(ADDRESS, "token-9");
   });
 
+  it("draws the widget again when the page is left and come back to, and after a request has used the token", async () => {
+    const client = fake({ info: info({ captcha }) });
+    const first = render(<MemoryRouter><FaucetPage client={client} coin={{ symbol: "tROME", decimals: 18 }} pollMs={FAST} /></MemoryRouter>);
+    await screen.findByLabelText("Your address");
+    const scripts = () => Array.from(document.scripts).filter((s) => s.getAttribute("src") === captcha.scriptUrl);
+    const firstScript = scripts()[0];
+    expect(scripts()).toHaveLength(1);
+    const firstWidget = document.querySelector(".human-check");
+    // Leaving the page and coming back runs the script again, into the new form.
+    first.unmount();
+    const user = await open(client);
+    await screen.findByLabelText("Your address");
+    expect(scripts()).toHaveLength(1);
+    expect(scripts()[0]).not.toBe(firstScript);
+    // A request uses up the token: the widget is a new one, and the script runs again to draw it.
+    const before = scripts()[0], widget = document.querySelector(".human-check");
+    expect(widget).not.toBe(firstWidget);
+    await ask(user);
+    await screen.findByRole("status");
+    expect(document.querySelector(".human-check")).not.toBe(widget);
+    expect(scripts()).toHaveLength(1);
+    expect(scripts()[0]).not.toBe(before);
+  });
+
   it("shows the faucet's words when the check is not passed", async () => {
     const user = await open(fake({ info: info({ captcha }), request: { kind: "captcha", message: "Complete the human check first." } }));
     await ask(user);
