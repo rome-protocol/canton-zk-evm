@@ -3,8 +3,8 @@
 #   build.sh stub      the form the tests run against: the sidecar's answers come from a small table
 #   build.sh external  the form a Canton node runs: Zk.Sidecar calls DA.ExternalCall. It needs a Daml toolchain
 #                      that has DA.ExternalCall; give it with SDK_VERSION (and optionally TARGET, default 2.4: the first
-#                      Daml-LF version with the external call, from the Daml 3.6 snapshot line; 3.6 is not released
-#                      yet). network/canton/build-dar.sh does this with the toolchain pinned in PINS.
+#                      Daml-LF version with the external call, from the Daml 3.6 release).
+#                      network/canton/build-dar.sh does this with the toolchain pinned in PINS.
 # Writes dist/canton-zk-evm-<form>.dar. The stub form's package is named canton-zk-evm-stub, so it can never be
 # mistaken for, or loaded in place of, the real one. The build happens in a copy under build/, so the sources stay clean.
 set -euo pipefail

@@ -92,8 +92,9 @@ grep -q 'network/canton/check-package.sh' "$ROOT/network/smoke.sh" || fail "smok
 grep -q 'network/canton/check-package.sh' "$ROOT/tests/canton_network.sh" || fail "the canton job does not check the DAR's package id against the participant's package list"
 grep -q 'CZE_SOURCE_COMMIT' "$ROOT/network/smoke.sh" || fail "smoke.sh does not take the source commit"
 for k in format source_commit dar_sha256 package_id; do grep -q "echo \"$k=" "$ROOT/network/smoke.sh" || fail "smoke.sh does not write $k"; done
-# The Daml-LF target is described as what it is: a snapshot line, not a release.
-grep -q 'Daml 3.6 snapshot line' "$ROOT/daml/build.sh" || fail "daml/build.sh does not say LF 2.4 is from the Daml 3.6 snapshot line"
+# The Daml-LF target is described as what it is: the released Daml 3.6 line.
+grep -q 'Daml 3.6 release' "$ROOT/daml/build.sh" || fail "daml/build.sh does not say LF 2.4 is from the Daml 3.6 release"
+! grep -qi 'snapshot' "$ROOT/daml/build.sh" || fail "daml/build.sh still says snapshot"
 
 # The gateway party (the chain's custody holder): hosted on the operator's participant, the operator's user may act as it, the
 # builder may read as it, and its id goes to the parties file. up.sh gives the chain the gateway contract's address from PINS and

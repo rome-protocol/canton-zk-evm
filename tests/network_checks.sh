@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The small checks the network scripts rely on, run without a GPU, Docker or Canton:
 #   - network/canton/check-damlc.sh refuses a damlc whose registry manifest is not the pinned one (a re-pushed tag)
+#   - network/canton/fetch-jar.sh takes the Canton jar out of the release tarball and refuses a tarball or jar that is not the pinned one
 #   - network/canton/dar-id.sh prints a DAR's SHA-256 and its main package id (read with Python's zipfile, no unzip)
 #   - network/canton/check-package.sh refuses a package id that the participant's Ledger API does not list
 #   - network/check-program-vk.sh refuses a built programVK that is not the recorded one
@@ -31,6 +32,39 @@ grep -q "$good" <<<"$out" || fail "the refusal does not name the pinned digest"
 PATH="$WORK/bin:$PATH" "$ROOT/network/canton/check-damlc.sh" "not-a-sha" >/dev/null 2>&1 && fail "check-damlc.sh accepted a malformed pin"
 # The pin in PINS is the default.
 grep -q 'check-damlc.sh' "$ROOT/network/canton/fetch.sh" || fail "fetch.sh does not run check-damlc.sh"
+
+# --- fetch-jar.sh, against a curl that serves a small tarball laid out like the Canton release
+# shellcheck disable=SC1091
+. "$ROOT/PINS"
+mkdir -p "$WORK/rel/canton-open-source-$CANTON_VERSION/lib" "$WORK/jbin"
+printf 'a pretend jar' > "$WORK/rel/canton-open-source-$CANTON_VERSION/lib/canton-open-source-$CANTON_VERSION.jar"
+tar -czf "$WORK/rel.tar.gz" -C "$WORK/rel" "canton-open-source-$CANTON_VERSION"
+cat > "$WORK/jbin/curl" <<'FAKE'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_CURL_LOG"
+out=
+while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
+cp "$FAKE_TARBALL" "$out"
+FAKE
+chmod +x "$WORK/jbin/curl"
+export FAKE_TARBALL=$WORK/rel.tar.gz FAKE_CURL_LOG=$WORK/jar-curl.log
+tsha=$(sha "$WORK/rel.tar.gz"); jsha=$(sha "$WORK/rel/canton-open-source-$CANTON_VERSION/lib/canton-open-source-$CANTON_VERSION.jar")
+: > "$FAKE_CURL_LOG"
+got=$(PATH="$WORK/jbin:$PATH" "$ROOT/network/canton/fetch-jar.sh" "$WORK/jar1" "$tsha" "$jsha") || fail "fetch-jar.sh refused the pinned tarball and jar"
+[ "$got" = "$WORK/jar1/canton-open-source-$CANTON_VERSION.jar" ] && [ "$(sha "$got")" = "$jsha" ] || fail "fetch-jar.sh did not print the path of the jar it took out ($got)"
+grep -q "$CANTON_TARBALL_URL" "$FAKE_CURL_LOG" || fail "fetch-jar.sh did not download the tarball at CANTON_TARBALL_URL"
+[ "$(find "$WORK/jar1" -type f | wc -l | tr -d ' ')" = 1 ] || fail "fetch-jar.sh left files next to the jar"
+: > "$FAKE_CURL_LOG"
+PATH="$WORK/jbin:$PATH" "$ROOT/network/canton/fetch-jar.sh" "$WORK/jar1" "$tsha" "$jsha" >/dev/null || fail "fetch-jar.sh failed on a jar that is already there"
+[ ! -s "$FAKE_CURL_LOG" ] || fail "fetch-jar.sh downloaded again although the jar was there and matched"
+out=$(PATH="$WORK/jbin:$PATH" "$ROOT/network/canton/fetch-jar.sh" "$WORK/jar2" "$(printf '0%.0s' $(seq 64))" "$jsha" 2>&1) && fail "fetch-jar.sh accepted a changed tarball"
+grep -q 'CANTON_TARBALL_SHA256' <<<"$out" || fail "fetch-jar.sh: no clear error for a changed tarball ($out)"
+[ ! -e "$WORK/jar2/canton-open-source-$CANTON_VERSION.jar" ] || fail "fetch-jar.sh kept a jar from a changed tarball"
+out=$(PATH="$WORK/jbin:$PATH" "$ROOT/network/canton/fetch-jar.sh" "$WORK/jar3" "$tsha" "$(printf '1%.0s' $(seq 64))" 2>&1) && fail "fetch-jar.sh accepted a changed jar"
+grep -q 'CANTON_JAR_SHA256' <<<"$out" || fail "fetch-jar.sh: no clear error for a changed jar ($out)"
+[ ! -e "$WORK/jar3/canton-open-source-$CANTON_VERSION.jar" ] || fail "fetch-jar.sh kept a changed jar"
+PATH="$WORK/jbin:$PATH" "$ROOT/network/canton/fetch-jar.sh" "$WORK/jar4" "not-a-sha" "$jsha" >/dev/null 2>&1 && fail "fetch-jar.sh accepted a malformed pin"
+grep -q 'fetch-jar.sh' "$ROOT/network/canton/fetch.sh" || fail "fetch.sh does not run fetch-jar.sh"
 
 # --- dar-id.sh, on a DAR with a wrapped manifest as damlc writes it
 ID=$(printf '6769d912%.0s' $(seq 8))
