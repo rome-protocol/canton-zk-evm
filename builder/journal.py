@@ -1,7 +1,7 @@
 """The producer's journal and the block-cutting setting (README.md, "The journal" and "The block-cutting setting").
 
 Nothing here talks to reth, Canton or the prover: `builder.py` calls it at the points where a block's steps happen."""
-import http.client, json, os, time, urllib.error, urllib.request, uuid
+import json, os, time, urllib.error, urllib.request, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -88,33 +88,72 @@ class Attempt:
         if self.closed:
             return
         stage = self.stage
-        self.cut(None)   # the failure came before Canton's head was read: the number is not known
+        if not self.cut_written:   # the failure came before Canton's head was read: there is no block number, so no block attempt
+            self.closed = True
+            if self.journal is not None:
+                self.journal.event("attempt_failed", attempt=self.seq, stage=stage, reason=reason[:600], **self.fields)
+            return
         self.event("answered", outcome="failed", reason=reason[:600], stage=stage)
 
 
-def parse_traffic(state: object) -> int | None:
-    """The bytes of traffic a participant has used so far, from its traffic state (`extraTrafficConsumed`, as a number or as the digits of an int64)."""
-    if isinstance(state, dict) and isinstance(state.get("trafficState"), dict):
-        state = state["trafficState"]
-    value = state.get("extraTrafficConsumed") if isinstance(state, dict) else None
+TRAFFIC_TIMEOUT = 1.0   # seconds a traffic read waits for the participant to answer
+TRAFFIC_PAUSE = 60.0    # after a read timed out, the participant is not asked again for this long, so a hung one costs a block at most once a minute
+_paused_until = 0.0
+
+
+def reset_traffic_pause() -> None:
+    global _paused_until
+    _paused_until = 0.0
+
+
+def _count(value: object) -> int | None:
+    """A non-negative count, as a number or as the digits of an int64."""
     if isinstance(value, str) and value.isdigit():
         value = int(value)
     return value if type(value) is int and value >= 0 else None
 
 
-def read_traffic(url: str, headers: dict) -> int | None:
-    """The builder's participant's traffic used so far, or None where it is not configured or the participant does not report it. This
-    never fails: a participant that does not answer must not hold up a block."""
-    if not url:
+def parse_traffic(state: object) -> dict | None:
+    """What a participant's traffic state says (`extraTrafficConsumed` and `baseTrafficRemainder`, each a number or the digits of an int64, and
+    its `timestamp`), as {"extra_consumed", "base_remainder", "timestamp"}. None where `extraTrafficConsumed` is not there. `base_remainder`
+    is None where the participant does not report it."""
+    if isinstance(state, dict) and isinstance(state.get("trafficState"), dict):
+        state = state["trafficState"]
+    if not isinstance(state, dict):
+        return None
+    extra = _count(state.get("extraTrafficConsumed"))
+    if extra is None:
+        return None
+    stamp = state.get("timestamp")
+    return {"extra_consumed": extra, "base_remainder": _count(state.get("baseTrafficRemainder")), "timestamp": stamp if isinstance(stamp, str) else None}
+
+
+def traffic_used(before: dict | None, after: dict | None) -> int | None:
+    """The bytes used between two traffic states: the extra traffic consumed, plus what the free base allowance covered first (its remainder
+    that dropped). A refill of the allowance in between makes this a little low. None where either state, or either base remainder, is missing,
+    or the consumed counter went down: a number that looks measured and is not is worse than none."""
+    if not before or not after or None in (before["base_remainder"], after["base_remainder"]) or after["extra_consumed"] < before["extra_consumed"]:
+        return None
+    return after["extra_consumed"] - before["extra_consumed"] + max(0, before["base_remainder"] - after["base_remainder"])
+
+
+def read_traffic(url: str, headers, timeout: float = TRAFFIC_TIMEOUT) -> dict | None:
+    """The builder's participant's traffic state (see `parse_traffic`), or None where it is not configured or the participant does not report
+    it. `headers` is a function that returns the request headers. This never raises: a participant that does not answer, or a token that cannot
+    be read, must not hold up a block or turn a commit into a failure. A participant that times out is left alone for TRAFFIC_PAUSE."""
+    global _paused_until
+    if not url or time.monotonic() < _paused_until:
         return None
     try:
-        request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=5) as r:
+        request = urllib.request.Request(url, headers=headers())
+        with urllib.request.urlopen(request, timeout=timeout) as r:
             return parse_traffic(json.load(r))
     except urllib.error.HTTPError as e:   # an answer that is an error: the participant does not report it
         e.close()
         return None
-    except (OSError, ValueError, http.client.HTTPException):
+    except Exception as e:   # no answer, nonsense, or headers() that failed (a token file that cannot be read)
+        if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
+            _paused_until = time.monotonic() + TRAFFIC_PAUSE
         return None
 
 

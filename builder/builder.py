@@ -20,7 +20,7 @@ from pathlib import Path
 
 from websockets.sync.client import connect
 
-from journal import Attempt, Journal, STRATEGIES, check_settings, iso, parse_traffic, read_traffic as journal_read_traffic
+from journal import Attempt, Journal, STRATEGIES, check_settings, iso, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -149,9 +149,10 @@ def saved_path(cfg: Config) -> Path:
     return Path(cfg.work_dir) / SAVED_FILE
 
 
-def save_kept(cfg: Config, pairs: list) -> None:
+def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None) -> None:
     """Writes the (hash, raw transaction) pairs of the block about to be made, atomically and to disk, before reth takes them out of its
-    pool: reth does not give an unwound block's transactions back, so after a crash this file is all that is left of them."""
+    pool: reth does not give an unwound block's transactions back, so after a crash this file is all that is left of them. With a journal,
+    each entry also names the run and attempt, so that the next run can close that attempt's record (`Producer.restore`)."""
     if not pairs:
         return
     path = saved_path(cfg)
@@ -159,7 +160,8 @@ def save_kept(cfg: Config, pairs: list) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp, "w") as f:
-            f.write(json.dumps([{"hash": h, "raw": raw} for h, raw in pairs]))
+            ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt is not None and attempt.journal is not None else {}
+            f.write(json.dumps([{"hash": h, "raw": raw, **ref} for h, raw in pairs]))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
@@ -614,7 +616,7 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
             raise
 
 
-def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, previous: list | None = None) -> tuple:
+def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, previous: list | None = None, attempt: "Attempt | None" = None) -> tuple:
     """Builds a block on Canton's head and makes it reth's head. The transactions come from reth's pending pool the first time, and
     afterwards from the last build's list (`previous`) less the excluded ones: reth no longer has them in its pool once a block that
     held them was its head. (payload, the (transaction, raw bytes) pairs in the block)."""
@@ -630,7 +632,7 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         pairs = without(previous, exclude)
     raws = [raw for _, raw in pairs]
     kept = [(t["hash"], raw) for t, raw in pairs]
-    save_kept(cfg, kept)   # before reth drops them from its pool
+    save_kept(cfg, kept, attempt)   # before reth drops them from its pool
     reth.imported = kept
     attributes = {"timestamp": hex(max(int(time.time()), int(parent["timestamp"], 16) + 1)), "prevRandao": ZERO32,
                   "suggestedFeeRecipient": cfg.fee_recipient, "withdrawals": [], "parentBeaconBlockRoot": ZERO32}
@@ -658,7 +660,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
         # every leg of the block has its Canton side, and a block with no transaction left out is the one that goes on.
-        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, pairs)
+        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, pairs, attempt)
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
         legs, missing = match_legs(Canton(Ledger(cfg), chain, utcnow()), events) if events else ([], [])
@@ -745,10 +747,10 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
         reason = f"no usable reply from Canton: {e}"
     report["advanceSeconds"] = round(time.monotonic() - advancing, 3)
     traffic_after = read_traffic(cfg) if watch else None
-    traffic = traffic_after - traffic_before if None not in (traffic_before, traffic_after) and traffic_after >= traffic_before else None
+    traffic = traffic_used(traffic_before, traffic_after)
 
     def answered(outcome: str, **more) -> None:
-        attempt.event("answered", outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, **more)
+        attempt.event("answered", outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, traffic_before=traffic_before, traffic_after=traffic_after, **more)
 
     if reason is not None:   # a lost reply can hide a commit, so Canton's head decides
         try:
@@ -861,7 +863,9 @@ def recover_saved(cfg: Config) -> dict | None:
         reth.forkchoice(head, head, head)
         lost = resend(reth, pairs)
     clear_saved(cfg)
-    return {"recovered": len(pairs), "lostTransactions": lost}
+    found = {"recovered": len(pairs), "lostTransactions": lost}
+    ref = next(({"run": e["run"], "attempt": e["attempt"]} for e in json.loads(text) if isinstance(e.get("run"), str) and type(e.get("attempt")) is int), None)
+    return {**found, "attempt": ref} if ref else found
 
 
 @contextlib.contextmanager
@@ -922,9 +926,9 @@ def failure_report(e: Exception) -> dict:
     return report
 
 
-def read_traffic(cfg: Config) -> int | None:
-    """The builder's participant's traffic used so far, or None (see journal.read_traffic)."""
-    return journal_read_traffic(cfg.traffic_url, Ledger(cfg).auth if cfg.traffic_url else {})
+def read_traffic(cfg: Config) -> dict | None:
+    """The builder's participant's traffic state, or None (see journal.read_traffic). The headers are looked up inside its guard."""
+    return journal_read_traffic(cfg.traffic_url, lambda: Ledger(cfg).auth)
 
 
 def check_strategy(*args, **kw) -> None:
@@ -1084,12 +1088,14 @@ class Producer:
                     self.proving_failed(e, now)
             self.fail(failure_report(e))
             return
-        self.note_lost(result.get("lostTransactions"), now)
+        failing = not result.get("skipped") and result["committed"] is False and not result.get("rejected")
+        if not failing:
+            self.note_lost(result.get("lostTransactions"), now)   # `fail` notes its own
         if "proveSeconds" in result:
             self.proof_passed([h.lower() for h in result.get("transactions", result.get("keptTransactions", []))], now)
         if result.get("skipped"):
             self.skipped(result, now)
-        elif result["committed"] is False and not result.get("rejected"):
+        elif failing:
             self.fail(result)   # Canton did not take it, but did not refuse it either: the service failed, the block may be fine
         else:
             self.record(result, pairs)
@@ -1138,6 +1144,9 @@ class Producer:
         reached: the file stays and the loop backs off."""
         found = self.recover(self.cfg)
         if found:
+            ref = found.pop("attempt", None)   # the attempt of an earlier run that never got its last line: this run closes it
+            if ref:
+                self.journal.event("resolved", attempt=ref["attempt"], attempt_run=ref["run"], outcome="restarted")
             self.emit(found)
             self.note_lost(found["lostTransactions"], self.clock())
             self.held = None

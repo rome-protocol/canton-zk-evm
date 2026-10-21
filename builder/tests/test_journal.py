@@ -1,6 +1,6 @@
 """The producer's journal and the block-cutting setting (README.md, "The journal" and "The block-cutting setting"), against the same
 fakes as test_producer.py. The tests drive `Producer.step()` by hand on a fake clock, then read the journal's lines."""
-import contextlib, io, json, os, re, sys, tempfile, threading, unittest
+import contextlib, io, json, os, re, socket, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -8,6 +8,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
+import journal as jr
 import test_builder as tb
 import test_producer as tp
 from fakes import HEAD_HASH, HEAD_NUMBER, tx
@@ -114,12 +115,36 @@ class EveryOutcome(Lines):
         self.assertEqual(self.one(s, "proof_ended")["outcome"], "wrong_block")
         self.assertNotIn("submitted", self.events(s))
 
-    def test_a_failure_before_canton_is_read_has_a_cut_with_no_number(self):
+    def test_a_failure_before_canton_is_read_is_not_a_block_attempt(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, chains=0)   # no ZkChain contract to build on
         self.producer(s).step()
-        self.assertIsNone(self.one(s, "cut")["number"])
-        answered = self.one(s, "answered")
-        self.assertEqual((answered["outcome"], answered["stage"]), ("failed", "cut"))
+        self.assertEqual(self.journal(s, "cut", "answered"), [])   # no block number is known: nothing for the block table
+        failed = self.one(s, "attempt_failed")
+        self.assertEqual((failed["attempt"], failed["stage"], failed["cut_reason"], failed["pool_waiting"]), (1, "cut", "pool", 1))
+        self.assertIn("reason", failed)
+
+    def test_a_block_that_was_not_taken_and_could_not_be_given_back_has_one_lost_line(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]}, fail_but_commit=True)
+        s.ledger.commit = False
+        s.reth.refuse_resend = True
+        self.producer(s).step()
+        (lost,) = self.journal(s, "lost")
+        self.assertEqual([x["transaction"] for x in lost["transactions"]], [t["hash"]])
+
+    def test_an_outcome_that_is_unknown_at_a_restart_is_resolved_by_the_next_run(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        first = self.producer(s)
+        first.step()
+        self.assertEqual(self.one(s, "answered")["outcome"], "unknown")
+        s.ledger.head_fails_after_submit = False
+        second = self.producer(s)   # a new process: the old one's unresolved outcome is gone from memory
+        second.step()
+        self.assertNotEqual(first.journal.run_id, second.journal.run_id)
+        (line,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
+        self.assertEqual((line["outcome"], line["attempt_run"], line["attempt"]), ("restarted", first.journal.run_id, 1))
 
     def test_a_pool_with_nothing_that_can_go_in_is_a_skipped_attempt(self):
         t = tx(BOB, 0)
@@ -192,8 +217,70 @@ class Traffic(Lines):
     def test_the_traffic_is_what_the_participant_used_across_advance(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         s.cfg.traffic_url = s.ledger.url + "/traffic"
-        s.ledger.traffic = [{"extraTrafficConsumed": 1000}, {"trafficState": {"extraTrafficConsumed": "13500"}}]   # a number, and an int64 as digits
-        self.assertEqual(self.run_one(s)["traffic_bytes"], 12500)
+        s.ledger.traffic = [{"extraTrafficConsumed": 1000, "baseTrafficRemainder": 500, "timestamp": "2026-10-21T10:00:00Z"},
+                            {"trafficState": {"extraTrafficConsumed": "13500", "baseTrafficRemainder": "100", "timestamp": "2026-10-21T10:00:07Z"}}]   # a number, and int64s as digits
+        answered = self.run_one(s)
+        self.assertEqual(answered["traffic_bytes"], 12500 + 400)   # the extra traffic, and what the free allowance covered first
+        self.assertEqual(answered["traffic_before"], {"extra_consumed": 1000, "base_remainder": 500, "timestamp": "2026-10-21T10:00:00Z"})
+        self.assertEqual(answered["traffic_after"], {"extra_consumed": 13500, "base_remainder": 100, "timestamp": "2026-10-21T10:00:07Z"})
+
+    def test_a_block_that_the_free_allowance_covered_has_its_bytes(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.cfg.traffic_url = s.ledger.url + "/traffic"
+        s.ledger.traffic = [{"extraTrafficConsumed": 7, "baseTrafficRemainder": 5000}, {"extraTrafficConsumed": 7, "baseTrafficRemainder": 2900}]   # only the allowance dropped
+        self.assertEqual(self.run_one(s)["traffic_bytes"], 2100)
+
+    def test_a_refill_of_the_allowance_does_not_give_negative_traffic(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.cfg.traffic_url = s.ledger.url + "/traffic"
+        s.ledger.traffic = [{"extraTrafficConsumed": 7, "baseTrafficRemainder": 100}, {"extraTrafficConsumed": 7, "baseTrafficRemainder": 4000}]
+        self.assertEqual(self.run_one(s)["traffic_bytes"], 0)   # the raw states show the refill
+
+    def test_the_traffic_is_null_where_the_allowance_is_not_reported(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.cfg.traffic_url = s.ledger.url + "/traffic"
+        s.ledger.traffic = [{"extraTrafficConsumed": 1000}, {"extraTrafficConsumed": 2000, "baseTrafficRemainder": 10}]
+        answered = self.run_one(s)
+        self.assertIsNone(answered["traffic_bytes"])   # 0 would look measured
+        self.assertEqual(answered["traffic_before"], {"extra_consumed": 1000, "base_remainder": None, "timestamp": None})
+
+    def test_a_traffic_read_that_raises_after_the_commit_does_not_make_it_a_failure(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.cfg.traffic_url = s.ledger.url + "/traffic"
+        s.ledger.traffic = [{"extraTrafficConsumed": 1, "baseTrafficRemainder": 5}, {"extraTrafficConsumed": 2, "baseTrafficRemainder": 4}]
+        state, real_auth, real_read = {"reading": False, "reads": 0}, b.Ledger.auth, b.journal_read_traffic
+        def auth(this):
+            if state["reading"] and state["reads"] == 2:
+                raise PermissionError("the token file is being rotated")
+            return real_auth.fget(this)
+        def read(url, headers, *a, **k):
+            state["reading"], state["reads"] = True, state["reads"] + 1
+            try:
+                return real_read(url, headers, *a, **k)
+            finally:
+                state["reading"] = False
+        with mock.patch.object(b.Ledger, "auth", property(auth)), mock.patch.object(b, "journal_read_traffic", read):
+            answered = self.run_one(s)
+        self.assertEqual((answered["outcome"], answered["traffic_bytes"]), ("committed", None))
+        self.assertTrue(self.reports[-1]["committed"])
+
+    def test_a_participant_that_never_answers_is_not_waited_for_again_for_a_while(self):
+        j = jr
+        stall = socket.socket()
+        stall.bind(("127.0.0.1", 0))
+        stall.listen(5)
+        self.addCleanup(stall.close)
+        url = f"http://127.0.0.1:{stall.getsockname()[1]}/traffic"
+        j.reset_traffic_pause()
+        self.addCleanup(j.reset_traffic_pause)
+        t0 = time.monotonic()
+        self.assertIsNone(j.read_traffic(url, lambda: {}, timeout=0.2))
+        self.assertLess(time.monotonic() - t0, 2)
+        t1 = time.monotonic()
+        self.assertIsNone(j.read_traffic(url, lambda: {}, timeout=0.2))
+        self.assertLess(time.monotonic() - t1, 0.1)   # skipped, not tried
+        self.assertGreater(j.TRAFFIC_PAUSE, j.TRAFFIC_TIMEOUT)
+        self.assertLessEqual(j.TRAFFIC_TIMEOUT, 1.0)
 
     def test_the_traffic_is_null_where_the_participant_does_not_report_it(self):
         for name, traffic in (("not asked for", None), ("no answer", []), ("one answer only", [{"extraTrafficConsumed": 5}]),
@@ -220,6 +307,7 @@ class Traffic(Lines):
         s.cfg.traffic_url = "http://127.0.0.1:9/nowhere"
         self.assertIsNone(b.read_traffic(s.cfg))
         self.assertEqual([b.parse_traffic(x) for x in (None, 7, {"extraTrafficConsumed": True}, {"extraTrafficConsumed": -1}, {"extraTrafficConsumed": "12x"})], [None] * 5)
+        self.assertEqual(b.parse_traffic({"extraTrafficConsumed": 3, "baseTrafficRemainder": "x"})["base_remainder"], None)
 
 
 class TheFile(Lines):
