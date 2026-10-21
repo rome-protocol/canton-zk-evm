@@ -109,6 +109,18 @@ has "$urlrun" "-e EXPLORER_DATABASE_URL" "the database's URL is named"
 lacks "$urlrun" "$dbsec" "the URL's password is never on the command"
 lacks "$(dry start)" "EXPLORER_DB" "no database settings, none passed on"
 
+# The Ledger API token: the file is mounted read-only and named, its value is never on the command, and with none set nothing is passed.
+printf '%s\n' "tok.$dbsec" > "$WORK/ledger.token"; chmod 600 "$WORK/ledger.token"
+tokrun=$(LEDGER_TOKEN_FILE="$WORK/ledger.token" dry start)
+has "$tokrun" "-v $WORK/ledger.token:/run/explorer/ledger.token:ro" "the Ledger API token file is mounted read-only"
+has "$tokrun" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the container reads the token from the mount"
+lacks "$tokrun" "tok.$dbsec" "the token's value is never on the command"
+readerrun=$(CZE_TOKEN_FILE_READER="$WORK/ledger.token" dry start)
+has "$readerrun" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the reader user's token file of an existing participant is used"
+lacks "$(dry start)" "LEDGER_TOKEN_FILE" "no token file, none passed on"
+if out=$(LEDGER_TOKEN_FILE="$WORK/nothing.token" dry start 2>&1); then fail "start ran with a token file that does not exist"; fi
+has "$out" "LEDGER_TOKEN_FILE" "the refusal names the token setting"
+
 # No reader party anywhere: it stops, and says which setting.
 rm "$S/canton/parties.env"
 if out=$(dry start 2>&1); then fail "start ran without a reader party"; fi
