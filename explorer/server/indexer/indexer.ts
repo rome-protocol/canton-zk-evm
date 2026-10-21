@@ -14,6 +14,8 @@ import { RethError } from "../reth.ts";
 import { IndexerStop, Paused, RethBehind } from "./errors.ts";
 import { seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth, type HealthRow } from "./health.ts";
+import { createJournal } from "./journal.ts";
+import { createLifecycleChecks } from "./lifecycle.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
@@ -40,6 +42,13 @@ export interface IndexerOptions {
   pollMs?: number;
   /** How often `start` runs the checks that are not tied to a block (C4, C5, the derive lag), in milliseconds. Default 2000. */
   checkMs?: number;
+  /**
+   * The producer's journal folder and status.json. `undefined` leaves the lifecycle out altogether (a test of something else); `null` says there is
+   * none, and the health says so. `journalMs` is how often the journal is read (default 1000).
+   */
+  journalDir?: string | null;
+  producerStatusFile?: string | null;
+  journalMs?: number;
   /** After this long without reth having a block the record names, the health says so. */
   rethBehindMs?: number;
   /** After this many reads in a row that fail with a reth error (not just a block reth lacks), `reth_reads` says degraded. Default 3. */
@@ -100,6 +109,19 @@ export function createIndexer(o: IndexerOptions) {
   let behindSince: number | null = null;
   /** The highest block number that has a partition in every partitioned table. */
   let partitionsThrough = -1;
+  /** The producer's journal and the checks that need it. Absent when the options leave the lifecycle out. */
+  const lifecycleOn = o.journalDir !== undefined;
+  const journal = createJournal({ pool: o.pool, folder: o.journalDir ?? null, now, log });
+  const producer = createLifecycleChecks({ pool: o.pool, statusFile: o.producerStatusFile ?? null, now });
+  let journalAvailable = false;
+
+  /** Reads what is new in the producer's journal into the lifecycle tables (a no-op when the lifecycle is left out). */
+  async function loadJournal() {
+    if (!lifecycleOn) return null;
+    const r = await journal.load();
+    journalAvailable = r.available;
+    return r;
+  }
 
   /** Takes the lock, and checks that this database is the one these pins describe (the pins are kept in `meta` and checked at every start). */
   async function open(): Promise<void> {
@@ -337,6 +359,7 @@ export function createIndexer(o: IndexerOptions) {
     ]);
     // C10 is written only by blocks that have legs; its row is made ok when none was seen, and its look is refreshed (the status is not) so that a quiet chain does not read as a stale check.
     await o.pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'ok', null, now(), now()) on conflict (check_id) do update set checked_at = now()");
+    if (lifecycleOn) await producer.run(journalAvailable);
   }
 
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
@@ -439,7 +462,18 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < checkMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks()]);
+    const journalMs = o.journalMs ?? 1000;
+    const journalLoop = async () => {
+      while (running && lifecycleOn) {
+        try {
+          await loadJournal();
+        } catch (e) {
+          log(`indexer (journal): ${(e as Error).message}`);
+        }
+        for (let waited = 0; running && waited < journalMs; waited += 50) await sleep(50);
+      }
+    };
+    const finished = Promise.all([...loops.map((l) => l()), checks(), journalLoop()]);
     return async () => { stopRequested = true; running = false; await finished; };
   }
 
@@ -480,7 +514,7 @@ export function createIndexer(o: IndexerOptions) {
     return written;
   }
 
-  return { open, close, runOnce, deriveOnce, checkOnce, start, rebuild, stopped: () => stopped };
+  return { open, close, runOnce, deriveOnce, checkOnce, loadJournal, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;

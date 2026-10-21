@@ -71,6 +71,7 @@ table block_attempts
   column resolved_at timestamp with time zone
   column resolved_outcome text
   column final_seen_at timestamp with time zone
+  column traffic_bytes integer
   constraint block_attempts_pkey PRIMARY KEY (attempt_id)
   constraint block_attempts_run_id_attempt_seq_key UNIQUE (run_id, attempt_seq)
   constraint block_attempts_run_id_fkey FOREIGN KEY (run_id) REFERENCES producer_runs(run_id)

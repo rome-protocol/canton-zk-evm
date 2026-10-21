@@ -82,7 +82,7 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
   }
   const indexer = createIndexer({
     pool, reads, ledger: createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty),
-    pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
+    pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, journalDir: settings.journalDir, producerStatusFile: settings.producerStatusFile, journalMs: settings.journalMs, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
     log,
   });
   if (!settings.genesisFile) throw new Error("GENESIS_FILE must name the chain's genesis.json: its contracts are seeded at first start");
