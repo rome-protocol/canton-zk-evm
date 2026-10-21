@@ -348,6 +348,7 @@ describe("a ticket", () => {
         state.mined = 3; state.finalized = 4;
         await second.process();
         expect(second.ticket(t)).toMatchObject({ status: "final", block: 3 });
+        await second.flush(); // its write of the final ticket must be done before the folder goes
       } finally { rmSync(dir, { recursive: true, force: true }); }
     });
 
