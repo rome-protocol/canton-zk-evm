@@ -20,6 +20,15 @@ import { createIndexer } from "./indexer.ts";
 import { createFinalReads } from "./reads.ts";
 import { loadIndexerSettings } from "./settings.ts";
 
+/** The login name, or the user id when the account has no entry (a container that runs as a bare uid). */
+function whoIsClearing(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return process.env.USER ?? process.env.LOGNAME ?? `uid ${process.getuid?.() ?? "unknown"}`;
+  }
+}
+
 async function admin(args: string[]): Promise<number> {
   if (args[0] === "reset" && !args.includes("--yes")) throw new Error("reset wipes every table of the explorer for a new chain; run it again with --yes to do it");
   if (args[0] === "reader-moved" && !args[1]) throw new Error("usage: reader-moved <participant id>");
@@ -31,7 +40,7 @@ async function admin(args: string[]): Promise<number> {
       const r = await resetChain(pool);
       console.log(`reset: emptied ${r.tables} tables; the next start writes the pins again`);
     } else if (args[0] === "clear-check") {
-      const by = userInfo().username;
+      const by = whoIsClearing();
       await clearCheck(pool, args[1] as string, by);
       console.log(`clear-check: ${args[1]} is ok again, cleared by ${by}`);
     } else {
