@@ -1,8 +1,7 @@
-import { mkdirSync, readFileSync } from "node:fs";
-import { rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
 import type { ChainIndex } from "./chain-index.ts";
+import { alwaysLeader, type Leader } from "./leader.ts";
 import { RethError, type Reth } from "./reth.ts";
+import { fileTrackerStore, type TrackerStore } from "./tracker-store.ts";
 
 /**
  * Where an accepted transaction is. Pending: in reth's pool, in no block. Proving: in a block that Canton has not committed.
@@ -25,7 +24,7 @@ export interface Tracked {
   attempts: number;
 }
 
-interface Entry extends Tracked {
+export interface Entry extends Tracked {
   hash: string;
   /** The signed transaction. Kept until the transaction is settled: final, replaced or dropped. */
   raw: string | null;
@@ -36,13 +35,19 @@ interface Entry extends Tracked {
   addedAt: number;
   lastSendAt: number;
   settledAt: number | null;
+  /** Which door the transaction came in by: the public RPC, or the faucet. Written to tx_lifecycle. */
+  via?: "rpc" | "faucet";
 }
 
 export interface TrackerOptions {
   reth: Pick<Reth, "transaction" | "block" | "rpc" | "sendRaw">;
   index: Pick<ChainIndex, "byNumber">;
-  /** Where to keep the list across restarts, or null for memory only. */
+  /** Where to keep the list across restarts: a file, or null for memory only. */
   file?: string | null;
+  /** Or a store of its own, such as the database. It wins over `file`. */
+  store?: TrackerStore | null;
+  /** Says whether this instance runs the loop. With one instance, always. With several, the one that holds the lock. */
+  leader?: Leader;
   /** The most entries held. Settled ones go first, oldest first. An open one is never forgotten silently: it is marked dropped, with the reason. */
   max?: number;
   /** The most characters of signed transactions held for open entries, in all. */
@@ -67,7 +72,7 @@ export interface Tracker {
   /** Says why a transaction cannot be followed right now, or null when it can. Ask before the transaction goes to reth. */
   admit(raw: string, hash: string, from: string): string | null;
   /** Remembers a transaction that reth accepted, with its signed bytes, so it can be sent again if it goes missing. */
-  track(raw: string, hash: string, from: string, nonce: number): void;
+  track(raw: string, hash: string, from: string, nonce: number, via?: "rpc" | "faucet"): void;
   state(hash: string): Tracked | undefined;
   /** One look at every transaction that is not settled. */
   poll(): Promise<void>;
@@ -75,6 +80,10 @@ export interface Tracker {
   stop(): void;
   /** Resolves when everything changed so far is on disk. */
   flush(): Promise<void>;
+  /** Resolves when the list has been read from where it is kept. A store that is not a file takes a moment. */
+  ready(): Promise<void>;
+  /** Stops, writes what changed, and gives up the lead, so another instance takes the loop at once. */
+  close(): Promise<void>;
   size(): number;
 }
 
@@ -90,7 +99,7 @@ function refusal(e: RethError): string {
 }
 
 export function createTracker(o: TrackerOptions): Tracker {
-  const { reth, index, file = null, max = 10000, maxBytes = 16 * 1024 * 1024, maxPerSender = 64, saveMs = 1000, retryMs = 5000, maxRefusals = 5, maxAttempts = 10, pollMs = 2000, maxPendingMs = 60 * 60 * 1000, now = Date.now } = o;
+  const { reth, index, file = null, leader = alwaysLeader, max = 10000, maxBytes = 16 * 1024 * 1024, maxPerSender = 64, saveMs = 1000, retryMs = 5000, maxRefusals = 5, maxAttempts = 10, pollMs = 2000, maxPendingMs = 60 * 60 * 1000, now = Date.now } = o;
   // Oldest first: a Map keeps the order its keys went in.
   const entries = new Map<string, Entry>();
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -98,23 +107,18 @@ export function createTracker(o: TrackerOptions): Tracker {
   let writing: Promise<void> = Promise.resolve();
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let dirty = false;
+  const store: TrackerStore | null = o.store ?? (file ? fileTrackerStore(file) : null);
+  let loaded: Promise<void> = Promise.resolve();
 
   function load(): void {
-    if (!file) return;
-    let text: string;
-    try {
-      text = readFileSync(file, "utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") console.error(`tracker: cannot read ${file}: ${(e as Error).message}`);
-      return;
-    }
-    try {
-      const saved = JSON.parse(text) as { entries?: Entry[] };
-      for (const e of saved.entries ?? []) if (typeof e.hash === "string" && typeof e.from === "string") entries.set(e.hash, e);
+    if (!store) return;
+    const adopt = (list: Entry[]): void => {
+      for (const e of list) entries.set(e.hash, e);
       makeRoom();
-    } catch {
-      console.error(`tracker: ${file} is not a list the tracker wrote, so it starts empty`);
-    }
+    };
+    const got = store.load();
+    if (Array.isArray(got)) adopt(got);
+    else loaded = got.then(adopt, (e: Error) => { console.error(`tracker: cannot read its list: ${e.message}`); });
   }
 
   /** The signed bytes held for open entries, in characters. */
@@ -160,31 +164,17 @@ export function createTracker(o: TrackerOptions): Tracker {
     return null;
   }
 
-  /** Writes the list to a temporary file and renames it over the real one, so a crash never leaves half a file. */
+  /** Hands the list to the store. Writes that follow one another are taken in turn. */
   function write(): void {
-    if (!file || !dirty) return;
+    if (!store || !dirty) return;
     dirty = false;
-    let body: string;
-    try {
-      body = JSON.stringify({ version: 1, entries: [...entries.values()] });
-    } catch (e) {
-      console.error(`tracker: cannot write ${file}: ${(e as Error).message}`);
-      return;
-    }
-    writing = writing.then(async () => {
-      try {
-        mkdirSync(dirname(file), { recursive: true });
-        await writeFile(`${file}.tmp`, body, { mode: 0o600 });
-        await rename(`${file}.tmp`, file);
-      } catch (e) {
-        console.error(`tracker: cannot write ${file}: ${(e as Error).message}`);
-      }
-    });
+    const list = [...entries.values()];
+    writing = writing.then(() => store.save(list));
   }
 
   /** A change is written after a short wait, and a burst of changes is one write. */
   function save(): void {
-    if (!file) return;
+    if (!store) return;
     dirty = true;
     if (saveTimer) return;
     saveTimer = setTimeout(() => { saveTimer = undefined; write(); }, saveMs);
@@ -267,7 +257,29 @@ export function createTracker(o: TrackerOptions): Tracker {
 
   const sig = (e: Entry) => `${e.state}|${e.block}|${e.attempts}|${e.reason}|${e.updateId}`;
 
+  let purged = 0;
+
+  /** What other instances wrote. A follower takes all of it. The leader is the only one that changes what it follows, so it takes only what it did not know. */
+  async function adopt(leading: boolean): Promise<void> {
+    if (!store?.changes) return;
+    write();
+    await writing;
+    try {
+      for (const e of await store.changes()) if (!leading || !entries.has(e.hash)) entries.set(e.hash, e);
+    } catch (e) {
+      console.error(`tracker: cannot read the database: ${(e as Error).message}`);
+    }
+  }
+
   async function run(): Promise<void> {
+    await loaded;
+    const leading = await leader.isLeader();
+    await adopt(leading);
+    if (!leading) return;
+    if (store?.purge && now() - purged >= 3600_000) {
+      purged = now();
+      await store.purge(now()).catch((e: Error) => console.error(`tracker: cannot clean the database: ${e.message}`));
+    }
     let changed = false;
     for (const e of entries.values()) if (fillUpdate(e)) changed = true;
     const open = [...entries.values()].filter((e) => !SETTLED.has(e.state));
@@ -291,12 +303,12 @@ export function createTracker(o: TrackerOptions): Tracker {
   load();
 
   return {
-    track(raw, hash, from, nonce) {
+    track(raw, hash, from, nonce, via) {
       raw = raw.toLowerCase(); hash = hash.toLowerCase(); from = from.toLowerCase();
       const known = entries.get(hash);
       if (known && !SETTLED.has(known.state)) return;
       entries.delete(hash); // a transaction sent again goes to the newest end
-      entries.set(hash, { hash, raw, from, nonce, state: "pending", reason: null, block: null, blockHash: null, updateId: null, attempts: 1, refused: 0, addedAt: now(), lastSendAt: now(), settledAt: null });
+      entries.set(hash, { hash, raw, from, nonce, state: "pending", reason: null, block: null, blockHash: null, updateId: null, attempts: 1, refused: 0, addedAt: now(), lastSendAt: now(), settledAt: null, via });
       if (entries.size > max || openBytes() > maxBytes) makeRoom();
       save();
     },
@@ -320,6 +332,17 @@ export function createTracker(o: TrackerOptions): Tracker {
       saveTimer = undefined;
       write();
       return writing;
+    },
+    ready: () => loaded,
+    async close() {
+      if (timer) clearInterval(timer);
+      timer = undefined;
+      await polling?.catch(() => undefined);
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = undefined;
+      write();
+      await writing;
+      await leader.release();
     },
     size: () => entries.size,
   };

@@ -262,12 +262,17 @@ table faucet_requests
   column sent_at timestamp with time zone
   column final_at timestamp with time zone
   column final_block bigint
+  column tries smallint not null default 0
+  column sent_nonce bigint
+  column watching boolean not null default false
+  column updated_at timestamp with time zone not null default now()
   constraint faucet_requests_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES faucet_batches(batch_id)
   constraint faucet_requests_pkey PRIMARY KEY (ticket)
   CREATE INDEX faucet_requests_address_requested_at_idx ON public.faucet_requests USING btree (address, requested_at DESC)
   CREATE INDEX faucet_requests_client_key_requested_at_idx ON public.faucet_requests USING btree (client_key, requested_at DESC)
   CREATE INDEX faucet_requests_requested_at_idx ON public.faucet_requests USING btree (requested_at)
   CREATE INDEX faucet_requests_state_requested_at_idx ON public.faucet_requests USING btree (state, requested_at) WHERE (state = ANY (ARRAY['queued'::text, 'sent'::text]))
+  CREATE INDEX faucet_requests_updated_at_idx ON public.faucet_requests USING btree (updated_at)
   CREATE UNIQUE INDEX faucet_requests_pkey ON public.faucet_requests USING btree (ticket)
 
 table gateway_legs
@@ -517,9 +522,17 @@ table tracked_transactions
   column refusals smallint not null default 0
   column last_sent_at timestamp with time zone not null
   column settled_at timestamp with time zone
+  column added_at timestamp with time zone
+  column state text not null default 'pending'::text
+  column reason text
+  column block_number bigint
+  column block_hash bytea
+  column update_id text
+  column updated_at timestamp with time zone not null default now()
   constraint tracked_transactions_pkey PRIMARY KEY (tx_hash)
   CREATE INDEX tracked_transactions_last_sent_at_idx ON public.tracked_transactions USING btree (last_sent_at) WHERE open
   CREATE INDEX tracked_transactions_sender_idx ON public.tracked_transactions USING btree (sender) WHERE open
+  CREATE INDEX tracked_transactions_updated_at_idx ON public.tracked_transactions USING btree (updated_at)
   CREATE UNIQUE INDEX tracked_transactions_pkey ON public.tracked_transactions USING btree (tx_hash)
 
 table transactions partition by RANGE (block_number)
