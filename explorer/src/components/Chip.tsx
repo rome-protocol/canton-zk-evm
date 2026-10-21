@@ -1,5 +1,5 @@
-/** The status words. Final: proven, checked by the confirmers and committed on Canton. Being proven: made by reth, not on Canton yet. Waiting: in reth's pool, in no block yet. Genesis: the chain's starting block. */
-export const STATUS_WORDS = { final: "Final", proving: "Being proven", waiting: "Waiting", genesis: "Genesis", replaced: "Replaced", dropped: "Dropped" } as const;
+/** The status words. Final: proven, checked by the confirmers and committed on Canton. Being proven: made by reth, not on Canton yet. Not indexed yet: final on Canton, and the explorer has not read the block yet. Waiting: in reth's pool, in no block yet. Genesis: the chain's starting block. */
+export const STATUS_WORDS = { final: "Final", proving: "Being proven", unindexed: "Not indexed yet", waiting: "Waiting", genesis: "Genesis", replaced: "Replaced", dropped: "Dropped" } as const;
 export type Status = keyof typeof STATUS_WORDS;
 
 export function Chip({ status }: { status: Status }) {

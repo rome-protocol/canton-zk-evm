@@ -23,7 +23,7 @@ type Coin = { symbol: string; decimals: number };
 
 /** A transaction that is not final yet says so, says where it is, and says that the page looks again. Only a transaction page reached by its hash can say Waiting. */
 function NotFinal({ t }: { t: ApiTxSeen }) {
-  const where = t.status === "waiting" ? "It is in reth's pool, and no block holds it yet." : "Its block is being proven.";
+  const where = t.status === "waiting" ? "It is in reth's pool, and no block holds it yet." : t.status === "unindexed" ? "Its block is final on Canton, and the explorer has not indexed it yet." : "Its block is being proven.";
   return (
     <div className="alert wait-alert" role="status">
       <Icon name="info" size={15} />
@@ -34,7 +34,7 @@ function NotFinal({ t }: { t: ApiTxSeen }) {
 
 /** Waiting, Being proven, Final: where this transaction is on the way. It sits below the facts. */
 function Progress({ t }: { t: ApiTxSeen }) {
-  const at = t.status === "waiting" ? 0 : 1;
+  const at = t.status === "waiting" ? 0 : t.status === "unindexed" ? 2 : 1;
   return (
     <ol className="progress" aria-label="Where this transaction is">
       {STEPS.map((s, i) => <li key={s} className={i === at ? "pg on" : "pg"} aria-current={i === at ? "step" : undefined}>{s}</li>)}
@@ -132,6 +132,7 @@ export function stageText(t: ApiTx): string {
   switch (t.state) {
     case "pending": return "Waiting to go into a block";
     case "proving": return "In a block that is being proven";
+    case "unindexed": return t.block ? `Final on Canton in block ${t.block.number}, which the explorer has not indexed yet` : "Final on Canton, not indexed yet";
     case "final": return t.block ? `Final on Canton in block ${t.block.number}` : "Final on Canton";
     case "replaced": return "Replaced by another transaction with the same nonce";
     case "dropped": return `Dropped: ${t.reason ?? "no reason was given"}`;
