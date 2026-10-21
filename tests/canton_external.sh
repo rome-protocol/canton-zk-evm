@@ -19,7 +19,10 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 pids=()
 cleanup() {
   local status=$?
-  [ "$status" = 0 ] || { echo "--- Canton log (tail)"; tail -n 40 "$WORK/canton.log" 2>/dev/null || true; }
+  [ "$status" = 0 ] || {
+    echo "--- Canton log (errors)"; grep -E 'ERROR|WARN|Exception|rror' "$WORK/canton.log" 2>/dev/null | head -n 25 | cut -c1-400 || true
+    echo "--- Canton log (head)"; head -n 25 "$WORK/canton.log" 2>/dev/null | cut -c1-300 || true
+  }
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
   rm -rf "$WORK"
 }
@@ -56,8 +59,10 @@ VERIFY_OK="ok $(printf 'cd%.0s' $(seq 32)) $(printf 'ef%.0s' $(seq 32)) $(printf
 LEGS_OK="ok $(printf '55%.0s' $(seq 32)) 1 ${GATEWAY_ADDRESS#0x} 0"
 answers() { echo "$VERIFY_OK" > "$FAKE_ANSWER.verify"; echo "$LEGS_OK" > "$FAKE_ANSWER.legs"; : > "$FAKE_LOG"; }
 mkdir -p "$CZE_STATE_DIR"; answers
-# One sidecar, on 8085: the only confirmer. Canton checks it at start-up (canton.conf), so it runs before Canton does.
+# One sidecar, on 8085: the only confirmer. Canton checks it at start-up (canton.conf), so it runs before Canton does. The idle participants of canton.conf
+# check 8086 at start-up, so a stand-in answers there too; the test fails if it is ever called.
 python3 "$ROOT/tests/fake_sidecar.py" 8085 & pids+=($!)
+python3 "$ROOT/tests/fake_sidecar.py" 8086 & pids+=($!)
 sleep 1
 
 java -Xmx3g -jar "$CANTON_JAR" daemon -c "$ROOT/network/canton/canton.conf" -c "$WORK/auth.conf" --bootstrap "$ROOT/tests/external_bootstrap.canton" --no-tty > "$WORK/canton.log" 2>&1 &
