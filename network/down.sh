@@ -68,5 +68,11 @@ if [ "$PERSISTENT" = 1 ]; then
 else
   [ "$WIPE" = 0 ] || echo "this network is not persistent: its data goes with it"
   "$ROOT/network/reth/stop.sh"
-  echo "stopped"
+  # The explorer's default database (started by explorer/run.sh) belongs to this chain: a new chain from the same genesis must not meet its rows.
+  if [ -f "$STATE/explorer-db.env" ]; then
+    CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || { echo "NOT wiped: the explorer's database could not be removed and is still there (see above): run network/explorer-db.sh wipe before the next network." >&2; exit 1; }
+    echo "stopped; the explorer's database is removed with the chain"
+  else
+    echo "stopped"
+  fi
 fi

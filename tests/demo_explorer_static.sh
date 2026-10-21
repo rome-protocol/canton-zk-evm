@@ -178,6 +178,25 @@ stopped=$(dry stop)
 grep -qx 'docker stop -t 30 cze-explorer' <<<"$stopped" || fail "stop does not stop the explorer: $stopped"
 grep -qx 'docker stop -t 30 cze-explorer-indexer' <<<"$stopped" || fail "stop does not stop the indexer: $stopped"
 
+# The default database follows the network's life: a stop of a network that is not persistent removes the database start made; a persistent one keeps it;
+# a database the caller named is never removed; with none made there is nothing to remove.
+has "$stopped" "network/explorer-db.sh wipe" "stop of a network that is not persistent wipes the explorer's database"
+touch "$S/persist.env"
+keep=$(dry stop); lacks "$keep" "explorer-db.sh wipe" "stop of a persistent network keeps the database"
+rm "$S/persist.env"
+named_stop=$(EXPLORER_DB_PASSWORD_FILE="$WORK/db.env" dry stop); lacks "$named_stop" "explorer-db.sh wipe" "stop never wipes a database the caller named"
+mv "$S/explorer-db.env" "$WORK/explorer-db.env.kept"
+none=$(dry stop); lacks "$none" "explorer-db.sh wipe" "stop with no database made"
+mv "$WORK/explorer-db.env.kept" "$S/explorer-db.env"
+# A persistent network's database container and port are read back from persist.env, whatever this shell has set; an environment that disagrees is refused.
+printf 'CZE_PERSIST=1\nCZE_EXPLORER_DB_CONTAINER=myexp\nCZE_EXPLORER_DB_PORT=5998\n' > "$S/persist.env"
+pers=$(dry start); has "$pers" "-e EXPLORER_DB_PORT=5998" "a persistent run's database port comes from persist.env"
+if out=$(CZE_EXPLORER_DB_PORT=5999 dry start 2>&1); then fail "start ran with a database port that is not the chain's"; fi
+has "$out" "CZE_EXPLORER_DB_PORT" "the refusal names the port"
+rm "$S/persist.env"
+# down.sh's non-persistent branch wipes it too (tests/persist_scripts.sh runs that).
+grep -q 'explorer-db.sh" wipe' "$ROOT/network/down.sh" || fail "down.sh does not wipe the explorer's database of a network that is not persistent"
+
 # No reader party anywhere: it stops, and says which setting.
 rm "$S/canton/parties.env"
 if out=$(dry start 2>&1); then fail "start ran without a reader party"; fi

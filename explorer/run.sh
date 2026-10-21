@@ -3,7 +3,7 @@
 #
 #   explorer/run.sh setup    make the faucet's key for this run and a genesis that funds it (before the network starts, see below)
 #   explorer/run.sh start    build the image if it needs building, make the database ready, and start the indexer and the explorer
-#   explorer/run.sh stop     stop both
+#   explorer/run.sh stop     stop both (and, on a network that is not persistent, remove the database `start` made: see below)
 #   explorer/run.sh build    only build the image
 #
 # The faucet's key and funded genesis come first, because reth starts from the genesis:
@@ -34,6 +34,10 @@
 # INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
 # explorer's (the indexer asks reth for trace_ methods too, so a log of the explorer's own calls is not put in front of it). It never restarts by itself:
 # a check that stops it leaves it stopped, and the explorer says so (503) until a person has looked.
+# The default database lives and dies with its network. For a persistent network (<state>/persist.env, CZE_PERSIST=1) it is kept across `stop`, and
+# the container and port it was made with are read back from persist.env. For a network that is not persistent, `stop` wipes it (network/explorer-db.sh
+# wipe), and so does network/down.sh: a new chain made from the same genesis would otherwise meet the old chain's rows and the indexer would stop on them.
+# A database the caller named (EXPLORER_DATABASE_URL, EXPLORER_DB_PASSWORD_FILE) is never wiped here.
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).
@@ -47,6 +51,12 @@ NAME=${EXPLORER_CONTAINER:-cze-explorer}
 INDEXER_NAME=${EXPLORER_INDEXER_CONTAINER:-cze-explorer-indexer}
 IMAGE=${EXPLORER_IMAGE:-cze-explorer}
 fail() { echo "explorer/run.sh: $*" >&2; exit 1; }
+# A persistent network's database container and port are the ones it was made with, not whatever this shell has set (as down.sh and restart.sh do).
+if [ -e "$STATE/persist.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/network/persist-settings.sh"
+  load_persist_settings "$STATE" || exit 1
+fi
 
 # Runs Docker, or prints the command when EXPLORER_DRY_RUN=1.
 docker_() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else docker "$@"; fi; }
@@ -183,10 +193,22 @@ stop_indexer() {
   quietly rm "$INDEXER_NAME" 2> /dev/null || true
 }
 
+# The default database follows the network's life: for a network that is not persistent, `stop` removes the database that `start` made, so the next
+# chain starts with an empty one. A persistent network keeps it, and a database the caller named is not ours to remove.
+forget_database() {
+  [ -z "${EXPLORER_DATABASE_URL:-}" ] || return 0
+  [ -z "${EXPLORER_DB_PASSWORD_FILE:-}" ] || return 0
+  [ ! -e "$STATE/persist.env" ] || return 0
+  [ -f "$STATE/explorer-db.env" ] || return 0   # start made none, so there is nothing to remove
+  if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "network/explorer-db.sh wipe"; return 0; fi
+  CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || fail "the explorer's database could not be removed (see above): run network/explorer-db.sh wipe again before the next network"
+  echo "explorer/run.sh: this network is not persistent, so the explorer's database is removed with it"
+}
+
 case ${1:-} in
   build) build ;;
   setup) build; setup ;;
   start) build; start ;;
-  stop) stop_container; stop_indexer ;;
+  stop) stop_container; stop_indexer; forget_database ;;
   *) echo "usage: explorer/run.sh setup | start | stop | build" >&2; exit 2 ;;
 esac
