@@ -28,7 +28,7 @@ if [ "$CANTON_MODE" = external ]; then
   # The participant and the sidecar's address are the ones up.sh recorded; the tokens come from this shell, as for up.sh.
   CZE_LEDGER_URL=$(sed -n 's/^CZE_LEDGER_URL=//p' "$STATE/persist.env"); CZE_SIDECAR_LISTEN=$(sed -n 's/^CZE_SIDECAR_LISTEN=//p' "$STATE/persist.env")
   export CZE_LEDGER_URL CZE_SIDECAR_LISTEN CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-}
-  "$ROOT/network/external/check-env.sh"
+  "$ROOT/network/external/check-env.sh" restart
 fi
 for f in persist.env $([ "$CANTON_MODE" = external ] || echo postgres.env) jwt.hex genesis.json canton/parties.env net/chain.json net/guest.txt net/dar.txt; do
   [ -s "$STATE/$f" ] || missing+=("$f")
@@ -45,7 +45,8 @@ fi
 load_persist_settings "$STATE" || exit 1
 [ "$(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env")" = "$CHAIN_ID" ] || fail "this state is for chain $(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env"), not $CHAIN_ID"
 # The databases were made by one Canton version, and only that one reads them: a newer jar needs its own upgrade, not a silent start.
-[ "$(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env")" = "$CANTON_VERSION" ] \
+# (An external chain has no local databases: the participant belongs to its validator and has its own upgrades.)
+[ "$CANTON_MODE" = external ] || [ "$(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env")" = "$CANTON_VERSION" ] \
   || fail "the databases were made by Canton $(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env"), and PINS now says $CANTON_VERSION"
 umask 077
 mkdir -p "$NET/logs"
@@ -110,7 +111,8 @@ else
   CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools") "$ROOT/network/canton/run.sh" resume
 fi
 # The Daml package the chain runs is still on the operator's participant.
-"$ROOT/network/canton/check-package.sh" "$(sed -n 's/^package_id=//p' "$NET/dar.txt")" "${CZE_LEDGER_URL:-http://127.0.0.1:7575}" \
+CZE_PACKAGE_TOKEN_FILE=${CZE_TOKEN_FILE_BUILDER:-${CZE_TOKEN_FILE_ADMIN:-}} \
+  "$ROOT/network/canton/check-package.sh" "$(sed -n 's/^package_id=//p' "$NET/dar.txt")" "${CZE_LEDGER_URL:-http://127.0.0.1:7575}" \
   || fail "the DAR's main package is not on the operator's participant"
 
 step "Canton's head and reth"

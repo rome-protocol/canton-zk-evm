@@ -101,6 +101,9 @@ grep -q 'allocated\|created the user\|uploaded' "$WORK/setup2.log" && fail "the 
 # The package the DAR holds is the one the participant lists, and it is vetted on the synchronizer (setup.py checked the vetting).
 package_id=$("$ROOT/network/canton/dar-id.sh" "$CZE_DAR" | sed -n 's/^package_id=//p')
 "$ROOT/network/canton/check-package.sh" "$package_id" "$CZE_LEDGER_URL" || fail "the DAR's main package is not on the participant"
+# A restart lists the package with the builder's token, not the admin's.
+mint
+CZE_PACKAGE_TOKEN_FILE=$CZE_TOKEN_FILE_BUILDER "$ROOT/network/canton/check-package.sh" "$package_id" "$CZE_LEDGER_URL" || fail "the builder's token cannot list the package"
 grep -q 'the package is vetted' "$WORK/setup1.log" || echo "NOTE: the participant gave no vetting list (setup.py warned)"
 
 # Users and rights: the builder reads as the gateway and cannot act as it, the operator acts as it, the chain names the gateway.

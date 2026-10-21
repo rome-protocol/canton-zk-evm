@@ -212,6 +212,19 @@ chmod 600 "$XW/OPERATOR"
 echo x > "$XW/BUILDER"; chmod 600 "$XW/BUILDER"
 env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example "$X/check-env.sh" >/dev/null 2>&1 && fail "check-env.sh accepted a login-less setting without CZE_LEDGER_NO_AUTH"
 env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_LEDGER_NO_AUTH=1 "$X/check-env.sh" >/dev/null 2>&1 || fail "check-env.sh refused CZE_LEDGER_NO_AUTH=1"
+# A restart needs no admin token (the validator's most powerful one); an up does.
+xenv_no_admin() { env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_OPERATOR="$XW/OPERATOR" CZE_TOKEN_FILE_CONFIRMER="$XW/CONFIRMER" \
+  CZE_TOKEN_FILE_BUILDER="$XW/BUILDER" "$X/check-env.sh" "$1"; }
+xenv_no_admin restart >/dev/null 2>&1 || fail "check-env.sh restart wants the admin token"
+xenv_no_admin up >/dev/null 2>&1 && fail "check-env.sh up accepted a setting without the admin token"
+xenv_no_admin sideways >/dev/null 2>&1 && fail "check-env.sh took a phase that is neither up nor restart"
+grep -q 'check-env.sh" restart' "$ROOT/network/restart.sh" || fail "restart.sh does not check the settings for a restart (no admin token)"
+grep -q 'CZE_PACKAGE_TOKEN_FILE=${CZE_TOKEN_FILE_BUILDER' "$ROOT/network/restart.sh" || fail "restart.sh lists the package with a token other than the builder's"
+! grep -q 'CZE_TOKEN_FILE_ADMIN' "$ROOT/network/restart.sh" "$ROOT/network/sync_reth.py" || ! grep -v 'CZE_PACKAGE_TOKEN_FILE=' "$ROOT/network/restart.sh" | grep -q 'CZE_TOKEN_FILE_ADMIN' || fail "restart.sh uses the admin token"
+# An external chain has no local databases: a Canton pin move does not stop its restart.
+grep -q '\[ "\$CANTON_MODE" = external \] || \[ "\$(sed -n' "$ROOT/network/restart.sh" || fail "restart.sh checks the local databases' Canton version in external mode"
+# A sidecar that runs already with the same keys on the same address is not an error (up.sh after a manual start).
+grep -q 'answers on \$listen already' "$X/sidecar.sh" || fail "sidecar.sh start fails when the same sidecar runs already"
 # The participant's line: the extension's key, the given address and port, and validate-on-startup off.
 line=$("$X/participant-config.sh" 172.17.0.1 8085)
 [ "$line" = 'ADDITIONAL_CONFIG_ZK_EVM=canton.participants.participant.parameters.engine.extensions.canton-zk-evm { address = "172.17.0.1", port = 8085, validate-on-startup = false }' ] || fail "participant-config.sh printed: $line"

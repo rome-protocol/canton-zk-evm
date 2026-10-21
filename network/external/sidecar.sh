@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs one sidecar on its own, without a local Canton, the way network/up.sh builds and starts it: the release build of sidecar/, pinned
 # to the program key and root key recorded in prover/fixtures/session.txt (the keys up.sh checks the guest build against).
-#   sidecar.sh start [address:port]   builds, starts and waits until it answers; default CZE_SIDECAR_LISTEN, else 127.0.0.1:8085
+#   sidecar.sh start [address:port]   builds, starts and waits until it answers; default CZE_SIDECAR_LISTEN, else 127.0.0.1:8085.
+#                                     One that runs already with the same keys on the same address is left as it is (success).
 #   sidecar.sh stop [address:port]    stops it
 # The sidecar has no login: whoever can reach its port can ask it to check a proof. Listen on 127.0.0.1, or on the one address that only the
 # participant can reach (the participant's own container network), never on a public one. The pid goes to $CZE_STATE_DIR/net/sidecar-<port>.pid
@@ -29,7 +30,15 @@ rec=${CZE_SESSION_FILE:-$ROOT/prover/fixtures/session.txt}
 recorded() { sed -n "s/^$1=0x//p" "$rec" | head -1; }
 PROGRAM_VK=$(recorded programVK); ROOT_C=$(recorded rootC)
 [[ $PROGRAM_VK =~ ^[0-9a-f]{64}$ && $ROOT_C =~ ^[0-9a-f]{64}$ ]] || fail "no recorded programVK and rootC in $rec"
-if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then fail "a sidecar runs on port $port already (pid $(cat "$pidfile"))"; fi
+if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+  # One that runs already with these very keys on this very address is what start would make: say so and succeed (up.sh after a manual start). Another is an error.
+  if ps -p "$(cat "$pidfile")" -o args= 2>/dev/null | grep -qF -- "--program-vk $PROGRAM_VK --root-c $ROOT_C --listen $listen" \
+    && curl -sf "http://${listen/#0.0.0.0:/127.0.0.1:}/api/v1/version" >/dev/null; then
+    echo "the sidecar answers on $listen already (pid $(cat "$pidfile"), programVK 0x$PROGRAM_VK)"
+    exit 0
+  fi
+  fail "a sidecar runs on port $port already (pid $(cat "$pidfile")) and is not this one: sidecar.sh stop $listen first"
+fi
 umask 077
 mkdir -p "$NET/logs"
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
