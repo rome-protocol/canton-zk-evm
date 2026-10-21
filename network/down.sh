@@ -35,19 +35,23 @@ stop() {   # a process by its pid file, if that pid is still the process that wa
   rm -f "$f"
 }
 
+# With CZE_CANTON=external there is no Canton and no database of Canton's here: the participant keeps running, and keeps the chain, which only its
+# operator can remove. Nothing below touches it.
+EXTERNAL=0
+[ "$(sed -n 's/^CZE_CANTON=//p' "$STATE/persist.env" 2>/dev/null)" != external ] || EXTERNAL=1
 # Canton first, so that it closes its databases before they stop.
 stop "$NET/canton.pid" 'canton'
 for f in "$NET"/sidecar-*.pid; do stop "$f" 'zk-sidecar'; done
 stop "$PROVER/worker.pid" 'zisk-worker'
 stop "$PROVER/coordinator.pid" 'zisk-coordinator'
 if [ "$PERSISTENT" = 1 ]; then
-  CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" stop
+  [ "$EXTERNAL" = 1 ] || CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" stop
   CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" stop
   if [ "$WIPE" = 1 ]; then
     # persist.env goes last, and only if everything else is gone: it is what tells restart.sh and down.sh that there is a chain to look after.
     left=()
     CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --wipe-persistent || left+=("reth's data")
-    CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" wipe || left+=("the database")
+    [ "$EXTERNAL" = 1 ] || CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" wipe || left+=("the database")
     CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || left+=("the explorer's database")
     rm -rf "$NET" "$STATE/canton" "$STATE/jwt.hex" "$STATE/genesis.json"
     if [ ${#left[@]} -gt 0 ]; then
@@ -56,6 +60,7 @@ if [ "$PERSISTENT" = 1 ]; then
     fi
     rm -f "$STATE/persist.env"
     echo "stopped; the persistent chain is wiped, and so is the explorer's database"
+    [ "$EXTERNAL" = 0 ] || echo "the participant still holds the chain's contracts: they stay until its operator removes them"
   else
     CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --keep-data
     echo "stopped; the chain's data is kept (network/restart.sh brings it back, network/down.sh --wipe removes it)"
