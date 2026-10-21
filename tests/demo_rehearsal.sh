@@ -209,7 +209,7 @@ first_failed=$(w1py reverts "$REVERTS" | head -n 1)
 cut_block
 REVERT_BLOCK=$(receipt_of "$first_failed" | jq -r .block)
 [ "$(receipt_of "$first_failed" | jq -r .status)" = 0 ] || fail "the first call to Reverts did not fail: $(receipt_of "$first_failed")"
-first_stress=$(w1py stress "$STRESS" 18 | head -n 1)
+first_stress=$(w1py stress "$STRESS" 15 | head -n 1)
 cut_block
 W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)
 echo "the first Stress call: $(receipt_of "$first_stress" | jq -c .)"

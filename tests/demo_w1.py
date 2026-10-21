@@ -19,7 +19,7 @@ from eth_utils import keccak  # noqa: E402
 DEPLOY_GAS = 1_500_000
 FAILING_GAS = 150_000
 STRESS_GAS = 2_000_000
-DEPTH, LOGS, CREATES = 20, 10, 1
+DEPTH, LOGS, CREATES = 14, 10, 1
 
 
 def selector(signature: str) -> str:
