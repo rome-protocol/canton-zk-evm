@@ -79,6 +79,62 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       await indexer.close();
     });
   });
-});
 
-export { hexOf };
+  it("makes a contract of each creation that took effect: a factory's, with the code shared by clones, and none under a failed call or in a failed transaction", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      // Transaction 2 deploys a factory, which makes a contract with CREATE and a clone of it (the same code) with CREATE2.
+      setFrames(chain, 1, 2, [
+        make([], 0xf000, 0xfac1, "0x60016000f3"), make([0], 0xfac1, 0xc1, "0x6001600055", { callType: "create" }), make([1], 0xfac1, 0xc2, "0x6001600055", { callType: "create2" }),
+      ]);
+      // Transaction 3 calls a contract that reverts after making one; transaction 4 failed.
+      setFrames(chain, 1, 3, [frame([]), frame([0], { error: "Reverted" }), make([0, 0], 0xa1, 0xc3)]);
+      setFrames(chain, 1, 4, [frame([], { error: "Reverted" }), make([0], 0xa1, 0xc4)]);
+      await indexer.runOnce();
+      const made = await rows(pool, "select encode(address, 'hex') as a, origin, encode(creator, 'hex') as creator, creation_block, creation_tx_index, creation_trace_address::text as path, encode(runtime_code_hash, 'hex') as rh, encode(creation_code_hash, 'hex') as ch from contracts order by address");
+      expect(made.map((m) => [m.a, m.creator, m.creation_tx_index, m.path])).toEqual([
+        [A(0xc1).slice(2), A(0xfac1).slice(2), 2, "{0}"], [A(0xc2).slice(2), A(0xfac1).slice(2), 2, "{1}"], [A(0xfac1).slice(2), A(0xf000).slice(2), 2, "{}"],
+      ]);
+      expect(made.every((m) => m.origin === "create" && m.creation_block === "1")).toBe(true);
+      expect(made[0]!.rh).toBe(made[1]!.rh);
+      expect(made[0]!.rh).not.toBe(made[2]!.rh);
+      const codes = await rows(pool, "select encode(code, 'hex') as code, size from bytecodes order by code");
+      expect(codes.map((x) => x.code)).toEqual(["6001600055", "60016000f3", "6080"]);
+      expect(codes.find((x) => x.code === "6001600055")!.size).toBe(5);
+      await indexer.close();
+    });
+  });
+
+  it("marks a contract destroyed only when its code is gone, and counts the transactions sent to a contract after the one that made it", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 11 }, { txs: 5 }]);
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xc001), make([1], 0xa1, 0xc003), make([2], 0xa1, 0xd1), make([3], 0xa1, 0xd2),
+        frame([3, 0], { type: "suicide", callType: "selfdestruct", from: A(0xd1), to: A(0xa1), value: 1n }), frame([3, 1], { type: "suicide", callType: "selfdestruct", from: A(0xd2), to: A(0xa1), value: 1n })]);
+      // After EIP-6780 the contract that was not made in the same transaction keeps its code; the other has none.
+      chain.reads.liveCode[A(0xd2)] = "0x6001";
+      await indexer.runOnce();
+      expect(await rows(pool, "select encode(address, 'hex') as a, destroyed_block from contracts where address in ($1, $2) order by address", [Buffer.from(A(0xd1).slice(2), "hex"), Buffer.from(A(0xd2).slice(2), "hex")]))
+        .toEqual([{ a: A(0xd1).slice(2), destroyed_block: "1" }, { a: A(0xd2).slice(2), destroyed_block: null }]);
+      // Block 1: transaction 0 went to 0xc000, 1 to 0xc001, 3 to 0xc003 (made by transaction 2, so after it), 5 to 0xc005. Block 2: transaction 1 went to 0xc001, 3 to 0xc003.
+      const counts = async () => rows(pool, "select encode(address, 'hex') as a, interaction_count, last_interaction_block from contracts where address in ($1, $2) order by address",
+        [Buffer.from(A(0xc001).slice(2), "hex"), Buffer.from(A(0xc003).slice(2), "hex")]);
+      expect(await counts()).toEqual([{ a: A(0xc001).slice(2), interaction_count: "1", last_interaction_block: "2" }, { a: A(0xc003).slice(2), interaction_count: "2", last_interaction_block: "2" }]);
+      await indexer.close();
+    });
+  });
+
+  it("counts nothing twice when a block is read again, and a reindex keeps what is counted", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 11 }, { txs: 5 }]);
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xc003)]);
+      await indexer.runOnce();
+      const snapshot = async () => rows(pool, "select encode(address, 'hex') as a, creation_block, interaction_count, last_interaction_block, destroyed_block from contracts order by address");
+      const before = await snapshot();
+      expect(before.length).toBeGreaterThan(0);
+      await pool.query("update cursors set position = 0, detail = null where stream = 'reader_updates'");
+      await indexer.runOnce();
+      expect(await snapshot()).toEqual(before);
+      await indexer.close();
+    });
+  });
+});

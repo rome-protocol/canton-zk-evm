@@ -239,7 +239,7 @@ export function createIndexer(o: IndexerOptions) {
       // The derive cursor is read again under the shared lock: stage 2 follows in this transaction only when the cursor is right behind this block;
       // otherwise (a catch-up is still owed) the block is left to catchUpDerive, and the walk goes on.
       if (done.written && inline && (await deriveCursor(c)) === n - 1) {
-        await stage2(c, n, traces as TxTrace[]);
+        await stage2(c, n, traces as TxTrace[], o.reads);
         o.onTiming?.({ block: n, stage: 2, readMs: 0, writeMs: now() - w2, txs: block.transactions.length });
       }
     });
@@ -353,7 +353,7 @@ export function createIndexer(o: IndexerOptions) {
       const read = now() - t0;
       await inTransaction(o.pool, async (c) => {
         const w = now();
-        const res = await stage2(c, n, traces);
+        const res = await stage2(c, n, traces, o.reads);
         o.onTiming?.({ block: n, stage: 2, readMs: read, writeMs: now() - w, txs: traces.length });
         return res;
       });

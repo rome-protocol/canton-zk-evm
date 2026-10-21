@@ -30,7 +30,7 @@ export const REINDEX_KEY = 7_207_371_004;
 
 export interface ReindexOptions {
   pool: Pool;
-  reads: Pick<FinalReads, "block" | "receipts" | "storageAt" | "traces">;
+  reads: Pick<FinalReads, "block" | "receipts" | "storageAt" | "traces" | "code">;
   gateway: string;
   log?: (line: string) => void;
   /** How long to wait for the lock (an in-flight block of the live indexer, or another reindex) before giving up. Default 60 s. */
@@ -96,7 +96,7 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
           throw new IndexerStop("C3", `block ${n}: ${block.transactions.length} transactions and ${logCount} logs, but ${rowsTx} and ${rowsLogs} rows were written`, n);
         }
         await checkLegs(c, n, legs, legsHash, problem);
-        if (n <= derived) await rederive(c, n, traces as TxTrace[]);
+        if (n <= derived) await rederive(c, n, traces as TxTrace[], o.reads);
         await c.query("commit");
       } catch (e) {
         await c.query("rollback").catch(() => undefined);

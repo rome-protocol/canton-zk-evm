@@ -3,14 +3,18 @@
  *
  * It writes `tx_traces` (each transaction's call count and the revert data of a failed one, with `Error(string)` and `Panic(uint256)` decoded;
  * a transaction with no sub-call that did not fail has no row) and `internal_calls` (calls that move value, creations and self-destructs).
- * Tokens and balances are added behind this same function by the slice that follows.
+ * `contracts` and `bytecodes` get the contracts the block made, and a contract the block destroyed is marked. Tokens and balances are added behind this same function by the slice that follows.
  */
 import { decodeAbiParameters } from "viem";
 import type { PoolClient } from "pg";
 import { IndexerStop } from "./errors.ts";
 import { clearStops } from "./health.ts";
 import { deriveFrames, type FrameRows } from "./calls.ts";
-import type { TxTrace } from "./reads.ts";
+import { countInteractions, writeContracts } from "./contracts.ts";
+import type { FinalReads, TxTrace } from "./reads.ts";
+
+/** What stage 2 reads from reth besides the block's traces. */
+export type Stage2Reads = Pick<FinalReads, "code">;
 
 const ERROR_SELECTOR = "0x08c379a0", PANIC_SELECTOR = "0x4e487b71";
 const PANIC: Record<string, string> = {
@@ -100,16 +104,17 @@ async function insertRows(c: Pick<PoolClient, "query">, n: number, d: Derived): 
  * Stage 2's rows for a block the derive cursor has already passed, written again (the reindex): the block's old rows are deleted and the same
  * derivation writes the new ones, in the caller's transaction. The cursor is not touched.
  */
-export async function rederive(c: Pick<PoolClient, "query">, n: number, traces: TxTrace[]): Promise<number> {
+export async function rederive(c: Pick<PoolClient, "query">, n: number, traces: TxTrace[], reads: Stage2Reads): Promise<number> {
   const d = await deriveRows(c, n, traces);
   await c.query("delete from tx_traces where block_number = $1", [n]);
   await c.query("delete from internal_calls where block_number = $1", [n]);
   await insertRows(c, n, d);
+  await writeContracts(c, n, d.frames.created, d.frames.destroyed, reads);
   return d.traceRows.length + d.frames.calls.length;
 }
 
 /** Stage 2 for block `n`, in the caller's database transaction. `traces` are reth's replay of the block's transactions, in order. */
-export async function stage2(c: PoolClient, n: number, traces: TxTrace[]): Promise<Stage2Result> {
+export async function stage2(c: PoolClient, n: number, traces: TxTrace[], reads: Stage2Reads): Promise<Stage2Result> {
   // 1. Guard.
   const at = await c.query("select position from cursors where stream = 'derive' for update");
   const position = at.rowCount ? Number(at.rows[0].position) : 0;
@@ -119,6 +124,8 @@ export async function stage2(c: PoolClient, n: number, traces: TxTrace[]): Promi
   // 2 and 3. The traces must be those of the block's transactions, in order; then derive and write.
   const d = await deriveRows(c, n, traces);
   await insertRows(c, n, d);
+  await writeContracts(c, n, d.frames.created, d.frames.destroyed, reads);
+  await countInteractions(c, n);
   await c.query(
     `insert into cursors (stream, position, updated_at) values ('derive', $1, now())
      on conflict (stream) do update set position = excluded.position, updated_at = excluded.updated_at`,
