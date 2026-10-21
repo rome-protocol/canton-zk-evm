@@ -132,7 +132,7 @@ mv "$WORK/explorer-db.env.kept" "$S/explorer-db.env"
 [ "$(grep -c '^docker run' <<<"$withck")" = 3 ] || fail "start does not run migrate, the indexer and the explorer: $withck"
 migrate=$(grep -- 'node server/db/cli.ts migrate' <<<"$withck")
 indexer=$(grep -- 'node server/indexer/cli.ts' <<<"$withck")
-[ -n "$migrate" ] && [ -n "$indexer" ] || fail "start has no migrate or no indexer step: $withck"
+{ [ -n "$migrate" ] && [ -n "$indexer" ]; } || fail "start has no migrate or no indexer step: $withck"
 [ "$(grep -n -- 'node server/db/cli.ts migrate' <<<"$withck" | cut -d: -f1)" -lt "$(grep -n -- 'node server/indexer/cli.ts' <<<"$withck" | cut -d: -f1)" ] || fail "the indexer starts before the migrations"
 has "$migrate" "--rm" "the migration container is removed when done"
 has "$migrate" "-e EXPLORER_DB_PASSWORD_FILE=/run/explorer/explorer-db.env" "the migration reads the run's database"
