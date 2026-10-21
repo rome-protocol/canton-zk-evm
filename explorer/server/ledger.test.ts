@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ALLOWED_ENDPOINTS, BLOCK_RECORD_TEMPLATE, createLedger, LedgerError } from "./ledger.ts";
 import {
-  checkpoint, createdEvent, FAKE_CONFIRMER, FAKE_OPERATOR, FAKE_READER, RECORD_ID, recordFields, startFakeLedger, transaction, type FakeLedger,
+  checkpoint, createdEvent, FAKE_CONFIRMER, FAKE_OPERATOR, FAKE_PARTICIPANT, FAKE_READER, RECORD_ID, recordFields, startFakeLedger, transaction, type FakeLedger,
 } from "../test/fake-ledger.ts";
 
 let fake: FakeLedger | undefined;
@@ -26,7 +26,33 @@ describe("block records", () => {
       updateId: "1220" + "19".repeat(32), offset: 7, recordTime: "2026-10-04T01:37:15.412Z", chainId: 770101, number: 3,
       blockHash: "0x" + "35".repeat(32), parentHash: "0x" + "0b".repeat(32),
       headerHex: "f9".repeat(40), txsHex: "02".repeat(20), proofHex: "ee".repeat(1344), operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER,
+      synchronizerId: "sync::1220" + "99".repeat(32), effectiveAt: "2026-10-04T01:37:15.412Z", contractId: "0000000007",
+      template: { packageId: "abc123def456", module: "Zk.Chain", entity: "BlockRecord" }, signatories: [FAKE_OPERATOR, FAKE_CONFIRMER],
     }]);
+  });
+
+  it("keeps the synchronizer, effective time, contract, template and signatories, and drops the observers, the builder and the reader", async () => {
+    const event = createdEvent(7);
+    (event.CreatedEvent as Record<string, unknown>).observers = ["observer::1220" + "77".repeat(32)];
+    const l = await ledger([transaction(7, "u1", [event])]);
+    const [r] = await l.records(0, 7);
+    const everything = JSON.stringify(r);
+    expect(everything).not.toContain("observer::");
+    expect(everything).not.toContain("builder::");
+    expect(everything).not.toContain(FAKE_READER);
+    expect(r!.signatories).toEqual([FAKE_OPERATOR, FAKE_CONFIRMER]);
+  });
+
+  it("refuses a record whose template id or signatories are not valid", async () => {
+    const noSigners = createdEvent(7);
+    (noSigners.CreatedEvent as Record<string, unknown>).signatories = [];
+    await expect((await ledger([transaction(7, "u1", [noSigners])])).records(0, 7)).rejects.toThrow(/signatories/);
+    await expect((await ledger([transaction(7, "u1", [createdEvent(7, recordFields(), "a:b:Zk.Chain:BlockRecord")])])).records(0, 7)).rejects.toThrow(/template/);
+  });
+
+  it("reads the participant's own id", async () => {
+    const l = await ledger([]);
+    expect(await l.participantId()).toBe(FAKE_PARTICIPANT);
   });
 
   it("keeps a block with no transactions, with its txsHex as the empty string the record holds", async () => {
@@ -58,7 +84,7 @@ describe("block records", () => {
     await l.ledgerEnd();
     await l.records(0, 7);
     expect(fake!.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates"]);
-    expect([...ALLOWED_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates"]);
+    expect([...ALLOWED_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
     for (const [m, p] of [["POST", "/v2/commands/submit-and-wait"], ["POST", "/v2/state/active-contracts"], ["GET", "/v2/updates"], ["POST", "/v2/updates/update-by-offset"]] as const) {
       await expect(l.call(m, p)).rejects.toThrow(/not on the list/);
     }
