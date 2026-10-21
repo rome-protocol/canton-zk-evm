@@ -323,6 +323,18 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (was === "queued" && r.status !== "queued") queue.splice(queue.indexOf(mine), 1);
       if (r.status === "failed" && was !== "failed") refund(mine); // the instance that failed it gave the limits back; the others do the same
     }
+    // A queued request the leader does not hold is taken whatever the store has seen of it, so a payout is never lost to a filter.
+    if (leading && store.queued) {
+      let queuedRows: Ticket[] = [];
+      try { queuedRows = await store.queued(); } catch (e) { console.error(`faucet: cannot read the database: ${(e as Error).message}`); }
+      for (const r of queuedRows) {
+        if (tickets.has(r.id)) continue;
+        tickets.set(r.id, r);
+        const next = queue.findIndex((q) => q.at > r.at);
+        queue.splice(next < 0 ? queue.length : next, 0, r);
+      }
+    }
+    trim();
   }
 
   // --- the limits

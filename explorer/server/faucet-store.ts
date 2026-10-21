@@ -33,6 +33,10 @@ export interface FaucetStore {
   /** Tickets another instance wrote since the last call. */
   changes?(): Promise<Ticket[]>;
   find?(id: string): Promise<Ticket | null>;
+  /** Every request that is queued in the database, whatever this store has read before. The leader takes the ones it does not hold. */
+  queued?(): Promise<Ticket[]>;
+  /** How many rows the store holds a signature for (it follows the list given to save). */
+  remembered?(): number;
   /** A batch is signed and written before the first send; this records it and says its number. */
   batchSigned?(firstNonce: number, size: number, at: number): Promise<number | null>;
   batchSent?(id: number, at: number): Promise<void>;
@@ -134,7 +138,8 @@ function ticketOf(r: Row): Ticket {
   };
 }
 
-const signature = (t: Ticket): string => JSON.stringify([t.status, t.hash, t.block, t.reason, t.tries, t.nonce, t.raw, t.sentNonce, t.watch, t.batch]);
+/** A ticket made in memory leaves some fields out where a row read back has them as false or null, so the optional ones are normalised: the same ticket signs the same either way. */
+const signature = (t: Ticket): string => JSON.stringify([t.status, t.hash ?? null, t.block ?? null, t.reason ?? null, t.tries, t.nonce ?? null, t.raw ?? null, t.sentNonce ?? null, t.watch === true, t.batch ?? null]);
 
 const INSERT = `
   insert into faucet_requests (ticket, address, client_key, amount, state, reason, batch_id, nonce, tx_hash, signed_raw, counts, requested_at, sent_at, final_at, final_block, tries, sent_nonce, watching, updated_at)
@@ -196,6 +201,8 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       return { addresses: [...addresses], ips: [...ips], hourly, tickets };
     },
     async save(tickets) {
+      // The list handed over is the bounded truth: what it no longer holds is forgotten here too.
+      if (written.size > tickets.length) { const keep = new Set(tickets.map((t) => t.id)); for (const id of written.keys()) if (!keep.has(id)) written.delete(id); }
       // The tickets change in place while a write is on its way, so what is written, and what is marked as written, is one copy.
       const changed = tickets.filter((t) => written.get(t.id) !== signature(t) && !t.claiming).map((t) => ({ ...t }));
       if (!changed.length) return true;
@@ -240,10 +247,14 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       if (!/^[0-9a-f]{24}$/.test(id)) return null;
       const { rows } = await pool.query<Row>(`select ${COLUMNS} from faucet_requests where ticket = $1`, [uuidOf(id)]);
       if (!rows[0]) return null;
-      const t = ticketOf(rows[0]);
-      written.set(t.id, signature(t));
-      return t;
+      // A found row is only shown, never held, so it is not marked as written: the leader's catch-up must still see it.
+      return ticketOf(rows[0]);
     },
+    async queued() {
+      const { rows } = await pool.query<Row>(`select ${COLUMNS} from faucet_requests where state = 'queued' order by requested_at, ticket`);
+      return rows.map(ticketOf);
+    },
+    remembered: () => written.size,
     async batchSigned(firstNonce, size, at) {
       const { rows } = await pool.query<{ batch_id: string }>("insert into faucet_batches (signed_at, first_nonce, size) values ($1, $2, $3) returning batch_id", [new Date(at), firstNonce, size]);
       return Number(rows[0]!.batch_id);

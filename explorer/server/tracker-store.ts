@@ -15,6 +15,8 @@ export interface TrackerStore {
   save(entries: Entry[]): Promise<void>;
   /** Entries that another instance wrote since the last call. Only a store that more than one instance shares has this. */
   changes?(): Promise<Entry[]>;
+  /** How many entries the store holds a signature for (it follows the list given to save). */
+  remembered?(): number;
   /** Takes the entries of an old file once, leaving rows that exist alone. */
   importEntries?(entries: Entry[]): Promise<number>;
   /** Removes what must not be kept any longer: signed bytes 7 days after a transaction settled. */
@@ -169,6 +171,8 @@ export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
       return entries;
     },
     async save(entries) {
+      // The list handed over is the bounded truth: what it no longer holds is forgotten here too.
+      if (written.size > entries.length) { const keep = new Set(entries.map((e) => e.hash)); for (const h of written.keys()) if (!keep.has(h)) written.delete(h); }
       const changed = entries.filter((e) => written.get(e.hash) !== signature(e));
       if (!changed.length) return;
       // The entries change in place while a write is on its way, so what is written, and what is marked as written, is one copy.
@@ -180,6 +184,7 @@ export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
         console.error(`tracker: cannot write the database: ${(e as Error).message}`);
       }
     },
+    remembered: () => written.size,
     async changes() {
       // A little before the last reading: a row that committed late, with an older time, is read once more instead of missed.
       const { rows } = await pool.query<Row>(`select ${COLUMNS} from tracked_transactions where updated_at > $1::timestamptz - interval '5 seconds' order by updated_at`, [cursor ?? new Date(0)]);

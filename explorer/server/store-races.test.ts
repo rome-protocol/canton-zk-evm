@@ -119,6 +119,51 @@ d("the faucet on a shared database", () => {
   }
   const paid = (raws: string[]) => raws.map((r) => parseTransaction(r as Hex).to);
 
+  it("a lookup on the leader before its catch-up does not hide the request from it", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    const a = await faucetOn(fake);
+    const b = await faucetOn(fake);
+    await a.process(); // a takes the lead
+    const r = await b.request(addr(1), { ip: "8.8.1.1" });
+    expect(r.status).toBe(202);
+    const id = (r.body as { ticket: string }).ticket;
+    expect((await a.find(id))?.status).toBe("queued"); // the page polls and the balancer sends it to the leader
+    for (let i = 0; i < 8; i++) await a.process();
+    expect(paid(raws)).toEqual([addr(1)]);
+  });
+
+  it("a lookup in a store does not mark the row as written, and the store lists the queued rows apart from its changes", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    const b = await faucetOn(fake);
+    const store = databaseFaucetStore(db.pool, COIN);
+    await store.load({ now: Date.now(), addressMs: 1000, ipMs: 1000, max: 100 });
+    const r = await b.request(addr(2), { ip: "8.8.2.1" });
+    expect(r.status).toBe(202);
+    const id = (r.body as { ticket: string }).ticket;
+    expect((await store.find!(id))?.status).toBe("queued");
+    expect((await store.changes!()).map((t) => t.id)).toEqual([id]);
+    expect((await store.changes!()).length).toBe(0);
+    expect((await store.queued!()).map((t) => t.id)).toEqual([id]);
+  });
+
+  it("a ticket made in memory and the same ticket read back sign the same, so an idle leader writes nothing", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    let inserts = 0;
+    const counting = spied(db.pool, /insert into faucet_requests/, () => { inserts++; });
+    const a = await faucetOn(fake, counting);
+    expect((await a.request(addr(3), { ip: "8.8.3.1" })).status).toBe(202);
+    await a.process();
+    await a.flush();
+    expect((await db.pool.query("select state from faucet_requests")).rows).toEqual([{ state: "sent" }]);
+    for (let i = 0; i < 2; i++) await a.process(); // let the write of the sent ticket and its read back settle
+    const before = inserts;
+    for (let i = 0; i < 6; i++) await a.process();
+    expect(inserts).toBe(before);
+  });
+
   it("a hand-over between a follower's read and its lock pays each request once", async () => {
     const raws: string[] = [];
     const fake = await fakeFor(raws);
@@ -239,6 +284,27 @@ d("an import that runs twice changes nothing the second time", () => {
 });
 
 d("the faucet's table keeps the payout's nonce, and requests older than 90 days leave only the daily counts", () => {
+  it("the stores forget what they wrote about rows that left their lists", async () => {
+    const t = (n: number): Ticket => ({ id: n.toString(16).padStart(24, "0"), to: addr(n), ip: null, at: 1000 + n, status: "final", hash: null, block: null, reason: null, tries: 0 });
+    const lim = () => ({ addresses: [], ips: [], hourly: [] });
+    const fstore = databaseFaucetStore(db.pool, COIN);
+    await fstore.load({ now: 2000, addressMs: 1000, ipMs: 1000, max: 100 });
+    const list = [t(1), t(2), t(3)];
+    await fstore.save(list, lim);
+    expect(fstore.remembered!()).toBe(3);
+    await fstore.save(list.slice(2), lim);
+    expect(fstore.remembered!()).toBe(1);
+
+    const e = (n: number): Entry => ({ hash: hashOf(n), raw: "0x" + "02".repeat(30), from: addr(7), nonce: n, state: "pending", reason: null, block: null, blockHash: null, updateId: null, attempts: 1, refused: 0, addedAt: 1000 + n, lastSendAt: 1000 + n, settledAt: null, via: "rpc" });
+    const tstore = databaseTrackerStore(db.pool, 100);
+    await tstore.load();
+    const entries = [e(1), e(2), e(3)];
+    await tstore.save(entries);
+    expect(tstore.remembered!()).toBe(3);
+    await tstore.save(entries.slice(1));
+    expect(tstore.remembered!()).toBe(2);
+  });
+
   it("holds the nonce of a sent request, and counts then deletes the old ones", async () => {
     const raws: string[] = [];
     const fake = await startFakeReth({
