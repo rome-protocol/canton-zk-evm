@@ -7,6 +7,8 @@ SCRIPT=$ROOT/.github/actions/pinned-images/pinned-images.sh
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# The keys carry these when the test runs in Actions; the test sets them where it needs them.
+unset RUNNER_OS RUNNER_ARCH GITHUB_RUN_ID GITHUB_RUN_ATTEMPT
 
 DIGEST=$(printf 'a%.0s' $(seq 64))
 OTHER=$(printf 'b%.0s' $(seq 64))
@@ -107,7 +109,8 @@ key1=$(out_of key_1); key2=$(out_of key_2); prefix1=$(out_of prefix_1)
 [ "$(grep -c . "$(out_of list)")" = 2 ] || fail "the list does not have both images"
 grep -q " $OTHER_ID " "$(out_of list)" || fail "the list does not carry the image ID of PINS"
 runs resolve "$WORK/PINS" "OTHER_IMAGE TOOL_IMAGE" 2>/dev/null
-[ "$(out_of key_1)" = "$key1" ] && [ "$(out_of key_2)" = "$key2" ] || fail "the keys depend on the order of the names"
+[ "$(out_of key_1)" = "$key1" ] || fail "the keys depend on the order of the names"
+[ "$(out_of key_2)" = "$key2" ] || fail "the keys depend on the order of the names"
 runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null
 [ "$(out_of prefix_1)" = "$(out_of prefix_2)" ] || fail "the entry of an image depends on the other images of the job"
 fresh solo1; runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null; p_solo=$(out_of prefix_1)
@@ -223,7 +226,7 @@ resolve TOOL_IMAGE
 FAKE_SAVE_FAILS=1 ensure > "$FAKE/log" 2>&1 || fail "a failed save failed the job"
 grep -q '::warning::could not save' "$FAKE/log" || fail "no warning for the failed save"
 [ -z "$(out_of save_1)" ] || fail "a save was asked for an image that has no tarball"
-[ ! -e "$dir/$DIGEST.tar" ] && [ ! -e "$dir/$DIGEST.tar.part" ] || fail "a partial tarball was left"
+if [ -e "$dir/$DIGEST.tar" ] || [ -e "$dir/$DIGEST.tar.part" ]; then fail "a partial tarball was left"; fi
 
 echo "== an image under another digest is refused"
 fresh wrong
