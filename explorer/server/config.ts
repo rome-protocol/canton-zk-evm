@@ -26,6 +26,8 @@ export interface Config {
   rethUrl: string;
   rpcTimeoutMs: number;
   ledgerUrl: string;
+  /** A file holding the bearer token for a participant that needs one (mode 0600, read on every call); null reads Canton without a token. */
+  ledgerTokenFile: string | null;
   /** Canton's party id for the reader. The explorer reads Canton as this party only, so it has no default. */
   readerParty: string;
   pollMs: number;
@@ -182,6 +184,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),
     ledgerUrl: url(env, "LEDGER_URL", "http://127.0.0.1:7577"),
+    ledgerTokenFile: env.LEDGER_TOKEN_FILE || null,
     readerParty: env.READER_PARTY,
     pollMs: whole(env, "POLL_MS", 2000, 100),
     pins: parsePins(pinsText, basename(pinsPath)),

@@ -17,7 +17,7 @@ try {
   // With a database set, the tracker and the faucet keep their state in it, and the old files are imported once. Without one, nothing changes.
   const storage = await openStorage(config);
   const reth = createReth(config.rethUrl, config.rpcTimeoutMs);
-  const ledger = createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty);
+  const ledger = createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty, undefined, config.ledgerTokenFile);
   const index = createChainIndex(reth, ledger, config.pins, config.pollMs);
   const tracker = createTracker({ reth, index, file: config.tracker.file, ...storage.tracker, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, maxPendingMs: config.tracker.maxPendingMinutes * 60000, pollMs: config.pollMs });
   const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), ...storage.faucet, chainId: config.chainId, reth, tracker });
