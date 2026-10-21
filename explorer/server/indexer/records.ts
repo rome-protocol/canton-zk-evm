@@ -6,6 +6,9 @@
  * A line holds what the indexer read from Canton and nothing else: the record (header, transactions, proof, hashes, the two signatories), the
  * update's id, record time, effective time, synchronizer and template, and the participant the offset belongs to. No observer and no party but
  * the two signatories is ever in a database, so none is in a file.
+ *
+ * The history of reader moves (`reader-moved`: an old participant's last offset and moved-out time, the `reader_move_N` rows of `meta`) is not in a
+ * file, so a database built from one has no such trail: the participants it met read as they first were. The indexer carries on correctly without it.
  */
 import { createReadStream, createWriteStream, existsSync, renameSync, rmSync } from "node:fs";
 import { once } from "node:events";
