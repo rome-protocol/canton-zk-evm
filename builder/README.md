@@ -86,16 +86,19 @@ All from the environment.
 | `CZE_GENESIS` | The genesis file given to `make-input.sh` (default `network/genesis.json`). |
 | `CZE_MAKE_INPUT_CMD` | Default `prover/make-input.sh`. Called with `<block.json> <witness.json> <genesis.json> <out.bin>`. |
 | `CZE_PROVE_CMD` | Default `prover/prove-one.sh`. Called with `<input.bin> <out-folder>`; it must leave `<out-folder>/wrapped-proof.hex`. |
+| `CZE_BLOCK_STRATEGY` | The block-cutting strategy for `run`, the same as `--strategy` (default `on_demand`). |
+| `CZE_TRAFFIC_URL` | Where the builder's participant reports its traffic (a JSON answer with `extraTrafficConsumed`). Empty (the default): the traffic is not read and the journal says `null`. |
+| `CZE_SOURCE_COMMIT` | The commit the builder was started from, written to the journal at the start of a run. Default: `git rev-parse HEAD`, else `unknown`. |
 
 The prover is whatever `CZE_PROVE_CMD` runs. By default that is `prove-one.sh`, which sends the input to the prover through ZisK's own remote client, so `ZISK_COORDINATOR_URL` says which prover host. `prove-one.sh` also runs `cargo-zisk verify` on the proof; that check is not made under the pinned keys (`programVK`, `rootC`). The check under the pinned keys is the sidecar's, in Canton's confirmers. Any other command with the same two arguments works, for example a script that copies the input to the prover host over SSH and brings the proof back.
 
 ## Running it all the time
 
 ```sh
-python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--idle-ms 500] [--empty-every-seconds 0] [--status-file <path>] [--exclude-cooldown-seconds 600]
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600]
 ```
 
-`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as` and `--disclosed` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--empty-every-seconds N` greater than 0 it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
+`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as` and `--disclosed` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
 
 **Only one builder at a time.** `run` and `once` both take an exclusive lock on `builder.lock` in the work folder and refuse to start if another one has it, because two builders would move the same reth and race with their blocks. To make one block by hand while `run` is going, stop `run` first.
 
@@ -125,6 +128,7 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 | Field | What it holds |
 |---|---|
 | `state` | `running`, `stopped` (a signal) or `crashed` (anything else ended it) |
+| `runId`, `journalError` | the run's id in the journal, and `{time, error}` of the last journal write that failed (`null` if none) |
 | `startedAt`, `updatedAt` | UTC times |
 | `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |
 | `blocksCommitted`, `blocksRefused`, `blocksUnknown` | counts since the loop started |
@@ -138,6 +142,41 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 
 A status file that cannot be written is reported on stderr and does not stop the chain.
 
+## The block-cutting setting
+
+`run` takes `--strategy` (or `CZE_BLOCK_STRATEGY`). There is one strategy now, and it is the default:
+
+| Strategy | When a block is cut | Parameters |
+|---|---|---|
+| `on_demand` | When at least one transaction that can go in waits and no block is in flight (one block at a time is in flight). With `--gather-ms`, the producer waits that long after the first transaction reaches an idle pool, so a few more can share the block. | `--gather-ms` (default 0: cut at once), `--heartbeat-seconds` (default 0: never an empty block; `--empty-every-seconds` is the old name) |
+
+The producer refuses to start with a setting that cannot keep up, and says why: an unknown strategy, a negative number, a `--gather-ms` over 30,000 (a transaction would wait longer than a block takes), or a heartbeat shorter than an empty block takes to prove (6.3 s measured on the testnet's prover). `--test` marks the run in the journal as a flood or another test, so the explorer's statistics can leave it out.
+
+## The journal
+
+`run` appends one JSON line per event to `journal/YYYY-MM-DD.jsonl` in the work folder (the file of the line's own UTC day, so a new day is a new file). Each line is flushed and synced to disk, and so is the folder when a new file is made. Every line has `v` (the format version, 1), `run` (the run's id), `seq` (a number that starts again with every run, so (`run`, `seq`) is a line's key and a reader's place in the journal is the file and the byte offset) and `time` (UTC, in milliseconds). A line cut short by a crash is ended with a newline before the next one is written.
+
+A journal that cannot be written never stops the chain. The failure is in the status file (`journalError`: `{time, error}`, `null` once a write has worked again), the line is lost, and the next line tries again. A lost line leaves a gap in `seq`.
+
+**Per block attempt** (every line has `attempt`, the attempt's number in the run):
+
+| Event | When | Fields |
+|---|---|---|
+| `cut` | the producer decides to build | `number` (`null` if the build failed before Canton's head was read), `strategy`, `cut_reason` (`pool`, `gather`, `heartbeat`, `retry` or `probe`), `pool_waiting`, `idle_before_cut_ms`, `in_flight_at_cut` |
+| `built` | reth has made the block its head and the legs are matched | `block_hash`, `parent_hash`, `tx_hashes` in order, `gas_used`, `legs`, `rebuilds`, `left_out` (each with its reason) |
+| `skipped` | a build with no transaction that can go in (the attempt ends) | `left_out`, `rebuilds` |
+| `proof_queued`, `proof_started`, `proof_ended` | around the prover | `prover`; on the end `outcome` (`ok`, `failed` or `wrong_block`) and `seconds` |
+| `submitted` | just before `Advance` | `command_id`, `argument_bytes` (the size of `advance.json`) |
+| `answered` | Canton answered, or did not (the attempt ends) | `outcome` (`committed`, `refused`, `not_taken`, `unknown`, or `failed` when reth, the ledger or the prover failed it first, with `stage`), `reason`, `update_id` and `completion_offset` (from the submit-and-wait answer; `null` after a lost reply), `seconds`, `traffic_bytes` |
+| `resolved` | an unknown outcome was settled later | `outcome`: `committed` or `not committed` |
+| `final_seen` | reth's finalized block moved to the block | `number` |
+
+The command id is `ostia-<chain id>-<number>-<first 16 hex of the block hash>-<attempt>`, the same for the same block and attempt. `once` uses one too. The update id is the same on every participant, so it joins the producer's attempt to the reader's update. `traffic_bytes` is what the builder's participant used across `Advance` (`extraTrafficConsumed` after minus before, from `CZE_TRAFFIC_URL`). It is read only while no other block is in flight, and it is `null` where the participant does not report it or does not answer. A participant that does not answer never holds up a block.
+
+**Per run:** `run_started` (`strategy`, `settings`, `source_commit`; the settings include `test`), `pool` (`waiting`: reth's count of waiting transactions, at most once a second and only when it changes), `excluded` (a transaction left out, until when, and why), `lost` (transactions reth would not take back) and `run_stopped` (`state`).
+
+Per transaction, `built` says which transactions the block holds, and `answered` with `committed` says they are final.
+
 ## Tests
 
 ```sh
@@ -145,7 +184,7 @@ pip install --require-hashes -r builder/requirements.txt    # the WebSocket clie
 python3 -m unittest discover -s builder/tests
 ```
 
-The loop's tests are in `test_producer.py`: idle on an empty pool, a block when there is a transaction, the heartbeat, a pool with nothing includable (no block; a leg whose Canton side comes later; a transaction that arrives during a look; a replacement; claims nobody made), refusal and retry with backoff, suspects tried one block each, a service failure that is not a refusal, an unknown outcome (committed, and not committed with the transactions put back), a transaction the prover cannot finish (alone, beside a good one, among four, and a failure that goes away), a block cut short by a restart (its transactions given back before anything is built, ones reth already has or cannot use, an unreadable file, `once`), transactions reth will not take back (after a refusal, a left-out transaction and a failure), the idle checks (no pool fetch while idle or between looks), a proof of another block, each attempt's own output folder, a backoff past a thousand failures, a closed stdout, the status file, work folder pruning, the lock, the token file, and real `run` processes that are sent `SIGTERM` and a group `SIGINT` in the middle of a block.
+The journal's and the strategy's tests are in `test_journal.py`: a line for each outcome, the file synced and rotated, a journal that cannot be written, the command id, the update id, the traffic, the flags and the alias, `--gather-ms` and the heartbeat. The loop's tests are in `test_producer.py`: idle on an empty pool, a block when there is a transaction, the heartbeat, a pool with nothing includable (no block; a leg whose Canton side comes later; a transaction that arrives during a look; a replacement; claims nobody made), refusal and retry with backoff, suspects tried one block each, a service failure that is not a refusal, an unknown outcome (committed, and not committed with the transactions put back), a transaction the prover cannot finish (alone, beside a good one, among four, and a failure that goes away), a block cut short by a restart (its transactions given back before anything is built, ones reth already has or cannot use, an unreadable file, `once`), transactions reth will not take back (after a refusal, a left-out transaction and a failure), the idle checks (no pool fetch while idle or between looks), a proof of another block, each attempt's own output folder, a backoff past a thousand failures, a closed stdout, the status file, work folder pruning, the lock, the token file, and real `run` processes that are sent `SIGTERM` and a group `SIGINT` in the middle of a block.
 
 Python 3.12, standard library plus `websockets`. The tests use only fakes in `builder/tests/`: reth's WebSocket and Engine ports (with the gateway's `Leg` logs and proofs), the Ledger API, and shell scripts for the prover and input tool. The fake Engine port checks the token as reth does. Tests cover a good block end to end, a refusal and the move back, a failing prover, the token, the explicit transaction list and the gas cap.
 
