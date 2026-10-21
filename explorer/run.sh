@@ -25,7 +25,7 @@
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
 # The database: EXPLORER_DB_PASSWORD_FILE and FAUCET_CLIENT_KEY_FILE are mounted read-only like the faucet's key; EXPLORER_DB_HOST, EXPLORER_DB_PORT, EXPLORER_DB_USER and
-# EXPLORER_DB_NAME are passed on; EXPLORER_DATABASE_URL is taken from the environment and never put on the command. With none of them set, the files work as they always have.
+# EXPLORER_DB_NAME are passed on; EXPLORER_DATABASE_URL is taken from the environment and never put on the command. The explorer does not start without one of them: it reads the chain the indexer wrote from there.
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).

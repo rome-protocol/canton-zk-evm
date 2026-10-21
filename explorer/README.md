@@ -37,11 +37,11 @@ The server takes its settings from environment variables. A wrong value stops it
 | `READER_PARTY` | none, required | Canton's id for the reader party. The server stops at start, naming it, when it is not set |
 | `PINS_FILE` | `prover/fixtures/session.txt` | A file of `key=value` lines with `programVK` and `rootC`: the proving program and ZisK release this explorer expects. A run's `state/net/guest.txt` has the same form |
 | `CHAIN_ID`, `CHAIN_NAME`, `COIN_SYMBOL` | `770101`, `Ostia`, `tROME` | How the chain and its native coin are named on every page |
-| `RPC_TIMEOUT_MS`, `POLL_MS` | `5000`, `2000` | How long one call to reth may take, and how often the explorer looks for a new block |
+| `RPC_TIMEOUT_MS`, `POLL_MS` | `5000`, `2000` | How long one call to reth may take, and how often the transaction tracker looks at the transactions it holds |
 | `PUBLIC_RPC` | `0` | Set to `1` to serve the public RPC at `POST /rpc`. See [The public RPC](#the-public-rpc) |
 | `RPC_RATE_PER_MINUTE` | `300` | Calls per client address per minute on `/rpc`. A batch counts each of its calls |
 | `TRUSTED_IP_HEADER` | none | The request header that holds the client's address, such as `X-Real-IP`, for a server that sits behind a proxy that writes it. With none, the address of the connection is used |
-| `EXPLORER_DATABASE_URL`, or `EXPLORER_DB_PASSWORD_FILE` with its parts | none | The explorer's database (see [The database](#the-database)). With one set, the tracker and the faucet keep their state in it instead of in their files, only one API instance runs each loop, and `TRACKER_FILE` and `FAUCET_STATE_FILE` are imported once and renamed to `<file>.imported`. With none, the files work as they always have |
+| `EXPLORER_DATABASE_URL`, or `EXPLORER_DB_PASSWORD_FILE` with its parts | none, and the explorer does not start without it | The explorer's database (see [The database](#the-database)). It holds the chain the indexer writes, which the block and transaction pages read. The tracker and the faucet keep their state in it instead of in their files, only one API instance runs each loop, and `TRACKER_FILE` and `FAUCET_STATE_FILE` are imported once and renamed to `<file>.imported` |
 | `TRACKER_FILE` | none | Where the transaction tracker keeps its list across restarts. With none, the list is in memory only. `run.sh` mounts a writable folder for it and sets `/var/lib/explorer/tracker.json` |
 | `TRACKER_MAX`, `TRACKER_MAX_BYTES`, `TRACKER_PER_SENDER`, `TRACKER_MAX_PENDING_MINUTES` | `10000`, `16777216`, `64`, `60` | The most entries the tracker holds, the most characters of signed transactions it holds for open entries, the most open entries one sender may have, and how many minutes an open entry may stay without a block before it is dropped. See [The transaction tracker](#the-transaction-tracker) |
 | `FAUCET_KEY_FILE` | none | The faucet's key. With none, the faucet is off |
@@ -68,24 +68,24 @@ Two calls on the JSON Ledger API of the participant that holds the reader party,
 
 `server/proof.ts` reads three facts from the bytes of a block's proof: the program key, the ZisK release and the block hash its public values commit to. It compares each with this explorer's pins and with the block the record is for. Reading a value is not verifying the proof. Canton's confirmers verified it when the block committed, and the Verify button runs that check again, in the visitor's browser (see below).
 
-## The index
+## Final blocks, from the database
 
-`server/chain-index.ts` keeps the final blocks in memory, up to Canton's head. There is no database. At start it walks every block record on Canton once, then looks again every `POLL_MS`. For each block it keeps reth's hash, time, transaction count and gas used, the record's update id and record time, the proof's facts next to this explorer's pins, and the record's header, transactions and proof. For each transaction it keeps its block and place, for each contract a transaction created it keeps that transaction, and for each token it reads the name, symbol and decimals once. It keeps the two signers' party ids once per run.
+The block and transaction pages read the final blocks from the tables the indexer fills (`server/chain-db.ts`; the tables are in [The database](#the-database)). The server holds no copy of the chain in memory, and it does not walk Canton: the indexer does that, with its checks (reth's hash against the record's hash and the Keccak of its header, block 1 against reth's genesis, the records in order). The server only reads what the indexer wrote.
 
-It checks three things. reth's block hash, the hash in the record and the Keccak of the record's header must be the same. Block 1's record must name reth's genesis as its parent. And each record must be the next block in order. A failed check turns the status red and names the block, and so does a read of reth that fails while a block is being read. A failed read of Canton, or of reth's genesis, turns it red and says what failed. The status is also red until the first complete look at reth and Canton has finished (it says when the last one did), and the health check reads that status. A block that is still being proven is not in the index.
+A block that the indexer has not written yet is shown as being proven (`proving`), from reth, with no Canton side; a transaction in it is `proving` too. The status says `starting` until the indexer has written its first record, goes red with the text of each failed check the indexer keeps, and goes red naming the database when it cannot be read. The routes answer 502 for a database that cannot be read.
 
-A new run is noticed when reth's genesis changes, when reth's block of the newest indexed number is a different block, or when Canton's ledger end is lower than the offset of the newest block record the index holds. With no block held, it reads Canton from the start each time. The index then drops everything and walks again.
+The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_DB_PASSWORD_FILE` with its parts) `npm start` refuses to start and says so.
 
 ## The server and its API
 
-`npm start` runs `server/main.ts`: one process on plain `node:http`. It serves the pages from `dist/` (set `EXPLORER_DIST` to use another folder), gives the home page for any route the pages own, and answers `/api/*`. It follows Canton with the index, and reads reth for what the index does not hold: a block still being proven, a transaction waiting in the pool, an address.
+`npm start` runs `server/main.ts`: one process on plain `node:http`. It serves the pages from `dist/` (set `EXPLORER_DIST` to use another folder), gives the home page for any route the pages own, and answers `/api/*`. It reads the final blocks from the database, and reads reth for what the database does not hold: a block still being proven, a transaction waiting in the pool, an address.
 
 | Route | Answer |
 |---|---|
-| `GET /api/status` and `GET /healthz` | The same answer. The status code is 200 when reth and Canton can be read and the index's checks pass, and 503 when not. It names the chain, its coin, the pins, the newest final block, the newest ten final blocks (`latest`, newest first, for the home page's list), the block being proven if there is one, and the two signers of the block records |
+| `GET /api/status` and `GET /healthz` | The same answer. The status code is 200 when reth and Canton can be read and the indexer's checks pass, and 503 when not. It names the chain, its coin, the pins, the newest final block, the newest ten final blocks (`latest`, newest first, for the home page's list), the block being proven if there is one, and the two signers of the block records |
 | `GET /api/block/:number-or-hash` | The block's EVM side, and its Canton side when it is final: update id, record time, proof facts, whether the three hashes match, and the record's proof, header and transactions as hex. Its status is `final`, `proving` or `genesis` |
 | `GET /api/tx/:hash` | The transaction, its receipt, the decoded ERC-20 `transfer` if it is one, and its status: `final`, `proving` or `waiting` (in reth's pool, in no block yet). It also carries `state` (`pending`, `proving`, `final`, `replaced`, `dropped`) and `reason`, a plain sentence or null, from the [transaction tracker](#the-transaction-tracker). A transaction that reth no longer holds, but that this chain accepted, still answers with its state instead of 404. A hash that neither reth nor the tracker knows is 404 |
-| `GET /api/address/:address` | Balance, count of sent transactions, whether it is an account, a contract or a token, and the transaction that created it, if a block the index holds did |
+| `GET /api/address/:address` | Balance, count of sent transactions, whether it is an account, a contract or a token, and the transaction that created it, if a block the database holds did |
 | `GET /api/search?q=` | The page to open for what was typed (a block number, a block or transaction hash, an address or a Canton update id), or 404 |
 | `GET /api/faucet` | Whether the faucet is on, its address, its balance, what it gives per request and how long an address waits between requests |
 | `POST /api/faucet` | Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. Answers 202 with a ticket. See [The faucet](#the-faucet) |
@@ -119,7 +119,7 @@ The tracker is what stops a transaction that Ostia accepted from being lost with
 |---|---|
 | `pending` | In reth's pool, in no block |
 | `proving` | In a block that Canton has not committed yet |
-| `final` | In a block that is final on Canton. The tracker keeps the block and, when the index holds it, the Canton update id |
+| `final` | In a block that is final on Canton. The tracker keeps the block and, when the database holds it, the Canton update id |
 | `replaced` | Not in the chain, and the finalized nonce of the sender is past it: another transaction took its place |
 | `dropped` | It went missing and was sent again `10` times, reth refused it `5` times in a row when it was sent again, or the tracker was full and stopped following it (the reason says which) |
 
@@ -131,7 +131,7 @@ The tracker is bounded by count and by size. `TRACKER_MAX_BYTES` limits the sign
 
 With `TRACKER_FILE` set, the list is written to a temporary file that is then renamed over the real one, so a crash never leaves half a file. A burst of sends is one write, a second or so after the last change, and nothing is written when nothing changed. On SIGTERM or SIGINT the server stops, writes the list and then exits, so the transactions accepted just before a restart are in the file. `run.sh` mounts `<state>/explorer` as the only writable folder of the read-only container, and the list lives there.
 
-The Canton update id of a final transaction is filled in when the index holds the block, which can be a poll after reth's finalized number passes it.
+The Canton update id of a final transaction is filled in when the database holds the block, which can be a poll after reth's finalized number passes it.
 
 ## The pages
 
@@ -265,7 +265,7 @@ Set the database and the explorer applies the migrations at start, then runs the
 - **A restart in the middle of a batch.** The signed batch is written before the first send. The instance that takes over (after a restart, or when the leader dies) hands the signed transfers that may be in reth to the tracker and signs nothing twice. The new leader reads every queued and sent row in full before it signs anything, a row only moves forward (queued, sent, then final or failed), and a leader that loses the lock leaves its signed batch as it was written instead of rewriting it, so the next leader finds it and hands it to the tracker.
 - **Client addresses are kept as keyed hashes**, made with `FAUCET_CLIENT_KEY_FILE`. The hash of a request's client is removed after 90 days, and a request's signed bytes when it is final or failed. A transaction's signed bytes are removed 7 days after it settles.
 - **Acceptance** is written to `tx_lifecycle` (`accepted_at`, `accepted_via` = `rpc` or `faucet`, with the sender, the nonce and the tracker's state), in the API's own columns. `final` is never overwritten by another word.
-- **Moving over.** With the database set, `TRACKER_FILE` and `FAUCET_STATE_FILE` are read once at start, their contents go into the database (rows that exist are left alone, and the faucet's client addresses are hashed on the way in), and each file is renamed to `<file>.imported`. Without the database the two files work as before. `run.sh` passes the database on: it mounts `EXPLORER_DB_PASSWORD_FILE` and `FAUCET_CLIENT_KEY_FILE` read-only, forwards `EXPLORER_DB_HOST`, `EXPLORER_DB_PORT`, `EXPLORER_DB_USER` and `EXPLORER_DB_NAME`, and takes `EXPLORER_DATABASE_URL` from the environment without putting it on the command.
+- **Moving over.** With the database set, `TRACKER_FILE` and `FAUCET_STATE_FILE` are read once at start, their contents go into the database (rows that exist are left alone, and the faucet's client addresses are hashed on the way in), and each file is renamed to `<file>.imported`. `run.sh` passes the database on: it mounts `EXPLORER_DB_PASSWORD_FILE` and `FAUCET_CLIENT_KEY_FILE` read-only, forwards `EXPLORER_DB_HOST`, `EXPLORER_DB_PORT`, `EXPLORER_DB_USER` and `EXPLORER_DB_NAME`, and takes `EXPLORER_DATABASE_URL` from the environment without putting it on the command.
 
 The tests for these run with `EXPLORER_TEST_DATABASE_URL` set. `EXPLORER_TEST_STORE=database` runs the existing tracker and faucet tests against the database in the files' place.
 
