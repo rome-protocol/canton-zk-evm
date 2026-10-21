@@ -34,6 +34,16 @@ describe("the indexer's command", () => {
     expect(moved.out).toContain("participant id");
   });
 
+  it("refuses clear-check without a check, and for any check but C10, before it touches a database", async () => {
+    const env = { EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" };
+    const none = await run(env, null, ["clear-check"]);
+    expect(none.code).toBe(1);
+    expect(none.out).toContain("clear-check C10");
+    const other = await run(env, null, ["clear-check", "C4"]);
+    expect(other.code).toBe(1);
+    expect(other.out).toContain("only C10");
+  });
+
   describe.skipIf(!TEST_URL)("against the database", () => {
     checkRequired();
     it("reset --yes empties the tables and reader-moved records a move, through the command", async () => {
@@ -50,6 +60,10 @@ describe("the indexer's command", () => {
         expect(reset.code).toBe(0);
         expect((await pool.query("select key from meta")).rows.map((r) => r.key)).toEqual(["partition_width"]);
         expect((await pool.query("select count(*) as n from canton_participants")).rows[0].n).toBe("0");
+        await pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'degraded', '{\"block\":7}', now(), now())");
+        const cleared = await run({ EXPLORER_DATABASE_URL: dbUrl }, null, ["clear-check", "C10"]);
+        expect(cleared.code).toBe(0);
+        expect((await pool.query("select status, value from health_checks where check_id = 'C10'")).rows[0]).toMatchObject({ status: "ok", value: { clearedBlock: 7 } });
       });
     }, 20_000);
 

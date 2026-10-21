@@ -12,7 +12,7 @@ import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/
 import type { BlockRecord, Ledger } from "../ledger.ts";
 import { RethError } from "../reth.ts";
 import { IndexerStop, RethBehind } from "./errors.ts";
-import { clearStops, setHealth } from "./health.ts";
+import { clearStops, setHealth, type HealthRow } from "./health.ts";
 import { legHash, legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
@@ -87,6 +87,8 @@ export function createIndexer(o: IndexerOptions) {
   /** What the walk has seen of Canton, for C4 and C5: the newest block number in any page it read, and the record it is on (read, not yet indexed). */
   let newestSeen = 0;
   let pending: { number: number; since: number } | null = null;
+  /** When the ledger end was first seen past the cursor with no record indexed since, while the walk has not reached it: C5's lag when the walk cannot read a record at all. */
+  let waitingSince: number | null = null;
   /** When C4 first saw reth's finalized more than one block behind the newest record, while it stays so. */
   let behindSince: number | null = null;
   /** The highest block number that has a partition in every partitioned table. */
@@ -115,6 +117,8 @@ export function createIndexer(o: IndexerOptions) {
       }
     }
     await clearStops(o.pool, ["pins"]);
+    // A database indexed before the chain instance was kept has it from block 1's record.
+    await o.pool.query("insert into meta (key, value) select 'chain_instance', update_id from blocks where number = 1 on conflict do nothing");
     await o.pool.query("insert into cursors (stream, position, updated_at) values ('derive', 0, now()) on conflict do nothing");
     participantId = await o.ledger.participantId();
   }
@@ -175,7 +179,7 @@ export function createIndexer(o: IndexerOptions) {
   }
 
   /** (c): the first record after the cursor is the next block, or a block already indexed (a replay) with the same hash. */
-  async function guardFirstRecord(r: BlockRecord, head: { number: number; hash: string } | null): Promise<void> {
+  async function guardFirstRecord(r: BlockRecord, head: { number: number; hash: string } | null, cursorPosition: number): Promise<void> {
     const headNumber = head?.number ?? 0;
     if (r.number === headNumber + 1) return;
     if (r.number <= headNumber) {
@@ -183,8 +187,10 @@ export function createIndexer(o: IndexerOptions) {
       if (have && "0x" + have.toString("hex") === r.blockHash) return;
       throw otherChain(`the first record after the cursor is block ${r.number} with hash ${r.blockHash}, not the one indexed`, headNumber, { head: headNumber, record: r.number, recordHash: r.blockHash });
     }
-    const move = (await o.pool.query("select value from meta where key like 'reader\\_move\\_%' order by key desc limit 1")).rows[0]?.value as string | undefined;
-    const after = move ? ` after the move to participant ${JSON.parse(move).to}` : "";
+    // The move is named only while the cursor is still at the new participant's start, and the latest is the highest number (not the highest text).
+    const moves = cursorPosition === 0 ? (await o.pool.query("select key, value from meta where key like 'reader\\_move\\_%'")).rows as { key: string; value: string }[] : [];
+    const move = moves.sort((a, b) => Number(b.key.slice("reader_move_".length)) - Number(a.key.slice("reader_move_".length)))[0];
+    const after = move ? ` after the move to participant ${JSON.parse(move.value).to}` : "";
     throw otherChain(`there is a gap${after}: the first record after the cursor is block ${r.number}, and block ${headNumber + 1} was expected`, headNumber, { head: headNumber, record: r.number, expected: headNumber + 1 });
   }
 
@@ -253,6 +259,7 @@ export function createIndexer(o: IndexerOptions) {
       const end = await o.ledger.ledgerEnd();
       const head = await indexedHead();
       await guardChain(head, cursor.position, end);
+      if (end > cursor.position) waitingSince ??= now(); else waitingSince = null;
       if (end > cursor.position) {
         let from = cursor.position;
         let first = true;
@@ -264,15 +271,17 @@ export function createIndexer(o: IndexerOptions) {
             if (!isRunning()) break walk;
             if (first) {
               first = false;
-              await guardFirstRecord(r, head);
+              await guardFirstRecord(r, head, cursor.position);
             }
             pending ??= { number: r.number, since: Date.parse(r.recordTime) };
             await indexRecord(r, from);
             pending = null;
+            waitingSince = null;
             from = r.offset;
             indexed++;
           }
         }
+        if (isRunning()) waitingSince = null;
       }
       pending = null;
       if (!inline || stopRequested) return { state: "caught-up", indexed };
@@ -281,6 +290,7 @@ export function createIndexer(o: IndexerOptions) {
     } catch (e) {
       if (e instanceof RethBehind) return { state: "reth-behind", indexed };
       if (e instanceof IndexerStop) return { state: "stopped", indexed, stop: await stop(e) };
+      waitingSince ??= now(); // a read that failed with records still waiting: C5 counts from here
       throw e;
     }
   }
@@ -297,24 +307,35 @@ export function createIndexer(o: IndexerOptions) {
     const t = now();
     const head = (await indexedHead())?.number ?? 0;
     const newest = Math.max(newestSeen, head);
-    const finalized = (await o.reads.finalized()) ?? 0;
-    const behind = newest - finalized;
-    if (behind > BEHIND_BLOCKS) behindSince ??= t; else behindSince = null;
-    const c4 = behindSince !== null && t - behindSince > BEHIND_FOR_MS;
-    const lagSeconds = pending ? Math.max(0, Math.round((t - pending.since) / 100) / 10) : 0;
+    // C5 and derive_lag read only the database and Canton's side, so a reth that does not answer must not stop them: C4 says so itself.
+    let finalized = 0;
+    let c4Row: HealthRow;
+    try {
+      finalized = (await o.reads.finalized()) ?? 0;
+      const behind = newest - finalized;
+      if (behind > BEHIND_BLOCKS) behindSince ??= t; else behindSince = null;
+      const c4 = behindSince !== null && t - behindSince > BEHIND_FOR_MS;
+      c4Row = { id: "C4", status: c4 ? "degraded" : "ok", value: { finalized, newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS },
+        detail: c4 ? `reth's finalized block ${finalized} is ${behind} blocks behind the newest record, block ${newest}` : null };
+    } catch (e) {
+      c4Row = { id: "C4", status: "degraded", value: { newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS }, detail: `reth's finalized block cannot be read: ${(e as Error).message}` };
+    }
+    // The lag in seconds is the longer of two: the record the walk is on, and the time since the ledger end was ahead of the cursor with no progress (a walk that cannot read yields no record).
+    const waited = Math.max(pending ? t - pending.since : 0, waitingSince !== null ? t - waitingSince : 0);
+    const lagSeconds = Math.max(0, Math.round(waited / 100) / 10);
     const lagBlocks = Math.max(0, newest - head);
     const at = await deriveCursor(o.pool);
     const waiting = await o.pool.query("select extract(epoch from now() - indexed_at) as s from blocks where number = $1", [at + 1]);
     const deriveSeconds = waiting.rowCount ? Math.max(0, Math.round(Number(waiting.rows[0].s) * 10) / 10) : 0;
     await setHealth(o.pool, [
-      { id: "C4", status: c4 ? "degraded" : "ok", value: { finalized, newest }, threshold: { behindBlocks: BEHIND_BLOCKS, forMs: BEHIND_FOR_MS },
-        detail: c4 ? `reth's finalized block ${finalized} is ${behind} blocks behind the newest record, block ${newest}` : null },
+      c4Row,
       { id: "C5", status: lagSeconds > DOWN_LAG_S ? "down" : lagSeconds > DEGRADED_LAG_S ? "degraded" : "ok", value: { lagBlocks, lagSeconds }, threshold: { degradedSeconds: DEGRADED_LAG_S, downSeconds: DOWN_LAG_S },
         detail: lagSeconds > DEGRADED_LAG_S ? `the index is ${lagBlocks} blocks behind, and its oldest waiting record became readable ${lagSeconds} s ago` : null },
       { id: "derive_lag", status: deriveSeconds > DERIVE_LAG_S ? "degraded" : "ok", value: { blocks: Math.max(0, head - at), seconds: deriveSeconds }, threshold: { degradedSeconds: DERIVE_LAG_S },
         detail: deriveSeconds > DERIVE_LAG_S ? `stage 2 is ${Math.max(0, head - at)} blocks behind stage 1, and the block it waits on was indexed ${deriveSeconds} s ago` : null },
     ]);
-    await o.pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'ok', null, now(), now()) on conflict do nothing");
+    // C10 is written only by blocks that have legs; its row is made ok when none was seen, and its look is refreshed (the status is not) so that a quiet chain does not read as a stale check.
+    await o.pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'ok', null, now(), now()) on conflict (check_id) do update set checked_at = now()");
   }
 
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */

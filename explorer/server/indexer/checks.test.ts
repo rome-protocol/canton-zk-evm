@@ -4,7 +4,8 @@ import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import type { BlockRecord } from "../ledger.ts";
-import { readerMoved, resetChain } from "./admin.ts";
+import { advisoryLeader, FAUCET_LOCK, TRACKER_LOCK } from "../leader.ts";
+import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { legHash } from "./legs.ts";
 
@@ -382,6 +383,123 @@ describe.skipIf(!TEST_URL)("explorer reader-moved", () => {
       await indexedOnOld(pool);
       await expect(readerMoved(pool, "PAR::old")).rejects.toThrow(/already/);
       await expect(readerMoved(pool, "")).rejects.toThrow(/participant id/);
+    });
+  });
+});
+
+describe.skipIf(!TEST_URL)("review fixes: a walk that cannot read, the checks without reth, and the loose ends", () => {
+  checkRequired();
+
+  it("C5 goes degraded and then down while the ledger end is ahead of the cursor and the walk cannot read a record", async () => {
+    await inDb(async (pool) => {
+      let now = at(2, 0);
+      const chain = makeChain(shapes(5));
+      chain.ledger.ledgerHead = 2;
+      const ix = await start(pool, chain, { now: () => now });
+      await ix.runOnce();
+      chain.ledger.ledgerHead = 5;
+      chain.ledger.failAfterPages = 0;
+      for (const plus of [0, 6000, 31_000]) {
+        now = at(3, plus);
+        await expect(ix.runOnce()).rejects.toThrow(/Canton timed out/);
+        await ix.checkOnce();
+        const c5 = await row(pool, "C5");
+        expect(c5.status, `at +${plus}`).toBe(plus === 0 ? "ok" : plus === 6000 ? "degraded" : "down");
+        expect(c5.value.lagSeconds).toBe(plus / 1000);
+      }
+      chain.ledger.failAfterPages = null;
+      expect(await ix.runOnce()).toEqual({ state: "caught-up", indexed: 3 });
+      await ix.checkOnce();
+      expect(await row(pool, "C5")).toMatchObject({ status: "ok", value: { lagBlocks: 0, lagSeconds: 0 } });
+    });
+  });
+
+  it("the checks that do not need reth are written when reth's finalized cannot be read, and C4 says why", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain(shapes(2));
+      const ix = await start(pool, chain);
+      await ix.runOnce();
+      await pool.query("delete from health_checks where check_id in ('C4', 'C5', 'derive_lag')");
+      chain.reads.finalized = async () => { throw new Error("reth did not answer"); };
+      await ix.checkOnce();
+      expect(await row(pool, "C4")).toMatchObject({ status: "degraded" });
+      expect((await row(pool, "C4")).detail).toContain("reth did not answer");
+      expect((await row(pool, "C5")).status).toBe("ok");
+      expect((await row(pool, "derive_lag")).status).toBe("ok");
+    });
+  });
+
+  it("C10's checked_at moves with every look while its status stays, and clear-check sets it ok and says who", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1, leg: 1 }, { txs: 1 }]);
+      chain.blocks[0]!.legsHash = "0x" + "11".repeat(32);
+      const ix = await start(pool, chain);
+      await ix.runOnce();
+      await pool.query("update health_checks set checked_at = now() - interval '1 hour' where check_id = 'C10'");
+      await ix.checkOnce();
+      const fresh = (await pool.query("select status, extract(epoch from now() - checked_at) as age from health_checks where check_id = 'C10'")).rows[0];
+      expect(fresh.status).toBe("degraded");
+      expect(Number(fresh.age)).toBeLessThan(30);
+      await expect(clearCheck(pool, "C4", "ana")).rejects.toThrow(/C10/);
+      await clearCheck(pool, "C10", "ana");
+      expect(await row(pool, "C10")).toMatchObject({ status: "ok", value: { clearedBy: "ana", clearedBlock: 1 } });
+    });
+  });
+
+  it("backfills chain_instance at open from block 1 for a database that was indexed before it was kept", async () => {
+    await inDb(async (pool) => {
+      const a = makeChain(shapes(2));
+      const ix = await start(pool, a);
+      await ix.runOnce();
+      await ix.close();
+      await pool.query("delete from meta where key = 'chain_instance'");
+      expect(await meta(pool, "chain_instance")).toBeUndefined();
+      await start(pool, a);
+      expect(await meta(pool, "chain_instance")).toBe(a.blocks[0]!.record.updateId);
+    });
+  });
+
+  it("the gap message names the latest move by its number (10 after 9), and only while the cursor is at the new participant's start", async () => {
+    await inDb(async (pool) => {
+      const a = makeChain(shapes(6));
+      const first = await start(pool, a, { ledger: ledgerView(a) });
+      a.reads.rethHead = 3;
+      await first.runOnce();
+      await first.close();
+      a.reads.rethHead = 6;
+      for (const n of [9, 10]) await pool.query("insert into meta (key, value) values ($1, $2)", [`reader_move_${n}`, JSON.stringify({ from: "PAR::x", to: `PAR::move${n}` })]);
+      // The cursor is past the new participant's start: the gap is not about the move.
+      const later = await start(pool, a, { ledger: ledgerView(a, { from: 5 }) });
+      expect((await later.runOnce()).state).toBe("stopped");
+      expect((await row(pool, "chain_instance")).detail).not.toContain("PAR::move");
+      await later.close();
+      await pool.query("update health_checks set status = 'ok' where check_id = 'chain_instance'");
+      await pool.query("update cursors set position = 0 where stream = 'reader_updates'");
+      const ix = await start(pool, a, { ledger: ledgerView(a, { from: 5, shift: -40 }) });
+      expect((await ix.runOnce()).state).toBe("stopped");
+      expect((await row(pool, "chain_instance")).detail).toContain("PAR::move10");
+    });
+  });
+
+  it("reset refuses a database that is not the explorer's, and one whose API still holds the tracker or faucet lock", async () => {
+    await withDatabase(async (pool, url) => {
+      await pool.query("create table somebody_elses (x int)");
+      await pool.query("insert into somebody_elses values (1)");
+      await expect(resetChain(pool)).rejects.toThrow(/explorer/);
+      expect(Number((await pool.query("select count(*) as n from somebody_elses")).rows[0].n)).toBe(1);
+      await migrate(pool);
+      const ix = await start(pool, makeChain(shapes(2)));
+      await ix.runOnce();
+      await ix.close();
+      for (const which of [TRACKER_LOCK, FAUCET_LOCK]) {
+        const api = advisoryLeader({ connectionString: url }, which);
+        expect(await api.isLeader()).toBe(true);
+        await expect(resetChain(pool)).rejects.toThrow(/API/);
+        expect(await blocks(pool)).toBe(2);
+        await api.release();
+      }
+      expect((await resetChain(pool)).tables).toBeGreaterThan(10);
+      expect(await blocks(pool)).toBe(0);
     });
   });
 });
