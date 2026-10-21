@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Pool } from "pg";
+import { READ_BACK_SECONDS } from "./leader.ts";
 import type { Entry } from "./tracker.ts";
 
 /**
@@ -187,7 +188,7 @@ export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
     remembered: () => written.size,
     async changes() {
       // A little before the last reading: a row that committed late, with an older time, is read once more instead of missed.
-      const { rows } = await pool.query<Row>(`select ${COLUMNS} from tracked_transactions where updated_at > $1::timestamptz - interval '5 seconds' order by updated_at`, [cursor ?? new Date(0)]);
+      const { rows } = await pool.query<Row>(`select ${COLUMNS} from tracked_transactions where updated_at > $1::timestamptz - interval '${READ_BACK_SECONDS} seconds' order by updated_at`, [cursor ?? new Date(0)]);
       for (const r of rows) if (cursor === null || r.updated_at > cursor) cursor = r.updated_at;
       const adopted = rows.map(entryOf).filter((e) => written.get(e.hash) !== signature(e));
       for (const e of adopted) written.set(e.hash, signature(e));

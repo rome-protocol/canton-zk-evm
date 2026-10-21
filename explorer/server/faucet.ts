@@ -337,6 +337,34 @@ export function createFaucet(o: FaucetOptions): Faucet {
     trim();
   }
 
+  /**
+   * On taking the lead: every queued and sent row is read in full, and the database copy replaces what this instance holds for them. The windowed read of
+   * catchUp() can miss a row for good (one that committed late, with an older time than rows already read), and a stale "queued" copy of a row the old leader
+   * signed would be signed again.
+   */
+  async function readUnsettled(): Promise<void> {
+    if (!store?.unsettled) return;
+    let rows: Ticket[];
+    try {
+      const known = [...tickets.values()].filter((t) => !t.claiming && (t.status === "queued" || t.status === "sent")).map((t) => t.id);
+      rows = await store.unsettled(known);
+    } catch (e) {
+      console.error(`faucet: cannot read the database: ${(e as Error).message}`);
+      return;
+    }
+    for (const r of rows) {
+      const mine = tickets.get(r.id);
+      if (!mine) { tickets.set(r.id, r); continue; }
+      if (mine.claiming) continue;
+      const was = mine.status;
+      Object.assign(mine, r);
+      if (r.status === "failed" && was !== "failed") refund(mine);
+    }
+    // The queue is what the tickets say it is, oldest first.
+    const next = [...tickets.values()].filter((t) => t.status === "queued").sort((a, b) => a.at - b.at);
+    queue.splice(0, queue.length, ...next);
+  }
+
   // --- the limits
   function forget(t: number): void {
     for (const [m, ms] of [[addresses, addressMs], [ips, ipMs]] as const) for (const [k, at] of m) { if (at + ms > t) break; m.delete(k); }
@@ -496,7 +524,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       const lead = await leader.isLeader();
       // The old leader may have written between the read above and the lock just taken. Once the lock is held, the database is the record: it is read
       // again, as a follower reads it, before this instance rebuilds from it or signs anything.
-      if (lead && !was) await catchUp();
+      if (lead && !was) { await catchUp(); await readUnsettled(); }
       leading = lead;
       if (!leading) return;
       if (!was) { rebuildSets(); recover(); settling = true; }
@@ -558,10 +586,10 @@ export function createFaucet(o: FaucetOptions): Faucet {
       return;
     }
     // Still the lead, just before the first send: a lock lost during the signing means another instance may be taking over.
+    // The batch stays as it was written, queued with its bytes: whichever instance leads next hands it to the tracker as sent. Clearing it here and writing
+    // that would undo what the new leader has already written about it, and the request would be signed and paid again.
     if (store?.changes && !(await leader.isLeader())) {
       leading = false;
-      for (const t of going) { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
-      void save();
       return;
     }
     for (const t of going) {
@@ -592,8 +620,10 @@ export function createFaucet(o: FaucetOptions): Faucet {
       }
       if (stopBatch) break;
     }
-    // What was not sent goes back to waiting, with no signature kept: it is signed again from reth's count at the next batch.
-    for (const t of going) if (t.status !== "sent") { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
+    // What was not sent goes back to waiting, with no signature kept: it is signed again from reth's count at the next batch. If the lock was lost during
+    // the sends, they are left as they are written (queued, with their bytes), for the same reason as above: the new leader may have taken them already.
+    if (store?.changes && going.some((t) => t.status !== "sent") && !(await leader.isLeader())) leading = false;
+    else for (const t of going) if (t.status !== "sent") { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
     if (batchId != null) await store?.batchSent?.(batchId, now()).catch(() => undefined);
     await save();
   }

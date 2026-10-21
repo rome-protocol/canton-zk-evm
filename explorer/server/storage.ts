@@ -1,6 +1,6 @@
 import { existsSync, renameSync } from "node:fs";
 import pg from "pg";
-import type { Config } from "./config.ts";
+import { ConfigError, type Config } from "./config.ts";
 import { migrate } from "./db/migrate.ts";
 import { TICKETS_MAX, type FaucetOptions } from "./faucet.ts";
 import { clientHasher, databaseFaucetStore, fileFaucetStore, loadClientKey, type FaucetStore } from "./faucet-store.ts";
@@ -45,6 +45,10 @@ export interface OpenOptions {
 
 export async function openStorage(config: Config, opts: OpenOptions = {}): Promise<Storage> {
   if (!config.database) return noStorage;
+  // Checked here, where the faucet's store is opened, and not in loadConfig: the indexer reads the same settings and never opens a faucet store.
+  if (config.faucet.keyFile && !config.faucet.clientKeyFile) {
+    throw new ConfigError("FAUCET_CLIENT_KEY_FILE must be set when the faucet keeps its state in the database: client addresses are stored only as hashes made with that key (64 hex digits, a file only its owner can read)");
+  }
   const pool = new pg.Pool({ ...config.database, max: 10 });
   pool.on("error", (e) => console.error(`explorer: the database connection failed: ${e.message}`));
   try {
@@ -62,8 +66,7 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
 
     let faucetStore: FaucetStore | undefined, clientKeyHash: ((c: string) => string) | undefined;
     if (config.faucet.keyFile) {
-      if (!config.faucet.clientKeyFile) throw new Error("FAUCET_CLIENT_KEY_FILE must be set when the faucet uses the database");
-      clientKeyHash = clientHasher(loadClientKey(config.faucet.clientKeyFile));
+      clientKeyHash = clientHasher(loadClientKey(config.faucet.clientKeyFile!));
       faucetStore = databaseFaucetStore(pool, config.faucet.amountWei, opts.now);
       const sf = config.faucet.stateFile;
       if (sf && existsSync(sf)) {

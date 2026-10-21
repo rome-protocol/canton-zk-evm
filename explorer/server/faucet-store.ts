@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { ConfigError } from "./config.ts";
 import type { Ticket, TicketStatus } from "./faucet.ts";
-import { CLAIM_LOCK, LOCK_CLASS } from "./leader.ts";
+import { CLAIM_LOCK, LOCK_CLASS, READ_BACK_SECONDS } from "./leader.ts";
 
 /** What the faucet keeps: each address's last request, each client's, the requests of the last hour, and the tickets. */
 export interface FaucetState {
@@ -35,6 +35,8 @@ export interface FaucetStore {
   find?(id: string): Promise<Ticket | null>;
   /** Every request that is queued in the database, whatever this store has read before. The leader takes the ones it does not hold. */
   queued?(): Promise<Ticket[]>;
+  /** Every row that is queued or sent, and the rows named in `known`, read in full whatever this store has read before. The database copy is the record when an instance takes the lead. */
+  unsettled?(known: string[]): Promise<Ticket[]>;
   /** How many rows the store holds a signature for (it follows the list given to save). */
   remembered?(): number;
   /** A batch is signed and written before the first send; this records it and says its number. */
@@ -145,23 +147,34 @@ const INSERT = `
   insert into faucet_requests (ticket, address, client_key, amount, state, reason, batch_id, nonce, tx_hash, signed_raw, counts, requested_at, sent_at, final_at, final_block, tries, sent_nonce, watching, updated_at)
   values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, case when $5 in ('sent', 'final') then $13::timestamptz end, case when $5 = 'final' then $13::timestamptz end, $14, $15, $16, $17, now())
   on conflict (ticket) do`;
+/**
+ * A row only moves forward: queued, then sent, then final or failed. An instance that lost the lead may still be writing what it knew when it lost it, and
+ * that write must not undo the new leader's work (a sent row back to queued, with no bytes and no hash, would be signed and paid again). A sent row keeps its
+ * hash and nonce for good. A queued row may be rewritten as it is (the leader resets a batch it did not send).
+ */
 const UPDATE = ` update set
-    state = excluded.state, reason = excluded.reason, batch_id = coalesce(excluded.batch_id, faucet_requests.batch_id), nonce = excluded.nonce, tx_hash = excluded.tx_hash,
+    state = excluded.state, reason = excluded.reason, batch_id = coalesce(excluded.batch_id, faucet_requests.batch_id), nonce = excluded.nonce,
+    tx_hash = case when faucet_requests.state = 'queued' then excluded.tx_hash else coalesce(excluded.tx_hash, faucet_requests.tx_hash) end,
     signed_raw = excluded.signed_raw, counts = excluded.counts, sent_at = coalesce(faucet_requests.sent_at, excluded.sent_at), final_at = coalesce(faucet_requests.final_at, excluded.final_at),
-    final_block = excluded.final_block, tries = excluded.tries, sent_nonce = excluded.sent_nonce, watching = excluded.watching, updated_at = now()`;
+    final_block = excluded.final_block, tries = excluded.tries,
+    sent_nonce = case when faucet_requests.state = 'queued' then excluded.sent_nonce else coalesce(excluded.sent_nonce, faucet_requests.sent_nonce) end,
+    watching = excluded.watching, updated_at = now()
+  where faucet_requests.state = 'queued' or faucet_requests.state = excluded.state or (faucet_requests.state = 'sent' and excluded.state in ('final', 'failed'))`;
 
 /** The tickets in the explorer's database. A request that came to nothing has `counts` false, so its address and client get their turn back. */
 export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => number = Date.now): FaucetStore {
   const written = new Map<string, string>();
   let cursor: Date | null = null;
+  /** Rows a write of ours did not change, because the database was ahead of us: the next read takes them whatever their time says. */
+  const behind = new Set<string>();
 
-  /** Writes a ticket as it stands in the copy it is given, and says what it wrote. The caller records it as written once the transaction has committed. */
-  async function put(c: PoolClient, t: Ticket, keepExisting = false): Promise<[string, string]> {
-    await c.query(INSERT + (keepExisting ? " nothing" : UPDATE), [
+  /** Writes a ticket as it stands in the copy it is given, and says what it wrote (and whether the row took it). The caller records it as written once the transaction has committed. */
+  async function put(c: PoolClient, t: Ticket, keepExisting = false): Promise<[string, string, boolean]> {
+    const done = await c.query(INSERT + (keepExisting ? " nothing" : UPDATE), [
       uuidOf(t.id), bytes(t.to), bytes(t.ip) ?? Buffer.alloc(0), amountWei.toString(), t.status, t.reason, t.batch ?? null, t.nonce ?? t.sentNonce ?? null, bytes(t.hash), bytes(t.raw),
       t.status !== "failed", new Date(t.at), new Date(now()), t.status === "final" ? t.block : null, t.tries, t.sentNonce ?? null, t.watch === true, 
     ]);
-    return [t.id, signature(t)];
+    return [t.id, signature(t), (done.rowCount ?? 0) > 0];
   }
 
   async function inTransaction<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -207,8 +220,8 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       const changed = tickets.filter((t) => written.get(t.id) !== signature(t) && !t.claiming).map((t) => ({ ...t }));
       if (!changed.length) return true;
       try {
-        const done = await inTransaction(async (c) => { const out: Array<[string, string]> = []; for (const t of changed) out.push(await put(c, t)); return out; });
-        for (const [id, sig] of done) written.set(id, sig);
+        const done = await inTransaction(async (c) => { const out: Array<[string, string, boolean]> = []; for (const t of changed) out.push(await put(c, t)); return out; });
+        for (const [id, sig, took] of done) { if (took) written.set(id, sig); else behind.add(id); }
         return true;
       } catch (e) {
         console.error(`faucet: cannot write the database: ${(e as Error).message}`);
@@ -217,7 +230,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     },
     async claim(t, r) {
       const copy = { ...t };
-      let wrote: [string, string] | null = null;
+      let wrote: [string, string, boolean] | null = null;
       const refused = await inTransaction(async (c) => {
         await c.query("select pg_advisory_xact_lock($1, $2)", [LOCK_CLASS, CLAIM_LOCK]);
         const { rows } = await c.query<{ address: boolean; ip: boolean; hour: string }>(
@@ -237,7 +250,12 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       return refused;
     },
     async changes() {
-      const { rows } = await pool.query<Row>(`select ${COLUMNS} from faucet_requests where updated_at > $1::timestamptz - interval '5 seconds' order by updated_at`, [cursor ?? new Date(0)]);
+      const late = [...behind].map(uuidOf);
+      behind.clear();
+      const { rows } = await pool.query<Row>(
+        `select ${COLUMNS} from faucet_requests where updated_at > $1::timestamptz - interval '${READ_BACK_SECONDS} seconds' or ticket = any($2::uuid[]) order by updated_at`,
+        [cursor ?? new Date(0), late],
+      );
       for (const r of rows) if (cursor === null || r.updated_at > cursor) cursor = r.updated_at;
       const fresh = rows.map(ticketOf).filter((t) => written.get(t.id) !== signature(t));
       for (const t of fresh) written.set(t.id, signature(t));
@@ -253,6 +271,15 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async queued() {
       const { rows } = await pool.query<Row>(`select ${COLUMNS} from faucet_requests where state = 'queued' order by requested_at, ticket`);
       return rows.map(ticketOf);
+    },
+    async unsettled(known) {
+      const { rows } = await pool.query<Row>(
+        `select ${COLUMNS} from faucet_requests where state in ('queued', 'sent') or ticket = any($1::uuid[]) order by requested_at, nonce nulls last, ticket`,
+        [known.filter((id) => /^[0-9a-f]{24}$/.test(id)).map(uuidOf)],
+      );
+      const tickets = rows.map(ticketOf);
+      for (const t of tickets) written.set(t.id, signature(t));
+      return tickets;
     },
     remembered: () => written.size,
     async batchSigned(firstNonce, size, at) {

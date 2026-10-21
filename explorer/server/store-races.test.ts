@@ -8,7 +8,7 @@ import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "./db/t
 import { createFaucet, type Faucet, type Ticket } from "./faucet.ts";
 import { clientHasher, databaseFaucetStore } from "./faucet-store.ts";
 import { advisoryLeader, FAUCET_LOCK, TRACKER_LOCK, type Leader } from "./leader.ts";
-import { createReth } from "./reth.ts";
+import { createReth, RethError } from "./reth.ts";
 import { createTracker, type Entry } from "./tracker.ts";
 import { databaseTrackerStore } from "./tracker-store.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
@@ -105,12 +105,15 @@ d("the faucet on a shared database", () => {
     closers.push(() => fake.close());
     return fake;
   };
-  async function faucetOn(reth: { url: string }, pool: Pool = db.pool, leader?: (real: Leader) => Leader, balance?: () => string): Promise<Faucet> {
+  async function faucetOn(reth: { url: string }, pool: Pool = db.pool, leader?: (real: Leader) => Leader, balance?: () => string, extra: { tracker?: boolean; sendRaw?: (send: (raw: string) => Promise<string>, raw: string) => Promise<string> } = {}): Promise<Faucet> {
     const real = createReth(reth.url, 5000);
     const real_ = advisoryLeader({ connectionString: db.url }, FAUCET_LOCK);
+    // A tracker that does what the real one does with the bytes it is handed: it sends them to reth.
+    const held = new Set<string>();
+    const tracker = extra.tracker ? { track: (raw: string, hash: string) => { held.add(hash); void real.sendRaw(raw as Hex).catch(() => undefined); }, state: (h: string) => (held.has(h) ? ({ state: "final" } as never) : undefined), admit: () => null } : undefined;
     const f = createFaucet({
-      key: KEY, chainId: 770101, amountWei: COIN, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 100000, batch: 5, queueMax: 5000, stateFile: null, captcha: null,
-      reth: balance ? { ...real, balance: async () => BigInt(balance()) } : real,
+      key: KEY, chainId: 770101, amountWei: COIN, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 100000, batch: 5, queueMax: 5000, stateFile: null, captcha: null, tracker,
+      reth: { ...(balance ? { ...real, balance: async () => BigInt(balance()) } : real), ...(extra.sendRaw ? { sendRaw: (raw: string) => extra.sendRaw!((r) => real.sendRaw(r), raw) } : {}) },
       store: databaseFaucetStore(pool, COIN), leader: leader ? leader(real_) : real_, clientKeyHash: clientHasher(Buffer.alloc(32, 9)),
     });
     await f.ready();
@@ -208,6 +211,135 @@ d("the faucet on a shared database", () => {
     expect(rows.every((r) => r.state === "sent" || r.state === "final")).toBe(true);
   });
 
+  /** The paid addresses, one entry for each distinct signed transfer reth was handed. */
+  const distinctPaid = (raws: string[]) => paid([...new Set(raws)]);
+
+  it("a leader that loses the lock before its first send does not write over the new leader's sent rows, and a second hand-over pays each request once", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    let realA: Leader | null = null, armed = false, calls = 0;
+    const a = await faucetOn(fake, db.pool, (real) => {
+      realA = real;
+      return {
+        isLeader: async () => {
+          if (armed && ++calls === 2) { // the pre-send check: the lock is gone, and another instance takes the lead inside this pass
+            armed = false;
+            await real.release();
+            await b.process();
+            await b.flush();
+            return false;
+          }
+          return real.isLeader();
+        },
+        release: () => real.release(),
+      };
+    }, undefined, { tracker: true });
+    const b: Faucet = await faucetOn(fake, db.pool, undefined, undefined, { tracker: true });
+    expect(realA).not.toBeNull();
+    await a.process(); // a takes the lead
+    for (let i = 1; i <= 3; i++) expect((await a.request(addr(i), { ip: `8.8.${i}.1` })).status).toBe(202);
+    await a.flush();
+    armed = true; calls = 0;
+    await a.process(); // signs and saves the batch, then finds the lock gone
+    await a.flush();
+    const rows = (await db.pool.query("select state, tx_hash is not null as has_hash from faucet_requests order by requested_at")).rows;
+    expect(rows.map((r) => [["sent", "final"].includes(r.state), r.has_hash])).toEqual([[true, true], [true, true], [true, true]]); // b's rows are not moved back to queued
+    await b.close(); // a second hand-over before b's rows are final
+    for (let i = 0; i < 6; i++) await a.process();
+    await a.flush();
+    expect(distinctPaid(raws).sort()).toEqual([addr(1), addr(2), addr(3)]);
+    expect(new Set(raws).size).toBe(3);
+  });
+
+  it("a leader that loses the lock in the middle of a batch leaves the unsent rows as the new leader found them", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    let realA: Leader | null = null, armed = false, sends = 0;
+    const a: Faucet = await faucetOn(fake, db.pool, (real) => { realA = real; return real; }, undefined, {
+      tracker: true,
+      sendRaw: async (send, raw) => {
+        if (!armed) return send(raw);
+        if (++sends === 1) return send(raw);
+        // the second send: the lock is gone, another instance takes the lead, and reth refuses this transfer
+        armed = false;
+        await realA!.release();
+        await b.process();
+        await b.flush();
+        throw new RethError("transaction underpriced", true);
+      },
+    });
+    const b: Faucet = await faucetOn(fake, db.pool, undefined, undefined, { tracker: true });
+    await a.process();
+    for (let i = 1; i <= 3; i++) expect((await a.request(addr(i), { ip: `8.8.${i}.1` })).status).toBe(202);
+    await a.flush();
+    armed = true;
+    await a.process();
+    await a.flush();
+    const rows = (await db.pool.query("select state, tx_hash is not null as has_hash from faucet_requests order by requested_at")).rows;
+    expect(rows.every((r) => ["sent", "final"].includes(r.state) && r.has_hash)).toBe(true);
+    await b.close();
+    for (let i = 0; i < 6; i++) await a.process();
+    await a.flush();
+    expect(distinctPaid(raws).sort()).toEqual([addr(1), addr(2), addr(3)]);
+    expect(new Set(raws).size).toBe(3);
+  });
+
+  it("a read takes a row that committed late, with a time behind rows already read", async () => {
+    const lim = () => ({ addresses: [], ips: [], hourly: [] });
+    const t = (n: number): Ticket => ({ id: n.toString(16).padStart(24, "0"), to: addr(n), ip: null, at: 1000 + n, status: "queued", hash: null, block: null, reason: null, tries: 0 });
+    const writer = databaseFaucetStore(db.pool, COIN), reader = databaseFaucetStore(db.pool, COIN);
+    await writer.load({ now: 2000, addressMs: 1000, ipMs: 1000, max: 100 });
+    await reader.load({ now: 2000, addressMs: 1000, ipMs: 1000, max: 100 });
+    await writer.save([t(1), t(2)], lim);
+    expect((await reader.changes!()).length).toBe(2);
+    // a transaction that began 30 seconds before it committed: its row carries the time of its start
+    await db.pool.query("update faucet_requests set reason = 'late', updated_at = now() - interval '30 seconds' where ticket = '00000000-0000-0000-0000-000100000000'");
+    expect((await reader.changes!()).map((x) => x.reason)).toEqual(["late"]);
+  });
+
+  it("the store never moves a row back from sent to queued, or drops a sent row's hash and nonce", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    const lim = () => ({ addresses: [], ips: [], hourly: [] });
+    const t: Ticket = { id: "cd".repeat(12), to: addr(9), ip: null, at: 1000, status: "queued", hash: hashOf(5), block: null, reason: null, tries: 0, nonce: 7, raw: "0x" + "02".repeat(30) };
+    const stale = databaseFaucetStore(db.pool, COIN), fresh = databaseFaucetStore(db.pool, COIN);
+    await stale.load({ now: 2000, addressMs: 1000, ipMs: 1000, max: 100 });
+    await fresh.load({ now: 2000, addressMs: 1000, ipMs: 1000, max: 100 });
+    await stale.save([t], lim); // queued with its bytes
+    await fresh.save([{ ...t, status: "sent", raw: null, sentNonce: 7 }], lim); // the new leader's copy
+    t.raw = null; t.hash = null; t.nonce = null; // the old leader's late reset
+    await stale.save([t], lim);
+    expect((await db.pool.query("select state, tx_hash is not null as has_hash, sent_nonce::int as sent_nonce from faucet_requests")).rows).toEqual([{ state: "sent", has_hash: true, sent_nonce: 7 }]);
+    // the stale store learns what the database says at its next read, although the refused write left no newer time on the row
+    const back = await stale.changes!();
+    expect(back.map((x) => [x.id, x.status])).toEqual([[t.id, "sent"]]);
+    // a settled row stays settled
+    await fresh.save([{ ...t, status: "final", block: 4, hash: hashOf(5), sentNonce: 7 }], lim);
+    await stale.save([{ ...t, status: "sent", hash: hashOf(5), sentNonce: 7 }], lim);
+    expect((await db.pool.query("select state from faucet_requests")).rows).toEqual([{ state: "final" }]);
+    void raws; void fake;
+  });
+
+  it("a new leader reads every open row in full, so a row that committed late and was missed by the windowed read is not signed again", async () => {
+    const raws: string[] = [];
+    const fake = await fakeFor(raws);
+    const a = await faucetOn(fake);
+    const b = await faucetOn(fake);
+    await a.process(); // a takes the lead
+    for (let i = 1; i <= 2; i++) expect((await a.request(addr(i), { ip: `8.8.${i}.1` })).status).toBe(202);
+    await a.flush();
+    await b.process(); // b reads them as queued
+    await a.process(); // a signs and sends them
+    await a.flush();
+    expect(raws.length).toBe(2);
+    // a's writes reached the database with times far behind what b has read (a transaction that was slow to commit)
+    await db.pool.query("update faucet_requests set updated_at = now() - interval '10 minutes'");
+    await a.close();
+    for (let i = 0; i < 6; i++) await b.process();
+    expect(raws.length).toBe(2);
+    expect(paid(raws).sort()).toEqual([addr(1), addr(2)]);
+  });
+
   it("gives a failed request's limits back on the instance that did not fail it", async () => {
     const raws: string[] = [];
     const fake = await fakeFor(raws);
@@ -258,6 +390,43 @@ d("the tracker's leader follows a transaction a follower added again", () => {
     expect(a.state(hashOf(1))?.state).toBe("pending");
     await a.poll();
     expect(calls.filter((c) => c.startsWith("a:"))).not.toEqual([]);
+  });
+});
+
+d("the tracker's limits hold for what an instance adopts", () => {
+  const make = async (max: number) => {
+    const reth = {
+      block: async () => ({ number: 1 }) as never,
+      transaction: async (h: string) => ({ hash: h, blockNumber: null, blockHash: null }) as never,
+      rpc: async () => "0x0", sendRaw: async () => hashOf(0),
+    };
+    const tr = createTracker({ reth, index: { byNumber: () => undefined }, store: databaseTrackerStore(db.pool, max), leader: advisoryLeader({ connectionString: db.url }, TRACKER_LOCK), max, saveMs: 10, pollMs: 60000, now: () => 1_000_000 });
+    await tr.ready();
+    closers.push(() => tr.close());
+    return tr;
+  };
+
+  it("the leader does not hold more entries than max when a follower adds them, and a follower never marks an open entry dropped", async () => {
+    const a = await make(3), b = await make(3), c = await make(3);
+    await a.poll(); // a takes the lead
+    for (let i = 1; i <= 4; i++) { b.track("0x" + "02".repeat(30), hashOf(i), addr(i), 0, "rpc"); await b.flush(); } // each one reaches the database before the next
+    for (let i = 0; i < 2; i++) await a.poll();
+    expect(a.size()).toBeLessThanOrEqual(3);
+    const before = Number((await db.pool.query("select count(*) from tracked_transactions where state = 'dropped'")).rows[0].count);
+    for (let i = 0; i < 2; i++) await c.poll(); // c follows: it takes what is there and does not run the loop
+    await c.flush();
+    const after = Number((await db.pool.query("select count(*) from tracked_transactions where state = 'dropped'")).rows[0].count);
+    expect(after).toBe(before);
+  });
+
+  it("a read takes a row that committed late, with a time behind rows already read", async () => {
+    const e = (n: number): Entry => ({ hash: hashOf(n), raw: "0x" + "02".repeat(30), from: addr(7), nonce: n, state: "pending", reason: null, block: null, blockHash: null, updateId: null, attempts: 1, refused: 0, addedAt: 1000 + n, lastSendAt: 1000 + n, settledAt: null, via: "rpc" });
+    const writer = databaseTrackerStore(db.pool, 100), reader = databaseTrackerStore(db.pool, 100);
+    await writer.load(); await reader.load();
+    await writer.save([e(1), e(2)]);
+    expect((await reader.changes!()).length).toBe(2);
+    await db.pool.query("update tracked_transactions set reason = 'late', updated_at = now() - interval '30 seconds' where tx_hash = $1", [Buffer.from(hashOf(1).slice(2), "hex")]);
+    expect((await reader.changes!()).map((x) => x.reason)).toEqual(["late"]);
   });
 });
 

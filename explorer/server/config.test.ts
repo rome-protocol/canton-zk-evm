@@ -10,7 +10,8 @@ describe("the database for the tracker and the faucet", () => {
   it("is on when it is named, and the faucet then needs the key its client hashes are made with", () => {
     expect(load({ EXPLORER_DATABASE_URL: "postgres://u@h/d" }).database).toEqual({ connectionString: "postgres://u@h/d" });
     expect(load({ EXPLORER_DATABASE_URL: "postgres://u@h/d" }).faucet.clientKeyFile).toBeNull();
-    expect(() => load({ EXPLORER_DATABASE_URL: "postgres://u@h/d", FAUCET_KEY_FILE: "/k" })).toThrow(/FAUCET_CLIENT_KEY_FILE/);
+    // Loading the settings never refuses it: the indexer loads the same settings with a faucet key in its environment and has no faucet. Opening the storage does (storage.test.ts).
+    expect(load({ EXPLORER_DATABASE_URL: "postgres://u@h/d", FAUCET_KEY_FILE: "/k" }).faucet.clientKeyFile).toBeNull();
     const c = load({ EXPLORER_DATABASE_URL: "postgres://u@h/d", FAUCET_KEY_FILE: "/k", FAUCET_CLIENT_KEY_FILE: "/ck" });
     expect(c.faucet.clientKeyFile).toBe("/ck");
     expect(load({ FAUCET_KEY_FILE: "/k" }).database).toBeNull(); // files only: no hash key needed

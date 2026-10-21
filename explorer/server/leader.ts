@@ -69,3 +69,10 @@ export function advisoryLeader(config: ClientConfig, which: number): Leader {
 /** The faucet's limits are checked and a request is written in one step, behind this lock, so two instances never both take the last turn of an address. */
 export const CLAIM_LOCK = 3;
 export const LOCK_CLASS = LOCKS;
+
+/**
+ * How far back a read goes from the newest time it has seen. A row carries the time its transaction began, so a transaction that was slow to commit lands with a
+ * time older than rows already read. Reading back this far takes it, and the rows read twice are told apart by their signature. A transaction slower than this
+ * is not seen by this read; a leader that takes over reads every open row in full instead (the faucet reads its open rows in full, see `unsettled`).
+ */
+export const READ_BACK_SECONDS = 60;

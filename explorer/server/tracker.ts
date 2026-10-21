@@ -138,15 +138,19 @@ export function createTracker(o: TrackerOptions): Tracker {
     }
   }
 
-  /** Brings the list back inside its limits: settled entries go first, oldest first. Open ones are marked dropped, never forgotten silently. */
-  function makeRoom(): void {
+  /**
+   * Brings the list back inside its limits: settled entries go first, oldest first. Open ones are marked dropped, never forgotten silently, unless `dropOpen` is
+   * off: an instance that does not run the loop (a follower) only lets go of settled entries, because a "dropped" it wrote would reach the leader and the faucets.
+   */
+  function makeRoom(dropOpen = true): void {
+    const before = entries.size;
     while (entries.size > max) {
       let found = false;
       for (const [h, e] of entries) if (SETTLED.has(e.state)) { entries.delete(h); found = true; break; }
-      if (!found) dropOldestOpen();
+      if (!found) { if (!dropOpen) break; dropOldestOpen(); }
     }
-    while (openBytes() > maxBytes) dropOldestOpen();
-    dirty = true;
+    while (dropOpen && openBytes() > maxBytes) dropOldestOpen();
+    if (dropOpen || entries.size !== before) dirty = true;
   }
 
   function admit(raw: string, hash: string, from: string): string | null {
@@ -271,6 +275,8 @@ export function createTracker(o: TrackerOptions): Tracker {
         // a wallet sent the same bytes once more, through another instance, and it is followed afresh.
         if (!leading || !held || (SETTLED.has(held.state) && !SETTLED.has(e.state))) entries.set(e.hash, e);
       }
+      // What other instances add counts against this one's limits too, or an instance that takes no sends itself would grow without bound.
+      if (entries.size > max || (leading && openBytes() > maxBytes)) makeRoom(leading);
     } catch (e) {
       console.error(`tracker: cannot read the database: ${(e as Error).message}`);
     }

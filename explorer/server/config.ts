@@ -172,9 +172,6 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
   } catch {
     throw new ConfigError(`FAUCET_AMOUNT must be a number of coins such as 1 or 0.5, not "${env.FAUCET_AMOUNT}"`);
   }
-  if (env.FAUCET_KEY_FILE && (env.EXPLORER_DATABASE_URL || env.EXPLORER_DB_PASSWORD_FILE) && !env.FAUCET_CLIENT_KEY_FILE) {
-    throw new ConfigError("FAUCET_CLIENT_KEY_FILE must be set when the faucet keeps its state in the database: client addresses are stored only as hashes made with that key (64 hex digits, a file only its owner can read)");
-  }
   if (!env.READER_PARTY) throw new ConfigError("READER_PARTY must be set to the Canton party id of the reader: the explorer reads Canton as that party only");
   return {
     host: env.EXPLORER_HOST || "127.0.0.1",

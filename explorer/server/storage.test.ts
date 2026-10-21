@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keccak256, parseTransaction, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { loadConfig } from "./config.ts";
+import { ConfigError, loadConfig } from "./config.ts";
 import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "./db/testing.ts";
 import { createFaucet } from "./faucet.ts";
 import { advisoryLeader, FAUCET_LOCK, TRACKER_LOCK } from "./leader.ts";
@@ -121,6 +121,11 @@ d("the old files move into the database once", () => {
     const none = await openStorage(loadConfig({ PINS_FILE: "/p", READER_PARTY: "r", TRACKER_FILE: join(dir, "t.json") }, () => `programVK=0x${"ab".repeat(32)}\nrootC=0x${"cd".repeat(32)}\n`));
     expect(none.tracker).toEqual({});
     expect(none.faucet).toEqual({});
+  });
+
+  it("refuses to open a faucet store with no hash key, as a settings error", async () => {
+    await expect(openStorage(config({ FAUCET_CLIENT_KEY_FILE: "" }), { migrate: false })).rejects.toThrow(/FAUCET_CLIENT_KEY_FILE must be set/);
+    await expect(openStorage(config({ FAUCET_CLIENT_KEY_FILE: "" }), { migrate: false })).rejects.toBeInstanceOf(ConfigError);
   });
 
   it("refuses a hash key that others can read, and one that is not 64 hex digits", async () => {
