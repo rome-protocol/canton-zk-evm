@@ -16,6 +16,9 @@ export async function withDatabase(fn: (pool: pg.Pool, url: string) => Promise<v
   const url = new URL(TEST_URL as string);
   url.pathname = `/${name}`;
   const pool = new pg.Pool({ connectionString: url.toString(), max: 4 });
+  // The database is dropped with force right after the pool ends. A connection that the server closes a moment before the client has
+  // finished with it would otherwise be an uncaught error after the test is over.
+  pool.on("error", () => undefined);
   try {
     await fn(pool, url.toString());
   } finally {
