@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
-import { rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { keccak256, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
+import { alwaysLeader, type Leader } from "./leader.ts";
+import { fileFaucetStore, type ClaimRefusal, type FaucetState, type FaucetStore } from "./faucet-store.ts";
 import { RethError, type Reth } from "./reth.ts";
 import type { Tracker } from "./tracker.ts";
 
@@ -27,8 +27,14 @@ export interface FaucetOptions {
   batch: number;
   /** The most requests waiting for a batch. */
   queueMax: number;
-  /** Where the limits and the waiting requests are kept, or null for memory only. */
+  /** Where the limits and the waiting requests are kept: a file, or null for memory only. */
   stateFile: string | null;
+  /** Or a store of its own, such as the database. It wins over `stateFile`. */
+  store?: FaucetStore | null;
+  /** Says whether this instance runs the worker. With one instance, always. With several, the one that holds the lock. */
+  leader?: Leader;
+  /** Turns a client's address into the keyed hash that is kept in its place. Without one the address is kept as it is, which only a file store does. */
+  clientKeyHash?: (clientKey: string) => string;
   /** The human check, or null for none. */
   captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
   reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc">>;
@@ -87,6 +93,12 @@ export interface Faucet {
   stop(): void;
   /** Resolves when everything changed so far is on disk. */
   flush(): Promise<void>;
+  /** Resolves when the state has been read from where it is kept. A store that is not a file takes a moment. */
+  ready(): Promise<void>;
+  /** Like `ticket`, and when this instance does not know the ticket, asks the store: another instance may have taken the request. */
+  find(id: string): Promise<TicketView | null>;
+  /** Stops, writes what changed, and gives up the lead, so another instance takes the worker at once. */
+  close(): Promise<void>;
   /** How many addresses are waiting out their day. */
   served(): number;
   /** How many requests wait for a batch. */
@@ -113,7 +125,7 @@ export function loadFaucetKey(file: string | null, read: (path: string) => strin
 /** What was last read of the chain: the faucet's balance, and the price of gas. */
 interface View { at: number; balance: bigint; gasPrice: bigint }
 
-interface Ticket {
+export interface Ticket {
   id: string; to: string; ip: string | null; at: number;
   status: TicketStatus; hash: string | null; block: number | null; reason: string | null; tries: number;
   /**
@@ -125,6 +137,10 @@ interface Ticket {
   sentNonce?: number | null;
   /** True once the tracker stopped following the transfer: the faucet then follows it by hash itself, until it is final or its nonce is used. */
   watch?: boolean;
+  /** The batch it was signed in, once the store has numbered it. */
+  batch?: number | null;
+  /** True from the moment the request is in memory until the store has checked the limits against every instance's requests and written it. The worker leaves it alone. */
+  claiming?: boolean;
 }
 
 const TICKETS_MAX = 10000;
@@ -201,32 +217,22 @@ export function createFaucet(o: FaucetOptions): Faucet {
   let halted = false;
   let writing: Promise<void> = Promise.resolve(), dirty = false, saving = false;
 
-  // --- what is kept across a restart
-  function load(): void {
-    if (!o.stateFile) return;
-    let text: string;
-    try {
-      text = readFileSync(o.stateFile, "utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") console.error(`faucet: cannot read ${o.stateFile}: ${(e as Error).message}`);
-      return;
-    }
-    try {
-      const s = JSON.parse(text) as { addresses?: [string, number][]; ips?: [string, number][]; hourly?: number[]; tickets?: Ticket[] };
-      for (const [a, t] of s.addresses ?? []) if (typeof a === "string" && Number.isFinite(t)) addresses.set(a, t);
-      for (const [a, t] of s.ips ?? []) if (typeof a === "string" && Number.isFinite(t)) ips.set(a, t);
-      hourly = (s.hourly ?? []).filter(Number.isFinite);
-      for (const t of s.tickets ?? []) {
-        if (typeof t.id !== "string" || typeof t.to !== "string") continue;
-        tickets.set(t.id, t);
-        if (t.status === "queued") queue.push(t);
-        else if (t.status === "sent") (t.watch ? watching : open).add(t);
-      }
-    } catch {
-      console.error(`faucet: ${o.stateFile} is not a file the faucet wrote, so it starts with no limits`);
-    }
-    // A transfer signed before the last stop may or may not have reached reth. Its ticket is sent, never queued again: the tracker holds the signed
-    // bytes, sends them if reth does not have them, and says what became of them. Signing the request again would pay the address twice.
+  // --- what is kept across a restart, and, with a database, what the other instances keep
+  const store: FaucetStore | null = o.store ?? (o.stateFile ? fileFaucetStore(o.stateFile) : null);
+  const leader = o.leader ?? alwaysLeader;
+  /** True when this instance runs the worker. A file has one instance, which leads. */
+  let leading = !o.store;
+  let loaded: Promise<void> = Promise.resolve();
+  const hashed = (k: string | undefined): string | undefined => (k === undefined || !o.clientKeyHash ? k : o.clientKeyHash(k));
+
+  function rebuildSets(): void {
+    open.clear(); watching.clear();
+    for (const t of tickets.values()) if (t.status === "sent") (t.watch ? watching : open).add(t);
+  }
+
+  /** A transfer signed before the last stop may or may not have reached reth. Its ticket is sent, never queued again: the tracker holds the signed
+   * bytes, sends them if reth does not have them, and says what became of them. Signing the request again would pay the address twice. */
+  function recover(): void {
     for (const t of [...queue]) {
       if (!t.raw || !t.hash) { t.raw = null; t.nonce = null; continue; }
       queue.splice(queue.indexOf(t), 1);
@@ -234,14 +240,41 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }
     for (const t of open) {
       if (!t.raw || !t.hash) continue;
-      if (o.tracker && !o.tracker.state(t.hash)) o.tracker.track(t.raw, t.hash, address!, t.nonce ?? 0);
+      if (o.tracker && !o.tracker.state(t.hash)) o.tracker.track(t.raw, t.hash, address!, t.nonce ?? 0, "faucet");
       t.raw = null; t.nonce = null;
+    }
+    if (store?.changes) void save();
+  }
+
+  function adopt(s: FaucetState): void {
+    for (const [a, t] of s.addresses) addresses.set(a, t);
+    for (const [a, t] of s.ips) ips.set(a, t);
+    hourly = s.hourly;
+    for (const t of s.tickets) {
+      tickets.set(t.id, t);
+      if (t.status === "queued") queue.push(t);
+      else if (t.status === "sent") (t.watch ? watching : open).add(t);
     }
   }
 
-  /** Writes the state to a temporary file and renames it over the real one, so a crash never leaves half a file. Writes that pile up become one. */
+  function load(): void {
+    if (!store) return;
+    const got = store.load({ now: now(), addressMs, ipMs, max: TICKETS_MAX });
+    if ("tickets" in got) {
+      adopt(got);
+      recover();
+      return;
+    }
+    loaded = got.then(async (s) => {
+      adopt(s);
+      leading = await leader.isLeader();
+      if (leading) recover();
+    }, (e: Error) => { console.error(`faucet: cannot read its state: ${e.message}`); });
+  }
+
+  /** Writes the state through the store. Writes that pile up become one. */
   function save(): Promise<void> {
-    if (!o.stateFile) return Promise.resolve();
+    if (!store) return Promise.resolve();
     dirty = true;
     if (saving) return writing;
     saving = true;
@@ -249,18 +282,41 @@ export function createFaucet(o: FaucetOptions): Faucet {
       try {
         while (dirty) {
           dirty = false;
-          const body = JSON.stringify({ version: 1, addresses: [...addresses], ips: [...ips], hourly, tickets: [...tickets.values()] });
-          mkdirSync(dirname(o.stateFile!), { recursive: true });
-          await writeFile(`${o.stateFile}.tmp`, body, { mode: 0o600 });
-          await rename(`${o.stateFile}.tmp`, o.stateFile!);
+          await store.save([...tickets.values()], () => ({ addresses: [...addresses], ips: [...ips], hourly }));
         }
       } catch (e) {
-        console.error(`faucet: cannot write ${o.stateFile}: ${(e as Error).message}`);
+        console.error(`faucet: cannot write its state: ${(e as Error).message}`);
       } finally {
         saving = false;
       }
     })();
     return writing;
+  }
+
+  /** What the other instances wrote. The leader's memory is the record, so it takes only the requests it did not know. A follower takes every change, to show the page. */
+  async function catchUp(): Promise<void> {
+    if (!store?.changes) return;
+    await save(); // what this instance changed goes first, so reading back cannot undo it
+    let rows;
+    try {
+      rows = await store.changes();
+    } catch (e) {
+      console.error(`faucet: cannot read the database: ${(e as Error).message}`);
+      return;
+    }
+    for (const r of rows) {
+      const mine = tickets.get(r.id);
+      if (!mine) {
+        tickets.set(r.id, r);
+        const next = queue.findIndex((q) => q.at > r.at);
+        if (r.status === "queued") queue.splice(next < 0 ? queue.length : next, 0, r);
+        continue;
+      }
+      if (leading || mine.claiming) continue;
+      const was = mine.status;
+      Object.assign(mine, r);
+      if (was === "queued" && r.status !== "queued") queue.splice(queue.indexOf(mine), 1);
+    }
   }
 
   // --- the limits
@@ -271,18 +327,33 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (i) hourly = hourly.slice(i);
   }
 
+  /** The refusal for a limit, with the wait it asks for. */
+  function turnedAway(limit: ClaimRefusal, waitMs: number): FaucetAnswer {
+    if (limit === "address") return answer(429, `This address was given coins in the last ${period(o.perAddressSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "address");
+    if (limit === "ip") return answer(429, `This connection asked for coins in the last ${period(o.perIpSeconds)}. Try again later.`, { "Retry-After": seconds(waitMs) }, "ip");
+    return answer(429, `The faucet has given out all it gives in an hour (${o.maxPerHour} requests). Try again later.`, { "Retry-After": seconds(waitMs) }, "hour");
+  }
+
   /** The refusal for a caller, or null when the limits let it through. */
   function limited(to: string, ip: string | undefined, t: number): FaucetAnswer | null {
     forget(t);
     const a = addresses.get(to);
-    if (a !== undefined) return answer(429, `This address was given coins in the last ${period(o.perAddressSeconds)}. Try again later.`, { "Retry-After": seconds(a + addressMs - t) }, "address");
+    if (a !== undefined) return turnedAway("address", a + addressMs - t);
     const i = ip === undefined ? undefined : ips.get(ip);
-    if (i !== undefined) return answer(429, `This connection asked for coins in the last ${period(o.perIpSeconds)}. Try again later.`, { "Retry-After": seconds(i + ipMs - t) }, "ip");
-    if (hourly.length >= o.maxPerHour) return answer(429, `The faucet has given out all it gives in an hour (${o.maxPerHour} requests). Try again later.`, { "Retry-After": seconds(hourly[0]! + HOUR - t) }, "hour");
+    if (i !== undefined) return turnedAway("ip", i + ipMs - t);
+    if (hourly.length >= o.maxPerHour) return turnedAway("hour", hourly[0]! + HOUR - t);
     if (queue.length >= o.queueMax) {
       return answer(503, "The faucet's line is full, so this request was turned away, not lost: nothing was taken from you. Try again in a little while.", { "Retry-After": String(Math.max(5, Math.ceil(queue.length / o.batch) * BLOCK_SECONDS)) }, "queue");
     }
     return null;
+  }
+
+  /** Takes a request back as if it had never been made. */
+  function unqueue(t: Ticket): void {
+    const i = queue.indexOf(t);
+    if (i >= 0) queue.splice(i, 1);
+    tickets.delete(t.id);
+    refund(t);
   }
 
   /** Takes back what a request used, when it came to nothing. */
@@ -321,7 +392,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
 
   /** Brings a sent ticket up to date from the tracker. Final only when the tracker says the transfer is final. */
   function refresh(t: Ticket): void {
-    if (t.status !== "sent" || !t.hash || !o.tracker) return;
+    if (t.status !== "sent" || !t.hash || !o.tracker || !leading) return;
     const s = o.tracker.state(t.hash);
     if (!s) return late(t);
     if (s.state === "final") { t.status = "final"; t.block = s.block; t.watch = false; open.delete(t); watching.delete(t); save(); }
@@ -397,8 +468,21 @@ export function createFaucet(o: FaucetOptions): Faucet {
   }
 
   /** Sends the next batch, if there is one and the last one has left reth's pool. */
+  let purged = 0;
   async function pass(): Promise<void> {
     if (!account) return;
+    if (store?.changes) {
+      await loaded;
+      await catchUp();
+      const was = leading;
+      leading = await leader.isLeader();
+      if (!leading) return;
+      if (!was) { rebuildSets(); recover(); }
+      if (store.purge && now() - purged >= HOUR) {
+        purged = now();
+        await store.purge(now()).catch((e: Error) => console.error(`faucet: cannot clean the database: ${e.message}`));
+      }
+    }
     for (const t of open) refresh(t);
     await settleDropped();
     await watchLate();
@@ -413,7 +497,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }
     view = { at: now(), balance, gasPrice };
     const maxFeePerGas = gasPrice * 2n;
-    const batch = queue.slice(0, o.batch);
+    const batch = queue.filter((t) => !t.claiming).slice(0, o.batch);
+    if (!batch.length) return;
     const afford = balance / cost(gasPrice) < BigInt(batch.length) ? Number(balance / cost(gasPrice)) : batch.length;
     // The coins are gone: the requests that cannot be paid are told so, and may ask again once the faucet is filled.
     for (const t of batch.slice(afford)) { queue.splice(queue.indexOf(t), 1); fail(t, "The faucet ran out of coins before this request was sent."); }
@@ -432,6 +517,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
       for (const t of going) { t.raw = null; t.hash = null; t.nonce = null; }
       return;
     }
+    const batchId = going.length ? await store?.batchSigned?.(nonce, going.length, now()).catch(() => null) : null;
+    for (const t of going) t.batch = batchId ?? null;
     await save();
     for (const t of going) {
       if (halted) break;
@@ -456,13 +543,14 @@ export function createFaucet(o: FaucetOptions): Faucet {
         queue.splice(queue.indexOf(t), 1);
         t.status = "sent"; t.reason = null; t.sentNonce = t.nonce;
         open.add(t);
-        o.tracker?.track(raw, hash, address!, t.nonce!);
+        o.tracker?.track(raw, hash, address!, t.nonce!, "faucet");
         t.raw = null; t.nonce = null;
       }
       if (stopBatch) break;
     }
     // What was not sent goes back to waiting, with no signature kept: it is signed again from reth's count at the next batch.
-    for (const t of going) if (t.status !== "sent") { t.raw = null; t.hash = null; t.nonce = null; }
+    for (const t of going) if (t.status !== "sent") { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
+    if (batchId != null) await store?.batchSent?.(batchId, now()).catch(() => undefined);
     await save();
   }
 
@@ -515,7 +603,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     refresh(t);
     const s = t.status === "sent" && t.hash ? o.tracker?.state(t.hash) : undefined;
     return {
-      ticket: t.id, status: t.status, position: t.status === "queued" ? queue.indexOf(t) + 1 : null, to: t.to, amount: o.amountWei.toString(),
+      ticket: t.id, status: t.status, position: t.status === "queued" ? Math.max(1, queue.indexOf(t) + 1) : null, to: t.to, amount: o.amountWei.toString(),
       hash: t.status === "queued" ? null : t.hash, state: s ? s.state : null, block: t.block ?? s?.block ?? null, reason: t.reason,
     };
   }
@@ -528,6 +616,20 @@ export function createFaucet(o: FaucetOptions): Faucet {
     served: () => addresses.size,
     queued: () => queue.length,
     process,
+    ready: () => loaded,
+    async find(id) {
+      const t = tickets.get(id);
+      if (t) return viewOf(t);
+      const r = await store?.find?.(id);
+      return r ? viewOf(r) : null;
+    },
+    async close() {
+      if (timer) clearInterval(timer);
+      timer = undefined; started = false;
+      await running?.catch(() => {});
+      await save();
+      await leader.release();
+    },
     /** Waits for the batch in hand to end, then writes everything as it stands. */
     flush: async () => {
       await running?.catch(() => {});
@@ -566,7 +668,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (!account) return answer(503, "The faucet is off.");
       const to = typeof raw === "string" ? raw.toLowerCase() : "";
       if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
-      const ip = clientKey(caller.ip);
+      const ip = hashed(clientKey(caller.ip));
       const early = limited(to, ip, now());
       if (early) return early;
       const refused = await human(caller.captcha, caller.ip);
@@ -583,10 +685,28 @@ export function createFaucet(o: FaucetOptions): Faucet {
       addresses.set(to, t);
       if (ip !== undefined) ips.set(ip, t);
       hourly.push(t);
+      if (store?.claim) {
+        // With a database, other instances take requests too. The limits are checked against all of them as the request is written. Until then
+        // the worker leaves the request alone, and if the store turns it away, the request is taken back as if it had never been made.
+        ticket.claiming = true;
+        let turned: ClaimRefusal | null = null;
+        try {
+          turned = await store.claim(ticket, { addressMs, ipMs, maxPerHour: o.maxPerHour });
+        } catch (e) {
+          console.error(`faucet: cannot write the request: ${(e as Error).message}`);
+          unqueue(ticket);
+          return answer(503, "The faucet cannot save requests right now, so this one was turned away, not lost: nothing was taken from you. Try again in a moment.", { "Retry-After": "5" });
+        }
+        ticket.claiming = false;
+        if (turned) {
+          unqueue(ticket);
+          return turnedAway(turned, turned === "address" ? addressMs : turned === "ip" ? ipMs : HOUR);
+        }
+      }
       trim();
       save();
       if (started && !running) void process().catch((e) => console.error(`faucet: ${(e as Error).message}`));
-      return { status: 202, body: { ticket: ticket.id, position: queue.length, to, amount: o.amountWei.toString() } };
+      return { status: 202, body: { ticket: ticket.id, position: queue.indexOf(ticket) + 1, to, amount: o.amountWei.toString() } };
     },
   };
 }
