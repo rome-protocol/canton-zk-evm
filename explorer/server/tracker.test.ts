@@ -2,8 +2,10 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DATABASE_MODE, makeDatabase, type TestDatabase } from "./db/testing.ts";
 import { RethError } from "./reth.ts";
 import { createTracker, type Tracker } from "./tracker.ts";
+import { databaseTrackerStore } from "./tracker-store.ts";
 
 const hashOf = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(32);
 const SENDER = "0x" + "aa".repeat(20);
@@ -27,7 +29,7 @@ function fakeChain(): Chain {
   return { finalized: 0, where: new Map(), nonce: 0, down: false, send: () => {}, sent: [] };
 }
 
-function make(chain: Chain, o: { file?: string; max?: number; maxBytes?: number; maxPerSender?: number; saveMs?: number; retryMs?: number; maxRefusals?: number; maxAttempts?: number; maxPendingMs?: number } = {}): { tracker: Tracker; clock: { now: number } } {
+async function make(chain: Chain, o: { file?: string; max?: number; maxBytes?: number; maxPerSender?: number; saveMs?: number; retryMs?: number; maxRefusals?: number; maxAttempts?: number; maxPendingMs?: number } = {}): Promise<{ tracker: Tracker; clock: { now: number } }> {
   const clock = { now: 1000 };
   const reach = () => { if (chain.down) throw new RethError("cannot reach reth (down)"); };
   const reth = {
@@ -52,17 +54,25 @@ function make(chain: Chain, o: { file?: string; max?: number; maxBytes?: number;
     },
   };
   const index = { byNumber: (n: number) => (n <= chain.finalized && !chain.indexLag ? ({ hash: hashOf(n), updateId: "1220" + String(n).padStart(2, "0").repeat(32) } as never) : undefined) };
-  const tracker = createTracker({ reth, index, now: () => clock.now, retryMs: 5000, ...o });
+  // Run with EXPLORER_TEST_STORE=database, the list is kept in the database where these tests say `file`.
+  const { file, ...rest } = o;
+  const tracker = createTracker({ reth, index, now: () => clock.now, retryMs: 5000, ...(DATABASE_MODE ? { store: databaseTrackerStore(db!.pool, rest.max ?? 10000) } : { file }), ...rest });
+  await tracker.ready();
   return { tracker, clock };
 }
 
 let dir: string;
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "tracker-")); vi.spyOn(console, "error").mockImplementation(() => {}); });
-afterEach(() => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); });
+let db: TestDatabase | undefined;
+beforeEach(async () => {
+  dir = mkdtempSync(join(tmpdir(), "tracker-"));
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  if (DATABASE_MODE) db = await makeDatabase(true);
+});
+afterEach(async () => { rmSync(dir, { recursive: true, force: true }); vi.restoreAllMocks(); vi.useRealTimers(); await db?.drop(); db = undefined; });
 
 describe("the tracker", () => {
-  it("starts a transaction as pending and knows nothing of another", () => {
-    const { tracker } = make(fakeChain());
+  it("starts a transaction as pending and knows nothing of another", async () => {
+    const { tracker } = await make(fakeChain());
     tracker.track(rawOf(1), hashOf(1), SENDER, 3);
     expect(tracker.state(hashOf(1))).toMatchObject({ state: "pending", from: SENDER, nonce: 3, attempts: 1, block: null, reason: null });
     expect(tracker.state(hashOf(2))).toBeUndefined();
@@ -70,7 +80,7 @@ describe("the tracker", () => {
 
   it("follows a transaction from the pool, into a block that is being proven, to a final block with its Canton update", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain);
+    const { tracker } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     chain.where.set(hashOf(1), null);
     await tracker.poll();
@@ -87,7 +97,7 @@ describe("the tracker", () => {
 
   it("stops looking at a final transaction", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain);
+    const { tracker } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     chain.where.set(hashOf(1), 1);
     chain.finalized = 1;
@@ -100,7 +110,7 @@ describe("the tracker", () => {
 
   it("sends a transaction that is nowhere again, with the same bytes, and counts the attempt", async () => {
     const chain = fakeChain();
-    const { tracker, clock } = make(chain);
+    const { tracker, clock } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     chain.where.set(hashOf(1), 5); // in a block that Canton then refuses; reth goes back and does not put it back
     chain.finalized = 4;
@@ -119,7 +129,7 @@ describe("the tracker", () => {
 
   it("sends again no more than once in the retry time", async () => {
     const chain = fakeChain();
-    const { tracker, clock } = make(chain);
+    const { tracker, clock } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     clock.now += 6000;
     await tracker.poll();
@@ -133,7 +143,7 @@ describe("the tracker", () => {
 
   it("says replaced when the sender's finalized count is past the nonce and the transaction is in no block", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain);
+    const { tracker } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 3);
     chain.nonce = 4;
     await tracker.poll();
@@ -144,7 +154,7 @@ describe("the tracker", () => {
 
   it("does not call a transaction replaced when it is in a final block, whatever the sender's count", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain);
+    const { tracker } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 3);
     chain.nonce = 9;
     chain.finalized = 2;
@@ -156,7 +166,7 @@ describe("the tracker", () => {
   it("drops a transaction after too many refusals in a row, with the reason from reth", async () => {
     const chain = fakeChain();
     chain.send = () => { throw "insufficient funds for gas"; };
-    const { tracker, clock } = make(chain, { maxRefusals: 3 });
+    const { tracker, clock } = await make(chain, { maxRefusals: 3 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     for (let i = 0; i < 3; i++) {
       clock.now += 6000;
@@ -174,7 +184,7 @@ describe("the tracker", () => {
   it("counts a send that reth says it knows already as accepted", async () => {
     const chain = fakeChain();
     chain.send = () => { throw "already known"; };
-    const { tracker, clock } = make(chain, { maxRefusals: 1 });
+    const { tracker, clock } = await make(chain, { maxRefusals: 1 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     clock.now += 6000;
     await tracker.poll();
@@ -183,7 +193,7 @@ describe("the tracker", () => {
 
   it("drops a transaction that keeps going missing after it is accepted again each time", async () => {
     const chain = fakeChain();
-    const { tracker, clock } = make(chain, { maxAttempts: 3 });
+    const { tracker, clock } = await make(chain, { maxAttempts: 3 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     for (let i = 0; i < 3; i++) { clock.now += 6000; await tracker.poll(); }
     expect(tracker.state(hashOf(1))).toMatchObject({ state: "dropped", attempts: 3 });
@@ -192,7 +202,7 @@ describe("the tracker", () => {
 
   it("learns nothing while reth cannot be reached, and counts no failed send", async () => {
     const chain = fakeChain();
-    const { tracker, clock } = make(chain, { maxRefusals: 1 });
+    const { tracker, clock } = await make(chain, { maxRefusals: 1 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     chain.down = true;
     clock.now += 6000;
@@ -206,7 +216,7 @@ describe("the tracker", () => {
 
   it("holds at most `max` transactions and drops the oldest settled one first", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain, { max: 3 });
+    const { tracker } = await make(chain, { max: 3 });
     for (const n of [1, 2, 3]) tracker.track(rawOf(n), hashOf(n), SENDER, n);
     chain.finalized = 1;
     chain.where.set(hashOf(2), 1); // 2 is final; 1 and 3 are not
@@ -220,8 +230,8 @@ describe("the tracker", () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining(hashOf(1)));
   });
 
-  it("never forgets an open transaction silently: when it must make room, it marks the oldest dropped, with the reason and its bytes gone", () => {
-    const { tracker } = make(fakeChain(), { max: 2, maxBytes: 1_000_000 });
+  it("never forgets an open transaction silently: when it must make room, it marks the oldest dropped, with the reason and its bytes gone", async () => {
+    const { tracker } = await make(fakeChain(), { max: 2, maxBytes: 1_000_000 });
     for (const n of [1, 2, 3]) tracker.track(rawOf(n), hashOf(n), SENDER, n);
     const dropped = [1, 2, 3].map((n) => tracker.state(hashOf(n))).filter((t) => t?.state === "dropped");
     expect(tracker.size()).toBe(2);
@@ -229,8 +239,8 @@ describe("the tracker", () => {
     expect(tracker.state(hashOf(3))?.state).toBe("pending");
   });
 
-  it("refuses a transaction before it is sent when the byte budget or the sender's limit is full, and takes a re-broadcast of one it follows", () => {
-    const { tracker } = make(fakeChain(), { maxBytes: rawOf(1).length * 2, maxPerSender: 2 });
+  it("refuses a transaction before it is sent when the byte budget or the sender's limit is full, and takes a re-broadcast of one it follows", async () => {
+    const { tracker } = await make(fakeChain(), { maxBytes: rawOf(1).length * 2, maxPerSender: 2 });
     expect(tracker.admit(rawOf(1), hashOf(1), SENDER)).toBeNull();
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     tracker.track(rawOf(2), hashOf(2), SENDER, 1);
@@ -241,7 +251,7 @@ describe("the tracker", () => {
 
   it("stops following a transaction that reth keeps for too long without a block, so it cannot hold a slot for ever", async () => {
     const chain = fakeChain();
-    const { tracker, clock } = make(chain, { maxPendingMs: 60000, maxBytes: rawOf(1).length * 3 });
+    const { tracker, clock } = await make(chain, { maxPendingMs: 60000, maxBytes: rawOf(1).length * 3 });
     const senders = [1, 2, 3].map((n) => "0x" + n.toString(16).repeat(40));
     senders.forEach((s, i) => { tracker.track(rawOf(i + 1), hashOf(i + 1), s, 0); chain.where.set(hashOf(i + 1), null); });
     expect(tracker.admit(rawOf(9), hashOf(9), "0x" + "9".repeat(40))).not.toBeNull(); // the byte budget is full
@@ -257,7 +267,7 @@ describe("the tracker", () => {
 
   it("keeps following a transaction that is in a block, however old it is", async () => {
     const chain = fakeChain();
-    const { tracker, clock } = make(chain, { maxPendingMs: 60000 });
+    const { tracker, clock } = await make(chain, { maxPendingMs: 60000 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     chain.where.set(hashOf(1), 5);
     chain.finalized = 4;
@@ -268,7 +278,7 @@ describe("the tracker", () => {
 
   it("counts only open entries against the limits: a settled transaction frees room", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain, { maxPerSender: 1 });
+    const { tracker } = await make(chain, { maxPerSender: 1 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     expect(tracker.admit(rawOf(2), hashOf(2), SENDER)).not.toBeNull();
     chain.finalized = 1;
@@ -280,7 +290,7 @@ describe("the tracker", () => {
   it("keeps a transaction open while another from the same sender holds its nonce (a speed-up), and calls it replaced once that one is final", async () => {
     const chain = fakeChain();
     chain.send = () => { throw "replacement transaction underpriced"; };
-    const { tracker, clock } = make(chain, { maxRefusals: 2 });
+    const { tracker, clock } = await make(chain, { maxRefusals: 2 });
     tracker.track(rawOf(1), hashOf(1), SENDER, 5);
     for (let i = 0; i < 6; i++) { // far past maxRefusals, and past the time one block takes to prove
       clock.now += 6000;
@@ -301,7 +311,7 @@ describe("the tracker", () => {
   it("sends it again when the transaction that held its nonce goes away", async () => {
     const chain = fakeChain();
     chain.send = () => { throw "nonce too low"; };
-    const { tracker, clock } = make(chain);
+    const { tracker, clock } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     clock.now += 6000;
     await tracker.poll();
@@ -311,13 +321,13 @@ describe("the tracker", () => {
     expect(tracker.state(hashOf(1))).toMatchObject({ state: "pending", attempts: 2 });
   });
 
-  it("writes the file once for a burst of sends, only when something changed, and on flush", async () => {
+  it.skipIf(DATABASE_MODE)("writes the file once for a burst of sends, only when something changed, and on flush", async () => {
     vi.useFakeTimers();
     try {
       const { writeFileSync, readFileSync, existsSync } = await import("node:fs");
       const file = join(dir, "t.json");
       const chain = fakeChain();
-      const { tracker } = make(chain, { file, saveMs: 1000 });
+      const { tracker } = await make(chain, { file, saveMs: 1000 });
       for (const n of [1, 2, 3, 4]) tracker.track(rawOf(n), hashOf(n), SENDER, n);
       await Promise.resolve();
       expect(existsSync(file)).toBe(false); // not written inside track()
@@ -342,7 +352,7 @@ describe("the tracker", () => {
   it("fills in the Canton update of a final transaction when the index catches up later", async () => {
     const chain = fakeChain();
     chain.indexLag = true;
-    const { tracker } = make(chain);
+    const { tracker } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 0);
     chain.finalized = 3;
     chain.where.set(hashOf(1), 3);
@@ -354,7 +364,7 @@ describe("the tracker", () => {
 
   it("starts a settled transaction again when it is sent again, and leaves an open one alone", async () => {
     const chain = fakeChain();
-    const { tracker } = make(chain);
+    const { tracker } = await make(chain);
     tracker.track(rawOf(1), hashOf(1), SENDER, 3);
     chain.nonce = 4;
     await tracker.poll();
@@ -365,10 +375,10 @@ describe("the tracker", () => {
     expect(tracker.size()).toBe(1);
   });
 
-  it("keeps the list across a restart in TRACKER_FILE, written atomically", async () => {
+  it.skipIf(DATABASE_MODE)("keeps the list across a restart in TRACKER_FILE, written atomically", async () => {
     const file = join(dir, "state", "tracker.json");
     const chain = fakeChain();
-    const first = make(chain, { file });
+    const first = await make(chain, { file });
     first.tracker.track(rawOf(1), hashOf(1), SENDER, 3);
     first.tracker.track(rawOf(2), hashOf(2), SENDER, 4);
     chain.finalized = 2;
@@ -377,7 +387,7 @@ describe("the tracker", () => {
     await first.tracker.flush();
     expect(readdirSync(join(dir, "state"))).toEqual(["tracker.json"]); // no half-written file left behind
 
-    const second = make(chain, { file });
+    const second = await make(chain, { file });
     expect(second.tracker.state(hashOf(1))).toMatchObject({ state: "pending", nonce: 3, attempts: 1 });
     expect(second.tracker.state(hashOf(2))).toMatchObject({ state: "final", block: 2 });
     // The restarted tracker still has the bytes of the open one, so it can send it again.
@@ -387,10 +397,10 @@ describe("the tracker", () => {
     expect(chain.sent).toEqual([rawOf(1)]);
   });
 
-  it("does not keep the bytes of a transaction once it is settled", async () => {
+  it.skipIf(DATABASE_MODE)("does not keep the bytes of a transaction once it is settled", async () => {
     const file = join(dir, "t.json");
     const chain = fakeChain();
-    const { tracker } = make(chain, { file });
+    const { tracker } = await make(chain, { file });
     tracker.track(rawOf(1), hashOf(1), SENDER, 3);
     await tracker.flush();
     const { readFileSync } = await import("node:fs");
@@ -401,11 +411,11 @@ describe("the tracker", () => {
     expect(readFileSync(file, "utf8")).not.toContain(rawOf(1));
   });
 
-  it("starts empty, and says so, when its file is not one it wrote", async () => {
+  it.skipIf(DATABASE_MODE)("starts empty, and says so, when its file is not one it wrote", async () => {
     const { writeFileSync } = await import("node:fs");
     const file = join(dir, "bad.json");
     writeFileSync(file, "not json");
-    const { tracker } = make(fakeChain(), { file });
+    const { tracker } = await make(fakeChain(), { file });
     expect(tracker.size()).toBe(0);
     expect(console.error).toHaveBeenCalled();
   });
@@ -414,11 +424,12 @@ describe("the tracker", () => {
     vi.useFakeTimers();
     try {
       const chain = fakeChain();
-      const { tracker } = make(chain);
+      const { tracker } = await make(chain);
       tracker.track(rawOf(1), hashOf(1), SENDER, 0);
       chain.where.set(hashOf(1), 0);
       tracker.start();
       await vi.advanceTimersByTimeAsync(2100);
+      await tracker.poll(); // a database answers in real time, which the clock above does not move
       expect(tracker.state(hashOf(1))?.state).toBe("final");
       tracker.stop();
     } finally {

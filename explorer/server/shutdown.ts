@@ -9,6 +9,8 @@ export interface ShutdownParts {
   tracker: { flush(): Promise<void> };
   /** Others with something to write before the exit, such as the faucet's limits and waiting requests. They are flushed one by one, before the tracker, because they may hand the tracker one more transfer. */
   also?: Array<{ flush(): Promise<void> }>;
+  /** Run after the last write, one by one: give up the loops' leads so another instance takes them at once, then close the database. A failure of one does not stop the rest. */
+  release?: Array<() => Promise<void>>;
   process?: Pick<NodeJS.Process, "on">;
   exit?: (code: number) => void;
 }
@@ -27,6 +29,7 @@ export function onShutdown(p: ShutdownParts): (signal: string) => Promise<void> 
       for (const w of p.also ?? []) await w.flush();
       await p.tracker.flush();
     } finally {
+      for (const r of p.release ?? []) await r().catch(() => undefined);
       exit(0);
     }
   })());

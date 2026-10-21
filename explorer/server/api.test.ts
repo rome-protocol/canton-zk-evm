@@ -6,6 +6,7 @@ import { createChainIndex } from "./chain-index.ts";
 import { loadConfig } from "./config.ts";
 import { createLedger } from "./ledger.ts";
 import { createFaucet } from "./faucet.ts";
+import type { FaucetStore } from "./faucet-store.ts";
 import { createTracker } from "./tracker.ts";
 import type { Tracked } from "./tracker.ts";
 import { ALLOWED_METHODS, createReth, RethError } from "./reth.ts";
@@ -49,10 +50,10 @@ function handlers(chain: FakeChain) {
 /** Adds a `leaked` field to every object it holds, as a careless pass-through of the index's or the config's own objects would send it on. */
 const leaky = <T>(x: T): T => (Array.isArray(x) ? (x.map(leaky) as T) : x && typeof x === "object" ? ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, leaky(v)])), leaked: "x" } as T) : x);
 
-interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; run?: { value: number }; faucet?: boolean; gate?: (method: string) => Promise<void> | void; firstLook?: "wait" | "go" }
+interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; run?: { value: number }; faucet?: boolean; store?: FaucetStore; gate?: (method: string) => Promise<void> | void; firstLook?: "wait" | "go" }
 
 /** With `firstLook: "go"` the index's first look is started and not waited for, and `look` is it: the answers are then those of a look in progress. */
-async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = false, gate, firstLook = "wait" }: Options = {}) {
+async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = false, store, gate, firstLook = "wait" }: Options = {}) {
   reth = await startFakeReth(handlers(chain), { gate });
   ledger = await startFakeLedger(chain.items);
   const real = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
@@ -74,8 +75,8 @@ async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = fal
     contract: (a) => (leak ? leaky(built.contract(a)) : built.contract(a)),
   };
   const key = faucet ? FAUCET_KEY : null;
-  const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number) => {}, state: (_hash: string): Tracked | undefined => undefined };
-  const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
+  const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number, _via?: string) => {}, state: (_hash: string): Tracked | undefined => undefined };
+  const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, ...(store ? { store } : {}), tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
   const api = createApi({ config, reth: r, ledger: l, index, tracker, faucet: faucetOf });
   return { api, look, get: (target: string) => api("GET", target), faucet: faucetOf, tracker: faucetTracker };
 }
@@ -342,6 +343,19 @@ describe("the faucet routes", () => {
     expect(sent.hash).toMatch(/^0x[0-9a-f]{64}$/);
     Object.assign(tracked!, { state: "final", block: 3 });
     expect((await api("GET", `/api/faucet/ticket/${id}`)).body).toMatchObject({ status: "final", block: 3, hash: sent.hash });
+  });
+
+  it("finds a ticket another instance wrote, through the store", async () => {
+    const id = "cd".repeat(12);
+    const store: FaucetStore = {
+      load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => true,
+      find: async (x) => (x === id ? { id, to: BOB, ip: null, at: 1, status: "sent", hash: "0x" + "11".repeat(32), block: null, reason: null, tries: 0 } : null),
+    };
+    const { api } = await boot(chain(), { faucet: true, store });
+    const found = await api("GET", `/api/faucet/ticket/${id}`);
+    expect(found.status).toBe(200);
+    expect(found.body).toMatchObject({ ticket: id, status: "sent", to: BOB });
+    expect((await api("GET", "/api/faucet/ticket/" + "ab".repeat(12))).status).toBe(404);
   });
 
   it("answers 404 to a ticket that is not known, 405 to other methods on it, and 404 to longer paths", async () => {

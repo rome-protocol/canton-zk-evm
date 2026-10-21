@@ -94,6 +94,21 @@ has "$queue" "-e CAPTCHA_VERIFY_URL=https://check.example/verify" "the human che
 has "$queue" "-e CAPTCHA_SECRET" "the human check's secret is named"
 lacks "$queue" "$sec" "the secret's value is never on the command"
 
+# The database: its password file and the faucet's hash key are mounted read-only, the parts are passed on, and a URL (it may hold the password) is named without its value.
+printf 'POSTGRES_PASSWORD=x\n' > "$WORK/db.env"; printf 'k\n' > "$WORK/client.key"
+dbsec=$(openssl rand -hex 8)
+dbrun=$(EXPLORER_DB_PASSWORD_FILE="$WORK/db.env" FAUCET_CLIENT_KEY_FILE="$WORK/client.key" EXPLORER_DB_HOST=10.0.0.5 EXPLORER_DB_PORT=5433 EXPLORER_DB_USER=explorer EXPLORER_DB_NAME=explorer dry start)
+has "$dbrun" "-v $WORK/db.env:/run/explorer/db.env:ro" "the database's password file is mounted read-only"
+has "$dbrun" "-e EXPLORER_DB_PASSWORD_FILE=/run/explorer/db.env" "the container reads the password file from the mount"
+has "$dbrun" "-v $WORK/client.key:/run/explorer/client.key:ro" "the faucet's hash key is mounted read-only"
+has "$dbrun" "-e FAUCET_CLIENT_KEY_FILE=/run/explorer/client.key" "the container reads the hash key from the mount"
+has "$dbrun" "-e EXPLORER_DB_HOST=10.0.0.5" "the database's host is passed on"
+has "$dbrun" "-e EXPLORER_DB_NAME=explorer" "the database's name is passed on"
+urlrun=$(EXPLORER_DATABASE_URL="postgres://explorer:$dbsec@127.0.0.1:5433/explorer" dry start)
+has "$urlrun" "-e EXPLORER_DATABASE_URL" "the database's URL is named"
+lacks "$urlrun" "$dbsec" "the URL's password is never on the command"
+lacks "$(dry start)" "EXPLORER_DB" "no database settings, none passed on"
+
 # No reader party anywhere: it stops, and says which setting.
 rm "$S/canton/parties.env"
 if out=$(dry start 2>&1); then fail "start ran without a reader party"; fi

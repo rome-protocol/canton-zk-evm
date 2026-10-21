@@ -233,7 +233,7 @@ describe("eth_sendRawTransaction", () => {
     const answer = await call("eth_sendRawTransaction", raw);
     expect(answer.result).toBe(keccak256(raw));
     expect(seen.eth_sendRawTransaction).toEqual([[raw]]);
-    expect(tracked).toEqual([[raw, keccak256(raw), ACCOUNT.address.toLowerCase(), 3]]);
+    expect(tracked).toEqual([[raw, keccak256(raw), ACCOUNT.address.toLowerCase(), 3, "rpc"]]);
   });
 
   it("refuses a transaction for another chain, and does not call reth or the tracker", async () => {
@@ -469,7 +469,7 @@ describe("a send that goes wrong around reth", () => {
     const { call, tracked } = await boot({ eth_sendRawTransaction: () => new Promise((ok) => setTimeout(ok, 400)) }, { timeoutMs: 100 });
     const raw = await signed();
     expect((await call("eth_sendRawTransaction", raw)).error?.code).toBe(-32603);
-    expect(tracked).toEqual([[raw, keccak256(raw), ACCOUNT.address.toLowerCase(), 3]]);
+    expect(tracked).toEqual([[raw, keccak256(raw), ACCOUNT.address.toLowerCase(), 3, "rpc"]]);
   });
 
   it("tracks a transaction that reth says it knows already, and still returns reth's error", async () => {
