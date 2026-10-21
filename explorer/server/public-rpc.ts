@@ -237,7 +237,7 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
     /** The tracker is a safety net. Its failure never turns a send that reth took into an error. */
     const follow = (): void => {
       try {
-        tracker.track(lower, hash, from, nonce);
+        tracker.track(lower, hash, from, nonce, "rpc");
       } catch (e) {
         console.error(`rpc: cannot follow ${hash}: ${(e as Error).message}`);
       }
