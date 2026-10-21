@@ -183,8 +183,8 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
     return result.status === 202 ? { ...result, body: pick(result.body as { ticket: string; position: number; to: string; amount: string }, FIELDS.faucetQueued) } : result;
   }
 
-  function ticket(id: string): Answer {
-    const t = faucet.ticket(id);
+  async function ticket(id: string): Promise<Answer> {
+    const t = faucet.ticket(id) ?? (await faucet.find(id));
     return t ? ok(pick(t, FIELDS.faucetTicket)) : fail(404, "No such ticket. A ticket is kept for a while after its coin is final, and is lost if the explorer is rebuilt.");
   }
 
@@ -202,7 +202,7 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
       const isTicket = name === "faucet" && arg === "ticket" && parts.length === 4;
       if (root !== "api" || parts.length > (isTicket ? 4 : 3)) return fail(404, "No such route.");
-      if (isTicket) return method === "GET" ? ticket(parts[3]!) : fail(405, "Use GET.");
+      if (isTicket) return method === "GET" ? await ticket(parts[3]!) : fail(405, "Use GET.");
       if (name === "faucet" && parts.length === 2) {
         if (method === "POST") return await giveCoin(body, ip);
         if (method !== "GET") return fail(405, "Use GET or POST.");
