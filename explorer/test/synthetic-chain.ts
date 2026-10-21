@@ -105,7 +105,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
 export interface SyntheticChain {
   blocks: SyntheticBlock[];
   /** reth, serving blocks 0 to `rethHead`. */
-  reads: FinalReads & { calls: Record<string, number>; rethHead: number };
+  reads: FinalReads & { calls: Record<string, number>; rethHead: number; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string> };
   /** The Ledger API, serving the records of blocks 1 to `ledgerHead`. */
   ledger: Ledger & { ledgerHead: number; pageSize: number; failAfterPages: number | null };
   genesisHash: string;
@@ -127,11 +127,12 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS): SyntheticCha
   const calls: Record<string, number> = {};
   const count = (m: string) => { calls[m] = (calls[m] ?? 0) + 1; };
   const reads = {
-    calls, rethHead: shapes.length,
+    calls, rethHead: shapes.length, codes: {} as Record<string, string>,
     block: async (n: number) => { count("block"); return n === 0 ? genesis : n <= reads.rethHead ? (blocks[n - 1]!.block) : null; },
     receipts: async (n: number) => { count("receipts"); return n >= 1 && n <= reads.rethHead ? blocks[n - 1]!.receipts : null; },
     traces: async (n: number) => { count("traces"); return n >= 1 && n <= reads.rethHead ? blocks[n - 1]!.traces : null; },
     storageAt: async (_a: string, _s: string, n: number) => { count("storageAt"); return blocks[n - 1]?.legsHash ?? "0x" + "00".repeat(32); },
+    code: async (a: string) => { count("code"); return reads.codes[a] ?? "0x"; },
     rpc: async () => { throw new Error("not used"); },
   } as unknown as SyntheticChain["reads"];
   const ledger = {
