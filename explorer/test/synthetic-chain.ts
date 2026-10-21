@@ -7,7 +7,8 @@ import { encodeAbiParameters, keccak256, serializeTransaction } from "viem";
 import type { Pins } from "../server/config.ts";
 import type { BlockRecord, Ledger } from "../server/ledger.ts";
 import { LEG_TOPIC } from "../server/indexer/legs.ts";
-import type { FinalBlock, FinalReads, FinalReceipt, FinalTx, TxTrace } from "../server/indexer/reads.ts";
+import { RethError } from "../server/reth.ts";
+import type { FinalBlock, FinalReads, FinalReceipt, FinalTx, TraceFrame, TxTrace } from "../server/indexer/reads.ts";
 
 export const GATEWAY = "0x" + "9a".repeat(20);
 export const PINS: Pins = { programVK: "0x" + "a1".repeat(32), rootC: "0x" + "b2".repeat(32), file: "test-pins.txt" };
@@ -91,7 +92,14 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     txs.push({ hash, type: 2, from: hex(0xf000 + (k % 53)), to, nonce: k, value: BigInt(k), gas: 100000, gasPrice: null, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, input, accessList: [], authorizationList: null });
     receipts.push({ transactionHash: hash, status: failed ? 0 : 1, gasUsed, cumulativeGasUsed: cumulative, effectiveGasPrice: 8n, contractAddress: kind === 2 && !failed ? hex(0xcafe00 + k) : null, logs });
     const reason = "0x08c379a0" + encodeAbiParameters([{ type: "string" }], ["not allowed"]).slice(2);
-    traces.push({ transactionHash: hash, output: failed ? reason : "0x", calls: kind === 3 ? 4 : failed ? 1 : 1, error: failed ? "Reverted" : null });
+    const sender = hex(0xf000 + (k % 53));
+    const top: TraceFrame = kind === 2
+      ? { traceAddress: [], type: "create", callType: "create", from: sender, to: failed ? null : hex(0xcafe00 + k), value: BigInt(k), gas: 100000, gasUsed, input, error: null,
+          created: failed ? null : { address: hex(0xcafe00 + k), code: "0x6001600055" } }
+      : { traceAddress: [], type: "call", callType: "call", from: sender, to, value: BigInt(k), gas: 100000, gasUsed, input, error: failed ? "Reverted" : null, created: null };
+    // A transaction of kind 3 makes three calls that move no value, so none is stored as an internal call.
+    const subs: TraceFrame[] = kind === 3 ? [0, 1, 2].map((i) => ({ traceAddress: [i], type: "call", callType: "staticcall", from: to as string, to: hex(0xe000 + i), value: 0n, gas: 5000, gasUsed: 100, input: "0x", error: null, created: null })) : [];
+    traces.push({ transactionHash: hash, output: failed ? reason : "0x", calls: 1 + subs.length, error: failed ? "Reverted" : null, frames: [top, ...subs] });
   }
   const legsHash = shape.leg ? expectedLegHash(shape.leg, "0x" + "01".repeat(32), hex(0xd000), hex(0xa11ce), 42n, "alice::1220" + "ab".repeat(32)) : null;
   const headerHex = number.toString(16).padStart(8, "0") + instance.toString(16).padStart(2, "0") + "f9".repeat(39);
@@ -113,7 +121,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
 export interface SyntheticChain {
   blocks: SyntheticBlock[];
   /** reth, serving blocks 0 to `rethHead`. */
-  reads: FinalReads & { calls: Record<string, number>; rethHead: number; rethFinalized: number | null; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string> };
+  reads: FinalReads & { calls: Record<string, number>; rethHead: number; rethFinalized: number | null; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string>; storage: Record<string, string>; liveCode: Record<string, string>; callResults: Record<string, string> };
   /** The Ledger API, serving the records of blocks 1 to `ledgerHead`. */
   ledger: Ledger & { ledgerHead: number; pageSize: number; failAfterPages: number | null };
   genesisHash: string;
@@ -136,14 +144,25 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS, instance = 0)
   const count = (m: string) => { calls[m] = (calls[m] ?? 0) + 1; };
   const reads = {
     calls, rethHead: shapes.length, rethFinalized: null as number | null, codes: {} as Record<string, string>,
+    /** Storage words by "address:slot" (the gateway's legs are served for it), the code an account holds after block 0, and eth_call answers by "address:input". */
+    storage: {} as Record<string, string>, liveCode: {} as Record<string, string>, callResults: {} as Record<string, string>,
     block: async (n: number) => { count("block"); return n === 0 ? genesis : n <= reads.rethHead ? (blocks[n - 1]!.block) : null; },
     hashAt: async (n: number) => { count("hashAt"); return n === 0 ? genesis.hash : n <= reads.rethHead ? blocks[n - 1]!.block.hash : null; },
     /** reth's finalized number: `rethFinalized` when a test sets it, else its head. */
     finalized: async () => { count("finalized"); return reads.rethFinalized ?? reads.rethHead; },
     receipts: async (n: number) => { count("receipts"); return n >= 1 && n <= reads.rethHead ? blocks[n - 1]!.receipts : null; },
     traces: async (n: number) => { count("traces"); return n >= 1 && n <= reads.rethHead ? blocks[n - 1]!.traces : null; },
-    storageAt: async (_a: string, _s: string, n: number) => { count("storageAt"); return blocks[n - 1]?.legsHash ?? "0x" + "00".repeat(32); },
-    code: async (a: string) => { count("code"); return reads.codes[a] ?? "0x"; },
+    storageAt: async (a: string, slot: string, n: number) => {
+      count("storageAt");
+      return reads.storage[`${a}:${slot}`] ?? (a === GATEWAY ? blocks[n - 1]?.legsHash : null) ?? "0x" + "00".repeat(32);
+    },
+    code: async (a: string, n: number) => { count("code"); return (n >= 1 ? reads.liveCode[a] : undefined) ?? reads.codes[a] ?? "0x"; },
+    call: async (to: string, input: string) => {
+      count("call");
+      const r = reads.callResults[`${to}:${input}`];
+      if (r === undefined) throw new RethError("eth_call: reth answered \"execution reverted\"", true);
+      return r;
+    },
     rpc: async () => { throw new Error("not used"); },
   } as unknown as SyntheticChain["reads"];
   const ledger = {
