@@ -138,16 +138,16 @@ The step count of 385,277 here is for this repository's guest and its own tempor
 
 Measured in CI, in the demo's rehearsal job (`tests/demo_rehearsal.sh`, test `explorer/server/indexer/real-reth.test.ts`), on a GitHub-hosted `ubuntu-latest` runner, not on the reference machine. The chain is the rehearsal's own: the real reth (through `network/reth/launch.sh`, discovery off), the real Canton and the real builder, with the stand-in proof (the test takes its pins from the first proof, which is all the stand-in changes). The indexer then indexes every block of the chain into a PostgreSQL started for the run (the pinned image), once with stage 2 `inline` and once `behind`.
 
-The worst-case block is made by `explorer/test/fixtures/Stress.sol`: 15 transactions, each a call chain 14 deep with 10 logs and a contract creation at every level. It is 21.8 Mgas of the 30 Mgas cap: 15 transactions, 435 internal calls, 2,250 logs. (The builder takes transactions by their gas limit, 2 Mgas each, and these use about 1.45 Mgas.) One run, one runner; the figures below are from the first run that made the block as intended.
+The worst-case block is made by `explorer/test/fixtures/Stress.sol`: 15 transactions, each a call chain 14 deep with 10 logs and a contract creation at every level. It is 21.8 Mgas of the 30 Mgas cap: 15 transactions, 435 internal calls, 2,250 logs. (The builder takes transactions by their gas limit, 2 Mgas each, and these use about 1.45 Mgas.) One run, one runner; the figures below are from one run, with the block as intended, and runs differ by a few milliseconds.
 
 | What | Time |
 |---|---|
-| Stage 1's reads from reth, `inline` (block, receipts, `trace_replayBlockTransactions`) | 28 ms |
-| Stage 1's reads from reth, `behind` (block, receipts) | 24 ms |
-| Stage 1's write, `inline` / `behind` | 44 ms / 39 ms |
-| Stage 2's trace read, `behind` | 7 ms |
+| Stage 1's reads from reth, `inline` (block, receipts, `trace_replayBlockTransactions`) | 37 ms |
+| Stage 1's reads from reth, `behind` (block, receipts) | 34 ms |
+| Stage 1's write, `inline` / `behind` | 59 ms / 57 ms |
+| Stage 2's trace read, `behind` | 9 ms |
 | Stage 2's write | 2 ms |
-| All three reads again, on a warm reth; the trace read alone | 34 ms; 6 ms |
+| All three reads again, on a warm reth; the trace read alone | 44 ms; 9 ms |
 
 Both shapes finish the block through both stages in under 100 ms, against B1's 1.0 s for stage 1 and B2's 3.0 s for both stages. So `INDEX_DERIVE` stays `inline` by default (design section 4.3's trigger). This does not set B2's final number: the block is below the cap, the machine is not the reference machine, and stage 2 here is only the call count and revert data. W1 runs again in E5b, with all of stage 2.
 
