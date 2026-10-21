@@ -14,12 +14,12 @@ import { RethError } from "../reth.ts";
 import { IndexerStop, Paused, RethBehind } from "./errors.ts";
 import { seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth, type HealthRow } from "./health.ts";
-import { legHash, legsSlot } from "./legs.ts";
+import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
-import { legsOf, stage1, type Stage1Input } from "./stage1.ts";
+import { checkLegs, legsOf, stage1, type Stage1Input } from "./stage1.ts";
 
 /** Any fixed number; it only has to be the same for every indexer of this schema, and not one the migration runner (001) or the partition maintenance (002) holds. */
 export const LOCK_KEY = 7_207_371_003;
@@ -243,26 +243,6 @@ export function createIndexer(o: IndexerOptions) {
         o.onTiming?.({ block: n, stage: 2, readMs: 0, writeMs: now() - w2, txs: block.transactions.length });
       }
     });
-  }
-
-  /**
-   * C10: the running leg hash worked out again from the block's decoded `Leg` events, in log order, against `legs[N]` as reth stores it. A leg that
-   * cannot be decoded, or a hash that differs, is `degraded` naming the block, never a stop. A later block that agrees does not clear the report of an
-   * older one: the row stays degraded until a person has looked, because one old block that disagrees is still one that disagrees.
-   */
-  async function checkLegs(c: PoolClient, n: number, legs: ReturnType<typeof legsOf>["legs"], onChain: string | null, problem: Error | null): Promise<void> {
-    if (problem) {
-      await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n }, detail: problem.message }]);
-      return;
-    }
-    if (legs.length === 0) return;
-    const computed = legHash(legs.map((l) => l.leg));
-    if (computed !== onChain) {
-      await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, computed, onChain }, detail: `block ${n}: the leg hash worked out from its ${legs.length} Leg events is ${computed}, but the gateway's legs[${n}] is ${onChain}` }]);
-      return;
-    }
-    const now0 = (await c.query("select status from health_checks where check_id = 'C10'")).rows[0]?.status as string | undefined;
-    if (now0 !== "degraded") await setHealth(c, [{ id: "C10", status: "ok", value: { block: n } }]);
   }
 
   /** One look at Canton: index every record after the reader's cursor. Throws for a read that failed (Canton, reth or the database unreachable), which is retried. */

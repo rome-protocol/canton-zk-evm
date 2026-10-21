@@ -10,17 +10,19 @@
  * is refused leaves every table as it was, and the live indexer is not held behind a catch-up of the blocks after the range. It leaves the
  * lifecycle, the tracker, the faucet, the verified sources, and the stored records, proofs and Canton updates alone.
  *
+ * C10 is checked for every block it writes, with the indexer's own rule (the shared `checkLegs`): a block whose decoded legs do not hash to the
+ * gateway's `legs[N]`, or have a leg that cannot be read, makes the row degraded, and a degraded row stays so until clear-check.
+ *
  * It takes the reindex lock exclusively. The live indexer takes it shared inside each of its transactions and, while a reindex holds it,
  * does nothing and tries again: its lag shows in the health. The aggregates (address counters, contract and token counts, balances) are
  * rebuilt here from the fact tables as the slices that add them land; this slice has none.
  */
 import type { Pool, PoolClient } from "pg";
-import { IndexerStop, LegUndecodable } from "./errors.ts";
-import { setHealth } from "./health.ts";
+import { IndexerStop } from "./errors.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { transactionHashes } from "./rlp.ts";
-import { legsOf, writeBlockRow, writeFacts } from "./stage1.ts";
+import { checkLegs, legsOf, writeBlockRow, writeFacts } from "./stage1.ts";
 import { deriveCursor, rederive } from "./stage2.ts";
 
 /** Any fixed number, the same for every process of this schema; not the indexer's own lock key. */
@@ -66,7 +68,6 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
     // The lock is held and the live indexer is paused, so the derive cursor stays where it is for the whole range.
     const derived = await deriveCursor(o.pool);
 
-    let leg: LegUndecodable | null = null;
     for (let n = from; n <= last; n++) {
       const stored = (await o.pool.query(
         `select b.hash, b.update_id, to_char(b.record_time at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as record_time, encode(br.header, 'hex') as header, encode(br.txs, 'hex') as txs
@@ -85,7 +86,6 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
       }
       const { legs, count: legsCount, problem } = legsOf(receipts, o.gateway, n);
       const legsHash = legsCount > 0 ? await o.reads.storageAt(o.gateway, legsSlot(n), n) : null;
-      leg ??= problem;
       const c = await o.pool.connect();
       try {
         await c.query("begin");
@@ -95,6 +95,7 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
         if (rowsTx !== block.transactions.length || rowsLogs !== logCount) {
           throw new IndexerStop("C3", `block ${n}: ${block.transactions.length} transactions and ${logCount} logs, but ${rowsTx} and ${rowsLogs} rows were written`, n);
         }
+        await checkLegs(c, n, legs, legsHash, problem);
         if (n <= derived) await rederive(c, n, traces as TxTrace[]);
         await c.query("commit");
       } catch (e) {
@@ -105,7 +106,6 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
       }
       if (n % 1000 === 0) log(`reindex: block ${n} of ${last}`);
     }
-    if (leg) await setHealth(o.pool, [{ id: "C10", status: "degraded", value: { block: leg.block }, detail: leg.message }]);
     return { from, to: last, blocks: last - from + 1 };
   } finally {
     await lock.query("select pg_advisory_unlock($1)", [REINDEX_KEY]).catch(() => undefined);

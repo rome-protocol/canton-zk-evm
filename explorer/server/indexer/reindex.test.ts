@@ -120,6 +120,34 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
     });
   }, 60_000);
 
+  it("checks the leg hash of each block it writes (C10), and a degraded row stays degraded", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      const indexer = await open(pool, chain);
+      await indexer.runOnce();
+      const row = async () => (await pool.query("select status, value from health_checks where check_id = 'C10'")).rows[0];
+      expect(await row()).toMatchObject({ status: "ok", value: { block: 4 } });
+
+      // Reindexing blocks that agree with the gateway leaves C10 ok.
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, null);
+      expect((await row()).status).toBe("ok");
+
+      // Reth now holds another legs[2] than the decoded legs hash to: the reindex reports it, and still writes the block.
+      const other = "0x" + "11".repeat(32);
+      chain.blocks[1]!.legsHash = other;
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, 3);
+      const r = await row();
+      expect(r.status).toBe("degraded");
+      expect(r.value).toMatchObject({ block: 2, computed: expect.stringMatching(/^0x[0-9a-f]{64}$/), onChain: other });
+      expect((await pool.query("select legs_count from blocks where number = 2")).rows[0].legs_count).toBe(2);
+
+      // A later reindex of blocks that agree does not clear it.
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 3, 5);
+      expect((await row()).status).toBe("degraded");
+    });
+  }, 60_000);
+
   it("refuses a range outside the indexed blocks, a block that reth has another hash for, and another gateway", async () => {
     await inDb(async () => {
       const pool = await newDb();

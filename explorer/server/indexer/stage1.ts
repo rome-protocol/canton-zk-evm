@@ -12,7 +12,7 @@ import type { Pins } from "../config.ts";
 import type { BlockRecord } from "../ledger.ts";
 import { checkProofFacts, readProofFacts } from "../proof.ts";
 import { setHealth } from "./health.ts";
-import { decodeLeg, LEG_TOPIC, type Leg } from "./legs.ts";
+import { decodeLeg, legHash, LEG_TOPIC, type Leg } from "./legs.ts";
 import { IndexerStop, LegUndecodable } from "./errors.ts";
 import type { FinalBlock, FinalReceipt } from "./reads.ts";
 import { transactionHashes } from "./rlp.ts";
@@ -270,4 +270,24 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
   await setHealth(c, ["C1", "C2", "C3", "C7"].map((id) => ({ id, status: "ok" as const, value: seen })));
   await c.query("select pg_notify('final_block', $1)", [String(n)]);
   return { written: true, txCount: txs.length, logCount };
+}
+
+/**
+ * C10: the running leg hash worked out again from the block's decoded `Leg` events, in log order, against `legs[N]` as reth stores it. A leg that
+ * cannot be decoded, or a hash that differs, is `degraded` naming the block, never a stop. A later block that agrees does not clear the report of an
+ * older one: the row stays degraded until a person has looked, because one old block that disagrees is still one that disagrees.
+ */
+export async function checkLegs(c: PoolClient, n: number, legs: ReturnType<typeof legsOf>["legs"], onChain: string | null, problem: Error | null): Promise<void> {
+  if (problem) {
+    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n }, detail: problem.message }]);
+    return;
+  }
+  if (legs.length === 0) return;
+  const computed = legHash(legs.map((l) => l.leg));
+  if (computed !== onChain) {
+    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, computed, onChain }, detail: `block ${n}: the leg hash worked out from its ${legs.length} Leg events is ${computed}, but the gateway's legs[${n}] is ${onChain}` }]);
+    return;
+  }
+  const now0 = (await c.query("select status from health_checks where check_id = 'C10'")).rows[0]?.status as string | undefined;
+  if (now0 !== "degraded") await setHealth(c, [{ id: "C10", status: "ok", value: { block: n } }]);
 }
