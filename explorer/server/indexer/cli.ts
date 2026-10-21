@@ -2,7 +2,7 @@
  * node server/indexer/cli.ts
  * Runs the indexer's write path until a check stops it or it is told to stop. Needs the database up and migrated (node server/db/cli.ts migrate).
  * Reads RETH_RPC_URL, LEDGER_URL, READER_PARTY, CHAIN_ID and PINS_FILE as the explorer does, EXPLORER_DATABASE_URL (or the password-file
- * settings) for the database, and GATEWAY_ADDRESS and INDEX_DERIVE (inline or behind) for itself. It exits 0 when told to stop, and 2 when a
+ * settings) for the database, and GATEWAY_ADDRESS, INDEX_DERIVE (inline or behind) and INDEX_TRACE_TIMEOUT_MS for itself. It exits 0 when told to stop, and 2 when a
  * check stops it, with the check's row written to health_checks as down.
  */
 import { Pool } from "pg";
@@ -19,7 +19,7 @@ async function main(): Promise<number> {
   const pool = new Pool(connectionConfig());
   pool.on("error", (e) => console.error(`indexer: database connection: ${e.message}`));
   const indexer = createIndexer({
-    pool, reads: createFinalReads(config.rethUrl, config.rpcTimeoutMs), ledger: createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty),
+    pool, reads: createFinalReads(config.rethUrl, config.rpcTimeoutMs, settings.traceTimeoutMs), ledger: createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty),
     pins: config.pins, chainId: config.chainId, gateway: settings.gateway, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
     log: (line) => console.log(line),
   });

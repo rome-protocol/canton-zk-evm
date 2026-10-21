@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.24;
 
 /// The three kinds of revert data the indexer must keep (design section 4.1): Error(string), Panic(uint256) and a custom error.

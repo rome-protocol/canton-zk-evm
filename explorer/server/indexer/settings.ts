@@ -1,6 +1,6 @@
 import type { DeriveShape } from "./indexer.ts";
 
-export interface IndexerSettings { gateway: string; derive: DeriveShape; pollMs: number; rethBehindMs: number }
+export interface IndexerSettings { gateway: string; derive: DeriveShape; pollMs: number; rethBehindMs: number; traceTimeoutMs: number }
 
 export class IndexerSettingsError extends Error {}
 
@@ -22,5 +22,5 @@ export function loadIndexerSettings(env: Env = process.env): IndexerSettings {
   if (!/^0x[0-9a-f]{40}$/.test(gateway)) throw new IndexerSettingsError("GATEWAY_ADDRESS must be the gateway contract's address, 0x and 40 hex digits");
   const derive = env.INDEX_DERIVE || "inline";
   if (derive !== "inline" && derive !== "behind") throw new IndexerSettingsError(`INDEX_DERIVE must be inline or behind, not "${derive}"`);
-  return { gateway, derive, pollMs: whole(env, "INDEX_POLL_MS", 250, 20), rethBehindMs: whole(env, "INDEX_RETH_BEHIND_MS", 10_000, 1) };
+  return { gateway, derive, pollMs: whole(env, "INDEX_POLL_MS", 250, 20), rethBehindMs: whole(env, "INDEX_RETH_BEHIND_MS", 10_000, 1), traceTimeoutMs: whole(env, "INDEX_TRACE_TIMEOUT_MS", 60_000, 1000) };
 }

@@ -17,3 +17,8 @@ export async function setHealth(db: Pool | PoolClient, rows: HealthRow[]): Promi
     rows.map((r) => r.id), rows.map((r) => r.status), rows.map((r) => (r.value === undefined ? null : JSON.stringify(r.value))), rows.map((r) => r.detail ?? null),
   ]);
 }
+
+/** Sets back to `ok` the rows among `ids` that a stop left `down`, in the caller's transaction when given a client. A row that does not exist stays absent. */
+export async function clearStops(db: Pool | PoolClient, ids: string[]): Promise<void> {
+  await db.query("update health_checks set status = 'ok', value = null, detail = null, changed_at = now(), checked_at = now() where check_id = any($1::text[]) and status = 'down'", [ids]);
+}

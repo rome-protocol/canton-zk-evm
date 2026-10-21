@@ -107,7 +107,7 @@ export interface SyntheticChain {
   /** reth, serving blocks 0 to `rethHead`. */
   reads: FinalReads & { calls: Record<string, number>; rethHead: number };
   /** The Ledger API, serving the records of blocks 1 to `ledgerHead`. */
-  ledger: Ledger & { ledgerHead: number };
+  ledger: Ledger & { ledgerHead: number; pageSize: number; failAfterPages: number | null };
   genesisHash: string;
 }
 
@@ -138,7 +138,15 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS): SyntheticCha
     ledgerHead: shapes.length,
     ledgerEnd: async () => ledger.ledgerHead * 10,
     participantId: async () => PARTICIPANT,
-    records: async (after: number, upTo: number) => blocks.map((b) => b.record).filter((r) => r.offset > after && r.offset <= upTo),
+    /** Records a page at a time, as the Ledger API walk does; `failAfterPages` makes the read after that many pages fail, as a Canton timeout would. */
+    pageSize: 1000, failAfterPages: null as number | null,
+    recordPages: async function* (after: number, upTo: number) {
+      const all = blocks.map((b) => b.record).filter((r) => r.offset > after && r.offset <= upTo);
+      for (let i = 0, page = 0; i < all.length; i += ledger.pageSize, page++) {
+        if (ledger.failAfterPages !== null && page >= ledger.failAfterPages) throw new Error("Canton timed out");
+        yield all.slice(i, i + ledger.pageSize);
+      }
+    },
     call: async () => { throw new Error("not used"); },
   } as unknown as SyntheticChain["ledger"];
   return { blocks, reads, ledger, genesisHash: GENESIS_HASH };

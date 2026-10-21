@@ -16,6 +16,16 @@ let reth: FakeReth | null = null;
 afterEach(async () => { await reth?.close(); reth = null; });
 
 describe("the indexer's reads from reth", () => {
+  it("gives the trace read its own timeout, longer than the others", async () => {
+    reth = await startFakeReth({
+      eth_getBlockByNumber: async () => { await new Promise((ok) => setTimeout(ok, 300)); return null; },
+      trace_replayBlockTransactions: async () => { await new Promise((ok) => setTimeout(ok, 300)); return []; },
+    });
+    const r = createFinalReads(reth.url, 100, 3000);
+    await expect(r.block(5)).rejects.toThrow(/cannot reach reth/);
+    expect(await r.traces(5)).toEqual([]);
+  });
+
   it("reads a block with its transactions, receipts and traces, and a missing block as null", async () => {
     reth = await startFakeReth({
       eth_getBlockByNumber: ([n]: unknown[]) => (n === "0x5" ? rawBlock() : null),

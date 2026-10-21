@@ -1,6 +1,6 @@
 import { decodeAbiParameters, encodeAbiParameters, keccak256 } from "viem";
 import type { FinalLog } from "./reads.ts";
-import { IndexerStop } from "./errors.ts";
+import { LegUndecodable } from "./errors.ts";
 
 /** The gateway's `Leg` event: what a transaction asked of Canton (gateway/README.md). */
 export const LEG_TOPIC = keccak256(new TextEncoder().encode("Leg(uint8,bytes32,address,address,uint256,string)"));
@@ -16,7 +16,7 @@ export interface Leg {
 
 const TYPES = [{ type: "uint8" }, { type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "string" }] as const;
 
-/** The leg a gateway log records. A log with the Leg topic that is not a well-formed Leg is a stop: the gateway cannot write one. */
+/** The leg a gateway log records. A log with the Leg topic that is not a well-formed Leg is a LegUndecodable: the gateway cannot write one. */
 export function decodeLeg(log: FinalLog, number: number): Leg {
   try {
     if (log.topics.length !== 1) throw new Error("it has indexed fields");
@@ -26,7 +26,7 @@ export function decodeLeg(log: FinalLog, number: number): Leg {
     if (kind < 1 || kind > 3) throw new Error(`the kind ${kind} is not a deposit, withdrawal or payment`);
     return { kind, id, token: token.toLowerCase(), account: account.toLowerCase(), amount, party };
   } catch (e) {
-    throw new IndexerStop("C10", `block ${number}: a Leg event of the gateway cannot be read (${(e as Error).message})`, number);
+    throw new LegUndecodable(number, `block ${number}: a Leg event of the gateway cannot be read (${(e as Error).message})`);
   }
 }
 

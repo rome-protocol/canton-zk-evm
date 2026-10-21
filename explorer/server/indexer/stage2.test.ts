@@ -1,7 +1,7 @@
 import { encodeAbiParameters } from "viem";
 import { describe, expect, it } from "vitest";
-import { IndexerStop } from "./errors.ts";
 import { decodeLeg, LEG_TOPIC, legsSlot } from "./legs.ts";
+import { LegUndecodable } from "./errors.ts";
 import { revertReason } from "./stage2.ts";
 
 const enc = (type: string, v: unknown) => encodeAbiParameters([{ type }], [v as never]).slice(2);
@@ -33,12 +33,11 @@ describe("the gateway's Leg events", () => {
     expect(decodeLeg(log(data(1)), 3)).toMatchObject({ kind: 1, amount: 7n, party: "p::1220", token: "0x" + "d0".repeat(20) });
   });
 
-  it("stops at C10, naming the block, for a leg the gateway cannot have written", () => {
+  it("refuses, naming the block, a leg the gateway cannot have written (the indexer records it as C10 degraded)", () => {
     for (const bad of [log(data(9)), log(data(1), [LEG_TOPIC, "0x" + "00".repeat(32)]), log("0x1234"), log(data(1) + "00")]) {
       try { decodeLeg(bad, 3); throw new Error("did not stop"); } catch (e) {
-        expect(e).toBeInstanceOf(IndexerStop);
-        expect((e as IndexerStop).check).toBe("C10");
-        expect((e as IndexerStop).block).toBe(3);
+        expect(e).toBeInstanceOf(LegUndecodable);
+        expect((e as LegUndecodable).block).toBe(3);
       }
     }
   });

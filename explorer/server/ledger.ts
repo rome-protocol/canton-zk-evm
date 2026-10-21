@@ -138,28 +138,39 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
     return typeof id === "string" && id !== "" ? id : fail("a participant id");
   }
 
-  /** The block records Canton committed after offset `after`, up to and including `upTo` (a ledger end read first), oldest first. */
-  async function records(after: number, upTo: number): Promise<BlockRecord[]> {
+  /**
+   * The block records Canton committed after offset `after`, up to and including `upTo` (a ledger end read first), oldest first, one page of
+   * the walk at a time: a caller that indexes each page before it asks for the next keeps its memory to one page, and a read that fails
+   * on a later page does not take back what the earlier pages gave.
+   */
+  async function* recordPages(after: number, upTo: number): AsyncGenerator<BlockRecord[]> {
     if (!readerParty) throw new LedgerError("READER_PARTY is not set: the explorer reads Canton as the reader party only");
-    const out: BlockRecord[] = [];
     for (let begin = after; begin < upTo; ) {
       const items = await call("POST", `/v2/updates?limit=${pageSize}`, updatesRequest(readerParty, begin, upTo));
       if (!Array.isArray(items)) return fail("an answer that is not a list");
       let last = begin;
+      const page: BlockRecord[] = [];
       for (const item of items) {
         const r = recordsIn(item);
         last = Math.max(last, r.offset);
-        out.push(...r.records);
+        page.push(...r.records);
       }
       // Only an empty answer ends the walk: Canton may cap `limit` below ours, or close a list early, so a short page proves nothing.
       if (items.length === 0) break;
       if (last <= begin) throw new LedgerError("Canton's updates did not move forward");
       begin = last;
+      if (page.length > 0) yield page;
     }
+  }
+
+  /** The whole walk of `recordPages`, in one list (for a short range; the indexer reads page by page). */
+  async function records(after: number, upTo: number): Promise<BlockRecord[]> {
+    const out: BlockRecord[] = [];
+    for await (const page of recordPages(after, upTo)) out.push(...page);
     return out;
   }
 
-  return { call, ledgerEnd, records, participantId };
+  return { call, ledgerEnd, records, recordPages, participantId };
 }
 
 export type Ledger = ReturnType<typeof createLedger>;

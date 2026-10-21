@@ -106,16 +106,17 @@ function trace(v: unknown): TxTrace {
   return { transactionHash: hash(t.transactionHash), output: data(t.output ?? "0x"), calls: calls.length, error: top && typeof top.error === "string" ? top.error : null };
 }
 
-export function createFinalReads(url: string, timeoutMs: number) {
+/** `traceTimeoutMs` is for the trace replay of a block, which can take much longer than the other reads (a heavy block is replayed whole). */
+export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs: number = timeoutMs) {
   let id = 0;
 
-  async function rpc(method: string, params: unknown[]): Promise<unknown> {
+  async function rpc(method: string, params: unknown[], limitMs: number = timeoutMs): Promise<unknown> {
     if (!FINAL_READ_METHODS.has(method)) throw new RethError(`${method} is not on the list of methods the indexer may call`);
     let body: { result?: unknown; error?: { message?: string } };
     try {
       const res = await fetch(url, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }), signal: AbortSignal.timeout(timeoutMs),
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }), signal: AbortSignal.timeout(limitMs),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       body = (await res.json()) as typeof body;
@@ -126,8 +127,8 @@ export function createFinalReads(url: string, timeoutMs: number) {
     return body.result;
   }
 
-  async function read<T>(method: string, params: unknown[], parse: (v: unknown) => T): Promise<T> {
-    const result = await rpc(method, params);
+  async function read<T>(method: string, params: unknown[], parse: (v: unknown) => T, limitMs: number = timeoutMs): Promise<T> {
+    const result = await rpc(method, params, limitMs);
     try {
       return parse(result);
     } catch (e) {
@@ -143,7 +144,7 @@ export function createFinalReads(url: string, timeoutMs: number) {
     /** The receipts of block n, or null when reth does not have it. */
     receipts: (n: number) => read("eth_getBlockReceipts", [tag(n)], (v) => (v === null ? null : list(v).map(receipt))),
     /** The replay of every transaction of block n (`trace_replayBlockTransactions` with the "trace" tracer), or null when reth does not have it. */
-    traces: (n: number) => read("trace_replayBlockTransactions", [tag(n), ["trace"]], (v) => (v === null ? null : list(v).map(trace))),
+    traces: (n: number) => read("trace_replayBlockTransactions", [tag(n), ["trace"]], (v) => (v === null ? null : list(v).map(trace)), traceTimeoutMs),
     /** One storage slot of an account at block n, as 32 bytes. */
     storageAt: (account: string, slot: string, n: number) => read("eth_getStorageAt", [account, slot, tag(n)], re(/^0x[0-9a-f]{64}$/, "a storage word")),
     rpc,

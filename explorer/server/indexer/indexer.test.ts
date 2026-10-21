@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from "pg";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
+import { RethError } from "../reth.ts";
 import { createIndexer, type DeriveShape, type Timing } from "./indexer.ts";
 
 async function setup(pool: Pool, shapes: BlockShape[], derive: DeriveShape = "inline", over: Partial<Parameters<typeof createIndexer>[0]> = {}) {
@@ -110,8 +111,10 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   it("stops at a gap (C2), writes the check as down, and stays stopped", async () => {
     await withDatabase(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }]);
-      const all = chain.ledger.records;
-      chain.ledger.records = async (a: number, u: number) => (await all(a, u)).filter((r) => r.number !== 2);
+      const all = chain.ledger.recordPages;
+      chain.ledger.recordPages = async function* (a: number, u: number) {
+        for await (const page of all(a, u)) yield page.filter((r) => r.number !== 2);
+      };
       const r = await indexer.runOnce();
       expect(r.state).toBe("stopped");
       if (r.state !== "stopped") return;
@@ -123,7 +126,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       const h = await health(pool, "C2");
       expect(h.status).toBe("down");
       expect(h.detail).toContain("gap");
-      chain.ledger.records = all;
+      chain.ledger.recordPages = all;
       expect((await indexer.runOnce()).state).toBe("stopped");
       expect((await counts(pool)).blocks).toBe(1);
       await indexer.close();
@@ -228,6 +231,118 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       await indexer.runOnce();
       const r = (await pool.query("select kind, tx_index, log_index, amount::text as amount, party from gateway_legs")).rows;
       expect(r).toEqual([{ kind: 2, tx_index: 0, log_index: 0, amount: "42", party: "alice::1220" + "ab".repeat(32) }]);
+      await indexer.close();
+    });
+  });
+
+  it("keeps the blocks of the pages it read when a later page fails, and the next look goes on from there", async () => {
+    await withDatabase(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }]);
+      chain.ledger.pageSize = 2;
+      chain.ledger.failAfterPages = 2;
+      await expect(indexer.runOnce()).rejects.toThrow("Canton timed out");
+      expect((await counts(pool)).blocks).toBe(4);
+      expect(await cursor(pool, "reader_updates")).toBe(40);
+      chain.ledger.failAfterPages = null;
+      expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 1 });
+      expect((await counts(pool)).blocks).toBe(5);
+      await indexer.close();
+    });
+  });
+
+  it("reads a page only after the records of the page before are written", async () => {
+    await withDatabase(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }]);
+      chain.ledger.pageSize = 1;
+      const pages = chain.ledger.recordPages;
+      const written: number[] = [];
+      chain.ledger.recordPages = async function* (a: number, u: number) {
+        for await (const page of pages(a, u)) {
+          written.push(await count(pool, "blocks"));
+          yield page;
+        }
+      };
+      await indexer.runOnce();
+      expect(written).toEqual([0, 1, 2]);
+      await indexer.close();
+    });
+  });
+
+  it("stops between records when told to stop, without waiting for the backlog", async () => {
+    await withDatabase(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }], "inline", { pollMs: 20 });
+      chain.ledger.pageSize = 1;
+      const halt = indexer.start();
+      const stop = halt();
+      await stop;
+      expect((await counts(pool)).blocks).toBeLessThan(4);
+      await indexer.close();
+    });
+  });
+
+  it("records an undecodable Leg as C10 degraded, naming the block, and goes on without that block's legs", async () => {
+    await withDatabase(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 2, leg: 1 }, { txs: 2 }]);
+      chain.blocks[0]!.receipts[0]!.logs[0]!.data = "0x1234";
+      expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 2 });
+      expect((await counts(pool)).blocks).toBe(2);
+      expect((await counts(pool)).gateway_legs).toBe(0);
+      const h = await health(pool, "C10");
+      expect(h.status).toBe("degraded");
+      expect(h.detail).toContain("block 1");
+      expect(h.value).toMatchObject({ block: 1 });
+      await indexer.close();
+    });
+  });
+
+  it("clears a stopped row once the indexer passes what it stopped at", async () => {
+    await withDatabase(async (pool) => {
+      const { indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }]);
+      for (const id of ["record", "derive", "participant", "C1"]) {
+        await pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at, detail) values ($1, 'down', null, now(), now(), 'stopped')", [id]);
+      }
+      await indexer.runOnce();
+      for (const id of ["record", "derive", "participant", "C1"]) expect((await health(pool, id)).status).toBe("ok");
+      await indexer.close();
+    });
+  });
+
+  it("clears the pins row when the indexer is started again with the pins the database was made for", async () => {
+    await withDatabase(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }]);
+      await indexer.close();
+      const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, programVK: "0x" + "01".repeat(32) }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+      await expect(other.open()).rejects.toThrow("program_vk");
+      await other.close();
+      expect((await health(pool, "pins")).status).toBe("down");
+      const again = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+      await again.open();
+      expect((await health(pool, "pins")).status).toBe("ok");
+      await again.close();
+    });
+  });
+
+  it("writes reth_reads as degraded, with the method and the message, after repeated read errors, and ok when they stop", async () => {
+    await withDatabase(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }], "inline", { pollMs: 20, readErrorsBeforeDegraded: 2 });
+      const traces = chain.reads.traces;
+      chain.reads.traces = async () => { throw new RethError('trace_replayBlockTransactions: reth answered "Method not found"', true); };
+      const halt = indexer.start();
+      const until = async (status: string) => {
+        for (let i = 0; i < 100; i++) {
+          const h = await health(pool, "reth_reads");
+          if (h?.status === status) return h;
+          await new Promise((ok) => setTimeout(ok, 30));
+        }
+        throw new Error(`reth_reads never became ${status}`);
+      };
+      const h = await until("degraded");
+      expect(h.detail).toContain("trace_replayBlockTransactions");
+      expect(h.detail).toContain("Method not found");
+      chain.reads.traces = traces;
+      await until("ok");
+      await halt();
+      expect((await counts(pool)).blocks).toBe(1);
       await indexer.close();
     });
   });

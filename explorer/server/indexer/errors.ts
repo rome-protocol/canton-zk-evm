@@ -25,3 +25,12 @@ export class RethBehind extends Error {
     this.block = block;
   }
 }
+
+/** A `Leg` event of the gateway that cannot be decoded. Not a stop: the block is indexed without its legs, and C10 says `degraded`, naming the block (design section 4.5). */
+export class LegUndecodable extends Error {
+  readonly block: number;
+  constructor(block: number, message: string) {
+    super(message);
+    this.block = block;
+  }
+}

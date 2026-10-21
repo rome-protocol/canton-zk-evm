@@ -10,8 +10,9 @@ import type { Pool, PoolClient } from "pg";
 import type { Pins } from "../config.ts";
 import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/partitions.ts";
 import type { BlockRecord, Ledger } from "../ledger.ts";
-import { IndexerStop, RethBehind } from "./errors.ts";
-import { setHealth } from "./health.ts";
+import { RethError } from "../reth.ts";
+import { IndexerStop, LegUndecodable, RethBehind } from "./errors.ts";
+import { clearStops, setHealth } from "./health.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
@@ -34,6 +35,8 @@ export interface IndexerOptions {
   pollMs?: number;
   /** After this long without reth having a block the record names, the health says so. */
   rethBehindMs?: number;
+  /** After this many reads in a row that fail with a reth error (not just a block reth lacks), `reth_reads` says degraded. Default 3. */
+  readErrorsBeforeDegraded?: number;
   log?: (line: string) => void;
   /** Called after each block's stage with what it took, in milliseconds. For the budgets' tests and the log. */
   onTiming?: (t: Timing) => void;
@@ -76,6 +79,9 @@ export function createIndexer(o: IndexerOptions) {
   let genesisHash: string | null = null;
   let participantId: string | null = null;
   let stopped: IndexerStop | null = null;
+  /** Set by the function `start` returns: the walk ends after the record it is on. */
+  let stopRequested = false;
+  const isRunning = () => !stopRequested;
   /** The highest block number that has a partition in every partitioned table. */
   let partitionsThrough = -1;
 
@@ -101,6 +107,7 @@ export function createIndexer(o: IndexerOptions) {
         throw await stop(new IndexerStop("pins", `this database was made for ${key} ${have}, but this indexer is set to ${value}: it belongs to another chain or another set of pins`, null, { key, database: have, setting: value }));
       }
     }
+    await clearStops(o.pool, ["pins"]);
     await o.pool.query("insert into cursors (stream, position, updated_at) values ('derive', 0, now()) on conflict do nothing");
     participantId = await o.ledger.participantId();
   }
@@ -147,7 +154,15 @@ export function createIndexer(o: IndexerOptions) {
     if (!block) throw new RethBehind(n, "block");
     if (!receipts) throw new RethBehind(n, "receipts");
     if (inline && !traces) throw new RethBehind(n, "traces");
-    const legs = legsOf(receipts, o.gateway, n);
+    // A Leg event that cannot be decoded is not a stop (design section 4.5): the block goes in without its legs rows, and C10 says degraded.
+    let legs: Stage1Input["legs"] = [];
+    let legProblem: LegUndecodable | null = null;
+    try {
+      legs = legsOf(receipts, o.gateway, n);
+    } catch (e) {
+      if (!(e instanceof LegUndecodable)) throw e;
+      legProblem = e;
+    }
     const legsHash = legs.length > 0 ? await o.reads.storageAt(o.gateway, legsSlot(n), n) : null;
     const read1 = now() - t0;
     if (inline) await catchUpDerive(n - 1);
@@ -157,6 +172,8 @@ export function createIndexer(o: IndexerOptions) {
     await inTransaction(o.pool, async (c) => {
       const w1 = now();
       const done = await stage1(c, input);
+      await clearStops(c, ["record"]);
+      if (legProblem && done.written) await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n }, detail: legProblem.message }]);
       const w2 = now();
       o.onTiming?.({ block: n, stage: 1, readMs: read1, writeMs: w2 - w1, txs: block.transactions.length });
       if (done.written && inline) {
@@ -175,16 +192,22 @@ export function createIndexer(o: IndexerOptions) {
       if (cursor.participant && cursor.participant !== participantId) {
         throw new IndexerStop("participant", `the reader's cursor belongs to participant ${cursor.participant}, but this one is ${participantId}: offsets are local to a participant, and a move is an explicit step`, null);
       }
+      await clearStops(o.pool, ["participant"]);
       const end = await o.ledger.ledgerEnd();
       if (end > cursor.position) {
         let from = cursor.position;
-        for (const r of await o.ledger.records(cursor.position, end)) {
-          await indexRecord(r, from);
-          from = r.offset;
-          indexed++;
+        // Page by page: each record is committed before the next page is read, so memory stays at one page, a Canton read that fails partway
+        // keeps the blocks before it (the cursor has moved), and a stop request takes effect between records.
+        walk: for await (const page of o.ledger.recordPages(cursor.position, end)) {
+          for (const r of page) {
+            if (!isRunning()) break walk;
+            await indexRecord(r, from);
+            from = r.offset;
+            indexed++;
+          }
         }
       }
-      if (!inline) return { state: "caught-up", indexed };
+      if (!inline || stopRequested) return { state: "caught-up", indexed };
       await catchUpDerive();
       return { state: "caught-up", indexed };
     } catch (e) {
@@ -236,27 +259,38 @@ export function createIndexer(o: IndexerOptions) {
     let running = true;
     const poll = o.pollMs ?? 250;
     const behindMs = o.rethBehindMs ?? 10_000;
+    const errorLimit = o.readErrorsBeforeDegraded ?? 3;
     let behindSince: number | null = null;
-    let behindReported = false;
+    let rethReported = false;
+    let readErrors = 0;
+    // A reth that answers with an error or does not answer in time (a method it does not serve, a heavy block's replay) halts the walk as surely as a block it lacks, so it is said the same way.
+    async function readFailed(e: unknown): Promise<void> {
+      if (e instanceof RethError && ++readErrors >= errorLimit && !rethReported) {
+        rethReported = true;
+        try { await setHealth(o.pool, [{ id: "reth_reads", status: "degraded", detail: e.message }]); } catch (he) { log(`indexer: ${(he as Error).message}`); }
+      }
+    }
     const sleep = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms));
     const loops = [
       async () => {
         while (running) {
           try {
             const r = await runOnce();
+            readErrors = 0;
             if (r.state === "stopped") { onStop(r.stop); running = false; return; }
             if (r.state === "reth-behind") {
               behindSince ??= now();
-              if (!behindReported && now() - behindSince >= behindMs) {
-                behindReported = true;
+              if (!rethReported && now() - behindSince >= behindMs) {
+                rethReported = true;
                 await setHealth(o.pool, [{ id: "reth_reads", status: "degraded", detail: "reth does not have the block that Canton's newest record names" }]);
               }
             } else {
               behindSince = null;
-              if (behindReported) { behindReported = false; await setHealth(o.pool, [{ id: "reth_reads", status: "ok" }]); }
+              if (rethReported) { rethReported = false; await setHealth(o.pool, [{ id: "reth_reads", status: "ok" }]); }
             }
           } catch (e) {
             log(`indexer: ${(e as Error).message}`);
+            await readFailed(e);
           }
           await sleep(poll);
         }
@@ -268,13 +302,14 @@ export function createIndexer(o: IndexerOptions) {
             if (r.state === "stopped") { onStop(r.stop); running = false; return; }
           } catch (e) {
             log(`indexer (stage 2): ${(e as Error).message}`);
+            await readFailed(e);
           }
           await sleep(poll);
         }
       }]),
     ];
     const finished = Promise.all(loops.map((l) => l()));
-    return async () => { running = false; await finished; };
+    return async () => { stopRequested = true; running = false; await finished; };
   }
 
   return { open, close, runOnce, deriveOnce, start, stopped: () => stopped };

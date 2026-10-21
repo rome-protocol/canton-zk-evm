@@ -8,6 +8,7 @@
 import { decodeAbiParameters } from "viem";
 import type { PoolClient } from "pg";
 import { IndexerStop } from "./errors.ts";
+import { clearStops } from "./health.ts";
 import type { TxTrace } from "./reads.ts";
 
 const ERROR_SELECTOR = "0x08c379a0", PANIC_SELECTOR = "0x4e487b71";
@@ -78,6 +79,7 @@ export async function stage2(c: PoolClient, n: number, traces: TxTrace[]): Promi
      on conflict (stream) do update set position = excluded.position, updated_at = excluded.updated_at`,
     [n],
   );
+  await clearStops(c, ["derive"]);
   await c.query("select pg_notify('derived_block', $1)", [String(n)]);
   return { derived: true, rows: rows.length };
 }
