@@ -199,6 +199,21 @@ The example uses the default `state/` folder. Set the three file paths to the ru
 
 The server reads the key only when `FAUCET_KEY_FILE` is set; without it the faucet is off. A key file that is missing or does not hold 64 hex digits stops the server at start, and the message does not quote the file. Nothing mints and nothing tops the faucet up: the next run makes a new key. The key never appears in an answer or in the log, and the tests check that.
 
+## The database
+
+The explorer keeps its data in a PostgreSQL of its own, apart from the one Canton uses, so that a heavy query never slows Canton down. `network/explorer-db.sh` starts it for a persistent network (see [network/README.md](../network/README.md)). The schema is a set of numbered SQL files in `db/migrations/`. There is no ORM, and a migration that has been applied is never edited: a change is a new file.
+
+```sh
+# the password file is the one network/explorer-db.sh made in the network's state folder
+EXPLORER_DB_PASSWORD_FILE=state/explorer-db.env node server/db/cli.ts migrate --head 0
+```
+
+`server/db/migrate.ts` applies the files that a database has not seen, each in its own transaction, and records the SHA-256 of each file in `schema_migrations`. It refuses to run, and applies nothing, when an applied file has changed, when a file is missing, or when the numbers skip. Run twice, the second run changes nothing.
+
+The five large tables (`transactions`, `tx_traces`, `logs`, `internal_calls`, `token_transfers`) are split by block number into partitions of a fixed width, 250,000 blocks. The width is written to `meta` (`partition_width`) on the first run and cannot change afterwards. `server/db/partitions.ts` makes every partition from block 0 up to the head, and two more ahead of it, so that an insert never meets a block number with no partition. `db/schema.snapshot.txt` describes the schema as the database holds it; the tests compare a fresh database with it, so a change to the schema shows up in review. After a deliberate change, `UPDATE_SNAPSHOT=1` rewrites it.
+
+The database tests need a PostgreSQL, and are skipped when `EXPLORER_TEST_DATABASE_URL` is not set. It names a database on a server where the user may create databases; each test makes one of its own and drops it. CI runs them against the image that `PINS` pins.
+
 ## Tests
 
 From the repository root:

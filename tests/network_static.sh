@@ -16,12 +16,13 @@ CONF=$ROOT/network/canton/canton.conf
 # reth: nothing but launch.sh names its image or runs it.
 others=$(grep -rIlE --include='*.sh' --include='*.py' --include='*.rs' 'RETH_IMAGE|paradigmxyz|reth node' "$ROOT/network" "$ROOT/builder" "$ROOT/prover" "$ROOT/sidecar/src" 2>/dev/null | grep -v '^'"$ROOT"'/network/reth/launch.sh$' || true)
 [ -z "$others" ] || fail "something other than network/reth/launch.sh starts or names reth's image: $others"
-# Nothing else runs a container, except the database (postgres.sh, the pinned postgres image) and the wipe of reth's folder (reth/stop.sh,
+# Nothing else runs a container, except the databases (postgres.sh and explorer-db.sh, the pinned postgres image) and the wipe of reth's folder (reth/stop.sh,
 # the pinned busybox image); neither names another image.
 runners=$(grep -rIlE --include='*.sh' --include='*.py' --include='*.rs' 'docker run' "$ROOT/network" "$ROOT/builder" "$ROOT/prover" "$ROOT/sidecar/src" 2>/dev/null \
-  | grep -v '^'"$ROOT"'/network/reth/launch.sh$' | grep -v '^'"$ROOT"'/network/postgres.sh$' | grep -v '^'"$ROOT"'/network/reth/stop.sh$' || true)
-[ -z "$runners" ] || fail "something other than launch.sh, postgres.sh and reth/stop.sh runs a container: $runners"
+  | grep -v '^'"$ROOT"'/network/reth/launch.sh$' | grep -v '^'"$ROOT"'/network/postgres.sh$' | grep -v '^'"$ROOT"'/network/explorer-db.sh$' | grep -v '^'"$ROOT"'/network/reth/stop.sh$' || true)
+[ -z "$runners" ] || fail "something other than launch.sh, postgres.sh, explorer-db.sh and reth/stop.sh runs a container: $runners"
 [ "$(grep -c 'docker run' "$ROOT/network/postgres.sh")" = 1 ] && grep -A8 'docker run' "$ROOT/network/postgres.sh" | grep -q '"\$POSTGRES_IMAGE"' || fail "postgres.sh does not run the pinned POSTGRES_IMAGE"
+[ "$(grep -c 'docker run' "$ROOT/network/explorer-db.sh")" = 1 ] && grep -A8 'docker run' "$ROOT/network/explorer-db.sh" | grep -q '"\$POSTGRES_IMAGE"' || fail "explorer-db.sh does not run the pinned POSTGRES_IMAGE"
 grep 'docker run' "$ROOT/network/reth/stop.sh" | grep -q '"\$BUSYBOX_IMAGE"' || fail "reth/stop.sh does not run the pinned BUSYBOX_IMAGE"
 grep -q 'network/reth/launch.sh' "$ROOT/network/up.sh" || fail "up.sh does not start reth through launch.sh"
 grep -q 'network/reth/check.sh' "$ROOT/network/up.sh" || fail "up.sh does not check that discovery is off"
@@ -68,6 +69,21 @@ grep -q -- '--env-file' "$PG" || fail "postgres.sh does not read the password fr
 grep -q 'network/canton/run.sh' "$ROOT/network/up.sh" || fail "up.sh does not start Canton through run.sh"
 grep -q 'canton-persistent.conf' "$ROOT/network/canton/run.sh" || fail "run.sh does not use canton-persistent.conf with CZE_PERSIST=1"
 grep -q 'network/postgres.sh' "$ROOT/network/canton/run.sh" || fail "run.sh does not start the database with CZE_PERSIST=1"
+# The explorer's own database: a container and a volume of its own (never Canton's), on 127.0.0.1 only, with a per-machine 0600 password.
+EDB=$ROOT/network/explorer-db.sh
+grep -q -- '-p "127.0.0.1:\$PORT:5432"' "$EDB" || fail "explorer-db.sh does not publish the database on 127.0.0.1 only"
+! grep -qE -- '(^|[ "])(-P|--publish-all|--network[= ]host|--net[= ]host)( |"|$)' "$EDB" || fail "explorer-db.sh publishes the database beyond localhost"
+! grep -qE -- '-p "?[0-9]+:' "$EDB" || fail "explorer-db.sh publishes a port without 127.0.0.1"
+grep -q 'openssl rand' "$EDB" && grep -q 'chmod 600' "$EDB" || fail "explorer-db.sh does not make the password per machine into a 0600 file"
+grep -q -- '--env-file' "$EDB" || fail "explorer-db.sh does not read the password from its file"
+! grep -qE 'POSTGRES_PASSWORD=[A-Za-z0-9]' "$EDB" "$ROOT/network/down.sh" || fail "the explorer database's password is written down"
+! grep -E 'echo .*POSTGRES_PASSWORD' "$EDB" | grep -qv '> "\$ENV_FILE"' || fail "explorer-db.sh prints the database password"
+[ "$(sed -n 's/^NAME=//p' "$EDB")" != "$(sed -n 's/^NAME=//p' "$PG")" ] || fail "the explorer's database shares Canton's container"
+grep -q 'cze-explorer-db' "$EDB" && ! grep -q 'cze-postgres' "$EDB" || fail "explorer-db.sh does not name its own container"
+[ "$(sed -n 's/^PORT=${CZE_EXPLORER_DB_PORT:-\(.*\)}$/\1/p' "$EDB")" != "$(sed -n 's/^PORT=${CZE_PG_PORT:-\(.*\)}$/\1/p' "$PG")" ] || fail "the explorer's database shares Canton's port"
+for f in up.sh restart.sh; do grep -q 'network/explorer-db.sh" start' "$ROOT/network/$f" || fail "$f does not start the explorer's database"; done
+grep -q 'explorer-db.sh" stop' "$ROOT/network/down.sh" && grep -q 'explorer-db.sh" wipe' "$ROOT/network/down.sh" || fail "down.sh does not stop and wipe the explorer's database"
+grep -q 'CZE_EXPLORER_DB_CONTAINER' "$ROOT/network/persist-settings.sh" || fail "persist-settings.sh does not record the explorer database's container"
 # restart.sh: no new chain, no new secrets, no new guest, no bootstrap; the order that Canton needs (the sidecars before it); the check at the end.
 R=$ROOT/network/restart.sh
 ! grep -v '^ *#' "$R" | grep -qE 'propose\.py|make-state\.sh|build-guest\.sh|build-dar\.sh|bootstrap' || fail "restart.sh makes something new: a chain, a secret, a guest or a bootstrap"

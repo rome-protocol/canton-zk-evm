@@ -33,6 +33,7 @@ WORKDIR /repo/explorer
 COPY explorer/package.json explorer/package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY explorer/server ./server
+COPY explorer/db ./db
 COPY --from=pages /repo/explorer/dist ./dist
 COPY prover/fixtures/session.txt /repo/prover/fixtures/session.txt
 COPY LICENSE NOTICE /repo/

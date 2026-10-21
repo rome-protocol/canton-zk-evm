@@ -57,6 +57,9 @@ command -v cargo-zisk >/dev/null || fail "ZisK is not installed (prover/install.
 step "the database"
 "$ROOT/network/postgres.sh" start
 
+step "the explorer's database"
+"$ROOT/network/explorer-db.sh" start
+
 step "reth, on its data"
 # The container is gone after a reboot; the data is in $STATE/reth-data. One that still runs is stopped gently, so that reth writes its last blocks.
 docker stop -t 60 "${RETH_CONTAINER:-cze-reth}" >/dev/null 2>&1 || true
