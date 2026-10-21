@@ -100,6 +100,19 @@ describe("block records", () => {
     expect(fake!.requests.every((r) => r.query.get("limit") === "2")).toBe(true);
   });
 
+  it("gives the records a page at a time, asking for the next page only when the caller comes back for it", async () => {
+    const items = [1, 2, 3, 4, 5].map((n) => transaction(n * 2, `u${n}`, [createdEvent(n * 2, recordFields({ number: String(n) }))]));
+    const l = await ledger(items, {}, FAKE_READER, 2);
+    const seen: number[][] = [];
+    const asked: number[] = [];
+    for await (const page of l.recordPages(0, 10)) {
+      seen.push(page.map((r) => r.number));
+      asked.push(fake!.requests.length);
+    }
+    expect(seen).toEqual([[1, 2], [3, 4], [5]]);
+    expect(asked).toEqual([1, 2, 3]);
+  });
+
   it("keeps going when a page is shorter than the limit but records remain, as when Canton caps the limit below ours", async () => {
     const items = [1, 2, 3, 4, 5].map((n) => transaction(n, `u${n}`, [createdEvent(n, recordFields({ number: String(n) }))]));
     const l = await ledger(items, { cap: 2 }, FAKE_READER, 100);
