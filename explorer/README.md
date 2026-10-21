@@ -15,7 +15,7 @@ explorer/run.sh start        # then open http://127.0.0.1:8088
 explorer/run.sh stop
 ```
 
-The explorer shows the chain from its own PostgreSQL, which the indexer fills, so `start` does three things before the explorer runs: it starts the database that `network/explorer-db.sh` makes for this state folder (unless it is already up, or `EXPLORER_DATABASE_URL` or `EXPLORER_DB_PASSWORD_FILE` names another), applies the migrations, and starts the indexer as its own container (`cze-explorer-indexer`). The explorer answers 503 on `/healthz` until the indexer has started, and it says so whenever the indexer's checks go stale or one has stopped it. A stopped indexer is not restarted by itself: read its log (`docker logs cze-explorer-indexer`), then `explorer/run.sh start` again. `stop` stops both. The faucet's hash key is made once, as `faucet/client-key` in the state folder, when there is a faucet key and `FAUCET_CLIENT_KEY_FILE` names none. The indexer reads reth and Canton where the explorer does, or at `INDEXER_RETH_RPC_URL` and `INDEXER_LEDGER_URL` when those are set; `GATEWAY_ADDRESS` comes from `PINS`, and its genesis is `<state>/genesis.json`, the one reth runs (`GENESIS_FILE` names another): the indexer seeds the chain's contracts from it at its first start, and `start` stops, naming the setting, when there is none.
+The explorer shows the chain from its own PostgreSQL, which the indexer fills, so `start` does three things before the explorer runs: it starts the database that `network/explorer-db.sh` makes for this state folder (unless it is already up, or `EXPLORER_DATABASE_URL` or `EXPLORER_DB_PASSWORD_FILE` names another), applies the migrations, and starts the indexer as its own container (`cze-explorer-indexer`). The explorer answers 503 on `/healthz` until the indexer has started, and it says so whenever the indexer's checks go stale or one has stopped it. A stopped indexer is not restarted by itself: read its log (`docker logs cze-explorer-indexer`), then `explorer/run.sh start` again. `stop` stops both. The database follows the network's life: when the state folder has no `persist.env` (a network made without `CZE_PERSIST`), `stop` also removes the database that `start` made (`network/explorer-db.sh wipe`), as `network/down.sh` does, so the next chain, made from the same genesis, starts with an empty one and the indexer does not meet the old chain's rows. A persistent network keeps it, and `start` reads the database's container and port from `persist.env`. A database you name yourself is never removed. The faucet's hash key is made once, as `faucet/client-key` in the state folder, when there is a faucet key and `FAUCET_CLIENT_KEY_FILE` names none. The indexer reads reth and Canton where the explorer does, or at `INDEXER_RETH_RPC_URL` and `INDEXER_LEDGER_URL` when those are set; `GATEWAY_ADDRESS` comes from `PINS`, and its genesis is `<state>/genesis.json`, the one reth runs (`GENESIS_FILE` names another): the indexer seeds the chain's contracts from it at its first start, and `start` stops, naming the setting, when there is none.
 
 `setup` comes before the network starts, because reth starts from that genesis (see [The faucet](#the-faucet)). `start` takes what it needs from the run's state folder (`CZE_STATE_DIR`, `./state` by default): the reader party from `canton/parties.env`, the run's own pins from `net/guest.txt` and the faucet's key from `faucet/key`. The caller can set `READER_PARTY`, `PINS_FILE` and `FAUCET_KEY_FILE` instead, and any of the [settings](#settings) below. With no key the faucet is off.
 
@@ -85,8 +85,8 @@ The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_D
 | Route | Answer |
 |---|---|
 | `GET /api/status` and `GET /healthz` | The same answer. The status code is 200 when reth and Canton can be read and the indexer's checks pass, and 503 when not. It names the chain, its coin, the pins, the newest final block, the newest ten final blocks (`latest`, newest first, for the home page's list), the block being proven if there is one, and the two signers of the block records |
-| `GET /api/block/:number-or-hash` | The block's EVM side, and its Canton side when it is final: update id, record time, proof facts, whether the three hashes match, and the record's proof, header and transactions as hex. Its status is `final`, `proving` or `genesis` |
-| `GET /api/tx/:hash` | The transaction, its receipt, the decoded ERC-20 `transfer` if it is one, and its status: `final`, `proving` or `waiting` (in reth's pool, in no block yet). It also carries `state` (`pending`, `proving`, `final`, `replaced`, `dropped`) and `reason`, a plain sentence or null, from the [transaction tracker](#the-transaction-tracker). A transaction that reth no longer holds, but that this chain accepted, still answers with its state instead of 404. A hash that neither reth nor the tracker knows is 404 |
+| `GET /api/block/:number-or-hash` | The block's EVM side, and its Canton side when it is final: update id, record time, proof facts, whether the three hashes match, and the record's proof, header and transactions as hex. Its status is `final`, `proving`, `unindexed` (final on Canton, not yet written by the indexer) or `genesis` |
+| `GET /api/tx/:hash` | The transaction, its receipt, the decoded ERC-20 `transfer` if it is one, and its status: `final`, `proving`, `unindexed` (its block is final on Canton, and the indexer has not written it yet) or `waiting` (in reth's pool, in no block yet). It also carries `state` (`pending`, `proving`, `final`, `replaced`, `dropped`) and `reason`, a plain sentence or null, from the [transaction tracker](#the-transaction-tracker). A transaction that reth no longer holds, but that this chain accepted, still answers with its state instead of 404. A hash that neither reth nor the tracker knows is 404 |
 | `GET /api/address/:address` | Balance, count of sent transactions, whether it is an account, a contract or a token, and the transaction that created it, if a block the database holds did |
 | `GET /api/search?q=` | The page to open for what was typed (a block number, a block or transaction hash, an address or a Canton update id), or 404 |
 | `GET /api/faucet` | Whether the faucet is on, its address, its balance, what it gives per request and how long an address waits between requests |
@@ -190,16 +190,25 @@ To run the server directly, use Node 22.18 or newer and the Rust toolchain in `r
 (cd explorer && npm ci)
 explorer/faucet-setup.sh
 CZE_GENESIS_FILE=state/faucet/genesis.json network/up.sh
+network/explorer-db.sh start                       # the explorer's database; its password is in state/explorer-db.env
 cd explorer
 rustup target add wasm32-unknown-unknown
 npm run build:verify
 npm run build
-READER_PARTY=$(sed -n 's/^READER_PARTY=//p' ../state/canton/parties.env) \
-  PINS_FILE=../state/net/guest.txt \
-  FAUCET_KEY_FILE=../state/faucet/key npm start
+export EXPLORER_DB_PASSWORD_FILE=../state/explorer-db.env
+export READER_PARTY=$(sed -n 's/^READER_PARTY=//p' ../state/canton/parties.env)
+export PINS_FILE=../state/net/guest.txt
+node server/db/cli.ts migrate
+(umask 077; [ -f ../state/faucet/client-key ] || openssl rand -hex 32 > ../state/faucet/client-key)   # the faucet's hash key, made once
+# In a second terminal (same exports): the indexer, which fills the database. It never restarts by itself.
+GATEWAY_ADDRESS=$(sed -n 's/^GATEWAY_ADDRESS=//p' ../PINS) GENESIS_FILE=../state/genesis.json npm run index
+# In this one: the explorer.
+FAUCET_KEY_FILE=../state/faucet/key FAUCET_CLIENT_KEY_FILE=../state/faucet/client-key npm start
 ```
 
-The example uses the default `state/` folder. Set the three file paths to the run's state folder if it differs.
+To have the database, the indexer and the explorer started in containers instead, with the same files, use `explorer/run.sh start` (see above).
+
+The example uses the default `state/` folder. Set the file paths to the run's state folder if it differs. The database follows the network's life: for a network made without `CZE_PERSIST`, `network/down.sh` removes it with the chain (and so does `explorer/run.sh stop`), so run `network/explorer-db.sh wipe` yourself if you started it by hand and then stopped the network some other way.
 
 The server reads the key only when `FAUCET_KEY_FILE` is set; without it the faucet is off. A key file that is missing or does not hold 64 hex digits stops the server at start, and the message does not quote the file. Nothing mints and nothing tops the faucet up: the next run makes a new key. The key never appears in an answer or in the log, and the tests check that.
 

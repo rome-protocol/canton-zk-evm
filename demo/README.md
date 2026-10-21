@@ -51,9 +51,11 @@ export CZE_GENESIS_FILE="$PWD/state/faucet/genesis.json"
 network/up.sh
 CZE_SOURCE_COMMIT=$(git rev-parse HEAD) demo/run.sh
 explorer/run.sh start        # starts the explorer's database, the indexer and the explorer; open http://127.0.0.1:8088
-explorer/run.sh stop         # when finished
-network/down.sh
+explorer/run.sh stop         # when finished: also removes the explorer's database, because this network is not persistent
+network/down.sh              # removes it too if it is still there
 ```
+
+The explorer's database lives and dies with this network: the network here is not persistent (no `CZE_PERSIST`), so `explorer/run.sh stop` and `network/down.sh` both remove the database `start` made. Without that, the next run's chain, made from the same genesis, would meet the old chain's rows, and the indexer would stop on them. Run `explorer/run.sh stop` before `network/down.sh`, so the indexer is not left running against a database that is going away.
 
 The faucet genesis preserves V's funding and adds the faucet's account. In either sequence, for a source export without `.git`, set `CZE_SOURCE_COMMIT` to the full hash of the commit it was built from.
 
