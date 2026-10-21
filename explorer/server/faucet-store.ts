@@ -175,7 +175,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       const { rows } = await pool.query<Row>(
         `select ${COLUMNS} from faucet_requests
           where state in ('queued', 'sent') or ticket in (select ticket from faucet_requests order by requested_at desc limit $1)
-          order by requested_at, ticket`,
+          order by requested_at, nonce nulls last, ticket`,
         [w.max],
       );
       const tickets = rows.map(ticketOf);

@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
+import { DATABASE_MODE, makeDatabase, type TestDatabase } from "./db/testing.ts";
 import { createFaucet, FAUCET_GAS, loadFaucetKey, type Faucet, type FaucetOptions } from "./faucet.ts";
+import { clientHasher, databaseFaucetStore } from "./faucet-store.ts";
 import { createReth, RethError, type Reth } from "./reth.ts";
 import type { Tracked, TxState } from "./tracker.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
@@ -52,15 +54,17 @@ function fakeTracker() {
 }
 
 let fake: FakeReth | undefined, clock: { now: number }, state: Net, tracker: ReturnType<typeof fakeTracker>;
+let db: TestDatabase | undefined;
 const logged: string[] = [];
-beforeEach(() => {
+beforeEach(async () => {
+  if (DATABASE_MODE) db = await makeDatabase(true);
   clock = { now: 1_000_000 };
   state = net();
   tracker = fakeTracker();
   logged.length = 0;
   for (const m of ["log", "error", "warn", "info"] as const) vi.spyOn(console, m).mockImplementation((...a: unknown[]) => { logged.push(a.map(String).join(" ")); });
 });
-afterEach(async () => { vi.restoreAllMocks(); await fake?.close(); fake = undefined; });
+afterEach(async () => { vi.restoreAllMocks(); await fake?.close(); fake = undefined; await db?.drop(); db = undefined; });
 
 type Over = Partial<Omit<FaucetOptions, "reth" | "tracker">> & { down?: boolean; tracked?: boolean; wrap?: (r: Reth) => FaucetOptions["reth"] };
 
@@ -87,10 +91,14 @@ async function faucet(over: Over = {}): Promise<Faucet> {
   });
   const { down, tracked, wrap, ...rest } = over;
   const reth = createReth(down ? "http://127.0.0.1:1" : fake.url, 5000);
-  return createFaucet({
+  // Run with EXPLORER_TEST_STORE=database, the database keeps what these tests say `stateFile` keeps, and clients are kept as keyed hashes.
+  const kept = DATABASE_MODE ? { stateFile: null, store: databaseFaucetStore(db!.pool, COIN, () => clock.now), clientKeyHash: clientHasher(Buffer.alloc(32, 7)) } : {};
+  const f = createFaucet({
     key: KEY, chainId: 770101, amountWei: COIN, perAddressSeconds: DAY, perIpSeconds: 600, maxPerHour: 100000, batch: 100, queueMax: 5000, stateFile: null, captcha: null,
-    reth: wrap ? wrap(reth) : reth, tracker: tracked === false ? undefined : tracker, now: () => clock.now, ...rest,
+    reth: wrap ? wrap(reth) : reth, tracker: tracked === false ? undefined : tracker, now: () => clock.now, ...rest, ...kept,
   });
+  await f.ready();
+  return f;
 }
 
 const ticketOf = (a: { body: unknown }) => (a.body as { ticket: string }).ticket;
@@ -585,7 +593,7 @@ describe("a restart", () => {
     });
   });
 
-  it("is written through a temporary file, with the key nowhere in it", async () => {
+  it.skipIf(DATABASE_MODE)("is written through a temporary file, with the key nowhere in it", async () => {
     await withFile(async (stateFile) => {
       const f = await faucet({ stateFile });
       await f.request(ALICE, { ip: "1.1.1.1" });
@@ -597,7 +605,7 @@ describe("a restart", () => {
     });
   });
 
-  it("starts with no limits, and says so, when the file is not one it wrote", async () => {
+  it.skipIf(DATABASE_MODE)("starts with no limits, and says so, when the file is not one it wrote", async () => {
     await withFile(async (stateFile) => {
       const { mkdirSync } = await import("node:fs");
       mkdirSync(join(stateFile, ".."), { recursive: true });
