@@ -34,3 +34,10 @@ export class LegUndecodable extends Error {
     this.block = block;
   }
 }
+
+/** A reindex holds the database: the indexer's step is not taken, and is tried again on the next turn. Not an error. */
+export class Paused extends Error {
+  constructor() {
+    super("a reindex is running");
+  }
+}

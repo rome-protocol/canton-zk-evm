@@ -11,11 +11,14 @@ import type { Pins } from "../config.ts";
 import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/partitions.ts";
 import type { BlockRecord, Ledger } from "../ledger.ts";
 import { RethError } from "../reth.ts";
-import { IndexerStop, RethBehind } from "./errors.ts";
+import { IndexerStop, Paused, RethBehind } from "./errors.ts";
+import { seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth } from "./health.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
+import type { ExportedRecord, RecordsHeader } from "./records.ts";
+import { REINDEX_KEY } from "./reindex.ts";
 import { legsOf, stage1, type Stage1Input } from "./stage1.ts";
 
 /** Any fixed number; it only has to be the same for every indexer of this schema, and not one the migration runner (001) or the partition maintenance (002) holds. */
@@ -31,6 +34,8 @@ export interface IndexerOptions {
   chainId: number;
   /** The gateway contract's address, lowercase: its `Leg` events are read as the block's legs. */
   gateway: string;
+  /** The chain's genesis.json: its contracts are seeded at first start. Left out, nothing is seeded (the command always names it). */
+  genesisFile?: string | null;
   derive: DeriveShape;
   pollMs?: number;
   /** After this long without reth having a block the record names, the health says so. */
@@ -46,7 +51,7 @@ export interface IndexerOptions {
 export interface Timing { block: number; stage: 1 | 2; readMs: number; writeMs: number; txs: number }
 
 export type RunResult =
-  | { state: "caught-up" | "reth-behind"; indexed: number }
+  | { state: "caught-up" | "reth-behind" | "paused"; indexed: number }
   | { state: "stopped"; indexed: number; stop: IndexerStop };
 
 const GENESIS_BLOCK = 0;
@@ -56,6 +61,8 @@ async function inTransaction<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): 
   let broken = false;
   try {
     await c.query("begin");
+    // A reindex holds this key exclusively; each step of the indexer holds it shared until it commits, so the two never work at once.
+    if (!(await c.query("select pg_try_advisory_xact_lock_shared($1) as ok", [REINDEX_KEY])).rows[0].ok) throw new Paused();
     const out = await fn(c);
     await c.query("commit");
     return out;
@@ -108,6 +115,16 @@ export function createIndexer(o: IndexerOptions) {
       }
     }
     await clearStops(o.pool, ["pins"]);
+    if (o.genesisFile) {
+      try {
+        const seeded = await seedGenesis(o.pool, o.reads, o.genesisFile, o.gateway);
+        if (seeded > 0) log(`indexer: seeded ${seeded} genesis contracts`);
+        await clearStops(o.pool, ["genesis"]);
+      } catch (e) {
+        if (e instanceof IndexerStop) throw await stop(e);
+        throw e;
+      }
+    }
     await o.pool.query("insert into cursors (stream, position, updated_at) values ('derive', 0, now()) on conflict do nothing");
     participantId = await o.ledger.participantId();
   }
@@ -145,7 +162,7 @@ export function createIndexer(o: IndexerOptions) {
     partitionsThrough = (Math.floor(n / width) + PARTITIONS_AHEAD + 1) * width - 1;
   }
 
-  async function indexRecord(r: BlockRecord, startOffset: number): Promise<void> {
+  async function indexRecord(r: BlockRecord, startOffset: number, participant: string = participantId as string): Promise<void> {
     const n = r.number;
     await partitionsFor(n);
     const t0 = now();
@@ -160,7 +177,7 @@ export function createIndexer(o: IndexerOptions) {
     const read1 = now() - t0;
     if (inline) await catchUpDerive(n - 1);
     const input: Stage1Input = {
-      record: r, block, receipts, legs, legsCount, legsHash, genesisHash: genesisHash as string, participantId: participantId as string, startOffset, pins: o.pins,
+      record: r, block, receipts, legs, legsCount, legsHash, genesisHash: genesisHash as string, participantId: participant, startOffset, pins: o.pins,
     };
     await inTransaction(o.pool, async (c) => {
       const w1 = now();
@@ -205,6 +222,7 @@ export function createIndexer(o: IndexerOptions) {
       return { state: "caught-up", indexed };
     } catch (e) {
       if (e instanceof RethBehind) return { state: "reth-behind", indexed };
+      if (e instanceof Paused) return { state: "paused", indexed };
       if (e instanceof IndexerStop) return { state: "stopped", indexed, stop: await stop(e) };
       throw e;
     }
@@ -239,6 +257,7 @@ export function createIndexer(o: IndexerOptions) {
       return { state: "caught-up", indexed: await catchUpDerive() };
     } catch (e) {
       if (e instanceof RethBehind) return { state: "reth-behind", indexed: 0 };
+      if (e instanceof Paused) return { state: "paused", indexed: 0 };
       if (e instanceof IndexerStop) return { state: "stopped", indexed: 0, stop: await stop(e) };
       throw e;
     }
@@ -277,7 +296,9 @@ export function createIndexer(o: IndexerOptions) {
             const r = await step();
             readErrors = 0;
             if (r.state === "stopped") { onStop(r.stop); running = false; return; }
-            if (r.state === "reth-behind") {
+            if (r.state === "paused") {
+              // A reindex has the database: nothing to report, the lag shows in the health.
+            } else if (r.state === "reth-behind") {
               behindSince ??= now();
               if (now() - behindSince >= behindMs) await report(name, "reth does not have the block that Canton's newest record names");
             } else {
@@ -300,7 +321,33 @@ export function createIndexer(o: IndexerOptions) {
     return async () => { stopRequested = true; running = false; await finished; };
   }
 
-  return { open, close, runOnce, deriveOnce, start, stopped: () => stopped };
+  /**
+   * Builds the database from an export of block records (design section 4.4): each record goes through stage 1 as if Canton had sent it, with
+   * every check, and reth is read as for any block. A record the database already holds is skipped, so it can be run on a database that has some
+   * of the blocks. The header must name this chain. Stage 2 follows when it is `behind`. Returns the records written.
+   */
+  async function rebuild(records: AsyncIterable<RecordsHeader | ExportedRecord>): Promise<number> {
+    let written = 0;
+    for await (const item of records) {
+      if (stopped) throw stopped;
+      if ("format" in item) {
+        if (item.chainId !== o.chainId || item.genesisHash !== genesisHash) throw new Error(`the records are for chain ${item.chainId} with genesis ${item.genesisHash}, not for chain ${o.chainId} with genesis ${genesisHash}`);
+        continue;
+      }
+      if (item.chainId !== o.chainId) throw new Error(`block ${item.number}: the record is for chain ${item.chainId}, not ${o.chainId}`);
+      try {
+        await indexRecord(item, item.participant.firstOffset ?? item.offset, item.participant.id);
+      } catch (e) {
+        if (e instanceof IndexerStop) throw await stop(e);
+        throw e;
+      }
+      written++;
+    }
+    if (!inline) await catchUpDerive();
+    return written;
+  }
+
+  return { open, close, runOnce, deriveOnce, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;
