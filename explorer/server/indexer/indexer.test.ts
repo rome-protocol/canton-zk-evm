@@ -67,9 +67,13 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       const { indexer } = await setup(pool, [{ txs: 3 }, { txs: 20 }]);
       // The connection dies at the logs of block 2, after its transactions went in.
       let killed = false;
-      const realConnect = pool.connect.bind(pool) as () => Promise<PoolClient>;
-      (pool as unknown as { connect: () => Promise<PoolClient> }).connect = async () => {
-        const c = await realConnect();
+      // `pool.query` calls `connect` with a callback; only the promise form, which the indexer's transactions use, is wrapped.
+      const realConnect = pool.connect.bind(pool) as (cb?: unknown) => Promise<PoolClient>;
+      (pool as unknown as { connect: (cb?: unknown) => Promise<PoolClient> | void }).connect = (cb?: unknown) => {
+        if (cb) return realConnect(cb) as unknown as void;
+        return realConnect().then((c) => wrap(c));
+      };
+      const wrap = (c: PoolClient): PoolClient => {
         const q = c.query.bind(c) as (...a: unknown[]) => Promise<unknown>;
         (c as unknown as { query: (...a: unknown[]) => Promise<unknown> }).query = (...a: unknown[]) => {
           const sql = typeof a[0] === "string" ? a[0] : "";
@@ -242,6 +246,7 @@ describe.skipIf(!TEST_URL)("L1: synthetic blocks within the ingestion budgets", 
         expect(await counts(pool)).toMatchObject({ blocks: 1, transactions: txs, tx_hashes: txs, tx_lifecycle: txs, logs: logsOf(chain, 0) });
         const stage1 = timings.find((t) => t.stage === 1)!;
         const stage2 = timings.find((t) => t.stage === 2)!;
+        await indexer.close();
         console.log(`L1 ${txs} txs: stage 1 ${stage1.writeMs} ms (reads ${stage1.readMs} ms), stage 2 ${stage2.writeMs} ms, ${logsOf(chain, 0)} logs`);
         // B1: stage 1 within 1.0 s up to 1,428 transactions and 3 s above. B2: both stages' writes within 2.0 s.
         expect(stage1.writeMs).toBeLessThan(txs > 1428 ? 3000 : 1000);
