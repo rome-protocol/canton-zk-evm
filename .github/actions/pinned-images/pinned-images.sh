@@ -3,11 +3,14 @@
 #   pinned-images.sh resolve PINS_FILE "NAME NAME ..."   checks the names, writes the cache key and folder to $GITHUB_OUTPUT
 #   pinned-images.sh ensure                              loads each image from the folder, else pulls it by digest with retries;
 #                                                        checks the digest; saves a tarball of each image that was pulled
-# Every image is named by digest in PINS, so a cache entry is keyed by those digests and a loaded or pulled image is checked
-# against the same digest. Docker cannot give a loaded image a digest name (a digest is not a tag), so after a load the pull by
-# digest still runs; it finds every layer on the machine and fetches only the few-kilobyte manifest, and it is what proves the
-# image is the pinned one: layers are matched by content, so a bad cache entry cannot stand in for the pinned image. The pull is retried with a doubling wait: PINNED_IMAGES_TRIES (6), PINNED_IMAGES_FIRST_DELAY (20 s),
-# PINNED_IMAGES_MAX_DELAY (300 s): 20 + 40 + 80 + 160 + 300 s, about ten minutes, before the job fails.
+# Every image is named by digest in PINS, so a cache entry is keyed by those digests. Docker cannot give a loaded image a digest
+# name (a digest is not a tag), and a pull to find the image would ask the registry, which is the thing that is over its limit.
+# So after a load this script writes the digest name into Docker's own reference file (repositories.json of the classic image
+# store) while the daemon is stopped, as a pull would have; the image ID loaded must be the ID recorded when the image was first
+# pulled from the registry, and the daemon then answers for the pinned digest name. Where that cannot be done (another image
+# store, no sudo, no jq) the pull by digest still runs, with retries, and finds every layer on the machine.
+# The pull is retried with a doubling wait: PINNED_IMAGES_TRIES (6), PINNED_IMAGES_FIRST_DELAY (20 s), PINNED_IMAGES_MAX_DELAY
+# (300 s): 20 + 40 + 80 + 160 + 300 s, about ten minutes, before the job fails.
 set -euo pipefail
 
 TRIES=${PINNED_IMAGES_TRIES:-6}
@@ -74,25 +77,80 @@ cmd_resolve() {
   output dir "$dir"
 }
 
+# The repository name and the key Docker writes after a pull by digest: the tag, if the reference has one, is dropped.
+store_names() {
+  local ref=$1 base name
+  base=${ref%@*}
+  name=$base
+  case ${base##*/} in *:*) name=${base%:*} ;; esac
+  echo "$name@${ref##*@}"
+}
+
+# Writes name@digest -> image ID into the classic image store's reference file, with the daemon stopped. Arguments: "REF ID" lines on stdin.
+bind_names() {
+  local sudo_cmd=${PINNED_IMAGES_SUDO:-sudo} file root driver info lines edited ref id key name
+  lines=$(cat)
+  [ -n "$lines" ] || return 0
+  command -v jq >/dev/null 2>&1 || { log "no jq; not binding digest names"; return 1; }
+  info=$(docker info --format '{{.DockerRootDir}}|{{.Driver}}|{{.DriverStatus}}') || return 1
+  case $info in *io.containerd.snapshotter*) log "this Docker uses the containerd image store; not binding digest names"; return 1 ;; esac
+  root=${info%%|*}; driver=${info#*|}; driver=${driver%%|*}
+  file=${PINNED_IMAGES_STORE_FILE:-$root/image/$driver/repositories.json}
+  # shellcheck disable=SC2086
+  edited=$($sudo_cmd cat "$file") || { log "cannot read $file"; return 1; }
+  while read -r ref id; do
+    [ -n "$ref" ] || continue
+    key=$(store_names "$ref"); name=${key%@*}
+    edited=$(printf '%s' "$edited" | jq --arg n "$name" --arg k "$key" --arg id "$id" '.Repositories[$n][$k] = $id') || return 1
+  done <<< "$lines"
+  [ -n "$edited" ] || return 1
+  log "stopping Docker to write the digest names of the loaded images"
+  # shellcheck disable=SC2086
+  $sudo_cmd systemctl stop docker.socket docker.service || return 1
+  # shellcheck disable=SC2086
+  printf '%s\n' "$edited" | $sudo_cmd tee "$file" >/dev/null || { $sudo_cmd systemctl start docker.service || true; return 1; }
+  # shellcheck disable=SC2086
+  $sudo_cmd systemctl start docker.service || return 1
+  local _
+  for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && return 0; sleep 1; done
+  return 1
+}
+
 cmd_ensure() {
-  local dir=${PINNED_IMAGES_CACHE_DIR:?cache folder} ref tar saved=0 loaded
+  local dir=${PINNED_IMAGES_CACHE_DIR:?cache folder} ref hex tar loaded_id want_id saved=0 bind="" id
   mkdir -p "$dir" "$BASE"
+  # 1. Load what the cache has; an entry that does not load, or loads as another image than the one recorded (when one was), is dropped.
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
-    tar="$dir/$(digest_of "$ref").tar"
-    loaded=0
-    if [ -f "$tar" ]; then
-      if docker load --input "$tar" >/dev/null 2>&1; then loaded=1; else log "the cached $ref did not load; dropping it"; rm -f "$tar"; fi
+    hex=$(digest_of "$ref"); tar="$dir/$hex.tar"
+    [ -f "$tar" ] || continue
+    want_id=$(cat "$dir/$hex.id" 2>/dev/null || true)
+    loaded_id=$(docker load --input "$tar" 2>/dev/null | sed -n 's/^Loaded image ID: //p' | tail -n 1 || true)
+    if [ -z "$loaded_id" ] || { [ -n "$want_id" ] && [ "$loaded_id" != "$want_id" ]; }; then
+      log "the cached $ref did not load as the image that was saved; dropping it"; rm -f "$tar" "$dir/$hex.id"; continue
     fi
+    have_pinned "$ref" || bind="$bind$ref $loaded_id"$'\n'
+  done < "${PINNED_IMAGES_CACHE_DIR}.refs"
+  # 2. Give the loaded images their digest names, so the registry is not asked for them.
+  if [ -n "$bind" ]; then
+    printf '%s' "$bind" | bind_names || log "the digest names could not be written; those images will be pulled"
+  fi
+  # 3. Whatever is still not here under its digest is pulled, with retries; then everything is checked and the new ones are saved.
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    hex=$(digest_of "$ref"); tar="$dir/$hex.tar"
     if have_pinned "$ref"; then
       log "$ref is on this machine"
     else
-      [ "$loaded" = 0 ] || log "$ref is loaded without its digest; pulling it (the layers are here already)"
       pull_with_retries "$ref" || fail "could not pull $ref in $TRIES tries"
     fi
     have_pinned "$ref" || fail "$ref is on this machine but not under the pinned digest"
     if [ ! -f "$tar" ]; then
-      if save_image "$ref" "$tar"; then saved=1; log "saved $ref for the cache"; else echo "::warning::could not save $ref for the cache"; fi
+      if id=$(docker image inspect --format '{{.Id}}' "$ref") && save_image "$ref" "$tar"; then
+        echo "$id" > "$dir/$hex.id"; saved=1; log "saved $ref for the cache"
+      else
+        rm -f "$tar"; echo "::warning::could not save $ref for the cache"
+      fi
     fi
   done < "${PINNED_IMAGES_CACHE_DIR}.refs"
   output save "$([ "$saved" = 1 ] && echo true || echo false)"

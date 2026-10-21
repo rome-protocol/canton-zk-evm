@@ -37,7 +37,9 @@ case $1 in
       *) [ -f "$FAKE/have/$hex" ] && cat "$FAKE/have/$hex" || exit 1 ;;
     esac ;;
   save) out=$3; echo "saved $last" > "$out" ;;
+  info) echo "/var/lib/docker|overlay2|${FAKE_DRIVER_STATUS:-[[Backing Filesystem extfs]]}" ;;
   load) [ -f "$3" ] || exit 1; grep -q '^saved ' "$3" || exit 1
+        echo "Loaded image ID: sha256:1d"
         if [ -n "${FAKE_LOAD_KEEPS_NAME:-}" ]; then mkdir -p "$FAKE/have"; h=$(sed 's/.*@sha256://' "$3"); echo "$(sed 's/^saved //' "$3")" > "$FAKE/have/$h"; fi ;;
   *) echo "unexpected docker call: $*" >&2; exit 2 ;;
 esac
@@ -47,10 +49,25 @@ cat > "$WORK/bin/sleep" <<'FAKE'
 #!/usr/bin/env bash
 echo "$1" >> "$FAKE/sleeps"
 FAKE
-chmod +x "$WORK/bin/docker" "$WORK/bin/sleep"
+# sudo runs the command (or fails when FAKE_NO_SUDO is set); systemctl logs, and a start makes Docker know the names in the reference file.
+cat > "$WORK/bin/sudo" <<'FAKE'
+#!/usr/bin/env bash
+[ -z "${FAKE_NO_SUDO:-}" ] || exit 1
+exec "$@"
+FAKE
+cat > "$WORK/bin/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$FAKE/calls"
+if [ "$1" = start ]; then
+  mkdir -p "$FAKE/have"
+  for key in $(jq -r '.Repositories[] | keys[]' "$PINNED_IMAGES_STORE_FILE"); do echo "$key" > "$FAKE/have/${key##*@sha256:}"; done
+fi
+FAKE
+chmod +x "$WORK/bin/docker" "$WORK/bin/sleep" "$WORK/bin/sudo" "$WORK/bin/systemctl"
 
 # run_case NAME ARGS...: a fresh machine (no images, no calls); the environment of the test is in the caller's variables.
-fresh() { FAKE=$WORK/fake-$1; rm -rf "$FAKE"; mkdir -p "$FAKE"; export FAKE; export PINNED_IMAGES_DIR=$FAKE/base GITHUB_OUTPUT=$FAKE/out; : > "$GITHUB_OUTPUT"; }
+fresh() { FAKE=$WORK/fake-$1; rm -rf "$FAKE"; mkdir -p "$FAKE"; export FAKE; export PINNED_IMAGES_DIR=$FAKE/base GITHUB_OUTPUT=$FAKE/out PINNED_IMAGES_STORE_FILE=$FAKE/repositories.json
+  : > "$GITHUB_OUTPUT"; echo '{"Repositories":{}}' > "$PINNED_IMAGES_STORE_FILE"; }
 runs() { PATH="$WORK/bin:$PATH" "$SCRIPT" "$@"; }
 out_of() { sed -n "s/^$1=//p" "$GITHUB_OUTPUT" | tail -n 1; }
 
@@ -76,19 +93,43 @@ PINNED_IMAGES_CACHE_DIR=$dir runs ensure 2>/dev/null
 [ -f "$dir/$DIGEST.tar" ] || fail "the image was not saved into the cache folder"
 [ "$(out_of save)" = true ] || fail "save was not asked for"
 
-echo "== cache hit: loaded, then the pull finds it"
+echo "== cache hit: loaded, given its digest name, no pull"
 fresh hit
+runs resolve "$WORK/PINS" "TOOL_IMAGE OTHER_IMAGE" 2>/dev/null; dir=$(out_of dir)
+echo "saved $REF" > "$dir/$DIGEST.tar"; echo "saved example.invalid/team/other:1.2@sha256:$OTHER" > "$dir/$OTHER.tar"
+PINNED_IMAGES_CACHE_DIR=$dir runs ensure 2>/dev/null
+grep -q '^load ' "$FAKE/calls" || fail "the cached tarball was not loaded"
+[ ! -f "$FAKE/pulls" ] || fail "a cached image was pulled: the registry was asked"
+grep -q '^systemctl stop ' "$FAKE/calls" || fail "Docker was not stopped for the edit"
+grep -q '^systemctl start ' "$FAKE/calls" || fail "Docker was not started after the edit"
+[ "$(jq -r '.Repositories["example.invalid/team/tool"] | keys[0]' "$PINNED_IMAGES_STORE_FILE")" = "example.invalid/team/tool@sha256:$DIGEST" ] || fail "the digest name of the first image is not in the reference file"
+[ "$(jq -r '.Repositories["example.invalid/team/other"] | keys[0]' "$PINNED_IMAGES_STORE_FILE")" = "example.invalid/team/other@sha256:$OTHER" ] || fail "a tagged reference was not written as name@digest"
+[ "$(out_of save)" = false ] || fail "a cache hit asked to save again"
+echo "== a store that keeps the name on load needs no edit"
+fresh keeps
 runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null; dir=$(out_of dir)
 echo "saved $REF" > "$dir/$DIGEST.tar"
 FAKE_LOAD_KEEPS_NAME=1 PINNED_IMAGES_CACHE_DIR=$dir runs ensure 2>/dev/null
-grep -q '^load ' "$FAKE/calls" || fail "the cached tarball was not loaded"
-[ ! -f "$FAKE/pulls" ] || fail "an image loaded under its digest was pulled anyway"
-[ "$(out_of save)" = false ] || fail "a cache hit asked to save again"
-fresh hit2
+[ ! -f "$FAKE/pulls" ] || fail "a loaded, named image was pulled"
+! grep -q '^systemctl' "$FAKE/calls" || fail "Docker was restarted for an image that needed no edit"
+echo "== no sudo, or the containerd store: the pull by digest runs as the fallback"
+fresh nosudo
 runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null; dir=$(out_of dir)
 echo "saved $REF" > "$dir/$DIGEST.tar"
+FAKE_NO_SUDO=1 PINNED_IMAGES_CACHE_DIR=$dir runs ensure 2>/dev/null
+[ "$(cat "$FAKE/pulls")" = 1 ] || fail "without sudo the image should be pulled once"
+fresh containerd
+runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null; dir=$(out_of dir)
+echo "saved $REF" > "$dir/$DIGEST.tar"
+FAKE_DRIVER_STATUS='[[driver-type io.containerd.snapshotter.v1]]' PINNED_IMAGES_CACHE_DIR=$dir runs ensure 2>/dev/null
+[ "$(cat "$FAKE/pulls")" = 1 ] || fail "on the containerd store the image should be pulled"
+! grep -q '^systemctl' "$FAKE/calls" || fail "Docker was restarted on the containerd store"
+echo "== a cached entry that loads as another image than the recorded one is dropped"
+fresh otherid
+runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null; dir=$(out_of dir)
+echo "saved $REF" > "$dir/$DIGEST.tar"; echo "sha256:ffff" > "$dir/$DIGEST.id"
 PINNED_IMAGES_CACHE_DIR=$dir runs ensure 2>/dev/null
-[ "$(cat "$FAKE/pulls")" = 1 ] || fail "an image loaded without a name should be pulled once (the layers are there)"
+[ "$(cat "$FAKE/pulls")" = 1 ] || fail "an entry with the wrong ID was used"
 
 echo "== a bad cache entry is dropped and the image pulled"
 fresh bad
