@@ -166,6 +166,11 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
       if (REFRESHED_CHECKS.includes(c.check_id) && Number(c.age) > staleSeconds) return [`${c.check_id}: the indexer has not checked in ${Math.round(Number(c.age))} s`];
       return c.status === "ok" ? [] : [`${c.check_id}: ${c.detail ?? c.status}`];
     });
+    // A refreshed check with no row has not been looked at at all: after a rebuild from an export (which writes the cursor but runs no check round), or before
+    // a new indexer's first round. No row must not read as healthy, or a database with no indexer behind it answers ok.
+    if (cursor !== undefined) {
+      for (const id of REFRESHED_CHECKS) if (!checks.some((c) => c.check_id === id)) problems.push(`${id}: the indexer has not checked yet`);
+    }
     return { started: cursor !== undefined, problems, signers: operator && confirmer ? { operator, confirmer } : null };
   }
 

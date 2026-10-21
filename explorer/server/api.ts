@@ -99,7 +99,10 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer()]).then((r) => r, (e: unknown) => e as Error);
     if (read instanceof Error) console.error(`status: ${read.message}`);
     const [head, newest, s] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], signers: null }] as const : read;
-    const proving = latest && latest.number > (head?.number ?? 0) ? latest : null;
+    // Above the indexed head, reth's newest block is being proven only if Canton does not hold it yet: at or below reth's finalized block it is final and the
+    // indexer is behind (the problems line says so, and the block's page calls it unindexed), so it is not named as proving.
+    const finalizedAt = latest && latest.number > (head?.number ?? 0) ? await finalizedNumber() : undefined;
+    const proving = latest && latest.number > (head?.number ?? 0) && !(finalizedAt !== undefined && latest.number <= finalizedAt) ? latest : null;
     const starting = !s.started && s.problems.length === 0;
     const all = s.started && s.problems.length === 0 && latest !== undefined && canton;
     return {
@@ -114,7 +117,7 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     };
   }
 
-  async function block(id: string): Promise<Answer> {
+  async function block(id: string, retried = false): Promise<Answer> {
     const key = HASH.test(id) ? id : /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) ? Number(id) : null;
     if (key === null) return fail(400, "A block is named by its number or its 0x hash.");
     const final = await chain.block(key);
@@ -140,7 +143,8 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     if (!b) return fail(404, NOT_FOUND);
     const genesis = b.number === 0;
     // At or below the newest indexed block, reth's block with this hash is not the final one of its number.
-    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return fail(404, NOT_FOUND);
+    // The indexer may have written it while reth was being asked: look in the database once more before saying no, so a page that was watching the block go final gets it.
+    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return retried ? fail(404, NOT_FOUND) : block(id, true);
     // At or below reth's finalized block, Canton holds the block: it is final, and the indexer is behind (or has stopped), which the status says. It is not being proven.
     const finalizedAt = genesis ? undefined : await finalizedNumber();
     const unindexed = finalizedAt !== undefined && b.number <= finalizedAt;

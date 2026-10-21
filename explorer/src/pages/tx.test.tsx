@@ -175,7 +175,8 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
 
   it("says a transaction in a block that Canton holds and the indexer has not read is final but not indexed, and keeps looking", async () => {
     await open(tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }));
-    expect(screen.getByRole("status")).toHaveTextContent("Its block is final on Canton, and the explorer has not indexed it yet.");
+    expect(screen.getByRole("status")).toHaveTextContent("Final on Canton, not indexed yet.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Not final yet");
     const steps = within(screen.getByRole("list", { name: "Where this transaction is" })).getAllByRole("listitem");
     expect(steps[2]).toHaveAttribute("aria-current", "step");
     expect(steps[1]).not.toHaveAttribute("aria-current");

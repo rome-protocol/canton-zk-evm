@@ -23,7 +23,16 @@ type Coin = { symbol: string; decimals: number };
 
 /** A transaction that is not final yet says so, says where it is, and says that the page looks again. Only a transaction page reached by its hash can say Waiting. */
 function NotFinal({ t }: { t: ApiTxSeen }) {
-  const where = t.status === "waiting" ? "It is in reth's pool, and no block holds it yet." : t.status === "unindexed" ? "Its block is final on Canton, and the explorer has not indexed it yet." : "Its block is being proven.";
+  // Final on Canton, only not written down by the explorer yet: it must not say "not final".
+  if (t.status === "unindexed") {
+    return (
+      <div className="alert wait-alert" role="status">
+        <Icon name="info" size={15} />
+        <div><b>Final on Canton, not indexed yet.</b> Canton holds this transaction's block; the explorer has not read its record, so the update id is not shown. This page looks again every 2 s.</div>
+      </div>
+    );
+  }
+  const where = t.status === "waiting" ? "It is in reth's pool, and no block holds it yet." : "Its block is being proven.";
   return (
     <div className="alert wait-alert" role="status">
       <Icon name="info" size={15} />
