@@ -16,6 +16,7 @@ export const FAKE_READER = "reader::1220" + "ab".repeat(32);
 export const FAKE_OPERATOR = "operator::1220" + "cd".repeat(32);
 export const FAKE_CONFIRMER = "confirmer::1220" + "ef".repeat(32);
 export const RECORD_ID = "abc123def456:Zk.Chain:BlockRecord";
+export const FAKE_PARTICIPANT = "PAR::participant::1220" + "aa".repeat(32);
 
 /** The fields of a BlockRecord as the JSON Ledger API shows them (an Int64 is a string, a hash is hex without 0x). */
 export function recordFields(over: Json = {}): Json {
@@ -64,6 +65,7 @@ export async function startFakeLedger(items: Json[], opts: { httpStatus?: number
       if (req.method === "GET" && u.pathname === "/v2/state/ledger-end") {
         return send(200, { offset: opts.ledgerEnd ?? items.reduce((m, i) => Math.max(m, offsetOf(i)), 0) });
       }
+      if (req.method === "GET" && u.pathname === "/v2/parties/participant-id") return send(200, { participantId: FAKE_PARTICIPANT });
       if (req.method === "POST" && u.pathname === "/v2/updates") {
         const begin = body?.beginExclusive, end = body?.endInclusive;
         if (typeof begin !== "number" || typeof end !== "number" || !body?.updateFormat) return send(400, { code: "INVALID_ARGUMENT" });

@@ -42,7 +42,7 @@ done
 cmd=" $(docker exec "$NAME" cat /proc/1/cmdline | tr '\0' ' ')"
 for f in --disable-discovery "--nat none" "--max-outbound-peers 0" "--max-inbound-peers 0" "--addr 127.0.0.1" --ipcdisable \
          --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header \
-         "--builder.gaslimit $GAS_CAP" "--rpc.eth-proof-window 1"; do
+         "--builder.gaslimit $GAS_CAP" "--rpc.eth-proof-window 1" "--http.api eth,net,web3,trace"; do
   [[ $cmd == *" $f "* ]] || fail "the command line lacks: $f"
 done
 echo "ok: $NAME has no peers, no UDP sockets, no p2p port published, and the discovery and builder flags are set"
