@@ -1,0 +1,9 @@
+// For tests/canton_external.sh only: a participant that exists before Ostia comes, as a validator's does. Starts the synchronizer
+// and the operator participant of network/canton/canton.conf and connects the participant. It makes no party, no user and no package, and
+// uploads nothing: that is network/external/setup.py's work. The other two participants of canton.conf are not started.
+sequencer1.start()
+mediator1.start()
+operator.start()
+bootstrap.synchronizer_local()
+operator.synchronizers.connect_local(sequencer1, alias = "da")
+println("EXTERNAL PARTICIPANT READY")

@@ -15,7 +15,7 @@ if [ -n "${CZE_TOKEN_FILE_ADMIN:-}" ]; then
   [ -s "$CZE_TOKEN_FILE_ADMIN" ] || fail "CZE_TOKEN_FILE_ADMIN is not a file with a token in it"
   auth=(-H @<(printf 'Authorization: Bearer %s\n' "$(tr -d '[:space:]' < "$CZE_TOKEN_FILE_ADMIN")"))
 fi
-answer=$(curl -sf "${auth[@]}" "$url/v2/packages") || fail "the Ledger API at $url did not answer GET /v2/packages"
+answer=$(curl -sf ${auth[@]+"${auth[@]}"} "$url/v2/packages") || fail "the Ledger API at $url did not answer GET /v2/packages"
 listed=$(jq -r '.packageIds[]?' <<<"$answer" 2>/dev/null) || fail "the answer of $url/v2/packages is not a package list"
 grep -qxF "$id" <<<"$listed" || fail "package $id is not in the package list of $url ($(grep -c . <<<"$listed") packages listed)"
 echo "package $id is in the package list of $url"
