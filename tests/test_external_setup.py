@@ -12,7 +12,7 @@ import propose, setup
 PKG = "ab" * 32
 H = "ab" * 32
 CHAIN_ARGS = ["--genesis-hash", H, "--genesis-state-root", "55" * 32, "--program-vk", "cd" * 32, "--root-c", "ef" * 32, "--rules-hash", "12" * 32]
-SECRETS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer": "tok-confirmer-3"}
+FAKE_TOKENS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer": "tok-confirmer-3"}
 
 
 class FakeParticipant:
@@ -111,9 +111,9 @@ class Setup(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.state = Path(self.tmp.name) / "state"
         self.tokens = {}
-        for role, secret in SECRETS.items():
+        for role, fake_token in FAKE_TOKENS.items():
             path = Path(self.tmp.name) / role
-            path.write_text(secret + "\n"); path.chmod(0o600)
+            path.write_text(fake_token + "\n"); path.chmod(0o600)
             self.tokens[role] = path
         env = {"CZE_STATE_DIR": str(self.state), "CZE_USER_PREFIX": "ostia-", **{f"CZE_TOKEN_FILE_{r.upper()}": str(p) for r, p in self.tokens.items()}}
         patcher = mock.patch.dict(os.environ, env)
@@ -178,12 +178,12 @@ class Setup(unittest.TestCase):
         self.assertEqual(by_path("/v2/parties"), {"Bearer tok-admin-1"})
         submits = [c[2] for c in self.node.calls if c[1] == "/v2/commands/submit-and-wait"]
         self.assertEqual(submits, ["Bearer tok-operator-2", "Bearer tok-confirmer-3"])
-        for secret in SECRETS.values():
-            self.assertNotIn(secret, out + err)
+        for fake_token in FAKE_TOKENS.values():
+            self.assertNotIn(fake_token, out + err)
 
     def test_without_token_files_no_authorization_header_is_sent(self):
         with mock.patch.dict(os.environ):
-            for r in SECRETS:
+            for r in FAKE_TOKENS:
                 os.environ.pop(f"CZE_TOKEN_FILE_{r.upper()}")
             os.environ["CZE_LEDGER_NO_AUTH"] = "1"
             self.run_setup()
@@ -194,7 +194,7 @@ class Setup(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             self.run_setup()
         self.assertIn("chmod 600", str(ctx.exception))
-        self.assertNotIn(SECRETS["admin"], str(ctx.exception))
+        self.assertNotIn(FAKE_TOKENS["admin"], str(ctx.exception))
         self.assertEqual(self.node.calls, [])
 
     def test_without_token_files_and_without_the_no_login_setting_it_stops_before_any_call(self):
@@ -213,7 +213,7 @@ class Setup(unittest.TestCase):
             with self.subTest(role=role), self.assertRaises(SystemExit) as ctx:
                 self.run_setup()
             self.assertIn("chmod 600", str(ctx.exception))
-            self.assertNotIn(SECRETS[role], str(ctx.exception))
+            self.assertNotIn(FAKE_TOKENS[role], str(ctx.exception))
             self.assertEqual(self.node.calls, [])
             self.tokens[role].chmod(0o600)
 
@@ -230,8 +230,8 @@ class Setup(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(SystemExit) as ctx:
                 setup.main(["--ledger-url", url, "--dar", str(self.dar)])
             self.assertIn("in the clear", str(ctx.exception))
-        for secret in SECRETS.values():
-            self.assertNotIn(secret, str(ctx.exception))
+        for fake_token in FAKE_TOKENS.values():
+            self.assertNotIn(fake_token, str(ctx.exception))
 
     def test_https_and_loopback_urls_pass_the_url_rule(self):
         for url in ("https://ledger.example", "https://ledger.example:7575/api", "http://127.0.0.1:7575", "http://localhost:7575", "http://[::1]:7575"):
