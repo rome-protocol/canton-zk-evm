@@ -151,6 +151,22 @@ The worst-case block is made by `explorer/test/fixtures/Stress.sol`: 15 transact
 
 Both shapes finish the block through both stages in under 100 ms, against B1's 1.0 s for stage 1 and B2's 3.0 s for both stages. So `INDEX_DERIVE` stays `inline` by default (design section 4.3's trigger). This does not set B2's final number: the block is below the cap, the machine is not the reference machine, and stage 2 here is only the call count and revert data. W1 runs again in E5b, with all of stage 2.
 
+The test asserts the budgets, so a regression fails the rehearsal job and does not stay a line in a log: stage 1's reads and write for the W1 block must come in under 1.0 s (B1), and both stages together under 3.0 s (B2, provisional for a block read over the network).
+
+### The health rows the indexer writes
+
+Alerts and the overall status read these ids by name, so they are fixed here. A stop writes the id `down` and the indexer stops; the row goes back to `ok` when the indexer next passes that check. `degraded` rows do not stop the indexer.
+
+| Id | Class | When |
+|---|---|---|
+| `C1`, `C2`, `C3`, `C7` | down | a block fails the check: hash, order and parent, transactions and receipts, the proof's pins |
+| `pins` | down | the database was made for other pins or another chain than the indexer is set to |
+| `participant` | down | the reader's cursor belongs to another participant than the one now answering, and offsets are local to a participant |
+| `record` | down | a record's signatories are not its operator and confirmer |
+| `derive` | down | stage 2 is given a block out of order, or reth's traces are not those of the block's transactions |
+| `C10` | degraded | a Leg event of the gateway cannot be decoded; it names the block, which is stored with the legs that decode and a `legs_count` of all the gateway wrote |
+| `reth_reads` | degraded | reth keeps answering a read with an error or a timeout, or has not had the block Canton names for longer than `INDEX_RETH_BEHIND_MS`; back to `ok` when every loop that reported it reads cleanly again |
+
 The same run answers the design's main open question about revert data: `trace_replayBlockTransactions` does carry the `output` of a failed transaction, for `Error(string)`, `Panic(uint256)` and a custom error (`Reverts.sol`, one failing call to each, in one block). The `debug_traceBlockByNumber` fallback is not needed.
 
 ## What CI runs

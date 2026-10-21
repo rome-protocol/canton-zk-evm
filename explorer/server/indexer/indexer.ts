@@ -11,7 +11,7 @@ import type { Pins } from "../config.ts";
 import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/partitions.ts";
 import type { BlockRecord, Ledger } from "../ledger.ts";
 import { RethError } from "../reth.ts";
-import { IndexerStop, LegUndecodable, RethBehind } from "./errors.ts";
+import { IndexerStop, RethBehind } from "./errors.ts";
 import { clearStops, setHealth } from "./health.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
@@ -154,20 +154,13 @@ export function createIndexer(o: IndexerOptions) {
     if (!block) throw new RethBehind(n, "block");
     if (!receipts) throw new RethBehind(n, "receipts");
     if (inline && !traces) throw new RethBehind(n, "traces");
-    // A Leg event that cannot be decoded is not a stop (design section 4.5): the block goes in without its legs rows, and C10 says degraded.
-    let legs: Stage1Input["legs"] = [];
-    let legProblem: LegUndecodable | null = null;
-    try {
-      legs = legsOf(receipts, o.gateway, n);
-    } catch (e) {
-      if (!(e instanceof LegUndecodable)) throw e;
-      legProblem = e;
-    }
-    const legsHash = legs.length > 0 ? await o.reads.storageAt(o.gateway, legsSlot(n), n) : null;
+    // A Leg event that cannot be decoded is not a stop (design section 4.5): the block goes in with the legs that decode, its count says how many the chain wrote, and C10 says degraded.
+    const { legs, count: legsCount, problem: legProblem } = legsOf(receipts, o.gateway, n);
+    const legsHash = legsCount > 0 ? await o.reads.storageAt(o.gateway, legsSlot(n), n) : null;
     const read1 = now() - t0;
     if (inline) await catchUpDerive(n - 1);
     const input: Stage1Input = {
-      record: r, block, receipts, legs, legsHash, genesisHash: genesisHash as string, participantId: participantId as string, startOffset, pins: o.pins,
+      record: r, block, receipts, legs, legsCount, legsHash, genesisHash: genesisHash as string, participantId: participantId as string, startOffset, pins: o.pins,
     };
     await inTransaction(o.pool, async (c) => {
       const w1 = now();
@@ -260,53 +253,48 @@ export function createIndexer(o: IndexerOptions) {
     const poll = o.pollMs ?? 250;
     const behindMs = o.rethBehindMs ?? 10_000;
     const errorLimit = o.readErrorsBeforeDegraded ?? 3;
-    let behindSince: number | null = null;
-    let rethReported = false;
-    let readErrors = 0;
-    // A reth that answers with an error or does not answer in time (a method it does not serve, a heavy block's replay) halts the walk as surely as a block it lacks, so it is said the same way.
-    async function readFailed(e: unknown): Promise<void> {
-      if (e instanceof RethError && ++readErrors >= errorLimit && !rethReported) {
-        rethReported = true;
-        try { await setHealth(o.pool, [{ id: "reth_reads", status: "degraded", detail: e.message }]); } catch (he) { log(`indexer: ${(he as Error).message}`); }
-      }
+    // The row `reth_reads` is degraded while any loop reports a problem and goes back to ok only when the last one clears it, so the walk and
+    // the derive loops, which poll on their own, do not hide each other's report or make the row flap.
+    const reporting = new Map<string, string>();
+    async function report(loop: string, detail: string | null): Promise<void> {
+      try {
+        if (detail === null) {
+          if (reporting.delete(loop) && reporting.size === 0) await setHealth(o.pool, [{ id: "reth_reads", status: "ok" }]);
+        } else if (!reporting.has(loop)) {
+          reporting.set(loop, detail);
+          await setHealth(o.pool, [{ id: "reth_reads", status: "degraded", detail }]);
+        }
+      } catch (he) { log(`indexer: ${(he as Error).message}`); }
     }
     const sleep = (ms: number) => new Promise<void>((ok) => setTimeout(ok, ms));
-    const loops = [
-      async () => {
+    // A reth that answers with an error or does not answer in time (a method it does not serve, a heavy block's replay) halts the walk as surely as a block it lacks, so it is said the same way.
+    function loop(name: string, step: () => Promise<RunResult>, logName: string) {
+      let behindSince: number | null = null;
+      let readErrors = 0;
+      return async () => {
         while (running) {
           try {
-            const r = await runOnce();
+            const r = await step();
             readErrors = 0;
             if (r.state === "stopped") { onStop(r.stop); running = false; return; }
             if (r.state === "reth-behind") {
               behindSince ??= now();
-              if (!rethReported && now() - behindSince >= behindMs) {
-                rethReported = true;
-                await setHealth(o.pool, [{ id: "reth_reads", status: "degraded", detail: "reth does not have the block that Canton's newest record names" }]);
-              }
+              if (now() - behindSince >= behindMs) await report(name, "reth does not have the block that Canton's newest record names");
             } else {
               behindSince = null;
-              if (rethReported) { rethReported = false; await setHealth(o.pool, [{ id: "reth_reads", status: "ok" }]); }
+              await report(name, null);
             }
           } catch (e) {
-            log(`indexer: ${(e as Error).message}`);
-            await readFailed(e);
+            log(`${logName}: ${(e as Error).message}`);
+            if (e instanceof RethError && ++readErrors >= errorLimit) await report(name, e.message);
           }
           await sleep(poll);
         }
-      },
-      ...(inline ? [] : [async () => {
-        while (running) {
-          try {
-            const r = await deriveOnce();
-            if (r.state === "stopped") { onStop(r.stop); running = false; return; }
-          } catch (e) {
-            log(`indexer (stage 2): ${(e as Error).message}`);
-            await readFailed(e);
-          }
-          await sleep(poll);
-        }
-      }]),
+      };
+    }
+    const loops = [
+      loop("stage1", runOnce, "indexer"),
+      ...(inline ? [] : [loop("stage2", deriveOnce, "indexer (stage 2)")]),
     ];
     const finished = Promise.all(loops.map((l) => l()));
     return async () => { stopRequested = true; running = false; await finished; };

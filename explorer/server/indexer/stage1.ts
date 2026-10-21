@@ -11,9 +11,9 @@ import type { PoolClient } from "pg";
 import type { Pins } from "../config.ts";
 import type { BlockRecord } from "../ledger.ts";
 import { checkProofFacts, readProofFacts } from "../proof.ts";
-import { IndexerStop } from "./errors.ts";
 import { setHealth } from "./health.ts";
 import { decodeLeg, LEG_TOPIC, type Leg } from "./legs.ts";
+import { IndexerStop, LegUndecodable } from "./errors.ts";
 import type { FinalBlock, FinalReceipt } from "./reads.ts";
 import { transactionHashes } from "./rlp.ts";
 
@@ -21,8 +21,10 @@ export interface Stage1Input {
   record: BlockRecord;
   block: FinalBlock;
   receipts: FinalReceipt[];
-  /** The legs the gateway recorded in this block, in log order, with the log each came from. */
-  legs: { leg: Leg; txIndex: number; logIndex: number }[];
+  /** The legs the gateway recorded in this block that could be decoded, in log order, with the place of each among the block's Leg logs and the log it came from. */
+  legs: { leg: Leg; index: number; txIndex: number; logIndex: number }[];
+  /** How many Leg logs the gateway wrote in this block, decodable or not: the row says what the chain says even when a Leg cannot be read. */
+  legsCount: number;
   /** `legs[number]` from the gateway's storage; null when the block has no legs. */
   legsHash: string | null;
   /** reth's hash for block 0: the parent the first record must name. */
@@ -39,17 +41,30 @@ const bytea = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "hex");
 const byteaOrNull = (h: string | null): Buffer | null => (h === null ? null : bytea(h));
 const text = (n: bigint | null): string | null => (n === null ? null : n.toString());
 
-/** The gateway's `Leg` logs of a block, in log order, with the transaction and the position of each log in the block. */
-export function legsOf(receipts: FinalReceipt[], gateway: string, number: number): Stage1Input["legs"] {
-  const out: Stage1Input["legs"] = [];
+/**
+ * The gateway's `Leg` logs of a block, in log order, with the transaction and the position of each log in the block. A Leg that cannot be decoded
+ * is left out of `legs` but counted in `count`, and the first such is returned as `problem`; the rest of the block's legs are still read.
+ */
+export function legsOf(receipts: FinalReceipt[], gateway: string, number: number): { legs: Stage1Input["legs"]; count: number; problem: LegUndecodable | null } {
+  const legs: Stage1Input["legs"] = [];
+  let problem: LegUndecodable | null = null;
+  let count = 0;
   let logIndex = 0;
   receipts.forEach((r, txIndex) => {
     for (const log of r.logs) {
-      if (log.address === gateway && log.topics[0] === LEG_TOPIC) out.push({ leg: decodeLeg(log, number), txIndex, logIndex });
+      if (log.address === gateway && log.topics[0] === LEG_TOPIC) {
+        try {
+          legs.push({ leg: decodeLeg(log, number), index: count, txIndex, logIndex });
+        } catch (e) {
+          if (!(e instanceof LegUndecodable)) throw e;
+          problem ??= e;
+        }
+        count++;
+      }
       logIndex++;
     }
   });
-  return out;
+  return { legs, count, problem };
 }
 
 /** The reader's cursor: the offset of the newest record on this participant, and the block it made. Offsets mean nothing without their participant. */
@@ -154,7 +169,7 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
     `insert into blocks (number, hash, parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, burnt_fees, priority_fees, tx_count, log_count, size_bytes,
        state_root, transactions_root, receipts_root, extra_data, legs_count, legs_hash, update_id, record_time, indexed_at)
      values ($1, $2, $3, to_timestamp($4), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, now())`,
-    [n, bytea(b.hash), bytea(b.parentHash), b.timestamp, bytea(b.miner), b.gasLimit, b.gasUsed, b.baseFeePerGas.toString(), gasBurnt.toString(), priority.toString(), b.transactions.length, logCount, size, bytea(b.stateRoot), bytea(b.transactionsRoot), bytea(b.receiptsRoot), bytea(b.extraData), i.legs.length,
+    [n, bytea(b.hash), bytea(b.parentHash), b.timestamp, bytea(b.miner), b.gasLimit, b.gasUsed, b.baseFeePerGas.toString(), gasBurnt.toString(), priority.toString(), b.transactions.length, logCount, size, bytea(b.stateRoot), bytea(b.transactionsRoot), bytea(b.receiptsRoot), bytea(b.extraData), i.legsCount,
       byteaOrNull(i.legsHash), updateId, r.recordTime],
   );
   await c.query("insert into block_records (number, header, txs, contract_id) values ($1, $2, $3, $4)", [n, bytea(r.headerHex), bytea(r.txsHex), r.contractId]);
@@ -212,7 +227,7 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
       `insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount, party)
        select $1::bigint, t.i, t.tx, t.log, t.kind, t.id, t.token, t.account, t.amount, t.party from unnest($2::int[], $3::int[], $4::int[], $5::smallint[], $6::bytea[], $7::bytea[], $8::bytea[], $9::numeric[], $10::text[])
          as t(i, tx, log, kind, id, token, account, amount, party)`,
-      [n, i.legs.map((_, k) => k), i.legs.map((l) => l.txIndex), i.legs.map((l) => l.logIndex), i.legs.map((l) => l.leg.kind), i.legs.map((l) => bytea(l.leg.id)),
+      [n, i.legs.map((l) => l.index), i.legs.map((l) => l.txIndex), i.legs.map((l) => l.logIndex), i.legs.map((l) => l.leg.kind), i.legs.map((l) => bytea(l.leg.id)),
         i.legs.map((l) => bytea(l.leg.token)), i.legs.map((l) => bytea(l.leg.account)), i.legs.map((l) => l.leg.amount.toString()), i.legs.map((l) => (l.leg.kind === 2 ? l.leg.party : null))],
     );
   }

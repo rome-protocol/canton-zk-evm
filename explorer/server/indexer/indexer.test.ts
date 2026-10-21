@@ -4,13 +4,27 @@ import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { RethError } from "../reth.ts";
-import { createIndexer, type DeriveShape, type Timing } from "./indexer.ts";
+import { createIndexer, type DeriveShape, type Indexer, type Timing } from "./indexer.ts";
+
+// Every indexer a test opens is closed when the test ends, pass or fail: an open one holds the advisory lock, and the database cannot be dropped
+// until it is released, so a failed assertion would otherwise end as a timeout with its message lost.
+const opened: Indexer[] = [];
+async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
+  await withDatabase(async (pool) => {
+    try {
+      await fn(pool);
+    } finally {
+      for (const i of opened.splice(0)) await i.close().catch(() => undefined);
+    }
+  });
+}
 
 async function setup(pool: Pool, shapes: BlockShape[], derive: DeriveShape = "inline", over: Partial<Parameters<typeof createIndexer>[0]> = {}) {
   await migrate(pool);
   const chain = makeChain(shapes);
   const timings: Timing[] = [];
   const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive, onTiming: (t) => timings.push(t), ...over });
+  opened.push(indexer);
   await indexer.open();
   return { chain, indexer, timings };
 }
@@ -35,7 +49,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   checkRequired();
 
   it("writes each final block whole, with its cursor, and the checks' rows say ok", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 0 }, { txs: 10, leg: 2 }, { txs: 7 }]);
       expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 3 });
       const logs = logsOf(chain, 0) + logsOf(chain, 1) + logsOf(chain, 2);
@@ -50,7 +64,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("changes nothing when a block is read again, and moves the cursor past it", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { indexer } = await setup(pool, [{ txs: 12, leg: 1 }, { txs: 5 }]);
       await indexer.runOnce();
       const before = await counts(pool);
@@ -64,7 +78,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("leaves nothing of a block that was cut off in the middle, and the cursor where it was", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { indexer } = await setup(pool, [{ txs: 3 }, { txs: 20 }]);
       // The connection dies at the logs of block 2, after its transactions went in.
       let killed = false;
@@ -95,7 +109,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("waits when reth is behind, and goes on when reth has the block", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 2 }, { txs: 2 }, { txs: 2 }]);
       chain.reads.rethHead = 1;
       expect(await indexer.runOnce()).toEqual({ state: "reth-behind", indexed: 1 });
@@ -109,7 +123,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("stops at a gap (C2), writes the check as down, and stays stopped", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }]);
       const all = chain.ledger.recordPages;
       chain.ledger.recordPages = async function* (a: number, u: number) {
@@ -134,7 +148,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   async function stopsOn(tamper: (c: SyntheticChain) => void, check: string) {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 3 }, { txs: 3 }]);
       tamper(chain);
       const r = await indexer.runOnce();
@@ -160,7 +174,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   }, "C7"));
 
   it("refuses a database made for other pins", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }]);
       await indexer.close();
       const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, programVK: "0x" + "01".repeat(32) }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
@@ -170,7 +184,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("refuses a second indexer for one database", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }]);
       const second = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
       await expect(second.open()).rejects.toThrow("another indexer");
@@ -181,7 +195,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("in the inline shape, writes both stages in one transaction: a block never shows without its traces", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 10 }, { txs: 10 }]);
       // The traces of block 2 are not those of its transactions: stage 2 stops, so stage 1's rows of block 2 go too.
       chain.blocks[1]!.traces.pop();
@@ -196,7 +210,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("in the behind shape, stage 1 does not wait for stage 2, which catches up on its own cursor", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 10 }, { txs: 10 }], "behind");
       expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 2 });
       expect(chain.reads.calls.traces ?? 0).toBe(0);
@@ -212,7 +226,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("keeps the revert data of a failed transaction, with the reason decoded, and the call count of the others", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 10 }]);
       await indexer.runOnce();
       const rows = (await pool.query("select tx_index, call_count, encode(revert_data, 'hex') as data, revert_reason from tx_traces where block_number = 1 order by tx_index")).rows;
@@ -226,7 +240,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("decodes the gateway's Leg logs into gateway_legs", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { indexer } = await setup(pool, [{ txs: 3, leg: 2 }]);
       await indexer.runOnce();
       const r = (await pool.query("select kind, tx_index, log_index, amount::text as amount, party from gateway_legs")).rows;
@@ -236,7 +250,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("keeps the blocks of the pages it read when a later page fails, and the next look goes on from there", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }]);
       chain.ledger.pageSize = 2;
       chain.ledger.failAfterPages = 2;
@@ -251,7 +265,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("reads a page only after the records of the page before are written", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }]);
       chain.ledger.pageSize = 1;
       const pages = chain.ledger.recordPages;
@@ -269,7 +283,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("stops between records when told to stop, without waiting for the backlog", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }], "inline", { pollMs: 20 });
       chain.ledger.pageSize = 1;
       const halt = indexer.start();
@@ -281,12 +295,15 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("records an undecodable Leg as C10 degraded, naming the block, and goes on without that block's legs", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 2, leg: 1 }, { txs: 2 }]);
       chain.blocks[0]!.receipts[0]!.logs[0]!.data = "0x1234";
       expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 2 });
       expect((await counts(pool)).blocks).toBe(2);
       expect((await counts(pool)).gateway_legs).toBe(0);
+      // The row still says what the chain says: the gateway wrote one Leg, and legs[1] is read.
+      const row = (await pool.query("select legs_count, legs_hash is not null as has_hash from blocks where number = 1")).rows[0];
+      expect(row).toEqual({ legs_count: 1, has_hash: true });
       const h = await health(pool, "C10");
       expect(h.status).toBe("degraded");
       expect(h.detail).toContain("block 1");
@@ -296,7 +313,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("clears a stopped row once the indexer passes what it stopped at", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }]);
       for (const id of ["record", "derive", "participant", "C1"]) {
         await pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at, detail) values ($1, 'down', null, now(), now(), 'stopped')", [id]);
@@ -308,7 +325,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("clears the pins row when the indexer is started again with the pins the database was made for", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }]);
       await indexer.close();
       const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, programVK: "0x" + "01".repeat(32) }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
@@ -323,7 +340,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 
   it("writes reth_reads as degraded, with the method and the message, after repeated read errors, and ok when they stop", async () => {
-    await withDatabase(async (pool) => {
+    await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }], "inline", { pollMs: 20, readErrorsBeforeDegraded: 2 });
       const traces = chain.reads.traces;
       chain.reads.traces = async () => { throw new RethError('trace_replayBlockTransactions: reth answered "Method not found"', true); };
@@ -346,6 +363,28 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       await indexer.close();
     });
   });
+
+  it("in the behind shape, reports a stage 2 read that keeps failing as a steady degraded row, not one that flaps with stage 1's good looks", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 1 }], "behind", { pollMs: 10, readErrorsBeforeDegraded: 2 });
+      const traces = chain.reads.traces;
+      chain.reads.traces = async () => { throw new RethError("trace_replayBlockTransactions: the replay timed out", true); };
+      const halt = indexer.start();
+      const wait = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
+      for (let i = 0; i < 100 && (await health(pool, "reth_reads"))?.status !== "degraded"; i++) await wait(20);
+      expect((await health(pool, "reth_reads")).status).toBe("degraded");
+      // Many looks of stage 1 go by with the trace read still failing; the row stays degraded the whole time.
+      for (let i = 0; i < 15; i++) {
+        await wait(15);
+        expect((await health(pool, "reth_reads")).status).toBe("degraded");
+      }
+      chain.reads.traces = traces;
+      for (let i = 0; i < 100 && (await health(pool, "reth_reads")).status !== "ok"; i++) await wait(20);
+      expect((await health(pool, "reth_reads")).status).toBe("ok");
+      await halt();
+      await indexer.close();
+    });
+  });
 });
 
 // The budgets of the design's section 9 (B1, B2) against the fakes: L1. Each size is a chain of one block on a database of its own.
@@ -354,7 +393,7 @@ describe.skipIf(!TEST_URL)("L1: synthetic blocks within the ingestion budgets", 
 
   for (const txs of [0, 100, 1428, 5000]) {
     it(`indexes a block of ${txs} transactions inside B1 and B2, and writes every row`, async () => {
-      await withDatabase(async (pool) => {
+      await inDb(async (pool) => {
         const { chain, indexer, timings } = await setup(pool, [{ txs, leg: 1 }], "behind");
         expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 1 });
         expect(await indexer.deriveOnce()).toEqual({ state: "caught-up", indexed: 1 });

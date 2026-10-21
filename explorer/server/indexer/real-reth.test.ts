@@ -75,45 +75,51 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
           onTiming: (t) => timings.push(t),
         });
         await indexer.open();
-        const run = await indexer.runOnce();
-        expect(run.state, JSON.stringify(run)).toBe("caught-up");
-        if (shape === "behind") expect(await indexer.deriveOnce()).toMatchObject({ state: "caught-up" });
-        const head = Number((await pool.query("select max(number) as n from blocks")).rows[0].n);
-        expect(head).toBeGreaterThanOrEqual(W1_BLOCK);
-        expect(Number((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position)).toBe(head);
+        try {
+          const run = await indexer.runOnce();
+          expect(run.state, JSON.stringify(run)).toBe("caught-up");
+          if (shape === "behind") expect(await indexer.deriveOnce()).toMatchObject({ state: "caught-up" });
+          const head = Number((await pool.query("select max(number) as n from blocks")).rows[0].n);
+          expect(head).toBeGreaterThanOrEqual(W1_BLOCK);
+          expect(Number((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position)).toBe(head);
 
-        // Section 4.1's open risk: the revert data of the failed transactions, from reth's replay.
-        const reverted = (await pool.query("select revert_reason, length(revert_data) as len from tx_traces where revert_data is not null order by block_number, tx_index")).rows;
-        const reasons = reverted.map((r) => r.revert_reason);
-        if (Number.isInteger(BLOCK) && BLOCK > 0) {
-          expect(reasons).toContain("not allowed");
-          expect(reasons).toContain("Panic(0x11): arithmetic overflow or underflow");
-          expect(reasons).toContain(null);
+          // Section 4.1's open risk: the revert data of the failed transactions, from reth's replay.
+          const reverted = (await pool.query("select revert_reason, length(revert_data) as len from tx_traces where revert_data is not null order by block_number, tx_index")).rows;
+          const reasons = reverted.map((r) => r.revert_reason);
+          if (Number.isInteger(BLOCK) && BLOCK > 0) {
+            expect(reasons).toContain("not allowed");
+            expect(reasons).toContain("Panic(0x11): arithmetic overflow or underflow");
+            expect(reasons).toContain(null);
+          }
+
+          const w1 = timings.filter((t) => t.block === W1_BLOCK);
+          const s1 = w1.find((t) => t.stage === 1)!;
+          const s2 = w1.find((t) => t.stage === 2)!;
+          const block = (await pool.query("select tx_count, log_count, gas_used from blocks where number = $1", [W1_BLOCK])).rows[0];
+          const shape1 = (await pool.query(
+            `select count(*) filter (where t.status = 1) as ok, count(*) filter (where t.status = 0) as failed, coalesce(sum(x.call_count), 0) as calls,
+                    (select count(*) from logs l where l.block_number = $1) as logs
+             from transactions t left join tx_traces x on x.block_number = t.block_number and x.tx_index = t.tx_index where t.block_number = $1`, [W1_BLOCK])).rows[0];
+          console.log(`W1 ${shape} block's shape: ${shape1.ok} transactions succeeded, ${shape1.failed} failed, ${shape1.calls} internal calls, ${shape1.logs} logs`);
+          expect(Number(shape1.ok), "the Stress calls must succeed, or the block is not the costly one").toBeGreaterThan(0);
+          expect(Number(shape1.logs)).toBeGreaterThan(0);
+          const t0 = Date.now();
+          const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
+          const readMs = Date.now() - t0;
+          expect(b && r && tr).toBeTruthy();
+          const t1 = Date.now();
+          await reads.traces(W1_BLOCK);
+          const traceMs = Date.now() - t1;
+          console.log(`W1 ${shape}: block ${W1_BLOCK}, ${block.tx_count} txs, ${block.log_count} logs, ${block.gas_used} gas; `
+            + `reads in stage 1 ${s1.readMs} ms (block, receipts${shape === "inline" ? ", traces" : ""}), stage 1 write ${s1.writeMs} ms, `
+            + `stage 2 reads ${s2.readMs} ms, stage 2 write ${s2.writeMs} ms; all three reads again ${readMs} ms, the trace read alone ${traceMs} ms; `
+            + `${timings.filter((t) => t.stage === 1).length} blocks in all`);
+          // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
+          expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(1000);
+          expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(3000);
+        } finally {
+          await indexer.close();
         }
-
-        const w1 = timings.filter((t) => t.block === W1_BLOCK);
-        const s1 = w1.find((t) => t.stage === 1)!;
-        const s2 = w1.find((t) => t.stage === 2)!;
-        const block = (await pool.query("select tx_count, log_count, gas_used from blocks where number = $1", [W1_BLOCK])).rows[0];
-        const shape1 = (await pool.query(
-          `select count(*) filter (where t.status = 1) as ok, count(*) filter (where t.status = 0) as failed, coalesce(sum(x.call_count), 0) as calls,
-                  (select count(*) from logs l where l.block_number = $1) as logs
-           from transactions t left join tx_traces x on x.block_number = t.block_number and x.tx_index = t.tx_index where t.block_number = $1`, [W1_BLOCK])).rows[0];
-        console.log(`W1 ${shape} block's shape: ${shape1.ok} transactions succeeded, ${shape1.failed} failed, ${shape1.calls} internal calls, ${shape1.logs} logs`);
-        expect(Number(shape1.ok), "the Stress calls must succeed, or the block is not the costly one").toBeGreaterThan(0);
-        expect(Number(shape1.logs)).toBeGreaterThan(0);
-        const t0 = Date.now();
-        const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
-        const readMs = Date.now() - t0;
-        expect(b && r && tr).toBeTruthy();
-        const t1 = Date.now();
-        await reads.traces(W1_BLOCK);
-        const traceMs = Date.now() - t1;
-        console.log(`W1 ${shape}: block ${W1_BLOCK}, ${block.tx_count} txs, ${block.log_count} logs, ${block.gas_used} gas; `
-          + `reads in stage 1 ${s1.readMs} ms (block, receipts${shape === "inline" ? ", traces" : ""}), stage 1 write ${s1.writeMs} ms, `
-          + `stage 2 reads ${s2.readMs} ms, stage 2 write ${s2.writeMs} ms; all three reads again ${readMs} ms, the trace read alone ${traceMs} ms; `
-          + `${timings.filter((t) => t.stage === 1).length} blocks in all`);
-        await indexer.close();
       });
     }
   }, 600_000);
