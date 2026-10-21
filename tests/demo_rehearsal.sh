@@ -66,7 +66,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 "$ROOT/network/canton/dar-id.sh" "$CZE_DAR" > "$NET/dar.txt"
 
 echo "== the sidecars: the real one for legs, the stand-in in front of it for verify"
-VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 832))
+VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 768))$VK$RC
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085
 for port in 8085 8086; do
@@ -87,6 +87,8 @@ python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --
 printf 'elf_sha256=%s\nprogramVK=0x%s\nrootC=0x%s\nrulesHash=%s\n' "$(printf '00%.0s' $(seq 32))" "$VK" "$RC" "$(printf '12%.0s' $(seq 32))" > "$NET/guest.txt"
 
 echo "== the demo"
+# The stand-in proof carries the run's program key and release root, as a real one does: the explorer's indexer checks them against the pins.
+export DEMO_PROOF_PROGRAM_VK=$VK DEMO_PROOF_ROOT_C=$RC
 export CZE_MAKE_INPUT_CMD=$ROOT/builder/tests/fake-make-input.sh CZE_PROVE_CMD=$ROOT/tests/demo_fake_prove.sh
 CZE_SOURCE_COMMIT=$(printf 'a%.0s' $(seq 40)) "$ROOT/demo/run.sh"
 
