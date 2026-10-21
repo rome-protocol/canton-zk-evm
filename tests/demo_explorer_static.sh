@@ -85,13 +85,14 @@ has "$rel" "-v $WORK/relkey:/run/explorer/relkey:ro" "a relative file is mounted
 rm -rf "$WORK/adir"
 
 # The faucet keeps its limits and waiting requests in the one folder the explorer may write, and a secret stays off the command line.
-queue=$(FAUCET_BATCH=50 FAUCET_QUEUE_MAX=900 CAPTCHA_VERIFY_URL=https://check.example/verify CAPTCHA_SECRET=s3cret-value dry start)
+sec=$(openssl rand -hex 8)   # made for this run, so no secret-like string is in the repository
+queue=$(FAUCET_BATCH=50 FAUCET_QUEUE_MAX=900 CAPTCHA_VERIFY_URL=https://check.example/verify CAPTCHA_SECRET="$sec" dry start)
 has "$queue" "-e FAUCET_STATE_FILE=/var/lib/explorer/faucet.json" "the faucet's state is kept in the explorer's folder"
 has "$queue" "-e FAUCET_BATCH=50" "the batch size is passed on"
 has "$queue" "-e FAUCET_QUEUE_MAX=900" "the queue cap is passed on"
 has "$queue" "-e CAPTCHA_VERIFY_URL=https://check.example/verify" "the human check's address is passed on"
 has "$queue" "-e CAPTCHA_SECRET" "the human check's secret is named"
-lacks "$queue" "s3cret-value" "the secret's value is never on the command"
+lacks "$queue" "$sec" "the secret's value is never on the command"
 
 # No reader party anywhere: it stops, and says which setting.
 rm "$S/canton/parties.env"

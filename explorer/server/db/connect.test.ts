@@ -13,7 +13,7 @@ describe("connectionConfig", () => {
   it("builds the parts, with the password from the file and the defaults of network/explorer-db.sh", () => {
     const cfg = connectionConfig({ EXPLORER_DB_PASSWORD_FILE: "/f" }, (p) => (p === "/f" ? `POSTGRES_PASSWORD=${pw}\n` : ""));
     expect(cfg).toEqual({ host: "127.0.0.1", port: 5433, user: "explorer", database: "explorer", password: pw });
-    expect(connectionConfig({ EXPLORER_DB_PASSWORD_FILE: "/f", EXPLORER_DB_PORT: "6000", EXPLORER_DB_HOST: "db" }, () => "POSTGRES_PASSWORD=x")).toMatchObject({ host: "db", port: 6000 });
+    expect(connectionConfig({ EXPLORER_DB_PASSWORD_FILE: "/f", EXPLORER_DB_PORT: "6000", EXPLORER_DB_HOST: "db" }, () => `POSTGRES_PASSWORD=${pw}`)).toMatchObject({ host: "db", port: 6000 });
   });
 
   it("refuses nothing to connect with, a file with no password, and a bad port, without printing a password", () => {
