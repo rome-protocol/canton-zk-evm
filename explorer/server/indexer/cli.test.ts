@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
@@ -23,6 +26,14 @@ describe("the indexer's command", () => {
     const r = await run({ READER_PARTY: FAKE_READER }, null);
     expect(r.code).toBe(1);
     expect(r.out).toContain("GATEWAY_ADDRESS");
+  });
+
+  it("says how to use it for a command it does not know, and for a range it cannot read", async () => {
+    for (const args of [["nope"], ["reindex", "0"], ["export-records"]]) {
+      const r = await run({ READER_PARTY: FAKE_READER }, null, args);
+      expect(r.code, args.join(" ")).toBe(1);
+      expect(r.out).toContain("usage:");
+    }
   });
 
   it("refuses reset without --yes, and reader-moved without a participant, before it touches a database", async () => {
@@ -67,9 +78,40 @@ describe("the indexer's command", () => {
       });
     }, 20_000);
 
+    it("refuses to run without the genesis file, which seeds the genesis contracts", async () => {
+      await withDatabase(async (pool, dbUrl) => {
+        await migrate(pool);
+        const r = await run({ READER_PARTY: FAKE_READER, EXPLORER_DATABASE_URL: dbUrl, GATEWAY_ADDRESS: "0x" + "9a".repeat(20) }, null);
+        expect(r.code).toBe(1);
+        expect(r.out).toContain("GENESIS_FILE");
+      });
+    });
+    it("refuses a reindex of blocks it does not hold, and an export of a database with no chain", async () => {
+      await withDatabase(async (pool, dbUrl) => {
+        await migrate(pool);
+        const env = { READER_PARTY: FAKE_READER, EXPLORER_DATABASE_URL: dbUrl, GATEWAY_ADDRESS: "0x" + "9a".repeat(20) };
+        const a = await run(env, null, ["reindex", "1", "5"]);
+        expect(a.code).toBe(1);
+        expect(a.out).toContain("not within the indexed blocks 1 to 0");
+        const dir = mkdtempSync(join(tmpdir(), "explorer-cli-"));
+        const file = join(dir, "records.jsonl");
+        try {
+          const b = await run(env, null, ["export-records", file]);
+          expect(b.code).toBe(1);
+          expect(b.out).toContain("nothing to export");
+        } finally {
+          rmSync(`${file}.partial`, { force: true });
+          rmdirSync(dir);
+        }
+      });
+    });
     it("runs on an empty chain, writes the pins to meta, and stops cleanly when told to", async () => {
       const zero = "0x" + "00".repeat(32);
+      const dir = mkdtempSync(join(tmpdir(), "explorer-cli-"));
+      const genesis = join(dir, "genesis.json");
+      writeFileSync(genesis, JSON.stringify({ alloc: { ["9a".repeat(20)]: { code: "0x6001", balance: "0x0" } } }));
       const reth = await startFakeReth({
+        eth_getCode: "0x6001",
         eth_getBlockByNumber: () => ({ number: "0x0", hash: "0x" + "00".repeat(31) + "01", parentHash: zero, timestamp: "0x1", gasLimit: "0x1c9c380", gasUsed: "0x0", baseFeePerGas: "0x7",
           miner: "0x" + "00".repeat(20), stateRoot: zero, transactionsRoot: zero, receiptsRoot: zero, extraData: "0x", transactions: [] }),
       });
@@ -83,14 +125,18 @@ describe("the indexer's command", () => {
           await migrate(pool);
           const r = await run({
             READER_PARTY: FAKE_READER, RETH_RPC_URL: reth.url, LEDGER_URL: `http://127.0.0.1:${(ledger.address() as AddressInfo).port}`, EXPLORER_DATABASE_URL: dbUrl,
-            GATEWAY_ADDRESS: "0x" + "9a".repeat(20), INDEX_DERIVE: "behind", INDEX_POLL_MS: "50",
+            GATEWAY_ADDRESS: "0x" + "9a".repeat(20), GENESIS_FILE: genesis, INDEX_DERIVE: "behind", INDEX_POLL_MS: "50",
           }, 2500);
           expect(r.out).toContain("indexer: running, stage 2 behind");
           expect(r.code).toBe(0);
           const meta = await pool.query("select key from meta where key in ('chain_id', 'genesis_hash', 'program_vk', 'root_c', 'gateway_address') order by key");
           expect(meta.rows.map((x) => x.key)).toEqual(["chain_id", "gateway_address", "genesis_hash", "program_vk", "root_c"]);
+          const seeded = await pool.query("select '0x' || encode(address, 'hex') as address, origin from contracts");
+          expect(seeded.rows).toEqual([{ address: "0x" + "9a".repeat(20), origin: "genesis" }]);
         });
       } finally {
+        rmSync(genesis, { force: true });
+        rmdirSync(dir);
         await reth.close();
         await new Promise<void>((ok) => ledger.close(() => ok()));
       }

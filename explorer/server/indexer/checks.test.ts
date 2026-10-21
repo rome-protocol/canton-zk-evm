@@ -8,6 +8,7 @@ import { advisoryLeader, FAUCET_LOCK, TRACKER_LOCK } from "../leader.ts";
 import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { legHash } from "./legs.ts";
+import { REINDEX_KEY } from "./reindex.ts";
 
 const opened: Indexer[] = [];
 async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
@@ -500,6 +501,34 @@ describe.skipIf(!TEST_URL)("review fixes: a walk that cannot read, the checks wi
       }
       expect((await resetChain(pool)).tables).toBeGreaterThan(10);
       expect(await blocks(pool)).toBe(0);
+    });
+  });
+
+  it("reset refuses while a reindex holds the database, and works once the reindex is done", async () => {
+    await withDatabase(async (pool) => {
+      await migrate(pool);
+      const ix = await start(pool, makeChain(shapes(2)));
+      await ix.runOnce();
+      await ix.close();
+      const reindexing = await pool.connect();
+      try {
+        await reindexing.query("select pg_advisory_lock($1)", [REINDEX_KEY]);
+        await expect(resetChain(pool)).rejects.toThrow(/reindex/);
+        expect(await blocks(pool)).toBe(2);
+      } finally {
+        await reindexing.query("select pg_advisory_unlock($1)", [REINDEX_KEY]);
+        reindexing.release();
+      }
+      expect((await resetChain(pool)).tables).toBeGreaterThan(10);
+      expect(await blocks(pool)).toBe(0);
+      // The reset let go of the reindex lock: a reindex can take it again.
+      const again = await pool.connect();
+      try {
+        expect((await again.query("select pg_try_advisory_lock($1) as ok", [REINDEX_KEY])).rows[0].ok).toBe(true);
+        await again.query("select pg_advisory_unlock($1)", [REINDEX_KEY]);
+      } finally {
+        again.release();
+      }
     });
   });
 });

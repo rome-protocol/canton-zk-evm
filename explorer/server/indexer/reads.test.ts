@@ -33,6 +33,7 @@ describe("the indexer's reads from reth", () => {
       trace_replayBlockTransactions: ([n, kinds]: unknown[]) => (n === "0x5" && JSON.stringify(kinds) === '["trace"]'
         ? [{ transactionHash: H("c3"), output: "0x08c379a0", trace: [{ error: "Reverted" }, {}] }] : null),
       eth_getStorageAt: () => H("5e"),
+      eth_getCode: ([a, n]: unknown[]) => (a === A("9a") && n === "0x0" ? "0x6001" : "0x"),
     });
     const r = createFinalReads(reth.url, 2000);
     const b = await r.block(5);
@@ -41,6 +42,8 @@ describe("the indexer's reads from reth", () => {
     expect((await r.receipts(5))![0]).toMatchObject({ status: 1, effectiveGasPrice: 8n, contractAddress: null, logs: [{ address: A("d0") }] });
     expect(await r.traces(5)).toEqual([{ transactionHash: H("c3"), output: "0x08c379a0", calls: 2, error: "Reverted" }]);
     expect(await r.storageAt(A("9a"), H("00"), 5)).toBe(H("5e"));
+    expect(await r.code(A("9a"), 0)).toBe("0x6001");
+    expect(await r.code(A("9b"), 0)).toBe("0x");
     expect(await r.block(6)).toBeNull();
     expect(await r.receipts(6)).toBeNull();
     expect(await r.traces(6)).toBeNull();
