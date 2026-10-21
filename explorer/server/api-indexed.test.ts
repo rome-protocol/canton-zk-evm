@@ -13,7 +13,7 @@ const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const token = { name: "Token", symbol: "TKN", decimals: 6 };
 
 /** The pages' routes over rows that the indexer's own stage 1 wrote: reth and Canton are not asked for anything a final block needs. */
-async function served(pool: Pool, shapes: Parameters<typeof makeChain>[0]) {
+async function served(pool: Pool, shapes: Parameters<typeof makeChain>[0], { now, hasCode = () => true }: { now?: () => number; hasCode?: (address: string) => boolean } = {}) {
   await migrate(pool);
   const chain = makeChain(shapes);
   const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
@@ -23,11 +23,16 @@ async function served(pool: Pool, shapes: Parameters<typeof makeChain>[0]) {
   } finally {
     await indexer.close();
   }
-  const reth = { token: async () => token, block: async () => undefined, transaction: async () => null } as unknown as Reth;
+  const asked = { code: [] as string[], token: [] as string[] };
+  const reth = {
+    code: async (a: string) => { asked.code.push(a); return hasCode(a) ? "0x6080" : "0x"; },
+    token: async (a: string) => { asked.token.push(a); return token; },
+    block: async () => undefined, transaction: async () => null,
+  } as unknown as Reth;
   const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
   const db = createChainDb(pool);
-  const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: db });
-  return { chain, db, get: (target: string) => api("GET", target) };
+  const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: db, ...(now ? { now } : {}) });
+  return { chain, db, asked, get: (target: string) => api("GET", target) };
 }
 
 describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
@@ -78,6 +83,37 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
       const { db } = await served(pool, [{ txs: 1 }]);
       expect(await db.indexer()).toEqual({ started: true, problems: [], signers: { operator: OPERATOR, confirmer: CONFIRMER } });
       expect(await db.genesisReferenced()).toBe(true);
+    });
+  });
+
+  describe("the token details of a transaction's destination", () => {
+    const to = (chain: Awaited<ReturnType<typeof served>>["chain"], k: number) => chain.blocks[0]!.block.transactions[k]!.to as string;
+
+    it("is not asked of reth for an address that holds no code, and a repeat visit asks nothing", async () => {
+      await withDatabase(async (pool) => {
+        const { chain, asked, get } = await served(pool, [{ txs: 2 }], { hasCode: () => false });
+        const hash = chain.blocks[0]!.block.transactions[0]!.hash;
+        expect((await get(`/api/tx/${hash}`)).body).toMatchObject({ status: "final", toToken: null });
+        expect(asked.token).toEqual([]);
+        expect(asked.code).toEqual([to(chain, 0)]);
+        await get(`/api/tx/${hash}`);
+        expect(asked.code).toEqual([to(chain, 0)]);
+      });
+    });
+
+    it("is read again after a minute, so that a new chain's contract at the same address is not shown as the old one's token", async () => {
+      await withDatabase(async (pool) => {
+        let t = 1_000;
+        let code = true;
+        const { chain, asked, get } = await served(pool, [{ txs: 1 }], { now: () => t, hasCode: () => code });
+        const hash = chain.blocks[0]!.block.transactions[0]!.hash;
+        expect((await get(`/api/tx/${hash}`)).body).toMatchObject({ toToken: "TKN" });
+        code = false; t += 59_000;
+        expect((await get(`/api/tx/${hash}`)).body).toMatchObject({ toToken: "TKN" }); // still inside the minute
+        t += 1_001;
+        expect((await get(`/api/tx/${hash}`)).body).toMatchObject({ toToken: null });
+        expect(asked.code.length).toBe(2);
+      });
     });
   });
 });

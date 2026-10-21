@@ -51,7 +51,10 @@ export interface Answer { status: number; body: unknown; headers?: Record<string
 /** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. */
 export type Api = (method: string, target: string, body?: string, ip?: string) => Promise<Answer>;
 /** With no `faucet`, the faucet is off. */
-export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker }
+export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker; now?: () => number }
+
+/** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */
+type ApiTxState = TxState | "unindexed";
 
 const HASH = /^0x[0-9a-f]{64}$/, ADDRESS = /^0x[0-9a-f]{40}$/, UPDATE = /^1220[0-9a-f]{64}$/;
 // transfer(address,uint256) with its two arguments, and nothing else
@@ -59,23 +62,31 @@ const TRANSFER = /^0xa9059cbb0{24}([0-9a-f]{40})([0-9a-f]{64})$/;
 const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string): Answer => ({ status, body: { error } });
 const dec = (n: bigint | number) => n.toString();
-/** How many tokens' details are kept: a token's name, symbol and decimals do not change. */
+/** How many addresses' token details are kept, and for how long: a token's name, symbol and decimals do not change, but a new chain on this process's database reuses addresses. */
 const TOKENS_KEPT = 1000;
+const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
-  // What reth said about a token, as the promise, so that the transfers of one block share one set of calls. A failed read is asked again next time.
-  const seen = new Map<string, Promise<TokenInfo | null>>();
-  /** A token's name, symbol and decimals, asked of reth once. */
+export function createApi({ config, reth, ledger, chain, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): Api {
+  // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
+  // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
+  // the cache is full. A failed read is asked again next time.
+  const seen = new Map<string, { at: number; info: Promise<TokenInfo | null> }>();
+  /** A token's name, symbol and decimals, asked of reth once for a while. */
   function tokenOf(address: string): Promise<TokenInfo | null> {
-    let asked = seen.get(address);
-    if (!asked) {
-      if (seen.size >= TOKENS_KEPT) seen.clear();
-      asked = reth.token(address);
-      seen.set(address, asked);
-      asked.catch(() => seen.delete(address));
+    const t = now();
+    let entry = seen.get(address);
+    if (entry && t - entry.at >= TOKENS_KEPT_MS) { seen.delete(address); entry = undefined; }
+    if (!entry) {
+      if (seen.size >= TOKENS_KEPT) seen.delete(seen.keys().next().value as string);
+      const made = { at: t, info: reth.code(address).then((code) => (code === "0x" ? null : reth.token(address))) };
+      seen.set(address, made);
+      made.info.catch(() => { if (seen.get(address) === made) seen.delete(address); });
+      entry = made;
     }
-    return asked;
+    return entry.info;
   }
+  /** The number of reth's finalized block, which follows what Canton has committed; undefined when reth cannot say, and then nothing is called final. */
+  const finalizedNumber = (): Promise<number | undefined> => reth.block("finalized").then((b) => b?.number, () => undefined);
   async function transferOf(input: string | null, to: string | null) {
     const m = input === null ? null : TRANSFER.exec(input);
     const token = m && to ? await tokenOf(to) : null;
@@ -124,18 +135,22 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
         transactions,
       });
     }
-    // Not in the database: the genesis, or a block that is still being proven, or one that the indexer has not written yet. Only reth knows it.
+    // Not in the database: the genesis, a block that is still being proven, or one that Canton holds and the indexer has not written yet. Only reth knows it.
     const b = await reth.block(key, true);
     if (!b) return fail(404, NOT_FOUND);
     const genesis = b.number === 0;
     // At or below the newest indexed block, reth's block with this hash is not the final one of its number.
     if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return fail(404, NOT_FOUND);
+    // At or below reth's finalized block, Canton holds the block: it is final, and the indexer is behind (or has stopped), which the status says. It is not being proven.
+    const finalizedAt = genesis ? undefined : await finalizedNumber();
+    const unindexed = finalizedAt !== undefined && b.number <= finalizedAt;
+    if (unindexed && typeof key === "string" && (await reth.block(b.number))?.hash !== b.hash) return fail(404, NOT_FOUND);
     const receipts = b.transactions.length ? await reth.blockReceipts(b.number) : [];
     const transactions = await Promise.all(b.transactions.map(async (t, i) => ({
       hash: t.hash, from: t.from, to: t.to, success: receipts?.[i]?.success ?? null, transfer: await transferOf(t.input, t.to),
     })));
     return ok({
-      status: genesis ? "genesis" : "proving", number: b.number, hash: b.hash, parentHash: b.parentHash, timestamp: b.timestamp,
+      status: genesis ? "genesis" : unindexed ? "unindexed" : "proving", number: b.number, hash: b.hash, parentHash: b.parentHash, timestamp: b.timestamp,
       txCount: b.transactions.length, gasUsed: b.gasUsed, gasLimit: b.gasLimit, baseFee: b.baseFeePerGas === null ? null : dec(b.baseFeePerGas), miner: b.miner, stateRoot: b.stateRoot,
       genesisReferenced: genesis ? await chain.genesisReferenced() : null,
       canton: null,
@@ -171,10 +186,12 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     if (!t) return tr ? gone(hash, tr) : fail(404, NOT_FOUND);
     const r = t.blockNumber === null ? null : await reth.receipt(hash);
     const transfer = await transferOf(t.input, t.to);
-    const status = t.blockNumber === null ? "waiting" : "proving";
-    const state: TxState = status === "waiting" ? "pending" : status;
+    const finalizedAt = t.blockNumber === null ? undefined : await finalizedNumber();
+    const unindexed = t.blockNumber !== null && finalizedAt !== undefined && t.blockNumber <= finalizedAt;
+    const status = t.blockNumber === null ? "waiting" : unindexed ? "unindexed" : "proving";
+    const state: ApiTxState = status === "waiting" ? "pending" : status;
     return ok({
-      hash: t.hash, status, state, reason: tr?.state === state ? tr.reason : null,
+      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null,
       block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: null },
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,

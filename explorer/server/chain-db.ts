@@ -60,7 +60,13 @@ type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-exp
 const summary = (r: Row): FinalSummary => ({ number: Number(r.number), hash: hex(r.hash), timestamp: Number(r.ts), txCount: r.tx_count, updateId: r.update_id, recordTime: isoTime(r.record_time) });
 
 /** The final blocks and their transactions, read from the tables the indexer fills (design section 4). Nothing here writes. */
-export function createChainDb(pool: Pool) {
+/**
+ * The checks the indexer refreshes on every round of its timer (every 2 s), whatever their status says: a row of one of these that has not been looked at
+ * for three rounds means the indexer is not running (design section 6.5). The other checks are written when they fail, so their age says nothing.
+ */
+export const REFRESHED_CHECKS: readonly string[] = ["C4", "C5", "derive_lag", "C10"];
+
+export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?: number } = {}) {
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     try {
       return (await pool.query(sql, values)).rows;
@@ -146,18 +152,21 @@ export function createChainDb(pool: Pool) {
     return r && { hash: hex(r.hash), updateId: r.update_id };
   }
 
-  /** The indexer's own word on itself: a record written, every check row it keeps, and the two signers. Block 1 exists when the genesis is referenced. */
+  /**
+   * The indexer's own word on itself: a record written, every check row that is not ok, the checks it has stopped refreshing (a stopped or crashed indexer
+   * leaves its last ok rows behind, so a row's age counts as much as its status), and the two signers. Block 1 exists when the genesis is referenced.
+   */
   async function indexer(): Promise<IndexerState> {
     const [cursor] = await query("select 1 from cursors where stream = 'reader_updates'");
-    const checks = await query("select check_id, status, detail from health_checks where status <> 'ok' order by check_id");
+    const checks = await query("select check_id, status, detail, extract(epoch from now() - checked_at)::float8 as age from health_checks order by check_id");
     const parties = await query("select party, role from canton_parties");
     const party = (role: string) => parties.find((p) => p.role === role)?.party as string | undefined;
     const [operator, confirmer] = [party("operator"), party("confirmer")];
-    return {
-      started: cursor !== undefined,
-      problems: checks.map((c) => `${c.check_id}: ${c.detail ?? c.status}`),
-      signers: operator && confirmer ? { operator, confirmer } : null,
-    };
+    const problems = checks.flatMap((c) => {
+      if (REFRESHED_CHECKS.includes(c.check_id) && Number(c.age) > staleSeconds) return [`${c.check_id}: the indexer has not checked in ${Math.round(Number(c.age))} s`];
+      return c.status === "ok" ? [] : [`${c.check_id}: ${c.detail ?? c.status}`];
+    });
+    return { started: cursor !== undefined, problems, signers: operator && confirmer ? { operator, confirmer } : null };
   }
 
   /** True once block 1 is indexed: it names reth's genesis as its parent, which the indexer checks before it writes the block. */
@@ -173,25 +182,31 @@ export type ChainDb = ReturnType<typeof createChainDb>;
 /**
  * The tracker's look at final blocks, which is a synchronous question. It answers from what it has read, and a block it does not hold is read in the
  * background, so the next question gets the answer: the tracker asks again on every poll, and the answer is only the update id for a page.
+ * A caller that knows the hash it expects passes it: an entry with another hash comes from another chain (after `explorer reset`, or a new chain
+ * instance while this process kept running), so it is dropped and read again, and a hash the database still does not hold is asked about only
+ * every `mismatchMs`.
  */
-export function createFinalBlocks(db: Pick<ChainDb, "finalOf">, { max = 5000, missMs = 1000, now = Date.now } = {}) {
+export function createFinalBlocks(db: Pick<ChainDb, "finalOf">, { max = 5000, missMs = 1000, mismatchMs = 30_000, now = Date.now } = {}) {
   const held = new Map<number, { hash: string; updateId: string }>();
   const missed = new Map<number, number>();
   const asking = new Set<number>();
   return {
-    byNumber(n: number): { hash: string; updateId: string } | undefined {
+    byNumber(n: number, expectedHash?: string | null): { hash: string; updateId: string } | undefined {
       const have = held.get(n);
-      if (have) return have;
+      if (have && (!expectedHash || have.hash === expectedHash)) return have;
+      if (have) held.delete(n);
       if (asking.has(n) || (missed.get(n) ?? 0) > now()) return undefined;
       asking.add(n);
       void db.finalOf(n).then((f) => {
-        if (f) {
+        if (f && expectedHash && f.hash !== expectedHash) {
+          missed.set(n, now() + mismatchMs);
+        } else if (f) {
           held.set(n, f);
           if (held.size > max) held.delete(held.keys().next().value as number);
         } else {
           missed.set(n, now() + missMs);
-          if (missed.size > max) missed.delete(missed.keys().next().value as number);
         }
+        if (missed.size > max) missed.delete(missed.keys().next().value as number);
       }, () => { missed.set(n, now() + missMs); }).finally(() => asking.delete(n));
       return undefined;
     },

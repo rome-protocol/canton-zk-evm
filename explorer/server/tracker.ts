@@ -188,7 +188,7 @@ export function createTracker(o: TrackerOptions): Tracker {
   /** The Canton update of a final transaction's block, once the database holds it. The indexer writes on its own timer, so the database can lag the chain. */
   function fillUpdate(e: Entry): boolean {
     if (e.state !== "final" || e.updateId !== null || e.block === null) return false;
-    const f = index.byNumber(e.block);
+    const f = index.byNumber(e.block, e.blockHash);
     if (!f || (e.blockHash && f.hash !== e.blockHash)) return false;
     e.updateId = f.updateId;
     return true;

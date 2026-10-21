@@ -29,7 +29,7 @@ afterEach(async () => { await reth?.close(); await ledger?.close(); for (const d
 const txOf = (_n: number, _i: number) => ({ from: ALICE, to: TOKEN, value: 0n, nonce: 1, type: 2, gas: 0x186a0, input: TRANSFER });
 
 /** reth's methods for the pages: the chain's own handlers, `latest`, full transactions, and the lookups by hash. */
-function handlers(chain: FakeChain) {
+function handlers(chain: FakeChain, finalized: () => number) {
   const tx = (n: number, i: number) => ({
     hash: txHash(n, i), blockNumber: "0x" + n.toString(16), blockHash: hashOf(n), transactionIndex: "0x" + i.toString(16), from: ALICE, to: TOKEN,
     value: "0x0", nonce: "0x1", type: "0x2", gas: "0x186a0", input: TRANSFER,
@@ -40,7 +40,7 @@ function handlers(chain: FakeChain) {
   const read = (b: { number: string; transactions: string[] } | undefined, full: unknown) => (!b ? null : full ? { ...b, transactions: b.transactions.map((_, i) => tx(Number(b.number), i)) } : b);
   return {
     ...base,
-    eth_getBlockByNumber: (p: unknown[]) => read(chain.blocks[p[0] === "latest" ? chain.blocks.length - 1 : Number(p[0])] as never, p[1]),
+    eth_getBlockByNumber: (p: unknown[]) => read(chain.blocks[p[0] === "latest" ? chain.blocks.length - 1 : p[0] === "finalized" ? finalized() : Number(p[0])] as never, p[1]),
     eth_getBlockByHash: (p: unknown[]) => read(chain.blocks.find((b) => b.hash === p[0]) as never, p[1]),
     eth_getTransactionByHash: (p: unknown[]) => { const f = find(p[0] as string); return f ? tx(...f) : p[0] === POOL_TX ? pool : null; },
     eth_getTransactionReceipt: (p: unknown[]) => { const f = find(p[0] as string); return f ? chain.receipts[f[0]]![f[1]] : null; },
@@ -56,11 +56,16 @@ function handlers(chain: FakeChain) {
 /** Adds a `leaked` field to every object it holds, as a careless pass-through of the index's or the config's own objects would send it on. */
 const leaky = <T>(x: T): T => (Array.isArray(x) ? (x.map(leaky) as T) : x && typeof x === "object" ? ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, leaky(v)])), leaked: "x" } as T) : x);
 
-interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean }
+interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean; finalized?: number | "unreadable" }
 
-/** `indexed` is the newest block the database holds, for an indexer that is behind Canton; `empty` is a database the indexer has not written to at all. */
-async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false }: Options = {}) {
-  reth = await startFakeReth(handlers(chain));
+/**
+ * `indexed` is the newest block the database holds, for an indexer that is behind Canton; `empty` is a database the indexer has not written to at all.
+ * `finalized` is what reth's finalized tag says: the newest block Canton holds unless given, or "unreadable" for a reth that cannot answer for the tag.
+ */
+async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false, finalized }: Options = {}) {
+  let finalizedAt = 0;
+  const base = handlers(chain, () => finalizedAt);
+  reth = await startFakeReth(finalized === "unreadable" ? { ...base, eth_getBlockByNumber: (p: unknown[]) => { if (p[0] === "finalized") throw new Error("finalized is not served"); return base.eth_getBlockByNumber(p); } } : base);
   ledger = await startFakeLedger(chain.items);
   const real = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
   const config = leak ? leaky(real) : real;
@@ -68,6 +73,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
   const db = await makeDatabase(true);
   databases.push(db);
   const records = await l.records(0, await l.ledgerEnd());
+  finalizedAt = typeof finalized === "number" ? finalized : Math.max(0, ...records.map((x) => x.number));
   if (!empty) await seedBlocks(db.pool, records.filter((x) => x.number <= indexed).map((record) => ({ record, raw: chain.blocks[record.number]!, receipts: chain.receipts[record.number]! })), txOf, real.pins);
   const built = createChainDb(db.pool);
   const chainDb: ChainDb = leak
@@ -151,11 +157,71 @@ describe.skipIf(!TEST_URL)("status and health", () => {
     expect(body).toMatchObject({ ok: false, starting: false, problems: ["C3: block 3: the record does not hash to reth's transactions"], final: { number: 2 } });
   });
 
-  it("shows the blocks Canton holds that the indexer has not written yet as being proven, and the newest written one as final", async () => {
+  it("says a block that is final on Canton but not in the database yet is final and not indexed yet, and a block that is not on Canton as being proven", async () => {
     const { get } = await boot(chain(), { indexed: 1 });
     expect((await get("/api/status")).body).toMatchObject({ final: { number: 1 }, proving: { number: 3 }, latest: [{ number: 1 }] });
-    expect((await get("/api/block/2")).body).toMatchObject({ status: "proving", number: 2, canton: null });
-    expect((await get(`/api/tx/${txHash(2, 0)}`)).body).toMatchObject({ status: "proving", state: "proving", block: { number: 2, updateId: null } });
+    const behind = await get("/api/block/2");
+    checkFields("block", behind.body);
+    expect(behind.body).toMatchObject({ status: "unindexed", number: 2, hash: hashOf(2), canton: null, txCount: 1, transactions: [{ hash: txHash(2, 0) }] });
+    expect((await get(`/api/tx/${txHash(2, 0)}`)).body).toMatchObject({ status: "unindexed", state: "unindexed", block: { number: 2, hash: hashOf(2), updateId: null }, success: true });
+    expect((await get("/api/block/3")).body).toMatchObject({ status: "proving", number: 3, canton: null });
+    expect((await get(`/api/tx/${txHash(3, 0)}`)).body).toMatchObject({ status: "proving", state: "proving", block: { number: 3, updateId: null } });
+    expect((await get(`/api/block/${hashOf(2)}`)).body).toMatchObject({ status: "unindexed", number: 2 });
+  });
+
+  it("does not call a block final when reth's finalized block cannot be read: it only says it is being proven", async () => {
+    const { get } = await boot(chain(), { indexed: 1, finalized: "unreadable" });
+    expect((await get("/api/block/2")).body).toMatchObject({ status: "proving", number: 2 });
+    expect((await get(`/api/tx/${txHash(2, 0)}`)).body).toMatchObject({ status: "proving" });
+  });
+
+  describe("an indexer that has stopped", () => {
+    const CHECKS = ["C4", "C5", "derive_lag", "C10"];
+    const writeChecks = (pool: import("pg").Pool, age: string) =>
+      pool.query(`insert into health_checks (check_id, status, changed_at, checked_at) select c, 'ok', now() - interval '${age}', now() - interval '${age}' from unnest($1::text[]) as c`, [CHECKS]);
+
+    it("is fine while its checks are fresh", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      const { status, body } = await get("/api/status");
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ ok: true, problems: [] });
+    });
+
+    it("answers 503 and names the checks that have not been refreshed, even when every row says ok", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "2 hours");
+      const { status, body } = await get("/api/status");
+      expect(status).toBe(503);
+      const { ok: isOk, starting, problems } = body as { ok: boolean; starting: boolean; problems: string[] };
+      expect(isOk).toBe(false);
+      expect(starting).toBe(false);
+      expect(problems).toHaveLength(4);
+      expect(problems[0]).toMatch(/^C10: the indexer has not checked in 7\d{3} s$/);
+      expect(problems.some((p) => /^C5: the indexer has not checked in 7\d{3} s$/.test(p))).toBe(true);
+    });
+
+    it("counts a row as stale after about three of the indexer's two-second intervals, and no sooner", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "4 seconds");
+      expect((await get("/api/status")).status).toBe(200);
+      await pool.query("update health_checks set checked_at = now() - interval '8 seconds'");
+      expect((await get("/api/status")).status).toBe(503);
+    });
+
+    it("does not count a check that is only written when it fails as stale: an old ok row of C1 is an indexer that never failed", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      await pool.query("insert into health_checks (check_id, status, changed_at, checked_at) values ('C1', 'ok', now() - interval '2 hours', now() - interval '2 hours')");
+      expect((await get("/api/status")).status).toBe(200);
+    });
+
+    it("keeps the check's own words for a check that has failed and is being refreshed", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      await pool.query("update health_checks set status = 'degraded', detail = 'the index is 3 blocks behind' where check_id = 'C5'");
+      expect(((await get("/api/status")).body as Obj).problems).toEqual(["C5: the index is 3 blocks behind"]);
+    });
   });
 
   it("goes red and names the database when it cannot be read", async () => {
