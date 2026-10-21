@@ -122,19 +122,32 @@ def confirmer_ledger(url: str, parties: dict) -> Ledger:
     return Ledger(url, user_id("confirmer"), parties["CONFIRMER_PARTY"], token=role_token("confirmer"))
 
 
-def propose(args, parties: dict, operator_url: str, confirmer_url: str, resume: bool = False) -> dict:
-    """With resume, a proposal that is there but not yet accepted (a run that stopped between the two steps) is accepted, not refused."""
-    operator = operator_ledger(operator_url, parties)
-    confirmer = confirmer_ledger(confirmer_url, parties)
-    if operator.active("ZkChain") or (operator.active("ChainProposal") and not resume):
-        raise SystemExit("a chain or a proposal already exists on this network")
-    if not operator.active("ChainProposal"):
-        operator.submit({"CreateCommand": {"templateId": PKG + "ChainProposal", "createArguments": {
-            "operator": parties["OPERATOR_PARTY"], "confirmer": parties["CONFIRMER_PARTY"], "gateway": parties["GATEWAY_PARTY"],
+def proposal_arguments(args, parties: dict) -> dict:
+    return {"operator": parties["OPERATOR_PARTY"], "confirmer": parties["CONFIRMER_PARTY"], "gateway": parties["GATEWAY_PARTY"],
             "builder": parties["BUILDER_PARTY"], "reader": parties["READER_PARTY"], "chainId": str(args.chain_id),
             "genesisHash": args.genesis_hash, "genesisStateRoot": args.genesis_state_root,
             "programVK": args.program_vk, "rootC": args.root_c, "rulesHash": args.rules_hash, "gasCap": str(args.gas_cap),
-            "gatewayAddress": args.gateway_address}}})
+            "gatewayAddress": args.gateway_address}
+
+
+def propose(args, parties: dict, operator_url: str, confirmer_url: str, resume: bool = False) -> dict:
+    """With resume, a proposal that is there but not yet accepted (a run that stopped between the two steps) is accepted, not refused, but only if it
+    is this chain's proposal: any field that differs from the arguments stops the run (it would otherwise become the chain)."""
+    operator = operator_ledger(operator_url, parties)
+    confirmer = confirmer_ledger(confirmer_url, parties)
+    if operator.active("ZkChain"):
+        raise SystemExit("a chain or a proposal already exists on this network")
+    [left, *_] = operator.active("ChainProposal") or [None]
+    if left is not None and not resume:
+        raise SystemExit("a chain or a proposal already exists on this network")
+    want = proposal_arguments(args, parties)
+    if left is None:
+        operator.submit({"CreateCommand": {"templateId": PKG + "ChainProposal", "createArguments": want}})
+    else:
+        wrong = sorted(k for k, v in want.items() if left.get(k) != v)
+        if wrong:
+            raise SystemExit(f"a proposal is on this participant already and differs in {wrong}: it is not this chain's. It cannot be withdrawn from here; "
+                             "choose another CZE_PARTY_PREFIX, or ask the participant's operator to archive it")
     [proposal] = confirmer.wait_for("ChainProposal")
     confirmer.submit({"ExerciseCommand": {"templateId": PKG + "ChainProposal", "contractId": proposal["contractId"], "choice": "Accept", "choiceArgument": {}}})
     [chain] = operator.wait_for("ZkChain")

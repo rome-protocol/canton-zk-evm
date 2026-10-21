@@ -1,5 +1,5 @@
 """network/external/setup.py against a fake participant (a stateful JSON Ledger API). Run: python3 -m unittest discover -s tests -p 'test_external_setup.py'"""
-import contextlib, io, json, os, re, sys, tempfile, threading, unittest
+import contextlib, io, json, os, re, sys, tempfile, threading, unittest, urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
@@ -19,6 +19,7 @@ class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
         self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": []}, []
+        self.remote, self.page_size, self.vetted_by = [], 1000, "PAR::ostia-test::1220fp0"   # parties hosted elsewhere; parties per page; who vetted the package
         node = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -57,12 +58,22 @@ class FakeParticipant:
             return {}
         if path == "/v2/state/connected-synchronizers":
             return {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "global::1220"}]}
+        if path == "/v2/parties/participant-id":
+            return {"participantId": "PAR::ostia-test::1220fp0"}
         if path == "/v2/package-vetting/list":
             if self.vetting is None:
                 return {}, 404
-            return {"vettedPackages": [{"synchronizerId": "global::1220", "packages": [{"packageId": PKG}] if self.vetting else []}]}
-        if (method, path) == ("GET", "/v2/parties"):
-            return {"partyDetails": [{"party": p} for p in self.parties]}
+            asked = body["topologyStateFilter"]["participantIds"]
+            if asked and self.vetted_by not in asked:
+                return {"vettedPackages": []}
+            return {"vettedPackages": [{"participantId": self.vetted_by, "synchronizerId": "global::1220", "packages": [{"packageId": PKG}] if self.vetting else []}]}
+        if method == "GET" and path.split("?")[0] == "/v2/parties":
+            # Every party the participant knows, the remote ones first, a page at a time: pageToken is the index of the next one.
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
+            known = [{"party": p, "isLocal": False} for p in self.remote] + [{"party": p, "isLocal": True} for p in self.parties]
+            start = int(query.get("pageToken", ["0"])[0])
+            page = known[start:start + self.page_size]
+            return {"partyDetails": page, "nextPageToken": str(start + self.page_size) if start + self.page_size < len(known) else ""}
         if (method, path) == ("POST", "/v2/parties"):
             self.parties.append(body["partyIdHint"] + "::1220fp")
             return {"partyDetails": {"party": self.parties[-1]}}
@@ -87,7 +98,10 @@ class FakeParticipant:
             else:
                 proposal, = self.contracts["ChainProposal"]
                 self.contracts["ChainProposal"] = []
-                self.contracts["ZkChain"].append({"contractId": "c1", "args": {**proposal["args"], "headNumber": "0", "headHash": proposal["args"]["genesisHash"]}})
+                # The chain has the head and no genesis: the fields of the real ZkChain template.
+                genesis = {k: proposal["args"][k] for k in ("genesisHash", "genesisStateRoot")}
+                chain = {k: v for k, v in proposal["args"].items() if k not in genesis}
+                self.contracts["ZkChain"].append({"contractId": "c1", "args": {**chain, "headNumber": "0", "headHash": genesis["genesisHash"], "headStateRoot": genesis["genesisStateRoot"]}})
             return {}
         raise AssertionError(f"unexpected {method} {path}")
 
@@ -202,25 +216,83 @@ class Setup(unittest.TestCase):
         self.run_setup(chain=False)
         self.assertEqual(len(self.rights("ostia-builder")), 3)
 
-    def test_a_proposal_that_an_earlier_run_left_is_accepted(self):
+    def leave_proposal(self, **different):
+        """A proposal that an earlier run left, as the real template has it, with some fields changed."""
         self.run_setup(chain=False)
         parties = {n.upper() + "_PARTY": f"ostia-{n}::1220fp" for n in setup.CHAIN_PARTIES}
         _, args = propose.parse(CHAIN_ARGS, propose.read_env_file(ROOT / "PINS"))
-        propose.operator_ledger(self.node.url, parties).submit({"CreateCommand": {"templateId": propose.PKG + "ChainProposal", "createArguments": {
-            "operator": parties["OPERATOR_PARTY"], "genesisHash": args.genesis_hash, "chainId": str(args.chain_id)}}})
+        fields = {**propose.proposal_arguments(args, parties), **different}
+        propose.operator_ledger(self.node.url, parties).submit({"CreateCommand": {"templateId": propose.PKG + "ChainProposal", "createArguments": fields}})
+
+    def test_a_proposal_that_an_earlier_run_left_is_accepted(self):
+        self.leave_proposal()
         _, out, _ = self.run_setup()
         self.assertEqual(len(self.node.contracts["ZkChain"]), 1)
         self.assertTrue(json.loads(out)["created"])
 
-    def test_a_chain_with_another_genesis_is_refused(self):
+    def test_a_proposal_of_another_chain_is_not_accepted(self):
+        for field, value in {"genesisHash": "00" * 32, "programVK": "00" * 32, "gatewayAddress": "11" * 20, "gasCap": "5", "rulesHash": "00" * 32}.items():
+            with self.subTest(field=field):
+                self.setUp()
+                self.leave_proposal(**{field: value})
+                with self.assertRaises(SystemExit) as ctx:
+                    self.run_setup()
+                self.assertIn(field, str(ctx.exception))
+                self.assertEqual(self.node.contracts["ZkChain"], [])
+                self.assertEqual(len(self.node.contracts["ChainProposal"]), 1)
+
+    def test_a_chain_at_block_0_with_another_genesis_is_refused(self):
         self.run_setup()
-        self.node.contracts["ZkChain"][0]["args"]["genesisHash"] = "00" * 32
+        self.node.contracts["ZkChain"][0]["args"]["headHash"] = "00" * 32
         with self.assertRaises(SystemExit) as ctx:
             self.run_setup()
-        self.assertIn("genesisHash", str(ctx.exception))
+        self.assertIn("headHash", str(ctx.exception))
+
+    def test_the_chain_template_has_no_genesis_field(self):
+        self.run_setup()
+        self.assertFalse({"genesisHash", "genesisStateRoot"} & set(self.node.contracts["ZkChain"][0]["args"]))
+
+    def test_a_chain_past_block_0_is_found_whatever_its_head(self):
+        self.run_setup()
+        self.node.contracts["ZkChain"][0]["args"].update({"headNumber": "1", "headHash": "99" * 32, "headStateRoot": "98" * 32})
+        _, out, _ = self.run_setup()
+        self.assertEqual(json.loads(out)["headNumber"], "1")
+
+    def test_a_chain_with_another_program_is_refused_at_any_block(self):
+        self.run_setup()
+        self.node.contracts["ZkChain"][0]["args"].update({"headNumber": "3", "programVK": "00" * 32})
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_setup()
+        self.assertIn("programVK", str(ctx.exception))
+
+    def test_a_party_hosted_elsewhere_with_the_same_hint_is_not_ours(self):
+        self.node.remote = [f"ostia-{n}::1220other" for n in setup.CHAIN_PARTIES]
+        self.run_setup(chain=False)
+        self.assertEqual(sorted(self.node.parties), sorted(f"ostia-{n}::1220fp" for n in setup.CHAIN_PARTIES))
+        env = propose.read_env_file(self.state / "canton" / "parties.env")
+        self.assertTrue(all(v.endswith("::1220fp") for v in env.values()))
+        for user, rights in self.node.users.items():
+            self.assertFalse(any("1220other" in json.dumps(r) for r in rights["rights"]), user)
+
+    def test_a_second_run_finds_its_parties_on_a_later_page(self):
+        self.node.remote = [f"someone-{i}::1220other" for i in range(7)]
+        self.node.page_size = 2
+        self.run_setup()
+        before = len(self.node.mutations())
+        _, out, _ = self.run_setup()
+        self.assertEqual(len(self.node.mutations()), before)
+        self.assertFalse(json.loads(out)["created"])
+        self.assertEqual(len(self.node.parties), len(setup.CHAIN_PARTIES))
 
     def test_a_package_that_is_not_vetted_stops_everything(self):
         self.node.vetting = False
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_setup()
+        self.assertIn("not vetted", str(ctx.exception))
+        self.assertEqual(self.node.parties, [])
+
+    def test_a_package_vetted_by_another_participant_does_not_count(self):
+        self.node.vetted_by = "PAR::someone-else::1220ff"
         with self.assertRaises(SystemExit) as ctx:
             self.run_setup()
         self.assertIn("not vetted", str(ctx.exception))

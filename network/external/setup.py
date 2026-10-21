@@ -19,7 +19,7 @@ builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). A role without
 a file sends no token, for a Ledger API without authentication. A token is never printed.
 """
-import argparse, json, os, subprocess, sys, urllib.error, urllib.request
+import argparse, json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -80,19 +80,37 @@ class Participant:
         found = self.call("/v2/state/connected-synchronizers")[1].get("connectedSynchronizers", [])
         return [s["synchronizerId"] for s in found]
 
+    def own_id(self):
+        """This participant's id, or None if it does not say."""
+        status, answer = self.call("/v2/parties/participant-id")
+        return answer.get("participantId") if status == 200 else None
+
     def vetted(self, package_id: str, synchronizers: list):
-        """True or False once the participant says whether the package is vetted on one of the synchronizers; None if it offers no vetting list."""
+        """True or False once the participant says whether the package is vetted, by THIS participant, on one of the synchronizers; None if it offers
+        no vetting list. The vetting of another participant on the synchronizer does not count."""
+        me = self.own_id()
         status, answer = self.call("/v2/package-vetting/list", {"packageMetadataFilter": {"packageIds": [package_id], "packageNamePrefixes": []},
-                                                                "topologyStateFilter": {"participantIds": [], "synchronizerIds": []}})
+                                                                "topologyStateFilter": {"participantIds": [me] if me else [], "synchronizerIds": []}})
         if status == 404:
             return None
-        return any(v.get("synchronizerId") in synchronizers and any(p.get("packageId") == package_id for p in v.get("packages", []))
+        return any(v.get("synchronizerId") in synchronizers and v.get("participantId", me) == me and any(p.get("packageId") == package_id for p in v.get("packages", []))
                    for v in answer.get("vettedPackages", []))
 
+    def local_parties(self) -> list:
+        """The ids of the parties this participant hosts. The Ledger API lists every party it knows, those hosted elsewhere too (isLocal false), a page
+        at a time: this reads every page and keeps the local ones."""
+        found, token = [], ""
+        while True:
+            answer = self.call("/v2/parties?pageSize=1000" + (f"&pageToken={urllib.parse.quote(token)}" if token else ""))[1]
+            found += [p["party"] for p in answer.get("partyDetails", []) if p.get("isLocal") is True]
+            token = answer.get("nextPageToken") or ""
+            if not token:
+                return found
+
     def party(self, hint: str):
-        found = [p["party"] for p in self.call("/v2/parties")[1].get("partyDetails", []) if p["party"].startswith(hint + "::")]
+        found = [p for p in self.local_parties() if p.startswith(hint + "::")]
         if len(found) > 1:
-            raise SystemExit(f"more than one party starts with {hint}:: ({found}): remove the extra ones or choose another CZE_PARTY_PREFIX")
+            raise SystemExit(f"more than one local party starts with {hint}:: ({found}): remove the extra ones or choose another CZE_PARTY_PREFIX")
         return found[0] if found else None
 
     def allocate(self, hint: str) -> str:
@@ -191,10 +209,12 @@ def ensure_chain(args, named: dict, url: str) -> dict:
         [chain] = operator.wait_for("ZkChain")
         log("proposed the chain and accepted it")
     else:
-        # The chain is there. It must be this one: the same chain id, genesis, program, root key and rules.
-        want = {"chainId": str(args.chain_id), "genesisHash": args.genesis_hash, "programVK": args.program_vk, "rootC": args.root_c,
-                "rulesHash": args.rules_hash, "gatewayAddress": args.gateway_address}
-        wrong = [k for k, v in want.items() if k in chain and chain[k] != v]
+        # The chain is there. It must be this one: the same chain id, program, root key, rules, gas cap and gateway. ZkChain does not keep the genesis
+        # (only the head), so a chain still at block 0 is checked by its head, which is the genesis; later blocks cannot be compared with it.
+        want = {"chainId": str(args.chain_id), "programVK": args.program_vk, "rootC": args.root_c, "rulesHash": args.rules_hash,
+                "gasCap": str(args.gas_cap), "gatewayAddress": args.gateway_address,
+                **({"headHash": args.genesis_hash, "headStateRoot": args.genesis_state_root} if chain.get("headNumber") == "0" else {})}
+        wrong = [k for k, v in want.items() if chain.get(k) != v]
         if wrong:
             raise SystemExit(f"a chain is on this participant already and differs in {wrong}: this setup only finds the chain it made")
         log(f"the chain is there already, at block {chain['headNumber']}")
