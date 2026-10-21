@@ -1,0 +1,634 @@
+extensions: pg_trgm, plpgsql
+
+table abi_fragments
+  column fragment_hash bytea not null
+  column selector bytea not null
+  column kind text not null
+  column fragment jsonb not null
+  column source text not null
+  constraint abi_fragments_pkey PRIMARY KEY (fragment_hash)
+  CREATE INDEX abi_fragments_selector_kind_idx ON public.abi_fragments USING btree (selector, kind)
+  CREATE UNIQUE INDEX abi_fragments_pkey ON public.abi_fragments USING btree (fragment_hash)
+
+table addresses
+  column address bytea not null
+  column first_seen_block bigint not null
+  column last_active_block bigint not null
+  column sent_count bigint not null default 0
+  column received_count bigint not null default 0
+  column internal_count bigint not null default 0
+  column token_transfer_count bigint not null default 0
+  column is_contract boolean not null default false
+  column coin_balance numeric(78,0)
+  column coin_balance_block bigint
+  constraint addresses_pkey PRIMARY KEY (address)
+  CREATE INDEX addresses_coin_balance_idx ON public.addresses USING btree (coin_balance DESC) WHERE (coin_balance > (0)::numeric)
+  CREATE INDEX addresses_expr_idx ON public.addresses USING btree (((sent_count + received_count)) DESC)
+  CREATE UNIQUE INDEX addresses_pkey ON public.addresses USING btree (address)
+
+table attempt_transactions
+  column attempt_id bigint not null
+  column position integer not null
+  column tx_hash bytea not null
+  column left_out_reason text
+  constraint attempt_transactions_attempt_id_fkey FOREIGN KEY (attempt_id) REFERENCES block_attempts(attempt_id)
+  constraint attempt_transactions_pkey PRIMARY KEY (attempt_id, "position")
+  CREATE INDEX attempt_transactions_tx_hash_idx ON public.attempt_transactions USING btree (tx_hash)
+  CREATE UNIQUE INDEX attempt_transactions_pkey ON public.attempt_transactions USING btree (attempt_id, "position")
+
+table block_attempts
+  column attempt_id bigint not null identity always
+  column run_id uuid not null
+  column attempt_seq integer not null
+  column number bigint not null
+  column block_hash bytea
+  column parent_hash bytea
+  column strategy text not null
+  column cut_reason text not null
+  column pool_waiting integer
+  column idle_before_cut_ms integer
+  column in_flight_at_cut smallint not null default 0
+  column tx_count integer
+  column gas_used bigint
+  column legs_count integer
+  column rebuilds smallint not null default 0
+  column left_out_count integer not null default 0
+  column cut_at timestamp with time zone not null
+  column built_at timestamp with time zone
+  column proof_queued_at timestamp with time zone
+  column proof_started_at timestamp with time zone
+  column proof_ended_at timestamp with time zone
+  column prover text
+  column proof_outcome text
+  column submitted_at timestamp with time zone
+  column command_id text
+  column argument_bytes integer
+  column answered_at timestamp with time zone
+  column outcome text
+  column reason text
+  column update_id text
+  column completion_offset bigint
+  column resolved_at timestamp with time zone
+  column resolved_outcome text
+  column final_seen_at timestamp with time zone
+  constraint block_attempts_pkey PRIMARY KEY (attempt_id)
+  constraint block_attempts_run_id_attempt_seq_key UNIQUE (run_id, attempt_seq)
+  constraint block_attempts_run_id_fkey FOREIGN KEY (run_id) REFERENCES producer_runs(run_id)
+  CREATE INDEX block_attempts_block_hash_idx ON public.block_attempts USING btree (block_hash)
+  CREATE INDEX block_attempts_cut_at_idx ON public.block_attempts USING btree (cut_at)
+  CREATE INDEX block_attempts_number_idx ON public.block_attempts USING btree (number)
+  CREATE INDEX block_attempts_update_id_idx ON public.block_attempts USING btree (update_id)
+  CREATE UNIQUE INDEX block_attempts_pkey ON public.block_attempts USING btree (attempt_id)
+  CREATE UNIQUE INDEX block_attempts_run_id_attempt_seq_key ON public.block_attempts USING btree (run_id, attempt_seq)
+
+table block_records
+  column number bigint not null
+  column header bytea not null
+  column txs bytea not null
+  column contract_id text not null
+  constraint block_records_number_fkey FOREIGN KEY (number) REFERENCES blocks(number)
+  constraint block_records_pkey PRIMARY KEY (number)
+  CREATE UNIQUE INDEX block_records_pkey ON public.block_records USING btree (number)
+
+table blocks
+  column number bigint not null
+  column hash bytea not null
+  column parent_hash bytea not null
+  column timestamp timestamp with time zone not null
+  column fee_recipient bytea not null
+  column gas_limit bigint not null
+  column gas_used bigint not null
+  column base_fee_per_gas numeric(78,0) not null
+  column burnt_fees numeric(78,0) not null
+  column priority_fees numeric(78,0) not null
+  column tx_count integer not null
+  column log_count integer not null
+  column size_bytes integer not null
+  column state_root bytea not null
+  column transactions_root bytea not null
+  column receipts_root bytea not null
+  column extra_data bytea not null
+  column legs_count integer not null
+  column legs_hash bytea
+  column update_id text not null
+  column record_time timestamp with time zone not null
+  column attempt_id bigint
+  column indexed_at timestamp with time zone not null
+  constraint blocks_hash_key UNIQUE (hash)
+  constraint blocks_pkey PRIMARY KEY (number)
+  constraint blocks_update_id_fkey FOREIGN KEY (update_id) REFERENCES canton_updates(update_id)
+  CREATE INDEX blocks_fee_recipient_number_idx ON public.blocks USING btree (fee_recipient, number DESC)
+  CREATE INDEX blocks_record_time_idx ON public.blocks USING btree (record_time)
+  CREATE INDEX blocks_timestamp_idx ON public.blocks USING btree ("timestamp")
+  CREATE INDEX blocks_update_id_idx ON public.blocks USING btree (update_id)
+  CREATE UNIQUE INDEX blocks_hash_key ON public.blocks USING btree (hash)
+  CREATE UNIQUE INDEX blocks_pkey ON public.blocks USING btree (number)
+
+table bytecodes
+  column code_hash bytea not null
+  column code bytea not null
+  column size integer not null
+  constraint bytecodes_pkey PRIMARY KEY (code_hash)
+  CREATE UNIQUE INDEX bytecodes_pkey ON public.bytecodes USING btree (code_hash)
+
+table canton_participants
+  column id smallint not null identity always
+  column participant_id text not null
+  column first_offset bigint
+  column last_offset bigint
+  column moved_in_at timestamp with time zone not null
+  column moved_out_at timestamp with time zone
+  constraint canton_participants_participant_id_key UNIQUE (participant_id)
+  constraint canton_participants_pkey PRIMARY KEY (id)
+  CREATE UNIQUE INDEX canton_participants_participant_id_key ON public.canton_participants USING btree (participant_id)
+  CREATE UNIQUE INDEX canton_participants_pkey ON public.canton_participants USING btree (id)
+
+table canton_parties
+  column id smallint not null identity always
+  column party text not null
+  column role text not null
+  constraint canton_parties_party_key UNIQUE (party)
+  constraint canton_parties_pkey PRIMARY KEY (id)
+  constraint canton_parties_role_check CHECK ((role = ANY (ARRAY['operator'::text, 'confirmer'::text])))
+  CREATE UNIQUE INDEX canton_parties_party_key ON public.canton_parties USING btree (party)
+  CREATE UNIQUE INDEX canton_parties_pkey ON public.canton_parties USING btree (id)
+
+table canton_synchronizers
+  column id smallint not null identity always
+  column synchronizer_id text not null
+  column first_seen timestamp with time zone not null
+  constraint canton_synchronizers_pkey PRIMARY KEY (id)
+  constraint canton_synchronizers_synchronizer_id_key UNIQUE (synchronizer_id)
+  CREATE UNIQUE INDEX canton_synchronizers_pkey ON public.canton_synchronizers USING btree (id)
+  CREATE UNIQUE INDEX canton_synchronizers_synchronizer_id_key ON public.canton_synchronizers USING btree (synchronizer_id)
+
+table canton_templates
+  column id smallint not null identity always
+  column package_id text not null
+  column package_name text
+  column module text not null
+  column entity text not null
+  constraint canton_templates_package_id_module_entity_key UNIQUE (package_id, module, entity)
+  constraint canton_templates_pkey PRIMARY KEY (id)
+  CREATE UNIQUE INDEX canton_templates_package_id_module_entity_key ON public.canton_templates USING btree (package_id, module, entity)
+  CREATE UNIQUE INDEX canton_templates_pkey ON public.canton_templates USING btree (id)
+
+table canton_updates
+  column update_id text not null
+  column participant smallint not null
+  column reader_offset bigint not null
+  column record_time timestamp with time zone not null
+  column effective_at timestamp with time zone
+  column synchronizer smallint not null
+  column reader_template smallint not null
+  column signatories smallint[] not null
+  column command_id text
+  column submitted_template text
+  column submitted_choice text
+  column argument_bytes integer
+  column traffic_bytes integer
+  column completion_offset bigint
+  constraint canton_updates_participant_fkey FOREIGN KEY (participant) REFERENCES canton_participants(id)
+  constraint canton_updates_participant_reader_offset_key UNIQUE (participant, reader_offset)
+  constraint canton_updates_pkey PRIMARY KEY (update_id)
+  constraint canton_updates_reader_template_fkey FOREIGN KEY (reader_template) REFERENCES canton_templates(id)
+  constraint canton_updates_synchronizer_fkey FOREIGN KEY (synchronizer) REFERENCES canton_synchronizers(id)
+  CREATE INDEX canton_updates_record_time_idx ON public.canton_updates USING btree (record_time)
+  CREATE UNIQUE INDEX canton_updates_participant_reader_offset_key ON public.canton_updates USING btree (participant, reader_offset)
+  CREATE UNIQUE INDEX canton_updates_pkey ON public.canton_updates USING btree (update_id)
+
+table coin_balance_history
+  column address bytea not null
+  column block_number bigint not null
+  column value numeric(78,0) not null
+  constraint coin_balance_history_pkey PRIMARY KEY (address, block_number)
+  CREATE UNIQUE INDEX coin_balance_history_pkey ON public.coin_balance_history USING btree (address, block_number)
+
+table contracts
+  column address bytea not null
+  column origin text not null
+  column creator bytea
+  column creation_block bigint
+  column creation_tx_index integer
+  column creation_trace_address integer[]
+  column runtime_code_hash bytea not null
+  column creation_code_hash bytea
+  column name text
+  column verified_source bigint
+  column match_type text
+  column interaction_count bigint not null default 0
+  column last_interaction_block bigint
+  column destroyed_block bigint
+  constraint contracts_creation_code_hash_fkey FOREIGN KEY (creation_code_hash) REFERENCES bytecodes(code_hash)
+  constraint contracts_origin_check CHECK ((origin = ANY (ARRAY['genesis'::text, 'create'::text])))
+  constraint contracts_pkey PRIMARY KEY (address)
+  constraint contracts_runtime_code_hash_fkey FOREIGN KEY (runtime_code_hash) REFERENCES bytecodes(code_hash)
+  CREATE INDEX contracts_creation_block_idx ON public.contracts USING btree (creation_block DESC)
+  CREATE INDEX contracts_interaction_count_idx ON public.contracts USING btree (interaction_count DESC)
+  CREATE INDEX contracts_name_idx ON public.contracts USING gin (name gin_trgm_ops)
+  CREATE INDEX contracts_runtime_code_hash_idx ON public.contracts USING btree (runtime_code_hash)
+  CREATE UNIQUE INDEX contracts_pkey ON public.contracts USING btree (address)
+
+table cursors
+  column stream text not null
+  column position bigint not null
+  column detail jsonb
+  column updated_at timestamp with time zone not null
+  constraint cursors_pkey PRIMARY KEY (stream)
+  CREATE UNIQUE INDEX cursors_pkey ON public.cursors USING btree (stream)
+
+table faucet_batches
+  column batch_id bigint not null identity always
+  column signed_at timestamp with time zone not null
+  column first_nonce bigint not null
+  column size integer not null
+  column sent_at timestamp with time zone
+  constraint faucet_batches_pkey PRIMARY KEY (batch_id)
+  CREATE UNIQUE INDEX faucet_batches_pkey ON public.faucet_batches USING btree (batch_id)
+
+table faucet_requests
+  column ticket uuid not null
+  column address bytea not null
+  column client_key bytea not null
+  column amount numeric(78,0) not null
+  column state text not null
+  column reason text
+  column batch_id bigint
+  column nonce bigint
+  column tx_hash bytea
+  column signed_raw bytea
+  column counts boolean not null default true
+  column requested_at timestamp with time zone not null
+  column sent_at timestamp with time zone
+  column final_at timestamp with time zone
+  column final_block bigint
+  constraint faucet_requests_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES faucet_batches(batch_id)
+  constraint faucet_requests_pkey PRIMARY KEY (ticket)
+  CREATE INDEX faucet_requests_address_requested_at_idx ON public.faucet_requests USING btree (address, requested_at DESC)
+  CREATE INDEX faucet_requests_client_key_requested_at_idx ON public.faucet_requests USING btree (client_key, requested_at DESC)
+  CREATE INDEX faucet_requests_requested_at_idx ON public.faucet_requests USING btree (requested_at)
+  CREATE INDEX faucet_requests_state_requested_at_idx ON public.faucet_requests USING btree (state, requested_at) WHERE (state = ANY (ARRAY['queued'::text, 'sent'::text]))
+  CREATE UNIQUE INDEX faucet_requests_pkey ON public.faucet_requests USING btree (ticket)
+
+table gateway_legs
+  column block_number bigint not null
+  column leg_index integer not null
+  column tx_index integer not null
+  column log_index integer not null
+  column kind smallint not null
+  column leg_id bytea not null
+  column token bytea not null
+  column account bytea not null
+  column amount numeric(78,0) not null
+  column party text
+  constraint gateway_legs_pkey PRIMARY KEY (block_number, leg_index)
+  CREATE INDEX gateway_legs_account_block_number_idx ON public.gateway_legs USING btree (account, block_number DESC)
+  CREATE INDEX gateway_legs_leg_id_idx ON public.gateway_legs USING btree (leg_id)
+  CREATE INDEX gateway_legs_token_block_number_idx ON public.gateway_legs USING btree (token, block_number DESC)
+  CREATE UNIQUE INDEX gateway_legs_pkey ON public.gateway_legs USING btree (block_number, leg_index)
+
+table health_checks
+  column check_id text not null
+  column status text not null
+  column value jsonb
+  column threshold jsonb
+  column changed_at timestamp with time zone not null
+  column checked_at timestamp with time zone not null
+  column detail text
+  constraint health_checks_pkey PRIMARY KEY (check_id)
+  CREATE UNIQUE INDEX health_checks_pkey ON public.health_checks USING btree (check_id)
+
+table internal_calls partition by RANGE (block_number)
+  column block_number bigint not null
+  column tx_index integer not null
+  column trace_address integer[] not null
+  column call_type text not null
+  column from_address bytea not null
+  column to_address bytea
+  column value numeric(78,0) not null
+  column gas bigint
+  column gas_used bigint
+  column input_selector bytea
+  column input_size integer
+  column error text
+  constraint internal_calls_pkey PRIMARY KEY (block_number, tx_index, trace_address)
+  CREATE INDEX internal_calls_from_address_block_number_idx ON ONLY public.internal_calls USING btree (from_address, block_number DESC)
+  CREATE INDEX internal_calls_to_address_block_number_idx ON ONLY public.internal_calls USING btree (to_address, block_number DESC)
+  CREATE UNIQUE INDEX internal_calls_pkey ON ONLY public.internal_calls USING btree (block_number, tx_index, trace_address)
+
+table logs partition by RANGE (block_number)
+  column block_number bigint not null
+  column log_index integer not null
+  column tx_index integer not null
+  column address bytea not null
+  column topic0 bytea
+  column topic1 bytea
+  column topic2 bytea
+  column topic3 bytea
+  column data bytea not null
+  constraint logs_pkey PRIMARY KEY (block_number, log_index)
+  CREATE INDEX logs_address_block_number_idx ON ONLY public.logs USING btree (address, block_number)
+  CREATE INDEX logs_topic0_block_number_idx ON ONLY public.logs USING btree (topic0, block_number)
+  CREATE UNIQUE INDEX logs_pkey ON ONLY public.logs USING btree (block_number, log_index)
+
+table meta
+  column key text not null
+  column value text not null
+  constraint meta_pkey PRIMARY KEY (key)
+  CREATE UNIQUE INDEX meta_pkey ON public.meta USING btree (key)
+
+table nft_owners
+  column token bytea not null
+  column token_id numeric(78,0) not null
+  column owner bytea not null
+  column updated_block bigint not null
+  constraint nft_owners_pkey PRIMARY KEY (token, token_id)
+  CREATE INDEX nft_owners_owner_idx ON public.nft_owners USING btree (owner)
+  CREATE UNIQUE INDEX nft_owners_pkey ON public.nft_owners USING btree (token, token_id)
+
+table pool_samples
+  column at timestamp with time zone not null
+  column waiting integer not null
+  constraint pool_samples_pkey PRIMARY KEY (at)
+  CREATE UNIQUE INDEX pool_samples_pkey ON public.pool_samples USING btree (at)
+
+table producer_runs
+  column run_id uuid not null
+  column started_at timestamp with time zone not null
+  column stopped_at timestamp with time zone
+  column stop_state text
+  column strategy text not null
+  column settings jsonb not null
+  column source_commit text not null
+  constraint producer_runs_pkey PRIMARY KEY (run_id)
+  CREATE UNIQUE INDEX producer_runs_pkey ON public.producer_runs USING btree (run_id)
+
+table proofs
+  column number bigint not null
+  column proof bytea not null
+  column program_vk bytea not null
+  column root_c bytea not null
+  column committed_block_hash bytea not null
+  column matches_pins boolean not null
+  column matches_block boolean not null
+  constraint proofs_number_fkey FOREIGN KEY (number) REFERENCES blocks(number)
+  constraint proofs_pkey PRIMARY KEY (number)
+  CREATE UNIQUE INDEX proofs_pkey ON public.proofs USING btree (number)
+
+table proxies
+  column proxy bytea not null
+  column kind text not null
+  column implementation bytea
+  column beacon bytea
+  column checked_block bigint not null
+  column verified_at timestamp with time zone
+  constraint proxies_pkey PRIMARY KEY (proxy)
+  constraint proxies_proxy_fkey FOREIGN KEY (proxy) REFERENCES contracts(address)
+  CREATE UNIQUE INDEX proxies_pkey ON public.proxies USING btree (proxy)
+
+table schema_migrations
+  column version integer not null
+  column checksum bytea not null
+  column applied_at timestamp with time zone not null
+  constraint schema_migrations_pkey PRIMARY KEY (version)
+  CREATE UNIQUE INDEX schema_migrations_pkey ON public.schema_migrations USING btree (version)
+
+table stats_day
+  column bucket timestamp with time zone not null
+  column blocks integer not null
+  column empty_blocks integer not null
+  column busy_blocks integer not null
+  column txs integer not null
+  column txs_failed integer not null
+  column gas_used bigint not null
+  column argument_bytes bigint not null
+  column accepted integer not null
+  column lost integer not null
+  column attempts_refused integer not null
+  column attempts_failed integer not null
+  column busy_gap_hist integer[] not null
+  column time_to_final_hist integer[] not null
+  column proof_hist integer[] not null
+  column commit_hist integer[] not null
+  column active_addresses integer
+  column new_addresses integer
+  column new_contracts integer
+  column verified_contracts integer
+  constraint stats_day_pkey PRIMARY KEY (bucket)
+  CREATE UNIQUE INDEX stats_day_pkey ON public.stats_day USING btree (bucket)
+
+table stats_hour
+  column bucket timestamp with time zone not null
+  column blocks integer not null
+  column empty_blocks integer not null
+  column busy_blocks integer not null
+  column txs integer not null
+  column txs_failed integer not null
+  column gas_used bigint not null
+  column argument_bytes bigint not null
+  column accepted integer not null
+  column lost integer not null
+  column attempts_refused integer not null
+  column attempts_failed integer not null
+  column busy_gap_hist integer[] not null
+  column time_to_final_hist integer[] not null
+  column proof_hist integer[] not null
+  column commit_hist integer[] not null
+  constraint stats_hour_pkey PRIMARY KEY (bucket)
+  CREATE UNIQUE INDEX stats_hour_pkey ON public.stats_hour USING btree (bucket)
+
+table stats_minute
+  column bucket timestamp with time zone not null
+  column blocks integer not null
+  column empty_blocks integer not null
+  column busy_blocks integer not null
+  column txs integer not null
+  column txs_failed integer not null
+  column gas_used bigint not null
+  column argument_bytes bigint not null
+  column accepted integer not null
+  column lost integer not null
+  column attempts_refused integer not null
+  column attempts_failed integer not null
+  column busy_gap_hist integer[] not null
+  column time_to_final_hist integer[] not null
+  column proof_hist integer[] not null
+  column commit_hist integer[] not null
+  constraint stats_minute_pkey PRIMARY KEY (bucket)
+  CREATE UNIQUE INDEX stats_minute_pkey ON public.stats_minute USING btree (bucket)
+
+table token_balances
+  column token bytea not null
+  column holder bytea not null
+  column token_id numeric(78,0) not null default 0
+  column value numeric(78,0) not null
+  column updated_block bigint not null
+  column checked_block bigint
+  constraint token_balances_pkey PRIMARY KEY (token, holder, token_id)
+  CREATE INDEX token_balances_holder_idx ON public.token_balances USING btree (holder)
+  CREATE INDEX token_balances_token_value_idx ON public.token_balances USING btree (token, value DESC) WHERE (value > (0)::numeric)
+  CREATE UNIQUE INDEX token_balances_pkey ON public.token_balances USING btree (token, holder, token_id)
+
+table token_transfers partition by RANGE (block_number)
+  column block_number bigint not null
+  column log_index integer not null
+  column batch_index integer not null default 0
+  column tx_index integer not null
+  column token bytea not null
+  column from_address bytea not null
+  column to_address bytea not null
+  column amount numeric(78,0)
+  column token_id numeric(78,0)
+  constraint token_transfers_pkey PRIMARY KEY (block_number, log_index, batch_index)
+  CREATE INDEX token_transfers_from_address_block_number_idx ON ONLY public.token_transfers USING btree (from_address, block_number DESC)
+  CREATE INDEX token_transfers_to_address_block_number_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC)
+  CREATE INDEX token_transfers_token_block_number_idx ON ONLY public.token_transfers USING btree (token, block_number DESC)
+  CREATE UNIQUE INDEX token_transfers_pkey ON ONLY public.token_transfers USING btree (block_number, log_index, batch_index)
+
+table tokens
+  column address bytea not null
+  column standard text not null
+  column name text
+  column symbol text
+  column decimals smallint
+  column total_supply numeric(78,0)
+  column total_supply_block bigint
+  column holder_count bigint not null default 0
+  column transfer_count bigint not null default 0
+  column first_transfer_block bigint not null
+  column metadata_status text not null
+  column balance_mode text not null default 'derived'::text
+  column gateway_wrapped boolean not null default false
+  constraint tokens_address_fkey FOREIGN KEY (address) REFERENCES contracts(address)
+  constraint tokens_pkey PRIMARY KEY (address)
+  CREATE INDEX tokens_expr_idx ON public.tokens USING gin ((((COALESCE(name, ''::text) || ' '::text) || COALESCE(symbol, ''::text))) gin_trgm_ops)
+  CREATE INDEX tokens_holder_count_idx ON public.tokens USING btree (holder_count DESC)
+  CREATE INDEX tokens_transfer_count_idx ON public.tokens USING btree (transfer_count DESC)
+  CREATE UNIQUE INDEX tokens_pkey ON public.tokens USING btree (address)
+
+table tracked_transactions
+  column tx_hash bytea not null
+  column raw bytea
+  column bytes integer not null
+  column sender bytea not null
+  column nonce bigint not null
+  column open boolean not null
+  column sends smallint not null default 1
+  column refusals smallint not null default 0
+  column last_sent_at timestamp with time zone not null
+  column settled_at timestamp with time zone
+  constraint tracked_transactions_pkey PRIMARY KEY (tx_hash)
+  CREATE INDEX tracked_transactions_last_sent_at_idx ON public.tracked_transactions USING btree (last_sent_at) WHERE open
+  CREATE INDEX tracked_transactions_sender_idx ON public.tracked_transactions USING btree (sender) WHERE open
+  CREATE UNIQUE INDEX tracked_transactions_pkey ON public.tracked_transactions USING btree (tx_hash)
+
+table transactions partition by RANGE (block_number)
+  column block_number bigint not null
+  column tx_index integer not null
+  column hash bytea not null
+  column type smallint not null
+  column from_address bytea not null
+  column to_address bytea
+  column created_contract bytea
+  column nonce bigint not null
+  column value numeric(78,0) not null
+  column gas_limit bigint not null
+  column gas_price numeric(78,0)
+  column max_fee_per_gas numeric(78,0)
+  column max_priority_fee_per_gas numeric(78,0)
+  column effective_gas_price numeric(78,0) not null
+  column gas_used bigint not null
+  column cumulative_gas_used bigint not null
+  column status smallint not null
+  column method_id bytea
+  column input bytea not null
+  column access_list jsonb
+  column authorization_list jsonb
+  column log_count integer not null
+  constraint transactions_pkey PRIMARY KEY (block_number, tx_index)
+  CREATE INDEX transactions_created_contract_idx ON ONLY public.transactions USING btree (created_contract) WHERE (created_contract IS NOT NULL)
+  CREATE INDEX transactions_from_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (from_address, block_number DESC, tx_index DESC)
+  CREATE INDEX transactions_to_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (to_address, block_number DESC, tx_index DESC) WHERE (to_address IS NOT NULL)
+  CREATE UNIQUE INDEX transactions_pkey ON ONLY public.transactions USING btree (block_number, tx_index)
+
+table tx_hashes
+  column hash bytea not null
+  column block_number bigint not null
+  column tx_index integer not null
+  constraint tx_hashes_pkey PRIMARY KEY (hash)
+  CREATE UNIQUE INDEX tx_hashes_pkey ON public.tx_hashes USING btree (hash)
+
+table tx_lifecycle
+  column tx_hash bytea not null
+  column accepted_at timestamp with time zone
+  column accepted_via text
+  column sender bytea
+  column nonce bigint
+  column first_included_at timestamp with time zone
+  column attempts smallint not null default 0
+  column last_left_out_reason text
+  column final_block bigint
+  column final_at timestamp with time zone
+  column state text not null
+  column state_reason text
+  column resends smallint not null default 0
+  column updated_at timestamp with time zone not null
+  constraint tx_lifecycle_pkey PRIMARY KEY (tx_hash)
+  CREATE INDEX tx_lifecycle_final_at_idx ON public.tx_lifecycle USING btree (final_at)
+  CREATE INDEX tx_lifecycle_sender_nonce_idx ON public.tx_lifecycle USING btree (sender, nonce) WHERE (state <> 'final'::text)
+  CREATE INDEX tx_lifecycle_state_accepted_at_idx ON public.tx_lifecycle USING btree (state, accepted_at) WHERE (state <> ALL (ARRAY['final'::text, 'replaced'::text]))
+  CREATE UNIQUE INDEX tx_lifecycle_pkey ON public.tx_lifecycle USING btree (tx_hash)
+
+table tx_traces partition by RANGE (block_number)
+  column block_number bigint not null
+  column tx_index integer not null
+  column call_count integer not null
+  column revert_data bytea
+  column revert_reason text
+  constraint tx_traces_pkey PRIMARY KEY (block_number, tx_index)
+  CREATE UNIQUE INDEX tx_traces_pkey ON ONLY public.tx_traces USING btree (block_number, tx_index)
+
+table verification_jobs
+  column guid uuid not null
+  column kind text not null
+  column address bytea not null
+  column request jsonb not null
+  column request_bytes integer not null
+  column status text not null
+  column result text
+  column client_key bytea not null
+  column lease_until timestamp with time zone
+  column created_at timestamp with time zone not null
+  column started_at timestamp with time zone
+  column finished_at timestamp with time zone
+  constraint verification_jobs_pkey PRIMARY KEY (guid)
+  CREATE INDEX verification_jobs_client_key_created_at_idx ON public.verification_jobs USING btree (client_key, created_at)
+  CREATE INDEX verification_jobs_status_created_at_idx ON public.verification_jobs USING btree (status, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'running'::text]))
+  CREATE UNIQUE INDEX verification_jobs_pkey ON public.verification_jobs USING btree (guid)
+
+table verified_sources
+  column id bigint not null identity always
+  column address bytea not null
+  column runtime_code_hash bytea not null
+  column language text not null
+  column compiler_version text not null
+  column code_format text not null
+  column contract_path text not null
+  column contract_name text not null
+  column optimizer_enabled boolean
+  column optimizer_runs integer
+  column evm_version text
+  column settings jsonb not null
+  column sources jsonb not null
+  column abi jsonb not null
+  column compiler_metadata jsonb
+  column constructor_args bytea
+  column libraries jsonb
+  column license text
+  column match_type text not null
+  column verified_at timestamp with time zone not null
+  constraint verified_sources_address_key UNIQUE (address)
+  constraint verified_sources_pkey PRIMARY KEY (id)
+  CREATE INDEX verified_sources_runtime_code_hash_idx ON public.verified_sources USING btree (runtime_code_hash)
+  CREATE UNIQUE INDEX verified_sources_address_key ON public.verified_sources USING btree (address)
+  CREATE UNIQUE INDEX verified_sources_pkey ON public.verified_sources USING btree (id)
