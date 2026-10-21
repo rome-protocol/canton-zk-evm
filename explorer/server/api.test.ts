@@ -74,7 +74,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = fal
     contract: (a) => (leak ? leaky(built.contract(a)) : built.contract(a)),
   };
   const key = faucet ? FAUCET_KEY : null;
-  const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number) => {}, state: (_hash: string): Tracked | undefined => undefined };
+  const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number, _via?: string) => {}, state: (_hash: string): Tracked | undefined => undefined };
   const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
   const api = createApi({ config, reth: r, ledger: l, index, tracker, faucet: faucetOf });
   return { api, look, get: (target: string) => api("GET", target), faucet: faucetOf, tracker: faucetTracker };
