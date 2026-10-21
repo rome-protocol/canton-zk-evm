@@ -16,10 +16,12 @@
 
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
-that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). A role without
-a file sends no token, for a Ledger API without authentication. A token is never printed.
+that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
+applies the rules of check-env.sh itself, before it sends anything: the URL is https or on this machine (127.0.0.1), every token file is
+mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unless CZE_LEDGER_NO_AUTH=1 says the Ledger API has no login (then
+no token is sent). A token is never printed.
 """
-import argparse, json, os, subprocess, sys, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -39,6 +41,26 @@ DEMO_PARTIES = ("u", "v", "registry")
 # The demo's setup (demo/canton.py) acts for U, V and the registry together.
 DEMO_USERS = {"u": (("u",), (), "u"), "v": (("v",), (), "v"), "registry": (("registry",), (), "registry"),
               "demo": (("u", "v", "registry"), (), "u")}
+
+
+# The roles whose token setup.py reads (builder's is not read here, but a file that is named must be as safe as the others).
+TOKEN_ROLES = ("admin", "operator", "confirmer")
+LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?)(/.*)?$")
+
+
+def check_settings(url: str) -> None:
+    """The rules of network/external/check-env.sh, so that setup.py is as safe when it is run on its own: the URL is https or on this machine (a token
+    never crosses a network in the clear), and every token file is read, before anything is sent, so that a bad one stops the run before it
+    has changed the participant. A token file is one that others cannot read, with one token in it. Without CZE_LEDGER_NO_AUTH=1 every role
+    that setup.py reads needs its file."""
+    if not LOOPBACK_OR_HTTPS.match(url):
+        raise SystemExit("the Ledger API URL must be https, or http on this machine (127.0.0.1): a token must not cross a network in the clear")
+    for role in ("builder", *TOKEN_ROLES):
+        var = "CZE_TOKEN_FILE_" + role.upper()
+        if os.environ.get(var):
+            propose.role_token(role)   # refuses a file that others can read, an unreadable one, an empty one, and one with more than a token
+        elif role in TOKEN_ROLES and os.environ.get("CZE_LEDGER_NO_AUTH") != "1":
+            raise SystemExit(f"{var} is not set: a file with the {role} user's token (or CZE_LEDGER_NO_AUTH=1 for a Ledger API with no login)")
 
 
 def log(message: str) -> None:
@@ -230,6 +252,7 @@ def main(argv: list) -> int:
     rest = [a for a in rest if a != "--"]
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
+    check_settings(own.ledger_url)
     chain_args = propose.parse(rest, propose.read_env_file(ROOT / "PINS"))[1] if rest else None
     prefix = os.environ.get("CZE_PARTY_PREFIX", "ostia-")
     os.environ.setdefault("CZE_USER_PREFIX", "ostia-")

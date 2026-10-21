@@ -185,6 +185,7 @@ class Setup(unittest.TestCase):
         with mock.patch.dict(os.environ):
             for r in SECRETS:
                 os.environ.pop(f"CZE_TOKEN_FILE_{r.upper()}")
+            os.environ["CZE_LEDGER_NO_AUTH"] = "1"
             self.run_setup()
         self.assertEqual({c[2] for c in self.node.calls}, {None})
 
@@ -195,6 +196,47 @@ class Setup(unittest.TestCase):
         self.assertIn("chmod 600", str(ctx.exception))
         self.assertNotIn(SECRETS["admin"], str(ctx.exception))
         self.assertEqual(self.node.calls, [])
+
+    def test_without_token_files_and_without_the_no_login_setting_it_stops_before_any_call(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+            os.environ.pop("CZE_LEDGER_NO_AUTH", None)
+            with self.assertRaises(SystemExit) as ctx:
+                self.run_setup()
+        self.assertIn("CZE_TOKEN_FILE_CONFIRMER is not set", str(ctx.exception))
+        self.assertEqual(self.node.calls, [])
+
+    def test_a_token_file_that_others_can_read_stops_the_run_before_any_call_whatever_its_role(self):
+        # The confirmer's token is first used after the participant has been changed: it is checked up front, with every other file.
+        for role in ("operator", "confirmer"):
+            self.tokens[role].chmod(0o640)
+            with self.subTest(role=role), self.assertRaises(SystemExit) as ctx:
+                self.run_setup()
+            self.assertIn("chmod 600", str(ctx.exception))
+            self.assertNotIn(SECRETS[role], str(ctx.exception))
+            self.assertEqual(self.node.calls, [])
+            self.tokens[role].chmod(0o600)
+
+    def test_a_builder_token_file_that_others_can_read_is_refused_too(self):
+        builder = Path(self.tmp.name) / "builder"
+        builder.write_text("tok-builder-4\n"); builder.chmod(0o604)
+        with mock.patch.dict(os.environ, {"CZE_TOKEN_FILE_BUILDER": str(builder)}), self.assertRaises(SystemExit) as ctx:
+            self.run_setup()
+        self.assertIn("chmod 600", str(ctx.exception))
+        self.assertEqual(self.node.calls, [])
+
+    def test_a_ledger_url_on_another_host_over_plain_http_is_refused_before_any_token_is_read(self):
+        for url in ("http://10.1.2.3:7575", "http://ledger.example", "http://127.0.0.1.evil.example:7575"):
+            with self.subTest(url=url), self.assertRaises(SystemExit) as ctx:
+                setup.main(["--ledger-url", url, "--dar", str(self.dar)])
+            self.assertIn("in the clear", str(ctx.exception))
+        for secret in SECRETS.values():
+            self.assertNotIn(secret, str(ctx.exception))
+
+    def test_https_and_loopback_urls_pass_the_url_rule(self):
+        for url in ("https://ledger.example", "https://ledger.example:7575/api", "http://127.0.0.1:7575", "http://localhost:7575", "http://[::1]:7575"):
+            with self.subTest(url=url):
+                setup.check_settings(url)
 
     def test_a_token_file_with_two_words_is_refused(self):
         self.tokens["admin"].write_text("two words\n")
