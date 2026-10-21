@@ -178,4 +178,57 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       await indexer.close();
     });
   });
+
+  // What each address's counters must be, counted from the fact tables.
+  const recount = `
+    with t(a, blk, s, r, i) as (
+      select from_address, block_number, 1, 0, 0 from transactions
+      union all select coalesce(to_address, created_contract), block_number, 0, 1, 0 from transactions where coalesce(to_address, created_contract) is not null
+      union all select from_address, block_number, 0, 0, 1 from internal_calls
+      union all select to_address, block_number, 0, 0, 1 from internal_calls where to_address is not null and to_address <> from_address
+    ) select encode(a, 'hex') as address, min(blk)::text as first_seen_block, max(blk)::text as last_active_block, sum(s)::text as sent_count, sum(r)::text as received_count,
+        sum(i)::text as internal_count from t group by a order by a`;
+  const stored = `select encode(address, 'hex') as address, first_seen_block::text, last_active_block::text, sent_count::text, received_count::text, internal_count::text from addresses order by address`;
+
+  it("counts, for each address a block touched, its transactions and internal calls, and the counts are those of the fact tables", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 11 }, { txs: 7 }]);
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xc001), frame([1], { from: A(0xc001), to: A(0xc001), value: 4n }), frame([2], { from: A(0xc001), to: A(0xf001), value: 1n, error: "Reverted" })]);
+      setFrames(chain, 2, 1, [frame([]), frame([0], { from: A(0xc001), to: A(0xf001), value: 2n })]);
+      await indexer.runOnce();
+      const counted = await rows(pool, stored);
+      expect(counted).toEqual(await rows(pool, recount));
+      const c001 = counted.find((r) => r.address === A(0xc001).slice(2))!;
+      // Block 1: transaction 1 went to it; the creation and the self-call are internal calls (the self-call once), and so is the failed one it made. Block 2: transaction 1, and an internal call.
+      expect(c001).toMatchObject({ first_seen_block: "1", last_active_block: "2", sent_count: "0", received_count: "2", internal_count: "4" });
+      expect(await rows(pool, "select encode(address, 'hex') as a, is_contract from addresses where address in ($1, $2) order by address", [Buffer.from(A(0xc001).slice(2), "hex"), Buffer.from(A(0xf001).slice(2), "hex")]))
+        .toEqual([{ a: A(0xc001).slice(2), is_contract: true }, { a: A(0xf001).slice(2), is_contract: false }]);
+      await pool.query("update cursors set position = 0, detail = null where stream = 'reader_updates'");
+      await indexer.runOnce();
+      expect(await rows(pool, stored)).toEqual(counted);
+      await indexer.close();
+    });
+  });
+
+  it("counts nothing twice when stage 2 runs behind and a block comes round again", async () => {
+    await inDb(async (pool) => {
+      await migrate(pool);
+      const chain = makeChain([{ txs: 6 }, { txs: 6 }]);
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xc001)]);
+      const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "behind" });
+      opened.push(indexer);
+      await indexer.open();
+      await indexer.runOnce();
+      expect(await rows(pool, "select count(*) as n from addresses")).toEqual([{ n: "0" }]);
+      expect(await indexer.deriveOnce()).toEqual({ state: "caught-up", indexed: 2 });
+      const counted = await rows(pool, stored);
+      expect(counted.length).toBeGreaterThan(0);
+      expect(counted).toEqual(await rows(pool, recount));
+      // The derive cursor put back: blocks that are derived already are not counted again.
+      await pool.query("update cursors set position = 2 where stream = 'derive'");
+      expect(await indexer.deriveOnce()).toEqual({ state: "caught-up", indexed: 0 });
+      expect(await rows(pool, stored)).toEqual(counted);
+      await indexer.close();
+    });
+  });
 });
