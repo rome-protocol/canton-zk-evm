@@ -59,7 +59,7 @@ fresh resolve
 runs resolve "$WORK/PINS" "TOOL_IMAGE OTHER_IMAGE" 2>/dev/null
 key1=$(out_of key); dir1=$(out_of dir)
 [[ $key1 == pinned-images-v1-*-[0-9a-f]* ]] || fail "odd cache key: $key1"
-[ -f "$dir1.refs" ] && [ "$(grep -c . "$dir1.refs")" = 2 ] || fail "the refs file does not list both images"
+[ "$(grep -c . "$dir1.refs")" = 2 ] || fail "the refs file does not list both images"
 runs resolve "$WORK/PINS" "OTHER_IMAGE TOOL_IMAGE" 2>/dev/null
 [ "$(out_of key)" = "$key1" ] || fail "the key depends on the order of the names"
 runs resolve "$WORK/PINS" "TOOL_IMAGE" 2>/dev/null
