@@ -265,7 +265,12 @@ export function createTracker(o: TrackerOptions): Tracker {
     write();
     await writing;
     try {
-      for (const e of await store.changes()) if (!leading || !entries.has(e.hash)) entries.set(e.hash, e);
+      for (const e of await store.changes()) {
+        const held = entries.get(e.hash);
+        // The leader's list is the record, so it takes only what it did not hold. The exception is a transaction it holds as settled that a row shows open again:
+        // a wallet sent the same bytes once more, through another instance, and it is followed afresh.
+        if (!leading || !held || (SETTLED.has(held.state) && !SETTLED.has(e.state))) entries.set(e.hash, e);
+      }
     } catch (e) {
       console.error(`tracker: cannot read the database: ${(e as Error).message}`);
     }

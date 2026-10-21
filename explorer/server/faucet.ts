@@ -222,6 +222,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
   const leader = o.leader ?? alwaysLeader;
   /** True when this instance runs the worker. A file has one instance, which leads. */
   let leading = !o.store;
+  /** Set when this instance takes the lead. Nothing is signed until reth's pending and latest counts for the faucet agree, so a batch the old leader sent is never signed over. */
+  let settling = false;
   let loaded: Promise<void> = Promise.resolve();
   const hashed = (k: string | undefined): string | undefined => (k === undefined || !o.clientKeyHash ? k : o.clientKeyHash(k));
 
@@ -319,6 +321,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
       const was = mine.status;
       Object.assign(mine, r);
       if (was === "queued" && r.status !== "queued") queue.splice(queue.indexOf(mine), 1);
+      if (r.status === "failed" && was !== "failed") refund(mine); // the instance that failed it gave the limits back; the others do the same
     }
   }
 
@@ -478,9 +481,13 @@ export function createFaucet(o: FaucetOptions): Faucet {
       await loaded;
       await catchUp();
       const was = leading;
-      leading = await leader.isLeader();
+      const lead = await leader.isLeader();
+      // The old leader may have written between the read above and the lock just taken. Once the lock is held, the database is the record: it is read
+      // again, as a follower reads it, before this instance rebuilds from it or signs anything.
+      if (lead && !was) await catchUp();
+      leading = lead;
       if (!leading) return;
-      if (!was) { rebuildSets(); recover(); }
+      if (!was) { rebuildSets(); recover(); settling = true; }
       if (store.purge && now() - purged >= HOUR) {
         purged = now();
         await store.purge(now()).catch((e: Error) => console.error(`faucet: cannot clean the database: ${e.message}`));
@@ -499,6 +506,15 @@ export function createFaucet(o: FaucetOptions): Faucet {
       return;
     }
     view = { at: now(), balance, gasPrice };
+    if (settling) {
+      try {
+        if (await o.reth.nonce(address!, "latest") !== nonce) return; // the old leader's transfers are still in reth's pool: asked again at the next pass
+        settling = false;
+      } catch (e) {
+        console.error(`faucet: ${(e as Error).message}`);
+        return;
+      }
+    }
     const maxFeePerGas = gasPrice * 2n;
     const batch = queue.filter((t) => !t.claiming).slice(0, o.batch);
     if (!batch.length) return;
@@ -527,6 +543,13 @@ export function createFaucet(o: FaucetOptions): Faucet {
     if (!(await save())) {
       console.error("faucet: the batch could not be written, so it was not sent");
       for (const t of going) { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
+      return;
+    }
+    // Still the lead, just before the first send: a lock lost during the signing means another instance may be taking over.
+    if (store?.changes && !(await leader.isLeader())) {
+      leading = false;
+      for (const t of going) { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
+      void save();
       return;
     }
     for (const t of going) {

@@ -94,7 +94,8 @@ const UPSERT = {
       as t(tx_hash, raw, bytes, sender, nonce, open, sends, refusals, last_sent_at, settled_at, added_at, state, reason, block_number, block_hash, update_id)
   on conflict (tx_hash) do`,
   update: ` update set
-    raw = excluded.raw, bytes = greatest(tracked_transactions.bytes, excluded.bytes), open = excluded.open, sends = excluded.sends, refusals = excluded.refusals,
+    raw = excluded.raw, bytes = greatest(tracked_transactions.bytes, excluded.bytes),
+    added_at = case when not tracked_transactions.open and excluded.open then excluded.added_at else tracked_transactions.added_at end, open = excluded.open, sends = excluded.sends, refusals = excluded.refusals,
     last_sent_at = excluded.last_sent_at, settled_at = excluded.settled_at, state = excluded.state, reason = excluded.reason, block_number = excluded.block_number,
     block_hash = excluded.block_hash, update_id = excluded.update_id, updated_at = now()`,
   keep: " nothing",
