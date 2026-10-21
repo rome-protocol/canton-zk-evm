@@ -20,7 +20,7 @@ for role in ADMIN OPERATOR CONFIRMER BUILDER; do
   var=CZE_TOKEN_FILE_$role
   file=${!var:-}
   [ -n "$file" ] || fail "$var is not set: a file with the $role user's token (or CZE_LEDGER_NO_AUTH=1)"
-  [ -f "$file" ] && [ -s "$file" ] || fail "$var: $file is not a file with a token in it"
+  if [ ! -f "$file" ] || [ ! -s "$file" ]; then fail "$var: $file is not a file with a token in it"; fi
   # shellcheck disable=SC2012
   [ "$(ls -ld "$file" | cut -c5-10)" = "------" ] || fail "$var: $file can be read by others: chmod 600 it"
 done
