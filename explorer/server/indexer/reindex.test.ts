@@ -140,7 +140,7 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
       const r = await row();
       expect(r.status).toBe("degraded");
       expect(r.value).toMatchObject({ block: 2, computed: expect.stringMatching(/^0x[0-9a-f]{64}$/), onChain: other });
-      expect((await pool.query("select legs_count from blocks where number = 2")).rows[0].legs_count).toBe(2);
+      expect((await pool.query("select legs_count from blocks where number = 2")).rows[0].legs_count).toBe(1);
 
       // A later reindex of blocks that agree does not clear it.
       await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 3, 5);

@@ -6,6 +6,7 @@
 import type { Pool, PoolClient } from "pg";
 import { FAUCET_LOCK, LOCKS, TRACKER_LOCK } from "../leader.ts";
 import { LOCK_KEY } from "./indexer.ts";
+import { REINDEX_KEY } from "./reindex.ts";
 
 async function withLock<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();
@@ -55,13 +56,18 @@ async function takeApiLocks(c: PoolClient): Promise<number[]> {
 /**
  * Empties every table of the explorer except the list of applied migrations, and keeps `partition_width`, which is fixed once for the schema's
  * partitions. A new chain gets a fresh database: the pins are written again by the first start, and `chain_instance` by block 1. It refuses a
- * database that is not the explorer's, and while an indexer or an API (the tracker or faucet lock) is up: stop both first.
+ * database that is not the explorer's, and while an indexer, a reindex or an API (the tracker or faucet lock) is up: stop them first.
  */
 export async function resetChain(pool: Pool): Promise<{ tables: number }> {
   return withLock(pool, async (c) => {
     await checkIsExplorer(c);
-    const taken = await takeApiLocks(c);
+    // A reindex runs without the indexer and holds its own lock for its whole range: a reset in the middle of it would let it write an old chain's C10 row.
+    if (!(await c.query("select pg_try_advisory_lock($1) as ok", [REINDEX_KEY])).rows[0].ok) {
+      throw new Error("a reindex holds this database: let it finish first, then reset");
+    }
+    let taken: number[] = [];
     try {
+      taken = await takeApiLocks(c);
       const found = await c.query(
         `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
           where n.nspname = current_schema() and c.relkind in ('r', 'p') and not c.relispartition and c.relname <> 'schema_migrations' order by c.relname`);
@@ -79,6 +85,7 @@ export async function resetChain(pool: Pool): Promise<{ tables: number }> {
       return { tables: tables.length };
     } finally {
       for (const t of taken) await c.query("select pg_advisory_unlock($1, $2)", [LOCKS, t]);
+      await c.query("select pg_advisory_unlock($1)", [REINDEX_KEY]);
     }
   });
 }
