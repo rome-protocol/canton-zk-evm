@@ -216,6 +216,14 @@ env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_LEDGER_NO_AUTH=1 "
 xenv_no_admin() { env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_OPERATOR="$XW/OPERATOR" CZE_TOKEN_FILE_CONFIRMER="$XW/CONFIRMER" \
   CZE_TOKEN_FILE_BUILDER="$XW/BUILDER" "$X/check-env.sh" "$1"; }
 xenv_no_admin restart >/dev/null 2>&1 || fail "check-env.sh restart wants the admin token"
+# A restart needs the builder's token and no other: not the operator's, not the confirmer's (they are for up.sh and setup.py).
+xenv_builder_only() { env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_BUILDER="$XW/BUILDER" "$X/check-env.sh" "$1"; }
+xenv_builder_only restart >/dev/null 2>&1 || fail "check-env.sh restart wants a token other than the builder's"
+xenv_builder_only up >/dev/null 2>&1 && fail "check-env.sh up accepted a setting with the builder's token only"
+env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_OPERATOR="$XW/OPERATOR" CZE_TOKEN_FILE_CONFIRMER="$XW/CONFIRMER" "$X/check-env.sh" restart >/dev/null 2>&1 \
+  && fail "check-env.sh restart accepted a setting without the builder's token"
+chmod 644 "$XW/BUILDER"; xenv_builder_only restart >/dev/null 2>&1 && fail "check-env.sh restart accepted a builder token file that others can read"
+chmod 600 "$XW/BUILDER"
 xenv_no_admin up >/dev/null 2>&1 && fail "check-env.sh up accepted a setting without the admin token"
 xenv_no_admin sideways >/dev/null 2>&1 && fail "check-env.sh took a phase that is neither up nor restart"
 grep -q 'check-env.sh" restart' "$ROOT/network/restart.sh" || fail "restart.sh does not check the settings for a restart (no admin token)"

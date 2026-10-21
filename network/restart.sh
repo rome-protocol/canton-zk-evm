@@ -27,7 +27,7 @@ CANTON_MODE=$(sed -n 's/^CZE_CANTON=//p' "$STATE/persist.env" 2>/dev/null || tru
 if [ "$CANTON_MODE" = external ]; then
   # The participant and the sidecar's address are the ones up.sh recorded; the tokens come from this shell, as for up.sh.
   CZE_LEDGER_URL=$(sed -n 's/^CZE_LEDGER_URL=//p' "$STATE/persist.env"); CZE_SIDECAR_LISTEN=$(sed -n 's/^CZE_SIDECAR_LISTEN=//p' "$STATE/persist.env")
-  export CZE_LEDGER_URL CZE_SIDECAR_LISTEN CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-}
+  export CZE_LEDGER_URL CZE_SIDECAR_LISTEN
   "$ROOT/network/external/check-env.sh" restart
 fi
 for f in persist.env $([ "$CANTON_MODE" = external ] || echo postgres.env) jwt.hex genesis.json canton/parties.env net/chain.json net/guest.txt net/dar.txt; do
@@ -43,6 +43,8 @@ fi
 # shellcheck disable=SC1091
 . "$ROOT/network/persist-settings.sh"
 load_persist_settings "$STATE" || exit 1
+# The Ledger API users' prefix is the one up.sh used (external mode; recorded in persist.env), not this shell's default.
+[ "$CANTON_MODE" != external ] || load_user_prefix "$STATE" || exit 1
 [ "$(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env")" = "$CHAIN_ID" ] || fail "this state is for chain $(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env"), not $CHAIN_ID"
 # The databases were made by one Canton version, and only that one reads them: a newer jar needs its own upgrade, not a silent start.
 # (An external chain has no local databases: the participant belongs to its validator and has its own upgrades.)

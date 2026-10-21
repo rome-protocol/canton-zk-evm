@@ -49,7 +49,11 @@ command -v cargo-zisk >/dev/null || fail "ZisK is not installed (prover/install.
 CANTON_MODE=${CZE_CANTON:-local}
 case $CANTON_MODE in
   local) ;;
-  external) "$ROOT/network/external/check-env.sh"; export CZE_LEDGER_URL CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-} ;;
+  external)
+    # The chain lives on the participant, which is shared: without CZE_PERSIST this run would commit a chain there and down.sh would drop reth's data,
+    # stranding the chain's contracts on the participant for good.
+    [ "${CZE_PERSIST:-0}" = 1 ] || fail "CZE_CANTON=external needs CZE_PERSIST=1: the chain stays on the participant, so reth must keep its blocks (see network/README.md)"
+    "$ROOT/network/external/check-env.sh"; export CZE_LEDGER_URL CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-} ;;
   *) fail "CZE_CANTON is local or external, not '$CANTON_MODE'" ;;
 esac
 
@@ -81,7 +85,7 @@ if [ "${CZE_PERSIST:-0}" = 1 ]; then
     "$CANTON_VERSION" "$CHAIN_ID" "${CZE_PG_CONTAINER:-cze-postgres}" "${CZE_PG_PORT:-5432}" "${CZE_EXPLORER_DB_CONTAINER:-cze-explorer-db}" "${CZE_EXPLORER_DB_PORT:-5433}" "${RETH_CONTAINER:-cze-reth}" \
     "${RETH_HTTP_PORT:-8545}" "${RETH_WS_PORT:-8546}" "${RETH_ENGINE_PORT:-8551}" > "$CZE_STATE_DIR/persist.env"
   # The mode and the sidecar's address go in too, for restart.sh and down.sh. No token, and no path to one, is written.
-  [ "$CANTON_MODE" != external ] || printf 'CZE_CANTON=external\nCZE_LEDGER_URL=%s\nCZE_SIDECAR_LISTEN=%s\n' "$CZE_LEDGER_URL" "${CZE_SIDECAR_LISTEN:-}" >> "$CZE_STATE_DIR/persist.env"
+  [ "$CANTON_MODE" != external ] || printf 'CZE_CANTON=external\nCZE_LEDGER_URL=%s\nCZE_SIDECAR_LISTEN=%s\nCZE_USER_PREFIX=%s\n' "$CZE_LEDGER_URL" "${CZE_SIDECAR_LISTEN:-}" "${CZE_USER_PREFIX-}" >> "$CZE_STATE_DIR/persist.env"
   # The explorer's own database, apart from Canton's (network/explorer-db.sh). It starts empty; the explorer makes its schema.
   step "the explorer's database"
   # The chain does not depend on the explorer: if its database cannot start, the chain starts without it.

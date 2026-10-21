@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Stops unless the settings for running on an existing participant (CZE_CANTON=external) are complete and safe. Used by network/up.sh and network/restart.sh.
 #   CZE_LEDGER_URL        the participant's JSON Ledger API: https, or http on this machine. A token is never sent in the clear to another machine.
-#   CZE_TOKEN_FILE_<ROLE> ADMIN (only for up.sh and setup.py; restart.sh does not need it), OPERATOR, CONFIRMER and BUILDER: a file of its own, mode 0600, with one token (the Ledger API user's, HS256, signed by
+#   CZE_TOKEN_FILE_<ROLE> ADMIN, OPERATOR and CONFIRMER (only for up.sh and setup.py; restart.sh needs none of them) and BUILDER: a file of its own, mode 0600, with one token (the Ledger API user's, HS256, signed by
 #                         whoever runs the participant). CZE_LEDGER_NO_AUTH=1 instead, for a Ledger API with no login.
 #   CZE_SIDECAR_LISTEN    optional, address:port: network/up.sh starts the sidecar here.
-# Usage: check-env.sh [up|restart]   (default up). The participant admin's token is the validator's most powerful one: a restart must not need it.
+# Usage: check-env.sh [up|restart]   (default up). The participant admin's token is the validator's most powerful one: a restart must not need it, nor the operator's or the confirmer's.
 # Prints nothing a token holds: only which setting is wrong.
 set -euo pipefail
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -19,7 +19,8 @@ if [ "${CZE_LEDGER_NO_AUTH:-0}" = 1 ]; then
   echo "WARN: no Ledger API tokens: only for a participant whose Ledger API has no login" >&2
   exit 0
 fi
-roles="ADMIN OPERATOR CONFIRMER BUILDER"; [ "$phase" = up ] || roles="OPERATOR CONFIRMER BUILDER"
+# A restart only lists the package and moves reth to the chain's head, both with the builder's token: it asks for no other.
+roles="ADMIN OPERATOR CONFIRMER BUILDER"; [ "$phase" = up ] || roles="BUILDER"
 for role in $roles; do
   var=CZE_TOKEN_FILE_$role
   file=${!var:-}
