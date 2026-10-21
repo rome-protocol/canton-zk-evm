@@ -50,7 +50,7 @@ explorer/run.sh setup
 export CZE_GENESIS_FILE="$PWD/state/faucet/genesis.json"
 network/up.sh
 CZE_SOURCE_COMMIT=$(git rev-parse HEAD) demo/run.sh
-explorer/run.sh start        # open http://127.0.0.1:8088
+explorer/run.sh start        # starts the explorer's database, the indexer and the explorer; open http://127.0.0.1:8088
 explorer/run.sh stop         # when finished
 network/down.sh
 ```
@@ -118,7 +118,7 @@ These are what the demo scripts call. Both programs print one JSON object per co
 
 CI has no GPU, so `tests/demo_rehearsal.sh` runs the same `demo/run.sh` with a stand-in proof. It uses the real reth, Canton, Daml package, token standard and builder. The real sidecar checks the gateway's legs against reth's storage proofs. A stand-in prover writes a 1,344-byte proof: fixed bytes, then public values that commit to the block's hash, so the builder's check of the proof's block hash runs as it does for a real one. `tests/demo_sidecar.py` answers the `verify` call, accepting only such a proof for the block it is asked about and otherwise reading the block as the real sidecar does. The rehearsal covers everything except the zero-knowledge proof check, which the sidecar's own tests and the GPU run cover. The rehearsal's results are not recorded.
 
-It also builds the explorer's image and runs it beside the chain (`explorer/run.sh`). Its calls to reth and to Canton go through `tests/demo_call_log.py`, which writes down each request. After the demo the rehearsal checks run 1's block on the explorer's page, that Verify answers no (the proof is a stand-in), that the faucet sends 1 tROME and refuses a second request from the same address, and, from the log, that the explorer asked Canton only for the ledger end and the updates, as the reader party.
+It also builds the explorer's image and runs it beside the chain (`explorer/run.sh`). Its calls to reth and to Canton go through `tests/demo_call_log.py`, which writes down each request. The explorer runs with its own database and its indexer, which `explorer/run.sh start` starts; after the demo the rehearsal waits for the indexer, then checks run 1's block on the explorer's page, that Verify answers no (the proof is a stand-in), that the faucet sends 1 tROME and refuses a second request from the same address, and, from the log, that the explorer and its indexer asked Canton only for the ledger end, the updates and the participant id (the updates as the reader party, for the block record alone).
 
 ## Results
 
