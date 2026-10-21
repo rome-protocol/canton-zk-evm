@@ -18,9 +18,9 @@ afterEach(async () => { await reth?.close(); reth = null; });
 describe("the indexer's reads from reth", () => {
   it("reads a block with its transactions, receipts and traces, and a missing block as null", async () => {
     reth = await startFakeReth({
-      eth_getBlockByNumber: ([n]) => (n === "0x5" ? rawBlock() : null),
-      eth_getBlockReceipts: ([n]) => (n === "0x5" ? [{ transactionHash: H("c3"), status: "0x1", gasUsed: "0x5208", effectiveGasPrice: "0x8", contractAddress: null, logs: [{ address: A("d0"), topics: [H("77")], data: "0x00" }] }] : null),
-      trace_replayBlockTransactions: ([n, kinds]) => (n === "0x5" && JSON.stringify(kinds) === '["trace"]'
+      eth_getBlockByNumber: ([n]: unknown[]) => (n === "0x5" ? rawBlock() : null),
+      eth_getBlockReceipts: ([n]: unknown[]) => (n === "0x5" ? [{ transactionHash: H("c3"), status: "0x1", gasUsed: "0x5208", effectiveGasPrice: "0x8", contractAddress: null, logs: [{ address: A("d0"), topics: [H("77")], data: "0x00" }] }] : null),
+      trace_replayBlockTransactions: ([n, kinds]: unknown[]) => (n === "0x5" && JSON.stringify(kinds) === '["trace"]'
         ? [{ transactionHash: H("c3"), output: "0x08c379a0", trace: [{ error: "Reverted" }, {}] }] : null),
       eth_getStorageAt: () => H("5e"),
     });
