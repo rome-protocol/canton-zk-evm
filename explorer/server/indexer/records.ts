@@ -97,14 +97,23 @@ export async function exportRecordsToFile(pool: Pool, path: string, options: { p
   if (existsSync(path)) throw new Error(`${path} is already there: an export is never written over a file`);
   const partial = `${path}.partial`;
   const out = createWriteStream(partial, { flags: "wx" });
+  // A stream that fails (or is destroyed while a write is in flight) emits "error"; with no listener that would end the process, so the error is kept and thrown here.
+  let streamError: Error | undefined;
+  out.on("error", (e) => { streamError ??= e; });
   try {
-    const written = await exportRecords(pool, async (line) => { if (!out.write(line + "\n")) await once(out, "drain"); }, options);
+    const written = await exportRecords(pool, async (line) => {
+      if (streamError) throw streamError;
+      if (!out.write(line + "\n")) await once(out, "drain");
+    }, options);
+    if (streamError) throw streamError;
     out.end();
     await once(out, "finish");
     renameSync(partial, path);
     return written;
   } catch (e) {
     out.destroy();
+    // The file is removed once the stream has let go of it: a pending open could otherwise create it after the removal.
+    if (!out.closed) await once(out, "close").catch(() => undefined);
     rmSync(partial, { force: true });
     throw e;
   }
