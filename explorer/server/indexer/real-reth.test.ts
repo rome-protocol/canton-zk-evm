@@ -8,7 +8,7 @@
  *    read: that trace_replayBlockTransactions carries the revert data for Error(string), Panic(uint256) and a custom error.
  * 2. W1 (design section 9). The indexer runs over the whole chain, with reth's own blocks, Canton's own records and a database of its own, and
  *    the block named by EXPLORER_TEST_W1_BLOCK (test/fixtures/Stress.sol, filling a block under the gas cap) is timed, reads and stages apart.
- *    Needs EXPLORER_TEST_LEDGER_URL, READER_PARTY, GATEWAY_ADDRESS and EXPLORER_TEST_DATABASE_URL. The rehearsal's proofs are stand-ins, so the
+ *    Needs EXPLORER_TEST_LEDGER_URL, READER_PARTY, GATEWAY_ADDRESS, CHAIN_ID and EXPLORER_TEST_DATABASE_URL. The rehearsal's proofs are stand-ins, so the
  *    pins are what the chain's first proof carries; that is the only thing the stand-in changes.
  */
 import { describe, expect, it } from "vitest";
@@ -67,7 +67,8 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
         expect(first, "Canton has no block record").toBeTruthy();
         const facts = readProofFacts(first!.proofHex);
         expect(facts, "the first record's proof is not 1,344 bytes").not.toBeNull();
-        const chainId = Number(BigInt((await reads.rpc("eth_chainId", [])) as string));
+        const chainId = Number(process.env.CHAIN_ID);
+        expect(Number.isInteger(chainId) && chainId > 0, "set CHAIN_ID to the chain's id").toBe(true);
         const timings: Timing[] = [];
         const indexer = createIndexer({
           pool, reads, ledger, pins: { programVK: facts!.programVK, rootC: facts!.rootC, file: "the first proof" }, chainId, gateway, derive: shape,

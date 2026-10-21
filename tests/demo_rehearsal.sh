@@ -224,7 +224,7 @@ done
 [ "$ok" -ge 3 ] || fail "the test database did not start"
 docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -e EXPLORER_TEST_RETH_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e EXPLORER_TEST_REVERT_BLOCK="$REVERT_BLOCK" -e EXPLORER_TEST_W1_BLOCK="$W1_BLOCK" \
-  -e EXPLORER_TEST_LEDGER_URL=http://127.0.0.1:7577 -e READER_PARTY="$READER_PARTY" -e GATEWAY_ADDRESS="$GATEWAY_ADDRESS" \
+  -e EXPLORER_TEST_LEDGER_URL=http://127.0.0.1:7577 -e READER_PARTY="$READER_PARTY" -e GATEWAY_ADDRESS="$GATEWAY_ADDRESS" -e CHAIN_ID="$(($(rpc eth_chainId | jq -r .result)))" \
   -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL="postgres://explorer:$PGPW@127.0.0.1:55433/explorer" \
   -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
   sh -c "mkdir /tmp/explorer && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/explorer && cd /tmp/explorer && npm ci --ignore-scripts && npx vitest run server/indexer/real-reth.test.ts --reporter=verbose" \
