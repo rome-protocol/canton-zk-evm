@@ -41,7 +41,7 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
   }
   if (command.kind === "reindex") {
     const done = await reindexRange({ pool, reads, gateway: settings.gateway, log }, command.from, command.to);
-    console.log(`reindex: ${done.blocks} blocks, ${done.from} to ${done.to}; stage 2 will work them out again`);
+    console.log(`reindex: ${done.blocks} blocks, ${done.from} to ${done.to}; their stage 2 rows are written again with them`);
     return 0;
   }
   const indexer = createIndexer({

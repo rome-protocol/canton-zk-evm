@@ -22,48 +22,80 @@ export interface ExportedRecord extends BlockRecord { participant: { id: string;
 const PAGE = 500;
 const TIMESTAMP = `'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'`;
 
-/** Writes the header and then every record in block order, calling `write` with each line. Reads a page at a time, so memory stays at one page. Returns the number of records. */
-export async function exportRecords(pool: Pool, write: (line: string) => Promise<void>): Promise<number> {
-  const meta = new Map((await pool.query("select key, value from meta")).rows.map((r) => [r.key as string, r.value as string]));
-  if (!meta.has("chain_id") || !meta.has("genesis_hash")) throw new Error("this database holds no chain yet: there is nothing to export");
-  const header: RecordsHeader = { format: RECORDS_FORMAT, version: 1, chainId: Number(meta.get("chain_id")), genesisHash: meta.get("genesis_hash") as string };
-  await write(JSON.stringify(header));
-  const parties = new Map((await pool.query("select id, party from canton_parties")).rows.map((r) => [Number(r.id), r.party as string]));
-  const roles = new Map((await pool.query("select party, role from canton_parties")).rows.map((r) => [r.role as string, r.party as string]));
-  const templates = new Map((await pool.query("select id, package_id, module, entity from canton_templates")).rows.map((r) => [Number(r.id), { packageId: r.package_id as string, module: r.module as string, entity: r.entity as string }]));
-  const synchronizers = new Map((await pool.query("select id, synchronizer_id from canton_synchronizers")).rows.map((r) => [Number(r.id), r.synchronizer_id as string]));
-  const participants = new Map((await pool.query("select id, participant_id, first_offset from canton_participants")).rows.map((r) => [Number(r.id), { id: r.participant_id as string, firstOffset: r.first_offset === null ? null : Number(r.first_offset) }]));
-  let after = -1, total = 0;
-  for (;;) {
-    const page = await pool.query(
-      `select b.number, '0x' || encode(b.hash, 'hex') as hash, '0x' || encode(b.parent_hash, 'hex') as parent, b.update_id, encode(br.header, 'hex') as header, encode(br.txs, 'hex') as txs,
-         br.contract_id, encode(p.proof, 'hex') as proof, cu.participant, cu.reader_offset, to_char(cu.record_time at time zone 'UTC', ${TIMESTAMP}) as record_time,
-         to_char(cu.effective_at at time zone 'UTC', ${TIMESTAMP}) as effective_at, cu.synchronizer, cu.reader_template, cu.signatories
-       from blocks b join block_records br on br.number = b.number join proofs p on p.number = b.number join canton_updates cu on cu.update_id = b.update_id
-       where b.number > $1 order by b.number limit $2`, [after, PAGE]);
-    for (const r of page.rows) {
-      const signatories = (r.signatories as number[]).map((id) => parties.get(Number(id)) as string);
-      const line: ExportedRecord = {
-        updateId: r.update_id, offset: Number(r.reader_offset), recordTime: r.record_time, chainId: header.chainId, number: Number(r.number), blockHash: r.hash, parentHash: r.parent,
-        headerHex: r.header, txsHex: r.txs, proofHex: r.proof, operator: roles.get("operator") as string, confirmer: roles.get("confirmer") as string,
-        synchronizerId: synchronizers.get(Number(r.synchronizer)) as string, effectiveAt: r.effective_at ?? r.record_time, contractId: r.contract_id,
-        template: templates.get(Number(r.reader_template)) as ExportedRecord["template"], signatories, participant: participants.get(Number(r.participant)) as ExportedRecord["participant"],
-      };
-      await write(JSON.stringify(line));
-      after = Number(r.number);
-      total++;
+/** A dictionary lookup that must find its row: a line with a hole in it must never reach a file that looks finished. */
+function need<T>(map: Map<number, T>, id: unknown, what: string, block: number): T {
+  const v = map.get(Number(id));
+  if (v === undefined) throw new Error(`block ${block}: its ${what} (id ${String(id)}) is not in the database's ${what} list: the export is stopped`);
+  return v;
+}
+
+/**
+ * Writes the header and then every record in block order, calling `write` with each line. Reads a page at a time, so memory stays at one page.
+ * The whole export is read in one repeatable-read, read-only transaction, so the dictionaries and every page are one snapshot of the database
+ * while the indexer goes on writing. Returns the number of records.
+ */
+export async function exportRecords(pool: Pool, write: (line: string) => Promise<void>, options: { pageSize?: number } = {}): Promise<number> {
+  const size = options.pageSize ?? PAGE;
+  const c = await pool.connect();
+  let broken = false;
+  try {
+    await c.query("begin isolation level repeatable read read only");
+    const meta = new Map((await c.query("select key, value from meta")).rows.map((r) => [r.key as string, r.value as string]));
+    if (!meta.has("chain_id") || !meta.has("genesis_hash")) throw new Error("this database holds no chain yet: there is nothing to export");
+    const header: RecordsHeader = { format: RECORDS_FORMAT, version: 1, chainId: Number(meta.get("chain_id")), genesisHash: meta.get("genesis_hash") as string };
+    await write(JSON.stringify(header));
+    const partyRows = (await c.query("select id, party, role from canton_parties")).rows;
+    const parties = new Map<number, string>(partyRows.map((r) => [Number(r.id), r.party as string]));
+    const roles = new Map<string, string>(partyRows.map((r) => [r.role as string, r.party as string]));
+    const templates = new Map((await c.query("select id, package_id, module, entity from canton_templates")).rows.map((r) => [Number(r.id), { packageId: r.package_id as string, module: r.module as string, entity: r.entity as string }]));
+    const synchronizers = new Map((await c.query("select id, synchronizer_id from canton_synchronizers")).rows.map((r) => [Number(r.id), r.synchronizer_id as string]));
+    const participants = new Map((await c.query("select id, participant_id, first_offset from canton_participants")).rows.map((r) => [Number(r.id), { id: r.participant_id as string, firstOffset: r.first_offset === null ? null : Number(r.first_offset) }]));
+    let after = -1, total = 0;
+    for (;;) {
+      const page = await c.query(
+        `select b.number, '0x' || encode(b.hash, 'hex') as hash, '0x' || encode(b.parent_hash, 'hex') as parent, b.update_id, encode(br.header, 'hex') as header, encode(br.txs, 'hex') as txs,
+           br.contract_id, encode(p.proof, 'hex') as proof, cu.participant, cu.reader_offset, to_char(cu.record_time at time zone 'UTC', ${TIMESTAMP}) as record_time,
+           to_char(cu.effective_at at time zone 'UTC', ${TIMESTAMP}) as effective_at, cu.synchronizer, cu.reader_template, cu.signatories
+         from blocks b join block_records br on br.number = b.number join proofs p on p.number = b.number join canton_updates cu on cu.update_id = b.update_id
+         where b.number > $1 order by b.number limit $2`, [after, size]);
+      for (const r of page.rows) {
+        const number = Number(r.number);
+        const signatories = (r.signatories as number[]).map((id) => need(parties, id, "signatory", number));
+        const operator = roles.get("operator"), confirmer = roles.get("confirmer");
+        if (operator === undefined || confirmer === undefined) throw new Error(`block ${number}: the database has no operator or confirmer party: the export is stopped`);
+        const line: ExportedRecord = {
+          updateId: r.update_id, offset: Number(r.reader_offset), recordTime: r.record_time, chainId: header.chainId, number, blockHash: r.hash, parentHash: r.parent,
+          headerHex: r.header, txsHex: r.txs, proofHex: r.proof, operator, confirmer,
+          synchronizerId: need(synchronizers, r.synchronizer, "synchronizer", number), effectiveAt: r.effective_at ?? r.record_time, contractId: r.contract_id,
+          template: need(templates, r.reader_template, "template", number), signatories, participant: need(participants, r.participant, "participant", number),
+        };
+        await write(JSON.stringify(line));
+        after = number;
+        total++;
+      }
+      if (page.rows.length < size) break;
     }
-    if (page.rows.length < PAGE) return total;
+    await c.query("commit");
+    return total;
+  } catch (e) {
+    try {
+      await c.query("rollback");
+    } catch {
+      broken = true;
+    }
+    throw e;
+  } finally {
+    c.release(broken);
   }
 }
 
 /** Writes the export to `path`, through a partial file that is renamed when it is whole, so a failed export leaves no file that looks finished. */
-export async function exportRecordsToFile(pool: Pool, path: string): Promise<number> {
+export async function exportRecordsToFile(pool: Pool, path: string, options: { pageSize?: number } = {}): Promise<number> {
   if (existsSync(path)) throw new Error(`${path} is already there: an export is never written over a file`);
   const partial = `${path}.partial`;
   const out = createWriteStream(partial, { flags: "wx" });
   try {
-    const written = await exportRecords(pool, async (line) => { if (!out.write(line + "\n")) await once(out, "drain"); });
+    const written = await exportRecords(pool, async (line) => { if (!out.write(line + "\n")) await once(out, "drain"); }, options);
     out.end();
     await once(out, "finish");
     renameSync(partial, path);

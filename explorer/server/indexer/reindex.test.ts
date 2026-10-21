@@ -9,7 +9,7 @@ import { makeDatabase, TEST_URL, checkRequired } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { IndexerStop } from "./errors.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
-import { exportRecordsToFile, readRecords } from "./records.ts";
+import { exportRecords, exportRecordsToFile, readRecords } from "./records.ts";
 import { REINDEX_KEY, reindexRange } from "./reindex.ts";
 
 // Everything a test makes is removed by its exact recorded path, and every database and indexer is closed when the test ends, pass or fail.
@@ -56,7 +56,7 @@ async function open(pool: Pool, chain: SyntheticChain, genesisFile?: string): Pr
 // What a table holds, without the columns that say when it was written (those are the clock's, not the chain's).
 const TABLES: Record<string, string[]> = {
   blocks: ["indexed_at"], block_records: [], proofs: [], transactions: [], tx_hashes: [], logs: [], gateway_legs: [], tx_traces: [], canton_updates: [],
-  canton_parties: [], canton_templates: [], tx_lifecycle: ["updated_at"], contracts: [], bytecodes: [],
+  canton_parties: [], canton_templates: [], canton_synchronizers: ["first_seen"], canton_participants: ["moved_in_at"], tx_lifecycle: ["updated_at"], contracts: [], bytecodes: [],
 };
 async function snapshot(pool: Pool, tables: string[] = Object.keys(TABLES)): Promise<Record<string, string[]>> {
   const out: Record<string, string[]> = {};
@@ -97,13 +97,14 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
 
       const reads = chain.reads;
       reads.calls.block = 0;
+      reads.calls.traces = 0;
       const done = await reindexRange({ pool, reads, gateway: GATEWAY }, 2, 4);
       expect(done).toEqual({ from: 2, to: 4, blocks: 3 });
       expect(reads.calls.block).toBe(3);
       expect(await snapshot(pool, ["tx_lifecycle"])).toEqual(kept);
-      // Stage 2 goes back before the range and works it out again; the stored records, proofs and updates are not read from Canton.
-      expect((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position).toBe("1");
-      expect((await pool.query("select count(*) as n from tx_traces where block_number >= 2")).rows[0].n).toBe("0");
+      // The derive cursor stays where it is, and the range's stage 2 rows are written again with its facts, from reth's traces of those blocks only.
+      expect((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position).toBe("5");
+      expect(reads.calls.traces).toBe(3);
       await indexer.deriveOnce();
       await pool.query("update tx_lifecycle set state_reason = null where final_block = 3");
       const first = await snapshot(pool);
@@ -138,6 +139,199 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
       await expect(reindexRange(o, 2, 4)).rejects.toThrow(/reth has no block for block 4/);
       // Block 2 and 3 were rewritten with the same rows; the failed block 4 was not touched.
       expect((await snapshot(pool, ["transactions", "logs", "blocks", "gateway_legs"]))).toEqual(Object.fromEntries(["transactions", "logs", "blocks", "gateway_legs"].map((t) => [t, before[t]])));
+    });
+  }, 60_000);
+
+  it("leaves tx_traces and the derive cursor as they were when a reindex is refused, whatever the reason", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      const indexer = await open(pool, chain);
+      await indexer.runOnce();
+      const before = await snapshot(pool);
+      expect(before.tx_traces!.length).toBeGreaterThan(0);
+      const cursor = async () => (await pool.query("select position from cursors where stream = 'derive'")).rows[0].position;
+      const o = { pool, reads: chain.reads, gateway: GATEWAY };
+      chain.reads.rethHead = 0; // reth has no block at all
+      await expect(reindexRange(o, 1, null)).rejects.toThrow(/reth has no block for block 1/);
+      expect(await snapshot(pool)).toEqual(before);
+      expect(await cursor()).toBe("5");
+      // Another chain instance behind reth: the hash of block 1 differs.
+      chain.reads.rethHead = 5;
+      await pool.query("update blocks set hash = decode($1, 'hex') where number = 1", ["77".repeat(32)]);
+      await expect(reindexRange(o, 1, null)).rejects.toThrow(/another chain instance/);
+      await pool.query("update blocks set hash = decode($1, 'hex') where number = 1", [chain.blocks[0]!.block.hash.slice(2)]);
+      // Traces that are not the block's transactions.
+      const real = chain.reads.traces;
+      chain.reads.traces = async (n) => (n === 2 ? (await real(3)) : real(n));
+      await expect(reindexRange(o, 1, null)).rejects.toBeInstanceOf(IndexerStop);
+      chain.reads.traces = async (n) => (n === 3 ? null : real(n));
+      await expect(reindexRange(o, 3, 3)).rejects.toThrow(/reth has no traces for block 3/);
+      chain.reads.traces = real;
+      expect(await snapshot(pool)).toEqual(before);
+      expect(await cursor()).toBe("5");
+    });
+  }, 60_000);
+
+  it("writes a block's stage 2 rows again only for blocks in the range and at or below the derive cursor, and never moves the cursor", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      const indexer = await open(pool, chain);
+      await indexer.runOnce();
+      const good = await snapshot(pool);
+      const reads = chain.reads;
+      const o = { pool, reads, gateway: GATEWAY };
+      // Damage the stage 2 rows of block 2, and put the derive cursor at block 3 (blocks 4 and 5 are not derived yet).
+      await pool.query("update tx_traces set call_count = 99, revert_reason = 'x' where block_number = 2");
+      await pool.query("delete from tx_traces where block_number >= 4");
+      await pool.query("update cursors set position = 3 where stream = 'derive'");
+      reads.calls.traces = 0;
+      await reindexRange(o, 2, 5);
+      expect(reads.calls.traces).toBe(2); // blocks 2 and 3 only
+      expect((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position).toBe("3");
+      expect((await pool.query("select count(*) as n from tx_traces where block_number >= 4")).rows[0].n).toBe("0");
+      await indexer.deriveOnce();
+      expect(await snapshot(pool)).toEqual(good);
+      // A range of one block reads one block's traces.
+      reads.calls.traces = 0;
+      await reindexRange(o, 1, 1);
+      expect(reads.calls.traces).toBe(1);
+    });
+  }, 60_000);
+
+  it("does not hold the inline indexer behind a catch-up of the chain after the range", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      chain.ledger.ledgerHead = 4;
+      const indexer = await open(pool, chain);
+      await indexer.runOnce();
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, 1);
+      chain.reads.calls.traces = 0;
+      chain.ledger.ledgerHead = 5;
+      expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 1 });
+      expect(chain.reads.calls.traces).toBe(1); // block 5's own, nothing else
+      expect((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position).toBe("5");
+    });
+  }, 60_000);
+
+  it("does not stop the inline indexer when the derive cursor is moved in the gap between its catch-up and its transaction", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      chain.ledger.ledgerHead = 3;
+      const indexer0 = await open(pool, chain);
+      await indexer0.runOnce();
+      await opened.pop()!.close();
+      chain.ledger.ledgerHead = 5;
+      // A pool whose next connection (the transaction of block 4, after its catch-up has returned) first finds the cursor moved back.
+      let armed = false;
+      const real = chain.reads.traces;
+      let seen = false;
+      chain.reads.traces = async (n) => { if (n === 4 && !seen) { seen = true; armed = true; } return real(n); };
+      const proxy = new Proxy(pool, {
+        get(target, prop) {
+          if (prop === "connect") {
+            return async () => {
+              if (armed) {
+                armed = false;
+                // Stage 2 put back before block 1, with its rows dropped: a consistent state, as an older reindex left it.
+                await target.query("delete from tx_traces");
+                await target.query("update cursors set position = 0 where stream = 'derive'");
+              }
+              return target.connect();
+            };
+          }
+          const v = Reflect.get(target, prop) as unknown;
+          return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+      const indexer = createIndexer({ pool: proxy, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+      opened.push(indexer);
+      await indexer.open();
+      const run = await indexer.runOnce();
+      expect(run).toEqual({ state: "caught-up", indexed: 2 });
+      expect((await pool.query("select position from cursors where stream = 'derive'")).rows[0].position).toBe("5");
+      expect((await pool.query("select count(*) as n from health_checks where status = 'down'")).rows[0].n).toBe("0");
+    });
+  }, 60_000);
+
+  it("exports one snapshot: a synchronizer made after the export began does not leave a hole in a line", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      await (await open(pool, chain)).runOnce();
+      const lines: string[] = [];
+      await exportRecords(pool, async (line) => {
+        lines.push(line);
+        if (lines.length === 2) {
+          // The indexer goes on writing: a new synchronizer, and block 5 now points at it.
+          await pool.query("insert into canton_synchronizers (synchronizer_id, first_seen) values ('late::sync', now())");
+          await pool.query("update canton_updates set synchronizer = (select id from canton_synchronizers where synchronizer_id = 'late::sync') where update_id = (select update_id from blocks where number = 5)");
+        }
+      }, { pageSize: 2 });
+      expect(lines).toHaveLength(6);
+      const last = JSON.parse(lines[5]!);
+      expect(last.number).toBe(5);
+      expect(last.synchronizerId).toBe(chain.blocks[4]!.record.synchronizerId);
+      expect(last.synchronizerId).not.toBe("late::sync");
+    });
+  }, 60_000);
+
+  it("refuses to write a line with a hole in it", async () => {
+    await inDb(async () => {
+      const pool = await newDb();
+      const chain = makeChain(SHAPES);
+      await (await open(pool, chain)).runOnce();
+      const file = scratch("records.jsonl");
+      await pool.query("alter table canton_updates drop constraint if exists canton_updates_synchronizer_fkey");
+      await pool.query("update canton_updates set synchronizer = 9999 where update_id = (select update_id from blocks where number = 3)");
+      await expect(exportRecordsToFile(pool, file)).rejects.toThrow(/block 3: its synchronizer/);
+      expect(() => readFileSync(file)).toThrow();
+    });
+  }, 60_000);
+
+  it("rebuilds from a file with a ledger that cannot be reached", async () => {
+    await inDb(async () => {
+      const chain = makeChain(SHAPES);
+      const poolA = await newDb();
+      await (await open(poolA, chain)).runOnce();
+      const file = scratch("records.jsonl");
+      await exportRecordsToFile(poolA, file);
+      const poolB = await newDb();
+      const dead = () => { throw new Error("Canton is not reachable"); };
+      const ledger = { ...chain.ledger, participantId: dead, ledgerEnd: dead, recordPages: dead } as unknown as typeof chain.ledger;
+      const indexer = createIndexer({ pool: poolB, reads: chain.reads, ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+      opened.push(indexer);
+      await indexer.open();
+      expect(await indexer.rebuild(readRecords(file))).toBe(5);
+      expect(await snapshot(poolB)).toEqual(await snapshot(poolA));
+    });
+  }, 60_000);
+
+  it("rebuilds on a database that is ahead of the file without moving its cursor back, and still checks the hashes", async () => {
+    await inDb(async () => {
+      const chain = makeChain(SHAPES);
+      const pool = await newDb();
+      const indexer = await open(pool, chain);
+      await indexer.runOnce();
+      const file = scratch("records.jsonl");
+      await exportRecordsToFile(pool, file);
+      const lines = readFileSync(file, "utf8").trim().split("\n");
+      const short = scratch("short.jsonl");
+      writeFileSync(short, lines.slice(0, 4).join("\n") + "\n"); // header and blocks 1 to 3
+      const cursor = async () => (await pool.query("select position, detail from cursors where stream = 'reader_updates'")).rows[0];
+      const at = await cursor();
+      const before = await snapshot(pool);
+      expect(await indexer.rebuild(readRecords(short))).toBe(0);
+      expect(await cursor()).toEqual(at);
+      expect(await snapshot(pool)).toEqual(before);
+      // A record with another hash for a block the database holds is the other chain instance's, and stops.
+      const wrong = scratch("wrong.jsonl");
+      const bad = { ...JSON.parse(lines[2]!), blockHash: "0x" + "77".repeat(32) };
+      writeFileSync(wrong, [lines[0], lines[1], JSON.stringify(bad)].join("\n") + "\n");
+      await expect(indexer.rebuild(readRecords(wrong))).rejects.toBeInstanceOf(IndexerStop);
     });
   }, 60_000);
 
@@ -188,7 +382,7 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
       }
       expect((await poolB.query("select key, value from meta order by key")).rows).toEqual((await poolA.query("select key, value from meta order by key")).rows);
       // Again on the database that has them: nothing is written twice.
-      expect(await rebuilt.rebuild(readRecords(file))).toBe(5);
+      expect(await rebuilt.rebuild(readRecords(file))).toBe(0);
       expect(await snapshot(poolB)).toEqual(await snapshot(poolA));
     });
   }, 60_000);

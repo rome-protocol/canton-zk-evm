@@ -126,7 +126,7 @@ export function createIndexer(o: IndexerOptions) {
       }
     }
     await o.pool.query("insert into cursors (stream, position, updated_at) values ('derive', 0, now()) on conflict do nothing");
-    participantId = await o.ledger.participantId();
+    // The participant is read from Canton when the walk first needs it (runOnce), not here: a rebuild from a file does not need Canton.
   }
 
   async function close(): Promise<void> {
@@ -162,7 +162,7 @@ export function createIndexer(o: IndexerOptions) {
     partitionsThrough = (Math.floor(n / width) + PARTITIONS_AHEAD + 1) * width - 1;
   }
 
-  async function indexRecord(r: BlockRecord, startOffset: number, participant: string = participantId as string): Promise<void> {
+  async function indexRecord(r: BlockRecord, startOffset: number, participant: string): Promise<void> {
     const n = r.number;
     await partitionsFor(n);
     const t0 = now();
@@ -186,7 +186,9 @@ export function createIndexer(o: IndexerOptions) {
       if (legProblem && done.written) await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n }, detail: legProblem.message }]);
       const w2 = now();
       o.onTiming?.({ block: n, stage: 1, readMs: read1, writeMs: w2 - w1, txs: block.transactions.length });
-      if (done.written && inline) {
+      // The derive cursor is read again under the shared lock: stage 2 follows in this transaction only when the cursor is right behind this block;
+      // otherwise (a catch-up is still owed) the block is left to catchUpDerive, and the walk goes on.
+      if (done.written && inline && (await deriveCursor(c)) === n - 1) {
         await stage2(c, n, traces as TxTrace[]);
         o.onTiming?.({ block: n, stage: 2, readMs: 0, writeMs: now() - w2, txs: block.transactions.length });
       }
@@ -198,9 +200,10 @@ export function createIndexer(o: IndexerOptions) {
     if (stopped) return { state: "stopped", indexed: 0, stop: stopped };
     let indexed = 0;
     try {
+      const me = (participantId ??= await o.ledger.participantId());
       const cursor = await readerCursor();
-      if (cursor.participant && cursor.participant !== participantId) {
-        throw new IndexerStop("participant", `the reader's cursor belongs to participant ${cursor.participant}, but this one is ${participantId}: offsets are local to a participant, and a move is an explicit step`, null);
+      if (cursor.participant && cursor.participant !== me) {
+        throw new IndexerStop("participant", `the reader's cursor belongs to participant ${cursor.participant}, but this one is ${me}: offsets are local to a participant, and a move is an explicit step`, null);
       }
       await clearStops(o.pool, ["participant"]);
       const end = await o.ledger.ledgerEnd();
@@ -211,7 +214,7 @@ export function createIndexer(o: IndexerOptions) {
         walk: for await (const page of o.ledger.recordPages(cursor.position, end)) {
           for (const r of page) {
             if (!isRunning()) break walk;
-            await indexRecord(r, from);
+            await indexRecord(r, from, me);
             from = r.offset;
             indexed++;
           }
@@ -323,8 +326,10 @@ export function createIndexer(o: IndexerOptions) {
 
   /**
    * Builds the database from an export of block records (design section 4.4): each record goes through stage 1 as if Canton had sent it, with
-   * every check, and reth is read as for any block. A record the database already holds is skipped, so it can be run on a database that has some
-   * of the blocks. The header must name this chain. Stage 2 follows when it is `behind`. Returns the records written.
+   * every check, and reth is read as for any block. A record at or below the database's head is not sent through stage 1 (that would move the
+   * reader's cursor back): it is skipped after its hash is checked against the stored block, so the rebuild can be run again, or resumed after
+   * an interruption, or on a database that has some of the blocks. The header must name this chain. Stage 2 follows when it is `behind`.
+   * Returns the records written.
    */
   async function rebuild(records: AsyncIterable<RecordsHeader | ExportedRecord>): Promise<number> {
     let written = 0;
@@ -336,6 +341,15 @@ export function createIndexer(o: IndexerOptions) {
       }
       if (item.chainId !== o.chainId) throw new Error(`block ${item.number}: the record is for chain ${item.chainId}, not ${o.chainId}`);
       try {
+        const have = await o.pool.query("select hash from blocks where number = $1", [item.number]);
+        const head = Number((await o.pool.query("select coalesce(max(number), 0) as n from blocks")).rows[0].n);
+        if (item.number <= head) {
+          const stored = have.rowCount ? "0x" + (have.rows[0].hash as Buffer).toString("hex") : null;
+          if (stored !== item.blockHash) {
+            throw new IndexerStop("C2", `block ${item.number} is indexed with hash ${stored ?? "(none)"}, but the record says ${item.blockHash}: this database belongs to another chain instance`, item.number);
+          }
+          continue;
+        }
         await indexRecord(item, item.participant.firstOffset ?? item.offset, item.participant.id);
       } catch (e) {
         if (e instanceof IndexerStop) throw await stop(e);
