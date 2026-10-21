@@ -340,6 +340,47 @@ class TheSetting(Lines):
         self.assertEqual((cut["cut_reason"], cut["idle_before_cut_ms"], cut["pool_waiting"]), ("gather", 2000, 2))
         self.assertEqual(len(self.one(s, "built")["tx_hashes"]), 2)   # the gather batched them
 
+    def test_a_pool_that_is_still_busy_after_a_block_is_cut_at_once(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.reth.tx_legs[t["hash"]] = []
+        p = self.producer(s, gather_ms=2000)
+        p.step()
+        self.now[0] += 2.0; p.step()   # the first transaction reached an idle pool: it waited the gather
+        self.assertEqual([l["cut_reason"] for l in self.journal(s, "cut")], ["gather"])
+        u = tx(BOB, 0, price=5)
+        s.reth.pool[BOB] = [u]   # waiting when the block committed
+        s.reth.tx_legs[u["hash"]] = []
+        self.now[0] += 0.1; p.step()
+        cuts = self.journal(s, "cut")
+        self.assertEqual([(c["cut_reason"], c["idle_before_cut_ms"]) for c in cuts], [("gather", 2000), ("pool", 0)])
+
+    def test_a_pool_that_empties_after_a_busy_block_gathers_again(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.reth.tx_legs[t["hash"]] = []
+        p = self.producer(s, gather_ms=2000)
+        p.step()
+        self.now[0] += 2.0; p.step()
+        self.now[0] += 0.1; p.step()   # the pool is empty
+        u = tx(BOB, 0, price=5)
+        s.reth.pool[BOB] = [u]
+        s.reth.tx_legs[u["hash"]] = []
+        self.now[0] += 0.1; p.step()
+        self.assertEqual(len(self.journal(s, "cut")), 1)   # waiting for more
+        self.now[0] += 2.0; p.step()
+        self.assertEqual([c["cut_reason"] for c in self.journal(s, "cut")], ["gather", "gather"])
+
+    def test_the_pool_count_of_a_heartbeat_on_an_empty_pool_is_zero(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.reth.tx_legs[t["hash"]] = []
+        p = self.producer(s, empty_every=30)
+        p.step()   # a block with one transaction
+        self.now[0] += 31; p.step()
+        cuts = self.journal(s, "cut")
+        self.assertEqual([(c["cut_reason"], c["pool_waiting"]) for c in cuts], [("pool", 1), ("heartbeat", 0)])
+
     def test_no_gather_cuts_at_once(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         self.producer(s).step()

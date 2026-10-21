@@ -963,6 +963,7 @@ class Producer:
         self.suspects: list = []          # transactions that were in two refused blocks together: tried one block each before any is left out
         self.probe = None                 # the suspect the next block may hold
         self.held = None                  # the pool holds nothing that can go in: {"count", "last", "next", "delay"}
+        self.pool_was_empty = True        # the last look at the pool found it empty (or there has been none): a gather starts only then
         self.snapshot = 0                 # how many transactions the pool held when the block now being made was decided on
         self.proof_kept: set = set()      # the transactions of the last block the input tool or the prover failed on, when it was the one before
         self.hunt = None                  # looking for the transaction that cannot be proven: {"live", "probe", "parked"}
@@ -1009,18 +1010,21 @@ class Producer:
         if h is None or now >= h["last"] + RECHECK_BASE:   # within RECHECK_BASE of the last look the pool is not even counted
             n = self.pending(self.cfg)
             self.sample_pool(n, now)
+            self.snapshot = n   # before the block is made: whatever arrives while it is made is seen as a change; 0 for an empty pool
             if n == 0:
                 self.held, self.reported_left, self.waiting_since = None, set(), None
+                self.pool_was_empty = True
             else:
-                self.snapshot = n   # before the block is made: whatever arrives while it is made is seen as a change
                 if self.waiting_since is None:
                     self.waiting_since = now
                 if h is None or now >= h["next"] or n != h["count"]:
                     left = self.waiting_since + self.gather_ms / 1000 - now
-                    if h is None and left > 0:   # an idle pool got its first transaction: wait a little for more to batch with it
+                    gathering = self.pool_was_empty   # only a transaction that reached an empty pool waits: a busy pool batches by itself
+                    if gathering and left > 0:   # an idle pool got its first transaction: wait a little for more to batch with it
                         self.pause = left
                     else:
-                        return "gather" if h is None and self.gather_ms > 0 else "pool"
+                        self.pool_was_empty = False
+                        return "gather" if gathering and self.gather_ms > 0 else "pool"
         if self.empty_every > 0 and now - self.last_block_at >= self.empty_every:
             return "heartbeat"
         return None
