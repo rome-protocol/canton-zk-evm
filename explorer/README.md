@@ -205,12 +205,12 @@ The explorer keeps its data in a PostgreSQL of its own, apart from the one Canto
 
 ```sh
 # the password file is the one network/explorer-db.sh made in the network's state folder
-EXPLORER_DB_PASSWORD_FILE=state/explorer-db.env node server/db/cli.ts migrate --head 0
+EXPLORER_DB_PASSWORD_FILE=../state/explorer-db.env node server/db/cli.ts migrate --head 0
 ```
 
 `server/db/migrate.ts` applies the files that a database has not seen, each in its own transaction, and records the SHA-256 of each file in `schema_migrations`. It refuses to run, and applies nothing, when an applied file has changed, when a file is missing, or when the numbers skip. Run twice, the second run changes nothing.
 
-The five large tables (`transactions`, `tx_traces`, `logs`, `internal_calls`, `token_transfers`) are split by block number into partitions of a fixed width, 250,000 blocks. The width is written to `meta` (`partition_width`) on the first run and cannot change afterwards. `server/db/partitions.ts` makes every partition from block 0 up to the head, and two more ahead of it, so that an insert never meets a block number with no partition. `db/schema.snapshot.txt` describes the schema as the database holds it; the tests compare a fresh database with it, so a change to the schema shows up in review. After a deliberate change, `UPDATE_SNAPSHOT=1` rewrites it.
+The five large tables (`transactions`, `tx_traces`, `logs`, `internal_calls`, `token_transfers`) are split by block number into partitions of a fixed width, 250,000 blocks. The width is written to `meta` (`partition_width`) on the first run and cannot change afterwards; a later run that names no width uses the recorded one, and one that names another is refused. Two maintenance runs at the same time take turns. `server/db/partitions.ts` makes every partition from block 0 up to the head, and two more ahead of it, so that an insert never meets a block number with no partition. `db/schema.snapshot.txt` describes the schema as the database holds it; the tests compare a fresh database with it, so a change to the schema shows up in review. After a deliberate change, `UPDATE_SNAPSHOT=1` rewrites it.
 
 The database tests need a PostgreSQL, and are skipped when `EXPLORER_TEST_DATABASE_URL` is not set. It names a database on a server where the user may create databases; each test makes one of its own and drops it. CI runs them against the image that `PINS` pins.
 

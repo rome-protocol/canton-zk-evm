@@ -1,7 +1,11 @@
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { migrate } from "./migrate.ts";
 import { DEFAULT_PARTITION_WIDTH, PARTITIONED_TABLES, ensurePartitions, partitionName } from "./partitions.ts";
 import { TEST_URL, checkRequired, withDatabase } from "./testing.ts";
+
+const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
 describe("partitionName", () => {
   it("is the table and the partition's index", () => {
@@ -55,10 +59,44 @@ describe.skipIf(!TEST_URL)("partition maintenance, on the pinned PostgreSQL", ()
       await ensurePartitions(pool, { head: 0, width: 1000 });
       expect(await bounds(pool, "transactions")).toEqual(["FOR VALUES FROM ('0') TO ('1000')", "FOR VALUES FROM ('1000') TO ('2000')", "FOR VALUES FROM ('2000') TO ('3000')"]);
       await expect(ensurePartitions(pool, { head: 0, width: DEFAULT_PARTITION_WIDTH })).rejects.toThrow(/1000 blocks wide/);
-      await expect(ensurePartitions(pool, { head: 5000 })).rejects.toThrow(/fixed once/);
       await ensurePartitions(pool, { head: 5000, width: 1000 });
     });
   });
+
+  it("uses the recorded width when none is asked for, and records the default only when nothing is recorded", async () => {
+    await withDatabase(async (pool) => {
+      await migrate(pool);
+      await ensurePartitions(pool, { head: 0, width: 1000 });
+      // No width: the recorded 1000 is used, not the default.
+      const more = await ensurePartitions(pool, { head: 5000 });
+      expect(more).toHaveLength(PARTITIONED_TABLES.length * 5);
+      expect((await pool.query("select value from meta where key = 'partition_width'")).rows[0].value).toBe("1000");
+      expect(await bounds(pool, "logs")).toHaveLength(8);
+    });
+  });
+
+  it("lets two maintenance runs start together: both succeed and each partition is made once", async () => {
+    await withDatabase(async (pool) => {
+      await migrate(pool);
+      const [a, b] = await Promise.all([ensurePartitions(pool, { head: 3_000_000 }), ensurePartitions(pool, { head: 3_000_000 })]);
+      const per = 3_000_000 / DEFAULT_PARTITION_WIDTH + 1 + 2;
+      expect([a.length, b.length].sort((x, y) => x - y)).toEqual([0, PARTITIONED_TABLES.length * per]);
+      expect(await bounds(pool, "transactions")).toHaveLength(per);
+    });
+  });
+
+  it("lets two runs of the command start together on a fresh database", async () => {
+    await withDatabase(async (pool, url) => {
+      const run = () => new Promise<{ code: number | null; out: string }>((resolve) => {
+        execFile(process.execPath, [cli, "migrate", "--head", "3000000"], { env: { ...process.env, EXPLORER_DATABASE_URL: url } }, (err, stdout, stderr) =>
+          resolve({ code: err ? ((err as { code?: number }).code ?? 1) : 0, out: stdout + stderr }));
+      });
+      const results = await Promise.all([run(), run()]);
+      expect(results.map((r) => r.out)).toEqual(results.map(() => expect.not.stringContaining("already exists")));
+      expect(results.map((r) => r.code)).toEqual([0, 0]);
+      expect(await bounds(pool, "transactions")).toHaveLength(3_000_000 / DEFAULT_PARTITION_WIDTH + 1 + 2);
+    });
+  }, 60_000);
 
   it("puts a row in the partition of its block number, and refuses a block beyond the last partition", async () => {
     await withDatabase(async (pool) => {

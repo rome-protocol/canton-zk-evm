@@ -58,7 +58,8 @@ step "the database"
 "$ROOT/network/postgres.sh" start
 
 step "the explorer's database"
-"$ROOT/network/explorer-db.sh" start
+# The chain does not depend on the explorer: if its database cannot start, the chain starts without it.
+"$ROOT/network/explorer-db.sh" start || echo "WARN: the explorer's database did not start (see above); the chain starts without it" >&2
 
 step "reth, on its data"
 # The container is gone after a reboot; the data is in $STATE/reth-data. One that still runs is stopped gently, so that reth writes its last blocks.

@@ -91,4 +91,21 @@ for k in CZE_PG_CONTAINER CZE_PG_PORT RETH_CONTAINER RETH_HTTP_PORT RETH_WS_PORT
   grep -q "$k=%s" "$ROOT/network/up.sh" || fail "up.sh does not write $k into persist.env"
   grep -q "$k" "$ROOT/network/persist-settings.sh" || fail "persist-settings.sh does not load $k"
 done
+# 6. The chain does not depend on the explorer's database: when it cannot start, restart.sh warns and goes on to reth (the next step).
+fresh
+sed -i.bak "s/^CHAIN_ID=.*/CHAIN_ID=$(sed -n 's/^CHAIN_ID=//p' "$ROOT/PINS")/; s/^CANTON_VERSION=.*/CANTON_VERSION=$(sed -n 's/^CANTON_VERSION=//p' "$ROOT/PINS")/" "$WORK/state/persist.env"
+for f in postgres.env jwt.hex genesis.json; do echo x > "$WORK/state/$f"; done
+mkdir -p "$WORK/state/canton" "$WORK/state/net" "$WORK/state/reth-data" "$WORK/repo/prover"
+echo x > "$WORK/state/canton/parties.env"; echo x > "$WORK/state/net/chain.json"; echo x > "$WORK/state/net/guest.txt"; echo x > "$WORK/state/net/dar.txt"; echo x > "$WORK/state/reth-data/f"
+: > "$WORK/repo/prover/common.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/cargo-zisk"; chmod +x "$WORK/bin/cargo-zisk"
+printf '#!/usr/bin/env bash\necho "port is already allocated" >&2; exit 125\n' > "$WORK/repo/network/explorer-db.sh"
+printf '#!/usr/bin/env bash\ntouch "%s/reth-launched"; exit 1\n' "$WORK" > "$WORK/repo/network/reth/launch.sh"
+chmod +x "$WORK/repo/network/explorer-db.sh" "$WORK/repo/network/reth/launch.sh"
+run "$WORK/repo/network/restart.sh" > "$WORK/restart.out" 2>&1 || true
+grep -q "WARN: the explorer's database did not start" "$WORK/restart.out" || fail "restart.sh did not warn that the explorer's database failed: $(tail -5 "$WORK/restart.out")"
+[ -e "$WORK/reth-launched" ] || fail "restart.sh stopped at the explorer's database and never started reth: $(tail -5 "$WORK/restart.out")"
+# up.sh has the same guard on the same step (it cannot be run here: it needs Canton).
+grep -q 'explorer-db.sh" start ||' "$ROOT/network/up.sh" || fail "up.sh lets a failing explorer database stop the chain"
+echo "ok: a failing explorer database does not stop the chain"
 echo "persist scripts tests passed"

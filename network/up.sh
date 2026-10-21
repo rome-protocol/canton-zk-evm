@@ -72,7 +72,8 @@ if [ "${CZE_PERSIST:-0}" = 1 ]; then
     "${RETH_HTTP_PORT:-8545}" "${RETH_WS_PORT:-8546}" "${RETH_ENGINE_PORT:-8551}" > "$CZE_STATE_DIR/persist.env"
   # The explorer's own database, apart from Canton's (network/explorer-db.sh). It starts empty; the explorer makes its schema.
   step "the explorer's database"
-  "$ROOT/network/explorer-db.sh" start
+  # The chain does not depend on the explorer: if its database cannot start, the chain starts without it.
+  "$ROOT/network/explorer-db.sh" start || echo "WARN: the explorer's database did not start (see above); the chain starts without it" >&2
 fi
 step "reth, through launch.sh"
 "$ROOT/network/reth/launch.sh"

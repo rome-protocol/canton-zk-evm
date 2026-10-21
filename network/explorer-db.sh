@@ -41,6 +41,9 @@ start() {
     sleep 1
   done
   [ "$ok" -ge 3 ] || { docker logs --tail 20 "$NAME" >&2; fail "the explorer's database does not answer"; }
+  # A volume whose database was dropped still starts, so make it again, as postgres.sh does.
+  docker exec "$NAME" psql -U explorer -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'explorer'" | grep -q 1 \
+    || docker exec "$NAME" createdb -U explorer explorer
 }
 
 case ${1:-} in
