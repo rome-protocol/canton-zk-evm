@@ -30,7 +30,7 @@ export const REINDEX_KEY = 7_207_371_004;
 
 export interface ReindexOptions {
   pool: Pool;
-  reads: Pick<FinalReads, "block" | "receipts" | "storageAt" | "traces" | "code">;
+  reads: Pick<FinalReads, "block" | "receipts" | "storageAt" | "traces" | "code" | "call">;
   gateway: string;
   log?: (line: string) => void;
   /** How long to wait for the lock (an in-flight block of the live indexer, or another reindex) before giving up. Default 60 s. */

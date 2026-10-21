@@ -1,0 +1,82 @@
+/**
+ * Proxy detection for the contracts a block made (design sections 4.3 and 5.2): the EIP-1967 implementation and beacon slots, the EIP-1822 slot (all
+ * read with `eth_getStorageAt` at the block) and the EIP-1167 minimal proxy, which is recognised from its code. A proxy is looked at once, in the
+ * block that made it, and `checked_block` says when: a proxy that is pointed at its implementation later is not seen again by this slice.
+ */
+import { hexToBigInt, keccak256, toHex } from "viem";
+import type { PoolClient } from "pg";
+import type { CreatedContract } from "./calls.ts";
+import type { FinalReads } from "./reads.ts";
+
+const slot = (name: string, minus = 0n): string => "0x" + (hexToBigInt(keccak256(toHex(name))) - minus).toString(16).padStart(64, "0");
+export const EIP1967_IMPLEMENTATION_SLOT = slot("eip1967.proxy.implementation", 1n);
+export const EIP1967_BEACON_SLOT = slot("eip1967.proxy.beacon", 1n);
+export const EIP1822_SLOT = slot("PROXIABLE");
+/** `implementation()` of a beacon. */
+const BEACON_IMPLEMENTATION = "0x5c60da1b";
+
+export type ProxyKind = "eip1967" | "eip1822" | "beacon" | "eip1167";
+export interface ProxyRow { proxy: string; kind: ProxyKind; implementation: string | null; beacon: string | null }
+
+const MINIMAL_PREFIX = "363d3d373d3d3d363d73", MINIMAL_SUFFIX = "5af43d82803e903d91602b57fd5bf3";
+
+/** The implementation an EIP-1167 minimal proxy delegates to, or null when the code is not exactly that proxy. */
+export function minimalProxyTarget(code: string): string | null {
+  const body = code.slice(2);
+  if (body.length !== MINIMAL_PREFIX.length + 40 + MINIMAL_SUFFIX.length || !body.startsWith(MINIMAL_PREFIX) || !body.endsWith(MINIMAL_SUFFIX)) return null;
+  return "0x" + body.slice(MINIMAL_PREFIX.length, MINIMAL_PREFIX.length + 40);
+}
+
+/** The address a storage word holds, or null when it is empty or is not an address (the top 12 bytes must be zero). */
+export function addressOfWord(word: string): string | null {
+  if (!/^0x0{24}[0-9a-f]{40}$/.test(word) || /^0x0{64}$/.test(word)) return null;
+  return "0x" + word.slice(26);
+}
+
+type ProxyReads = Pick<FinalReads, "storageAt" | "call">;
+
+async function detect(k: CreatedContract, n: number, reads: ProxyReads): Promise<ProxyRow | null> {
+  const target = minimalProxyTarget(k.runtimeCode);
+  if (target) return { proxy: k.address, kind: "eip1167", implementation: target, beacon: null };
+  const [impl, beacon, logic] = await Promise.all([EIP1967_IMPLEMENTATION_SLOT, EIP1967_BEACON_SLOT, EIP1822_SLOT].map((s) => reads.storageAt(k.address, s, n)));
+  const implementation = addressOfWord(impl!);
+  if (implementation) return { proxy: k.address, kind: "eip1967", implementation, beacon: null };
+  const beaconAddress = addressOfWord(beacon!);
+  if (beaconAddress) {
+    // The beacon names the implementation by answering `implementation()`; a beacon that does not answer is recorded with no implementation.
+    let behind: string | null = null;
+    try {
+      behind = addressOfWord(await reads.call(beaconAddress, BEACON_IMPLEMENTATION, n));
+    } catch {
+      behind = null;
+    }
+    return { proxy: k.address, kind: "beacon", implementation: behind, beacon: beaconAddress };
+  }
+  const logicAddress = addressOfWord(logic!);
+  if (logicAddress) return { proxy: k.address, kind: "eip1822", implementation: logicAddress, beacon: null };
+  return null;
+}
+
+const bytea = (h: string): Buffer => Buffer.from(h.slice(2), "hex");
+const WIDTH = 8;
+
+/** Looks at each contract made in block `n` and writes the proxies, in the caller's transaction. Returns how many. */
+export async function writeProxies(c: Pick<PoolClient, "query">, n: number, created: CreatedContract[], reads: ProxyReads): Promise<number> {
+  const last = new Map<string, CreatedContract>();
+  for (const k of created) last.set(k.address, k);
+  const todo = [...last.values()];
+  const found: ProxyRow[] = [];
+  for (let i = 0; i < todo.length; i += WIDTH) {
+    const rows = await Promise.all(todo.slice(i, i + WIDTH).map((k) => detect(k, n, reads)));
+    for (const r of rows) if (r) found.push(r);
+  }
+  if (found.length === 0) return 0;
+  await c.query(
+    `insert into proxies (proxy, kind, implementation, beacon, checked_block)
+     select t.p, t.k, t.i, t.b, $1::bigint from unnest($2::bytea[], $3::text[], $4::bytea[], $5::bytea[]) as t(p, k, i, b)
+     on conflict (proxy) do update set kind = excluded.kind, implementation = excluded.implementation, beacon = excluded.beacon, checked_block = excluded.checked_block
+       where proxies.checked_block <= excluded.checked_block`,
+    [n, found.map((p) => bytea(p.proxy)), found.map((p) => p.kind), found.map((p) => (p.implementation === null ? null : bytea(p.implementation))), found.map((p) => (p.beacon === null ? null : bytea(p.beacon)))],
+  );
+  return found.length;
+}

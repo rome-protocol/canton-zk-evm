@@ -6,6 +6,7 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import type { TraceFrame } from "./reads.ts";
+import { EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT } from "./proxies.ts";
 
 const opened: Indexer[] = [];
 async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
@@ -134,6 +135,46 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       await pool.query("update cursors set position = 0, detail = null where stream = 'reader_updates'");
       await indexer.runOnce();
       expect(await snapshot()).toEqual(before);
+      await indexer.close();
+    });
+  });
+
+  it("detects the proxies among the new contracts: EIP-1967, a beacon, EIP-1822 and a minimal proxy, and not a plain contract", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      const minimal = "0x363d3d373d3d3d363d73" + "bc".repeat(20) + "5af43d82803e903d91602b57fd5bf3";
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1), make([1], 0xa1, 0xb2), make([2], 0xa1, 0xb3), make([3], 0xa1, 0xb4, minimal), make([4], 0xa1, 0xb5)]);
+      chain.reads.storage[`${A(0xb1)}:${EIP1967_IMPLEMENTATION_SLOT}`] = word(0x1111);
+      chain.reads.storage[`${A(0xb2)}:${EIP1967_BEACON_SLOT}`] = word(0xbeac);
+      chain.reads.callResults[`${A(0xbeac)}:0x5c60da1b`] = word(0x2222);
+      chain.reads.storage[`${A(0xb3)}:${EIP1822_SLOT}`] = word(0x3333);
+      await indexer.runOnce();
+      const proxies = async () => rows(pool, "select encode(proxy, 'hex') as p, kind, encode(implementation, 'hex') as i, encode(beacon, 'hex') as b, checked_block from proxies order by proxy");
+      const found = await proxies();
+      expect(found).toEqual([
+        { p: A(0xb1).slice(2), kind: "eip1967", i: A(0x1111).slice(2), b: null, checked_block: "1" },
+        { p: A(0xb2).slice(2), kind: "beacon", i: A(0x2222).slice(2), b: A(0xbeac).slice(2), checked_block: "1" },
+        { p: A(0xb3).slice(2), kind: "eip1822", i: A(0x3333).slice(2), b: null, checked_block: "1" },
+        { p: A(0xb4).slice(2), kind: "eip1167", i: "bc".repeat(20), b: null, checked_block: "1" },
+      ]);
+      await pool.query("update cursors set position = 0, detail = null where stream = 'reader_updates'");
+      await indexer.runOnce();
+      expect(await proxies()).toEqual(found);
+      await indexer.close();
+    });
+  });
+
+  it("records a beacon that does not answer with no implementation, and finds no proxy in a contract that a failed call undid", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb2)]);
+      setFrames(chain, 1, 4, [frame([], { error: "Reverted" }), make([0], 0xa1, 0xb9)]);
+      chain.reads.storage[`${A(0xb2)}:${EIP1967_BEACON_SLOT}`] = word(0xbeac);
+      chain.reads.storage[`${A(0xb9)}:${EIP1967_IMPLEMENTATION_SLOT}`] = word(0x1111);
+      await indexer.runOnce();
+      expect(await rows(pool, "select kind, implementation, encode(beacon, 'hex') as b from proxies")).toEqual([{ kind: "beacon", implementation: null, b: A(0xbeac).slice(2) }]);
       await indexer.close();
     });
   });
