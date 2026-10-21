@@ -2,10 +2,10 @@ name: network
 
 on:
   pull_request:
-    paths: ["network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
   push:
     branches: [main]
-    paths: ["network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
 
 permissions:
   contents: read
@@ -44,6 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: POSTGRES_IMAGE
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin

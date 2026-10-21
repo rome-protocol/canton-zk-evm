@@ -1,0 +1,32 @@
+name: Pinned images
+description: >
+  Gets the Docker images that PINS pins by digest onto the runner: from the Actions cache (keyed by those digests) when it has
+  them, otherwise pulled by digest with retries and a growing wait, so one public registry's pull limit does not turn a job red.
+  Run it after checkout and before the first docker command of the job.
+inputs:
+  images:
+    description: The names in PINS of the images this job runs or builds from, separated by spaces (for example "RETH_IMAGE BUSYBOX_IMAGE").
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pinned-images.sh" resolve "$GITHUB_WORKSPACE/PINS" "$IMAGES"'
+      env:
+        IMAGES: ${{ inputs.images }}
+    - id: restore
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir }}
+        key: ${{ steps.resolve.outputs.key }}
+    - id: ensure
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pinned-images.sh" ensure'
+      env:
+        PINNED_IMAGES_CACHE_DIR: ${{ steps.resolve.outputs.dir }}
+    - if: steps.ensure.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir }}
+        key: ${{ steps.resolve.outputs.key }}

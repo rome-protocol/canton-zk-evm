@@ -100,4 +100,6 @@ if command -v sha256sum >/dev/null; then lic_sha=$(sha256sum "$ROOT/LICENSE" | c
 [ "$(jq -r .license "$ROOT/explorer/package.json")" = "Apache-2.0" ] || fail "explorer/package.json does not say Apache-2.0"
 [ "$(jq .private "$ROOT/explorer/package.json")" = true ] || fail "explorer/package.json is not private"
 [ "$(jq '[.dependencies, .devDependencies | to_entries[] | select(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)] | length' "$ROOT/explorer/package.json")" = 0 ] || fail "an explorer dependency is not pinned to one exact version"
+# Every workflow job that runs or builds from a pinned image gets it from the pinned-images action first (cache, else pulls with retries).
+python3 "$ROOT/tests/ci_images_static.py" || fail "a workflow job uses a pinned image without the pinned-images step"
 echo "static checks passed"

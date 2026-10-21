@@ -2,10 +2,10 @@ name: demo
 
 on:
   pull_request:
-    paths: ["demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
   push:
     branches: [main]
-    paths: ["demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", ".github/workflows/demo.yml"]
 
 permissions:
   contents: read
@@ -34,6 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: SOLC_IMAGE
       - run: demo/build-token.sh --check
 
   # Everything but the proof: real reth, real Canton and Daml package, real token standard, real builder, the real sidecar for
@@ -43,6 +46,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE EXPLORER_NODE_IMAGE EXPLORER_RUST_IMAGE
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
