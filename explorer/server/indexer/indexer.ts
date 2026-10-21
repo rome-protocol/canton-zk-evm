@@ -16,6 +16,7 @@ import { seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth, type HealthRow } from "./health.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
+import { markNightly, nightlyDue, runAudit, type AuditKind } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
@@ -40,6 +41,10 @@ export interface IndexerOptions {
   pollMs?: number;
   /** How often `start` runs the checks that are not tied to a block (C4, C5, the derive lag), in milliseconds. Default 2000. */
   checkMs?: number;
+  /** How often `start` runs C6's sample audit (20 random blocks against reth), in milliseconds. Default 10 minutes. The nightly audit of the previous day follows the first sample after 03:00 UTC. */
+  auditMs?: number;
+  /** For C6's choice of blocks. */
+  random?: () => number;
   /** After this long without reth having a block the record names, the health says so. */
   rethBehindMs?: number;
   /** After this many reads in a row that fail with a reth error (not just a block reth lacks), `reth_reads` says degraded. Default 3. */
@@ -339,6 +344,9 @@ export function createIndexer(o: IndexerOptions) {
     await o.pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'ok', null, now(), now()) on conflict (check_id) do update set checked_at = now()");
   }
 
+  /** C6 (design section 4.5): blocks fetched again from reth and compared with the index. Writes the row and returns it. */
+  const auditOnce = (kind: AuditKind): Promise<HealthRow> => runAudit(o.pool, o.reads, kind, o.random);
+
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
     let done = 0;
@@ -439,7 +447,22 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < checkMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks()]);
+    const auditMs = o.auditMs ?? 600_000;
+    const audits = async () => {
+      while (running) {
+        try {
+          await auditOnce("sample");
+          if (await nightlyDue(o.pool, new Date(now()))) {
+            await auditOnce("day");
+            await markNightly(o.pool, new Date(now()));
+          }
+        } catch (e) {
+          log(`indexer (audit): ${(e as Error).message}`);
+        }
+        for (let waited = 0; running && waited < auditMs; waited += 50) await sleep(50);
+      }
+    };
+    const finished = Promise.all([...loops.map((l) => l()), checks(), audits()]);
     return async () => { stopRequested = true; running = false; await finished; };
   }
 
@@ -480,7 +503,7 @@ export function createIndexer(o: IndexerOptions) {
     return written;
   }
 
-  return { open, close, runOnce, deriveOnce, checkOnce, start, rebuild, stopped: () => stopped };
+  return { open, close, runOnce, deriveOnce, checkOnce, auditOnce, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;
