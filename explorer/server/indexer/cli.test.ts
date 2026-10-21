@@ -7,9 +7,9 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { startFakeReth } from "../../test/fake-reth.ts";
 import { FAKE_PARTICIPANT, FAKE_READER } from "../../test/fake-ledger.ts";
 
-function run(env: Record<string, string>, stopAfterMs: number | null): Promise<{ code: number | null; out: string }> {
+function run(env: Record<string, string>, stopAfterMs: number | null, args: string[] = []): Promise<{ code: number | null; out: string }> {
   return new Promise((done) => {
-    const p = spawn("node", ["server/indexer/cli.ts"], { env: { PATH: process.env.PATH ?? "", ...env }, cwd: new URL("../..", import.meta.url).pathname });
+    const p = spawn("node", ["server/indexer/cli.ts", ...args], { env: { PATH: process.env.PATH ?? "", ...env }, cwd: new URL("../..", import.meta.url).pathname });
     let out = "";
     p.stdout.on("data", (d) => { out += d; });
     p.stderr.on("data", (d) => { out += d; });
@@ -25,8 +25,34 @@ describe("the indexer's command", () => {
     expect(r.out).toContain("GATEWAY_ADDRESS");
   });
 
+  it("refuses reset without --yes, and reader-moved without a participant, before it touches a database", async () => {
+    const reset = await run({ EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" }, null, ["reset"]);
+    expect(reset.code).toBe(1);
+    expect(reset.out).toContain("--yes");
+    const moved = await run({ EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" }, null, ["reader-moved"]);
+    expect(moved.code).toBe(1);
+    expect(moved.out).toContain("participant id");
+  });
+
   describe.skipIf(!TEST_URL)("against the database", () => {
     checkRequired();
+    it("reset --yes empties the tables and reader-moved records a move, through the command", async () => {
+      await withDatabase(async (pool, dbUrl) => {
+        await migrate(pool);
+        await pool.query("insert into meta (key, value) values ('chain_id', '1'), ('partition_width', '1000000')");
+        await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('PAR::old', 0, now())");
+        await pool.query("insert into cursors (stream, position, detail, updated_at) values ('reader_updates', 40, '{\"participant\":\"PAR::old\",\"block\":4}', now())");
+        const moved = await run({ EXPLORER_DATABASE_URL: dbUrl }, null, ["reader-moved", "PAR::new"]);
+        expect(moved.code).toBe(0);
+        expect(moved.out).toContain("PAR::new");
+        expect((await pool.query("select participant_id from canton_participants order by id")).rows.map((r) => r.participant_id)).toEqual(["PAR::old", "PAR::new"]);
+        const reset = await run({ EXPLORER_DATABASE_URL: dbUrl }, null, ["reset", "--yes"]);
+        expect(reset.code).toBe(0);
+        expect((await pool.query("select key from meta")).rows.map((r) => r.key)).toEqual(["partition_width"]);
+        expect((await pool.query("select count(*) as n from canton_participants")).rows[0].n).toBe("0");
+      });
+    }, 20_000);
+
     it("runs on an empty chain, writes the pins to meta, and stops cleanly when told to", async () => {
       const zero = "0x" + "00".repeat(32);
       const reth = await startFakeReth({

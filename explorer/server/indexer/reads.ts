@@ -141,6 +141,10 @@ export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs:
   return {
     /** Block n with its transactions, or null when reth does not have it. */
     block: (n: number) => read("eth_getBlockByNumber", [tag(n), true], (v) => (v === null ? null : block(v))),
+    /** The hash of block n (no transactions asked for), or null when reth does not have it. */
+    hashAt: (n: number) => read("eth_getBlockByNumber", [tag(n), false], (v) => (v === null ? null : hash(obj(v).hash))),
+    /** The number of reth's finalized block, or null when it has none. */
+    finalized: () => read("eth_getBlockByNumber", ["finalized", false], (v) => (v === null ? null : num(obj(v).number))),
     /** The receipts of block n, or null when reth does not have it. */
     receipts: (n: number) => read("eth_getBlockReceipts", [tag(n)], (v) => (v === null ? null : list(v).map(receipt))),
     /** The replay of every transaction of block n (`trace_replayBlockTransactions` with the "trace" tracer), or null when reth does not have it. */
