@@ -212,6 +212,22 @@ EXPLORER_DB_PASSWORD_FILE=../state/explorer-db.env node server/db/cli.ts migrate
 
 `server/db/migrate.ts` applies the files that a database has not seen, each in its own transaction, and records the SHA-256 of each file in `schema_migrations`. It refuses to run, and applies nothing, when an applied file has changed, when a file is missing, or when the numbers skip. Run twice, the second run changes nothing.
 
+### A new chain, and a moved reader
+
+The indexer keeps the update id of block 1's record in `meta` as `chain_instance`. A reset of the network starts a new chain from the same genesis, chain id and pins, so at every look the indexer also checks that (a) reth's block at the indexed head is the indexed one, (b) the reader's ledger end is not below the cursor's offset, and (c) the first record after the cursor is block head + 1 (or an indexed block with the same hash). When one fails it stops with the row `chain_instance` set to `down` and exit code 2, and it wipes nothing. Two commands are the only way on, and each refuses to run while an indexer holds the database (`reset` also refuses while an API instance is up, because its tracker and faucet write to the same tables, and refuses a database that is not the explorer's):
+
+```sh
+node server/indexer/cli.ts reset --yes                      # empties the explorer's tables for a new chain (keeps the migrations and the partition width)
+node server/indexer/cli.ts reader-moved <participant id>    # the reader party is now hosted by this participant; the indexer reads it from its start
+node server/indexer/cli.ts clear-check C10                    # C10 is ok again after a person has looked at the block it names; the row keeps who cleared it
+```
+
+The same commands run through npm as `npm run explorer -- reset --yes` (the `--` hands the rest to the command, not to npm). Not yet built: a switch for a throwaway local run that resets by itself when it meets a new chain (`INDEX_RESET_ON_NEW_CHAIN`, design section 4.4); today a person runs `reset --yes`.
+
+`reader-moved` adds the participant to `canton_participants`, keeps the old one's last offset, records the move in `meta` (`reader_move_N`) and puts the reader cursor at the new participant's start. Do it after hosting the reader on the new participant and letting the indexer read the old one past that moment. If the new participant starts after the next block, the indexer stops and names the gap.
+
+The indexer writes a row of `health_checks` for every check it runs: C1, C2, C3 and C7 are `down` on a failure, C4 (reth's finalized more than one block behind the newest record for over 2 s), C10 (the leg hash worked out again differs from `legs[N]`, naming the block; it stays degraded until `clear-check C10`) and `derive_lag` (over 60 s) are `degraded`, and C5 (the index behind the newest record) is `degraded` past 5 s and `down` past 30 s, counted from the record being read, or from the ledger end being ahead of the index when no record can be read. When reth's finalized block cannot be read, C4 is `degraded` with the error, and C5 and `derive_lag` are still written.
+
 The five large tables (`transactions`, `tx_traces`, `logs`, `internal_calls`, `token_transfers`) are split by block number into partitions of a fixed width, 250,000 blocks. The width is written to `meta` (`partition_width`) on the first run and cannot change afterwards; a later run that names no width uses the recorded one, and one that names another is refused. Two maintenance runs at the same time take turns. `server/db/partitions.ts` makes every partition from block 0 up to the head, and two more ahead of it, so that an insert never meets a block number with no partition. `db/schema.snapshot.txt` describes the schema as the database holds it; the tests compare a fresh database with it, so a change to the schema shows up in review. After a deliberate change, `UPDATE_SNAPSHOT=1` rewrites it.
 
 The database tests need a PostgreSQL, and are skipped when `EXPLORER_TEST_DATABASE_URL` is not set. It names a database on a server where the user may create databases; each test makes one of its own and drops it. CI runs them against the image that `PINS` pins.

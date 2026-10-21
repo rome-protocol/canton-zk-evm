@@ -32,3 +32,19 @@ export function decodeLeg(log: FinalLog, number: number): Leg {
 
 /** The storage key of `legs[number]`: `keccak256(abi.encode(number, 0))`, the mapping at slot 0. */
 export const legsSlot = (number: number): string => keccak256(encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [BigInt(number), 0n]));
+
+const LEG_WORDS = [{ type: "bytes32" }, { type: "uint8" }, { type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "bytes32" }] as const;
+
+/**
+ * The running leg hash of a block, worked out from its legs in log order (gateway/README.md): from 32 zero bytes, each leg replaces the value with
+ * `keccak256(abi.encode(previous, kind, id, token, account, amount, keccak256(bytes(party))))`. C10 compares this with `legs[N]` as reth stores it.
+ */
+export function legHash(legs: Leg[]): string {
+  let running = "0x" + "00".repeat(32);
+  for (const l of legs) {
+    running = keccak256(encodeAbiParameters(LEG_WORDS, [
+      running as `0x${string}`, l.kind, l.id as `0x${string}`, l.token as `0x${string}`, l.account as `0x${string}`, l.amount, keccak256(new TextEncoder().encode(l.party)),
+    ]));
+  }
+  return running;
+}
