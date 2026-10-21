@@ -348,7 +348,7 @@ describe("the faucet routes", () => {
   it("finds a ticket another instance wrote, through the store", async () => {
     const id = "cd".repeat(12);
     const store: FaucetStore = {
-      load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => undefined,
+      load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => true,
       find: async (x) => (x === id ? { id, to: BOB, ip: null, at: 1, status: "sent", hash: "0x" + "11".repeat(32), block: null, reason: null, tries: 0 } : null),
     };
     const { api } = await boot(chain(), { faucet: true, store });

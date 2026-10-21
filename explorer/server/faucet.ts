@@ -215,7 +215,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
   const checksFailed = new Map<string, { n: number; since: number }>();
   /** Set by stop() while a batch is going out: the batch ends after the send in hand. */
   let halted = false;
-  let writing: Promise<void> = Promise.resolve(), dirty = false, saving = false;
+  let writing: Promise<boolean> = Promise.resolve(true), dirty = false, saving = false;
 
   // --- what is kept across a restart, and, with a database, what the other instances keep
   const store: FaucetStore | null = o.store ?? (o.stateFile ? fileFaucetStore(o.stateFile) : null);
@@ -272,23 +272,26 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }, (e: Error) => { console.error(`faucet: cannot read its state: ${e.message}`); });
   }
 
-  /** Writes the state through the store. Writes that pile up become one. */
-  function save(): Promise<void> {
-    if (!store) return Promise.resolve();
+  /** Writes the state through the store. Writes that pile up become one. Says whether the last write went through: the batch about to be sent waits for that. */
+  function save(): Promise<boolean> {
+    if (!store) return Promise.resolve(true);
     dirty = true;
     if (saving) return writing;
     saving = true;
     writing = (async () => {
+      let ok = true;
       try {
         while (dirty) {
           dirty = false;
-          await store.save([...tickets.values()], () => ({ addresses: [...addresses], ips: [...ips], hourly }));
+          ok = await store.save([...tickets.values()], () => ({ addresses: [...addresses], ips: [...ips], hourly }));
         }
       } catch (e) {
         console.error(`faucet: cannot write its state: ${(e as Error).message}`);
+        ok = false;
       } finally {
         saving = false;
       }
+      return ok;
     })();
     return writing;
   }
@@ -519,7 +522,13 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }
     const batchId = going.length ? await store?.batchSigned?.(nonce, going.length, now()).catch(() => null) : null;
     for (const t of going) t.batch = batchId ?? null;
-    await save();
+    // The write must have gone through before the first send. If it did not, nothing is sent: a restart or a hand-over would find these requests queued
+    // with no bytes, sign them again from reth's count, and pay them twice.
+    if (!(await save())) {
+      console.error("faucet: the batch could not be written, so it was not sent");
+      for (const t of going) { t.raw = null; t.hash = null; t.nonce = null; t.batch = null; }
+      return;
+    }
     for (const t of going) {
       if (halted) break;
       const raw = t.raw as Hex, hash = t.hash!;

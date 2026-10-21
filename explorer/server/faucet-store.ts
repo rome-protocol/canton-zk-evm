@@ -26,8 +26,8 @@ export type ClaimRefusal = "address" | "ip" | "hour";
  */
 export interface FaucetStore {
   load(w: LoadWindow): FaucetState | Promise<FaucetState>;
-  /** Writes what changed. Never throws: a failure is logged, and the next write tries again. */
-  save(tickets: Ticket[], limits: () => Pick<FaucetState, "addresses" | "ips" | "hourly">): Promise<void>;
+  /** Writes what changed. Resolves false when the write did not happen (a failure is logged, and the next write tries again); it never throws. The batch that is about to be sent waits for true. */
+  save(tickets: Ticket[], limits: () => Pick<FaucetState, "addresses" | "ips" | "hourly">): Promise<boolean>;
   /** Checks the limits against every instance's requests and writes the request, in one step. Null when it was taken. */
   claim?(t: Ticket, rules: ClaimRules): Promise<ClaimRefusal | null>;
   /** Tickets another instance wrote since the last call. */
@@ -75,8 +75,10 @@ export function fileFaucetStore(file: string): FaucetStore {
         mkdirSync(dirname(file), { recursive: true });
         await writeFile(`${file}.tmp`, body, { mode: 0o600 });
         await rename(`${file}.tmp`, file);
+        return true;
       } catch (e) {
         console.error(`faucet: cannot write ${file}: ${(e as Error).message}`);
+        return false;
       }
     },
   };
@@ -147,12 +149,13 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
   const written = new Map<string, string>();
   let cursor: Date | null = null;
 
-  async function put(c: PoolClient, t: Ticket, keepExisting = false): Promise<void> {
+  /** Writes a ticket as it stands in the copy it is given, and says what it wrote. The caller records it as written once the transaction has committed. */
+  async function put(c: PoolClient, t: Ticket, keepExisting = false): Promise<[string, string]> {
     await c.query(INSERT + (keepExisting ? " nothing" : UPDATE), [
       uuidOf(t.id), bytes(t.to), bytes(t.ip) ?? Buffer.alloc(0), amountWei.toString(), t.status, t.reason, t.batch ?? null, t.nonce ?? null, bytes(t.hash), bytes(t.raw),
       t.status !== "failed", new Date(t.at), new Date(now()), t.status === "final" ? t.block : null, t.tries, t.sentNonce ?? null, t.watch === true, 
     ]);
-    written.set(t.id, signature(t));
+    return [t.id, signature(t)];
   }
 
   async function inTransaction<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -192,16 +195,22 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       return { addresses: [...addresses], ips: [...ips], hourly, tickets };
     },
     async save(tickets) {
-      const changed = tickets.filter((t) => written.get(t.id) !== signature(t) && !t.claiming);
-      if (!changed.length) return;
+      // The tickets change in place while a write is on its way, so what is written, and what is marked as written, is one copy.
+      const changed = tickets.filter((t) => written.get(t.id) !== signature(t) && !t.claiming).map((t) => ({ ...t }));
+      if (!changed.length) return true;
       try {
-        await inTransaction(async (c) => { for (const t of changed) await put(c, t); });
+        const done = await inTransaction(async (c) => { const out: Array<[string, string]> = []; for (const t of changed) out.push(await put(c, t)); return out; });
+        for (const [id, sig] of done) written.set(id, sig);
+        return true;
       } catch (e) {
         console.error(`faucet: cannot write the database: ${(e as Error).message}`);
+        return false;
       }
     },
     async claim(t, r) {
-      return inTransaction(async (c) => {
+      const copy = { ...t };
+      let wrote: [string, string] | null = null;
+      const refused = await inTransaction(async (c) => {
         await c.query("select pg_advisory_xact_lock($1, $2)", [LOCK_CLASS, CLAIM_LOCK]);
         const { rows } = await c.query<{ address: boolean; ip: boolean; hour: string }>(
           `select exists (select 1 from faucet_requests where address = $1 and counts and requested_at > $2) as address,
@@ -213,9 +222,11 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
         if (s.address) return "address";
         if (s.ip) return "ip";
         if (Number(s.hour) >= r.maxPerHour) return "hour";
-        await put(c, t);
+        wrote = await put(c, copy);
         return null;
       });
+      if (wrote) written.set(wrote[0], wrote[1]);
+      return refused;
     },
     async changes() {
       const { rows } = await pool.query<Row>(`select ${COLUMNS} from faucet_requests where updated_at > $1::timestamptz - interval '5 seconds' order by updated_at`, [cursor ?? new Date(0)]);

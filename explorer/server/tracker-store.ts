@@ -167,9 +167,11 @@ export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
     async save(entries) {
       const changed = entries.filter((e) => written.get(e.hash) !== signature(e));
       if (!changed.length) return;
+      // The entries change in place while a write is on its way, so what is written, and what is marked as written, is one copy.
+      const copy = changed.map((e) => ({ ...e }));
       try {
-        await write(changed, false);
-        for (const e of changed) written.set(e.hash, signature(e));
+        await write(copy, false);
+        for (const e of copy) written.set(e.hash, signature(e));
       } catch (e) {
         console.error(`tracker: cannot write the database: ${(e as Error).message}`);
       }
