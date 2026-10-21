@@ -6,6 +6,22 @@ const ROOT = "0x" + "cd".repeat(32);
 const pinsFile = `# stand-in pins\nchain_id=770101\nprogramVK=${VK}\nrootC=${ROOT}\n`;
 const load = (env: Record<string, string> = {}, file = pinsFile) => loadConfig({ PINS_FILE: "/run/net/guest.txt", READER_PARTY: "reader::1220ab", ...env }, () => file);
 
+describe("the database for the tracker and the faucet", () => {
+  it("is on when it is named, and the faucet then needs the key its client hashes are made with", () => {
+    expect(load({ EXPLORER_DATABASE_URL: "postgres://u@h/d" }).database).toEqual({ connectionString: "postgres://u@h/d" });
+    expect(load({ EXPLORER_DATABASE_URL: "postgres://u@h/d" }).faucet.clientKeyFile).toBeNull();
+    expect(() => load({ EXPLORER_DATABASE_URL: "postgres://u@h/d", FAUCET_KEY_FILE: "/k" })).toThrow(/FAUCET_CLIENT_KEY_FILE/);
+    const c = load({ EXPLORER_DATABASE_URL: "postgres://u@h/d", FAUCET_KEY_FILE: "/k", FAUCET_CLIENT_KEY_FILE: "/ck" });
+    expect(c.faucet.clientKeyFile).toBe("/ck");
+    expect(load({ FAUCET_KEY_FILE: "/k" }).database).toBeNull(); // files only: no hash key needed
+  });
+
+  it("says in a ConfigError, naming the file, when the password file has no password", () => {
+    expect(() => load({ EXPLORER_DB_PASSWORD_FILE: "/run/pw" })).toThrow(ConfigError);
+    expect(() => load({ EXPLORER_DB_PASSWORD_FILE: "/run/pw" })).toThrow(/POSTGRES_PASSWORD/);
+  });
+});
+
 describe("settings", () => {
   it("has working defaults, and the chain's coin is tROME", () => {
     const c = load();
@@ -13,7 +29,8 @@ describe("settings", () => {
       host: "127.0.0.1", port: 8088, chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 },
       rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", pollMs: 2000,
     });
-    expect(c.faucet).toEqual({ keyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null });
+    expect(c.database).toBeNull();
+    expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null });
     expect(c.captcha).toBeNull();
   });
 

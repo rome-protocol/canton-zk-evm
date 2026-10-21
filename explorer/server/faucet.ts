@@ -143,7 +143,7 @@ export interface Ticket {
   claiming?: boolean;
 }
 
-const TICKETS_MAX = 10000;
+export const TICKETS_MAX = 10000;
 const HOUR = 3600_000;
 /** How long the faucet follows, by hash, a transfer the tracker stopped following. After this the ticket says so and is left. */
 const WATCH_MS = 48 * HOUR;

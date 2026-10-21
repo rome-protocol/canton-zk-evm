@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -242,10 +242,30 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async importState(s, hash) {
       let n = 0;
       await inTransaction(async (c) => {
+        const addressAt = new Map<string, number>(), clientAt = new Map<string, number>(), hourAt: number[] = [];
         for (const t of s.tickets) {
           if (!/^[0-9a-f]{24}$/.test(t.id) || !/^0x[0-9a-f]{40}$/.test(t.to)) continue;
-          await put(c, { ...t, ip: t.ip === null ? null : hash(t.ip) }, true);
+          const ip = t.ip === null ? null : hash(t.ip);
+          await put(c, { ...t, ip }, true);
           n++;
+          if (t.status === "failed") continue;
+          addressAt.set(t.to, Math.max(addressAt.get(t.to) ?? 0, t.at));
+          if (ip !== null) clientAt.set(ip, Math.max(clientAt.get(ip) ?? 0, t.at));
+          hourAt.push(t.at);
+        }
+        // A limit can outlive its ticket (the file keeps the last 10,000 tickets, and the limits for as long as their windows). The limit
+        // comes over as a request of its own that is already settled, so it still counts and nothing is sent for it.
+        const limitOnly = async (to: string, ip: string | null, at: number): Promise<void> => {
+          await put(c, { id: randomBytes(12).toString("hex"), to, ip, at, status: "final", hash: null, block: null, reason: "a limit imported from the old file", tries: 0 });
+        };
+        for (const [a, at] of s.addresses) if (/^0x[0-9a-f]{40}$/.test(a) && (addressAt.get(a) ?? -1) < at) { await limitOnly(a, null, at); hourAt.push(at); }
+        for (const [k, at] of s.ips) { const ip = hash(k); if ((clientAt.get(ip) ?? -1) < at) { await limitOnly("0x", ip, at); hourAt.push(at); } }
+        // The hour's count: what the file counted that the requests above do not show.
+        const seen = new Map<number, number>();
+        for (const at of hourAt) seen.set(at, (seen.get(at) ?? 0) + 1);
+        for (const at of s.hourly) {
+          if ((seen.get(at) ?? 0) > 0) { seen.set(at, seen.get(at)! - 1); continue; }
+          await limitOnly("0x", null, at);
         }
       });
       return n;
