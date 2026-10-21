@@ -111,7 +111,8 @@ const LIFECYCLE = `
   select tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends, now()
     from unnest($1::bytea[], $2::timestamptz[], $3::text[], $4::bytea[], $5::bigint[], $6::text[], $7::text[], $8::int[])
       as t(tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends)
-  on conflict (tx_hash) do update set
+  on conflict (tx_hash) do`;
+const LIFECYCLE_UPDATE = ` update set
     accepted_at = coalesce(tx_lifecycle.accepted_at, excluded.accepted_at),
     accepted_via = coalesce(tx_lifecycle.accepted_via, excluded.accepted_via),
     sender = coalesce(tx_lifecycle.sender, excluded.sender),
@@ -120,6 +121,8 @@ const LIFECYCLE = `
     state = case when tx_lifecycle.state = 'final' then 'final' else excluded.state end,
     state_reason = case when tx_lifecycle.state = 'final' then tx_lifecycle.state_reason else excluded.state_reason end,
     updated_at = now()`;
+/** An import leaves a lifecycle row that exists alone, so a second import never rolls a state back. */
+const LIFECYCLE_KEEP = " nothing";
 
 /** The list in the explorer's database. Writes are batches of changed entries. Rows are never deleted by the tracker; retention removes them. */
 export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
@@ -139,7 +142,7 @@ export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
         col((e) => e.reason), col((e) => e.block), col((e) => (e.blockHash ? bytes(e.blockHash) : null)), col((e) => e.updateId),
       ];
       await c.query(UPSERT.head + (keepExisting ? UPSERT.keep : UPSERT.update), params);
-      await c.query(LIFECYCLE, [
+      await c.query(LIFECYCLE + (keepExisting ? LIFECYCLE_KEEP : LIFECYCLE_UPDATE), [
         col((e) => bytes(e.hash)), col((e) => at(e.addedAt)), col((e) => e.via ?? null), col((e) => bytes(e.from)), col((e) => e.nonce), col((e) => e.state), col((e) => e.reason),
         col((e) => Math.max(0, e.attempts - 1)),
       ]);

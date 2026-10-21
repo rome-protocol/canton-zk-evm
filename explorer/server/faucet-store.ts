@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -38,7 +38,7 @@ export interface FaucetStore {
   batchSent?(id: number, at: number): Promise<void>;
   /** Takes the tickets of an old file once, leaving rows that exist alone. */
   importState?(s: FaucetState, hash: (clientKey: string) => string): Promise<number>;
-  /** Removes signed bytes of settled requests, and the client hash of requests older than 90 days. */
+  /** Removes signed bytes of settled requests, and the settled requests older than 90 days after adding them to their day's count. */
   purge?(now: number): Promise<void>;
 }
 
@@ -128,7 +128,8 @@ function ticketOf(r: Row): Ticket {
   return {
     id: idOf(r.ticket), to: "0x" + r.address.toString("hex"), ip: r.client_key.length ? r.client_key.toString("hex") : null, at: r.requested_at.getTime(),
     status: r.state as TicketStatus, hash: hexOf(r.tx_hash, true), block: r.final_block === null ? null : Number(r.final_block), reason: r.reason, tries: r.tries,
-    nonce: r.nonce === null ? null : Number(r.nonce), raw: hexOf(r.signed_raw, true), sentNonce: r.sent_nonce === null ? null : Number(r.sent_nonce), watch: r.watching,
+    // The column keeps the payout's nonce for good; the ticket carries it only while the batch is signed and not yet sent.
+    nonce: r.nonce === null || (r.state !== "queued" && r.signed_raw === null) ? null : Number(r.nonce), raw: hexOf(r.signed_raw, true), sentNonce: r.sent_nonce === null ? null : Number(r.sent_nonce), watch: r.watching,
     batch: r.batch_id === null ? null : Number(r.batch_id),
   };
 }
@@ -152,7 +153,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
   /** Writes a ticket as it stands in the copy it is given, and says what it wrote. The caller records it as written once the transaction has committed. */
   async function put(c: PoolClient, t: Ticket, keepExisting = false): Promise<[string, string]> {
     await c.query(INSERT + (keepExisting ? " nothing" : UPDATE), [
-      uuidOf(t.id), bytes(t.to), bytes(t.ip) ?? Buffer.alloc(0), amountWei.toString(), t.status, t.reason, t.batch ?? null, t.nonce ?? null, bytes(t.hash), bytes(t.raw),
+      uuidOf(t.id), bytes(t.to), bytes(t.ip) ?? Buffer.alloc(0), amountWei.toString(), t.status, t.reason, t.batch ?? null, t.nonce ?? t.sentNonce ?? null, bytes(t.hash), bytes(t.raw),
       t.status !== "failed", new Date(t.at), new Date(now()), t.status === "final" ? t.block : null, t.tries, t.sentNonce ?? null, t.watch === true, 
     ]);
     return [t.id, signature(t)];
@@ -266,8 +267,13 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
         }
         // A limit can outlive its ticket (the file keeps the last 10,000 tickets, and the limits for as long as their windows). The limit
         // comes over as a request of its own that is already settled, so it still counts and nothing is sent for it.
+        // The id comes from the limit itself (a keyed hash of its kind, key, time and place among equals), so a second import writes the same rows and the existing ones stay.
+        const placeOf = new Map<string, number>();
         const limitOnly = async (to: string, ip: string | null, at: number): Promise<void> => {
-          await put(c, { id: randomBytes(12).toString("hex"), to, ip, at, status: "final", hash: null, block: null, reason: "a limit imported from the old file", tries: 0 });
+          const key = `limit|${to}|${ip ?? ""}|${at}`;
+          const nth = (placeOf.get(key) ?? 0) + 1;
+          placeOf.set(key, nth);
+          await put(c, { id: hash(`${key}|${nth}`).slice(0, 24), to, ip, at, status: "final", hash: null, block: null, reason: "a limit imported from the old file", tries: 0 }, true);
         };
         for (const [a, at] of s.addresses) if (/^0x[0-9a-f]{40}$/.test(a) && (addressAt.get(a) ?? -1) < at) { await limitOnly(a, null, at); hourAt.push(at); }
         for (const [k, at] of s.ips) { const ip = hash(k); if ((clientAt.get(ip) ?? -1) < at) { await limitOnly("0x", ip, at); hourAt.push(at); } }
@@ -284,6 +290,14 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async purge(t) {
       await pool.query("update faucet_requests set signed_raw = null where signed_raw is not null and state in ('final', 'failed')");
       await pool.query("update faucet_requests set client_key = ''::bytea where client_key <> ''::bytea and requested_at < $1", [new Date(t - CLIENT_HASH_KEPT_MS)]);
+      // Settled requests older than 90 days leave only their day's count, in one step so a request is never deleted without being counted.
+      await pool.query(
+        `with old as (delete from faucet_requests where requested_at < $1 and state in ('final', 'failed') returning requested_at, state)
+         insert into faucet_daily_counts (day, requests, failed)
+           select (requested_at at time zone 'UTC')::date, count(*)::int, (count(*) filter (where state = 'failed'))::int from old group by 1
+         on conflict (day) do update set requests = faucet_daily_counts.requests + excluded.requests, failed = faucet_daily_counts.failed + excluded.failed`,
+        [new Date(t - CLIENT_HASH_KEPT_MS)],
+      );
     },
   };
 }

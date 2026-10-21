@@ -215,3 +215,62 @@ d("the tracker's leader follows a transaction a follower added again", () => {
     expect(calls.filter((c) => c.startsWith("a:"))).not.toEqual([]);
   });
 });
+
+d("an import that runs twice changes nothing the second time", () => {
+  it("the tracker's lifecycle keeps what the database says, and the faucet's limit rows are not added again", async () => {
+    const e: Entry = { hash: hashOf(1), raw: "0x" + "02".repeat(30), from: addr(7), nonce: 0, state: "pending", reason: null, block: null, blockHash: null, updateId: null, attempts: 1, refused: 0, addedAt: 1000, lastSendAt: 1000, settledAt: null };
+    const ts = databaseTrackerStore(db.pool, 100);
+    await ts.importEntries!([e]);
+    await db.pool.query("update tx_lifecycle set state = 'dropped', resends = 4");
+    await ts.importEntries!([e]);
+    expect((await db.pool.query("select state, resends from tx_lifecycle")).rows).toEqual([{ state: "dropped", resends: 4 }]);
+
+    const fs = databaseFaucetStore(db.pool, COIN);
+    const hash = clientHasher(Buffer.alloc(32, 9));
+    const now = Date.now();
+    const state = { addresses: [[addr(1), now - 1000]] as Array<[string, number]>, ips: [["8.8.8.8", now - 500]] as Array<[string, number]>, hourly: [now - 1000, now - 1000, now - 700], tickets: [] };
+    await fs.importState!(state, hash);
+    const count = async () => Number((await db.pool.query("select count(*) from faucet_requests")).rows[0].count);
+    const first = await count();
+    expect(first).toBeGreaterThan(0);
+    await fs.importState!(state, hash);
+    expect(await count()).toBe(first);
+  });
+});
+
+d("the faucet's table keeps the payout's nonce, and requests older than 90 days leave only the daily counts", () => {
+  it("holds the nonce of a sent request, and counts then deletes the old ones", async () => {
+    const raws: string[] = [];
+    const fake = await startFakeReth({
+      eth_getTransactionCount: () => "0x" + (3 + raws.length).toString(16),
+      eth_getBlockByNumber: () => ({ number: "0x1", hash: hashOf(1), parentHash: hashOf(0), timestamp: "0x1", gasUsed: "0x0", gasLimit: "0x1c9c380", baseFeePerGas: "0x7", miner: addr(0), stateRoot: hashOf(2), transactions: [] }),
+      eth_gasPrice: "0x3b9aca07", eth_maxPriorityFeePerGas: "0x3b9aca00", eth_getBalance: () => "0x" + (10n ** 30n).toString(16),
+      eth_getTransactionByHash: () => null,
+      eth_sendRawTransaction: (p: unknown[]) => { raws.push(p[0] as string); return keccak256(p[0] as Hex); },
+    });
+    closers.push(() => fake.close());
+    const store = databaseFaucetStore(db.pool, COIN);
+    const f = createFaucet({
+      key: KEY, chainId: 770101, amountWei: COIN, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 100000, batch: 5, queueMax: 5000, stateFile: null, captcha: null,
+      reth: createReth(fake.url, 5000), store, leader: advisoryLeader({ connectionString: db.url }, FAUCET_LOCK), clientKeyHash: clientHasher(Buffer.alloc(32, 9)),
+    });
+    await f.ready();
+    closers.push(() => f.close());
+    expect((await f.request(addr(1), { ip: "8.8.1.1" })).status).toBe(202);
+    await f.process();
+    await f.flush();
+    expect((await db.pool.query("select state, nonce::int n from faucet_requests")).rows).toEqual([{ state: "sent", n: 3 }]);
+
+    // A request from long ago, settled: after the purge its row is gone and its day's count remains.
+    const old = new Date(Date.now() - 100 * 86400_000);
+    await db.pool.query(
+      `insert into faucet_requests (ticket, address, client_key, amount, state, counts, requested_at, updated_at) values
+        ('11111111-1111-1111-1111-111111111111', $1, ''::bytea, 1, 'final', true, $2, now()), ('22222222-2222-2222-2222-222222222222', $1, ''::bytea, 1, 'failed', false, $2, now())`,
+      [Buffer.alloc(20, 1), old],
+    );
+    await store.purge!(Date.now());
+    expect(Number((await db.pool.query("select count(*) from faucet_requests")).rows[0].count)).toBe(1);
+    const days = (await db.pool.query("select day::text, requests::int, failed::int from faucet_daily_counts")).rows;
+    expect(days).toEqual([{ day: old.toISOString().slice(0, 10), requests: 2, failed: 1 }]);
+  });
+});

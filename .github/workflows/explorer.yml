@@ -92,4 +92,4 @@ jobs:
             -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:ci-only@127.0.0.1:5432/explorer \
             -e EXPLORER_DATABASE_URL=postgres://explorer:ci-only@127.0.0.1:5432/explorer \
             -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
-            sh -c "npm ci --ignore-scripts && npx vitest run server/db server/storage.test.ts && EXPLORER_TEST_STORE=database npx vitest run server/tracker.test.ts server/faucet.test.ts && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"
+            sh -c "npm ci --ignore-scripts && npx vitest run server/db server/storage.test.ts server/store-races.test.ts && EXPLORER_TEST_STORE=database npx vitest run server/tracker.test.ts server/faucet.test.ts && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"

@@ -246,6 +246,13 @@ table faucet_batches
   constraint faucet_batches_pkey PRIMARY KEY (batch_id)
   CREATE UNIQUE INDEX faucet_batches_pkey ON public.faucet_batches USING btree (batch_id)
 
+table faucet_daily_counts
+  column day date not null
+  column requests integer not null
+  column failed integer not null
+  constraint faucet_daily_counts_pkey PRIMARY KEY (day)
+  CREATE UNIQUE INDEX faucet_daily_counts_pkey ON public.faucet_daily_counts USING btree (day)
+
 table faucet_requests
   column ticket uuid not null
   column address bytea not null
