@@ -30,6 +30,7 @@ mkdir -p "$S/canton" "$S/net" "$S/faucet"
 printf 'OPERATOR_PARTY=operator::1220aa\nREADER_PARTY=reader::1220bb\n' > "$S/canton/parties.env"
 printf 'programVK=0x%s\nrootC=0x%s\n' "$(printf 'cd%.0s' $(seq 32))" "$(printf 'ef%.0s' $(seq 32))" > "$S/net/guest.txt"
 printf 'SECRET-KEY-TEXT\n' > "$S/faucet/key"
+printf '{"alloc":{}}\n' > "$S/genesis.json"   # what network/make-state.sh writes: the genesis reth runs
 printf 'POSTGRES_PASSWORD=statepw\n' > "$S/explorer-db.env"   # what network/explorer-db.sh makes: the default database of a run
 dry() { EXPLORER_DRY_RUN=1 CZE_STATE_DIR="$S" "$ROOT/explorer/run.sh" "$@"; }
 has() { grep -qF -- "$2" <<<"$1" || fail "$3: no \"$2\" in: $1"; }
@@ -142,6 +143,9 @@ has "$indexer" "-e CHAIN_ID=$CHAIN_ID" "the indexer is told the chain id"
 has "$indexer" "-e READER_PARTY=reader::1220bb" "the indexer reads Canton as the reader party"
 has "$indexer" "-e PINS_FILE=/run/explorer/guest.txt" "the indexer reads the run's own pins"
 has "$indexer" "-e EXPLORER_DB_PASSWORD_FILE=/run/explorer/explorer-db.env" "the indexer reads the run's database"
+has "$indexer" "-v $S/genesis.json:/run/explorer/genesis.json:ro" "the indexer gets the genesis reth runs, read-only"
+has "$indexer" "-e GENESIS_FILE=/run/explorer/genesis.json" "the indexer reads its genesis from the mount"
+lacks "$(grep -- '--name cze-explorer ' <<<"$withck")" "GENESIS_FILE" "the explorer is not given the genesis"
 has "$indexer" "--read-only" "the indexer's filesystem"
 has "$indexer" "--cap-drop ALL" "the indexer's capabilities"
 has "$indexer" "--network host" "the indexer reads the chain's local ports"
@@ -161,6 +165,14 @@ has "$split_indexer" "-e INDEX_POLL_MS=500" "INDEX_POLL_MS is passed on"
 explorer_run=$(grep -- '--name cze-explorer ' <<<"$split")
 has "$explorer_run" "-e RETH_RPC_URL=http://127.0.0.1:8595" "the explorer keeps its own reth address"
 lacks "$explorer_run" "GATEWAY_ADDRESS" "the explorer is not given the indexer's settings"
+# Another genesis can be named; without one anywhere, start stops before any container runs and names the setting.
+gen=$(GENESIS_FILE="$WORK/other-genesis.json" dry start 2>&1 || true)
+has "$gen" "GENESIS_FILE" "a named genesis that is missing is refused, by name"
+mv "$S/genesis.json" "$WORK/genesis.json.kept"
+if out=$(dry start 2>&1); then fail "start ran with no genesis"; fi
+has "$out" "GENESIS_FILE" "the refusal names the genesis setting"
+lacks "$out" "docker run" "a start with no genesis"
+mv "$WORK/genesis.json.kept" "$S/genesis.json"
 # stop stops both.
 stopped=$(dry stop)
 grep -qx 'docker stop -t 30 cze-explorer' <<<"$stopped" || fail "stop does not stop the explorer: $stopped"

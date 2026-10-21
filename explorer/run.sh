@@ -30,7 +30,7 @@
 # EXPLORER_DB_USER and EXPLORER_DB_NAME are passed on; EXPLORER_DATABASE_URL is taken from the environment and never put on the command.
 # FAUCET_CLIENT_KEY_FILE (the faucet's hash key) is made as <state>/faucet/client-key (mode 0600) when there is a faucet key and none is named.
 # `start` applies the migrations (node server/db/cli.ts migrate), then runs the indexer (node server/indexer/cli.ts) as its own container, EXPLORER_INDEXER_CONTAINER
-# (default cze-explorer-indexer), beside the explorer. It reads the same chain, and also takes GATEWAY_ADDRESS (from PINS), INDEX_DERIVE, INDEX_POLL_MS,
+# (default cze-explorer-indexer), beside the explorer. It reads the same chain, and also takes GATEWAY_ADDRESS (from PINS), GENESIS_FILE (default <state>/genesis.json, the genesis reth runs), INDEX_DERIVE, INDEX_POLL_MS,
 # INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
 # explorer's (the indexer asks reth for trace_ methods too, so a log of the explorer's own calls is not put in front of it). It never restarts by itself:
 # a check that stops it leaves it stopped, and the explorer says so (503) until a person has looked.
@@ -142,6 +142,11 @@ explorer_args() {
 indexer_args() {
   ARGS=(run -d --name "$INDEXER_NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID" -e "GATEWAY_ADDRESS=$GATEWAY_ADDRESS")
   chain_args
+  # The genesis reth runs (network/make-state.sh's), whose contracts the indexer seeds at its first start; GENESIS_FILE names another.
+  local genesis=${GENESIS_FILE:-}
+  [ -n "$genesis" ] || genesis=$STATE/genesis.json
+  [ -f "$genesis" ] || fail "GENESIS_FILE is not set, and $STATE/genesis.json (the genesis reth runs) is not there: the indexer seeds the chain's contracts from it"
+  mount_file GENESIS_FILE "$genesis"
   local reth=${INDEXER_RETH_RPC_URL:-${RETH_RPC_URL:-}} ledger=${INDEXER_LEDGER_URL:-${LEDGER_URL:-}}
   [ -z "$reth" ] || ARGS+=(-e "RETH_RPC_URL=$reth")
   [ -z "$ledger" ] || ARGS+=(-e "LEDGER_URL=$ledger")
