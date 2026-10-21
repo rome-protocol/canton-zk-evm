@@ -1,9 +1,10 @@
 import type { Config } from "./config.ts";
 import { createFaucet, type Faucet } from "./faucet.ts";
 import { LedgerError, type Ledger } from "./ledger.ts";
-import type { ChainIndex } from "./chain-index.ts";
-import type { FactCheck, ProofCheck } from "./proof.ts";
-import { RethError, type Reth, type Tx, type TokenInfo } from "./reth.ts";
+import { keccak256 } from "viem";
+import { ChainDbError, type ChainDb } from "./chain-db.ts";
+import { checkProofFacts, readProofFacts, type FactCheck, type ProofCheck } from "./proof.ts";
+import { RethError, type Reth, type TokenInfo } from "./reth.ts";
 import type { Tracker, TxState } from "./tracker.ts";
 
 /** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
@@ -50,7 +51,7 @@ export interface Answer { status: number; body: unknown; headers?: Record<string
 /** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. */
 export type Api = (method: string, target: string, body?: string, ip?: string) => Promise<Answer>;
 /** With no `faucet`, the faucet is off. */
-export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; index: ChainIndex; faucet?: Faucet; tracker?: Tracker }
+export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker }
 
 const HASH = /^0x[0-9a-f]{64}$/, ADDRESS = /^0x[0-9a-f]{40}$/, UPDATE = /^1220[0-9a-f]{64}$/;
 // transfer(address,uint256) with its two arguments, and nothing else
@@ -58,44 +59,45 @@ const TRANSFER = /^0xa9059cbb0{24}([0-9a-f]{40})([0-9a-f]{64})$/;
 const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string): Answer => ({ status, body: { error } });
 const dec = (n: bigint | number) => n.toString();
+/** How many tokens' details are kept: a token's name, symbol and decimals do not change. */
+const TOKENS_KEPT = 1000;
 
-export function createApi({ config, reth, ledger, index, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
-  // What reth said about a token, as the promise, so that the transfers of one block share one set of calls. It is dropped when the index starts a new run.
-  let seen = new Map<string, Promise<TokenInfo | null>>(), seenRun = index.status().run;
-  /** A token's name, symbol and decimals: from the index when a block created it, else asked of reth once per run. */
+export function createApi({ config, reth, ledger, chain, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }) }: ApiDeps): Api {
+  // What reth said about a token, as the promise, so that the transfers of one block share one set of calls. A failed read is asked again next time.
+  const seen = new Map<string, Promise<TokenInfo | null>>();
+  /** A token's name, symbol and decimals, asked of reth once. */
   function tokenOf(address: string): Promise<TokenInfo | null> {
-    const known = index.token(address);
-    if (known) return Promise.resolve(known);
-    const run = index.status().run;
-    if (run !== seenRun) { seen = new Map(); seenRun = run; }
-    const mine = seen;
-    let asked = mine.get(address);
+    let asked = seen.get(address);
     if (!asked) {
+      if (seen.size >= TOKENS_KEPT) seen.clear();
       asked = reth.token(address);
-      mine.set(address, asked);
-      asked.catch(() => mine.delete(address)); // a failed read is asked again next time
+      seen.set(address, asked);
+      asked.catch(() => seen.delete(address));
     }
     return asked;
   }
-  async function transferOf(t: Tx) {
-    const m = TRANSFER.exec(t.input);
-    const token = m && t.to ? await tokenOf(t.to) : null;
+  async function transferOf(input: string | null, to: string | null) {
+    const m = input === null ? null : TRANSFER.exec(input);
+    const token = m && to ? await tokenOf(to) : null;
     return m && token ? { symbol: token.symbol, decimals: token.decimals, to: "0x" + m[1], value: dec(BigInt("0x" + m[2])) } : null;
   }
 
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
-    const s = index.status(), head = index.head();
+    const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer()]).then((r) => r, (e: unknown) => e as Error);
+    if (read instanceof Error) console.error(`status: ${read.message}`);
+    const [head, newest, s] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], signers: null }] as const : read;
     const proving = latest && latest.number > (head?.number ?? 0) ? latest : null;
-    const all = s.ok && latest !== undefined && canton;
+    const starting = !s.started && s.problems.length === 0;
+    const all = s.started && s.problems.length === 0 && latest !== undefined && canton;
     return {
       status: all ? 200 : 503,
       body: {
-        chainId: config.chainId, chainName: config.chainName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting: s.starting, problems: s.problems, evm: latest !== undefined, canton,
+        chainId: config.chainId, chainName: config.chainName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
-        latest: index.latest(10).map((b) => pick(b, FIELDS.latest)),
+        latest: newest.map((b) => pick(b, FIELDS.latest)),
         signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on,
       },
     };
@@ -104,22 +106,39 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
   async function block(id: string): Promise<Answer> {
     const key = HASH.test(id) ? id : /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) ? Number(id) : null;
     if (key === null) return fail(400, "A block is named by its number or its 0x hash.");
+    const final = await chain.block(key);
+    if (final) {
+      const hashesMatch = keccak256(`0x${final.headerHex}`) === final.hash;
+      const facts = final.proofHex && readProofFacts(final.proofHex);
+      const transactions = await Promise.all((await chain.blockTxs(final.number)).map(async (t) => ({
+        hash: t.hash, from: t.from, to: t.to, success: t.success, transfer: await transferOf(t.transferInput, t.to),
+      })));
+      return ok({
+        status: "final", number: final.number, hash: final.hash, parentHash: final.parentHash, timestamp: final.timestamp,
+        txCount: final.txCount, gasUsed: final.gasUsed, gasLimit: final.gasLimit, baseFee: final.baseFee, miner: final.miner, stateRoot: final.stateRoot,
+        genesisReferenced: null,
+        canton: {
+          updateId: final.updateId, recordTime: final.recordTime, template: "Zk.Chain:BlockRecord", proofBytes: (final.proofHex?.length ?? 0) / 2, proof: proofOf(facts ? checkProofFacts(facts, config.pins, final.hash) : null),
+          hashesMatch, headerHex: final.headerHex, txsHex: final.txsHex, proofHex: final.proofHex ?? "",
+        },
+        transactions,
+      });
+    }
+    // Not in the database: the genesis, or a block that is still being proven, or one that the indexer has not written yet. Only reth knows it.
     const b = await reth.block(key, true);
     if (!b) return fail(404, NOT_FOUND);
-    const final = index.byNumber(b.number), onCanton = final && final.hash === b.hash ? final : null;
+    const genesis = b.number === 0;
+    // At or below the newest indexed block, reth's block with this hash is not the final one of its number.
+    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return fail(404, NOT_FOUND);
     const receipts = b.transactions.length ? await reth.blockReceipts(b.number) : [];
     const transactions = await Promise.all(b.transactions.map(async (t, i) => ({
-      hash: t.hash, from: t.from, to: t.to, success: receipts?.[i]?.success ?? null, transfer: await transferOf(t),
+      hash: t.hash, from: t.from, to: t.to, success: receipts?.[i]?.success ?? null, transfer: await transferOf(t.input, t.to),
     })));
-    const genesis = b.number === 0;
     return ok({
-      status: genesis ? "genesis" : onCanton ? "final" : "proving", number: b.number, hash: b.hash, parentHash: b.parentHash, timestamp: b.timestamp,
+      status: genesis ? "genesis" : "proving", number: b.number, hash: b.hash, parentHash: b.parentHash, timestamp: b.timestamp,
       txCount: b.transactions.length, gasUsed: b.gasUsed, gasLimit: b.gasLimit, baseFee: b.baseFeePerGas === null ? null : dec(b.baseFeePerGas), miner: b.miner, stateRoot: b.stateRoot,
-      genesisReferenced: genesis ? index.status().genesisReferenced : null,
-      canton: onCanton && {
-        updateId: onCanton.updateId, recordTime: onCanton.recordTime, template: "Zk.Chain:BlockRecord", proofBytes: onCanton.proofHex.length / 2, proof: proofOf(onCanton.proof),
-        hashesMatch: onCanton.hashesMatch, headerHex: onCanton.headerHex, txsHex: onCanton.txsHex, proofHex: onCanton.proofHex,
-      },
+      genesisReferenced: genesis ? await chain.genesisReferenced() : null,
+      canton: null,
       transactions,
     });
   }
@@ -134,28 +153,40 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
 
   async function transaction(hash: string): Promise<Answer> {
     if (!HASH.test(hash)) return fail(400, "A transaction is named by its 0x hash.");
-    const t = await reth.transaction(hash);
+    const final = await chain.tx(hash);
     const tr = tracker?.state(hash);
+    if (final) {
+      const transfer = await transferOf(final.input, final.to);
+      const toToken = transfer?.symbol ?? (final.to ? (await tokenOf(final.to))?.symbol ?? null : null);
+      return ok({
+        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null,
+        block: pick(final.block, FIELDS.txBlock),
+        from: final.from, to: final.to, value: final.value, nonce: final.nonce, type: final.type, gas: final.gas,
+        gasUsed: final.gasUsed, gasPrice: final.gasPrice, fee: dec(BigInt(final.gasUsed) * BigInt(final.gasPrice)), success: final.success,
+        input: final.input, logs: final.logs.map((l) => pick(l, FIELDS.log)), transfer, toToken, created: final.created,
+      });
+    }
+    // Not in the database: waiting in reth's pool, or in a block that is still being proven (or not indexed yet), or only the tracker knows it.
+    const t = await reth.transaction(hash);
     if (!t) return tr ? gone(hash, tr) : fail(404, NOT_FOUND);
     const r = t.blockNumber === null ? null : await reth.receipt(hash);
-    const final = index.byNumber(index.tx(hash)?.block ?? -1);
-    const onCanton = final && final.hash === t.blockHash ? final : null;
-    const transfer = await transferOf(t);
-    const status = t.blockNumber === null ? "waiting" : onCanton ? "final" : "proving";
+    const transfer = await transferOf(t.input, t.to);
+    const status = t.blockNumber === null ? "waiting" : "proving";
     const state: TxState = status === "waiting" ? "pending" : status;
     return ok({
       hash: t.hash, status, state, reason: tr?.state === state ? tr.reason : null,
-      block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: onCanton?.updateId ?? null },
+      block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: null },
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,
-      input: t.input, logs: (r?.logs ?? []).map((l) => ({ address: l.address, topics: [...l.topics], data: l.data })), transfer, toToken: transfer?.symbol ?? (t.to ? index.token(t.to)?.symbol ?? null : null), created: r?.contractAddress ?? null,
+      input: t.input, logs: (r?.logs ?? []).map((l) => ({ address: l.address, topics: [...l.topics], data: l.data })), transfer,
+      toToken: transfer?.symbol ?? (t.to ? (await tokenOf(t.to))?.symbol ?? null : null), created: r?.contractAddress ?? null,
     });
   }
 
   async function address(a: string): Promise<Answer> {
     if (!ADDRESS.test(a)) return fail(400, "An address is 0x and 40 hex digits.");
     const [balance, nonce, code] = await Promise.all([reth.balance(a), reth.nonce(a), reth.code(a)]);
-    const token = code === "0x" ? null : await reth.token(a), created = index.contract(a) ?? null;
+    const token = code === "0x" ? null : await reth.token(a), created = (await chain.createdBy(a)) ?? null;
     return ok({ address: a, kind: token ? "token" : code === "0x" ? "account" : "contract", balance: dec(balance), nonce, token: token && pick(token, FIELDS.token), createdBy: created && pick(created, FIELDS.createdBy) });
   }
 
@@ -165,8 +196,8 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
     if (/^\d+$/.test(q) && Number.isSafeInteger(Number(q))) return (await reth.block(Number(q))) ? go(`/block/${q}`) : fail(404, NOT_FOUND);
     if (HASH.test(q)) return (await reth.transaction(q)) ? go(`/tx/${q}`) : (await reth.block(q)) ? go(`/block/${q}`) : fail(404, NOT_FOUND);
     if (ADDRESS.test(q)) return go(`/address/${q}`);
-    const byUpdate = UPDATE.test(q) ? index.byUpdate(q) : undefined;
-    return byUpdate ? go(`/block/${byUpdate.number}`) : fail(404, NOT_FOUND);
+    const byUpdate = UPDATE.test(q) ? await chain.blockOfUpdate(q) : undefined;
+    return byUpdate !== undefined ? go(`/block/${byUpdate}`) : fail(404, NOT_FOUND);
   }
 
   /** Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. The faucet answers every case itself. */
@@ -220,7 +251,7 @@ export function createApi({ config, reth, ledger, index, tracker, faucet = creat
       if (!route) return fail(404, "No such route.");
       return method === "GET" ? await route() : fail(405, "Use GET.");
     } catch (e) {
-      if (!(e instanceof RethError || e instanceof LedgerError)) throw e;
+      if (!(e instanceof RethError || e instanceof LedgerError || e instanceof ChainDbError)) throw e;
       console.error(`${method} ${url.pathname}: ${e.message}`);
       return fail(502, "The explorer cannot read the chain right now.");
     }

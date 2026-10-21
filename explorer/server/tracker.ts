@@ -1,4 +1,4 @@
-import type { ChainIndex } from "./chain-index.ts";
+import type { FinalBlocks } from "./chain-db.ts";
 import { alwaysLeader, type Leader } from "./leader.ts";
 import { RethError, type Reth } from "./reth.ts";
 import { fileTrackerStore, type TrackerStore } from "./tracker-store.ts";
@@ -18,7 +18,7 @@ export interface Tracked {
   nonce: number;
   /** The block that holds it, once one does. */
   block: number | null;
-  /** The Canton update of that block, when the index held it at the time. */
+  /** The Canton update of that block, when the database held it at the time. */
   updateId: string | null;
   /** How many times the transaction has been sent to reth: the first time, and each time it was sent again. */
   attempts: number;
@@ -41,7 +41,7 @@ export interface Entry extends Tracked {
 
 export interface TrackerOptions {
   reth: Pick<Reth, "transaction" | "block" | "rpc" | "sendRaw">;
-  index: Pick<ChainIndex, "byNumber">;
+  index: Pick<FinalBlocks, "byNumber">;
   /** Where to keep the list across restarts: a file, or null for memory only. */
   file?: string | null;
   /** Or a store of its own, such as the database. It wins over `file`. */
@@ -185,7 +185,7 @@ export function createTracker(o: TrackerOptions): Tracker {
     saveTimer.unref();
   }
 
-  /** The Canton update of a final transaction's block, once the index holds it. The index polls on its own timer, so it can lag the chain. */
+  /** The Canton update of a final transaction's block, once the database holds it. The indexer writes on its own timer, so the database can lag the chain. */
   function fillUpdate(e: Entry): boolean {
     if (e.state !== "final" || e.updateId !== null || e.block === null) return false;
     const f = index.byNumber(e.block);
