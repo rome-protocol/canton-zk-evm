@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,6 +109,9 @@ const tos = () => state.raw.map((r) => parseTransaction(r as Hex).to);
 async function drain(f: Faucet) {
   for (let i = 0; i < 100 && f.queued(); i++) { await f.process(); tracker.all("final"); }
 }
+
+// The human check's secret in these tests is made for each run, so that no secret-like string is written in the repository.
+const CAPTCHA_SECRET = randomBytes(8).toString("hex");
 
 describe("a request", () => {
   it("is accepted at once with a ticket and its place in line, and nothing is sent until the worker runs", async () => {
@@ -498,7 +502,7 @@ describe("when the coins run low", () => {
 });
 
 describe("the human check", () => {
-  const captcha = { secret: "s3cret", verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "site-key", widgetClass: "human-check" };
+  const captcha = { secret: CAPTCHA_SECRET, verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "site-key", widgetClass: "human-check" };
   const verifier = (say: unknown | Error) => {
     const calls: { url: string; body: URLSearchParams; type: string | null }[] = [];
     const fn = (async (url: string, init: RequestInit) => {
@@ -524,7 +528,7 @@ describe("the human check", () => {
     expect(v.calls).toHaveLength(1);
     expect(v.calls[0]!.url).toBe(captcha.verifyUrl);
     expect(v.calls[0]!.type).toBe("application/x-www-form-urlencoded");
-    expect(Object.fromEntries(v.calls[0]!.body)).toEqual({ secret: "s3cret", response: "tok", remoteip: "1.1.1.1" });
+    expect(Object.fromEntries(v.calls[0]!.body)).toEqual({ secret: CAPTCHA_SECRET, response: "tok", remoteip: "1.1.1.1" });
   });
 
   it("turns a token that does not pass away with 403, and does not use up the address's turn", async () => {
@@ -553,7 +557,7 @@ describe("the human check", () => {
     const f = await faucet({ captcha });
     const info = await f.info();
     expect(info.captcha).toEqual({ siteKey: "site-key", scriptUrl: captcha.scriptUrl, widgetClass: "human-check" });
-    expect(JSON.stringify(info)).not.toContain("s3cret");
+    expect(JSON.stringify(info)).not.toContain(CAPTCHA_SECRET);
   });
 });
 
@@ -887,7 +891,7 @@ describe("the tracker's room", () => {
 });
 
 describe("the human check under a flood of junk", () => {
-  const captcha = { secret: "s3cret", verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "site-key", widgetClass: "human-check" };
+  const captcha = { secret: CAPTCHA_SECRET, verifyUrl: "https://check.example/verify", scriptUrl: "https://check.example/api.js", siteKey: "site-key", widgetClass: "human-check" };
   /** Says yes to "good" and no to anything else, after a wait, and counts the calls and the most in flight at once. */
   function checker(waitMs = 30) {
     const seen = { calls: 0, inFlight: 0, peak: 0 };
