@@ -281,6 +281,7 @@ class FakeLedger:
         self.submitted: list = []
         self.queries: list = []
         self.bad_auth = 0
+        self.traffic: list = []   # the traffic states GET /traffic answers with, one for each read; when none is left it reports none (404)
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.http.server_address[1]}"
@@ -371,6 +372,9 @@ class FakeLedger:
 
             def do_GET(self):
                 self._auth()
+                if self.path == "/traffic":
+                    state = ledger.traffic.pop(0) if ledger.traffic else None   # one answer for each read
+                    return self._reply(404, {}) if state is None else self._reply(200, state)
                 self._reply(200, {"offset": 42} if self.path == "/v2/state/ledger-end" else {})
 
             def do_POST(self):
