@@ -3,8 +3,14 @@ CHAIN_ID=770101
 # The chain's gas limit and block gas cap: genesis gasLimit 0x1c9c380. tests/static.sh checks they agree.
 GAS_CAP=30000000
 RETH_VERSION=2.5.2
+# Each *_IMAGE has a *_IMAGE_ID next to it: the image ID (the config digest of its linux/amd64 manifest, which `docker image inspect --format '{{.Id}}'`
+# prints on the classic image store). The pinned-images action requires an image loaded from the Actions cache to have exactly that ID before it
+# gives it the pinned name, so no cache entry, whoever wrote it, can make a job run anything but the pinned image. To move an image pin, change both
+# lines (the ID is in the registry's manifest for that digest); tests/static.sh checks that every *_IMAGE has its *_IMAGE_ID.
 RETH_IMAGE=ghcr.io/paradigmxyz/reth@sha256:68e76b32ad9ac1a3de54984d6f15bbce2047a92a771ff4efbcd08ee8f9dbd4d1
+RETH_IMAGE_ID=sha256:b22b691a0dc5e216ff7e5548a19bb75b986f341acce68a480c477a30b88ae209
 BUSYBOX_IMAGE=public.ecr.aws/docker/library/busybox@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+BUSYBOX_IMAGE_ID=sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db496e9647fb
 ZISK_VERSION=1.3.1-alpha
 ZISK_COMMIT=306a9c934ba4947b1d586d69b67120f8b4c41466
 ZISK_ETH_CLIENT_VERSION=0.13.1
@@ -16,9 +22,11 @@ SNARKJS_VERSION=0.7.6
 # The explorer (explorer/) runs on the current Node LTS, 24 (Krypton). NODE_VERSION above is for snarkjs and stays on 20.
 # This is node:24-alpine, pinned by digest (the multi-arch index, the same digest on Docker Hub and on ECR Public).
 EXPLORER_NODE_IMAGE=public.ecr.aws/docker/library/node@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+EXPLORER_NODE_IMAGE_ID=sha256:c10884952bb8c37122fcc3fe6f97af3ab0a80e5eb02ee5df707406b4e11a7e3e
 # The explorer's image builds the Verify check for WebAssembly with the toolchain rust-toolchain.toml pins (Rust 1.94.1): this is rust:1.94.1-slim,
 # pinned by digest (the multi-arch index). tests/demo_explorer_static.sh checks that its version is the one rust-toolchain.toml names.
 EXPLORER_RUST_IMAGE=public.ecr.aws/docker/library/rust:1.94.1-slim@sha256:cf09adf8c3ebaba10779e5c23ff7fe4df4cccdab8a91f199b0c142c53fef3e1a
+EXPLORER_RUST_IMAGE_ID=sha256:3611cb0cae75965ac77adad12783922a7ae75a480ab7bf45dde8f4f18628c472
 # Canton with the external call, and the Daml compiler that can call it. Both are released: open-source Canton 3.6.3
 # (GitHub release digital-asset/canton v3.6.3, 2026-10-20, the version the Canton Network's DevNet runs) and the Daml SDK 3.6.0 (2026-10-08), whose compiler is damlc 3.6.2,
 # from Digital Asset's public registry. DPM_REGISTRY is where the SDK and the compiler are; dpm 1.0.22 is the released one.
@@ -46,6 +54,7 @@ JAVA_MAJOR=21
 # The demo's test token (demo/TKA.sol) is compiled with this solc image by demo/build-token.sh; demo/TKA.bin is its output.
 SOLC_VERSION=0.8.28
 SOLC_IMAGE=ethereum/solc@sha256:b3b83d65e1eae916b58e0c19b9051afa7ffc93e00f8210196639dee794a2a98a
+SOLC_IMAGE_ID=sha256:2c814b81cef52e49a3e13bb16f10e5fd8beaa9b3c0b2912f2d5e73f27024ccd0
 # The gateway (gateway/Gateway.sol): one contract at this fixed address, put into each run's genesis by network/make-state.sh.
 # gateway/Gateway.bin-runtime is its runtime code, built by gateway/build.sh with the solc image above and checked in CI.
 # The address is far from the low addresses Ethereum uses for precompiles and system contracts.
@@ -53,3 +62,4 @@ GATEWAY_ADDRESS=0xa7e0000000000000000000000000000000000000
 # The database of the persistent network (network/postgres.sh, CZE_PERSIST=1): postgres 16.10 on Alpine, pinned by digest (the multi-arch
 # index). tests/network_static.sh checks it is pinned by digest.
 POSTGRES_IMAGE=public.ecr.aws/docker/library/postgres@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+POSTGRES_IMAGE_ID=sha256:aab18c983342019900e3a4a617c63432fd5e34449323ab04187a8e8c1ee3dbad

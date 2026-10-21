@@ -2,10 +2,10 @@ name: explorer
 
 on:
   pull_request:
-    paths: ["explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
+    paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
   push:
     branches: [main]
-    paths: ["explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
+    paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
 
 permissions:
   contents: read
@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE
       - name: Type-check and run the tests, from the lockfile
         run: |
           set -a; . ./PINS; set +a
@@ -28,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE
       - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
         with:
           distribution: temurin
@@ -50,6 +56,9 @@ jobs:
       WASM: explorer/verify/target/wasm32-unknown-unknown/release/zk_explorer_verify.wasm
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE
       - run: rustup target add wasm32-unknown-unknown
       # The module is built with explorer/verify/Cargo.lock, the confirmers' sidecar with sidecar/Cargo.lock. A crate in both must be at the same version.
       - run: shellcheck explorer/verify/check-lock-versions.sh explorer/verify/build.sh
@@ -74,6 +83,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE POSTGRES_IMAGE
       - name: Start the pinned PostgreSQL, on this machine's loopback only
         run: |
           set -a; . ./PINS; set +a

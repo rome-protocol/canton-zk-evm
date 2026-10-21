@@ -2,10 +2,10 @@ name: gateway
 
 on:
   pull_request:
-    paths: ["gateway/**", "network/**", "PINS", "builder/keccak.py", "prover/make-block.py", "demo/TKA.bin", "demo/requirements.txt", "tests/static.sh", ".github/workflows/gateway.yml"]
+    paths: [".github/actions/pinned-images/**", "gateway/**", "network/**", "PINS", "builder/keccak.py", "prover/make-block.py", "demo/TKA.bin", "demo/requirements.txt", "tests/static.sh", ".github/workflows/gateway.yml"]
   push:
     branches: [main]
-    paths: ["gateway/**", "network/**", "PINS", "builder/keccak.py", "prover/make-block.py", "demo/TKA.bin", "demo/requirements.txt", "tests/static.sh", ".github/workflows/gateway.yml"]
+    paths: [".github/actions/pinned-images/**", "gateway/**", "network/**", "PINS", "builder/keccak.py", "prover/make-block.py", "demo/TKA.bin", "demo/requirements.txt", "tests/static.sh", ".github/workflows/gateway.yml"]
 
 permissions:
   contents: read
@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: SOLC_IMAGE
       - run: gateway/build.sh --check
 
   # The contract on a real reth, started only through network/reth/launch.sh (peer discovery off) and checked by network/reth/check.sh:
@@ -24,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE SOLC_IMAGE
       - name: Install the packages, by hash
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"

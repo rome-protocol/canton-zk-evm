@@ -2,10 +2,10 @@ name: sidecar
 
 on:
   pull_request:
-    paths: ["gateway/**", "sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
+    paths: [".github/actions/pinned-images/**", "gateway/**", "sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
   push:
     branches: [main]
-    paths: ["gateway/**", "sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
+    paths: [".github/actions/pinned-images/**", "gateway/**", "sidecar/**", "verifier/**", "mpt/**", "prover/make-block.py", "prover/fixtures/**", "network/**", "PINS", ".github/workflows/sidecar.yml"]
 
 permissions:
   contents: read
@@ -35,6 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
       - name: Install the packages prover/make-block.py needs
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"

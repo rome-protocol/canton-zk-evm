@@ -18,6 +18,12 @@ done
 [[ $RETH_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || fail "RETH_IMAGE is not pinned by digest"
 [[ $BUSYBOX_IMAGE =~ @sha256:[0-9a-f]{64}$ ]] || fail "BUSYBOX_IMAGE is not pinned by digest"
 [[ ${EXPLORER_NODE_IMAGE:-} =~ @sha256:[0-9a-f]{64}$ ]] || fail "EXPLORER_NODE_IMAGE is missing or not pinned by digest"
+# Every pinned image has the image ID that the pinned-images action holds a cache entry to (see the note in PINS).
+for k in $(grep -oE '^[A-Z][A-Z0-9_]*_IMAGE=' "$ROOT/PINS" | tr -d =); do
+  [[ ${!k} =~ @sha256:[0-9a-f]{64}$ ]] || fail "$k is not pinned by digest"
+  v=${k}_ID
+  [[ ${!v:-} =~ ^sha256:[0-9a-f]{64}$ ]] || fail "$k has no $v (sha256: and 64 hex digits) in PINS"
+done
 [ -z "${FOUNDRY_IMAGE:-}${FOUNDRY_VERSION:-}" ] || fail "PINS must not pin Foundry: the chain has no funded test accounts"
 [[ $ZISK_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_COMMIT is not a full commit hash"
 [[ $ZISK_ETH_CLIENT_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail "ZISK_ETH_CLIENT_COMMIT is not a full commit hash"
@@ -100,4 +106,6 @@ if command -v sha256sum >/dev/null; then lic_sha=$(sha256sum "$ROOT/LICENSE" | c
 [ "$(jq -r .license "$ROOT/explorer/package.json")" = "Apache-2.0" ] || fail "explorer/package.json does not say Apache-2.0"
 [ "$(jq .private "$ROOT/explorer/package.json")" = true ] || fail "explorer/package.json is not private"
 [ "$(jq '[.dependencies, .devDependencies | to_entries[] | select(.value | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)] | length' "$ROOT/explorer/package.json")" = 0 ] || fail "an explorer dependency is not pinned to one exact version"
+# Every workflow job that runs or builds from a pinned image gets it from the pinned-images action first (cache, else pulls with retries).
+python3 "$ROOT/tests/ci_images_static.py" || fail "a workflow job uses a pinned image without the pinned-images step"
 echo "static checks passed"
