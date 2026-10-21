@@ -15,7 +15,10 @@ auth=()
 tokenfile=${CZE_PACKAGE_TOKEN_FILE-${CZE_TOKEN_FILE_ADMIN:-}}
 if [ -n "$tokenfile" ]; then
   [ -s "$tokenfile" ] || fail "the token file for listing packages ($tokenfile) is not a file with a token in it"
-  auth=(-H @<(printf 'Authorization: Bearer %s\n' "$(tr -d '[:space:]' < "$tokenfile")"))
+  # A header file of mode 0600 (made before the token goes in), removed at exit; curl reads it more than once, so a pipe will not do.
+  header=$(mktemp); trap 'rm -f "$header"' EXIT
+  printf 'Authorization: Bearer %s\n' "$(tr -d '[:space:]' < "$tokenfile")" > "$header"
+  auth=(-H "@$header")
 fi
 answer=$(curl -sf ${auth[@]+"${auth[@]}"} "$url/v2/packages") || fail "the Ledger API at $url did not answer GET /v2/packages"
 listed=$(jq -r '.packageIds[]?' <<<"$answer" 2>/dev/null) || fail "the answer of $url/v2/packages is not a package list"
