@@ -1,8 +1,13 @@
 name: Pinned images
 description: >
-  Gets the Docker images that PINS pins by digest onto the runner: from the Actions cache (keyed by those digests) when it has
-  them, otherwise pulled by digest with retries and a growing wait, so one public registry's pull limit does not turn a job red.
-  Run it after checkout and before the first docker command of the job.
+  Gets the Docker images that PINS pins by digest onto the runner. Each image has its own Actions cache entry (keyed by its digest); a cached
+  image is used only if it loads as the image ID that PINS records for it. An image not in the cache is pulled by digest (the same digest
+  from the other registry of the official images when the first refuses), checked against that ID, and saved for the next run.
+  Run it after checkout and before the first docker command of the job. Up to six different images per job.
+
+  The first run on a branch or on main after a pin changes is a miss for each new image: it pulls from the registries and saves. If a
+  registry's pull limit stops that run, rerun the job: the images that were saved are used and only the rest is pulled again. A run on main
+  seeds the cache for main; a pull request run can read main's entries but writes its own.
 inputs:
   images:
     description: The names in PINS of the images this job runs or builds from, separated by spaces (for example "RETH_IMAGE BUSYBOX_IMAGE").
@@ -15,18 +20,80 @@ runs:
       run: '"$GITHUB_ACTION_PATH/pinned-images.sh" resolve "$GITHUB_WORKSPACE/PINS" "$IMAGES"'
       env:
         IMAGES: ${{ inputs.images }}
-    - id: restore
+    - id: restore_1
+      if: steps.resolve.outputs.key_1 != ''
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ steps.resolve.outputs.dir }}
-        key: ${{ steps.resolve.outputs.key }}
+        path: ${{ steps.resolve.outputs.dir_1 }}
+        key: ${{ steps.resolve.outputs.key_1 }}
+        restore-keys: ${{ steps.resolve.outputs.prefix_1 }}
+    - id: restore_2
+      if: steps.resolve.outputs.key_2 != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_2 }}
+        key: ${{ steps.resolve.outputs.key_2 }}
+        restore-keys: ${{ steps.resolve.outputs.prefix_2 }}
+    - id: restore_3
+      if: steps.resolve.outputs.key_3 != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_3 }}
+        key: ${{ steps.resolve.outputs.key_3 }}
+        restore-keys: ${{ steps.resolve.outputs.prefix_3 }}
+    - id: restore_4
+      if: steps.resolve.outputs.key_4 != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_4 }}
+        key: ${{ steps.resolve.outputs.key_4 }}
+        restore-keys: ${{ steps.resolve.outputs.prefix_4 }}
+    - id: restore_5
+      if: steps.resolve.outputs.key_5 != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_5 }}
+        key: ${{ steps.resolve.outputs.key_5 }}
+        restore-keys: ${{ steps.resolve.outputs.prefix_5 }}
+    - id: restore_6
+      if: steps.resolve.outputs.key_6 != ''
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_6 }}
+        key: ${{ steps.resolve.outputs.key_6 }}
+        restore-keys: ${{ steps.resolve.outputs.prefix_6 }}
     - id: ensure
       shell: bash
       run: '"$GITHUB_ACTION_PATH/pinned-images.sh" ensure'
       env:
-        PINNED_IMAGES_CACHE_DIR: ${{ steps.resolve.outputs.dir }}
-    - if: steps.ensure.outputs.save == 'true' && steps.restore.outputs.cache-hit != 'true'
+        PINNED_IMAGES_LIST: ${{ steps.resolve.outputs.list }}
+    - if: steps.ensure.outputs.save_1 == 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
-        path: ${{ steps.resolve.outputs.dir }}
-        key: ${{ steps.resolve.outputs.key }}
+        path: ${{ steps.resolve.outputs.dir_1 }}
+        key: ${{ steps.resolve.outputs.key_1 }}
+    - if: steps.ensure.outputs.save_2 == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_2 }}
+        key: ${{ steps.resolve.outputs.key_2 }}
+    - if: steps.ensure.outputs.save_3 == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_3 }}
+        key: ${{ steps.resolve.outputs.key_3 }}
+    - if: steps.ensure.outputs.save_4 == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_4 }}
+        key: ${{ steps.resolve.outputs.key_4 }}
+    - if: steps.ensure.outputs.save_5 == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_5 }}
+        key: ${{ steps.resolve.outputs.key_5 }}
+    - if: steps.ensure.outputs.save_6 == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ steps.resolve.outputs.dir_6 }}
+        key: ${{ steps.resolve.outputs.key_6 }}
