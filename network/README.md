@@ -13,6 +13,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `canton/run.sh`, `canton/resume.canton` | Start Canton and wait until it is ready: `run.sh bootstrap` runs `bootstrap.canton`, and `run.sh resume` (persistent mode only) starts the nodes on the databases they kept and runs `resume.canton`, which creates nothing |
 | `canton/propose.py` | The operator and the gateway propose the chain and the confirmer accepts it. `propose.py token` does the same for a token: it registers a Canton instrument against the wrapped token on the EVM |
 | `canton/fetch.sh`, `canton/fetch-jar.sh`, `canton/check-damlc.sh`, `canton/build-dar.sh`, `canton/dar-id.sh` | Install the pinned Canton and Daml tools and check them, build the real form of the Daml package with them, and print the DAR's SHA-256 and package id |
+| `external/setup.py`, `external/sidecar.sh`, `external/participant-config.sh`, `external/check-env.sh` | Ostia on a participant that exists already (see [Running on an existing participant](#running-on-an-existing-participant-the-canton-network)): the setup, the lone sidecar, the participant's configuration line, and the check of the settings |
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
 | `up.sh`, `down.sh`, `persist-settings.sh` | Start and stop everything. `down.sh` keeps a persistent chain's data, and `down.sh --wipe` removes it, says "wiped" only when the database and reth's data are really gone, and otherwise says what is left and exits with an error (`persist.env` stays, so it can be run again) |
 | `restart.sh`, `sync_reth.py` | Bring a persistent chain back after a restart, and make reth's head Canton's head |
@@ -101,6 +102,54 @@ The chain's history is as safe as the machine's disk. Back up the databases (`pg
 
 `tests/canton_persist.sh` runs this on the real Canton: one Advance, then Canton killed (`kill -9`) and the database stopped, both started again the way `restart.sh` does, and the chain must be the same contract at the same head with the same block hash, with the block record still visible to the reader, the party list unchanged, and no second bootstrap.
 
+## Running on an existing participant (the Canton Network)
+
+Ostia can run on a participant that is there already, such as a Splice validator's on the Canton Network's DevNet (Canton 3.6.3, protocol version 36), instead of on the local Canton network. `up.sh` then starts reth, the prover and, if you ask, one sidecar, and sets the chain up on that participant. It starts no Canton and bootstraps nothing.
+
+**One confirmer.** One participant hosts every Ostia party, so the one sidecar beside it is the only confirmer. That is weaker than the local network, where two participants confirm each block with a sidecar each. It is fine for DevNet. Do not use it for anything of value.
+
+**What you need.**
+
+- The participant's JSON Ledger API (v2), as an `https` URL or an `http` URL on the same machine. It must never be reachable from outside the machine it runs on: it can act as every party the participant hosts. Put it on the machine's own address or behind a proxy that checks who calls it.
+- A token file for each of four Ledger API users, made by whoever runs the participant: `ADMIN` (the participant's admin user; it uploads the package and allocates the parties and users, so only `up.sh` and `setup.py` need it), and `OPERATOR`, `CONFIRMER` and `BUILDER` (the users that `setup.py` creates; their ids are `ostia-operator`, `ostia-confirmer` and `ostia-builder`). A token is HS256, with the audience `https://canton.network.global` and the user's id as `sub`. A token can be made before its user exists. Each file holds one token, has mode 0600, and is read when it is used. Ostia never makes a token, prints one, or writes one into its state.
+- **Tokens are short-lived.** A participant refuses a token whose lifetime is long (the pinned Canton did so for one hour in this repository's own test), so expect tokens of minutes and refresh them by writing the new token into the same 0600 file, in place. The builder reads its file again on every call and picks the new one up. `setup.py` and `propose.py` read each token once, when they start, so each needs one that is valid for the whole run: start them with fresh tokens, and run them again (they are idempotent) if one ran out. `restart.sh` needs no admin token: it lists the package with the builder's.
+- The sidecar, reachable from the participant and from nobody else. It has no login: whoever reaches its port can ask it to check a proof.
+
+**Steps.**
+
+```sh
+# 1. Give the participant the line it needs, as one more ADDITIONAL_CONFIG variable of its container, and restart it:
+network/external/participant-config.sh <sidecar address> 8085
+#    ADDITIONAL_CONFIG_ZK_EVM=canton.participants.participant.parameters.engine.extensions.canton-zk-evm { address = "...", port = 8085, validate-on-startup = false }
+#    validate-on-startup is false so that the participant still starts when the sidecar is down. Then a block's check fails, and no block commits.
+
+# 2. Start the chain on it:
+export CZE_CANTON=external CZE_LEDGER_URL=https://<participant's Ledger API>
+export CZE_TOKEN_FILE_ADMIN=... CZE_TOKEN_FILE_OPERATOR=... CZE_TOKEN_FILE_CONFIRMER=... CZE_TOKEN_FILE_BUILDER=...
+```
+
+Then, where the sidecar runs, one of two ways:
+
+```sh
+# (a) The sidecar runs on this machine: up.sh starts it, on the address the participant reaches it on (not a public one).
+CZE_PERSIST=1 CZE_SIDECAR_LISTEN=<sidecar address>:8085 network/up.sh
+
+# (b) The sidecar runs on another machine: start it there first (it is reached from the participant and from nobody else) ...
+CZE_SIDECAR_LISTEN=<sidecar address>:8085 network/external/sidecar.sh start     # on that machine
+#     ... and run up.sh here without CZE_SIDECAR_LISTEN: it starts no sidecar.
+CZE_PERSIST=1 network/up.sh
+```
+
+In (a), do not start the sidecar yourself first; if you did, `up.sh` finds it running with the same keys on the same address and goes on, and stops with a message if it is another one (`network/external/sidecar.sh stop <address:port>` first).
+
+`up.sh` builds the guest, starts reth and the prover, and runs `external/setup.py`. The setup uploads the DAR (`POST /v2/packages`) unless its package is listed, checks that the package is vetted on the synchronizer the participant is connected to, allocates the parties `ostia-operator`, `ostia-confirmer`, `ostia-gateway`, `ostia-builder` and `ostia-reader` (and the demo's `ostia-u`, `ostia-v`, `ostia-registry` with `setup.py --demo`), writes their ids to `$CZE_STATE_DIR/canton/parties.env`, creates the users with exactly the rights of their roles (the same as `canton/bootstrap.canton`: the operator's user acts as the operator and the gateway, the builder's user acts as the builder and reads as the operator and the gateway, the confirmer's acts as the confirmer, the reader's only reads), and proposes the chain and accepts it with `canton/propose.py`. It is idempotent: a second run finds what exists and does nothing, accepts a proposal that an earlier run left, and stops if a user has more rights than its role needs or if the chain on the participant is not this chain. `CZE_USER_PREFIX` and `CZE_PARTY_PREFIX` (default `ostia-`) change the names.
+
+`CZE_PERSIST=1` is required: `up.sh` refuses `CZE_CANTON=external` without it. The chain stays on the participant, so reth must keep its blocks too. `restart.sh` then brings the same chain back (it starts the sidecar again if `up.sh` started it, checks the package on the participant with the builder's token, and moves reth to the chain's head; it needs only the builder's token file, not the admin's, the operator's or the confirmer's, and it uses the `CZE_USER_PREFIX` that `up.sh` recorded in `persist.env`, refusing a different one), and `down.sh` stops reth, the prover and the sidecar. `down.sh --wipe` does not touch the participant: the chain's contracts stay there until its operator removes them. `up.sh` refuses a participant whose chain has moved past genesis, because reth starts at genesis; `restart.sh` is what brings such a chain back.
+
+**Privacy.** The operator of the participant sees every contract of every Ostia party, because all of them are hosted there, and holds what it takes to act as them. Nothing about Ostia keeps a chain's data from the validator's operator. Use a participant whose operator you trust with the chain, and keep the token files off shared machines.
+
+**Not covered here.** The explorer and the demo's helpers still talk to the local network's ports and users; pointing them at this participant, with a token, is their own change.
+
 ## The smoke test
 
 `smoke.sh` runs the builder once, with no transactions in the pool. It checks that
@@ -121,6 +170,8 @@ tests/network_static.sh      # reth only through launch.sh; the extension only o
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
 python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
 tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
+python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights
+tests/canton_external.sh     # the pinned Canton with a login on its Ledger API, started without Ostia's bootstrap: the setup twice, the rights and one Advance
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth
 ```
@@ -131,4 +182,4 @@ tests/canton_network.sh      # the pinned Canton, the real Daml package, a regis
 
 - Blocks with transactions and legs (a deposit, a payment and a withdrawal), a refused submission and a tampered proof are covered by [demo/](../demo/README.md), which runs on this network. The smoke test here is one empty block.
 - Persistence is optional (`CZE_PERSIST=1`, above); without it everything restarts from nothing. There is no replication: one machine, one copy of the data.
-- Authentication, TLS and more than one machine.
+- Authentication and TLS on the local network, and more than one machine. (On an existing participant the Ledger API has a login: see [Running on an existing participant](#running-on-an-existing-participant-the-canton-network).)

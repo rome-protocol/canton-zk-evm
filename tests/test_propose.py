@@ -132,6 +132,20 @@ class Propose(unittest.TestCase):
             propose.propose(args(), PARTIES, op.url, co.url)
         self.assertEqual((op.submitted, co.submitted), ([], []))
 
+    def test_resuming_refuses_a_proposal_that_differs_from_the_arguments(self):
+        left = {**propose.proposal_arguments(args(), PARTIES), "programVK": "00" * 32}
+        op, co = self.ledgers({"ChainProposal": [{"contractId": "old", "args": left}]})
+        with self.assertRaises(SystemExit) as ctx:
+            propose.propose(args(), PARTIES, op.url, co.url, resume=True)
+        self.assertIn("programVK", str(ctx.exception))
+        self.assertEqual((op.submitted, co.submitted), ([], []))
+
+    def test_resuming_accepts_the_proposal_that_matches(self):
+        left = propose.proposal_arguments(args(), PARTIES)
+        op, co = self.ledgers({"ChainProposal": [{"contractId": "old", "args": left}]})
+        self.assertEqual(propose.propose(args(), PARTIES, op.url, co.url, resume=True)["contractId"], "z1")
+        self.assertEqual(op.submitted, [])
+
     def test_it_refuses_a_proposal_that_is_already_there(self):
         op, co = self.ledgers({"ChainProposal": [{"contractId": "old", "args": {}}]})
         with self.assertRaises(SystemExit):

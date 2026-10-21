@@ -17,3 +17,19 @@ load_persist_settings() {   # $1 = the state folder; returns 1 with a message if
     export "$k=$v"
   done
 }
+
+# CZE_USER_PREFIX (external mode only: the Ledger API users' names, "ostia-" by default, possibly empty) is recorded by up.sh, and restart.sh uses it.
+# A restart in a shell without it must not fall back to the default, and a different explicit value is refused: the participant would not know the users.
+# A persist.env from before the prefix was recorded has no line for it, and keeps the default.
+load_user_prefix() {   # $1 = the state folder; returns 1 with a message if the environment disagrees
+  if grep -q '^CZE_USER_PREFIX=' "$1/persist.env"; then
+    local v; v=$(sed -n 's/^CZE_USER_PREFIX=//p' "$1/persist.env")
+    if [ -n "${CZE_USER_PREFIX+set}" ] && [ "$CZE_USER_PREFIX" != "$v" ]; then
+      echo "FAIL: CZE_USER_PREFIX is '$CZE_USER_PREFIX' here, but the chain in $1 was made with '$v': unset it (or set it to '$v')" >&2
+      return 1
+    fi
+    export CZE_USER_PREFIX=$v
+  else
+    export CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-}
+  fi
+}

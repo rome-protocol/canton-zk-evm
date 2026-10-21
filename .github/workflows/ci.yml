@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Lint every shell script
-        run: shellcheck network/*.sh network/reth/*.sh network/canton/*.sh tests/*.sh
+        run: shellcheck network/*.sh network/reth/*.sh network/canton/*.sh network/external/*.sh tests/*.sh
 
   static:
     runs-on: ubuntu-latest
