@@ -47,6 +47,42 @@ export async function deriveCursor(c: Pick<PoolClient, "query">): Promise<number
   return r.rowCount ? Number(r.rows[0].position) : 0;
 }
 
+/** What stage 2 derives for block `n` from its traces, checked against the transactions stage 1 holds, in the caller's transaction. */
+async function deriveRows(c: Pick<PoolClient, "query">, n: number, traces: TxTrace[]) {
+  // The traces must be those of the block's transactions, in order.
+  const txs = (await c.query("select tx_index, hash, status from transactions where block_number = $1 order by tx_index", [n])).rows as { tx_index: number; hash: Buffer; status: number }[];
+  if (txs.length !== traces.length || txs.some((t, k) => "0x" + t.hash.toString("hex") !== traces[k]!.transactionHash)) {
+    throw new IndexerStop("derive", `block ${n}: reth's traces are not those of the block's ${txs.length} transactions, in order`, n, { traces: traces.length, transactions: txs.length });
+  }
+  return txs.flatMap((t, k) => {
+    const trace = traces[k]!;
+    const calls = Math.max(trace.calls - 1, 0);
+    if (calls === 0 && t.status !== 0) return [];
+    const data = t.status === 0 && trace.output !== "0x" ? trace.output : null;
+    return [{ index: t.tx_index, calls, data, reason: data === null ? null : revertReason(data) }];
+  });
+}
+
+async function insertRows(c: Pick<PoolClient, "query">, n: number, rows: Awaited<ReturnType<typeof deriveRows>>): Promise<void> {
+  if (rows.length === 0) return;
+  await c.query(
+    `insert into tx_traces (block_number, tx_index, call_count, revert_data, revert_reason)
+     select $1::bigint, t.i, t.calls, t.data, t.reason from unnest($2::int[], $3::int[], $4::bytea[], $5::text[]) as t(i, calls, data, reason)`,
+    [n, rows.map((r) => r.index), rows.map((r) => r.calls), rows.map((r) => (r.data === null ? null : bytea(r.data))), rows.map((r) => r.reason)],
+  );
+}
+
+/**
+ * Stage 2's rows for a block the derive cursor has already passed, written again (the reindex): the block's old rows are deleted and the same
+ * derivation writes the new ones, in the caller's transaction. The cursor is not touched.
+ */
+export async function rederive(c: Pick<PoolClient, "query">, n: number, traces: TxTrace[]): Promise<number> {
+  const rows = await deriveRows(c, n, traces);
+  await c.query("delete from tx_traces where block_number = $1", [n]);
+  await insertRows(c, n, rows);
+  return rows.length;
+}
+
 /** Stage 2 for block `n`, in the caller's database transaction. `traces` are reth's replay of the block's transactions, in order. */
 export async function stage2(c: PoolClient, n: number, traces: TxTrace[]): Promise<Stage2Result> {
   // 1. Guard.
@@ -56,24 +92,8 @@ export async function stage2(c: PoolClient, n: number, traces: TxTrace[]): Promi
   if (position !== n - 1) throw new IndexerStop("derive", `stage 2 is at block ${position} and was given block ${n}: it goes one block at a time`, n, { cursor: position });
 
   // 2 and 3. The traces must be those of the block's transactions, in order; then derive and write.
-  const txs = (await c.query("select tx_index, hash, status from transactions where block_number = $1 order by tx_index", [n])).rows as { tx_index: number; hash: Buffer; status: number }[];
-  if (txs.length !== traces.length || txs.some((t, k) => "0x" + t.hash.toString("hex") !== traces[k]!.transactionHash)) {
-    throw new IndexerStop("derive", `block ${n}: reth's traces are not those of the block's ${txs.length} transactions, in order`, n, { traces: traces.length, transactions: txs.length });
-  }
-  const rows = txs.flatMap((t, k) => {
-    const trace = traces[k]!;
-    const calls = Math.max(trace.calls - 1, 0);
-    if (calls === 0 && t.status !== 0) return [];
-    const data = t.status === 0 && trace.output !== "0x" ? trace.output : null;
-    return [{ index: t.tx_index, calls, data, reason: data === null ? null : revertReason(data) }];
-  });
-  if (rows.length > 0) {
-    await c.query(
-      `insert into tx_traces (block_number, tx_index, call_count, revert_data, revert_reason)
-       select $1::bigint, t.i, t.calls, t.data, t.reason from unnest($2::int[], $3::int[], $4::bytea[], $5::text[]) as t(i, calls, data, reason)`,
-      [n, rows.map((r) => r.index), rows.map((r) => r.calls), rows.map((r) => (r.data === null ? null : bytea(r.data))), rows.map((r) => r.reason)],
-    );
-  }
+  const rows = await deriveRows(c, n, traces);
+  await insertRows(c, n, rows);
   await c.query(
     `insert into cursors (stream, position, updated_at) values ('derive', $1, now())
      on conflict (stream) do update set position = excluded.position, updated_at = excluded.updated_at`,
