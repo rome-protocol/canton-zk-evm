@@ -29,6 +29,7 @@ cleanup() {
     echo "--- explorer log (tail)"; docker logs --tail 30 "${EXPLORER_CONTAINER:-cze-explorer}" 2>&1 || true
   fi
   "$ROOT/explorer/run.sh" stop || true
+  docker rm -f cze-w1-db >/dev/null 2>&1 || true
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
   "$ROOT/network/reth/stop.sh" || true
   rm -rf "$WORK"
@@ -186,4 +187,50 @@ done
 [ -s "$WORK/reth-calls" ] || fail "the explorer made no call to reth"
 jq -e -s 'all(.[] | .body | fromjson | if type == "array" then .[] else . end | .method; test("^(eth|net|web3)_"))' "$WORK/reth-calls" >/dev/null || fail "the explorer called a method of reth that is not eth_, net_ or web3_"
 echo "the explorer called only the ledger end and the updates on Canton, and only eth_, net_ and web3_ on reth"
+echo "== the indexer's real-reth tests: revert data (Error(string), Panic(uint256), a custom error) and W1, the worst-case block"
+# The explorer's indexer reads this chain's reth and Canton as it would a deployed one. The proofs here are stand-ins, so the test takes its pins
+# from the first proof; everything else is the real thing. The block of three failed transactions and a block that fills the gas cap are made
+# here, through the real builder, and the test then indexes the whole chain into a PostgreSQL made for this run (the pinned image, loopback only).
+PY=$CZE_STATE_DIR/venv/bin/python3
+w1py() { "$PY" "$ROOT/tests/demo_w1.py" "$@"; }
+cut_block() {
+  local out
+  out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $out"
+  jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
+}
+receipt_of() { "$PY" "$ROOT/demo/evm.py" receipt "$1"; }
+"$ROOT/tests/build_w1_fixtures.sh" "$WORK/w1"
+reverts_tx=$(w1py deploy "$WORK/w1/Reverts.bin"); stress_tx=$(w1py deploy "$WORK/w1/Stress.bin")
+cut_block
+REVERTS=$(receipt_of "$reverts_tx" | jq -r .contract); STRESS=$(receipt_of "$stress_tx" | jq -r .contract)
+[[ $REVERTS =~ ^0x[0-9a-fA-F]{40}$ && $STRESS =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "the two fixture contracts were not deployed: $REVERTS $STRESS"
+first_failed=$(w1py reverts "$REVERTS" | head -n 1)
+cut_block
+REVERT_BLOCK=$(receipt_of "$first_failed" | jq -r .block)
+[ "$(receipt_of "$first_failed" | jq -r .status)" = 0 ] || fail "the first call to Reverts did not fail: $(receipt_of "$first_failed")"
+first_stress=$(w1py stress "$STRESS" 15 | head -n 1)
+cut_block
+W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)
+echo "the first Stress call: $(receipt_of "$first_stress" | jq -c .)"
+echo "revert block $REVERT_BLOCK, W1 block $W1_BLOCK: $(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$W1_BLOCK")\",false" | jq -c '{transactions: (.result.transactions | length), gasUsed: .result.gasUsed}')"
+
+PGPW=$(openssl rand -hex 16)
+docker run -d --name cze-w1-db --security-opt no-new-privileges -p 127.0.0.1:55433:5432 -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE" >/dev/null
+ok=0
+for _ in $(seq 1 60); do
+  if docker exec cze-w1-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
+  sleep 1
+done
+[ "$ok" -ge 3 ] || fail "the test database did not start"
+docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e EXPLORER_TEST_RETH_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e EXPLORER_TEST_REVERT_BLOCK="$REVERT_BLOCK" -e EXPLORER_TEST_W1_BLOCK="$W1_BLOCK" \
+  -e EXPLORER_TEST_LEDGER_URL=http://127.0.0.1:7577 -e READER_PARTY="$READER_PARTY" -e GATEWAY_ADDRESS="$GATEWAY_ADDRESS" -e CHAIN_ID="$(($(rpc eth_chainId | jq -r .result)))" \
+  -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL="postgres://explorer:$PGPW@127.0.0.1:55433/explorer" \
+  -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
+  sh -c "mkdir /tmp/explorer && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/explorer && cd /tmp/explorer && npm ci --ignore-scripts && npx vitest run server/indexer/real-reth.test.ts --reporter=verbose" \
+  | tee "$WORK/w1.log"
+grep -q 'W1 inline:' "$WORK/w1.log" || fail "the W1 test did not run"
+grep -E '^W1 ' "$WORK/w1.log" || true
+
 echo "demo rehearsal passed"

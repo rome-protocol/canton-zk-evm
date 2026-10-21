@@ -34,7 +34,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` | `PINS` |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
-| Canton | 3.6.2, the open-source release of 2026-10-15 (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f) | `PINS` |
+| Canton | 3.6.3, the open-source release of 2026-10-20 (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f) | `PINS` |
 | Daml SDK | 3.6.0, the release of 2026-10-08 (the recorded runs used 3.5.13-snapshot.20261001.145.0.v852bdd82) | `PINS` |
 | Daml compiler | 3.6.2, building to Daml-LF 2.4 (the recorded runs used 3.6.0-snapshot.20260915.14804.0.v53478765) | `PINS` |
 | Daml SDK (Daml Script tests) | 3.5.12, building the stub form to Daml-LF 2.1 | `daml/daml.yaml`; `.github/workflows/daml.yml` |
@@ -134,6 +134,41 @@ After the runs, the explorer was opened in a browser on block 3. Its Verify butt
 
 The step count of 385,277 here is for this repository's guest and its own temporary genesis. It should not be compared with the benchmark's step counts, which are for the upstream guest and different blocks.
 
+## The indexer on a real chain (W1)
+
+Measured in CI, in the demo's rehearsal job (`tests/demo_rehearsal.sh`, test `explorer/server/indexer/real-reth.test.ts`), on a GitHub-hosted `ubuntu-latest` runner, not on the reference machine. The chain is the rehearsal's own: the real reth (through `network/reth/launch.sh`, discovery off), the real Canton and the real builder, with the stand-in proof (the test takes its pins from the first proof, which is all the stand-in changes). The indexer then indexes every block of the chain into a PostgreSQL started for the run (the pinned image), once with stage 2 `inline` and once `behind`.
+
+The worst-case block is made by `explorer/test/fixtures/Stress.sol`: 15 transactions, each a call chain 14 deep with 10 logs and a contract creation at every level. It is 21.8 Mgas of the 30 Mgas cap: 15 transactions, 435 internal calls, 2,250 logs. (The builder takes transactions by their gas limit, 2 Mgas each, and these use about 1.45 Mgas.) One run, one runner; the figures below are from one run, with the block as intended, and runs differ by a few milliseconds.
+
+| What | Time |
+|---|---|
+| Stage 1's reads from reth, `inline` (block, receipts, `trace_replayBlockTransactions`) | 37 ms |
+| Stage 1's reads from reth, `behind` (block, receipts) | 34 ms |
+| Stage 1's write, `inline` / `behind` | 59 ms / 57 ms |
+| Stage 2's trace read, `behind` | 9 ms |
+| Stage 2's write | 2 ms |
+| All three reads again, on a warm reth; the trace read alone | 44 ms; 9 ms |
+
+Both shapes finish the block through both stages in under 100 ms, against B1's 1.0 s for stage 1 and B2's 3.0 s for both stages. So `INDEX_DERIVE` stays `inline` by default (design section 4.3's trigger). This does not set B2's final number: the block is below the cap, the machine is not the reference machine, and stage 2 here is only the call count and revert data. W1 runs again in E5b, with all of stage 2.
+
+The test asserts the budgets, so a regression fails the rehearsal job and does not stay a line in a log: stage 1's reads and write for the W1 block must come in under 1.0 s (B1), and both stages together under 3.0 s (B2, provisional for a block read over the network).
+
+### The health rows the indexer writes
+
+Alerts and the overall status read these ids by name, so they are fixed here. A stop writes the id `down` and the indexer stops; the row goes back to `ok` when the indexer next passes that check. `degraded` rows do not stop the indexer.
+
+| Id | Class | When |
+|---|---|---|
+| `C1`, `C2`, `C3`, `C7` | down | a block fails the check: hash, order and parent, transactions and receipts, the proof's pins |
+| `pins` | down | the database was made for other pins or another chain than the indexer is set to |
+| `participant` | down | the reader's cursor belongs to another participant than the one now answering, and offsets are local to a participant |
+| `record` | down | a record's signatories are not its operator and confirmer |
+| `derive` | down | stage 2 is given a block out of order, or reth's traces are not those of the block's transactions |
+| `C10` | degraded | a Leg event of the gateway cannot be decoded; it names the block, which is stored with the legs that decode and a `legs_count` of all the gateway wrote |
+| `reth_reads` | degraded | reth keeps answering a read with an error or a timeout, or has not had the block Canton names for longer than `INDEX_RETH_BEHIND_MS`; back to `ok` when every loop that reported it reads cleanly again |
+
+The same run answers the design's main open question about revert data: `trace_replayBlockTransactions` does carry the `output` of a failed transaction, for `Error(string)`, `Panic(uint256)` and a custom error (`Reverts.sol`, one failing call to each, in one block). The `debug_traceBlockByNumber` fallback is not needed.
+
 ## What CI runs
 
 CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof is made or timed in CI. The WebAssembly tests print verification timings. The jobs are:
@@ -149,6 +184,7 @@ CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof 
 - **Canton:** the Canton job in `.github/workflows/network.yml` builds the external form with the pinned released 3.6 compiler. It starts the pinned Canton with that package. One `Advance` is committed and one refused, against a stand-in for the sidecars.
 - **Builder:** its tests, on Python 3.12.
 - **Explorer:** `.github/workflows/explorer.yml` runs type-checks, tests against fakes and the pages' build in `EXPLORER_NODE_IMAGE`. Its `ledger-api` job checks the explorer's requests against the pinned Canton's OpenAPI document. Its `verify-wasm` job checks shared crate versions against the sidecar's lockfile, runs Rust formatting, lint and tests, and builds the Verify module for WebAssembly. It tests the built module through the loader and panel in Node and checks that the pages' build serves it.
+- **The explorer's database and indexer:** the `database` job in `.github/workflows/explorer.yml` starts the pinned PostgreSQL and runs the database tests and the indexer's tests against it with `EXPLORER_TEST_REQUIRE_DATABASE=1`, so a missing database fails the job instead of skipping the tests. That includes the replay, kill-mid-block, reth-behind, gap, C1, C2, C3 and C7 tests, and L1: blocks of 0, 100, 1,428 and 5,000 transactions through both stages, each inside B1 and B2.
 - **Demo checks:** the `checks` job in `.github/workflows/demo.yml` runs shellcheck, `tests/demo_static.sh` and `tests/demo_explorer_static.sh`. It tests the EVM side against a fake reth, the Canton helpers, the sidecar stand-in and the request logger. The `token` job checks that the pinned solc rebuilds `demo/TKA.bin` from `demo/TKA.sol`.
 - **The demo's rehearsal:** the whole demo without a GPU, using a stand-in for the proof. It runs the real reth, Canton, token standard, builder and the sidecar's `legs` check, and runs the explorer beside the chain. It checks the block page, Verify's rejection of the stand-in proof, the tROME faucet and the explorer's requests. It does not prove a block or check a real proof.
 

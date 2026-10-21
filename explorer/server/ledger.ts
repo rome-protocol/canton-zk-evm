@@ -2,7 +2,7 @@
  * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, two calls only, both reads.
  * It asks for the reader party's transactions, filtered to the block record, and keeps nothing else the answer might carry.
  */
-export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates"]);
+export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
 
 /** The package is named, not pinned by id, as the demo does; Canton picks the vetted version. */
 export const BLOCK_RECORD_TEMPLATE = "#canton-zk-evm:Zk.Chain:BlockRecord";
@@ -26,6 +26,15 @@ export interface BlockRecord {
   /** The two signers of the record: the chain's root of trust. The builder's and the reader's party ids are read and dropped. */
   operator: string;
   confirmer: string;
+  /** What the reader's update says about itself, kept for the Canton view of a block. The observers are never read. */
+  synchronizerId: string;
+  /** When the transaction takes effect, as Canton writes it (UTC); the record time when Canton sends none. */
+  effectiveAt: string;
+  contractId: string;
+  /** The record's template as the update names it: package id, module and entity. */
+  template: { packageId: string; module: string; entity: string };
+  /** The party ids that signed the record's creation: the operator and the confirmer, and no one else. */
+  signatories: string[];
 }
 
 type Json = Record<string, unknown>;
@@ -60,11 +69,20 @@ function record(tx: Json, event: Json): BlockRecord {
   const a = obj(event.createArgument, "a createArgument");
   const hash = (name: string) => "0x" + text(a, name, updateId, HASH).replace(/^0x/, "");
   text(a, "builder", updateId); text(a, "reader", updateId);
+  const [packageId, module, entity, ...rest] = text(event, "templateId", updateId, (t) => t.split(":").length === 3 && !t.startsWith("#")).split(":");
+  if (rest.length > 0 || !packageId || !module || !entity) fail("a template id");
+  const signatories = field(event, "signatories", updateId);
+  if (!Array.isArray(signatories) || signatories.length === 0 || signatories.some((x) => typeof x !== "string" || x === "")) {
+    throw new LedgerError(`the block record in update ${updateId} has signatories that are not valid`);
+  }
   return {
     updateId, offset: whole(tx, "offset", updateId), recordTime, chainId: whole(a, "chainId", updateId), number: whole(a, "number", updateId),
     blockHash: hash("blockHash"), parentHash: hash("parentHash"),
     headerHex: text(a, "headerHex", updateId, HEX), txsHex: text(a, "txsHex", updateId, HEX_OR_EMPTY), proofHex: text(a, "proofHex", updateId, HEX),
     operator: text(a, "operator", updateId), confirmer: text(a, "confirmer", updateId),
+    synchronizerId: text(tx, "synchronizerId", updateId),
+    effectiveAt: tx.effectiveAt === undefined ? recordTime : text(tx, "effectiveAt", updateId, (s) => Number.isFinite(Date.parse(s))),
+    contractId: text(event, "contractId", updateId), template: { packageId: packageId!, module: module!, entity: entity! }, signatories: signatories as string[],
   };
 }
 
@@ -114,28 +132,45 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
     } },
   });
 
-  /** The block records Canton committed after offset `after`, up to and including `upTo` (a ledger end read first), oldest first. */
-  async function records(after: number, upTo: number): Promise<BlockRecord[]> {
+  /** The participant's own id, as it reports it. Offsets are local to one participant, so every stored offset says whose it is. */
+  async function participantId(): Promise<string> {
+    const id = obj(await call("GET", "/v2/parties/participant-id"), "a participant id").participantId;
+    return typeof id === "string" && id !== "" ? id : fail("a participant id");
+  }
+
+  /**
+   * The block records Canton committed after offset `after`, up to and including `upTo` (a ledger end read first), oldest first, one page of
+   * the walk at a time: a caller that indexes each page before it asks for the next keeps its memory to one page, and a read that fails
+   * on a later page does not take back what the earlier pages gave.
+   */
+  async function* recordPages(after: number, upTo: number): AsyncGenerator<BlockRecord[]> {
     if (!readerParty) throw new LedgerError("READER_PARTY is not set: the explorer reads Canton as the reader party only");
-    const out: BlockRecord[] = [];
     for (let begin = after; begin < upTo; ) {
       const items = await call("POST", `/v2/updates?limit=${pageSize}`, updatesRequest(readerParty, begin, upTo));
       if (!Array.isArray(items)) return fail("an answer that is not a list");
       let last = begin;
+      const page: BlockRecord[] = [];
       for (const item of items) {
         const r = recordsIn(item);
         last = Math.max(last, r.offset);
-        out.push(...r.records);
+        page.push(...r.records);
       }
       // Only an empty answer ends the walk: Canton may cap `limit` below ours, or close a list early, so a short page proves nothing.
       if (items.length === 0) break;
       if (last <= begin) throw new LedgerError("Canton's updates did not move forward");
       begin = last;
+      if (page.length > 0) yield page;
     }
+  }
+
+  /** The whole walk of `recordPages`, in one list (for a short range; the indexer reads page by page). */
+  async function records(after: number, upTo: number): Promise<BlockRecord[]> {
+    const out: BlockRecord[] = [];
+    for await (const page of recordPages(after, upTo)) out.push(...page);
     return out;
   }
 
-  return { call, ledgerEnd, records };
+  return { call, ledgerEnd, records, recordPages, participantId };
 }
 
 export type Ledger = ReturnType<typeof createLedger>;
