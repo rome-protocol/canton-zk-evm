@@ -39,17 +39,22 @@ SECRET=$(openssl rand -hex 32)
 cat > "$WORK/auth.conf" <<CONF
 canton.participants.operator.ledger-api.auth-services = [{ type = unsafe-jwt-hmac-256, secret = "$SECRET", target-audience = "https://canton.network.global" }]
 CONF
+# The participant refuses a token with a long lifetime (as the DevNet's does), so a token lives two minutes and is written again, in place, before each phase.
+mint() {
 python3 - "$SECRET" "$WORK" <<'PY'
-import base64, hashlib, hmac, json, sys, time
+import base64, hashlib, hmac, json, os, sys, time
 secret, work = sys.argv[1:]
 enc = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=")
 for role, user in {"admin": "participant_admin", "operator": "ostia-operator", "confirmer": "ostia-confirmer", "builder": "ostia-builder", "reader": "ostia-reader"}.items():
-    claims = {"sub": user, "aud": "https://canton.network.global", "exp": int(time.time()) + 3600}
+    claims = {"sub": user, "aud": "https://canton.network.global", "exp": int(time.time()) + 120}
     signing = enc(b'{"alg":"HS256","typ":"JWT"}') + b"." + enc(json.dumps(claims).encode())
     token = signing + b"." + enc(hmac.new(secret.encode(), signing, hashlib.sha256).digest())
-    with open(f"{work}/token-{role}", "wb") as f:
+    fd = os.open(f"{work}/token-{role}", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
         f.write(token + b"\n")
 PY
+}
+mint
 for role in admin operator confirmer builder reader; do
   export "CZE_TOKEN_FILE_${role^^}=$WORK/token-$role"
 done
@@ -74,9 +79,10 @@ grep -q "EXTERNAL PARTICIPANT READY" "$WORK/canton.log" || fail "the participant
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$CZE_LEDGER_URL/v2/packages")" = 401 ] || fail "the Ledger API answers without a token"
 
 H0=$(printf 'ab%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32))
-setup() { python3 "$ROOT/network/external/setup.py" -- --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
+setup() { mint; python3 "$ROOT/network/external/setup.py" -- --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
   --rules-hash "$(printf '12%.0s' $(seq 32))" --gateway-address "${GATEWAY_ADDRESS#0x}"; }
 snapshot() {
+  mint
   local t; t=$(tr -d '[:space:]' < "$WORK/token-admin")
   for path in /v2/state/ledger-end /v2/parties /v2/users /v2/packages; do curl -sf -H "Authorization: Bearer $t" "$CZE_LEDGER_URL$path" | jq -S .; done
 }
@@ -99,12 +105,14 @@ grep -q 'the package is vetted' "$WORK/setup1.log" || echo "NOTE: the participan
 
 # Users and rights: the builder reads as the gateway and cannot act as it, the operator acts as it, the chain names the gateway.
 gw=${GATEWAY_ADDRESS#0x}
+mint
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" gateway "$gw")" = ok ] || fail "the users' rights, or the chain's gateway, are wrong"
 
 # One Advance. The stand-in refuses first: nothing moves. Then it agrees: the head is 1, and the same sidecar was asked in both modes.
 echo "no the proof does not verify" > "$FAKE_ANSWER.verify"
+mint
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" refused 2>/dev/null)" = 0 ] || fail "a refused block moved the head"
-answers
+answers; mint
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" accepted)" = 1 ] || fail "a good block did not move the head to 1"
 for function in verify legs; do
   for mode in submission validation; do
