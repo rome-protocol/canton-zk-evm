@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ALLOWED_ENDPOINTS, createLedger } from "./ledger.ts";
-import { checkpoint, createdEvent, FAKE_READER, startFakeLedger, transaction, type FakeLedger } from "../test/fake-ledger.ts";
+import { checkpoint, createdEvent, FAKE_PARTICIPANT, FAKE_READER, startFakeLedger, transaction, type FakeLedger } from "../test/fake-ledger.ts";
 import { loadSpec, validate } from "../test/openapi.ts";
 
 // CANTON_OPENAPI names the OpenAPI document of the pinned Canton, as JSON. CI sets it (explorer/check-ledger-api.sh); without it these tests skip.
@@ -12,7 +12,7 @@ describe.skipIf(!file)("the Ledger API calls, against Canton's own OpenAPI docum
   const spec = () => loadSpec(file!);
   const answer = (path: string, method: string) => spec().paths[path]![method].responses["200"].content["application/json"].schema;
 
-  it("has both endpoints the explorer calls", () => {
+  it("has every endpoint the explorer calls", () => {
     for (const route of ALLOWED_ENDPOINTS) {
       const [method, path] = route.split(" ") as [string, string];
       expect(spec().paths[path]?.[method.toLowerCase()], route).toBeDefined();
@@ -32,6 +32,7 @@ describe.skipIf(!file)("the Ledger API calls, against Canton's own OpenAPI docum
     const updates = [transaction(7, "u1", [createdEvent(7)]), checkpoint(8)];
     expect(validate(spec(), answer("/v2/updates", "post"), updates, true)).toEqual([]);
     expect(validate(spec(), answer("/v2/state/ledger-end", "get"), { offset: 8 }, true)).toEqual([]);
+    expect(validate(spec(), answer("/v2/parties/participant-id", "get"), { participantId: FAKE_PARTICIPANT }, true)).toEqual([]);
   });
 
   it("would catch a field the document does not have, and a required field that is missing", () => {

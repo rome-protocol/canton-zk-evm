@@ -77,7 +77,8 @@ jobs:
 
   # The explorer's database: the migrations and the partition maintenance, against the PostgreSQL that PINS pins (the same image
   # network/explorer-db.sh runs). The tests make a database of their own for each case. EXPLORER_TEST_REQUIRE_DATABASE makes a
-  # missing database a failure instead of a skip. The command line is run twice, to see that the second run changes nothing.
+  # missing database a failure instead of a skip. The tracker's and the faucet's own tests run again with the database in the files' place
+  # (EXPLORER_TEST_STORE=database), and storage.test.ts has the two-instance and import cases. The command line is run twice, to see that the second run changes nothing.
   database:
     runs-on: ubuntu-latest
     steps:
@@ -107,4 +108,4 @@ jobs:
             -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
             -e EXPLORER_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
             -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
-            sh -c "npm ci --ignore-scripts && npx vitest run server/db && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"
+            sh -c "npm ci --ignore-scripts && npx vitest run server/db server/indexer server/storage.test.ts server/store-races.test.ts && EXPLORER_TEST_STORE=database npx vitest run server/tracker.test.ts server/faucet.test.ts && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"

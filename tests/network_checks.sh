@@ -156,6 +156,26 @@ out=$(PATH="$WORK/pkgbin:$PATH" "$ROOT/network/canton/check-package.sh" "$ID" 2>
 grep -q 'did not answer' <<<"$out" || fail "check-package.sh: no clear error when the Ledger API does not answer ($out)"
 printf '{"packageIds":["%s"]}' "$ID" > "$FAKE_PACKAGES"
 PATH="$WORK/pkgbin:$PATH" "$ROOT/network/canton/check-package.sh" "not-an-id" >/dev/null 2>&1 && fail "check-package.sh accepted a malformed package id"
+# With a token file, against the real curl: the server answers only to its bearer token (the admin's by default, CZE_PACKAGE_TOKEN_FILE when given).
+printf 'tok-admin-1\n' > "$WORK/tok-admin"; printf 'tok-builder-2\n' > "$WORK/tok-builder"; chmod 600 "$WORK/tok-admin" "$WORK/tok-builder"
+cat > "$WORK/auth_server.py" <<'PY'
+import http.server, json, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        ok = self.headers.get("authorization") in ("Bearer tok-admin-1", "Bearer tok-builder-2")
+        self.send_response(200 if ok else 401); self.end_headers()
+        self.wfile.write(json.dumps({"packageIds": [sys.argv[2]]}).encode() if ok else b"{}")
+s = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H)
+print("up", flush=True); s.serve_forever()
+PY
+python3 "$WORK/auth_server.py" 17582 "$ID" > "$WORK/auth_server.log" & AUTH_PID=$!
+for _ in $(seq 1 30); do grep -q up "$WORK/auth_server.log" && break; sleep 0.2; done
+CZE_TOKEN_FILE_ADMIN=$WORK/tok-admin "$ROOT/network/canton/check-package.sh" "$ID" http://127.0.0.1:17582 >/dev/null 2>&1 || { kill $AUTH_PID; fail "check-package.sh did not send the admin token"; }
+CZE_PACKAGE_TOKEN_FILE=$WORK/tok-builder CZE_TOKEN_FILE_ADMIN=$WORK/no-such-file "$ROOT/network/canton/check-package.sh" "$ID" http://127.0.0.1:17582 >/dev/null 2>&1 || { kill $AUTH_PID; fail "check-package.sh did not use CZE_PACKAGE_TOKEN_FILE"; }
+"$ROOT/network/canton/check-package.sh" "$ID" http://127.0.0.1:17582 >/dev/null 2>&1 && { kill $AUTH_PID; fail "check-package.sh got an answer without a token"; }
+out=$(CZE_PACKAGE_TOKEN_FILE=$WORK/tok-builder "$ROOT/network/canton/check-package.sh" "$ID" http://127.0.0.1:17582 2>&1); kill $AUTH_PID
+! grep -q 'tok-builder' <<<"$out" || fail "check-package.sh printed a token"
 
 # --- check-program-vk.sh
 REC=$(printf 'e7%.0s' $(seq 32)); OTHER=$(printf '69%.0s' $(seq 32))

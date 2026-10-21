@@ -192,4 +192,66 @@ grep -q 'GATEWAY_PARTY=' "$B" || fail "bootstrap.canton does not write GATEWAY_P
 grep -q -- '--gateway-address "${GATEWAY_ADDRESS#0x}"' "$ROOT/network/up.sh" || fail "up.sh does not give the chain the gateway address from PINS"
 grep -q 'eth_getCode' "$ROOT/network/up.sh" || fail "up.sh does not read the gateway's code from reth's genesis"
 grep -q 'gateway/Gateway.bin-runtime' "$ROOT/network/up.sh" || fail "up.sh does not compare it with gateway/Gateway.bin-runtime"
+# Running on an existing participant (network/external/, CZE_CANTON=external): the scripts, what they refuse, and that local mode is as it was.
+X=$ROOT/network/external
+for f in setup.py sidecar.sh participant-config.sh check-env.sh; do [ -x "$X/$f" ] || fail "network/external/$f is missing or not executable"; done
+# The settings check: a good set passes and prints no token; each fault is refused.
+XW=$(mktemp -d); trap 'rm -rf "$XW"' EXIT
+for role in ADMIN OPERATOR CONFIRMER BUILDER; do echo "secret-token-$role" > "$XW/$role"; chmod 600 "$XW/$role"; done
+xenv() { env -i PATH="$PATH" CZE_LEDGER_URL="${URL-https://ledger.example}" CZE_TOKEN_FILE_ADMIN="$XW/ADMIN" CZE_TOKEN_FILE_OPERATOR="$XW/OPERATOR" \
+  CZE_TOKEN_FILE_CONFIRMER="$XW/CONFIRMER" CZE_TOKEN_FILE_BUILDER="$XW/BUILDER" "$X/check-env.sh"; }
+out=$(xenv 2>&1) || fail "check-env.sh refused a complete setting: $out"
+! grep -q 'secret-token' <<<"$out" || fail "check-env.sh prints a token"
+URL=http://127.0.0.1:7575 xenv >/dev/null 2>&1 || fail "check-env.sh refused http on this machine"
+URL=http://10.1.2.3:7575 xenv >/dev/null 2>&1 && fail "check-env.sh accepted a token over plain http to another machine"
+URL='' xenv >/dev/null 2>&1 && fail "check-env.sh accepted no Ledger API URL"
+chmod 644 "$XW/OPERATOR"; out=$(xenv 2>&1) && fail "check-env.sh accepted a token file that others can read"
+! grep -q 'secret-token' <<<"$out" || fail "check-env.sh prints a token when it refuses"
+chmod 600 "$XW/OPERATOR"
+: > "$XW/BUILDER"; xenv >/dev/null 2>&1 && fail "check-env.sh accepted an empty token file"
+echo x > "$XW/BUILDER"; chmod 600 "$XW/BUILDER"
+env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example "$X/check-env.sh" >/dev/null 2>&1 && fail "check-env.sh accepted a login-less setting without CZE_LEDGER_NO_AUTH"
+env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_LEDGER_NO_AUTH=1 "$X/check-env.sh" >/dev/null 2>&1 || fail "check-env.sh refused CZE_LEDGER_NO_AUTH=1"
+# A restart needs no admin token (the validator's most powerful one); an up does.
+xenv_no_admin() { env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_OPERATOR="$XW/OPERATOR" CZE_TOKEN_FILE_CONFIRMER="$XW/CONFIRMER" \
+  CZE_TOKEN_FILE_BUILDER="$XW/BUILDER" "$X/check-env.sh" "$1"; }
+xenv_no_admin restart >/dev/null 2>&1 || fail "check-env.sh restart wants the admin token"
+# A restart needs the builder's token and no other: not the operator's, not the confirmer's (they are for up.sh and setup.py).
+xenv_builder_only() { env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_BUILDER="$XW/BUILDER" "$X/check-env.sh" "$1"; }
+xenv_builder_only restart >/dev/null 2>&1 || fail "check-env.sh restart wants a token other than the builder's"
+xenv_builder_only up >/dev/null 2>&1 && fail "check-env.sh up accepted a setting with the builder's token only"
+env -i PATH="$PATH" CZE_LEDGER_URL=https://ledger.example CZE_TOKEN_FILE_OPERATOR="$XW/OPERATOR" CZE_TOKEN_FILE_CONFIRMER="$XW/CONFIRMER" "$X/check-env.sh" restart >/dev/null 2>&1 \
+  && fail "check-env.sh restart accepted a setting without the builder's token"
+chmod 644 "$XW/BUILDER"; xenv_builder_only restart >/dev/null 2>&1 && fail "check-env.sh restart accepted a builder token file that others can read"
+chmod 600 "$XW/BUILDER"
+xenv_no_admin up >/dev/null 2>&1 && fail "check-env.sh up accepted a setting without the admin token"
+xenv_no_admin sideways >/dev/null 2>&1 && fail "check-env.sh took a phase that is neither up nor restart"
+grep -q 'check-env.sh" restart' "$ROOT/network/restart.sh" || fail "restart.sh does not check the settings for a restart (no admin token)"
+grep -q 'CZE_PACKAGE_TOKEN_FILE=${CZE_TOKEN_FILE_BUILDER' "$ROOT/network/restart.sh" || fail "restart.sh lists the package with a token other than the builder's"
+! grep -q 'CZE_TOKEN_FILE_ADMIN' "$ROOT/network/restart.sh" "$ROOT/network/sync_reth.py" || ! grep -v 'CZE_PACKAGE_TOKEN_FILE=' "$ROOT/network/restart.sh" | grep -q 'CZE_TOKEN_FILE_ADMIN' || fail "restart.sh uses the admin token"
+# An external chain has no local databases: a Canton pin move does not stop its restart.
+grep -q '\[ "\$CANTON_MODE" = external \] || \[ "\$(sed -n' "$ROOT/network/restart.sh" || fail "restart.sh checks the local databases' Canton version in external mode"
+# A sidecar that runs already with the same keys on the same address is not an error (up.sh after a manual start).
+grep -q 'answers on \$listen already' "$X/sidecar.sh" || fail "sidecar.sh start fails when the same sidecar runs already"
+# The participant's line: the extension's key, the given address and port, and validate-on-startup off.
+line=$("$X/participant-config.sh" 172.17.0.1 8085)
+[ "$line" = 'ADDITIONAL_CONFIG_ZK_EVM=canton.participants.participant.parameters.engine.extensions.canton-zk-evm { address = "172.17.0.1", port = 8085, validate-on-startup = false }' ] || fail "participant-config.sh printed: $line"
+"$X/participant-config.sh" 'x"y' 8085 >/dev/null 2>&1 && fail "participant-config.sh took an address with a quote"
+"$X/participant-config.sh" 127.0.0.1 99999999 >/dev/null 2>&1 && fail "participant-config.sh took a port that is not one"
+# The lone sidecar: the recorded keys, loopback by default, a pid file down.sh finds, no reth, no container.
+grep -q 'session.txt' "$X/sidecar.sh" && grep -q -- '--program-vk "$PROGRAM_VK" --root-c "$ROOT_C"' "$X/sidecar.sh" || fail "sidecar.sh does not pin the recorded program key and root key"
+grep -q 'CZE_SIDECAR_LISTEN:-127.0.0.1:8085' "$X/sidecar.sh" || fail "sidecar.sh does not listen on 127.0.0.1 by default"
+grep -q 'sidecar-\$port.pid' "$X/sidecar.sh" || fail "sidecar.sh does not keep its pid where down.sh looks"
+! grep -qE 'docker|reth' "$X/sidecar.sh" || fail "sidecar.sh starts something other than the sidecar"
+grep -q -- '--manifest-path "$ROOT/sidecar/Cargo.toml"' "$X/sidecar.sh" || fail "sidecar.sh does not build the sidecar as up.sh does"
+# up.sh, restart.sh and down.sh know the mode. In external mode up.sh runs setup.py, not Canton; in local mode it runs Canton as before.
+for f in up.sh restart.sh; do grep -q 'network/external/check-env.sh' "$ROOT/network/$f" || fail "$f does not check the external settings"; done
+grep -q 'CZE_CANTON=external' "$ROOT/network/down.sh" || fail "down.sh does not know the external mode"
+awk '/CANTON_MODE" = external \]; then/ {in_ext=1} /^else/ {in_ext=0} in_ext && /canton\/run.sh/ {bad=1} END {exit bad}' "$ROOT/network/up.sh" || fail "up.sh starts Canton in external mode"
+grep -q 'network/external/setup.py' "$ROOT/network/up.sh" || fail "up.sh does not run setup.py in external mode"
+grep -q 'canton/run.sh" bootstrap' "$ROOT/network/up.sh" || fail "up.sh no longer bootstraps the local Canton"
+! grep -qE 'echo .*\$\(.*(TOKEN_FILE|\$file)' "$X"/*.sh "$ROOT/network/up.sh" "$ROOT/network/restart.sh" "$ROOT/network/canton/check-package.sh" || fail "a script prints a token"
+! grep -qE 'CZE_TOKEN_FILE_[A-Z]+=' "$ROOT/network/up.sh" "$ROOT/network/restart.sh" "$ROOT/network/down.sh" || fail "a token file's path is written in a script"
+# persist.env records the mode, the participant and the sidecar's address, and no token.
+grep -q 'CZE_CANTON=external' "$ROOT/network/up.sh" && ! grep 'CZE_CANTON=external' "$ROOT/network/up.sh" | grep -qi token || fail "up.sh writes a token into persist.env"
 echo "network static checks passed"

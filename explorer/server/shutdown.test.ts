@@ -56,6 +56,19 @@ describe("the shutdown", () => {
     vi.restoreAllMocks();
   });
 
+  it("gives up the leads and the database after the last write, even when one of them fails, and then exits", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const { p, log, release } = parts();
+    release();
+    const leave = onShutdown({
+      ...p,
+      release: [async () => { log.push("lead given up"); throw new Error("gone"); }, async () => { log.push("database closed"); }],
+    });
+    await leave("SIGTERM");
+    expect(log.slice(-4)).toEqual(["flushed", "lead given up", "database closed", "exit 0"]);
+    vi.restoreAllMocks();
+  });
+
   it("also waits for the faucet's last write", async () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const { p, log, handlers, release } = parts();

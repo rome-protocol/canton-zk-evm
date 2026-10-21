@@ -16,6 +16,10 @@
 # its password made on this machine into $CZE_STATE_DIR/postgres.env) and reth keeps its data in $CZE_STATE_DIR/reth-data. After a reboot,
 # network/restart.sh brings the same chain back; network/down.sh stops it and keeps the data, and network/down.sh --wipe removes it.
 # Without CZE_PERSIST every run makes a new chain, as before.
+# With CZE_CANTON=external there is no local Canton: steps 6 and 7 run on a participant that exists already (the Canton Network's
+# DevNet) through network/external/setup.py, and step 4 starts one sidecar, or none (see "Running on an existing participant" in
+# network/README.md). Needs CZE_LEDGER_URL (https, or on this machine) and a token file per role: CZE_TOKEN_FILE_ADMIN, _OPERATOR, _CONFIRMER, _BUILDER
+# (CZE_LEDGER_NO_AUTH=1 instead, for a Ledger API without login). CZE_SIDECAR_LISTEN=<address:port> starts the sidecar here. Local mode is unchanged.
 # Needs ZisK installed (prover/install.sh), Docker, a GPU, Rust, Python 3 and jq. State, logs and pid files go to
 # $CZE_STATE_DIR (default ./state, ignored by git); the Engine secret and the party ids are created there per run.
 set -euo pipefail
@@ -42,6 +46,16 @@ command -v cargo-zisk >/dev/null || fail "ZisK is not installed (prover/install.
 [ ! -e "$CZE_STATE_DIR/persist.env" ] || fail "a persistent chain is here already: network/restart.sh brings it back, network/down.sh --wipe removes it"
 [ ! -e "$NET/canton.pid" ] || fail "a network was started here already: run network/down.sh first"
 [ "${CZE_PERSIST:-0}" != 1 ] || export CZE_PERSIST
+CANTON_MODE=${CZE_CANTON:-local}
+case $CANTON_MODE in
+  local) ;;
+  external)
+    # The chain lives on the participant, which is shared: without CZE_PERSIST this run would commit a chain there and down.sh would drop reth's data,
+    # stranding the chain's contracts on the participant for good.
+    [ "${CZE_PERSIST:-0}" = 1 ] || fail "CZE_CANTON=external needs CZE_PERSIST=1: the chain stays on the participant, so reth must keep its blocks (see network/README.md)"
+    "$ROOT/network/external/check-env.sh"; export CZE_LEDGER_URL CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-} ;;
+  *) fail "CZE_CANTON is local or external, not '$CANTON_MODE'" ;;
+esac
 
 step "tools: Canton $CANTON_VERSION, Daml SDK $DAML_SDK_VERSION"
 tools=$("$ROOT/network/canton/fetch.sh")
@@ -70,6 +84,8 @@ if [ "${CZE_PERSIST:-0}" = 1 ]; then
   printf 'CZE_PERSIST=1\nCANTON_VERSION=%s\nCHAIN_ID=%s\nCZE_PG_CONTAINER=%s\nCZE_PG_PORT=%s\nCZE_EXPLORER_DB_CONTAINER=%s\nCZE_EXPLORER_DB_PORT=%s\nRETH_CONTAINER=%s\nRETH_HTTP_PORT=%s\nRETH_WS_PORT=%s\nRETH_ENGINE_PORT=%s\n' \
     "$CANTON_VERSION" "$CHAIN_ID" "${CZE_PG_CONTAINER:-cze-postgres}" "${CZE_PG_PORT:-5432}" "${CZE_EXPLORER_DB_CONTAINER:-cze-explorer-db}" "${CZE_EXPLORER_DB_PORT:-5433}" "${RETH_CONTAINER:-cze-reth}" \
     "${RETH_HTTP_PORT:-8545}" "${RETH_WS_PORT:-8546}" "${RETH_ENGINE_PORT:-8551}" > "$CZE_STATE_DIR/persist.env"
+  # The mode and the sidecar's address go in too, for restart.sh and down.sh. No token, and no path to one, is written.
+  [ "$CANTON_MODE" != external ] || printf 'CZE_CANTON=external\nCZE_LEDGER_URL=%s\nCZE_SIDECAR_LISTEN=%s\nCZE_USER_PREFIX=%s\n' "$CZE_LEDGER_URL" "${CZE_SIDECAR_LISTEN:-}" "${CZE_USER_PREFIX-}" >> "$CZE_STATE_DIR/persist.env"
   # The explorer's own database, apart from Canton's (network/explorer-db.sh). It starts empty; the explorer makes its schema.
   step "the explorer's database"
   # The chain does not depend on the explorer: if its database cannot start, the chain starts without it.
@@ -90,13 +106,18 @@ GATEWAY_CODE=$(rpc eth_getCode "\"$GATEWAY_ADDRESS\",\"0x0\"" | jq -r .result)
 [ "$GATEWAY_CODE" = "0x$(tr -d '[:space:]' < "$ROOT/gateway/Gateway.bin-runtime")" ] || fail "reth's block 0 does not hold the gateway's code at $GATEWAY_ADDRESS"
 
 step "the sidecars"
-cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
-SIDECAR=$ROOT/sidecar/target/release/zk-sidecar
-for port in 8085 8086; do
-  background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --listen "127.0.0.1:$port"
-  for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null && break; sleep 0.5; done
-  curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null || fail "the sidecar on $port does not answer"
-done
+if [ "$CANTON_MODE" = external ]; then
+  # One participant hosts every party, so one sidecar is the only confirmer. None here if it runs elsewhere (network/external/sidecar.sh).
+  if [ -n "${CZE_SIDECAR_LISTEN:-}" ]; then "$ROOT/network/external/sidecar.sh" start; else echo "no sidecar here: CZE_SIDECAR_LISTEN is not set"; fi
+else
+  cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
+  SIDECAR=$ROOT/sidecar/target/release/zk-sidecar
+  for port in 8085 8086; do
+    background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --listen "127.0.0.1:$port"
+    for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null && break; sleep 0.5; done
+    curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null || fail "the sidecar on $port does not answer"
+  done
+fi
 
 step "the prover"
 "$ROOT/prover/start.sh"
@@ -105,13 +126,22 @@ step "the builder's Python packages"
 [ -x "$CZE_STATE_DIR/venv/bin/python3" ] || python3 -m venv "$CZE_STATE_DIR/venv"
 "$CZE_STATE_DIR/venv/bin/pip" install --quiet --require-hashes -r "$ROOT/builder/requirements.txt"
 
-step "Canton"
 export CZE_DAR=$DAR
-CANTON_JAR=$CANTON_JAR "$ROOT/network/canton/run.sh" bootstrap
+if [ "$CANTON_MODE" = external ]; then
+  step "the participant at $CZE_LEDGER_URL, and the chain: genesis $GENESIS_HASH, state root $GENESIS_STATE_ROOT"
+  python3 "$ROOT/network/external/setup.py" -- --genesis-hash "${GENESIS_HASH#0x}" --genesis-state-root "${GENESIS_STATE_ROOT#0x}" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" \
+    --rules-hash "$RULES_HASH" --gateway-address "${GATEWAY_ADDRESS#0x}" | tee "$NET/chain.json"
+  # reth starts at genesis. A chain that is on the participant already, and has moved on, is brought back by network/restart.sh with its reth, not by a new start.
+  [ "$(jq -r '.created or (.headNumber == "0")' "$NET/chain.json")" = true ] \
+    || fail "the chain on this participant is at block $(jq -r .headNumber "$NET/chain.json") and reth starts at genesis: network/restart.sh (a persistent chain, CZE_PERSIST=1) brings the two together"
+else
+  step "Canton"
+  CANTON_JAR=$CANTON_JAR "$ROOT/network/canton/run.sh" bootstrap
 
-step "the chain: genesis $GENESIS_HASH, state root $GENESIS_STATE_ROOT"
-python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --genesis-state-root "${GENESIS_STATE_ROOT#0x}" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" \
-  --rules-hash "$RULES_HASH" --gateway-address "${GATEWAY_ADDRESS#0x}" | tee "$NET/chain.json"
+  step "the chain: genesis $GENESIS_HASH, state root $GENESIS_STATE_ROOT"
+  python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --genesis-state-root "${GENESIS_STATE_ROOT#0x}" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" \
+    --rules-hash "$RULES_HASH" --gateway-address "${GATEWAY_ADDRESS#0x}" | tee "$NET/chain.json"
+fi
 
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
   step "the first block: an empty block 1, so that reth never has to move back to genesis"
@@ -120,7 +150,7 @@ if [ "${CZE_PERSIST:-0}" = 1 ]; then
   # shellcheck disable=SC1091
   . "$CZE_STATE_DIR/canton/parties.env"
   set +e
-  first=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+  first=$(CZE_LEDGER_USER=${CZE_USER_PREFIX:-}builder CZE_LEDGER_TOKEN_FILE=${CZE_TOKEN_FILE_BUILDER:-} CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
     "$CZE_STATE_DIR/venv/bin/python3" "$ROOT/builder/builder.py" once)
   first_status=$?
   set -e

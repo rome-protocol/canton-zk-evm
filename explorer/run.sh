@@ -24,6 +24,8 @@
 # RPC_RATE_PER_MINUTE, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER, TRACKER_MAX_PENDING_MINUTES. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
+# The database: EXPLORER_DB_PASSWORD_FILE and FAUCET_CLIENT_KEY_FILE are mounted read-only like the faucet's key; EXPLORER_DB_HOST, EXPLORER_DB_PORT, EXPLORER_DB_USER and
+# EXPLORER_DB_NAME are passed on; EXPLORER_DATABASE_URL is taken from the environment and never put on the command. With none of them set, the files work as they always have.
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).
@@ -86,13 +88,18 @@ start() {
   local key=${FAUCET_KEY_FILE:-}
   [ -n "$key" ] || { [ ! -f "$STATE/faucet/key" ] || key=$STATE/faucet/key; }
   [ -z "$key" ] || mount_file FAUCET_KEY_FILE "$key"
+  # The database (see the README): the password file and the faucet's hash key are read-only files, like the faucet's key.
+  [ -z "${EXPLORER_DB_PASSWORD_FILE:-}" ] || mount_file EXPLORER_DB_PASSWORD_FILE "$EXPLORER_DB_PASSWORD_FILE"
+  [ -z "${FAUCET_CLIENT_KEY_FILE:-}" ] || mount_file FAUCET_CLIENT_KEY_FILE "$FAUCET_CLIENT_KEY_FILE"
   for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_PER_IP_SECONDS FAUCET_MAX_PER_HOUR FAUCET_BATCH FAUCET_QUEUE_MAX \
     CAPTCHA_VERIFY_URL CAPTCHA_SCRIPT_URL CAPTCHA_SITE_KEY CAPTCHA_WIDGET_CLASS \
-    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES; do
+    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES \
+    EXPLORER_DB_HOST EXPLORER_DB_PORT EXPLORER_DB_USER EXPLORER_DB_NAME; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   # The secret is named without a value, so Docker takes it from this shell's environment and it is never in the command line.
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
+  [ -z "${EXPLORER_DATABASE_URL:-}" ] || ARGS+=(-e EXPLORER_DATABASE_URL)   # a URL may hold the password, so it is named the same way
   stop_container
   quietly "${ARGS[@]}" "$IMAGE"
 }

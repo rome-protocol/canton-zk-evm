@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEther } from "viem";
+import type { PoolConfig } from "pg";
+import { connectionConfig } from "./db/connect.ts";
 
 /** The settings are plain environment variables. A wrong one stops the server at start with a message that names it. */
 export class ConfigError extends Error {}
@@ -36,8 +38,10 @@ export interface Config {
     /** The request header that carries the client's address, set only behind a proxy that is trusted to write it. Lower case; null means the socket's address. */
     trustedIpHeader: string | null;
   };
+  /** The explorer's database, or null when none is set. With one, the tracker and the faucet keep their state in it, and TRACKER_FILE and FAUCET_STATE_FILE are only read once, to be imported. */
+  database: PoolConfig | null;
   tracker: {
-    /** Null keeps the tracker in memory only. */
+    /** Without a database: where the tracker keeps its list, or null for memory only. With one: the old file to import once. */
     file: string | null;
     /** The most entries it holds. */
     max: number;
@@ -50,6 +54,8 @@ export interface Config {
   faucet: {
     /** Null turns the faucet off. */
     keyFile: string | null;
+    /** The key that client addresses are hashed with before they are stored. Required with a database and a faucet: a file that only its owner can read. */
+    clientKeyFile: string | null;
     amountWei: bigint;
     perAddressSeconds: number;
     /** One request per client address in this many seconds. */
@@ -142,6 +148,16 @@ export function parsePins(text: string, file: string): Pins {
   return { programVK: pick("programVK"), rootC: pick("rootC"), file };
 }
 
+/** The database is on when it is named: EXPLORER_DATABASE_URL, or the password file of the one network/explorer-db.sh starts. */
+function databaseSettings(env: Env, readFile: ReadFile): PoolConfig | null {
+  if (!env.EXPLORER_DATABASE_URL && !env.EXPLORER_DB_PASSWORD_FILE) return null;
+  try {
+    return connectionConfig(env, readFile);
+  } catch (e) {
+    throw new ConfigError((e as Error).message);
+  }
+}
+
 export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => readFileSync(p, "utf8")): Config {
   const pinsPath = env.PINS_FILE || DEFAULT_PINS_FILE;
   let pinsText: string;
@@ -174,6 +190,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
       ratePerMinute: whole(env, "RPC_RATE_PER_MINUTE", 300, 1),
       trustedIpHeader: header(env, "TRUSTED_IP_HEADER"),
     },
+    database: databaseSettings(env, readFile),
     tracker: {
       file: env.TRACKER_FILE || null,
       max: whole(env, "TRACKER_MAX", 10000, 10),
@@ -183,6 +200,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     },
     faucet: {
       keyFile: env.FAUCET_KEY_FILE || null,
+      clientKeyFile: env.FAUCET_CLIENT_KEY_FILE || null,
       amountWei,
       perAddressSeconds: whole(env, "FAUCET_PER_ADDRESS_SECONDS", 86400, 1),
       perIpSeconds: whole(env, "FAUCET_PER_IP_SECONDS", 600, 1),

@@ -8,7 +8,7 @@ Usage: canton_advance.py <state dir> accepted|refused   One Advance by the build
        canton_advance.py <state dir> head               Prints the chain's contract id, head number and head hash, and checks that the reader (on the
                                                         participant with no sidecar) still sees the BlockRecord of block 1. The persistent-network test
                                                         runs it before and after Canton is stopped and started again."""
-import json, sys, time, urllib.error, urllib.request
+import json, os, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "network" / "canton"))
@@ -16,19 +16,23 @@ import propose
 
 state, expect = Path(sys.argv[1]), sys.argv[2]
 parties = propose.read_env_file(state / "canton" / "parties.env")
-builder = propose.Ledger("http://127.0.0.1:7575", "builder", parties["BUILDER_PARTY"])
+# The local network is the default. For one participant that holds every party (tests/canton_external.sh): CZE_LEDGER_URL and CZE_READER_LEDGER_URL are
+# its URL, CZE_USER_PREFIX the user ids' prefix, and CZE_TOKEN_FILE_<ROLE> the tokens, as propose.py reads them.
+URL = os.environ.get("CZE_LEDGER_URL", "http://127.0.0.1:7575")
+READER_URL = os.environ.get("CZE_READER_LEDGER_URL", "http://127.0.0.1:7577")
+builder = propose.Ledger(URL, propose.user_id("builder"), parties["BUILDER_PARTY"], token=propose.role_token("builder"))
 [chain] = builder.active("ZkChain")
 if expect == "gateway":
     gateway_address = sys.argv[3]
     assert chain["gateway"] == parties["GATEWAY_PARTY"], f"the chain's gateway is {chain['gateway']}"
     assert chain["gatewayAddress"] == gateway_address, f"the chain's gateway address is {chain['gatewayAddress']}"
-    as_gateway = propose.Ledger("http://127.0.0.1:7575", "operator", parties["GATEWAY_PARTY"])
+    as_gateway = propose.Ledger(URL, propose.user_id("operator"), parties["GATEWAY_PARTY"], token=propose.role_token("operator"))
     assert len(as_gateway.active("ZkChain")) == 1, "the gateway party does not see the chain"
 
     def rights(user):
         """What the Ledger API says a user may do: pairs of (right, party)."""
-        with urllib.request.urlopen(f"http://127.0.0.1:7575/v2/users/{user}/rights", timeout=60) as r:
-            return {(kind, body.get("value", {}).get("party")) for right in json.load(r)["rights"] for kind, body in right["kind"].items()}
+        answer = propose.get(f"{URL}/v2/users/{propose.user_id(user)}/rights", propose.role_token("admin"))
+        return {(kind, body.get("value", {}).get("party")) for right in answer["rights"] for kind, body in right["kind"].items()}
     gw = parties["GATEWAY_PARTY"]
     b, o = rights("builder"), rights("operator")
     assert ("CanReadAs", gw) in b and ("CanActAs", gw) not in b, f"the builder must read as the gateway and not act as it: {b}"
@@ -36,7 +40,7 @@ if expect == "gateway":
     print("ok")
     sys.exit(0)
 if expect == "head":
-    reader = propose.Ledger("http://127.0.0.1:7577", "reader", parties["READER_PARTY"])
+    reader = propose.Ledger(READER_URL, propose.user_id("reader"), parties["READER_PARTY"], token=propose.role_token("reader"))
     records = reader.active("BlockRecord")
     assert [r["number"] for r in records] == ["1"], f"the reader sees these block records: {records}"
     assert records[0]["blockHash"] == chain["headHash"], "the block record is not the chain's head"
@@ -55,6 +59,6 @@ assert outcome == expect, f"Canton {outcome} the block, expected it to be {expec
 time.sleep(1)
 print(builder.active("ZkChain")[0]["headNumber"])
 if outcome == "accepted":
-    reader = propose.Ledger("http://127.0.0.1:7577", "reader", parties["READER_PARTY"])
+    reader = propose.Ledger(READER_URL, propose.user_id("reader"), parties["READER_PARTY"], token=propose.role_token("reader"))
     records = reader.wait_for("BlockRecord")
     assert len(records) == 1 and records[0]["number"] == "1", records

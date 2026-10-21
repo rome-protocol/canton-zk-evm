@@ -46,7 +46,7 @@ RETH_ARGS=(
   --http
   --http.addr 0.0.0.0
   --http.port 8545
-  --http.api "eth,net,web3"
+  --http.api "eth,net,web3,trace"
   --ws
   --ws.addr 0.0.0.0
   --ws.port 8546
@@ -92,6 +92,9 @@ require --engine.always-process-payload-attributes-on-canonical-head
 require --engine.allow-unwind-canonical-header
 require --builder.gaslimit "$GAS_CAP"
 require --rpc.eth-proof-window 1
+# The explorer's indexer reads each final block's traces (trace_replayBlockTransactions) on this port. It listens on the machine only, and the
+# public RPC forwards no trace_ or debug_ method. Nothing that can build or change blocks, and no debug, is ever served on it.
+require --http.api "eth,net,web3,trace"
 
 if [ "${CZE_PERSIST:-0}" = 1 ]; then
   require --engine.persistence-threshold 0

@@ -22,6 +22,8 @@ jobs:
         run: tests/persist_scripts.sh
       - name: The proposal script, against a fake Ledger API
         run: python3 -m unittest discover -s tests -p 'test_propose.py' -v
+      - name: Setting Ostia up on an existing participant, against a fake participant
+        run: python3 -m unittest discover -s tests -p 'test_external_setup.py' -v
       - name: Moving reth to Canton's head after a restart, against a fake reth
         run: python3 -m unittest discover -s tests -p 'test_sync_reth.py' -v
 
@@ -37,6 +39,19 @@ jobs:
           java-version: "21"
       - name: Canton, the real Daml package and one Advance
         run: tests/canton_network.sh
+
+  # Ostia on an existing participant, for real: the same pinned Canton, started without Ostia's bootstrap and with a login on its Ledger API;
+  # network/external/setup.py twice (the second changes nothing), the users' rights, and one Advance against one stand-in sidecar.
+  canton-external:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Ostia on an existing participant
+        run: tests/canton_external.sh
 
   # The persistent network for real: Canton in PostgreSQL (the pinned image), one Advance, then Canton killed and the database stopped
   # as a reboot would, and both started again the way network/restart.sh does. The chain must be the same contract at the same head.

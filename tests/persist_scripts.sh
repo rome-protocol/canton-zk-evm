@@ -108,4 +108,43 @@ grep -q "WARN: the explorer's database did not start" "$WORK/restart.out" || fai
 # up.sh has the same guard on the same step (it cannot be run here: it needs Canton).
 grep -q 'explorer-db.sh" start ||' "$ROOT/network/up.sh" || fail "up.sh lets a failing explorer database stop the chain"
 echo "ok: a failing explorer database does not stop the chain"
+# 7. External mode keeps its chain on the shared participant, so up.sh refuses it without CZE_PERSIST=1 (before it starts or writes anything), and says why.
+fresh
+rm -f "$WORK/state/persist.env"; mkdir -p "$WORK/repo/prover"; : > "$WORK/repo/prover/common.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/cargo-zisk"; chmod +x "$WORK/bin/cargo-zisk"
+if out=$(run CZE_CANTON=external CZE_LEDGER_URL=https://ledger.example CZE_LEDGER_NO_AUTH=1 "$WORK/repo/network/up.sh" 2>&1); then fail "up.sh started an external chain without CZE_PERSIST=1"; fi
+grep -q "CZE_CANTON=external needs CZE_PERSIST=1" <<<"$out" || fail "up.sh's refusal does not say that external mode needs CZE_PERSIST=1: $out"
+[ ! -e "$WORK/state/persist.env" ] || fail "up.sh wrote persist.env before it refused"
+[ ! -s "$FAKE_DOCKER_LOG" ] || fail "Docker was called before up.sh refused"
+# With CZE_PERSIST=1 it goes past that guard (and stops at the next one, here the missing URL).
+if out=$(run CZE_CANTON=external CZE_PERSIST=1 "$WORK/repo/network/up.sh" 2>&1); then fail "up.sh accepted an external setting without a URL"; fi
+grep -q "needs CZE_LEDGER_URL" <<<"$out" || fail "up.sh with CZE_PERSIST=1 did not reach the settings check: $out"
+echo "ok: external mode refuses to start without CZE_PERSIST=1"
+
+# 8. The Ledger API users' prefix: up.sh records it, restart.sh uses it (a shell without it does not fall back to ostia-), and a different one is refused.
+grep -q 'CZE_USER_PREFIX=%s' "$ROOT/network/up.sh" || fail "up.sh does not record CZE_USER_PREFIX in persist.env"
+grep -q 'load_user_prefix' "$ROOT/network/restart.sh" || fail "restart.sh does not load the recorded prefix"
+# shellcheck disable=SC2016
+! grep -q 'CZE_USER_PREFIX=${CZE_USER_PREFIX-ostia-}' "$ROOT/network/restart.sh" || fail "restart.sh still defaults the prefix to ostia- before it reads the recorded one"
+prefix_of() { ( unset CZE_USER_PREFIX; [ "$1" = unset ] || export CZE_USER_PREFIX=$1; load_user_prefix "$WORK/state" 2>&1 && printf '[%s]' "$CZE_USER_PREFIX" ); }
+fresh; printf 'CZE_CANTON=external\nCZE_USER_PREFIX=team-\n' >> "$WORK/state/persist.env"
+[ "$(prefix_of unset)" = "[team-]" ] || fail "a restart without CZE_USER_PREFIX did not take the recorded team-: $(prefix_of unset)"
+[ "$(prefix_of team-)" = "[team-]" ] || fail "a restart with the same prefix was refused: $(prefix_of team-)"
+out=$(prefix_of ostia-) && fail "a restart with another prefix was accepted: $out"
+grep -q "CZE_USER_PREFIX is 'ostia-' here, but the chain.*was made with 'team-'" <<<"$out" || fail "the refusal does not say why: $out"
+out=$(prefix_of "") && fail "an empty prefix was accepted for a chain made with team-: $out"
+# A chain made with an empty prefix keeps it empty; one that predates the record keeps the default.
+fresh; printf 'CZE_CANTON=external\nCZE_USER_PREFIX=\n' >> "$WORK/state/persist.env"
+[ "$(prefix_of unset)" = "[]" ] || fail "an empty recorded prefix was replaced: $(prefix_of unset)"
+fresh; printf 'CZE_CANTON=external\n' >> "$WORK/state/persist.env"
+[ "$(prefix_of unset)" = "[ostia-]" ] || fail "a persist.env without a prefix did not keep the default: $(prefix_of unset)"
+# restart.sh itself refuses a different prefix before it calls Docker.
+fresh; printf 'CZE_CANTON=external\nCZE_LEDGER_URL=https://ledger.example\nCZE_SIDECAR_LISTEN=\nCZE_USER_PREFIX=team-\n' >> "$WORK/state/persist.env"
+sed -i.bak "s/^CHAIN_ID=.*/CHAIN_ID=$(sed -n 's/^CHAIN_ID=//p' "$ROOT/PINS")/" "$WORK/state/persist.env"
+mkdir -p "$WORK/state/canton" "$WORK/state/net" "$WORK/state/reth-data"
+for f in jwt.hex genesis.json canton/parties.env net/chain.json net/guest.txt net/dar.txt reth-data/db; do echo x > "$WORK/state/$f"; done
+if out=$(run CZE_LEDGER_NO_AUTH=1 CZE_USER_PREFIX=ostia- "$WORK/repo/network/restart.sh" 2>&1); then fail "restart.sh accepted another prefix than the chain's"; fi
+grep -q "CZE_USER_PREFIX is 'ostia-' here, but the chain.*was made with 'team-'" <<<"$out" || fail "restart.sh refusal does not say why: $out"
+[ ! -s "$FAKE_DOCKER_LOG" ] || fail "Docker was called after the prefix refusal"
+echo "ok: the Ledger API users' prefix is recorded, used, and not overridden"
 echo "persist scripts tests passed"

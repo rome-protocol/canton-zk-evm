@@ -3,6 +3,8 @@
 # reth on its data, both sidecars, the prover and Canton, in that order. It makes nothing new: no new chain is proposed, no per-run secret is
 # made, no guest is built, and Canton's bootstrap is not run again (resume.canton starts the nodes on what they kept). Then it checks that
 # Canton's ZkChain head and reth agree, moving reth to Canton's head the way the builder does (network/sync_reth.py), and prints the head.
+# With CZE_CANTON=external (recorded in persist.env by up.sh) there is no database for Canton and no Canton to start: the participant is already
+# running, so this checks that it still has the package and the chain, starts the sidecar here if up.sh did, and moves reth to the chain's head.
 # It refuses to run without persistent state, or if any of the services is still running (network/down.sh stops them).
 # State comes from $CZE_STATE_DIR (default ./state), as for up.sh.
 set -euo pipefail
@@ -21,7 +23,14 @@ rpc() { curl -sf -H 'content-type: application/json' --data "{\"jsonrpc\":\"2.0\
 
 # 1. There must be a persistent chain here.
 missing=()
-for f in persist.env postgres.env jwt.hex genesis.json canton/parties.env net/chain.json net/guest.txt net/dar.txt; do
+CANTON_MODE=$(sed -n 's/^CZE_CANTON=//p' "$STATE/persist.env" 2>/dev/null || true); CANTON_MODE=${CANTON_MODE:-local}
+if [ "$CANTON_MODE" = external ]; then
+  # The participant and the sidecar's address are the ones up.sh recorded; the tokens come from this shell, as for up.sh.
+  CZE_LEDGER_URL=$(sed -n 's/^CZE_LEDGER_URL=//p' "$STATE/persist.env"); CZE_SIDECAR_LISTEN=$(sed -n 's/^CZE_SIDECAR_LISTEN=//p' "$STATE/persist.env")
+  export CZE_LEDGER_URL CZE_SIDECAR_LISTEN
+  "$ROOT/network/external/check-env.sh" restart
+fi
+for f in persist.env $([ "$CANTON_MODE" = external ] || echo postgres.env) jwt.hex genesis.json canton/parties.env net/chain.json net/guest.txt net/dar.txt; do
   [ -s "$STATE/$f" ] || missing+=("$f")
 done
 { [ -d "$STATE/reth-data" ] && [ -n "$(ls -A "$STATE/reth-data" 2>/dev/null)" ]; } || missing+=("reth-data")
@@ -34,9 +43,12 @@ fi
 # shellcheck disable=SC1091
 . "$ROOT/network/persist-settings.sh"
 load_persist_settings "$STATE" || exit 1
+# The Ledger API users' prefix is the one up.sh used (external mode; recorded in persist.env), not this shell's default.
+[ "$CANTON_MODE" != external ] || load_user_prefix "$STATE" || exit 1
 [ "$(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env")" = "$CHAIN_ID" ] || fail "this state is for chain $(sed -n 's/^CHAIN_ID=//p' "$STATE/persist.env"), not $CHAIN_ID"
 # The databases were made by one Canton version, and only that one reads them: a newer jar needs its own upgrade, not a silent start.
-[ "$(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env")" = "$CANTON_VERSION" ] \
+# (An external chain has no local databases: the participant belongs to its validator and has its own upgrades.)
+[ "$CANTON_MODE" = external ] || [ "$(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env")" = "$CANTON_VERSION" ] \
   || fail "the databases were made by Canton $(sed -n 's/^CANTON_VERSION=//p' "$STATE/persist.env"), and PINS now says $CANTON_VERSION"
 umask 077
 mkdir -p "$NET/logs"
@@ -54,8 +66,10 @@ shopt -u nullglob
 . "$ROOT/prover/common.sh"   # ZisK's paths
 command -v cargo-zisk >/dev/null || fail "ZisK is not installed (prover/install.sh)"
 
-step "the database"
-"$ROOT/network/postgres.sh" start
+if [ "$CANTON_MODE" != external ]; then
+  step "the database"
+  "$ROOT/network/postgres.sh" start
+fi
 
 step "the explorer's database"
 # The chain does not depend on the explorer: if its database cannot start, the chain starts without it.
@@ -78,20 +92,29 @@ PROGRAM_VK=$(guest programVK); ROOT_C=$(guest rootC)
 PROGRAM_VK=${PROGRAM_VK#0x}; ROOT_C=${ROOT_C#0x}
 SIDECAR=$ROOT/sidecar/target/release/zk-sidecar
 [ -x "$SIDECAR" ] || cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
-for port in 8085 8086; do
-  background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --listen "127.0.0.1:$port"
-  for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null && break; sleep 0.5; done
-  curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null || fail "the sidecar on $port does not answer"
-done
+if [ "$CANTON_MODE" = external ]; then
+  if [ -n "$CZE_SIDECAR_LISTEN" ]; then "$ROOT/network/external/sidecar.sh" start; else echo "no sidecar here: up.sh started none"; fi
+else
+  for port in 8085 8086; do
+    background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --listen "127.0.0.1:$port"
+    for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null && break; sleep 0.5; done
+    curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null || fail "the sidecar on $port does not answer"
+  done
+fi
 
 step "the prover"
 "$ROOT/prover/start.sh"
 
-step "Canton $CANTON_VERSION, on its databases"
-tools=$("$ROOT/network/canton/fetch.sh")
-CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools") "$ROOT/network/canton/run.sh" resume
+if [ "$CANTON_MODE" = external ]; then
+  step "the participant at $CZE_LEDGER_URL"
+else
+  step "Canton $CANTON_VERSION, on its databases"
+  tools=$("$ROOT/network/canton/fetch.sh")
+  CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools") "$ROOT/network/canton/run.sh" resume
+fi
 # The Daml package the chain runs is still on the operator's participant.
-"$ROOT/network/canton/check-package.sh" "$(sed -n 's/^package_id=//p' "$NET/dar.txt")" "${CZE_LEDGER_URL:-http://127.0.0.1:7575}" \
+CZE_PACKAGE_TOKEN_FILE=${CZE_TOKEN_FILE_BUILDER:-${CZE_TOKEN_FILE_ADMIN:-}} \
+  "$ROOT/network/canton/check-package.sh" "$(sed -n 's/^package_id=//p' "$NET/dar.txt")" "${CZE_LEDGER_URL:-http://127.0.0.1:7575}" \
   || fail "the DAR's main package is not on the operator's participant"
 
 step "Canton's head and reth"
@@ -99,7 +122,7 @@ step "Canton's head and reth"
 "$STATE/venv/bin/pip" install --quiet --require-hashes -r "$ROOT/builder/requirements.txt"
 # shellcheck disable=SC1091
 . "$STATE/canton/parties.env"
-head=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+head=$(CZE_LEDGER_USER=${CZE_USER_PREFIX:-}builder CZE_LEDGER_TOKEN_FILE=${CZE_TOKEN_FILE_BUILDER:-} CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
   "$STATE/venv/bin/python3" "$ROOT/network/sync_reth.py") || fail "Canton and reth do not agree (see above)"
 echo "$head"
 echo "== back ($(date -u +%T)): the chain is at block $(sed -n 's/^canton_head=//p' <<<"$head") ($(sed -n 's/^canton_hash=//p' <<<"$head"))"
