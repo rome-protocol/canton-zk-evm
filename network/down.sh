@@ -2,7 +2,7 @@
 # Stops what network/up.sh (or network/restart.sh) started: Canton, the sidecars, the prover and reth. Safe to run twice.
 #   down.sh          a network made without CZE_PERSIST also loses its data, as always. A persistent network keeps everything: its
 #                    databases, reth's data and the secrets, so network/restart.sh brings the same chain back.
-#   down.sh --wipe   removes a persistent network's data as well: the databases, reth's data, the passwords and the party list. The chain is gone.
+#   down.sh --wipe   removes a persistent network's data as well: the databases (the explorer's too), reth's data, the passwords and the party list. The chain is gone.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 STATE=${CZE_STATE_DIR:-$ROOT/state}
@@ -42,18 +42,20 @@ stop "$PROVER/worker.pid" 'zisk-worker'
 stop "$PROVER/coordinator.pid" 'zisk-coordinator'
 if [ "$PERSISTENT" = 1 ]; then
   CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" stop
+  CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" stop
   if [ "$WIPE" = 1 ]; then
     # persist.env goes last, and only if everything else is gone: it is what tells restart.sh and down.sh that there is a chain to look after.
     left=()
     CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --wipe-persistent || left+=("reth's data")
     CZE_STATE_DIR=$STATE "$ROOT/network/postgres.sh" wipe || left+=("the database")
+    CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || left+=("the explorer's database")
     rm -rf "$NET" "$STATE/canton" "$STATE/jwt.hex" "$STATE/genesis.json"
     if [ ${#left[@]} -gt 0 ]; then
       echo "NOT wiped: ${left[*]} could not be removed and is still there (see above). persist.env is kept: fix the cause and run network/down.sh --wipe again." >&2
       exit 1
     fi
     rm -f "$STATE/persist.env"
-    echo "stopped; the persistent chain is wiped"
+    echo "stopped; the persistent chain is wiped, and so is the explorer's database"
   else
     CZE_STATE_DIR=$STATE "$ROOT/network/reth/stop.sh" --keep-data
     echo "stopped; the chain's data is kept (network/restart.sh brings it back, network/down.sh --wipe removes it)"

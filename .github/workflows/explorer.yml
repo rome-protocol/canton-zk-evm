@@ -65,3 +65,30 @@ jobs:
           ls -l "$WASM"
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e VERIFY_WASM="/repo/$WASM" -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npx vitest run src/verify src/pages/block.test.tsx && npm run build && cmp dist/verify/zk_explorer_verify.wasm verify/target/wasm32-unknown-unknown/release/zk_explorer_verify.wasm"
+
+  # The explorer's database: the migrations and the partition maintenance, against the PostgreSQL that PINS pins (the same image
+  # network/explorer-db.sh runs). The tests make a database of their own for each case. EXPLORER_TEST_REQUIRE_DATABASE makes a
+  # missing database a failure instead of a skip. The command line is run twice, to see that the second run changes nothing.
+  database:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Start the pinned PostgreSQL, on this machine's loopback only
+        run: |
+          set -a; . ./PINS; set +a
+          docker run -d --name explorer-db --security-opt no-new-privileges -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD=ci-only -e POSTGRES_DB=explorer "$POSTGRES_IMAGE"
+          ok=0
+          for _ in $(seq 1 60); do
+            if docker exec explorer-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
+            sleep 1
+          done
+          [ "$ok" -ge 3 ] || { docker logs explorer-db; exit 1; }
+      - name: Run the database tests and the migration command, twice
+        run: |
+          set -a; . ./PINS; set +a
+          docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:ci-only@127.0.0.1:5432/explorer \
+            -e EXPLORER_DATABASE_URL=postgres://explorer:ci-only@127.0.0.1:5432/explorer \
+            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run server/db && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"
