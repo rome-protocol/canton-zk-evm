@@ -1,5 +1,5 @@
 /**
- * node server/indexer/cli.ts [run | reindex <from> [<to>] | reindex --records <file> | export-records <file>]
+ * node server/indexer/cli.ts [run | reindex <from> [<to>] | reindex --records <file> | export-records <file> | reset --yes | reader-moved <participant id> | clear-check C10]
  * `run` (the default) runs the indexer's write path until a check stops it or it is told to stop. Needs the database up and migrated (node server/db/cli.ts migrate).
  * Reads RETH_RPC_URL, LEDGER_URL, READER_PARTY, CHAIN_ID and PINS_FILE as the explorer does, EXPLORER_DATABASE_URL (or the password-file
  * settings) for the database, and GATEWAY_ADDRESS, GENESIS_FILE, INDEX_DERIVE (inline or behind) and INDEX_TRACE_TIMEOUT_MS for itself. It exits 0 when told to stop, and 2 when a
@@ -7,12 +7,18 @@
  * `reindex <from> [<to>]` works the stage 1 tables out again for a range from the stored records and reth (it can run beside the indexer, which waits while it does);
  * `export-records <file>` writes the stored records to a file; `reindex --records <file>` builds a database from such a file (the indexer must not be running).
  * The last two of these need no Canton. Exit codes: 0 done, 1 refused or failed, 2 a check stopped the work.
+ * `reset --yes` wipes the explorer's own tables for a new chain (keeping the migrations); it never runs by itself. `reader-moved <participant id>`
+ * records that the reader party is now hosted by that participant (design section 4.4). Neither runs while an indexer holds the database, and reset
+ * also refuses while an API instance holds the tracker or faucet lock. `clear-check C10` sets the leg hash row back to ok once a person has looked, and
+ * keeps the name of who cleared it (the login user). Through npm the arguments follow `--`: `npm run explorer -- reset --yes`.
  */
+import { userInfo } from "node:os";
 import { Pool } from "pg";
 import { loadConfig } from "../config.ts";
 import { connectionConfig } from "../db/connect.ts";
 import { createLedger } from "../ledger.ts";
 import { parseCommand, UsageError, type Command } from "./commands.ts";
+import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { IndexerStop } from "./errors.ts";
 import { createIndexer } from "./indexer.ts";
 import { createFinalReads } from "./reads.ts";
@@ -20,7 +26,37 @@ import { readRecords, exportRecordsToFile } from "./records.ts";
 import { reindexRange } from "./reindex.ts";
 import { loadIndexerSettings } from "./settings.ts";
 
+/** The login name, or the user id when the account has no entry (a container that runs as a bare uid). */
+function whoIsClearing(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return process.env.USER ?? process.env.LOGNAME ?? `uid ${process.getuid?.() ?? "unknown"}`;
+  }
+}
+
+async function admin(command: Command): Promise<number> {
+  const pool = new Pool(connectionConfig());
+  try {
+    if (command.kind === "reset") {
+      const r = await resetChain(pool);
+      console.log(`reset: emptied ${r.tables} tables; the next start writes the pins again`);
+    } else if (command.kind === "clear-check") {
+      const by = whoIsClearing();
+      await clearCheck(pool, command.check, by);
+      console.log(`clear-check: ${command.check} is ok again, cleared by ${by}`);
+    } else if (command.kind === "reader-moved") {
+      const m = await readerMoved(pool, command.participant);
+      console.log(`reader-moved: the reader is now on ${m.to} (was ${m.from}, last offset ${m.lastOffset}, block head ${m.head}); the indexer reads the new participant from its start`);
+    }
+  } finally {
+    await pool.end();
+  }
+  return 0;
+}
+
 async function main(command: Command): Promise<number> {
+  if (command.kind === "reset" || command.kind === "reader-moved" || command.kind === "clear-check") return admin(command);
   const config = loadConfig();
   const settings = loadIndexerSettings();
   const pool = new Pool(connectionConfig());
@@ -54,6 +90,7 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
     await indexer.open();
   } catch (e) {
     await indexer.close(); // gives back the lock a failed start may hold, so that the pool can end
+    if (e instanceof IndexerStop) { console.error(`indexer: stopped at ${e.check}: ${e.message}`); return 2; }
     throw e;
   }
   if (command.kind === "rebuild") {

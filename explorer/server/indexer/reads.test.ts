@@ -49,6 +49,16 @@ describe("the indexer's reads from reth", () => {
     expect(await r.traces(6)).toBeNull();
   });
 
+  it("reads the hash of a block without its transactions, and the finalized number", async () => {
+    reth = await startFakeReth({
+      eth_getBlockByNumber: ([n, full]: unknown[]) => (full === false && n === "0x5" ? rawBlock() : full === false && n === "finalized" ? rawBlock({ number: "0x4" }) : null),
+    });
+    const r = createFinalReads(reth.url, 2000);
+    expect(await r.hashAt(5)).toBe(H("a1"));
+    expect(await r.hashAt(6)).toBeNull();
+    expect(await r.finalized()).toBe(4);
+  });
+
   it("names the method when reth sends data that is not valid", async () => {
     reth = await startFakeReth({ eth_getBlockByNumber: rawBlock({ hash: "0xZZ" }), eth_getStorageAt: "0x12" });
     const r = createFinalReads(reth.url, 2000);

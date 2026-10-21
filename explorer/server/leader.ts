@@ -16,7 +16,7 @@ export interface Leader {
 export const alwaysLeader: Leader = { isLeader: async () => true, release: async () => undefined };
 
 /** The first number of the advisory lock pair. The second says which loop. The migration runner and the partition maintenance use single-number locks, which never match a pair. */
-const LOCKS = 0x45585031;
+export const LOCKS = 0x45585031;
 export const TRACKER_LOCK = 1;
 export const FAUCET_LOCK = 2;
 

@@ -36,8 +36,48 @@ describe("the indexer's command", () => {
     }
   });
 
+  it("refuses reset without --yes, and reader-moved without a participant, before it touches a database", async () => {
+    const reset = await run({ EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" }, null, ["reset"]);
+    expect(reset.code).toBe(1);
+    expect(reset.out).toContain("--yes");
+    const moved = await run({ EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" }, null, ["reader-moved"]);
+    expect(moved.code).toBe(1);
+    expect(moved.out).toContain("participant id");
+  });
+
+  it("refuses clear-check without a check, and for any check but C10, before it touches a database", async () => {
+    const env = { EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" };
+    const none = await run(env, null, ["clear-check"]);
+    expect(none.code).toBe(1);
+    expect(none.out).toContain("clear-check C10");
+    const other = await run(env, null, ["clear-check", "C4"]);
+    expect(other.code).toBe(1);
+    expect(other.out).toContain("only C10");
+  });
+
   describe.skipIf(!TEST_URL)("against the database", () => {
     checkRequired();
+    it("reset --yes empties the tables and reader-moved records a move, through the command", async () => {
+      await withDatabase(async (pool, dbUrl) => {
+        await migrate(pool);
+        await pool.query("insert into meta (key, value) values ('chain_id', '1'), ('partition_width', '1000000')");
+        await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('PAR::old', 0, now())");
+        await pool.query("insert into cursors (stream, position, detail, updated_at) values ('reader_updates', 40, '{\"participant\":\"PAR::old\",\"block\":4}', now())");
+        const moved = await run({ EXPLORER_DATABASE_URL: dbUrl }, null, ["reader-moved", "PAR::new"]);
+        expect(moved.code).toBe(0);
+        expect(moved.out).toContain("PAR::new");
+        expect((await pool.query("select participant_id from canton_participants order by id")).rows.map((r) => r.participant_id)).toEqual(["PAR::old", "PAR::new"]);
+        const reset = await run({ EXPLORER_DATABASE_URL: dbUrl }, null, ["reset", "--yes"]);
+        expect(reset.code).toBe(0);
+        expect((await pool.query("select key from meta")).rows.map((r) => r.key)).toEqual(["partition_width"]);
+        expect((await pool.query("select count(*) as n from canton_participants")).rows[0].n).toBe("0");
+        await pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'degraded', '{\"block\":7}', now(), now())");
+        const cleared = await run({ EXPLORER_DATABASE_URL: dbUrl }, null, ["clear-check", "C10"]);
+        expect(cleared.code).toBe(0);
+        expect((await pool.query("select status, value from health_checks where check_id = 'C10'")).rows[0]).toMatchObject({ status: "ok", value: { clearedBlock: 7 } });
+      });
+    }, 20_000);
+
     it("refuses to run without the genesis file, which seeds the genesis contracts", async () => {
       await withDatabase(async (pool, dbUrl) => {
         await migrate(pool);

@@ -58,7 +58,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       expect(await cursor(pool, "derive")).toBe(3);
       for (const id of ["C1", "C2", "C3", "C7"]) expect((await health(pool, id)).status).toBe("ok");
       const b = (await pool.query("select tx_count, log_count, legs_count, encode(legs_hash, 'hex') as lh from blocks where number = 2")).rows[0];
-      expect(b).toMatchObject({ tx_count: 10, legs_count: 1, lh: "5e".repeat(32), log_count: logsOf(chain, 1) });
+      expect(b).toMatchObject({ tx_count: 10, legs_count: 1, lh: (chain.blocks[1]!.legsHash as string).slice(2), log_count: logsOf(chain, 1) });
       await indexer.close();
     });
   });

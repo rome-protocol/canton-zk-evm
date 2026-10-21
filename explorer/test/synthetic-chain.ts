@@ -26,6 +26,12 @@ export interface BlockShape {
   leg?: number;
 }
 
+/** The leg hash of README.md's formula, written out here on its own so that a mistake in the indexer's copy shows up as a failing test. */
+export function expectedLegHash(kind: number, id: string, token: string, account: string, amount: bigint, party: string): string {
+  const words = [("0x" + "00".repeat(32)), hex(kind, 32), id, hex(0, 12) + token.slice(2), hex(0, 12) + account.slice(2), hex(Number(amount), 32), keccak256(new TextEncoder().encode(party))];
+  return keccak256(("0x" + words.map((w) => w.slice(2)).join("")) as `0x${string}`);
+}
+
 export interface SyntheticBlock {
   block: FinalBlock;
   receipts: FinalReceipt[];
@@ -57,7 +63,8 @@ function txList(serialized: string[]): string {
   return body.length === 0 ? "" : Buffer.concat([head(0xc0, body.length), body]).toString("hex");
 }
 
-export function makeBlock(number: number, parentHash: string, shape: BlockShape, pins: Pins = PINS): SyntheticBlock {
+/** `instance` tells two chains from the same genesis apart: a reset of the network gives the same genesis, chain id and pins, and different blocks. */
+export function makeBlock(number: number, parentHash: string, shape: BlockShape, pins: Pins = PINS, instance = 0): SyntheticBlock {
   const txs: FinalTx[] = [], receipts: FinalReceipt[] = [], traces: TxTrace[] = [], serialized: string[] = [];
   let cumulative = 0;
   for (let k = 0; k < shape.txs; k++) {
@@ -86,7 +93,8 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     const reason = "0x08c379a0" + encodeAbiParameters([{ type: "string" }], ["not allowed"]).slice(2);
     traces.push({ transactionHash: hash, output: failed ? reason : "0x", calls: kind === 3 ? 4 : failed ? 1 : 1, error: failed ? "Reverted" : null });
   }
-  const headerHex = number.toString(16).padStart(8, "0") + "f9".repeat(40);
+  const legsHash = shape.leg ? expectedLegHash(shape.leg, "0x" + "01".repeat(32), hex(0xd000), hex(0xa11ce), 42n, "alice::1220" + "ab".repeat(32)) : null;
+  const headerHex = number.toString(16).padStart(8, "0") + instance.toString(16).padStart(2, "0") + "f9".repeat(39);
   const hash = keccak256(`0x${headerHex}`);
   const block: FinalBlock = {
     number, hash, parentHash, timestamp: 1_790_000_000 + number * 3, gasLimit: 30_000_000, gasUsed: cumulative, baseFeePerGas: 7n, miner: hex(0xbeef),
@@ -94,29 +102,29 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
   };
   const at = new Date(Date.UTC(2026, 9, 21, 0, 0, 0) + number * 3000).toISOString();
   const record: BlockRecord = {
-    updateId: `1220${number.toString(16).padStart(8, "0")}${"ee".repeat(28)}`, offset: number * 10, recordTime: at, chainId: CHAIN_ID, number, blockHash: hash, parentHash,
+    updateId: `1220${number.toString(16).padStart(8, "0")}${instance.toString(16).padStart(2, "0")}${"ee".repeat(27)}`, offset: number * 10, recordTime: at, chainId: CHAIN_ID, number, blockHash: hash, parentHash,
     headerHex, txsHex: txList(serialized), proofHex: proofHex(hash, pins), operator: OPERATOR, confirmer: CONFIRMER, synchronizerId: "sync::1220" + "99".repeat(32),
     effectiveAt: at, contractId: "00" + number.toString(16).padStart(8, "0"), template: { packageId: "abc123def456", module: "Zk.Chain", entity: "BlockRecord" },
     signatories: [OPERATOR, CONFIRMER],
   };
-  return { block, receipts, traces, record, legsHash: shape.leg ? "0x" + "5e".repeat(32) : null };
+  return { block, receipts, traces, record, legsHash };
 }
 
 export interface SyntheticChain {
   blocks: SyntheticBlock[];
   /** reth, serving blocks 0 to `rethHead`. */
-  reads: FinalReads & { calls: Record<string, number>; rethHead: number; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string> };
+  reads: FinalReads & { calls: Record<string, number>; rethHead: number; rethFinalized: number | null; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string> };
   /** The Ledger API, serving the records of blocks 1 to `ledgerHead`. */
   ledger: Ledger & { ledgerHead: number; pageSize: number; failAfterPages: number | null };
   genesisHash: string;
 }
 
 /** `shapes[i]` is block i + 1. Both `rethHead` and `ledgerHead` are properties a test may move. */
-export function makeChain(shapes: BlockShape[], pins: Pins = PINS): SyntheticChain {
+export function makeChain(shapes: BlockShape[], pins: Pins = PINS, instance = 0): SyntheticChain {
   const blocks: SyntheticBlock[] = [];
   let parent = GENESIS_HASH;
   shapes.forEach((s, i) => {
-    const b = makeBlock(i + 1, parent, s, pins);
+    const b = makeBlock(i + 1, parent, s, pins, instance);
     blocks.push(b);
     parent = b.block.hash;
   });
@@ -127,8 +135,11 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS): SyntheticCha
   const calls: Record<string, number> = {};
   const count = (m: string) => { calls[m] = (calls[m] ?? 0) + 1; };
   const reads = {
-    calls, rethHead: shapes.length, codes: {} as Record<string, string>,
+    calls, rethHead: shapes.length, rethFinalized: null as number | null, codes: {} as Record<string, string>,
     block: async (n: number) => { count("block"); return n === 0 ? genesis : n <= reads.rethHead ? (blocks[n - 1]!.block) : null; },
+    hashAt: async (n: number) => { count("hashAt"); return n === 0 ? genesis.hash : n <= reads.rethHead ? blocks[n - 1]!.block.hash : null; },
+    /** reth's finalized number: `rethFinalized` when a test sets it, else its head. */
+    finalized: async () => { count("finalized"); return reads.rethFinalized ?? reads.rethHead; },
     receipts: async (n: number) => { count("receipts"); return n >= 1 && n <= reads.rethHead ? blocks[n - 1]!.receipts : null; },
     traces: async (n: number) => { count("traces"); return n >= 1 && n <= reads.rethHead ? blocks[n - 1]!.traces : null; },
     storageAt: async (_a: string, _s: string, n: number) => { count("storageAt"); return blocks[n - 1]?.legsHash ?? "0x" + "00".repeat(32); },
