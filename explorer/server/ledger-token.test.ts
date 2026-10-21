@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLedger, LedgerError, readLedgerToken } from "./ledger.ts";
 import { FAKE_READER, startFakeLedger, type FakeLedger } from "../test/fake-ledger.ts";
 
-const SECRET = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJvc3RpYS1yZWFkZXIifQ.c2lnbmF0dXJlLXNlY3JldA";
+const SECRET = "tok." + randomBytes(24).toString("hex");   // made for each run, so no secret-like string is in the repository
 let dir = "", file = "", fake: FakeLedger | undefined;
 const put = (text: string, mode = 0o600) => { writeFileSync(file, text, { mode }); chmodSync(file, mode); };
 const messageOf = async (p: Promise<unknown>) => { try { await p; } catch (e) { return (e as Error).message; } return ""; };
