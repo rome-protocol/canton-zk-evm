@@ -212,6 +212,7 @@ REVERT_BLOCK=$(receipt_of "$first_failed" | jq -r .block)
 first_stress=$(w1py stress "$STRESS" 18 | head -n 1)
 cut_block
 W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)
+echo "the first Stress call: $(receipt_of "$first_stress" | jq -c .)"
 echo "revert block $REVERT_BLOCK, W1 block $W1_BLOCK: $(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$W1_BLOCK")\",false" | jq -c '{transactions: (.result.transactions | length), gasUsed: .result.gasUsed}')"
 
 PGPW=$(openssl rand -hex 16)

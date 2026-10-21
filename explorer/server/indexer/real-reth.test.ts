@@ -95,6 +95,13 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
         const s1 = w1.find((t) => t.stage === 1)!;
         const s2 = w1.find((t) => t.stage === 2)!;
         const block = (await pool.query("select tx_count, log_count, gas_used from blocks where number = $1", [W1_BLOCK])).rows[0];
+        const shape1 = (await pool.query(
+          `select count(*) filter (where t.status = 1) as ok, count(*) filter (where t.status = 0) as failed, coalesce(sum(x.call_count), 0) as calls,
+                  (select count(*) from logs l where l.block_number = $1) as logs
+           from transactions t left join tx_traces x on x.block_number = t.block_number and x.tx_index = t.tx_index where t.block_number = $1`, [W1_BLOCK])).rows[0];
+        console.log(`W1 ${shape} block's shape: ${shape1.ok} transactions succeeded, ${shape1.failed} failed, ${shape1.calls} internal calls, ${shape1.logs} logs`);
+        expect(Number(shape1.ok), "the Stress calls must succeed, or the block is not the costly one").toBeGreaterThan(0);
+        expect(Number(shape1.logs)).toBeGreaterThan(0);
         const t0 = Date.now();
         const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
         const readMs = Date.now() - t0;
