@@ -8,6 +8,8 @@ import { createHttpServer } from "./http.ts";
 import { ledgerFromConfig } from "./ledger-config.ts";
 import { createPublicRpc } from "./public-rpc.ts";
 import { createReth } from "./reth.ts";
+import { createStreamHub, startStreamTimers } from "./rest/stream.ts";
+import { createStreamSource } from "./rest/stream-source.ts";
 import { onShutdown } from "./shutdown.ts";
 import { openStorage } from "./storage.ts";
 import { createTracker } from "./tracker.ts";
@@ -27,14 +29,22 @@ try {
     ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
     : undefined;
   const dist = process.env.EXPLORER_DIST || resolve(fileURLToPath(new URL(".", import.meta.url)), "../dist");
-  const server = createHttpServer(createApi({ config, reth, ledger, chain, faucet, tracker, ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}) }), dist, rpc, config.publicRpc.trustedIpHeader);
+  const api = createApi({ config, reth, ledger, chain, faucet, tracker, ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}) });
+  // Live updates (design 6.4): the indexer's NOTIFY, heard on a connection of its own, told to the clients of GET /api/stream.
+  const hub = createStreamHub();
+  const source = storage.pool && config.database
+    ? createStreamSource({ pool: storage.pool, connection: config.database, hub, inflight: async () => (await api("GET", "/api/in-flight")).body })
+    : null;
+  const server = createHttpServer(api, dist, rpc, config.publicRpc.trustedIpHeader, source ? hub : undefined);
   await Promise.all([tracker.ready(), faucet.ready()]);
   server.listen(config.port, config.host, () => {
     console.log(`explorer for ${config.chainName} listening on http://${config.host}:${config.port}`);
     tracker.start();
     faucet.start();
+    void source?.start();
   });
-  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop()], server, tracker, also: [faucet], release: [() => faucet.close(), () => tracker.close(), () => storage.close()] });
+  const stopTimers = startStreamTimers(hub);
+  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => hub.close(), stopTimers], server, tracker, also: [faucet], release: [() => faucet.close(), () => tracker.close(), () => source?.stop(), () => storage.close()] });
 } catch (e) {
   if (!(e instanceof ConfigError)) throw e;
   console.error(`explorer: ${e.message}`);

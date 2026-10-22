@@ -4,6 +4,7 @@ import { gzipSync } from "node:zlib";
 import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
+import { lastIdOf, topicsOf, type StreamHub } from "./rest/stream.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
@@ -52,7 +53,7 @@ function clientIp(req: IncomingMessage, ipHeader: string | null): string {
 }
 
 /** `ipHeader` names the header that carries the client's address for the faucet's limits, and is the public RPC's when none is given. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
-export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null): Server {
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub): Server {
   const root = resolve(dist);
   async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
@@ -95,6 +96,29 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
           console.error(`${method} ${pathname}: ${(e as Error).message}`);
           return send(200, { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Something went wrong in the RPC. Try again in a moment." } });
         }
+      }
+      if (pathname === "/api/stream") {
+        const fail = (status: number, error: string, headers: Record<string, string> = {}) =>
+          void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...headers }).end(JSON.stringify({ error }));
+        if (!stream) return fail(404, "Live updates are off on this explorer.");
+        if (method !== "GET") return fail(405, "Use GET.", { allow: "GET" });
+        const topics = topicsOf(new URL(target, "http://explorer").searchParams.get("topics"));
+        if (!topics) return fail(400, "topics is a list of blocks, txs, inflight and stats.");
+        // The head goes out with the first byte: a stream that is refused is a plain 429, and one that is taken starts with its retry delay.
+        let started = false;
+        const open = () => {
+          if (started) return;
+          started = true;
+          res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform", "x-accel-buffering": "no", "x-content-type-options": "nosniff" });
+          res.write("retry: 3000\n\n");
+        };
+        const sink = { write: (c: string) => { open(); res.write(c); }, backlog: () => res.writableLength, end: () => void res.end() };
+        const attached = stream.attach(clientIp(req, ipHeader), topics, lastIdOf(req.headers["last-event-id"]), sink);
+        if (!attached.ok) return fail(429, attached.error, { "retry-after": "5" });
+        req.socket.setNoDelay(true);
+        req.socket.setTimeout(0);
+        res.on("close", attached.detach);
+        return void open();
       }
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req) : undefined;
