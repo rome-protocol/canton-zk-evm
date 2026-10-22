@@ -19,7 +19,7 @@ class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
         self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": []}, []
-        self.remote, self.vetted_by = [], "PAR::ostia-test::1220fp"   # parties hosted elsewhere; who vetted the package
+        self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
         node = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -69,11 +69,12 @@ class FakeParticipant:
             return {"vettedPackages": [{"participantId": self.vetted_by, "synchronizerId": "global::1220", "packages": [{"packageId": PKG}] if self.vetting else []}]}
         m = re.fullmatch(r"/v2/parties/([^/?]+)", path)
         if method == "GET" and m:
-            # One party by id (url-encoded): the participant knows the remote ones too, with isLocal false; a party it does not know is a 404.
+            # One party by id (url-encoded): the participant knows the remote ones too, with isLocal false. A party it has never heard of is 200 with an empty
+            # list on the pinned Canton 3.6.3 (measured by tests/canton_external.sh); a participant may answer 404 instead.
             party = urllib.parse.unquote(m[1])
             if party in self.parties or party in self.remote:
                 return {"partyDetails": [{"party": party, "isLocal": party in self.parties}]}
-            return {}, 404
+            return ({}, 404) if self.unknown_is_404 else {"partyDetails": []}
         if (method, path) == ("POST", "/v2/parties"):
             self.parties.append(body["partyIdHint"] + "::1220fp")
             return {"partyDetails": {"party": self.parties[-1]}}
@@ -327,6 +328,11 @@ class Setup(unittest.TestCase):
         gets = sorted(c[1] for c in self.node.calls if c[0] == "GET" and c[1].startswith("/v2/parties") and c[1] != "/v2/parties/participant-id")
         self.assertEqual(gets, sorted(f"/v2/parties/ostia-{n}%3A%3A1220fp" for n in setup.CHAIN_PARTIES))
         self.assertFalse([c for c in self.node.calls if c[1].split("?")[0] == "/v2/parties"])
+
+    def test_an_unknown_party_answered_with_404_is_allocated_too(self):
+        self.node.unknown_is_404 = True
+        self.run_setup(chain=False)
+        self.assertEqual(len(self.node.parties), len(setup.CHAIN_PARTIES))
 
     def test_a_party_that_the_participant_knows_but_does_not_host_is_allocated(self):
         self.node.remote = [f"ostia-{n}::1220fp" for n in setup.CHAIN_PARTIES]
