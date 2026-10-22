@@ -286,13 +286,16 @@ const logs: Record<string, Handler> = {
   async getLogs(c) {
     const { head } = await c.heads();
     const p = c.p;
+    const newest = head ?? -1;
+    // `latest` is the newest final block at either end; a missing fromBlock is block 0 and a missing toBlock is the newest.
     const edge = (name: string, fallback: number): number => {
       const v = p.get(name);
-      if (v === null || v === "latest") return fallback;
+      if (v === null) return fallback;
+      if (v === "latest") return newest;
       if (!WHOLE.test(v)) throw new NotOk(TEXTS.blocks);
       return Number(v);
     };
-    const from = edge("fromBlock", 0), to = Math.min(edge("toBlock", head ?? -1), head ?? -1);
+    const from = edge("fromBlock", 0), to = Math.min(edge("toBlock", newest), newest);
     const whole = (name: string, fallback: number): number => {
       const v = p.get(name);
       if (v === null) return fallback;

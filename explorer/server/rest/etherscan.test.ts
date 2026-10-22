@@ -464,6 +464,12 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
       expect(shape(await get(logsUrl(`address=${Z}&topic0=${t(0x99)}`)))).toEqual({ status: "0", message: "No records found", result: [] });
     });
 
+    it("reads fromBlock=latest as the newest final block, as it reads toBlock=latest, and not as block 0", async () => {
+      expect(await keys(`address=${Z}&fromBlock=latest&toBlock=latest`)).toEqual(["3:900", "3:901"]); // block 2's log is older
+      expect(await keys(`address=${Z}&fromBlock=latest`)).toEqual(["3:900", "3:901"]);
+      expect(shape(await get(logsUrl(`address=${Z}&fromBlock=latest&toBlock=2`)))).toEqual({ status: "0", message: "No records found", result: [] });
+    });
+
     it("pages with page and offset, and holds a page to 1,000 logs and page x offset to 10,000", async () => {
       expect(await keys(`address=${Z}&page=1&offset=2`)).toEqual(["2:900", "3:900"]);
       expect(await keys(`address=${Z}&page=2&offset=2`)).toEqual(["3:901"]);
