@@ -19,7 +19,7 @@ class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
         self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": []}, []
-        self.remote, self.page_size, self.vetted_by = [], 1000, "PAR::ostia-test::1220fp0"   # parties hosted elsewhere; parties per page; who vetted the package
+        self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
         node = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -59,7 +59,7 @@ class FakeParticipant:
         if path == "/v2/state/connected-synchronizers":
             return {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "global::1220"}]}
         if path == "/v2/parties/participant-id":
-            return {"participantId": "PAR::ostia-test::1220fp0"}
+            return {"participantId": "PAR::ostia-test::1220fp"}
         if path == "/v2/package-vetting/list":
             if self.vetting is None:
                 return {}, 404
@@ -67,13 +67,14 @@ class FakeParticipant:
             if asked and self.vetted_by not in asked:
                 return {"vettedPackages": []}
             return {"vettedPackages": [{"participantId": self.vetted_by, "synchronizerId": "global::1220", "packages": [{"packageId": PKG}] if self.vetting else []}]}
-        if method == "GET" and path.split("?")[0] == "/v2/parties":
-            # Every party the participant knows, the remote ones first, a page at a time: pageToken is the index of the next one.
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)
-            known = [{"party": p, "isLocal": False} for p in self.remote] + [{"party": p, "isLocal": True} for p in self.parties]
-            start = int(query.get("pageToken", ["0"])[0])
-            page = known[start:start + self.page_size]
-            return {"partyDetails": page, "nextPageToken": str(start + self.page_size) if start + self.page_size < len(known) else ""}
+        m = re.fullmatch(r"/v2/parties/([^/?]+)", path)
+        if method == "GET" and m:
+            # One party by id (url-encoded): the participant knows the remote ones too, with isLocal false. A party it has never heard of is 200 with an empty
+            # list on the pinned Canton 3.6.3 (measured by tests/canton_external.sh); a participant may answer 404 instead.
+            party = urllib.parse.unquote(m[1])
+            if party in self.parties or party in self.remote:
+                return {"partyDetails": [{"party": party, "isLocal": party in self.parties}]}
+            return ({}, 404) if self.unknown_is_404 else {"partyDetails": []}
         if (method, path) == ("POST", "/v2/parties"):
             self.parties.append(body["partyIdHint"] + "::1220fp")
             return {"partyDetails": {"party": self.parties[-1]}}
@@ -316,15 +317,36 @@ class Setup(unittest.TestCase):
         for user, rights in self.node.users.items():
             self.assertFalse(any("1220other" in json.dumps(r) for r in rights["rights"]), user)
 
-    def test_a_second_run_finds_its_parties_on_a_later_page(self):
+    def test_a_second_run_looks_each_party_up_by_id_and_never_lists_the_parties(self):
         self.node.remote = [f"someone-{i}::1220other" for i in range(7)]
-        self.node.page_size = 2
         self.run_setup()
-        before = len(self.node.mutations())
+        self.node.calls.clear()
         _, out, _ = self.run_setup()
-        self.assertEqual(len(self.node.mutations()), before)
+        self.assertEqual(self.node.mutations(), [])
         self.assertFalse(json.loads(out)["created"])
         self.assertEqual(len(self.node.parties), len(setup.CHAIN_PARTIES))
+        gets = sorted(c[1] for c in self.node.calls if c[0] == "GET" and c[1].startswith("/v2/parties") and c[1] != "/v2/parties/participant-id")
+        self.assertEqual(gets, sorted(f"/v2/parties/ostia-{n}%3A%3A1220fp" for n in setup.CHAIN_PARTIES))
+        self.assertFalse([c for c in self.node.calls if c[1].split("?")[0] == "/v2/parties"])
+
+    def test_an_unknown_party_answered_with_404_is_allocated_too(self):
+        self.node.unknown_is_404 = True
+        self.run_setup(chain=False)
+        self.assertEqual(len(self.node.parties), len(setup.CHAIN_PARTIES))
+
+    def test_a_party_that_the_participant_knows_but_does_not_host_is_allocated(self):
+        self.node.remote = [f"ostia-{n}::1220fp" for n in setup.CHAIN_PARTIES]
+        self.run_setup(chain=False)
+        self.assertEqual(sorted(self.node.parties), sorted(f"ostia-{n}::1220fp" for n in setup.CHAIN_PARTIES))
+
+    def test_an_allocation_that_gives_another_id_is_used_as_it_came(self):
+        route = self.node.route
+        self.node.route = lambda m, p, b, r: ({"partyDetails": {"party": self.node.parties.append(b["partyIdHint"] + "::1220odd") or self.node.parties[-1]}}
+                                              if (m, p) == ("POST", "/v2/parties") else route(m, p, b, r))
+        _, _, err = self.run_setup(chain=False)
+        env = propose.read_env_file(self.state / "canton" / "parties.env")
+        self.assertTrue(all(v.endswith("::1220odd") for v in env.values()))
+        self.assertIn("not the one expected", err)
 
     def test_a_package_that_is_not_vetted_stops_everything(self):
         self.node.vetting = False
