@@ -31,9 +31,12 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
   let db: TestDatabase, pool: Pool;
   const asked: [string, number][] = [];
   const balances = new Map<string, bigint>();
+  const tokens = new Map<string, bigint>();
+  const tokenAsked: [string, string, number][] = [];
   const config = () => loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
   const reth = {
     balanceAt: async (a: string, n: number) => (asked.push([a, n]), balances.get(a) ?? 0n),
+    tokenBalanceAt: async (t: string, a: string, n: number) => (tokenAsked.push([t, a, n]), tokens.get(`${t}:${a}`) ?? 0n),
   } as unknown as Reth;
   const api = () => createApi({ config: config(), reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest(pool) });
   const get = async (target: string) => api()("GET", target);
@@ -145,6 +148,18 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
     it("answers `finalized` and `safe` as `latest`, and refuses any other tag", async () => {
       for (const tag of ["finalized", "safe"]) expect(shape(await get(`/api?module=account&action=balance&address=${A}&tag=${tag}`)).result).toBe("12345");
       expect(shape(await get(`/api?module=account&action=balance&address=${A}&tag=pending`))).toEqual(NOTOK(TEXTS.tag));
+    });
+
+    it("tokenbalance reads the holder's balance of the token from reth at the final head (recorded answer)", async () => {
+      tokens.set(`${T1}:${A}`, 1000000000000000000000n);
+      tokenAsked.length = 0;
+      expect(shape(await get(`/api?module=account&action=tokenbalance&contractaddress=${T1}&address=${A}&tag=latest`))).toEqual({ status: "1", message: "OK", result: "1000000000000000000000" });
+      expect(tokenAsked).toEqual([[T1, A, 3]]);
+      expect(shape(await get(`/api?module=account&action=tokenbalance&contractaddress=${T1}&address=${B}`))).toEqual({ status: "1", message: "OK", result: "0" });
+      expect(shape(await get(`/api?module=account&action=tokenbalance&address=${A}`))).toEqual(NOTOK(TEXTS.tokenWho));
+      expect(shape(await get(`/api?module=account&action=tokenbalance&contractaddress=nope&address=${A}`))).toEqual(NOTOK(TEXTS.address));
+      expect(shape(await get(`/api?module=account&action=tokenbalance&contractaddress=${T1}&address=nope`))).toEqual(NOTOK(TEXTS.address));
+      expect(shape(await get(`/api?module=account&action=tokenbalance&contractaddress=${T1}&address=${A}&tag=pending`))).toEqual(NOTOK(TEXTS.tag));
     });
 
     it("refuses a bad address, more than 20 addresses, and a chain with no final block", async () => {

@@ -212,6 +212,17 @@ export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_
     /** Sends a signed transaction and returns its hash. A refusal from reth is a RethError with `answered` set. */
     sendRaw: (signed: string) => read("eth_sendRawTransaction", [signed], hash),
     code: (a: string) => read("eth_getCode", [a, "latest"], data),
+    /** An ERC-20 holder's balance as of one block (the final head, for the Etherscan `tokenbalance`): 0 when the address is no token (a revert, or no answer), as Etherscan gives. */
+    async tokenBalanceAt(token: string, holder: string, block: number): Promise<bigint> {
+      const call = "0x70a08231" + holder.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+      try {
+        const out = await read("eth_call", [{ to: token, data: call }, tag(block)], data);
+        return out.length >= 66 ? BigInt(out.slice(0, 66)) : 0n;
+      } catch (e) {
+        if (e instanceof RethError && e.answered) return 0n;
+        throw e;
+      }
+    },
     /** The name, symbol and decimals of an ERC-20 token, or null when the address does not answer those three calls. */
     async token(a: string): Promise<TokenInfo | null> {
       const [n, s, d] = await Promise.all([erc20(a, SELECTOR.name), erc20(a, SELECTOR.symbol), erc20(a, SELECTOR.decimals)]);

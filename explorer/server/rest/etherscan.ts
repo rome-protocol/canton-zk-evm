@@ -64,7 +64,7 @@ export class Params {
   }
 }
 
-interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt">; heads: () => Promise<{ head: number | null; cursor: number }> }
+interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt">; heads: () => Promise<{ head: number | null; cursor: number }> }
 type Handler = (c: Ctx) => Promise<Result>;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/, HASH = /^0x[0-9a-fA-F]{64}$/, WHOLE = /^[0-9]{1,15}$/;
@@ -158,6 +158,13 @@ const account: Record<string, Handler> = {
     const balances = await Promise.all(accounts.map((a) => c.reth.balanceAt(a, head)));
     return accounts.map((account, i) => ({ account, balance: (balances[i] as bigint).toString() }));
   },
+  async tokenbalance(c) {
+    const token = c.p.get("contractaddress");
+    if (token === null) throw new NotOk(TEXTS.tokenWho);
+    const t = addressOf(token), a = addressOf(c.p.get("address"));
+    checkTag(c.p);
+    return (await c.reth.tokenBalanceAt(t, a, await finalHead(c))).toString();
+  },
   async txlist(c) {
     const a = addressOf(c.p.get("address"));
     const { head } = await c.heads();
@@ -212,7 +219,7 @@ const UNSUPPORTED: Record<string, readonly string[]> = {
   account: ["balancehistory", "addresstokenbalance", "addresstokennftbalance", "addresstokennftinventory", "fundedby", "txnbridge"],
 };
 
-export interface EtherscanDeps { rest: EtherscanRest; reth: Pick<Reth, "balanceAt">; chainId: number }
+export interface EtherscanDeps { rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt">; chainId: number }
 
 /** The door: a request's parameters in, Etherscan's answer out. */
 export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
