@@ -643,6 +643,8 @@ table verification_jobs
   column created_at timestamp with time zone not null
   column started_at timestamp with time zone
   column finished_at timestamp with time zone
+  column attempts integer not null default 0
+  column not_before timestamp with time zone
   constraint verification_jobs_kind CHECK ((kind = ANY (ARRAY['source'::text, 'proxy'::text])))
   constraint verification_jobs_pkey PRIMARY KEY (guid)
   constraint verification_jobs_status CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'pass'::text, 'fail'::text, 'already'::text])))

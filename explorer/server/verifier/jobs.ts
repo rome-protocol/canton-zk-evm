@@ -21,7 +21,8 @@ export const DEFAULT_LIMITS: QueueLimits = { maxSourceBytes: MAX_SOURCE_BYTES, p
 
 export type JobStatus = "pending" | "running" | "pass" | "fail" | "already";
 export interface JobView { guid: string; status: JobStatus; result: string }
-export interface Claimed { guid: string; request: VerifyRequest; createdAt: Date }
+/** `attempts` is how many times the job was put back before this claim. */
+export interface Claimed { guid: string; request: VerifyRequest; createdAt: Date; attempts: number }
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 /** What `checkverifystatus` says while a job has not ended (Etherscan's words). */
@@ -77,15 +78,16 @@ export class JobQueue {
     return { guid, status: r.status, result: waiting ? PENDING_TEXT : (r.result ?? (r.status === "pass" ? "Pass - Verified" : "Fail - Unable to verify")) };
   }
 
-  /** Takes the oldest waiting job for `leaseMs`, or returns null when none waits. Jobs whose lease ran out are put back first. */
+  /** Takes the oldest waiting job whose time to try has come, for `leaseMs`, or returns null when none is ready. Jobs whose lease ran out are put back first. */
   async claim(leaseMs: number): Promise<Claimed | null> {
     await this.pool.query(
       "update verification_jobs set status = 'pending', lease_until = null where status = 'running' and lease_until < now()");
-    const r = (await this.pool.query<{ guid: string; request: VerifyRequest; created_at: Date }>(
+    const r = (await this.pool.query<{ guid: string; request: VerifyRequest; created_at: Date; attempts: number }>(
       `update verification_jobs set status = 'running', started_at = now(), lease_until = now() + ($1::int * interval '1 millisecond')
-       where guid = (select guid from verification_jobs where status = 'pending' order by created_at limit 1 for update skip locked)
-       returning guid, request, created_at`, [leaseMs])).rows[0];
-    return r ? { guid: r.guid, request: r.request, createdAt: r.created_at } : null;
+       where guid = (select guid from verification_jobs where status = 'pending' and (not_before is null or not_before <= now())
+                      order by created_at limit 1 for update skip locked)
+       returning guid, request, created_at, attempts`, [leaseMs])).rows[0];
+    return r ? { guid: r.guid, request: r.request, createdAt: r.created_at, attempts: r.attempts } : null;
   }
 
   /** Ends a job with its result; its sources are dropped. A job that is not running any more (its lease ran out and another role has it) is left alone. */
@@ -96,9 +98,12 @@ export class JobQueue {
     return r.rowCount === 1;
   }
 
-  /** Puts a job back in the queue, for a compiler or sandbox that could not be had. */
+  /** Puts a job back in the queue, for a compiler or sandbox that could not be had, or a contract that is not in the index yet. It is taken again after its backoff: 5 s, doubled for each attempt, at most 2 minutes. */
   async release(guid: string): Promise<void> {
-    await this.pool.query("update verification_jobs set status = 'pending', lease_until = null where guid = $1 and status = 'running'", [guid]);
+    await this.pool.query(
+      `update verification_jobs set status = 'pending', lease_until = null, attempts = attempts + 1,
+         not_before = now() + (least(5000 * power(2, least(attempts, 10)), 120000)::int * interval '1 millisecond')
+       where guid = $1 and status = 'running'`, [guid]);
   }
 
   /** The queue as the health row reads it. */

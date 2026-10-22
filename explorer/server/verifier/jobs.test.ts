@@ -66,6 +66,25 @@ suite("the verification job queue", () => {
     expect(await q.stats()).toMatchObject({ waiting: 1, running: 0 });
   });
 
+  it("takes a released job again only after its backoff, and the jobs behind it meanwhile", async () => {
+    const q = new JobQueue(db.pool);
+    const stuck = await q.submit(req(), client(1));
+    const good = await q.submit(req(), client(2));
+    expect((await q.claim(60_000))?.guid).toBe(stuck);
+    await q.release(stuck);
+    const next = await q.claim(60_000);
+    expect(next?.guid).toBe(good);
+    expect(next?.attempts).toBe(0);
+    await q.finish(good, "pass", "Pass - Verified");
+    expect(await q.claim(60_000)).toBeNull(); // the released job is not ready yet
+    await db.pool.query("update verification_jobs set not_before = now() - interval '1 second' where guid = $1", [stuck]);
+    expect(await q.claim(60_000)).toMatchObject({ guid: stuck, attempts: 1 });
+    await q.release(stuck);
+    const gap = (await db.pool.query("select extract(epoch from not_before - now())::float8 as s from verification_jobs where guid = $1", [stuck])).rows[0].s;
+    expect(gap).toBeGreaterThan(5); // the second wait is 10 s
+    expect(gap).toBeLessThanOrEqual(10);
+  });
+
   it("prunes ended jobs after thirty days and keeps the rest", async () => {
     const q = new JobQueue(db.pool);
     const done = await q.submit(req(), client(1));

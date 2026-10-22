@@ -19,8 +19,10 @@ export interface WorkerOptions {
   /** How often the health rows are written. */
   healthMs?: number;
   pollMs?: number;
-  /** A job that could not be run, or whose contract is not in the index, is tried again for this long, counted from its submission. */
+  /** A job that could not be run, or whose contract is not in the index, is tried again, after a backoff, for this long counted from its submission, and for `maxAttempts` tries. */
   giveUpMs?: number;
+  /** A job that was put back this many times fails with the reason. */
+  maxAttempts?: number;
   /** The queue is `degraded` when the oldest job has waited this long. */
   stuckSeconds?: number;
   /** Whether the compiler cache can be used (its folder is there and can be written). */
@@ -39,7 +41,7 @@ export class VerifierWorker {
     this.pool = pool;
     this.queue = queue;
     this.verifier = verifier;
-    const o = { jobTimeoutMs: 150_000, stopGraceMs: 15_000, healthMs: 5000, pollMs: 1000, giveUpMs: 10 * 60_000, stuckSeconds: 300, log: (l: string) => console.error(l), ...opts };
+    const o = { jobTimeoutMs: 150_000, stopGraceMs: 15_000, healthMs: 5000, pollMs: 1000, giveUpMs: 10 * 60_000, maxAttempts: 10, stuckSeconds: 300, log: (l: string) => console.error(l), ...opts };
     // A lease that ends while its job still runs would let the job be taken twice.
     this.o = { ...o, leaseMs: opts.leaseMs ?? o.jobTimeoutMs + o.stopGraceMs + 30_000 };
   }
@@ -75,7 +77,7 @@ export class VerifierWorker {
       clearTimeout(grace);
     }
     if (outcome.status === "retry" || outcome.status === "unknown") {
-      if (age < this.o.giveUpMs) { await this.queue.release(job.guid); return "again"; }
+      if (age < this.o.giveUpMs && job.attempts + 1 < this.o.maxAttempts) { await this.queue.release(job.guid); return "again"; }
       await this.queue.finish(job.guid, "fail", outcome.status === "unknown" ? outcome.result : `Fail - Unable to verify. ${outcome.result}`);
       return "ended";
     }

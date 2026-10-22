@@ -80,8 +80,24 @@ suite("the verifier role", () => {
     const guid = await q.submit(req(A), key);
     expect(await worker(new Verifier(db.pool, stub)).step()).toBe("again");
     expect(await q.status(guid)).toMatchObject({ status: "pending" });
+    await db.pool.query("update verification_jobs set not_before = null");
     expect(await worker(new Verifier(db.pool, stub), { giveUpMs: 0 }).step()).toBe("ended");
     expect(await q.status(guid)).toMatchObject({ status: "fail", result: expect.stringContaining("sandbox is not available") });
+  });
+
+  it("fails a job that was put back too many times; one that keeps failing does not stop the others", async () => {
+    const q = queue();
+    const B = "0x" + "b2".repeat(20);
+    const stuck = await q.submit(req(B), key);
+    const good = await q.submit(req(A), key);
+    const w = worker({ verify: async (r: VerifyRequest) => r.address === B ? { status: "unknown", result: "Fail - the contract is not in the index" } : { status: "pass", result: "Pass - Verified" } }, { maxAttempts: 2 });
+    expect(await w.step()).toBe("again"); // the oldest is put back, with a wait
+    expect(await w.step()).toBe("ended"); // the next one is taken, not the oldest again
+    expect(await q.status(good)).toMatchObject({ status: "pass" });
+    expect(await w.step()).toBe("idle");
+    await db.pool.query("update verification_jobs set not_before = null");
+    expect(await w.step()).toBe("ended"); // its second try: the attempts are used up
+    expect(await q.status(stuck)).toMatchObject({ status: "fail", result: "Fail - the contract is not in the index" });
   });
 
   it("writes its health rows: ok, then degraded for an unusable cache and for a stuck queue", async () => {
