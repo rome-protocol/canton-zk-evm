@@ -95,7 +95,7 @@ export function createStatsRest(pool: Pool): StatsRest {
   }
 
   async function open(now: number, slowAfter: number | null): Promise<OpenCounts> {
-    const [r] = await query(
+    const [r = {}] = await query(
       `with o as (select extract(epoch from ($1::timestamptz - accepted_at))::float8 as age from tx_lifecycle where state in ('pending', 'proving'))
        select count(*)::int as open, count(*) filter (where age is null)::int as none,
               count(*) filter (where age > $2)::int as stuck,

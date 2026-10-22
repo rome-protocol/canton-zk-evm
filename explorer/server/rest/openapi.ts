@@ -7,6 +7,7 @@ import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
+import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
 
 type Fields = readonly string[];
 interface Query { name: string; about: string; values?: readonly string[] }
@@ -70,6 +71,18 @@ export const DOCS: Record<string, Doc> = {
   "/api/legs": { tag: "Gateway", summary: "The gateway's legs, newest first.", query: paged, page: { items: F.legItem, derived: false } },
   "/api/legs/{id}": { tag: "Gateway", summary: "One gateway leg, by its id.", param: "The leg's 0x id.", object: F.legItem },
   "/api/search": { tag: "Search", summary: "Where a text leads: a block number or hash, a transaction hash, an address, a Canton update id, or the start of a token's or a verified contract's name.", query: [{ name: "q", about: "The text to look for." }], object: F.search },
+  "/api/stats/summary": {
+    tag: "Stats", summary: "The numbers of the stats page over a window, and what is live now. A window is the last whole buckets of the rows it is read from (1h and 6h: minutes; 24h and 7d: hours; 30d: days), the open one included; `from` and `to` are the buckets read. Times are seconds, read from buckets 5% apart: a percentile is at most 5% above the truth. A time or a rate with nothing behind it is null. Runs marked as tests are counted in `test` and left out of everything else. `asOf` is when the rollups last ran.",
+    query: [{ name: "window", about: `The window: ${Object.keys(WINDOWS).join(", ")}; ${DEFAULT_WINDOW} when left out.`, values: Object.keys(WINDOWS) }], object: F.statsSummary,
+  },
+  "/api/stats/series": {
+    tag: "Stats", summary: `One metric over a window, one point for each step: \`points\` is a list of \`at\` (the start of the step) and \`value\`. A step with no row is 0 for a count and null for a time or a rate. The windows can be drawn in these steps (the first is the default): ${Object.entries(WINDOW_STEPS).map(([w, s]) => `${w}: ${s.join(", ")}`).join("; ")}. \`busy_ratio\` is drawn in 10m, 1h or 1d, and the daily address and contract counts in 1d.`,
+    query: [
+      { name: "metric", about: `What to draw: ${Object.keys(METRICS).join(", ")}.`, values: Object.keys(METRICS) },
+      { name: "window", about: `The window: ${Object.keys(WINDOWS).join(", ")}; ${DEFAULT_WINDOW} when left out.`, values: Object.keys(WINDOWS) },
+      { name: "step", about: "The width of a point: 1m, 10m, 1h or 1d, as the window allows.", values: Object.keys(STEPS) },
+    ], object: F.statsSeries,
+  },
   "/api/status": { tag: "Status", summary: "What the chain and the explorer are doing now.", object: FIELDS.status },
   "/api/block/{id}": { tag: "Pages", summary: "A block as its page shows it: a final block, or one still on its way.", param: "The block's number or its 0x hash.", object: FIELDS.block },
   "/api/tx/{hash}": { tag: "Pages", summary: "A transaction as its page shows it, with where it is in its life.", param: "The transaction's 0x hash.", object: FIELDS.tx },
