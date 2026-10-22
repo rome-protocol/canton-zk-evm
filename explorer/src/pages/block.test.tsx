@@ -68,13 +68,13 @@ describe("the block page, for a final block", () => {
     expect(row(evm, "Time")).toHaveTextContent("4 Oct 2026, 01:37:16 UTC · block timestamp, whole seconds");
     expect(within(row(evm, "Transactions")).getByRole("link", { name: "1 transaction" })).toHaveAttribute("href", "#transactions");
     expect(row(evm, "Hash")).toHaveTextContent(hash(3));
-    expect(within(row(evm, "Parent hash")).getByRole("link", { name: "0x020202…020202" })).toHaveAttribute("href", `/block/${hash(2)}`);
+    expect(within(row(evm, "Parent hash")).getByRole("link", { name: "0x02020202…02020202" })).toHaveAttribute("href", `/block/${hash(2)}`);
     expect(row(evm, "Parent hash")).toHaveTextContent("block 2");
     expect(row(evm, "Gas used")).toHaveTextContent("51,698 (0.17% of 30,000,000)");
     expect(row(evm, "Base fee")).toHaveTextContent("0.67 gwei");
     expect(row(evm, "Burnt fees")).toHaveTextContent("0.0000346 tROME");
     expect(within(row(evm, "Fee recipient")).getByRole("link")).toHaveAttribute("href", `/address/${block().miner}`);
-    expect(row(evm, "State root")).toHaveTextContent("0x1010…1010");
+    expect(row(evm, "State root")).toHaveTextContent("0x10101010…10101010");
     expect(row(evm, "Record data")).toHaveTextContent("2,137 bytes · header 612, transactions 181, proof 1,344");
   });
 

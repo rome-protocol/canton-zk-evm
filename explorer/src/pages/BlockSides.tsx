@@ -40,13 +40,13 @@ export function EvmSide({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
         <Item label="Transactions"><a className="num" href="#transactions">{count(b.txCount)} transaction{b.txCount === 1 ? "" : "s"}</a></Item>
         <Item label="Hash"><HashLink value={b.hash} full /></Item>
         <Item label="Parent hash">
-          {b.number > 0 ? <><HashLink value={b.parentHash} to={`/block/${b.parentHash}`} /> <span className="muted">block {b.number - 1}</span></> : <span className="muted">none</span>}
+          {b.number > 0 ? <><HashLink value={b.parentHash} to={`/block/${b.parentHash}`} long /> <span className="muted">block {b.number - 1}</span></> : <span className="muted">none</span>}
         </Item>
         <Item label="Gas used"><span className="mono">{count(b.gasUsed)}</span> <span className="muted">({share(b.gasUsed, b.gasLimit)} of {count(b.gasLimit)})</span></Item>
         <Item label="Base fee">{b.baseFee === null ? "none" : <span className="mono" title={`${b.baseFee} wei`}>{exact(b.baseFee, 9)} gwei</span>}</Item>
         <Item label="Burnt fees">{burnt === null || !coin ? "—" : <span className="mono" title={`${exact(burnt, coin.decimals)} ${coin.symbol}`}>{units(burnt, coin.decimals)} {coin.symbol}</span>}</Item>
         <Item label="Fee recipient"><HashLink value={b.miner} to={`/address/${b.miner}`} /></Item>
-        <Item label="State root"><HashLink value={b.stateRoot} /></Item>
+        <Item label="State root"><HashLink value={b.stateRoot} long /></Item>
         {sizes && (
           <Item label="Record data">
             <span className="mono">{count(sizes.reduce((n, [, h]) => n + h.length / 2, 0))} bytes</span>{" "}
