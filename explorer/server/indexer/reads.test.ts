@@ -12,6 +12,14 @@ const rawBlock = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+/** The shape of reth's `trace` tracer (the parity format): a call that failed, a delegatecall, a create2 that made a contract, and that contract destroying itself. */
+const RECORDED_TRACE = [
+  { action: { from: A("f0"), callType: "call", gas: "0x5208", input: "0x", to: A("f1"), value: "0x1" }, result: null, error: "Reverted", subtraces: 2, traceAddress: [], type: "call" },
+  { action: { from: A("f1"), callType: "delegatecall", gas: "0x100", input: "0x12345678", to: A("d0"), value: "0x0" }, result: { gasUsed: "0x10", output: "0x" }, subtraces: 0, traceAddress: [0], type: "call" },
+  { action: { from: A("f1"), gas: "0x900", init: "0x6080", value: "0x5", creationMethod: "create2" }, result: { gasUsed: "0x40", address: A("c1"), code: "0x6001" }, subtraces: 1, traceAddress: [1], type: "create" },
+  { action: { address: A("c1"), refundAddress: A("f0"), balance: "0x9" }, result: null, subtraces: 0, traceAddress: [1, 0], type: "suicide" },
+];
+
 let reth: FakeReth | null = null;
 afterEach(async () => { await reth?.close(); reth = null; });
 
@@ -31,7 +39,7 @@ describe("the indexer's reads from reth", () => {
       eth_getBlockByNumber: ([n]: unknown[]) => (n === "0x5" ? rawBlock() : null),
       eth_getBlockReceipts: ([n]: unknown[]) => (n === "0x5" ? [{ transactionHash: H("c3"), status: "0x1", gasUsed: "0x5208", effectiveGasPrice: "0x8", contractAddress: null, logs: [{ address: A("d0"), topics: [H("77")], data: "0x00" }] }] : null),
       trace_replayBlockTransactions: ([n, kinds]: unknown[]) => (n === "0x5" && JSON.stringify(kinds) === '["trace"]'
-        ? [{ transactionHash: H("c3"), output: "0x08c379a0", trace: [{ error: "Reverted" }, {}] }] : null),
+        ? [{ transactionHash: H("c3"), output: "0x08c379a0", trace: RECORDED_TRACE }] : null),
       eth_getStorageAt: () => H("5e"),
       eth_getCode: ([a, n]: unknown[]) => (a === A("9a") && n === "0x0" ? "0x6001" : "0x"),
     });
@@ -40,7 +48,13 @@ describe("the indexer's reads from reth", () => {
     expect(b).toMatchObject({ number: 5, hash: H("a1"), gasLimit: 30_000_000, baseFeePerGas: 7n, size: 752 });
     expect(b!.transactions[0]).toMatchObject({ hash: H("c3"), type: 2, value: 1n, maxFeePerGas: 9n, to: A("f1") });
     expect((await r.receipts(5))![0]).toMatchObject({ status: 1, effectiveGasPrice: 8n, contractAddress: null, logs: [{ address: A("d0") }] });
-    expect(await r.traces(5)).toEqual([{ transactionHash: H("c3"), output: "0x08c379a0", calls: 2, error: "Reverted" }]);
+    const [t] = (await r.traces(5))!;
+    expect(t).toMatchObject({ transactionHash: H("c3"), output: "0x08c379a0", calls: 4, error: "Reverted" });
+    expect(t!.frames.map((f) => [f.traceAddress.join("."), f.type, f.callType, f.value, f.error])).toEqual([
+      ["", "call", "call", 1n, "Reverted"], ["0", "call", "delegatecall", 0n, null], ["1", "create", "create2", 5n, null], ["1.0", "suicide", "selfdestruct", 9n, null],
+    ]);
+    expect(t!.frames[2]).toMatchObject({ from: A("f1"), to: A("c1"), created: { address: A("c1"), code: "0x6001" }, input: "0x6080" });
+    expect(t!.frames[3]).toMatchObject({ from: A("c1"), to: A("f0") });
     expect(await r.storageAt(A("9a"), H("00"), 5)).toBe(H("5e"));
     expect(await r.code(A("9a"), 0)).toBe("0x6001");
     expect(await r.code(A("9b"), 0)).toBe("0x");

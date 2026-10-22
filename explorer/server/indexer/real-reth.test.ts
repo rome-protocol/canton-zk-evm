@@ -6,11 +6,17 @@
  * 1. Revert data. reth holds a block, named by EXPLORER_TEST_REVERT_BLOCK, with transactions that failed in this order: test/fixtures/Reverts.sol's
  *    reason(), overflow() and custom(), with other transactions allowed before them. The test proves what design section 4.1 asks of the trace
  *    read: that trace_replayBlockTransactions carries the revert data for Error(string), Panic(uint256) and a custom error.
- * 2. W1 (design section 9). The indexer runs over the whole chain, with reth's own blocks, Canton's own records and a database of its own, and
+ * 2. The trace reading (design sections 4.3 and 5.2). reth holds the blocks of test/fixtures/Lab.sol, named by EXPLORER_TEST_LAB (the address),
+ *    EXPLORER_TEST_LAB_BUILD_BLOCK, EXPLORER_TEST_LAB_UNDONE_BLOCK and EXPLORER_TEST_LAB_KILL_BLOCK: contracts made with CREATE and CREATE2, clones, a
+ *    contract made and destroyed in one transaction, a failed creation, work a failing parent undid, a self-destruct in a later block, and a proxy of
+ *    each kind. The test indexes the chain and checks the internal calls, contracts and proxies reth's own traces give, then reads blocks again.
+ *    Needs the same ledger and database variables as W1.
+ * 3. W1 (design section 9). The indexer runs over the whole chain, with reth's own blocks, Canton's own records and a database of its own, and
  *    the block named by EXPLORER_TEST_W1_BLOCK (test/fixtures/Stress.sol, filling a block under the gas cap) is timed, reads and stages apart.
  *    Needs EXPLORER_TEST_LEDGER_URL, READER_PARTY, GATEWAY_ADDRESS, CHAIN_ID and EXPLORER_TEST_DATABASE_URL. The rehearsal's proofs are stand-ins, so the
  *    pins are what the chain's first proof carries; that is the only thing the stand-in changes.
  */
+import { keccak256, toHex } from "viem";
 import { describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createLedger } from "../ledger.ts";
@@ -18,7 +24,8 @@ import { readProofFacts } from "../proof.ts";
 import { checkRequired, withDatabase } from "../db/testing.ts";
 import { createIndexer, type Timing } from "./indexer.ts";
 import { createFinalReads } from "./reads.ts";
-import { revertReason } from "./stage2.ts";
+import { reindexRange } from "./reindex.ts";
+import { revertReason, stage2 } from "./stage2.ts";
 
 const URL_ = process.env.EXPLORER_TEST_RETH_URL;
 const BLOCK = Number(process.env.EXPLORER_TEST_REVERT_BLOCK ?? "");
@@ -47,6 +54,117 @@ describe.skipIf(!URL_)("revert data on a real reth", () => {
 const LEDGER = process.env.EXPLORER_TEST_LEDGER_URL;
 const W1_BLOCK = Number(process.env.EXPLORER_TEST_W1_BLOCK ?? "");
 const DATABASE = process.env.EXPLORER_TEST_DATABASE_URL;
+
+const LAB = (process.env.EXPLORER_TEST_LAB ?? "").toLowerCase();
+const LAB_BUILD = Number(process.env.EXPLORER_TEST_LAB_BUILD_BLOCK ?? "");
+const LAB_UNDONE = Number(process.env.EXPLORER_TEST_LAB_UNDONE_BLOCK ?? "");
+const LAB_KILL = Number(process.env.EXPLORER_TEST_LAB_KILL_BLOCK ?? "");
+const MADE = keccak256(toHex("Made(uint8,address)"));
+const bytea = (a: string) => Buffer.from(a.replace(/^0x/, ""), "hex");
+
+describe.skipIf(!URL_ || !LEDGER || !DATABASE || !LAB)("the trace reading, on a real reth", () => {
+  checkRequired();
+
+  it("finds the contracts, destructions, failed calls and proxies reth reports, and counts nothing twice when blocks are read again", async () => {
+    expect([LAB_BUILD, LAB_UNDONE, LAB_KILL].every((n) => Number.isInteger(n) && n > 0), "set the three EXPLORER_TEST_LAB_*_BLOCK variables").toBe(true);
+    const gateway = (process.env.GATEWAY_ADDRESS ?? "").toLowerCase();
+    expect(gateway).toMatch(/^0x[0-9a-f]{40}$/);
+    const reads = createFinalReads(URL_ as string, 10_000, 120_000);
+    // What Lab made, from its own events: kind -> address.
+    const made = new Map<number, string>();
+    for (const r of (await reads.receipts(LAB_BUILD))!) {
+      for (const l of r.logs) if (l.address.toLowerCase() === LAB && l.topics[0] === MADE) made.set(Number(BigInt(l.topics[1]!)), "0x" + l.data.slice(-40));
+    }
+    expect([...made.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    await withDatabase(async (pool: Pool) => {
+      const { migrate } = await import("../db/migrate.ts");
+      await migrate(pool);
+      const ledger = createLedger(LEDGER as string, 10_000, process.env.READER_PARTY ?? null);
+      const end = await ledger.ledgerEnd();
+      const first = (await ledger.recordPages(0, end).next()).value?.[0];
+      expect(first, "Canton has no block record").toBeTruthy();
+      const facts = readProofFacts(first!.proofHex);
+      expect(facts, "the first record's proof is not 1,344 bytes").not.toBeNull();
+      const chainId = Number(process.env.CHAIN_ID);
+      const indexer = createIndexer({ pool, reads, ledger, pins: { programVK: facts!.programVK, rootC: facts!.rootC, file: "the first proof" }, chainId, gateway, derive: "inline" });
+      await indexer.open();
+      try {
+        const run = await indexer.runOnce();
+        expect(run.state, JSON.stringify(run)).toBe("caught-up");
+        const one = async (sql: string, params: unknown[]) => (await pool.query(sql, params)).rows;
+        const contract = async (kind: number) => (await one(
+          "select encode(creator, 'hex') as creator, origin, creation_block::text as block, destroyed_block::text as destroyed, creation_trace_address::text as path, encode(runtime_code_hash, 'hex') as rh from contracts where address = $1",
+          [bytea(made.get(kind)!)]))[0];
+
+        // Every kind is a contract made by Lab, in the block of build(), at a place in the call tree.
+        for (const kind of made.keys()) {
+          expect(await contract(kind), `kind ${kind}`).toMatchObject({ creator: LAB.slice(2), origin: "create", block: String(LAB_BUILD) });
+          expect((await contract(kind))!.path, `kind ${kind}`).toMatch(/^\{\d+(,\d+)*\}$/);
+        }
+        expect(Number((await one("select count(*) as n from contracts where creation_block = $1", [LAB_BUILD]))[0].n), "the failed creation made no contract").toBe(12);
+        // The code is shared: two clones of one implementation, two proxies of one kind, two children.
+        expect((await contract(3))!.rh).toBe((await contract(4))!.rh);
+        expect((await contract(6))!.rh).toBe((await contract(7))!.rh);
+        expect((await contract(1))!.rh).toBe((await contract(2))!.rh);
+        expect((await contract(1))!.rh).not.toBe((await contract(6))!.rh);
+
+        // Destruction. Made and destroyed in one transaction: the code is gone, in that block. Destroyed later: marked only if reth no longer holds the code.
+        expect((await contract(5))!.destroyed).toBe(String(LAB_BUILD));
+        expect(await reads.code(made.get(5)!, LAB_BUILD)).toBe("0x");
+        const keptCode = (await reads.code(made.get(12)!, LAB_KILL)) !== "0x";
+        console.log(`self-destruct outside the creation transaction: reth ${keptCode ? "keeps" : "removes"} the code`);
+        expect((await contract(12))!.destroyed).toBe(keptCode ? null : String(LAB_KILL));
+        const calls = await one("select call_type, encode(from_address, 'hex') as f, error from internal_calls where block_number = $1 order by tx_index, trace_address", [LAB_BUILD]);
+        expect(calls.some((c) => c.call_type === "selfdestruct" && c.f === made.get(5)!.slice(2))).toBe(true);
+        expect(calls.filter((c) => c.call_type === "create" && c.error !== null).length, "the creation that failed").toBeGreaterThanOrEqual(1);
+        expect((await one("select count(*) as n from internal_calls where block_number = $1 and call_type = 'selfdestruct'", [LAB_KILL]))[0].n).toBe("1");
+
+        // Work a failing parent undid: nothing made, and every call that is kept says it failed.
+        expect((await one("select count(*) as n from contracts where creation_block = $1", [LAB_UNDONE]))[0].n).toBe("0");
+        const undone = await one("select error from internal_calls where block_number = $1", [LAB_UNDONE]);
+        expect(undone.length).toBeGreaterThan(0);
+        expect(undone.every((c) => c.error !== null)).toBe(true);
+
+        // Proxies: each kind, with its implementation, and nothing else.
+        const proxy = async (kind: number) => (await one("select kind, encode(implementation, 'hex') as i, encode(beacon, 'hex') as b, checked_block::text as c from proxies where proxy = $1", [bytea(made.get(kind)!)]))[0];
+        const impl = made.get(11)!.slice(2);
+        expect(await proxy(3)).toEqual({ kind: "eip1167", i: impl, b: null, c: String(LAB_BUILD) });
+        expect(await proxy(4)).toEqual({ kind: "eip1167", i: impl, b: null, c: String(LAB_BUILD) });
+        expect(await proxy(6)).toEqual({ kind: "eip1967", i: impl, b: null, c: String(LAB_BUILD) });
+        expect(await proxy(7)).toEqual({ kind: "eip1967", i: impl, b: null, c: String(LAB_BUILD) });
+        expect(await proxy(9)).toEqual({ kind: "beacon", i: impl, b: made.get(8)!.slice(2), c: String(LAB_BUILD) });
+        expect(await proxy(10)).toEqual({ kind: "eip1822", i: impl, b: null, c: String(LAB_BUILD) });
+        for (const kind of [1, 2, 5, 8, 11, 12]) expect(await proxy(kind), `kind ${kind} is not a proxy`).toBeUndefined();
+        expect((await one("select count(*) as n from proxies", []))[0].n).toBe("6");
+
+        // Blocks read again count nothing twice: the reader's updates again, a reindex of the blocks, and stage 2's own guard.
+        const snapshot = async () => ({
+          contracts: await one("select encode(address, 'hex') as a, creation_block, destroyed_block, interaction_count, last_interaction_block from contracts order by address", []),
+          proxies: await one("select encode(proxy, 'hex') as proxy, kind, encode(implementation, 'hex') as i, encode(beacon, 'hex') as b, checked_block from proxies order by proxy", []),
+          addresses: await one("select encode(address, 'hex') as address, first_seen_block, last_active_block, sent_count, received_count, internal_count, is_contract from addresses order by address", []),
+          calls: (await one("select count(*) as n from internal_calls", []))[0].n,
+        });
+        const before = await snapshot();
+        await pool.query("update cursors set position = 0, detail = null where stream = 'reader_updates'");
+        expect((await indexer.runOnce()).state).toBe("caught-up");
+        expect(await snapshot()).toEqual(before);
+        await reindexRange({ pool, reads, gateway }, LAB_BUILD, LAB_KILL);
+        expect(await snapshot()).toEqual(before);
+        const c = await pool.connect();
+        try {
+          await c.query("begin");
+          expect(await stage2(c, LAB_BUILD, (await reads.traces(LAB_BUILD))!, reads)).toEqual({ derived: false });
+          await c.query("commit");
+        } finally {
+          c.release();
+        }
+        expect(await snapshot()).toEqual(before);
+      } finally {
+        await indexer.close();
+      }
+    });
+  }, 600_000);
+});
 
 describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chain", () => {
   checkRequired();

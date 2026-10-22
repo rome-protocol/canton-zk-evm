@@ -165,6 +165,7 @@ Alerts and the overall status read these ids by name, so they are fixed here. A 
 | `record` | down | a record's signatories are not its operator and confirmer |
 | `derive` | down | stage 2 is given a block out of order, or reth's traces are not those of the block's transactions |
 | `C10` | degraded | a Leg event of the gateway cannot be decoded; it names the block, which is stored with the legs that decode and a `legs_count` of all the gateway wrote |
+| `C6` | degraded | the audit: 20 random indexed blocks (every 10 minutes), and the whole previous 24 hours (nightly, after 03:00 UTC), fetched again from reth, differ in hash, transaction count, gas used or log count; it names the blocks, looks at them again in every run, and is `ok` again when they agree. A reth that cannot be read for the audit is `degraded` with the error |
 | `reth_reads` | degraded | reth keeps answering a read with an error or a timeout, or has not had the block Canton names for longer than `INDEX_RETH_BEHIND_MS`; back to `ok` when every loop that reported it reads cleanly again |
 
 The same run answers the design's main open question about revert data: `trace_replayBlockTransactions` does carry the `output` of a failed transaction, for `Error(string)`, `Panic(uint256)` and a custom error (`Reverts.sol`, one failing call to each, in one block). The `debug_traceBlockByNumber` fallback is not needed.

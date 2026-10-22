@@ -6,7 +6,7 @@
 import { RethError } from "../reth.ts";
 
 export const FINAL_READ_METHODS: ReadonlySet<string> = new Set([
-  "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode",
+  "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode", "eth_call",
 ]);
 
 type Json = Record<string, unknown>;
@@ -57,8 +57,29 @@ export interface FinalReceipt {
   logs: FinalLog[];
 }
 
-/** One transaction's replay: its output (the revert data of a failed one) and how many calls its trace holds, the transaction's own included. */
-export interface TxTrace { transactionHash: string; output: string; calls: number; error: string | null }
+/**
+ * One frame of a transaction's trace, as reth's `trace` tracer states it (the parity format). `call` has a call type; `create` a new address and its
+ * runtime code (`created`); `suicide` the account that destroyed itself (`from`) and the one that got its balance (`to`, with the balance in `value`).
+ */
+export interface TraceFrame {
+  traceAddress: number[];
+  type: "call" | "create" | "suicide";
+  /** call, delegatecall, staticcall or callcode for a call; create or create2 for a creation; selfdestruct for a suicide. */
+  callType: string;
+  from: string;
+  to: string | null;
+  value: bigint;
+  gas: number | null;
+  gasUsed: number | null;
+  /** A call's input; a creation's init code. */
+  input: string;
+  error: string | null;
+  /** For a creation that succeeded: the address and the runtime code it left. */
+  created: { address: string; code: string } | null;
+}
+
+/** One transaction's replay: its output (the revert data of a failed one), how many frames its trace holds (the transaction's own included) and the frames. */
+export interface TxTrace { transactionHash: string; output: string; calls: number; error: string | null; frames: TraceFrame[] }
 
 const bad = (what: string): never => { throw new Error(`${what} is not valid`); };
 const re = (r: RegExp, what: string) => (v: unknown): string => (typeof v === "string" && r.test(v) ? v : bad(what));
@@ -99,11 +120,32 @@ function receipt(v: unknown): FinalReceipt {
   };
 }
 
+function frame(v: unknown): TraceFrame | null {
+  const f = obj(v);
+  const action = obj(f.action);
+  const result = f.result === null || f.result === undefined ? null : obj(f.result);
+  const base = { traceAddress: list(f.traceAddress).map((i) => (Number.isSafeInteger(i) && (i as number) >= 0 ? (i as number) : bad("a trace address"))), error: typeof f.error === "string" ? f.error : null };
+  const gas = (x: unknown) => orNull(x, num);
+  if (f.type === "call") {
+    return { ...base, type: "call", callType: typeof action.callType === "string" ? action.callType : "call", from: address(action.from), to: orNull(action.to, address), value: big(action.value ?? "0x0"),
+      gas: gas(action.gas), gasUsed: result ? gas(result.gasUsed) : null, input: data(action.input ?? "0x"), created: null };
+  }
+  if (f.type === "create") {
+    const made = result && typeof result.address === "string" ? { address: address(result.address), code: data(result.code ?? "0x") } : null;
+    return { ...base, type: "create", callType: action.creationMethod === "create2" ? "create2" : "create", from: address(action.from), to: made ? made.address : null, value: big(action.value ?? "0x0"),
+      gas: gas(action.gas), gasUsed: result ? gas(result.gasUsed) : null, input: data(action.init ?? "0x"), created: base.error === null ? made : null };
+  }
+  if (f.type === "suicide") {
+    return { ...base, type: "suicide", callType: "selfdestruct", from: address(action.address), to: orNull(action.refundAddress, address), value: big(action.balance ?? "0x0"), gas: null, gasUsed: null, input: "0x", created: null };
+  }
+  return null; // a reward (never on this chain) or a kind this indexer does not know
+}
+
 function trace(v: unknown): TxTrace {
   const t = obj(v);
-  const calls = list(t.trace);
-  const top = calls.length > 0 ? obj(calls[0]) : null;
-  return { transactionHash: hash(t.transactionHash), output: data(t.output ?? "0x"), calls: calls.length, error: top && typeof top.error === "string" ? top.error : null };
+  const frames = list(t.trace).flatMap((x) => { const f = frame(x); return f ? [f] : []; });
+  const top = frames.find((f) => f.traceAddress.length === 0);
+  return { transactionHash: hash(t.transactionHash), output: data(t.output ?? "0x"), calls: list(t.trace).length, error: top?.error ?? null, frames };
 }
 
 /** `traceTimeoutMs` is for the trace replay of a block, which can take much longer than the other reads (a heavy block is replayed whole). */
@@ -151,6 +193,8 @@ export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs:
     traces: (n: number) => read("trace_replayBlockTransactions", [tag(n), ["trace"]], (v) => (v === null ? null : list(v).map(trace)), traceTimeoutMs),
     /** One storage slot of an account at block n, as 32 bytes. */
     storageAt: (account: string, slot: string, n: number) => read("eth_getStorageAt", [account, slot, tag(n)], re(/^0x[0-9a-f]{64}$/, "a storage word")),
+    /** An `eth_call` at block n (a read of a contract, with no sender). */
+    call: (to: string, input: string, n: number) => read("eth_call", [{ to, data: input }, tag(n)], data),
     /** An account's code at block n (`0x` for none): the genesis contracts are checked at block 0. */
     code: (account: string, n: number) => read("eth_getCode", [account, tag(n)], data),
     rpc,
