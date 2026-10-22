@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Answer } from "./api.ts";
 import { createHttpServer } from "./http.ts";
 
 let dir: string, server: ReturnType<typeof createHttpServer>;
@@ -10,7 +11,7 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "explorer-cache-"));
   mkdirSync(join(dir, "dist"), { recursive: true });
   writeFileSync(join(dir, "dist", "index.html"), "home");
-  const api = async (_m: string, target: string) =>
+  const api = async (_m: string, target: string): Promise<Answer> =>
     target === "/api/big" ? { status: 200, body: { hex: "ab".repeat(2000) }, headers: { "cache-control": "public, max-age=3", etag: '"big1"' } }
     : target === "/api/cached" ? { status: 200, body: { n: 1 }, headers: { "cache-control": "public, max-age=3", etag: '"v1"' } }
     : target === "/api/file" ? { status: 200, body: "a,b\r\n1,2\r\n", headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="x.csv"' } }
