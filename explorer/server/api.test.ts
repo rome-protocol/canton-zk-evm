@@ -88,7 +88,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
     ? {
         head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)),
         tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf, lifecycleOf: built.lifecycleOf, inFlight: built.inFlight,
-        indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced,
+        indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced, indexFacts: built.indexFacts,
       }
     : built;
   // The indexer commits a block between the route's first look in the database and its second: the first read of a block by number misses, the rest are true.
@@ -167,6 +167,15 @@ describe.skipIf(!TEST_URL)("status and health", () => {
     const { status, body } = await get("/api/status");
     expect(status).toBe(503);
     expect(body).toMatchObject({ ok: false, starting: false, problems: ["C3: block 3: the record does not hash to reth's transactions"], final: { number: 2 } });
+  });
+
+  it("tells how far the index and stage 2 are: the head, the lag behind Canton, the derive cursor, and the chain instance", async () => {
+    const { get, pool } = await boot(chain(), { indexed: 1 });
+    await pool.query("insert into cursors (stream, position, updated_at) values ('derive', 0, now()) on conflict (stream) do update set position = 0");
+    await pool.query("insert into meta (key, value) values ('chain_instance', 'instance-1') on conflict (key) do update set value = excluded.value");
+    expect((await get("/api/status")).body).toMatchObject({ indexHead: 1, indexLag: 1, deriveCursor: 0, chainInstance: "instance-1" });
+    const { get: caughtUp } = await boot(chain());
+    expect((await caughtUp("/api/status")).body).toMatchObject({ indexHead: 2, indexLag: 0 });
   });
 
   it("says a block that is final on Canton but not in the database yet is final and not indexed yet, and a block that is not on Canton as being proven", async () => {

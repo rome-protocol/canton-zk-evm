@@ -17,6 +17,7 @@ import { clearStops, setHealth, type HealthRow } from "./health.ts";
 import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
 import { legsSlot } from "./legs.ts";
+import { notify } from "./notify.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
@@ -126,6 +127,7 @@ export function createIndexer(o: IndexerOptions) {
     if (!lifecycleOn) return null;
     const r = await journal.load();
     journalAvailable = r.available;
+    if (r.lines > 0) await notify(o.pool, { kind: "inflight" });
     return r;
   }
 
@@ -262,12 +264,15 @@ export function createIndexer(o: IndexerOptions) {
       await clearStops(c, ["record"]);
       if (done.written && n === 1) await c.query("insert into meta (key, value) values ('chain_instance', $1) on conflict do nothing", [r.updateId]);
       if (done.written) await checkLegs(c, n, legs, legsHash, legProblem);
+      // Told to the API instances when this transaction commits (design 6.4).
+      if (done.written) await notify(c, { kind: "final", number: n });
       const w2 = now();
       o.onTiming?.({ block: n, stage: 1, readMs: read1, writeMs: w2 - w1, txs: block.transactions.length });
       // The derive cursor is read again under the shared lock: stage 2 follows in this transaction only when the cursor is right behind this block;
       // otherwise (a catch-up is still owed) the block is left to catchUpDerive, and the walk goes on.
       if (done.written && inline && (await deriveCursor(c)) === n - 1) {
         await stage2(c, n, traces as TxTrace[], o.reads);
+        await notify(c, { kind: "derived", number: n });
         o.onTiming?.({ block: n, stage: 2, readMs: 0, writeMs: now() - w2, txs: block.transactions.length });
       }
     });
@@ -389,6 +394,7 @@ export function createIndexer(o: IndexerOptions) {
       await inTransaction(o.pool, async (c) => {
         const w = now();
         const res = await stage2(c, n, traces, o.reads);
+        await notify(c, { kind: "derived", number: n });
         o.onTiming?.({ block: n, stage: 2, readMs: read, writeMs: now() - w, txs: traces.length });
         return res;
       });

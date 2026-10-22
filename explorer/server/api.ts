@@ -6,48 +6,19 @@ import { ChainDbError, type ChainDb } from "./chain-db.ts";
 import { checkProofFacts, readProofFacts, type FactCheck, type ProofCheck } from "./proof.ts";
 import { RethError, type Reth, type TokenInfo } from "./reth.ts";
 import type { Tracker, TxState } from "./tracker.ts";
+import { cached, type Rule } from "./rest/cache.ts";
+import { chainRoutes } from "./rest/chain-routes.ts";
+import type { ChainRest } from "./rest/chain-rest.ts";
+import { accountRoutes } from "./rest/account-routes.ts";
+import type { AccountRest } from "./rest/account-rest.ts";
+import { BadRequest } from "./rest/paging.ts";
+import { buildOpenApi } from "./rest/openapi.ts";
+import { router } from "./rest/router.ts";
+import { FIELDS, pick } from "./rest/fields.ts";
 
-/** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
-export const FIELDS = {
-  status: ["chainId", "chainName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc"],
-  coin: ["symbol", "decimals"],
-  pins: ["programVK", "rootC", "file"],
-  final: ["number", "hash", "timestamp", "recordTime"],
-  proving: ["number", "hash", "timestamp"],
-  /** One of the newest final blocks, for the home page's list. */
-  latest: ["number", "hash", "timestamp", "txCount", "updateId", "recordTime"],
-  signers: ["operator", "confirmer"],
-  faucet: ["on"],
-  /** What the faucet shows about itself, and what it answers a request with. */
-  faucetInfo: ["on", "address", "balance", "amount", "perAddressSeconds", "perIpSeconds", "maxPerHour", "queue", "captcha"],
-  faucetCaptcha: ["siteKey", "scriptUrl", "widgetClass"],
-  /** What a request is answered with: a ticket, and its place in line. */
-  faucetQueued: ["ticket", "position", "to", "amount"],
-  /** Where a ticket is. */
-  faucetTicket: ["ticket", "status", "position", "to", "amount", "hash", "state", "block", "reason"],
-  block: ["status", "number", "hash", "parentHash", "timestamp", "txCount", "gasUsed", "gasLimit", "baseFee", "miner", "stateRoot", "genesisReferenced", "canton", "transactions"],
-  canton: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch", "headerHex", "txsHex", "proofHex"],
-  /** The proof's three facts, each of which is a {value, ok} pair. */
-  proof: ["programVK", "rootC", "blockHash"],
-  fact: ["value", "ok"],
-  blockTx: ["hash", "from", "to", "success", "transfer"],
-  transfer: ["symbol", "decimals", "to", "value"],
-  txBlock: ["number", "hash", "updateId"],
-  log: ["address", "topics", "data"],
-  /** Where a transaction has been, from the producer's journal and the API: null when no row is kept for it. */
-  lifecycle: ["state", "reason", "acceptedAt", "acceptedVia", "includedAt", "attempts", "leftOutReason", "proofStartedAt", "proofEndedAt", "submittedAt", "committedAt", "finalAt", "finalBlock", "timeToFinalMs"],
-  /** The attempts that are not final, and reth's pool count from the producer's latest sample. */
-  inFlight: ["final", "attempts", "poolWaiting"],
-  inFlightAttempt: ["number", "strategy", "cutReason", "stage", "txCount", "poolWaiting", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt", "outcome"],
-  poolSample: ["waiting", "at"],
-  tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
-  address: ["address", "kind", "balance", "nonce", "token", "createdBy"],
-  token: ["name", "symbol", "decimals"],
-  createdBy: ["txHash", "block"],
-} as const;
+export { FIELDS };
 
-/** A copy of an object with the listed fields and no others. */
-const pick = <T extends object, K extends keyof T>(o: T, fields: readonly K[]): Pick<T, K> => Object.fromEntries(fields.map((k) => [k, o[k]])) as Pick<T, K>;
+
 const fact = (f: FactCheck) => pick(f, FIELDS.fact);
 const proofOf = (p: ProofCheck | null) => p && { programVK: fact(p.programVK), rootC: fact(p.rootC), blockHash: fact(p.blockHash) };
 
@@ -56,8 +27,16 @@ export const NOT_FOUND = "Not found. Search takes a block number, a block or tra
 export interface Answer { status: number; body: unknown; headers?: Record<string, string> }
 /** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. */
 export type Api = (method: string, target: string, body?: string, ip?: string) => Promise<Answer>;
+/** What `createApi` makes: the API, and the paths of its routes (`GET /api/openapi.json` describes them, and a test holds that it describes all of them). */
+export type RoutedApi = Api & { routes: readonly string[] };
 /** With no `faucet`, the faucet is off. */
-export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker; now?: () => number }
+export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker; now?: () => number;
+  /** The reads behind the REST routes of blocks, transactions and Canton updates; without them those routes are off. */
+  rest?: ChainRest;
+  /** The reads behind the REST routes of addresses, contracts, tokens and legs, and the search by name; without them those routes are off. */
+  accounts?: AccountRest;
+  /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
+  live?: boolean }
 
 /** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */
 type ApiTxState = TxState | "unindexed";
@@ -72,7 +51,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): Api {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, live, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -102,9 +81,12 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
-    const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer()]).then((r) => r, (e: unknown) => e as Error);
+    const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer(), chain.indexFacts()]).then((r) => r, (e: unknown) => e as Error);
     if (read instanceof Error) console.error(`status: ${read.message}`);
-    const [head, newest, s] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], down: true, signers: null }] as const : read;
+    const [head, newest, s, facts] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], down: true, signers: null }, { deriveCursor: null, chainInstance: null }] as const : read;
+    // How far the index is behind Canton's finalized blocks (reth's finalized block is Canton's head); null while either is unknown.
+    const finalizedNow = await finalizedNumber();
+    const indexLag = head && finalizedNow !== undefined ? Math.max(0, finalizedNow - head.number) : null;
     // Above the indexed head, reth's newest block is being proven only if Canton does not hold it yet: at or below reth's finalized block it is final and the
     // indexer is behind (the problems line says so, and the block's page calls it unindexed), so it is not named as proving.
     const finalizedAt = latest && latest.number > (head?.number ?? 0) ? await finalizedNumber() : undefined;
@@ -122,18 +104,20 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
         signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on,
+        indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };
   }
 
-  async function block(id: string, retried = false): Promise<Answer> {
+  /** `light` is for the REST routes, whose pages leave out the transactions and the record's transactions bytes. */
+  async function block(id: string, retried = false, light = false): Promise<Answer> {
     const key = HASH.test(id) ? id : /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) ? Number(id) : null;
     if (key === null) return fail(400, "A block is named by its number or its 0x hash.");
-    const final = await chain.block(key);
+    const final = await chain.block(key, !light);
     if (final) {
       const hashesMatch = keccak256(`0x${final.headerHex}`) === final.hash;
       const facts = final.proofHex && readProofFacts(final.proofHex);
-      const transactions = await Promise.all((await chain.blockTxs(final.number)).map(async (t) => ({
+      const transactions = light ? [] : await Promise.all((await chain.blockTxs(final.number)).map(async (t) => ({
         hash: t.hash, from: t.from, to: t.to, success: t.success, transfer: await transferOf(t.transferInput, t.to),
       })));
       return ok({
@@ -153,7 +137,7 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     const genesis = b.number === 0;
     // At or below the newest indexed block, reth's block with this hash is not the final one of its number.
     // The indexer may have written it while reth was being asked: look in the database once more before saying no, so a page that was watching the block go final gets it.
-    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return retried ? fail(404, NOT_FOUND) : block(id, true);
+    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return retried ? fail(404, NOT_FOUND) : block(id, true, light);
     // At or below reth's finalized block, Canton holds the block: it is final, and the indexer is behind (or has stopped), which the status says. It is not being proven.
     const finalizedAt = genesis ? undefined : await finalizedNumber();
     const unindexed = finalizedAt !== undefined && b.number <= finalizedAt;
@@ -261,7 +245,25 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     return t ? ok(pick(t, FIELDS.faucetTicket)) : fail(404, "No such ticket. A ticket is kept for a while after its coin is final, and is lost if the explorer is rebuilt.");
   }
 
-  return async (method, target, body, ip) => {
+  const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
+  const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
+  /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
+  const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list", "openapi.json": "composite" };
+  const legacy = router([
+    ["/api/status", () => status()],
+    ["/api/block/{id}", (id) => block(id)],
+    ["/api/tx/{hash}", (hash) => transaction(hash)],
+    ["/api/address/{address}", (a) => address(a)],
+    ["/api/in-flight", () => inFlight()],
+    ["/api/search", (_, q) => search((q.get("q") ?? "").trim().toLowerCase())],
+    ["/api/faucet/ticket/{ticket}", (t) => ticket(t)],
+    ["/api/openapi.json", async () => ok(openapi)],
+  ]);
+  // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API` });
+
+  const api: Api = async (method, target, body, ip) => {
     let url: URL, parts: string[];
     try {
       if (!/^\/(?!\/)/.test(target)) throw new Error("not a path");
@@ -270,33 +272,30 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     } catch {
       return fail(400, "That is not a valid address.");
     }
-    const [root, name, arg] = parts;
+    const [root, name] = parts;
     try {
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
-      const isTicket = name === "faucet" && arg === "ticket" && parts.length === 4;
-      if (root !== "api" || parts.length > (isTicket ? 4 : 3)) return fail(404, "No such route.");
-      if (isTicket) return method === "GET" ? await ticket(parts[3]!) : fail(405, "Use GET.");
+      if (root !== "api") return fail(404, "No such route.");
+      const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams);
+      if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
       if (name === "faucet" && parts.length === 2) {
         if (method === "POST") return await giveCoin(body, ip);
         if (method !== "GET") return fail(405, "Use GET or POST.");
         const info = await faucet.info();
         return ok({ ...pick(info, FIELDS.faucetInfo), captcha: info.captcha && pick(info.captcha, FIELDS.faucetCaptcha) });
       }
-      const read = new Map<string, (() => Promise<Answer>) | undefined>([
-        ["status", parts.length === 2 ? status : undefined],
-        ["block", arg ? () => block(arg) : undefined],
-        ["tx", arg ? () => transaction(arg) : undefined],
-        ["address", arg ? () => address(arg) : undefined],
-        ["in-flight", parts.length === 2 ? inFlight : undefined],
-        ["search", parts.length === 2 ? () => search((url.searchParams.get("q") ?? "").trim().toLowerCase()) : undefined],
-      ]);
-      const route = read.get(name ?? "");
+      const route = legacy(parts, url.searchParams);
       if (!route) return fail(404, "No such route.");
-      return method === "GET" ? await route() : fail(405, "Use GET.");
+      if (method !== "GET") return fail(405, "Use GET.");
+      const answer = await route();
+      const rule = RULES[name ?? ""];
+      return rule ? cached(answer, rule) : answer;
     } catch (e) {
+      if (e instanceof BadRequest) return fail(400, e.message);
       if (!(e instanceof RethError || e instanceof LedgerError || e instanceof ChainDbError)) throw e;
       console.error(`${method} ${url.pathname}: ${e.message}`);
       return fail(502, "The explorer cannot read the chain right now.");
     }
   };
+  return Object.assign(api, { routes });
 }
