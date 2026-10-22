@@ -284,6 +284,8 @@ class FakeLedger:
         self.traffic: list = []   # the traffic states GET /traffic answers with, one for each read; when none is left it reports none (404)
         self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
         self.completion_queries: list = []   # (query string, body) of each completions read
+        self.completions_delay = 0.0   # seconds the completions read takes to answer
+        self.answer_time = None   # time.time() when submit-and-wait was answered
         self.completions_fail = False   # the completions read is answered with HTTP 500
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
@@ -394,6 +396,7 @@ class FakeLedger:
                     return self._reply(200, ledger._active(tmpl))
                 if self.path.split("?")[0] == "/v2/commands/completions":
                     ledger.completion_queries.append((self.path, body))
+                    time.sleep(ledger.completions_delay)
                     if ledger.completions_fail:
                         return self._reply(500, {"cause": "the participant is down"})
                     shown = [{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 40}}}},
@@ -417,6 +420,7 @@ class FakeLedger:
                         return self.connection.shutdown(socket.SHUT_RDWR)
                     if ledger.fail_but_commit:
                         return self._reply(503, {"cause": "timed out"})
+                    ledger.answer_time = time.time()
                     return self._reply(200, {"updateId": "u1", "completionOffset": 43})
                 self._reply(404, {})
         return H

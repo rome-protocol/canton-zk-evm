@@ -20,7 +20,7 @@ from pathlib import Path
 
 from websockets.sync.client import connect
 
-from journal import Attempt, Journal, STRATEGIES, check_settings, iso, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
+from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -338,6 +338,8 @@ class Ledger:
         """The traffic the participant paid for the command's confirmation request (`paidTrafficCost` of its completion, in bytes), or None.
         Reads the one completion at `offset` (the answer of submit-and-wait) and waits for it only a few seconds. This never raises: a block
         Canton committed stays committed whatever this read does."""
+        if completions_paused():   # a read that timed out leaves the participant alone for a minute, as the traffic read does
+            return None
         body = {"userId": self.cfg.ledger_user, "parties": [self.cfg.party], "beginExclusive": max(0, offset - 1)}
         try:
             items = post_json(f"{self.cfg.ledger_url}/v2/commands/completions?limit=5&stream_idle_timeout_ms={COMPLETION_IDLE_MS}", body, self.auth,
@@ -346,7 +348,9 @@ class Ledger:
         except urllib.error.HTTPError as e:
             e.close()
             return None
-        except Exception:   # no answer, an error answer, nonsense, or a token file that cannot be read
+        except Exception as e:   # no answer, an error answer, nonsense, or a token file that cannot be read
+            if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
+                pause_completions()
             return None
 
 
@@ -765,11 +769,12 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     except (OSError, ValueError, http.client.HTTPException) as e:   # a dropped connection, a timeout, a reply that is not HTTP or not JSON: the reply is lost
         reason = f"no usable reply from Canton: {e}"
     report["advanceSeconds"] = round(time.monotonic() - advancing, 3)
+    answered_at = attempt.now()   # when Canton answered: the reads below take time that is not part of the answer
     traffic_after = read_traffic(cfg) if watch else None
     traffic = traffic_used(traffic_before, traffic_after)
 
     def answered(outcome: str, **more) -> None:
-        attempt.event("answered", outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, traffic_before=traffic_before, traffic_after=traffic_after, **more)
+        attempt.event("answered", at=answered_at, outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, traffic_before=traffic_before, traffic_after=traffic_after, **more)
 
     if reason is not None:   # a lost reply can hide a commit, so Canton's head decides
         try:

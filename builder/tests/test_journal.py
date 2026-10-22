@@ -1,5 +1,6 @@
 """The producer's journal and the block-cutting setting (README.md, "The journal" and "The block-cutting setting"), against the same
 fakes as test_producer.py. The tests drive `Producer.step()` by hand on a fake clock, then read the journal's lines."""
+from datetime import datetime
 import contextlib, io, json, os, re, socket, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest import mock
@@ -324,6 +325,39 @@ class Traffic(Lines):
                 answered = self.run_one(s)
                 self.assertEqual((answered["outcome"], answered["traffic_bytes"]), ("committed", None))
                 self.assertNotIn("trafficBytes", self.reports[-1])
+
+    def test_the_answered_line_is_stamped_when_canton_answered_not_when_the_completion_read_ended(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.paid = 5700
+        s.ledger.completions_delay = 0.6
+        attempt = b.Attempt(b.Journal(Path(s.dir) / "j"), 1)   # the real clock
+        read_ended = []
+        real = b.Ledger.paid_traffic
+        def timed(self_, *a):
+            try:
+                return real(self_, *a)
+            finally:
+                read_ended.append(time.time())
+        with mock.patch.object(b.Ledger, "paid_traffic", timed):
+            b.build_block(s.cfg, journal=attempt)
+        lines = [json.loads(l) for f in sorted((Path(s.dir) / "j").glob("*.jsonl")) for l in f.read_text().splitlines()]
+        answered = next(l for l in lines if l["event"] == "answered")
+        self.assertEqual(answered["traffic_bytes"], 5700)
+        stamp = datetime.fromisoformat(answered["time"].replace("Z", "+00:00")).timestamp()
+        self.assertGreaterEqual(read_ended[0] - s.ledger.answer_time, 0.55)   # the read did take its time
+        self.assertLess(abs(stamp - s.ledger.answer_time), 0.25)              # and the line does not show it
+        self.assertLess(stamp, read_ended[0] - 0.4)
+
+    def test_a_completion_read_that_timed_out_is_not_repeated_for_a_minute(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.paid = 5700
+        s.ledger.completions_delay = 0.4
+        jr.reset_traffic_pause()
+        self.addCleanup(jr.reset_traffic_pause)
+        with mock.patch.object(b, "COMPLETION_TIMEOUT", 0.1):
+            self.assertIsNone(b.Ledger(s.cfg).paid_traffic("c", 43))
+            self.assertIsNone(b.Ledger(s.cfg).paid_traffic("c", 43))
+        self.assertEqual(len(s.ledger.completion_queries), 1)   # the second one was skipped, not tried
 
     def test_the_completion_is_read_for_a_block_in_flight_beside_another(self):   # the cost is the command's own: whose it is is known
         s = self.setup({ALICE: [tx(ALICE, 0)]})
