@@ -151,8 +151,8 @@ describe("the Call tree and Raw tabs", () => {
   });
 
   it("says when it shows only the first calls", async () => {
-    await open({ txTrace: () => reply({ frames: Array.from({ length: 5000 }, (_, i) => frame({ traceAddress: [i] })), truncated: true }) }, tx(), "?tab=tree");
-    expect(await screen.findByRole("status")).toHaveTextContent("Showing the first 5,000 calls");
+    await open({ txTrace: () => reply({ frames: Array.from({ length: 1000 }, (_, i) => frame({ traceAddress: [i] })), truncated: true }) }, tx(), "?tab=tree");
+    expect(await screen.findByRole("status")).toHaveTextContent("Showing the first 1,000 calls");
   });
 });
 
