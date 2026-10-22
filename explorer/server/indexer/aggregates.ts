@@ -35,7 +35,12 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
 
   if (full) {
     await c.query(`delete from nft_owners o where not exists (select 1 from token_transfers t where t.token = o.token and t.token_id = o.token_id)`);
-    await c.query(`delete from token_balances b where not exists (select 1 from token_transfers t where t.token = b.token and (t.from_address = b.holder or t.to_address = b.holder))`);
+    // A row stands while a transfer names its holder for its token, and for its id when the token is an ERC-1155 (the other tokens' rows have id 0).
+    await c.query(
+      `delete from token_balances b using tokens k where k.address = b.token
+         and not exists (select 1 from token_transfers t where t.token = b.token and t.from_address = b.holder and (k.standard <> 'ERC-1155' or t.token_id = b.token_id))
+         and not exists (select 1 from token_transfers t where t.token = b.token and t.to_address = b.holder and (k.standard <> 'ERC-1155' or t.token_id = b.token_id))`,
+    );
     await c.query(
       `delete from addresses a where not exists (select 1 from transactions t where t.from_address = a.address or t.to_address = a.address or t.created_contract = a.address)
          and not exists (select 1 from internal_calls i where i.from_address = a.address or i.to_address = a.address)

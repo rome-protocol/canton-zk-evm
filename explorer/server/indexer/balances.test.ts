@@ -355,18 +355,20 @@ describe.skipIf(!TEST_URL)("a reindex keeps what stage 2 made, on the pinned Pos
       await indexer.runOnce(); await settle(indexer);
       const ghost = hx(0x99);
       await pool.query("insert into token_balances (token, holder, token_id, value, updated_block, checked_block) values ($1, $2, 0, 50, 2, 2)", [hx(ERC20), ghost]);
+      // An ERC-1155 id no transfer names, for a holder that has transfers of other ids of the same token.
+      await pool.query("insert into token_balances (token, holder, token_id, value, updated_block, checked_block) values ($1, $2, 99, 40, 2, 2)", [hx(ERC1155), hx(ALICE)]);
       await pool.query("insert into nft_owners (token, token_id, owner, updated_block) values ($1, 99, $2, 2)", [hx(ERC721), ghost]);
       await pool.query("insert into addresses (address, first_seen_block, last_active_block) values ($1, 2, 2)", [ghost]);
       await pool.query("update tokens set holder_count = holder_count + 1 where address = $1", [hx(ERC20)]);
       const o = { pool, reads: chain.reads, gateway: GATEWAY };
       const left = async () => [
         (await rows(pool, "select 1 from token_balances where holder = $1", [ghost])).length, (await rows(pool, "select 1 from nft_owners where owner = $1", [ghost])).length,
-        (await rows(pool, "select 1 from addresses where address = $1", [ghost])).length,
+        (await rows(pool, "select 1 from addresses where address = $1", [ghost])).length, (await rows(pool, "select 1 from token_balances where token = $1 and token_id = 99", [hx(ERC1155)])).length,
       ];
       await reindexRange(o, 2, 4);
-      expect(await left()).toEqual([1, 1, 1]);
+      expect(await left()).toEqual([1, 1, 1, 1]);
       await reindexRange(o, 1, null);
-      expect(await left()).toEqual([0, 0, 0]);
+      expect(await left()).toEqual([0, 0, 0, 0]);
       expect((await rows(pool, "select holder_count from tokens where address = $1", [hx(ERC20)]))[0].holder_count).toBe("2");
       // A full reindex starts the live walk of coin balances over: the addresses were rebuilt.
       expect((await rows(pool, "select position from cursors where stream = 'balances'"))[0].position).toBe("0");
