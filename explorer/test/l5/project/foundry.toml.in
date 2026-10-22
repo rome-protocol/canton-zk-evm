@@ -1,0 +1,12 @@
+# l5.sh copies this to foundry.toml in the run's work folder, with the chain and the explorer filled in.
+[profile.default]
+src = "contracts"
+out = "out"
+cache_path = "cache"
+solc = "@SOLC@"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+
+[etherscan]
+rome = { key = "rome", chain = @CHAIN_ID@, url = "@EXPLORER@/api" }
