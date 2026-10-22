@@ -214,6 +214,8 @@ cut_block() {
   out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
     "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $out"
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
+  # The nightly's L3 times a block from the offset the commit answered with.
+  [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
 }
 receipt_of() { "$PY" "$ROOT/demo/evm.py" receipt "$1"; }
 "$ROOT/tests/build_w1_fixtures.sh" "$WORK/w1"

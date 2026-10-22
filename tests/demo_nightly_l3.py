@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """L3 of the explorer's design (section 9), the nightly flood on the rehearsal chain: the real reth, Canton, builder and the explorer's indexer, with the
 stand-in proof. It floods the producer with blocks of plain transfers (1,428 fit under the 30 Mgas cap), cut one after another as the builder takes them,
-and measures, for each block, from the moment the builder has committed it:
-  served   the first time the explorer's API answers for the block (B1's index lag, polled every 60 ms: the REST routes allow 20 requests a second to a client)
+and measures, for each block, from the moment the update can be read on the reader's participant (the ledger end, polled every 20 ms, reaches the offset the
+builder's commit answered with):
+  served   the first time the explorer's API answers for the block from its database (status final, with the Canton record): B1's index lag, polled every 60 ms
+           (the REST routes allow 20 requests a second to a client). An answer from reth alone ("unindexed", "proving") does not count: reth has the block the
+           moment the builder commits, so it would say nothing of the indexer.
   final    the first time the API says the block is final
-  sse      how long after `served` a live-stream client receives the block's `block` event (B4)
+  sse      how long after `served` a live-stream client receives the block's `block` event (B4); every block must reach the client
 and, over the whole flood, the growth of the explorer's database per million transactions (B6).
 Held to B1 (p95 <= 1.0 s), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions). Without a GPU there is no proving, so time to final here is the
 chain's without a proof: it is reported, not held to a budget.
@@ -12,7 +15,8 @@ chain's without a proof: it is reported, not held to a budget.
   demo_nightly_l3.py run <seconds> <transactions per block> <results.json>
 
 Reads: EXPLORER (the explorer's URL), L3_PY (the Python of the demo's virtualenv), L3_DB (the explorer's database container), and the demo's own variables,
-which the rehearsal exports with the function `cut_block` (bash -c cut_block cuts a block through the real builder). Exits 1 when a budget is broken.
+which the rehearsal exports with the function `cut_block` (bash -c cut_block cuts a block through the real builder; with CUT_BLOCK_JSON=1 it prints the commit's offset),
+and L3_LEDGER (the reader's participant, http://127.0.0.1:7577). The next batch of transfers is sent while the builder cuts the block before it. Exits 1 when a budget is broken.
 """
 import json
 import math
@@ -20,6 +24,8 @@ import os
 import subprocess
 import sys
 import threading
+import bisect
+import queue
 import time
 import urllib.error
 import urllib.request
@@ -31,6 +37,7 @@ B6_BYTES = 2.5e9
 MIN_TXS_FOR_B6 = 5_000
 POLL_S = 0.06
 GIVE_UP_S = 180
+LEDGER_POLL_S = 0.02
 
 
 def percentile(values, p):
@@ -55,6 +62,9 @@ def judge(blocks, growth, txs_added):
     never = [b["number"] for b in blocks if b["served_s"] is None]
     if never:
         failures.append(f"blocks {never} were never served")
+    clockless = [b["number"] for b in blocks if b.get("t0_from") == "fallback"]
+    if clockless:
+        failures.append(f"B1: the clock of blocks {clockless} could not start from the reader's ledger end (the offset was not read), so their lag is not measured")
     served = [b["served_s"] for b in blocks if b["served_s"] is not None]
     final = [b["final_s"] for b in blocks if b["final_s"] is not None]
     sse = [b["sse_after_served_s"] for b in blocks if b["sse_after_served_s"] is not None]
@@ -69,9 +79,12 @@ def judge(blocks, growth, txs_added):
     p95 = summary["served_p95_s"]
     if p95 is not None and p95 > B1_S:
         failures.append(f"B1: index lag p95 {p95:.3f} s is over {B1_S} s")
+    unreceived = [b["number"] for b in blocks if b["served_s"] is not None and b["sse_after_served_s"] is None]
     if not sse:
         failures.append("B4: no live-stream client received any block")
-    elif summary["sse_p95_s"] > B4_S:
+    elif unreceived:
+        failures.append(f"B4: the live-stream client received {len(sse)} of {len(sse) + len(unreceived)} blocks; missing {unreceived}")
+    if sse and summary["sse_p95_s"] > B4_S:
         failures.append(f"B4: stream delivery p95 {summary['sse_p95_s']:.3f} s is over {B4_S} s")
     if txs_added < MIN_TXS_FOR_B6 or growth is None:
         failures.append(f"B6: too few transactions ({txs_added}) added to the database to judge its growth (needs {MIN_TXS_FOR_B6})")
@@ -134,55 +147,143 @@ class Stream(threading.Thread):
                 time.sleep(0.5)
 
 
+class LedgerClock(threading.Thread):
+    """The reader's participant's ledger end, polled every 20 ms: when it first reached each offset. That is when an update can be read there (section 9's t0)."""
+    def __init__(self, base):
+        super().__init__(daemon=True)
+        self.base, self.stop, self.times, self.offsets = base, False, [], []
+
+    def run(self):
+        while not self.stop:
+            status, body = get(f"{self.base}/v2/state/ledger-end", timeout=5)
+            now = time.monotonic()
+            offset = body.get("offset") if status == 200 and isinstance(body, dict) else None
+            if type(offset) is int and (not self.offsets or offset > self.offsets[-1]):
+                self.times.append(now)
+                self.offsets.append(offset)
+            time.sleep(LEDGER_POLL_S)
+
+    def reached(self, offset):
+        """When the ledger end first read `offset` or more; None when it never did (or the offset is not known)."""
+        if type(offset) is not int:
+            return None
+        i = bisect.bisect_left(self.offsets, offset)
+        return self.times[i] if i < len(self.times) else None
+
+
+def committed(output):
+    """The `completionOffset` of the commit that `cut_block` printed (the last JSON line of its output); None when it says none."""
+    for line in reversed(output.strip().splitlines()):
+        try:
+            answer = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(answer, dict):
+            return answer.get("completionOffset") if type(answer.get("completionOffset")) is int else None
+    return None
+
+
+def from_database(body):
+    """Whether an answer of /api/block/<n> comes from the explorer's database: the final block with its Canton record. Reth alone answers "unindexed" or "proving"."""
+    return isinstance(body, dict) and body.get("status") == "final" and body.get("canton") is not None
+
+
+class Sender(threading.Thread):
+    """Sends batches of transfers one after another, one batch ahead of the builder: the next batch goes into reth's pool while the builder cuts the block before it."""
+    def __init__(self, py, root, per_block):
+        super().__init__(daemon=True)
+        self.cmd, self.ready, self.stop, self.error = [py, str(root / "demo_w1.py"), "plain", str(per_block)], queue.Queue(maxsize=1), False, None
+
+    def run(self):
+        try:
+            while not self.stop:
+                subprocess.run(self.cmd, check=True, capture_output=True)
+                while not self.stop:
+                    try:
+                        self.ready.put(True, timeout=0.5)
+                        break
+                    except queue.Full:
+                        pass
+        except Exception as e:  # the sender's failure is the flood's: run() raises it
+            self.error = e
+
+    def next_batch(self):
+        while True:
+            if self.error:
+                raise RuntimeError(f"the sender stopped: {self.error}")
+            try:
+                return self.ready.get(timeout=0.5)
+            except queue.Empty:
+                pass
+
+
 def run(seconds, per_block, results):
     base, py, root = os.environ["EXPLORER"], os.environ["L3_PY"], Path(__file__).resolve().parent
     stream = Stream(base)
     stream.start()
+    clock = LedgerClock(os.environ.get("L3_LEDGER", "http://127.0.0.1:7577"))
+    clock.start()
     size0, txs0 = database()
-    cut = []          # (number, committed at, transactions)
+    cut = []          # (number, offset, returned at, transactions)
     seen = {}         # number -> {"served": t, "final": t}
     done = threading.Event()
 
     def watch():
         while True:
-            active = [(n, t0) for n, t0, _ in list(cut) if "final" not in seen.setdefault(n, {}) and time.monotonic() - t0 < GIVE_UP_S]
+            active = [(n, t) for n, _, t, _ in list(cut) if "final" not in seen.setdefault(n, {}) and time.monotonic() - t < GIVE_UP_S]
             if not active and done.is_set():
                 return
             for number, _ in active:
                 status, body = get(f"{base}/api/block/{number}")
                 now = time.monotonic()
-                if status == 200 and body:
+                if status == 200 and from_database(body):
                     seen[number].setdefault("served", now)
-                    if body.get("status") == "final":
-                        seen[number]["final"] = now
+                    seen[number]["final"] = now
                 time.sleep(POLL_S)
             if not active:
                 time.sleep(POLL_S)
 
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
-    end = time.monotonic() + seconds
-    while time.monotonic() < end:
-        subprocess.run([py, str(root / "demo_w1.py"), "plain", str(per_block)], check=True, capture_output=True)
-        subprocess.run(["bash", "-c", "cut_block"], check=True)
-        t0 = time.monotonic()
-        number = int(rpc("eth_blockNumber", []), 16)
-        count = len(rpc("eth_getBlockByNumber", [hex(number), False])["transactions"])
-        cut.append((number, t0, count))
-        print(f"block {number}: {count} transactions committed", flush=True)
-    done.set()
+    sender = Sender(py, root, per_block)
+    sender.start()
+    started = time.monotonic()
+    end = started + seconds
+    try:
+        while time.monotonic() < end:
+            sender.next_batch()
+            out = subprocess.run(["bash", "-c", "cut_block"], check=True, capture_output=True, text=True, env={**os.environ, "CUT_BLOCK_JSON": "1"}).stdout
+            returned = time.monotonic()
+            number = int(rpc("eth_blockNumber", []), 16)
+            count = len(rpc("eth_getBlockByNumber", [hex(number), False])["transactions"])
+            cut.append((number, committed(out), returned, count))
+            print(f"block {number}: {count} transactions committed", flush=True)
+    finally:
+        sender.stop = True
+        done.set()
+    flood_s = time.monotonic() - started
     watcher.join(timeout=GIVE_UP_S + 30)
-    stream.stop = True
+    # A block's `block` event can come a moment after the API serves it: give the stream until every served block has arrived, up to 5 s.
+    grace = time.monotonic() + 5
+    while time.monotonic() < grace and any("served" in seen.get(n, {}) and n not in stream.arrived for n, *_ in cut):
+        time.sleep(0.1)
+    stream.stop = clock.stop = True
     size1, txs1 = database()
     blocks = []
-    for number, t0, count in cut:
+    for number, offset, returned, count in cut:
         mark, got = seen.get(number, {}), stream.arrived.get(number)
         served = mark.get("served")
-        blocks.append({"number": number, "txs": count, "served_s": None if served is None else served - t0,
-                       "final_s": None if "final" not in mark else mark["final"] - t0,
+        t0 = clock.reached(offset)
+        t0_from = "ledger" if t0 is not None else "fallback"
+        t0 = returned if t0 is None else t0
+        blocks.append({"number": number, "txs": count, "completion_offset": offset, "t0_from": t0_from,
+                       "served_s": None if served is None else max(0.0, served - t0),
+                       "final_s": None if "final" not in mark else max(0.0, mark["final"] - t0),
                        "sse_after_served_s": None if served is None or got is None else max(0.0, got - served)})
     summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0)
-    summary.update(seconds=seconds, transactions_per_block_sent=per_block, database_bytes_before=size0, database_bytes_after=size1, failures=failures, per_block=blocks)
+    if blocks:
+        summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
+    summary.update(seconds=seconds, flood_seconds=round(flood_s, 1), transactions_per_block_sent=per_block, database_bytes_before=size0, database_bytes_after=size1, failures=failures, per_block=blocks)
     Path(results).write_text(json.dumps(summary, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k != "per_block"}, indent=1))
     return 1 if failures else 0
