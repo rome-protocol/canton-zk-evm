@@ -102,9 +102,9 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
         const text = JSON.stringify(body);
         // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
-        const out = { "cache-control": "no-store", ...headers, "content-type": "application/json" };
+        const out: Record<string, string> = { "cache-control": "no-store", ...headers, "content-type": "application/json" };
         if (status === 200 && out.etag && (method === "GET" || method === "HEAD") && matches(req.headers["if-none-match"], out.etag)) {
-          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] }).end();
+          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] as string }).end();
         }
         // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it; the validator stays that of the text.
         if (text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
