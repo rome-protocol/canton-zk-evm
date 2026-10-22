@@ -55,7 +55,7 @@ process.stderr.write(`${streams} streams open\n`);
 async function runClass(c: Config["classes"][number], ci: number) {
   const agent = new Agent({ keepAlive: true, maxSockets: cfg.connections });
   const total = Math.round(c.rate * cfg.seconds), latencies: number[] = [];
-  const out = { requests: 0, non2xx: 0, errors: 0, timeouts: 0, s2: 0, s4: 0, s5: 0 };
+  const out = { retried: 0, requests: 0, non2xx: 0, errors: 0, timeouts: 0, s2: 0, s4: 0, s5: 0 };
   const inflight: Promise<void>[] = [];
   const start = performance.now();
   for (let k = 0; k < total; k++) {
@@ -64,26 +64,36 @@ async function runClass(c: Config["classes"][number], ci: number) {
     if (wait > 1) await new Promise((ok) => setTimeout(ok, wait));
     const path = c.paths[k % c.paths.length]!, client = k % c.clients;
     inflight.push(new Promise<void>((done) => {
-      const req = get({ host: cfg.host, port: cfg.port, path, agent, headers: { [cfg.ipHeader]: `10.${ci + 1}.${client >> 8}.${client & 255}` } }, (res) => {
-        res.resume();
-        res.on("end", () => {
-          out.requests++;
-          latencies.push(performance.now() - due);
-          const code = res.statusCode ?? 0;
-          if (code >= 200 && code < 300) out.s2++; else { out.non2xx++; if (code >= 400 && code < 500) out.s4++; else out.s5++; }
-          done();
+      // A server may close an idle kept-alive connection at the moment a request is written to it: the request never reached it. A client (a browser, curl) sends
+      // that one again on a new connection, and so does this one, once, and counts it.
+      const attempt = (again: boolean): void => {
+        const req = get({ host: cfg.host, port: cfg.port, path, agent, headers: { [cfg.ipHeader]: `10.${ci + 1}.${client >> 8}.${client & 255}` } }, (res) => {
+          res.resume();
+          res.on("end", () => {
+            out.requests++;
+            latencies.push(performance.now() - due);
+            const code = res.statusCode ?? 0;
+            if (code >= 200 && code < 300) out.s2++; else { out.non2xx++; if (code >= 400 && code < 500) out.s4++; else out.s5++; }
+            done();
+          });
+          res.on("error", () => { out.errors++; done(); });
         });
-        res.on("error", () => { out.errors++; done(); });
-      });
-      req.setTimeout(10_000, () => { out.timeouts++; req.destroy(); });
-      req.on("error", () => { if (!req.destroyed) out.errors++; done(); });
+        let timedOut = false;
+        req.setTimeout(10_000, () => { timedOut = true; out.timeouts++; req.destroy(); });
+        req.on("error", (e: NodeJS.ErrnoException) => {
+          if (timedOut) { done(); return; }
+          if (again && req.reusedSocket && (e.code === "ECONNRESET" || e.code === "EPIPE")) { out.retried++; attempt(false); return; }
+          out.errors++; done();
+        });
+      };
+      attempt(true);
     }));
   }
   await Promise.all(inflight);
   agent.destroy();
   latencies.sort((x, y) => x - y);
   const at = (f: number) => Math.round(latencies[Math.min(latencies.length - 1, Math.max(0, Math.ceil(latencies.length * f) - 1))] ?? 0);
-  return { name: c.name, target: c.rate, requests: out.requests, non2xx: out.non2xx, errors: out.errors, timeouts: out.timeouts, statusCodes: { "2xx": out.s2, "4xx": out.s4, "5xx": out.s5 }, latency: { p50: at(0.5), p90: at(0.9), p97_5: at(0.975), p99: at(0.99), max: Math.round(latencies[latencies.length - 1] ?? 0) } };
+  return { name: c.name, target: c.rate, retried: out.retried, requests: out.requests, non2xx: out.non2xx, errors: out.errors, timeouts: out.timeouts, statusCodes: { "2xx": out.s2, "4xx": out.s4, "5xx": out.s5 }, latency: { p50: at(0.5), p90: at(0.9), p97_5: at(0.975), p99: at(0.99), max: Math.round(latencies[latencies.length - 1] ?? 0) } };
 }
 const runs = cfg.classes.map((c, ci) => runClass(c, ci));
 const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
