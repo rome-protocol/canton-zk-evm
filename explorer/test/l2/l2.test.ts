@@ -32,7 +32,7 @@ const TXS = int("L2_TRANSACTIONS", 300_000), SECONDS = int("L2_SECONDS", 60), RA
 const BLOCK_TXS = 1428, BLOCK_EVERY_MS = 3000;
 /** The budgets of section 9. B3 and B7 are p95; the load tool reports p97.5, which is the stricter, so that is what is held to them. */
 export const BUDGET = { singleMs: 100, searchMs: 100, listMs: 200, addressPageMs: 300, getLogsMs: 500, sseMs: 500, gigabytesPerMillion: 2.5, healthMs: 50 };
-const HOT = "0x" + "0000000000000000000000000000000000f0f0f0".slice(2);
+const HOT = "0x" + "f0f0f0".padStart(40, "0");
 const HOT_LOGS = "0x" + "d000".padStart(40, "0"); // the address the synthetic chain's token transfers log under: a fifth of all transactions
 
 const q95 = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.max(0, Math.ceil(xs.length * 0.95) - 1)] ?? 0;
@@ -78,7 +78,8 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const hotTxs = Number((await pool.query("select count(*) as n from transactions where from_address = $1", [bytea(HOT)])).rows[0].n);
 
       // ---- The server: the pages' routes, the live stream, and the health route, over the database.
-      const reth = { code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => undefined, transaction: async () => null } as unknown as Reth;
+      const reth = { code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => ({ number: 1 }), transaction: async () => ({ hash: "0x" }), balance: async () => 0n, balanceAt: async () => 0n, nonce: async () => 0 } as unknown as Reth;
+      // reth answers at once here: it is not what L2 measures. The routes under test are the database's.
       const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`);
       const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), rest: createChainRest(pool), accounts: createAccountRest(pool), live: true });
       const hub = createStreamHub();
@@ -87,6 +88,10 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
       stops.push(() => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }));
       await source.start();
+      // The indexer's own checks (C4, C5, the derive lag), every 2 s as its run loop does, so that the rows /api/health reads are fresh.
+      const checker = setInterval(() => void indexer.checkOnce().catch(() => undefined), 2000);
+      stops.push(() => clearInterval(checker));
+      await indexer.checkOnce();
       stops.push(() => source.stop());
       stops.push(startStreamTimers(hub));
       stops.push(() => hub.close());
@@ -111,6 +116,16 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         { name: "search", share: 0.05, clients: 10, paths: [...hashes.slice(0, 20).map((h) => `/api/search?q=${h}`), ...blocks.slice(0, 20).map((n) => `/api/search?q=${n}`), ...addresses.slice(0, 10).map((a) => `/api/search?q=${a}`)] },
         { name: "health", share: 0, rate: 5, clients: 1, paths: ["/api/health"] },
       ].map((c) => ({ ...c, rate: "rate" in c ? c.rate! : Math.round(RATE * c.share) }));
+      // Every path the load asks for must answer 200 once, so that a wrong path is named here and not counted as load.
+      const refused: string[] = [];
+      for (const c of classes) for (const path of c.paths) {
+        const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { "x-client-ip": "10.250.0.1" } });
+        const text = await res.text();
+        if (res.status !== 200) refused.push(`${res.status} ${path.slice(0, 90)} ${text.slice(0, 80)}`);
+        if (path.endsWith("/health")) continue;
+        await sleep(55); // under the per-client rate of 20 a second
+      }
+      expect(refused, "paths of the load that did not answer 200").toEqual([]);
       const driveConfig = join(folder, "drive.json");
       writeFileSync(driveConfig, JSON.stringify({ host: "127.0.0.1", port, seconds: SECONDS, ipHeader: "x-client-ip", connections: 20, sse: SSE, classes }));
 
