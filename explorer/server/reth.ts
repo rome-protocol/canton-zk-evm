@@ -23,6 +23,33 @@ export class RethError extends Error {
   }
 }
 
+/** reth's answer was bigger than the explorer reads (a trace of a huge transaction can be hundreds of MB). */
+export class RethTooBig extends RethError {
+  constructor(method: string, limit: number) {
+    super(`${method}: reth's answer is bigger than ${limit} bytes, which is more than the explorer reads`);
+  }
+}
+
+/** The most bytes of one reth answer the explorer reads. */
+export const MAX_ANSWER_BYTES = 32 * 1024 * 1024;
+
+/** Reads a response body as text, and gives up past `limit` bytes. */
+async function textCapped(res: Response, limit: number, method: string): Promise<string> {
+  const declared = Number(res.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) { void res.body?.cancel(); throw new RethTooBig(method, limit); }
+  if (!res.body) return "";
+  const reader = res.body.getReader(), decoder = new TextDecoder();
+  let bytes = 0, text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > limit) { void reader.cancel(); throw new RethTooBig(method, limit); }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 export interface Tx {
   hash: string;
   /** Null while the transaction is only in reth's pool. */
@@ -115,7 +142,7 @@ function block<T>(v: unknown, item: (x: unknown) => T): Block<T> {
 
 const SELECTOR = { name: "0x06fdde03", symbol: "0x95d89b41", decimals: "0x313ce567" };
 
-export function createReth(url: string, timeoutMs: number) {
+export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_ANSWER_BYTES) {
   let id = 0;
 
   async function rpc(method: string, params: unknown[]): Promise<unknown> {
@@ -127,8 +154,9 @@ export function createReth(url: string, timeoutMs: number) {
         body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }), signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      body = (await res.json()) as typeof body;
+      body = JSON.parse(await textCapped(res, maxAnswerBytes, method)) as typeof body;
     } catch (e) {
+      if (e instanceof RethTooBig) throw e;
       throw new RethError(`${method}: cannot reach reth (${(e as Error).message})`);
     }
     if (body.error) throw new RethError(`${method}: reth answered "${body.error.message ?? "an error"}"`, true);

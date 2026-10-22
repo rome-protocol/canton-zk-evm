@@ -12,7 +12,25 @@ export interface CallFrame {
   created: string | null;
 }
 
-export async function traceOf(reth: Pick<Reth, "rpc">, hash: string): Promise<{ frames: CallFrame[]; truncated: boolean } | null> {
+export type Trace = { frames: CallFrame[]; truncated: boolean };
+
+/** The cut, parsed traces of the last transactions asked for, per reth client: the trace of a final transaction never changes. */
+export const TRACE_CACHE_MAX = 64;
+const caches = new WeakMap<object, Map<string, Trace>>();
+
+export async function traceOf(reth: Pick<Reth, "rpc">, hash: string): Promise<Trace | null> {
+  const cache = caches.get(reth) ?? caches.set(reth, new Map()).get(reth)!;
+  const known = cache.get(hash);
+  if (known) { cache.delete(hash); cache.set(hash, known); return known; }
+  const made = await fetchTrace(reth, hash);
+  if (made) {
+    cache.set(hash, made);
+    if (cache.size > TRACE_CACHE_MAX) cache.delete(cache.keys().next().value!);
+  }
+  return made;
+}
+
+async function fetchTrace(reth: Pick<Reth, "rpc">, hash: string): Promise<Trace | null> {
   const result = await reth.rpc("trace_transaction", [hash]);
   if (result === null) return null;
   if (!Array.isArray(result)) throw new RethError("trace_transaction: reth sent something that is not a list");

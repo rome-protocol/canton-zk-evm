@@ -11,7 +11,7 @@ import { REST_FIELDS as F, pick } from "./fields.ts";
 import { BadRequest, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import { traceOf, type CallFrame } from "./trace.ts";
-import type { Reth } from "../reth.ts";
+import { RethTooBig, type Reth } from "../reth.ts";
 
 const HASH = /^0x[0-9a-f]{64}$/, UPDATE = /^1220[0-9a-f]{64}$/;
 const ok = (body: unknown): Answer => ({ status: 200, body });
@@ -146,7 +146,13 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   async function trace(hash: string, q: URLSearchParams): Promise<Answer> {
     const raw = q.get("raw") === "1", here = await finalTx(hash);
     if (!here) return fail(404, NOT_FOUND_HERE);
-    const t = await traceOf(reth, hash);
+    let t;
+    try {
+      t = await traceOf(reth, hash);
+    } catch (e) {
+      if (e instanceof RethTooBig) return fail(502, "the trace is too big to serve");
+      throw e;
+    }
     if (!t) return fail(404, "reth holds no trace of that transaction.");
     const frames = t.frames.map((f: CallFrame) => pick({ ...f, input: raw ? f.input : cut(f.input), inputSize: (f.input.length - 2) / 2 }, F.frame));
     // The trace of a transaction in a final block is a chain fact that never changes.

@@ -6,7 +6,7 @@ import { loadConfig } from "../config.ts";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/testing.ts";
 import { createIndexer } from "../indexer/indexer.ts";
-import type { Reth } from "../reth.ts";
+import { RethTooBig, type Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
 import { createChainRest } from "./chain-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
@@ -24,7 +24,7 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
     const reth = {
       code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => undefined, transaction: async () => null,
-      rpc: async (m: string) => (m === "trace_transaction" ? rethTrace : m === "eth_getTransactionReceipt" ? { status: "0x1", gasUsed: "0x5208", logs: [] } : null),
+      rpc: async (m: string) => (m === "trace_transaction" ? (rethTrace === ("toobig" as never) ? Promise.reject(new RethTooBig(m, 1)) : rethTrace) : m === "eth_getTransactionReceipt" ? { status: "0x1", gasUsed: "0x5208", logs: [] } : null),
     } as unknown as Reth;
     return createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), rest: createChainRest(pool) })("GET", target);
   };
@@ -239,6 +239,17 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     rethTrace = null;
     try {
       expect((await get(`/api/txs/${tx(2, 0)}/trace`)).status).toBe(404);
+    } finally {
+      rethTrace = [frame];
+    }
+  });
+
+  it("answers 502 for a trace that is too big to serve", async () => {
+    rethTrace = "toobig" as never;
+    try {
+      const a = await get(`/api/txs/${tx(2, 0)}/trace`);
+      expect(a.status).toBe(502);
+      expect(body(a).error).toBe("the trace is too big to serve");
     } finally {
       rethTrace = [frame];
     }
