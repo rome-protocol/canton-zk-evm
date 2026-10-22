@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiTx } from "../api.ts";
-import { addr, blockSummary, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
+import { addr, block, blockSummary, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
 import type { TxLifecycle } from "../api.ts";
 
 const verifierRun = vi.hoisted(() => ({ line: "" }));
@@ -377,6 +377,17 @@ async function openFinal(t: ApiTx = tx({ lifecycle: journal() }), over: Paramete
 }
 const way = () => within(screen.getByRole("region", { name: "The way to final" }));
 const steps = () => way().getAllByRole("listitem").map((x) => x.textContent);
+
+describe("the block's answers, kept by one cache for every page", () => {
+  it("opens the block page from a transaction page and shows the block, though the transaction page has read the block's summary", async () => {
+    const user = userEvent.setup();
+    await openFinal(undefined, { block: () => reply(block()) });
+    await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
+    await user.click(within(row("Block")).getByRole("link", { name: "3" }));
+    expect(await screen.findByRole("heading", { name: "Block #3" })).toBeInTheDocument();
+    expect(screen.queryByText(/something went wrong|cannot read/i)).toBeNull();
+  });
+});
 
 describe("the way to final", () => {
   it("shows each step with its time, the seconds between them and where each time comes from", async () => {

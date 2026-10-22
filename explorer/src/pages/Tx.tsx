@@ -221,7 +221,7 @@ export function Tx() {
   const t = q.data;
   const n = t?.block?.number;
   // The block holds the times, the proof and the record's facts; a transaction in no block has none to read.
-  const blockQ = useQuery({ queryKey: ["block", String(n)], queryFn: () => getBlockSummary(String(n)), enabled: n !== undefined, retry: false, staleTime: 5_000, refetchInterval: t && t.status !== "final" && n !== undefined ? 2000 : false });
+  const blockQ = useQuery({ queryKey: ["block-summary", String(n)], queryFn: () => getBlockSummary(String(n)), enabled: n !== undefined, retry: false, staleTime: 5_000, refetchInterval: t && t.status !== "final" && n !== undefined ? 2000 : false });
   const detailQ = useQuery({ queryKey: ["tx-detail", hash], queryFn: () => getTxDetail(hash), enabled: t?.status === "final", retry: false, staleTime: 10_000 });
   const wait = unready(q, "Reading the transaction…");
   if (wait || !t) return wait;
