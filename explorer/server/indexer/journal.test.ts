@@ -342,11 +342,10 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
   });
 
   it("with no journal at all: blocks are still indexed, the lifecycle is blank, and the health says so", async () => {
-    await inDb(async (pool) => {
-      const chain = makeChain([{ txs: 2 }, { txs: 1 }]);
-      const missing = join(makeFolder(), "not-made");
-      for (const dir of [null, missing, makeFolder()]) {
-        await pool.query("truncate health_checks");
+    for (const kind of ["unset", "missing", "empty"] as const) {
+      await inDb(async (pool) => {
+        const chain = makeChain([{ txs: 2 }, { txs: 1 }]);
+        const dir = kind === "unset" ? null : kind === "missing" ? join(makeFolder(), "not-made") : makeFolder();
         const ix = await start(pool, chain, { journalDir: dir });
         await ix.runOnce();
         await ix.loadJournal();
@@ -359,15 +358,10 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
         expect(await lifecycle(pool, chain.blocks[0]!.block.transactions[0]!.hash)).toMatchObject({ state: "final", accepted_at: null, first_included_at: null, attempts: 0 });
         const j = await health(pool, "journal");
         expect(j.status).toBe("degraded");
-        expect(j.detail).toMatch(dir === null ? /no journal folder is set/ : dir === missing ? /cannot be read/ : /no journal file/);
+        expect(j.detail).toMatch(kind === "unset" ? /no journal folder is set/ : kind === "missing" ? /cannot be read/ : /no journal file/);
         expect(await health(pool, "C8")).toMatchObject({ status: "degraded", detail: expect.stringContaining("no producer journal") });
-        await ix.close();
-        opened.pop();
-        await pool.query("truncate blocks cascade").catch(() => undefined);
-        await pool.query("delete from cursors").catch(() => undefined);
-        if (dir !== makeFolder()) break; // one pass is enough for the three kinds of "no journal" once the database is dirty
-      }
-    });
+      });
+    }
   });
 
   it("deletes the pool samples older than 30 days", async () => {
