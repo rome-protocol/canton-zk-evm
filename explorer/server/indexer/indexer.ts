@@ -18,6 +18,7 @@ import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
+import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
@@ -49,6 +50,10 @@ export interface IndexerOptions {
   journalDir?: string | null;
   producerStatusFile?: string | null;
   journalMs?: number;
+  /** How often `start` runs C6's sample audit (20 random blocks against reth), in milliseconds. Default 10 minutes. The nightly audit of the previous day follows the first sample after 03:00 UTC. */
+  auditMs?: number;
+  /** For C6's choice of blocks. */
+  random?: () => number;
   /** After this long without reth having a block the record names, the health says so. */
   rethBehindMs?: number;
   /** After this many reads in a row that fail with a reth error (not just a block reth lacks), `reth_reads` says degraded. Default 3. */
@@ -261,7 +266,7 @@ export function createIndexer(o: IndexerOptions) {
       // The derive cursor is read again under the shared lock: stage 2 follows in this transaction only when the cursor is right behind this block;
       // otherwise (a catch-up is still owed) the block is left to catchUpDerive, and the walk goes on.
       if (done.written && inline && (await deriveCursor(c)) === n - 1) {
-        await stage2(c, n, traces as TxTrace[]);
+        await stage2(c, n, traces as TxTrace[], o.reads);
         o.onTiming?.({ block: n, stage: 2, readMs: 0, writeMs: now() - w2, txs: block.transactions.length });
       }
     });
@@ -362,6 +367,12 @@ export function createIndexer(o: IndexerOptions) {
     if (lifecycleOn) await producer.run(journalAvailable);
   }
 
+  /** C6 (design section 4.5): blocks fetched again from reth and compared with the index. Writes the row and returns it. */
+  const auditOnce = async (kind: AuditKind): Promise<AuditResult> => {
+    const at = new Date(now());
+    return runAudit(o.pool, o.reads, kind, o.random, undefined, kind === "day" ? await nightlyWindow(o.pool, at) : undefined);
+  };
+
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
     let done = 0;
@@ -376,7 +387,7 @@ export function createIndexer(o: IndexerOptions) {
       const read = now() - t0;
       await inTransaction(o.pool, async (c) => {
         const w = now();
-        const res = await stage2(c, n, traces);
+        const res = await stage2(c, n, traces, o.reads);
         o.onTiming?.({ block: n, stage: 2, readMs: read, writeMs: now() - w, txs: traces.length });
         return res;
       });
@@ -473,7 +484,22 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < journalMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks(), journalLoop()]);
+    const auditMs = o.auditMs ?? 600_000;
+    const audits = async () => {
+      while (running) {
+        try {
+          await auditOnce("sample");
+          if (await nightlyDue(o.pool, new Date(now()))) {
+            // The day counts as audited only when every block was read; otherwise the next pass tries again.
+            if ((await auditOnce("day")).complete) await markNightly(o.pool, new Date(now()));
+          }
+        } catch (e) {
+          log(`indexer (audit): ${(e as Error).message}`);
+        }
+        for (let waited = 0; running && waited < auditMs; waited += 50) await sleep(50);
+      }
+    };
+    const finished = Promise.all([...loops.map((l) => l()), checks(), journalLoop(), audits()]);
     return async () => { stopRequested = true; running = false; await finished; };
   }
 
@@ -514,7 +540,7 @@ export function createIndexer(o: IndexerOptions) {
     return written;
   }
 
-  return { open, close, runOnce, deriveOnce, checkOnce, loadJournal, start, rebuild, stopped: () => stopped };
+  return { open, close, runOnce, deriveOnce, checkOnce, auditOnce, loadJournal, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;
