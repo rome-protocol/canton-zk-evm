@@ -5,7 +5,7 @@ export const pick = <T extends object, K extends keyof T>(o: T, fields: readonly
 
 /** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
 export const FIELDS = {
-  status: ["chainId", "chainName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "indexHead", "indexLag", "deriveCursor", "chainInstance"],
+  status: ["chainId", "chainName", "networkName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "indexHead", "indexLag", "deriveCursor", "chainInstance"],
   coin: ["symbol", "decimals"],
   pins: ["programVK", "rootC", "file"],
   final: ["number", "hash", "timestamp", "recordTime"],
@@ -36,7 +36,8 @@ export const FIELDS = {
   /** Where a transaction has been, from the producer's journal and the API: null when no row is kept for it. */
   lifecycle: ["state", "reason", "acceptedAt", "acceptedVia", "includedAt", "attempts", "leftOutReason", "proofStartedAt", "proofEndedAt", "submittedAt", "committedAt", "finalAt", "finalBlock", "timeToFinalMs"],
   /** The attempts that are not final, and reth's pool count from the producer's latest sample. */
-  inFlight: ["final", "attempts", "poolWaiting"],
+  inFlight: ["final", "attempts", "poolWaiting", "transactions"],
+  inFlightTx: ["hash", "stage", "at"],
   inFlightAttempt: ["number", "strategy", "cutReason", "stage", "txCount", "poolWaiting", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt", "outcome"],
   poolSample: ["waiting", "at"],
   tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
@@ -50,13 +51,13 @@ export const REST_FIELDS = {
   page: ["items", "next"],
   /** A page of a list that stage 2 fills: `derived` is false while the derive cursor has not reached the block, and the list is then empty, not final. */
   derivedPage: ["derived", "items", "next"],
-  blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "updateId", "recordTime"],
+  blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "baseFee", "updateId", "recordTime", "proofSeconds", "finalSeconds", "commitSeconds"],
   /** One block: what the pages already have, with the legs count, whether stage 2 has derived it, and the producer's times. */
   blockDetail: [...FIELDS.block.filter((f) => f !== "transactions"), "legsCount", "derived", "lifecycle"],
   /** The Canton side of a block as its page shows it: the record's hex is served by /record. */
   cantonSummary: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch"],
   blockLifecycle: ["strategy", "cutReason", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt"],
-  txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created"],
+  txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId"],
   /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived). */
   txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason"],
   leg: ["legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount"],
@@ -69,6 +70,8 @@ export const REST_FIELDS = {
   frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
   updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block"],
   updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "template", "contractId", "blockHash", "signatories", "producerRecord"],
+  updateAround: ["items"],
+  updateAroundItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "submittedTemplate", "submittedChoice", "txCount"],
   updateTemplate: ["packageId", "packageName", "module", "entity"],
   signatory: ["role", "party"],
   producerRecord: ["template", "choice", "commandId", "argumentBytes", "trafficBytes"],

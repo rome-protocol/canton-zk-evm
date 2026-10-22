@@ -2,7 +2,7 @@
 import { act, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem } from "../api.ts";
-import { blockItem, fakeApi, hash, page, renderApp, reply, route, status, txItem, update } from "../test-utils.tsx";
+import { addr, blockItem, fakeApi, hash, inFlight, page, renderApp, reply, route, status, tx, txItem, update } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:37:27Z");
 const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockListItem[]) => {
@@ -18,6 +18,16 @@ const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockLis
 const strip = () => within(screen.getByRole("region", { name: "Chain status" }));
 
 describe("the home page's status strip", () => {
+  it("names how far the index is behind Canton, in blocks, and says nothing of it while that is not known", async () => {
+    await home({ indexLag: 2 });
+    expect(strip().getByText("Index lag 2 blocks")).toBeInTheDocument();
+  });
+
+  it("names no index lag when the status does not know it", async () => {
+    await home({ indexLag: null });
+    expect(strip().queryByText(/Index lag/)).toBeNull();
+  });
+
   it("says what is final, how long it took to commit, and what is being proven", async () => {
     await home();
     expect(strip().getByText("EVM node").closest(".sd")).toHaveClass("ok");
@@ -124,10 +134,17 @@ describe("the list of latest final blocks", () => {
     const first = within(rows[0]!);
     expect(first.getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
     expect(first.getByRole("link", { name: "1220 0303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
-    expect(rows[0]).toHaveTextContent("7.4 s");
+    expect(rows[0]).toHaveTextContent("7.40 s");
     expect(rows[0]).toHaveTextContent("11 s ago");
     expect(first.getByText("Final")).toHaveClass("chip-final");
     expect(within(rows[1]!).getAllByRole("cell")[1]).toHaveTextContent("2");
+  });
+
+  it("gives the time to final from the producer's cut to Canton's record time, and a dash where the producer's log has none", async () => {
+    // The block was made 7.4 s before Canton's record, but its way to final began at the cut and took 8.09 s.
+    await home({}, 200, [blockItem(3, { finalSeconds: 8.09 }), blockItem(2, { finalSeconds: 89.3 }), blockItem(1, { finalSeconds: null })]);
+    const cells = rowsOf().map((r) => within(r).getAllByRole("cell")[2]!.textContent);
+    expect(cells).toEqual(["8.09 s", "1 min 29 s", "—"]);
   });
 
   it("reads the columns in a plain order, says each block is one Canton transaction, and leads to all of them", async () => {
@@ -138,10 +155,8 @@ describe("the list of latest final blocks", () => {
   });
 
   it("writes a long wait in minutes, and never a negative one", async () => {
-    const a = blockItem(5, { timestamp: Date.parse("2026-10-04T01:37:00Z") / 1000, recordTime: "2026-10-04T01:36:59.500Z" });
-    const b = blockItem(4, { timestamp: Date.parse("2026-10-04T01:30:00Z") / 1000, recordTime: "2026-10-04T01:33:20Z" });
-    await home({}, 200, [a, b]);
-    expect(rowsOf()[0]).toHaveTextContent("0.0 s");
+    await home({}, 200, [blockItem(5, { finalSeconds: -0.5 }), blockItem(4, { finalSeconds: 200 })]);
+    expect(rowsOf()[0]).toHaveTextContent("0.00 s");
     expect(rowsOf()[1]).toHaveTextContent("3 min 20 s");
   });
 
@@ -173,13 +188,125 @@ describe("the list of latest transactions", () => {
   });
 });
 
+describe("the list of latest transactions, with the faucet", () => {
+  it("names the faucet as the sender of its transactions", async () => {
+    fakeApi(route({ faucet: () => reply({ on: true, address: txItem(3).from }) }));
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    expect((await region.findAllByRole("link", { name: "Ostia faucet" }))[0]).toHaveAttribute("href", `/address/${txItem(3).from}`);
+  });
+
+  it("leaves a sender that is not the faucet as an address", async () => {
+    fakeApi(route({ faucet: () => reply({ on: true, address: addr(0xfa) }) }));
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    await region.findAllByRole("row");
+    expect(region.queryByRole("link", { name: "Ostia faucet" })).toBeNull();
+    expect(region.getAllByRole("link", { name: "0x5b5b5b…b5b5b" }).length).toBeGreaterThan(0);
+  });
+});
+
+describe("the list of latest transactions, with those not final yet", () => {
+  const at = new Date(NOW - 4000).toISOString();
+  const open = async (over: { txs?: () => ReturnType<typeof reply>; inFlight?: () => ReturnType<typeof reply>; tx?: (h: string) => ReturnType<typeof reply> } = {}) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    fakeApi(route({
+      txs: over.txs,
+      inFlight: over.inFlight ?? (() => reply(inFlight({ transactions: [{ hash: hash(0xb1), stage: "waiting", at }, { hash: hash(0xb2), stage: "proving", at }] }))),
+      tx: over.tx ?? ((h) => reply(tx({ hash: h, status: h === hash(0xb1) ? "waiting" : "proving", state: h === hash(0xb1) ? "pending" : "proving", block: null, value: h === hash(0xb1) ? "250000000000000000" : "1000000000000000000", from: addr(0x71), to: addr(0x9b) }))),
+    }));
+    renderApp("/");
+    await screen.findByText("Latest transactions");
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    return within(screen.getByRole("region", { name: "Latest transactions" }));
+  };
+
+  it("lists the transactions that are not final first, each with its stage, who sent it to whom and its value, and the final ones after them", async () => {
+    const region = await open();
+    const rows = region.getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(4);
+    expect(within(rows[0]!).getByRole("link", { name: "0xb1b1b1…b1b1" })).toHaveAttribute("href", `/tx/${hash(0xb1)}`);
+    expect(within(rows[0]!).getByText("Waiting")).toHaveClass("chip-waiting");
+    expect(rows[0]).toHaveTextContent("4 s ago");
+    expect(rows[0]).toHaveTextContent("0.25 tROME");
+    expect(within(rows[0]!).getByRole("link", { name: "0x717171…17171" })).toHaveAttribute("href", `/address/${addr(0x71)}`);
+    expect(within(rows[1]!).getByText("Being proven")).toHaveClass("chip-proving");
+    expect(rows[1]).toHaveTextContent("1 tROME");
+    expect(within(rows[2]!).getByText("Final")).toHaveClass("chip-final");
+    expect(within(rows[3]!).getByText("Final")).toHaveClass("chip-final");
+    expect(region.getByText("Including those not final yet")).toBeInTheDocument();
+  });
+
+  it("keeps the stage of a transaction whose details cannot be read, and says so in place of who and how much", async () => {
+    const region = await open({ tx: () => reply({ error: "no" }, 500) });
+    const row = region.getAllByRole("row").slice(1)[0]!;
+    expect(within(row).getByText("Waiting")).toBeInTheDocument();
+    expect(row).toHaveTextContent("cannot be read right now");
+    expect(row).not.toHaveTextContent("tROME");
+  });
+
+  it("says that those not final yet cannot be read, and still lists the final ones, when the in-flight route fails", async () => {
+    const region = await open({ inFlight: () => reply({ error: "no" }, 500) });
+    expect(region.getByText("Transactions not final yet cannot be read right now.")).toBeInTheDocument();
+    expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+  });
+
+  it("lists those not final yet, and says there is no final one, when the final list is empty", async () => {
+    const region = await open({ txs: () => reply(page([])) });
+    const rows = region.getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("Waiting")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Being proven")).toBeInTheDocument();
+    expect(region.getByText("No final transactions yet.")).toBeInTheDocument();
+  });
+
+  it("lists those not final yet, and says the final list cannot be read, when the final list fails", async () => {
+    const region = await open({ txs: () => reply({ error: "no" }, 502) });
+    expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+    expect(region.getByText("The explorer cannot read this list right now.")).toBeInTheDocument();
+  });
+
+  it("lists only the final ones, with no note, when none is waiting or being proven", async () => {
+    const region = await open({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null })) });
+    expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+    expect(region.queryByText(/cannot be read/)).toBeNull();
+  });
+});
+
+/** The card whose label begins with `label`; the first one when two do. */
+const tile = (label: string) => Array.from(screen.getByRole("region", { name: "Numbers" }).querySelectorAll(".stat")).find((e) => e.querySelector(".stat-k")!.textContent!.startsWith(label))! as HTMLElement;
+
 describe("the numbers, from what the API gives today", () => {
-  it("shows the height, the time to final of the newest blocks, their transactions and what is not final yet", async () => {
+  it("shows the height, the times of the newest blocks from the producer's log, their transactions and what is not final yet", async () => {
+    await home({}, 200, [blockItem(3, { finalSeconds: 8.5, proofSeconds: 7.4 }), blockItem(2, { finalSeconds: 8.5, proofSeconds: 7.4 })]);
+    expect(tile("Block height")).toHaveTextContent("3final on Canton · block 4 is being proven");
+    expect(tile("Time to final")).toHaveTextContent("latest 2 blocks8.5 s p95 8.5 sfrom the producer's cut to Canton's record time");
+    expect(tile("Proof time")).toHaveTextContent("latest 2 blocks7.4 s p95 7.4 sZisK, one proof per block, 2 blocks · producer log");
+    expect(tile("Transactions ·")).toHaveTextContent("2in 2 final blocks");
+  });
+
+  it("shows a dash and says why when the producer's log has no times for the blocks", async () => {
+    await home({}, 200, [blockItem(3, { finalSeconds: null, proofSeconds: null, commitSeconds: null })]);
+    expect(tile("Time to final")).toHaveTextContent("—the producer's log has no times for these blocks");
+    expect(tile("Proof time")).toHaveTextContent("—the producer's log has no times for these blocks");
+  });
+
+  it("fills the Canton commit time from the latest blocks, the producer's submit to Canton's record time, and says so", async () => {
+    await home({}, 200, [blockItem(3, { commitSeconds: 0.9 }), blockItem(2, { commitSeconds: 0.7 })]);
+    expect(tile("Canton commit time")).toHaveTextContent("0.9");
+    expect(tile("Canton commit time")).toHaveTextContent("latest 2 blocks");
+    expect(tile("Canton commit time")).toHaveTextContent("producer log");
+  });
+
+  it("shows a dash and names the missing source for each number that needs the stats rollups, and invents none", async () => {
     await home();
-    const n = within(screen.getByRole("region", { name: "Numbers" }));
-    expect(n.getByText("Block height").parentElement).toHaveTextContent("3final on Canton · block 4 is being proven");
-    expect(n.getByText("Time to final").parentElement).toHaveTextContent("latest 2 blocks7.4 s p95 7.4 s");
-    expect(n.getByText("Transactions").parentElement).toHaveTextContent("2in 2 final blocks");
+    for (const label of ["Transactions per second", "Lost transactions", "Success rate", "Time to final · 72 h"]) {
+      const t = tile(label);
+      expect(t, label).toHaveTextContent("—");
+      expect(t, label).toHaveTextContent("not served yet: the API has no stats route for it");
+      expect(t.querySelector(".stat-v")!.textContent, label).toBe("—");
+    }
   });
 });
 

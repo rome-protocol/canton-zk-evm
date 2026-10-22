@@ -18,9 +18,14 @@ const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
 export const traceKey = (a: number[]): string => "t" + a.join("-");
 export const addressOfKey = (key: string): number[] => (key === "t" ? [] : key.slice(1).split("-").map(Number));
 
-export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string }
+export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; baseFee: string; updateId: string; recordTime: string;
+  /** ZisK's time for the block, the way from the producer's cut to Canton's record time, and Canton's own commit (the producer's submit to the record time), in seconds; null for a block the journal did not write. */
+  proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
+export type BlockFilter = "all" | "transactions" | "empty";
 export interface TxListItem {
   hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null;
+  /** The input's first 4 bytes as 0x hex; null for a transaction with no input (a plain transfer or a creation with no arguments). */
+  methodId: string | null;
 }
 export interface BlockExtras {
   legsCount: number;
@@ -39,13 +44,15 @@ export interface UpdateDetail extends UpdateItem {
   /** What the producer's journal says it submitted for the update; null for an update the journal does not hold. */
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
 }
+/** An update in the list around one: what the producer's log says it submitted is null for an update the log does not hold. */
+export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null; txCount: number | null }
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
 
 export const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from b.timestamp)::bigint as ts, t.from_address, t.to_address, t.value::text as value, t.nonce, t.type, t.gas_used,
-  t.effective_gas_price::text as price, t.status, t.created_contract`;
+  t.effective_gas_price::text as price, t.status, t.created_contract, t.method_id`;
 export const txItem = (r: Row): TxListItem => ({
   hash: hex(r.hash), block: Number(r.block_number), index: r.tx_index, timestamp: Number(r.ts), from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value, nonce: Number(r.nonce),
-  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract),
+  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract), methodId: hexOrNull(r.method_id),
 });
 
 export type ChainRest = ReturnType<typeof createChainRest>;
@@ -71,15 +78,19 @@ export function createChainRest(pool: Pool) {
     return r && Number(r.number);
   }
 
-  async function blocks(before: number | null, limit: number): Promise<BlockListItem[]> {
+  /** The newest final blocks; `filter` keeps all of them, the ones with transactions, or the empty ones (genesis is not an empty block). */
+  async function blocks(before: number | null, limit: number, filter: BlockFilter = "all"): Promise<BlockListItem[]> {
+    const where = { all: "", transactions: "and b.tx_count > 0", empty: "and b.tx_count = 0 and b.number > 0" }[filter];
     const rows = await query(
-      `select b.number, b.hash, extract(epoch from b.timestamp)::bigint as ts, b.tx_count, b.gas_used, b.gas_limit, b.fee_recipient, b.legs_count, b.update_id, ${US("b.record_time")} as record_time
-       from blocks b where ($1::bigint is null or b.number < $1) order by b.number desc limit $2`,
+      `select b.number, b.hash, extract(epoch from b.timestamp)::bigint as ts, b.tx_count, b.gas_used, b.gas_limit, b.fee_recipient, b.legs_count, b.base_fee_per_gas::text as base_fee, b.update_id, ${US("b.record_time")} as record_time,
+         round(extract(epoch from a.proof_ended_at - a.proof_started_at)::numeric, 3)::float8 as proof_seconds, round(extract(epoch from b.record_time - a.cut_at)::numeric, 3)::float8 as final_seconds,
+         round(extract(epoch from b.record_time - a.submitted_at)::numeric, 3)::float8 as commit_seconds
+       from blocks b left join block_attempts a on a.attempt_id = b.attempt_id where ($1::bigint is null or b.number < $1) ${where} order by b.number desc limit $2`,
       [before, limit + 1],
     );
     return rows.map((r) => ({
       number: Number(r.number), hash: hex(r.hash), timestamp: Number(r.ts), txCount: r.tx_count, gasUsed: Number(r.gas_used), gasLimit: Number(r.gas_limit), miner: hex(r.fee_recipient),
-      legsCount: r.legs_count, updateId: r.update_id, recordTime: isoTime(r.record_time),
+      legsCount: r.legs_count, baseFee: r.base_fee, updateId: r.update_id, recordTime: isoTime(r.record_time), proofSeconds: r.proof_seconds, finalSeconds: r.final_seconds, commitSeconds: r.commit_seconds,
     }));
   }
 
@@ -202,6 +213,28 @@ export function createChainRest(pool: Pool) {
     return rows.map((r) => ({ ...updateItem(r), micros: Number(r.micros) }));
   }
 
+  const aroundSelect = `${updateSelect}, u.submitted_template, u.submitted_choice, (select b.tx_count from blocks b where b.update_id = u.update_id order by b.number limit 1) as tx_count`;
+  const aroundFrom = "from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer";
+  const aroundItem = (r: Row): UpdateAroundItem & { micros: number } => ({
+    ...updateItem(r), submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, txCount: r.tx_count === null ? null : Number(r.tx_count), micros: Number(r.micros),
+  });
+
+  /** One update as the list around it shows it; undefined when there is no such update. */
+  async function aroundOne(updateId: string): Promise<UpdateAroundItem & { micros: number } | undefined> {
+    const [r] = await query(`select ${aroundSelect} ${aroundFrom} where u.update_id = $1`, [updateId]);
+    return r && aroundItem(r);
+  }
+
+  /** The `n` updates after the key (record time in microseconds, update id) and the `n` before it, by the list's own key; newest first, without the update at the key. */
+  async function around(at: number, updateId: string, n: number): Promise<{ newer: UpdateAroundItem[]; older: UpdateAroundItem[] }> {
+    const key = `(${EPOCH} + $1::bigint * interval '1 microsecond', $2::text)`;
+    const [newer, older] = await Promise.all([
+      query(`select ${aroundSelect} ${aroundFrom} where (u.record_time, u.update_id) > ${key} order by u.record_time, u.update_id limit $3`, [at, updateId, n]),
+      query(`select ${aroundSelect} ${aroundFrom} where (u.record_time, u.update_id) < ${key} order by u.record_time desc, u.update_id desc limit $3`, [at, updateId, n]),
+    ]);
+    return { newer: newer.reverse().map(aroundItem), older: older.map(aroundItem) };
+  }
+
   async function update(updateId: string): Promise<UpdateDetail | undefined> {
     const [r] = await query(
       `select ${updateSelect}, t.package_id, t.package_name, t.module, t.entity, u.signatories, u.command_id, u.submitted_template, u.submitted_choice, u.argument_bytes, u.traffic_bytes,
@@ -221,5 +254,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, traceOf, txLogs, txInternal, txTransfers, updates, update };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
 }

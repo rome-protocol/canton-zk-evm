@@ -8,15 +8,15 @@ const FOOTER = "This explorer reads Canton as the chain's reader party, which is
 const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
 describe("the shell", () => {
-  it("names the chain with Rome's mark, shows the chain id, links home, and offers search and the Faucet", async () => {
+  it("names the chain with Rome's mark, shows the network, links home, and offers search and the Faucet", async () => {
     fakeApi(() => ({ status: 200, body: status() }));
     renderApp("/faucet");
     const header = screen.getByRole("banner");
     expect(within(header).getByRole("img", { name: "Rome" })).toBeInTheDocument();
     const home = within(header).getByRole("link", { name: /Ostia/ });
     expect(home).toHaveAttribute("href", "/");
-    expect(await within(header).findByText("chain 770101")).toBeInTheDocument();
-    expect(within(home).getByText("chain 770101")).toBeInTheDocument();
+    expect(await within(header).findByText("DevNet")).toBeInTheDocument();
+    expect(within(home).getByText("DevNet")).toBeInTheDocument();
     expect(within(header).getByRole("link", { name: "Faucet" })).toHaveAttribute("href", "/faucet");
     expect(within(header).getByRole("searchbox", { name: "Search" })).toHaveAttribute("placeholder", "Block number, transaction or block hash, address, or Canton update id");
   });

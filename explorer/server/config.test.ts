@@ -35,6 +35,12 @@ describe("settings", () => {
     expect(c.captcha).toBeNull();
   });
 
+  it("names no network until NETWORK_NAME says which one this is", () => {
+    expect(load().networkName).toBeNull();
+    expect(load({ NETWORK_NAME: "DevNet" }).networkName).toBe("DevNet");
+    expect(load({ NETWORK_NAME: "  " }).networkName).toBeNull();
+  });
+
   it("keeps the public RPC off unless PUBLIC_RPC is 1, and has defaults for its limits and the tracker", () => {
     expect(load().publicRpc).toEqual({ on: false, ratePerMinute: 300, trustedIpHeader: null });
     expect(load().tracker).toEqual({ file: null, max: 10000, maxBytes: 16 * 1024 * 1024, perSender: 64, maxPendingMinutes: 60 });

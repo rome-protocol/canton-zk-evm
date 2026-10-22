@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bytesOf, count, gwei, party, seconds, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, count, gwei, party, seconds, units, utcDate, utcMs } from "./format.ts";
 
 describe("numbers", () => {
   it("groups thousands", () => {
@@ -60,5 +60,16 @@ describe("party ids", () => {
   it("keeps the name and the ends of the identifier", () => {
     expect(party("operator::1220" + "ab".repeat(30) + "3619")).toBe("operator::1220…3619");
     expect(party("odd")).toBe("odd");
+  });
+});
+
+describe("baseFee", () => {
+  it("is gwei to three digits, so that a fee of a few hundredths of a gwei is not rounded away", () => {
+    expect(baseFee("67300000")).toBe("0.0673 gwei");
+    expect(baseFee("1000000000")).toBe("1 gwei");
+    expect(baseFee("1234567890")).toBe("1.23 gwei");
+    expect(baseFee("123456789012")).toBe("123 gwei");
+    expect(baseFee("7")).toBe("7 wei");
+    expect(baseFee("0")).toBe("0 gwei");
   });
 });
