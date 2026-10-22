@@ -9,6 +9,7 @@ import { MAX_VERIFY_BODY, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
 import { MODULES } from "./etherscan.ts";
+import { MAX_PAGE_BYTES } from "./etherscan-rest.ts";
 import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
 
 type Fields = readonly string[];
@@ -198,7 +199,7 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
       "x-limits": {
         pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}),
         rest: { perSecond: RULES.rest[0].perSecond, burst: RULES.rest[0].capacity },
-        etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity },
+        etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity, maxPageBytes: MAX_PAGE_BYTES },
         verification: { perHour: RULES.verification[0].capacity, maxBodyKb: MAX_VERIFY_BODY / 1024 },
         streams: { perClient: PER_CLIENT },
       },

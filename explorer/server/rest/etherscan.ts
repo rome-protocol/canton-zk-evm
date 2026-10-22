@@ -12,7 +12,7 @@
 import type { Answer } from "../api.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
-import { QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
+import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
 
 /** `page × offset` may be no more than this, as Etherscan's window is. */
 export const RESULT_WINDOW = 10_000;
@@ -47,6 +47,7 @@ export const TEXTS = {
   topic: "Error! Invalid topic format",
   topicOp: "Error! Invalid topic operator, use and or or",
   logsWide: "Query Timeout occured. Please select a smaller result dataset",
+  tooLarge: "Result too large; ask for a smaller offset",
   timeout: "Query Timeout occured. Please select a smaller result dataset",
   noRecords: "No records found",
 } as const;
@@ -335,10 +336,10 @@ const logs: Record<string, Handler> = {
   },
 };
 
-/** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
 /** The last second of year 9999. */
 const MAX_TIMESTAMP = 253_402_300_799;
 
+/** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
 export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
@@ -368,6 +369,7 @@ export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
     } catch (e) {
       if (e instanceof NotOk) return notOk(e);
       if (e instanceof Empty) return empty(e);
+      if (e instanceof PageTooLarge) return notOk(new NotOk(TEXTS.tooLarge));
       if (e instanceof QueryTimeout) { console.error(`etherscan api: ${e.message}`); return notOk(new NotOk(TEXTS.timeout)); }
       if (!(e instanceof RethError || e instanceof ChainDbError)) throw e;
       console.error(`etherscan api: ${e.message}`);

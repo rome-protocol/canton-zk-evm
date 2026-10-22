@@ -46,6 +46,12 @@ const txColumns = `t.block_number, t.tx_index, t.hash, b.hash as block_hash, ext
 /** A read that the database cancelled for running too long: the door answers it with Etherscan's own words for a query that is too big. */
 export class QueryTimeout extends ChainDbError {}
 
+/** A page whose rows carry more bytes than the page budget: the door asks the client for a smaller offset. */
+export class PageTooLarge extends Error {}
+
+/** The most bytes of transaction `input` or log `data` that one page of `txlist` or `getLogs` may carry. Etherscan's rows hold the whole field, so a page is cut by its size and not only its rows. */
+export const MAX_PAGE_BYTES = 8 * 1024 * 1024;
+
 /** The longest a read of this door may run (ms). A client that asks for a wide search is held to it, so that a few of them cannot hold the pool's connections for long. */
 export const READ_TIMEOUT_MS = 5000;
 
@@ -73,7 +79,7 @@ export function tokenMovesSql(standard: TokenStandard, a: string | null, token: 
   };
 }
 
-export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS }: { timeoutMs?: number } = {}) {
+export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS, maxPageBytes = MAX_PAGE_BYTES }: { timeoutMs?: number; maxPageBytes?: number } = {}) {
   /** One read, in a read-only transaction that has its own statement timeout (set local, so the connection goes back to the pool as it was). */
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     let client: PoolClient;
@@ -109,12 +115,21 @@ export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS }:
     const d = dirOf(w);
     const side = (column: string) =>
       `(select block_number, tx_index from transactions where ${column} = $1 and block_number between $2 and $3 order by block_number ${d}, tx_index ${d} limit $4)`;
+    const keys = `with k as (${side("from_address")} union ${side("to_address")} union ${side("created_contract")})`;
+    const values = [bytes(a), w.start, w.end, w.skip + w.limit, w.limit, w.skip];
+    // The page's input bytes first, from the stored sizes: a page over the budget is refused before any input is read.
+    const [size] = await query(
+      `${keys}, p as (select block_number, tx_index from k order by block_number ${d}, tx_index ${d} limit $5 offset $6)
+       select coalesce(sum(octet_length(t.input)), 0)::bigint as n from p join transactions t on t.block_number = p.block_number and t.tx_index = p.tx_index`,
+      values,
+    );
+    if (Number(size?.n ?? 0) > maxPageBytes) throw new PageTooLarge(`a txlist page of ${size!.n} bytes of input is over ${maxPageBytes}`);
     const rows = await query(
-      `with k as (${side("from_address")} union ${side("to_address")} union ${side("created_contract")})
+      `${keys}
        select ${txColumns}, t.from_address, t.to_address, t.created_contract, t.value::text as value, t.status, t.input, t.method_id
        from k join transactions t on t.block_number = k.block_number and t.tx_index = k.tx_index join blocks b on b.number = t.block_number
        order by t.block_number ${d}, t.tx_index ${d} limit $5 offset $6`,
-      [bytes(a), w.start, w.end, w.skip + w.limit, w.limit, w.skip],
+      values,
     );
     return rows.map((r) => ({
       ...baseOf(r), from: hex(r.from_address), to: hexOrNull(r.to_address), created: hexOrNull(r.created_contract), value: r.value, success: r.status === 1, input: hex(r.input), methodId: hexOrNull(r.method_id),
@@ -237,9 +252,12 @@ export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS }:
     });
     if (expr !== "") where.push(expr);
     values.push(f.limit, f.skip);
+    const page = `from logs l where ${where.join(" and ")} order by l.block_number, l.log_index limit $${values.length - 1} offset $${values.length}`;
+    // The page's data bytes first, from the stored sizes: a page over the budget is refused before any data is read.
+    const [size] = await query(`select coalesce(sum(octet_length(p.data)), 0)::bigint as n from (select l.data ${page}) p`, values);
+    if (Number(size?.n ?? 0) > maxPageBytes) throw new PageTooLarge(`a getLogs page of ${size!.n} bytes of data is over ${maxPageBytes}`);
     const rows = await query(
-      `with k as (select l.block_number, l.log_index, l.tx_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data from logs l where ${where.join(" and ")}
-                  order by l.block_number, l.log_index limit $${values.length - 1} offset $${values.length})
+      `with k as (select l.block_number, l.log_index, l.tx_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data ${page})
        select k.*, t.hash, t.effective_gas_price::text as price, t.gas_used::text as gas_used, b.hash as block_hash, extract(epoch from b.timestamp)::bigint as ts
        from k join transactions t on t.block_number = k.block_number and t.tx_index = k.tx_index join blocks b on b.number = k.block_number
        order by k.block_number, k.log_index`,

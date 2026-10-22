@@ -555,6 +555,32 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
     });
   });
 
+  describe("a page is bounded by its bytes", () => {
+    const Z = h(0xc2);
+    const door = (maxPageBytes: number) => createApi({ config: config(), reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest(pool, { maxPageBytes }) });
+    const txUrl = (offset: number) => `/api?module=account&action=txlist&address=${A}&startblock=0&endblock=99999999&page=1&offset=${offset}&sort=asc`;
+    const logUrl = (offset: number) => `/api?module=logs&action=getLogs&address=${Z}&fromBlock=0&toBlock=latest&page=1&offset=${offset}`;
+    beforeAll(async () => {
+      await sql("insert into logs (block_number, log_index, tx_index, address, topic0, data) values (3, 950, 0, $1, $2, '\\x010203'), (3, 951, 1, $1, $2, '\\x0405')", [who(0xc2), Buffer.alloc(32, 7)]);
+    });
+    afterAll(async () => { await sql("delete from logs where address = $1", [who(0xc2)]); });
+
+    it("answers a txlist page over the budget with Etherscan's NOTOK and a smaller offset gets its rows (recorded answer)", async () => {
+      const sizes = (await sql("select octet_length(input)::int as n from transactions where block_number in (2, 3) and (from_address = $1 or to_address = $1 or created_contract = $1) order by block_number, tx_index", [who(0xa1)])).rows.map((r) => r.n as number);
+      const total = sizes.reduce((x, y) => x + y, 0), first = sizes[0]!;
+      expect(total).toBeGreaterThan(first); // the fixture's rows carry input, so the budgets below differ
+      expect(shape(await door(total)("GET", txUrl(100))).result).toHaveLength(sizes.length); // a page at the budget is answered
+      expect(shape(await door(total - 1)("GET", txUrl(100)))).toEqual(NOTOK("Result too large; ask for a smaller offset"));
+      expect(shape(await door(first)("GET", txUrl(1))).result).toHaveLength(1); // the budget counts the page's own rows, not the address's
+    });
+
+    it("answers a getLogs page over the budget with the same words, and a smaller offset gets its rows", async () => {
+      expect(shape(await door(5)("GET", logUrl(10))).result).toHaveLength(2);
+      expect(shape(await door(4)("GET", logUrl(10)))).toEqual(NOTOK("Result too large; ask for a smaller offset"));
+      expect(shape(await door(4)("GET", logUrl(1))).result).toHaveLength(1);
+    });
+  });
+
   it("answers a read it cannot make with its own NOTOK, and a limit with Etherscan's word, both at HTTP 200", async () => {
     const broken = { balanceAt: async () => { const { RethError } = await import("../reth.ts"); throw new RethError("down"); } } as unknown as Reth;
     const a = await createApi({ config: config(), reth: broken, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest(pool) })("GET", `/api?module=account&action=balance&address=${A}`);
