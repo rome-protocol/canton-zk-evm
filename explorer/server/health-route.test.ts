@@ -15,13 +15,13 @@ afterEach(async () => { for (const d of databases.splice(0)) await d.drop(); });
 const settings = "programVK=0x" + "cd".repeat(32) + "\nrootC=0x" + "ef".repeat(32) + "\n";
 const ROUND = ["C4", "C5", "derive_lag", "C10"];
 
-interface World { reth?: boolean; canton?: boolean; started?: boolean; round?: boolean; faucet?: { balance: string | null; amount?: string; queue?: number }; tracker?: { open: number; droppedLastHour: number } }
+interface World { reth?: boolean; canton?: boolean; started?: boolean; round?: boolean; faucet?: { balance: string | null; amount?: string; queue?: number; /** When the oldest waiting request was made; by default, when the test began. */ since?: number }; tracker?: { open: number; droppedLastHour: number } }
 
 /** An API instance `a` over a database of its own. Its reth and Canton answer unless the test says they do not; the indexer has written its four rounds unless it says it has not. */
 async function boot(w: World = {}) {
   const db = await makeDatabase(true);
   databases.push(db);
-  const clock = { now: 1_000_000 };
+  const clock = { now: 1_000_000 }, start = clock.now;
   const state = { reth: w.reth ?? true, canton: w.canton ?? true, faucet: w.faucet, tracker: w.tracker };
   if (w.started ?? true) await db.pool.query("insert into cursors (stream, position, updated_at) values ('reader_updates', 1, now())");
   if ((w.started ?? true) && (w.round ?? true)) await writeRound(db, "ok");
@@ -29,14 +29,18 @@ async function boot(w: World = {}) {
     pool: db.pool, instance: "a", now: () => clock.now,
     reth: { block: async () => { if (!state.reth) throw new Error("connect ECONNREFUSED 127.0.0.1:8545"); return { number: 5 } as never; } },
     ledger: { ledgerEnd: async () => { if (!state.canton) throw new Error("http://ledger.invalid:7575 refused"); return 9; } },
-    faucet: { on: true, isLeading: () => state.faucet !== undefined, info: async () => ({ balance: state.faucet!.balance, amount: state.faucet!.amount ?? "100", queue: state.faucet!.queue ?? 0 }) as never },
+    faucet: { on: true, isLeading: () => state.faucet !== undefined, info: async () => ({ balance: state.faucet!.balance, amount: state.faucet!.amount ?? "100", queue: state.faucet!.queue ?? 0 }) as never,
+      oldestQueued: () => (state.faucet?.queue ? state.faucet.since ?? start : null) },
     tracker: { isLeading: () => state.tracker !== undefined, stats: () => state.tracker! },
   });
   const config = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
   const reth = { block: async () => ({ number: 5 }) } as never, ledger = { ledgerEnd: async () => 9 } as never;
   const api = createApi({ config, reth, ledger, chain: createChainDb(db.pool), health });
-  const get = async (path = "/api/health") => { const a = await api("GET", path); return { status: a.status, body: a.body as Obj, headers: a.headers }; };
-  return { db, pool: db.pool, get, clock, state, health, api };
+  /** Asks like a client does, after the instance's timer has run once (the route itself only reads the table). */
+  const get = async (path = "/api/health") => { await health.refresh(); return asked(path); };
+  /** Asks without the timer having run. */
+  const asked = async (path = "/api/health") => { const a = await api("GET", path); return { status: a.status, body: a.body as Obj, headers: a.headers }; };
+  return { db, pool: db.pool, get, asked, clock, state, health, api };
 }
 
 const writeRound = (db: TestDatabase, status: string, age = "0 seconds") =>
@@ -56,7 +60,7 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
     expect(status).toBe(200);
     expect(headers).toMatchObject({ "Cache-Control": "no-store" });
     expect(body).toMatchObject({ status: "ok", instance: "a", starting: false, problems: [] });
-    // this instance's own two checks were written by the call itself, with when they were looked at
+    // this instance's own two checks were written by its timer, with when they were looked at
     expect(check(body, "api/a/reth")).toMatchObject({ role: "api", status: "ok", stale: false, intervalSeconds: 5, value: { latest: 5 } });
     expect(check(body, "api/a/canton")).toMatchObject({ status: "ok", value: { ledgerEnd: 9 } });
     expect(typeof check(body, "C5").refreshedAt).toBe("string");
@@ -179,10 +183,42 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
       await put(pool, "api/gone/reth", "ok", null, `${GONE_AFTER_MINUTES - 1} minutes`);
       expect(check((await get()).body, "api/gone/reth")).toMatchObject({ stale: true });
       await put(pool, "api/gone/reth", "ok", null, `${GONE_AFTER_MINUTES + 1} minutes`);
-      clock.now += 2000;
-      await get(); // the refresh in this call removes it; the answer after that has no such row
-      clock.now += 2000;
-      expect(check((await get()).body, "api/gone/reth")).toBeUndefined();
+      expect(check((await get()).body, "api/gone/reth")).toBeUndefined(); // the timer's sweep removes it
+    });
+  });
+
+  describe("answers from the table alone", () => {
+    it("answers at once, down for reth, while a reth that hangs is still being probed, and never waits for it", async () => {
+      const db = await makeDatabase(true);
+      databases.push(db);
+      await db.pool.query("insert into cursors (stream, position, updated_at) values ('reader_updates', 1, now())");
+      await writeRound(db, "ok");
+      let calls = 0;
+      const hang = (): Promise<never> => { calls++; return new Promise(() => {}); };
+      const health = createApiHealth({ pool: db.pool, instance: "a", reth: { block: hang }, ledger: { ledgerEnd: hang }, faucet: { on: true, isLeading: () => true, info: hang, oldestQueued: () => null }, probeTimeoutMs: 150 });
+      const config = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
+      const api = createApi({ config, reth: { block: async () => ({ number: 5 }) } as never, ledger: { ledgerEnd: async () => 9 } as never, chain: createChainDb(db.pool), health });
+      const timer = Date.now();
+      const refreshing = health.refresh(); // the background timer's work: three probes side by side, each given up on after 150 ms
+      const a = await api("GET", "/api/health");
+      expect(Date.now() - timer).toBeLessThan(120); // not held by the probes
+      expect(a.status).toBe(200);
+      await refreshing;
+      expect(Date.now() - timer).toBeLessThan(450); // side by side, not one after another
+      expect(calls).toBe(3);
+      const b = await api("GET", "/api/health");
+      expect(b).toMatchObject({ status: 503, body: { status: "down" } });
+      expect(((b.body as Obj).checks as Obj[]).find((c) => c.id === "api/a/reth")).toMatchObject({ status: "down", detail: "reth does not answer" });
+      expect(((b.body as Obj).checks as Obj[]).find((c) => c.id === "faucet")).toMatchObject({ status: "degraded" });
+    });
+
+    it("shows this instance's rows as stale once its timer has stopped, without a request ever refreshing them", async () => {
+      const { asked, pool, health } = await boot();
+      await health.refresh();
+      await put(pool, "api/a/reth", "ok", null, "16 seconds");
+      const { body } = await asked();
+      expect(check(body, "api/a/reth")).toMatchObject({ stale: true });
+      expect(body.status).toBe("degraded");
     });
   });
 
@@ -213,13 +249,31 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
     it("show a faucet whose queue has not moved for two minutes as stuck, and a queue that moves as ok", async () => {
       const { get, clock, state } = await boot({ faucet: { balance: "1000", queue: 3 } });
       expect((await get()).body.status).toBe("ok");
-      clock.now += FAUCET_STUCK_MS + 1000; // /api/health refreshes this instance's rows at most once a second
+      clock.now += FAUCET_STUCK_MS + 1000;
       const stuck = await get();
       expect(stuck.status).toBe(200);
-      expect(stuck.body.problems[0]).toMatch(/^faucet: 3 requests have been waiting 121 s without a batch going out$/);
+      expect(stuck.body.problems[0]).toMatch(/^faucet: the oldest of 3 waiting requests has been waiting 121 s without a batch going out$/);
       state.faucet = { balance: "1000", queue: 0 };
-      clock.now += 2000;
       expect((await get()).body.status).toBe("ok");
+    });
+
+    it("do not call a busy faucet stuck: its queue is never empty, but its oldest request is young because batches go out", async () => {
+      const { get, clock, state } = await boot({ faucet: { balance: "1000", queue: 3 } });
+      for (let i = 0; i < 5; i++) {
+        clock.now += FAUCET_STUCK_MS / 2; // five minutes in all, with a batch out every minute and new requests keeping the queue at 3
+        state.faucet = { balance: "1000", queue: 3, since: clock.now - 5000 };
+        expect((await get()).body.status).toBe("ok");
+      }
+    });
+
+    it("remove the faucet's row when this instance's faucet has been turned off, so that no stale row is left behind", async () => {
+      const { get, pool, health } = await boot();
+      await put(pool, "faucet", "ok", null, "10 minutes");
+      expect(check((await get()).body, "faucet")).toMatchObject({ stale: true });
+      const off = createApiHealth({ pool, instance: "a", reth: { block: async () => ({ number: 5 }) as never }, ledger: { ledgerEnd: async () => 9 }, faucet: { on: false, isLeading: () => false, info: async () => ({}) as never, oldestQueued: () => null } });
+      await off.refresh();
+      expect(check((await get()).body, "faucet")).toBeUndefined();
+      void health;
     });
 
     it("show a tracker that gave up on many transactions in the last hour as degraded, and its open count", async () => {

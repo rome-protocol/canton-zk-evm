@@ -118,7 +118,6 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
    * word, and 503 only for `down`. A database that cannot be read is `down`, said by this instance itself.
    */
   async function healthAnswer(): Promise<Answer> {
-    await apiHealth?.refresh(1000);
     try {
       const h = await chain.health(apiHealth?.instance);
       return {

@@ -37,10 +37,17 @@ describe("the REST routes' limit: 20 a second, bursts of 60", () => {
     expect((await at("/api/status")).status).toBe(200);
   });
 
-  it("leaves the faucet, /healthz and the pages to their own rules", async () => {
+  it("counts /healthz in the same rate as /api/status, which it answers the same as, and leaves the faucet and the pages to their own rules", async () => {
     await start();
     for (let i = 0; i < 61; i++) await at("/api/status");
     expect((await at("/api/status")).status).toBe(429);
+    const probe = await at("/healthz");
+    expect(probe.status).toBe(429);
+    expect(probe.headers.get("retry-after")).toBe("1");
+    const before = calls.length;
+    for (let i = 0; i < 20; i++) await at("/healthz");
+    expect(calls).toHaveLength(before); // a limited client does not reach the API through the probe route
+    clock.advance(1000);
     expect((await at("/healthz")).status).toBe(200);
     expect((await at("/api/faucet", { method: "POST", body: "{}" })).status).toBe(200);
     expect((await at("/api/faucet/ticket/abc")).status).toBe(200);

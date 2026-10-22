@@ -157,8 +157,8 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const { status, body, headers } = await api(method, target, sent, ip);
         return send(status, body, { ...headers });
       }
-      // The pages' REST routes share one rate per client. The faucet has its own limits, the live stream its own count, and `/healthz` is the proxy's probe.
-      if (pathname.startsWith("/api/") && pathname !== "/api/faucet" && !pathname.startsWith("/api/faucet/")) {
+      // The pages' REST routes share one rate per client, and `/healthz` is in it: it answers the same as `/api/status` (reth and Canton on every call), so it must not be a way round the limit. The rate is far above any proxy's probe. The faucet has its own limits, and the live stream its own count.
+      if ((pathname.startsWith("/api/") && pathname !== "/api/faucet" && !pathname.startsWith("/api/faucet/")) || pathname === "/healthz") {
         const wait = limits.rest.take(clientIp(req, ipHeader));
         if (wait !== null) return void res.writeHead(429, { ...JSON_TYPE, "cache-control": "no-store", ...retryAfter(wait) }).end(JSON.stringify({ error: REST_REFUSED(wait) }));
       }
