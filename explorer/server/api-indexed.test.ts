@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createApi } from "./api.ts";
 import { createChainDb } from "./chain-db.ts";
@@ -6,8 +6,12 @@ import { loadConfig } from "./config.ts";
 import { migrate } from "./db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "./db/testing.ts";
 import { createIndexer } from "./indexer/indexer.ts";
+import { createJournal } from "./indexer/journal.ts";
+import { RUN1, Run, iso, makeFolder, putFile, removeFolders } from "./indexer/journal-fixtures.ts";
 import type { Reth } from "./reth.ts";
 import { CHAIN_ID, CONFIRMER, GATEWAY, OPERATOR, PINS, makeChain } from "../test/synthetic-chain.ts";
+
+afterAll(removeFolders);
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const token = { name: "Token", symbol: "TKN", decimals: 6 };
@@ -116,6 +120,80 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
         t += 1_001;
         expect((await get(`/api/tx/${hash}`)).body).toMatchObject({ toToken: null });
         expect(asked.code.length).toBe(2);
+      });
+    });
+  });
+  describe("the lifecycle", () => {
+    it("is in the transaction route: the stages and their times, and blank for a transaction that nobody tracked", async () => {
+      await withDatabase(async (pool) => {
+        const { chain, get } = await served(pool, [{ txs: 2 }]);
+        const [a, b] = chain.blocks[0]!.block.transactions;
+        const t = Date.parse(chain.blocks[0]!.record.recordTime);
+        // before any journal: the row stage 1 wrote has the final fields only
+        expect((await get(`/api/tx/${a!.hash}`)).body).toMatchObject({
+          lifecycle: { state: "final", acceptedAt: null, acceptedVia: null, includedAt: null, attempts: 0, proofStartedAt: null, committedAt: null, finalAt: iso(t), finalBlock: 1, timeToFinalMs: null },
+        });
+        // the API accepted `a`, 9 s before the block's record time
+        await pool.query("update tx_lifecycle set accepted_at = $2, accepted_via = 'rpc' where tx_hash = $1", [Buffer.from(a!.hash.slice(2), "hex"), iso(t - 9000)]);
+        const dir = makeFolder();
+        const run = new Run(RUN1);
+        run.start(t - 60_000);
+        run.committed(1, 1, chain);
+        putFile(dir, "2026-10-21.jsonl", run.lines);
+        await createJournal({ pool, folder: dir }).load();
+        const { body } = await get(`/api/tx/${a!.hash}`);
+        expect((body as { lifecycle: unknown }).lifecycle).toEqual({
+          state: "final", reason: null, acceptedAt: iso(t - 9000), acceptedVia: "rpc", includedAt: iso(t - 7000), attempts: 1, leftOutReason: null,
+          proofStartedAt: iso(t - 6800), proofEndedAt: iso(t - 100), submittedAt: iso(t - 50), committedAt: iso(t + 40), finalAt: iso(t), finalBlock: 1, timeToFinalMs: 9000,
+        });
+        // the other one was never accepted by the API: it has an inclusion time and no acceptance time
+        expect((await get(`/api/tx/${b!.hash}`)).body).toMatchObject({ lifecycle: { acceptedAt: null, includedAt: iso(t - 7000), timeToFinalMs: null } });
+      });
+    });
+
+    it("lists the attempts that are not final at /api/in-flight, with the pool's latest count, and says they are not final", async () => {
+      await withDatabase(async (pool) => {
+        const { chain, get } = await served(pool, [{ txs: 1 }]);
+        const t = Date.parse(chain.blocks[0]!.record.recordTime);
+        const hash = chain.blocks[0]!.block.transactions[0]!.hash;
+        const dir = makeFolder();
+        const r = new Run(RUN1);
+        r.start(t - 60_000);
+        r.committed(1, 1, chain); // final and indexed: not in flight
+        const cut = (attempt: number, number: number, at: number, reason = "pool") => r.add(at, "cut", { attempt, number, strategy: "on_demand", cut_reason: reason, pool_waiting: 2, idle_before_cut_ms: 5, in_flight_at_cut: 0 });
+        const built = (attempt: number, at: number, h: string) => r.add(at, "built", { attempt, block_hash: h, parent_hash: "0x" + "00".repeat(32), tx_hashes: [hash], gas_used: 21000, legs: 0, rebuilds: 0, left_out: [] });
+        const base = Date.now() - 120_000; // the attempts are recent: one that is older than an hour is not in flight
+        cut(2, 2, base); // only cut
+        cut(3, 3, base + 1000); built(3, base + 1100, "0x" + "33".repeat(32)); r.add(base + 1200, "proof_started", { attempt: 3, prover: "prover-a" }); // being proven
+        cut(4, 4, base + 2000); built(4, base + 2100, "0x" + "44".repeat(32)); r.add(base + 2200, "proof_started", { attempt: 4, prover: "prover-a" });
+        r.add(base + 3000, "proof_ended", { attempt: 4, prover: "prover-a", outcome: "ok", seconds: 0.8 });
+        r.add(base + 3100, "submitted", { attempt: 4, command_id: "ostia-1-4-x-1", argument_bytes: 10 }); // submitted, no answer yet
+        cut(5, 5, base + 4000); built(5, base + 4100, "0x" + "55".repeat(32));
+        r.add(base + 4200, "answered", { attempt: 5, outcome: "refused", reason: "stale", update_id: null, completion_offset: null, seconds: 0.1, traffic_bytes: null }); // ended: not in flight
+        cut(6, 6, base + 5000); built(6, base + 5100, "0x" + "66".repeat(32));
+        r.add(base + 5200, "answered", { attempt: 6, outcome: "committed", reason: null, update_id: "1220" + "66".repeat(32), completion_offset: 60, seconds: 0.1, traffic_bytes: null }); // committed, not final yet
+        cut(7, 1, base - 7_200_000); // an hour old and more: a run that stopped
+        r.add(base + 6000, "pool", { waiting: 4 });
+        putFile(dir, "2026-10-21.jsonl", r.lines);
+        await createJournal({ pool, folder: dir }).load();
+        const { status, body } = await get("/api/in-flight");
+        expect(status).toBe(200);
+        const f = body as { final: boolean; attempts: Record<string, unknown>[]; poolWaiting: unknown };
+        expect(f.final).toBe(false);
+        expect(f.attempts.map((x) => [x.number, x.stage])).toEqual([[2, "cut"], [3, "proving"], [4, "submitted"], [6, "committed"]]);
+        expect(f.attempts[1]).toEqual({
+          number: 3, strategy: "on_demand", cutReason: "pool", stage: "proving", txCount: 1, poolWaiting: 2, cutAt: iso(base + 1000), builtAt: iso(base + 1100), proofStartedAt: iso(base + 1200),
+          proofEndedAt: null, submittedAt: null, answeredAt: null, outcome: null,
+        });
+        expect(f.poolWaiting).toEqual({ waiting: 4, at: iso(base + 6000) });
+        expect((await get("/api/in-flight/x")).status).toBe(404);
+      });
+    });
+
+    it("is empty and has no pool sample when there is no journal", async () => {
+      await withDatabase(async (pool) => {
+        const { get } = await served(pool, [{ txs: 1 }]);
+        expect((await get("/api/in-flight")).body).toEqual({ final: false, attempts: [], poolWaiting: null });
       });
     });
   });
