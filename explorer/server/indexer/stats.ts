@@ -2,7 +2,7 @@
  * The stats rollups (design section 8): minute, hour and day rows with histograms, rebuilt from the facts.
  *
  * Every run recomputes the minutes from the earlier of (the cursor minus a lookback) and (the earliest fact time any writer touched since the last run, left in
- * `stats_dirty` by the triggers of migration 0025) to the open minute, a chunk at a time, and replaces the rows of each chunk in one transaction. Nothing is
+ * `stats_dirty` by the triggers of migration 0026) to the open minute, a chunk at a time, and replaces the rows of each chunk in one transaction. Nothing is
  * ever incremented, so a run twice changes nothing, and a fact that arrives late (a block caught up after an outage, a journal loaded late) is rolled up by
  * the next run however old it is. Buckets are `floor(epoch / 60 s)`, days are UTC, and `date_trunc` is not used, so the session time zone
  * does not matter. Runs whose settings carry `test = true` are counted apart in the `test_*` columns and left out of everything else.
