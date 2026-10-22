@@ -103,7 +103,7 @@ export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: () => Reply; txs?: () => Reply; inFlight?: () => Reply;
 }) {
-  return (path: string): Reply => {
+  const answer = (path: string): Reply => {
     const [, , kind, arg = ""] = path.split("?")[0]!.split("/");
     if (kind === "status") return h.status ? h.status() : reply(status());
     if (kind === "blocks") return h.blocks ? h.blocks() : reply(page([blockItem(3), blockItem(2)]));
@@ -113,14 +113,16 @@ export function route(h: {
     const pick = { block: h.block, tx: h.tx, address: h.address, search: h.search && (() => h.search!(decodeURIComponent(q ?? ""))) }[kind ?? ""];
     return pick ? (pick as (a: string) => Reply)(decodeURIComponent(arg)) : gone();
   };
+  return Object.assign(answer, { routed: true });
 }
 
 /** The pages' own fetch calls, answered by the given function. The last call's target is kept in `calls`. */
-export function fakeApi(answer: (path: string) => { status: number; body: unknown }) {
+export function fakeApi(answer: ((path: string) => { status: number; body: unknown }) & { routed?: boolean }) {
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
     calls.push(input);
-    const a = answer(input);
+    // A test that answers every path with one body (the status) still gets the plain lists, which it does not care about.
+    const a = !answer.routed && /^\/api\/(blocks|txs|in-flight)\b/.test(input) ? route({})(input) : answer(input);
     return new Response(JSON.stringify(a.body), { status: a.status, headers: { "content-type": "application/json" } });
   }));
   return calls;
