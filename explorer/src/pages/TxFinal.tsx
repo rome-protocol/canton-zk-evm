@@ -1,4 +1,4 @@
-import type { ApiBlock, ApiTx } from "../api.ts";
+import type { BlockSummary, ApiTx } from "../api.ts";
 import { at, clock, secs } from "../block-times.ts";
 import "./block.css";
 
@@ -13,26 +13,25 @@ const NONE = "—";
 const via = (v: string | null) => (v === null ? null : v === "rpc" ? "by Ostia's RPC" : `via ${v}`);
 
 /** The four steps of a transaction's way to final. A step is reached when the transaction has got there, and has a time only when the producer's journal or Canton gave one. */
-export function stepsOf(t: ApiTx, block: ApiBlock | undefined, read: BlockRead): Step[] {
+export function stepsOf(t: ApiTx, block: BlockSummary | undefined, read: BlockRead, index: number | null): Step[] {
   const l = t.lifecycle;
   const final = t.status === "final";
   const canton = block?.canton ?? null;
-  const index = block?.transactions.findIndex((r) => r.hash === t.hash) ?? -1;
   const inBlock = t.block !== null;
-  const where = !inBlock ? null : index >= 0 && block ? `position ${index} of ${block.txCount}` : read === "reading" ? "reading the block…" : read === "failed" ? "the block cannot be read right now" : null;
+  const where = !inBlock ? null : index !== null && block ? `position ${index} of ${block.txCount}` : read === "reading" ? "reading the block…" : read === "failed" ? "the block cannot be read right now" : null;
   const proofDone = l?.proofEndedAt != null;
   const proofNote = canton ? `ZisK, ${canton.proofBytes.toLocaleString("en-US")} bytes` : proofDone || final ? "ZisK" : null;
   return [
     { name: "Accepted", reached: l?.acceptedAt != null || inBlock || t.status === "waiting", time: l?.acceptedAt ?? null, digits: 3, note: via(l?.acceptedVia ?? null), source: l?.acceptedAt ? "producer log" : null },
     { name: inBlock ? `In block ${t.block!.number}` : "In a block", reached: inBlock, time: l?.includedAt ?? null, digits: 3, note: where, source: l?.includedAt ? "producer log" : null },
-    { name: "Proof done", reached: proofDone || final || canton !== null, time: l?.proofEndedAt ?? null, digits: 3, note: proofNote, source: l?.proofEndedAt ? "producer log" : null },
+    { name: "Proof done", reached: proofDone || final || t.status === "unindexed" || canton !== null, time: l?.proofEndedAt ?? null, digits: 3, note: proofNote, source: l?.proofEndedAt ? "producer log" : null },
     { name: "Final on Canton", reached: final || t.status === "unindexed", time: canton?.recordTime ?? null, digits: 6, note: null, source: canton ? "Canton record time" : null },
   ];
 }
 
 /** "The way to final": a transaction's four steps with the time of each that is known and the seconds between known neighbours. Nothing is guessed; a missing time is a dash. */
-export function TxFinal({ t, block, read }: { t: ApiTx; block: ApiBlock | undefined; read: BlockRead }) {
-  const steps = stepsOf(t, block, read);
+export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSummary | undefined; read: BlockRead; index: number | null }) {
+  const steps = stepsOf(t, block, read, index);
   const l = t.lifecycle;
   const final = t.status === "final";
   const caption = l === null ? "No row in the producer's journal, so only the times Canton and the block give are shown."

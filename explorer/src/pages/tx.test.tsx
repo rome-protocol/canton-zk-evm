@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiTx } from "../api.ts";
-import { addr, block, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
+import { addr, blockSummary, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
 import type { TxLifecycle } from "../api.ts";
 
 const verifierRun = vi.hoisted(() => ({ line: "" }));
@@ -61,12 +61,13 @@ describe("the transaction page, for a final transaction", () => {
     expect(within(row("Token moved")).getByRole("link", { name: "0x5a5a…5a5a" })).toHaveAttribute("href", `/address/${addr(0x5a)}`);
   });
 
-  it("shows the value, the fee at its price, the gas, the nonce and the type", async () => {
+  it("shows the value, the fee, the gas price, the gas with its share used, the nonce and the type", async () => {
     await open();
     expect(row("Value")).toHaveTextContent("0 tROME");
-    expect(row("Fee")).toHaveTextContent("0.0000863 tROME at 1.67 gwei");
-    expect(row("Gas used")).toHaveTextContent("51,698 of 100,000");
-    expect(row("Nonce")).toHaveTextContent("1");
+    expect(row("Fee")).toHaveTextContent("0.0000863 tROME");
+    expect(row("Gas price")).toHaveTextContent("1.67 gwei");
+    expect(row("Gas used")).toHaveTextContent("51,698 of 100,000 (51.70%)");
+    expect(row("Nonce and position")).toHaveTextContent("1");
     expect(row("Type")).toHaveTextContent("2 (EIP-1559)");
   });
 
@@ -147,7 +148,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(row("Value")).toHaveTextContent("0 tROME");
     expect(row("Fee")).toHaveTextContent("Known once a block holds it");
     expect(row("Gas limit")).toHaveTextContent("100,000");
-    expect(row("Nonce")).toHaveTextContent("1");
+    expect(row("Nonce and position")).toHaveTextContent("1");
     expect(row("Type")).toHaveTextContent("2 (EIP-1559)");
     expect(screen.queryByText("Gas used", { selector: "dt" })).toBeNull();
     expect(screen.queryByText("Logs", { selector: "dt" })).toBeNull();
@@ -169,7 +170,22 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(screen.getByRole("status")).not.toHaveTextContent("Not final yet");
     const steps = within(screen.getByRole("region", { name: "The way to final" })).getAllByRole("listitem");
     expect(steps[1]).toHaveClass("got");
-    expect(steps[2]).not.toHaveClass("got");
+    expect(steps[2]).toHaveClass("got");
+    expect(steps[3]).toHaveClass("got");
+  });
+
+  it("does not say in any card that a not-yet-indexed transaction is not final: the Canton card, the proof card and Verify say the explorer has not read the record", async () => {
+    await openFinal(tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: journal() }), { blockDetail: () => reply(blockSummary({ status: "unindexed", number: 4, hash: hash(4), canton: null })) });
+    const canton = screen.getByRole("region", { name: "Canton record" }), proof = screen.getByRole("region", { name: "The proof" });
+    for (const card of [canton, proof]) {
+      expect(card).toHaveTextContent("Final on Canton, not indexed yet");
+      expect(card).toHaveTextContent("the record is shown once the explorer reads it");
+      expect(card).not.toHaveTextContent("Not on Canton yet");
+      expect(card).not.toHaveTextContent("being proven");
+    }
+    expect(await within(proof).findByText("opens once the explorer has read the record")).toBeInTheDocument();
+    expect(proof).not.toHaveTextContent("opens once the block is final on Canton");
+    expect(within(proof).getByRole("button", { name: /Verify block 4/ })).toBeDisabled();
   });
 
   it("looks again every two seconds, and follows the transaction to Final with no reload", async () => {
@@ -207,7 +223,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     let gone = false;
     fakeApi(route({ tx: () => (gone ? reply({ error: NOT_FOUND }, 404) : reply(waitingTx())) }));
     renderApp(`/tx/${H}`);
-    await screen.findByText("Waiting", { selector: ".chip" });
+    await waitFor(() => expect(chip()).toHaveTextContent("Waiting"));
     gone = true;
     await tick();
     expect(screen.getByRole("heading", { name: "Not found" })).toBeInTheDocument();
@@ -354,7 +370,7 @@ const journal = (over: Partial<TxLifecycle> = {}): TxLifecycle => ({
 
 /** The final transaction with everything its page reads: its block and the block's record, the update, and the stage 2 detail. */
 async function openFinal(t: ApiTx = tx({ lifecycle: journal() }), over: Parameters<typeof route>[0] = {}) {
-  const calls = fakeApi(route({ tx: () => reply(t), block: () => reply(block()), update: () => reply(updateDetail()), txDetail: () => reply(txDetail()), ...over }));
+  const calls = fakeApi(route({ tx: () => reply(t), blockDetail: () => reply(blockSummary()), update: () => reply(updateDetail()), txDetail: () => reply(txDetail()), ...over }));
   renderApp(`/tx/${t.hash}`);
   await screen.findByRole("heading", { name: "Transaction" });
   return calls;
@@ -396,7 +412,7 @@ describe("the way to final", () => {
   });
 
   it("leaves the steps a transaction has not reached open, and names no block it is not in", async () => {
-    await openFinal(tx({ status: "proving", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: journal({ state: "proving", proofEndedAt: null, finalAt: null, timeToFinalMs: null }) }), { block: () => reply(block({ status: "proving", number: 4, canton: null })) });
+    await openFinal(tx({ status: "proving", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: journal({ state: "proving", proofEndedAt: null, finalAt: null, timeToFinalMs: null }) }), { blockDetail: () => reply(blockSummary({ status: "proving", number: 4, canton: null })) });
     const li = way().getAllByRole("listitem");
     expect(li.map((x) => x.className)).toEqual(["got", "got", "none", "none"]);
     expect(li[1]).toHaveTextContent("In block 4");
@@ -438,7 +454,7 @@ describe("the Canton record and the proof of the transaction's block", () => {
   });
 
   it("says a block that is not on Canton yet has no record and no proof, and greys Verify", async () => {
-    await openFinal(tx({ status: "proving", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: null }), { block: () => reply(block({ status: "proving", number: 4, canton: null })) });
+    await openFinal(tx({ status: "proving", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: null }), { blockDetail: () => reply(blockSummary({ status: "proving", number: 4, canton: null })) });
     expect(await screen.findByText("Not on Canton yet.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Verify block 4 in your browser/ })).toBeDisabled();
   });
@@ -456,6 +472,9 @@ describe("Verify, on the transaction page", () => {
     const button = await screen.findByRole("button", { name: "Verify block 3 in your browser" });
     await screen.findByText("Program key");
     expect(recordCalls(calls)).toHaveLength(0);
+    // The page reads the block's summary, never the old route that carries the record's hex.
+    expect(calls.filter((c) => c.startsWith("/api/block/"))).toEqual([]);
+    expect(calls.filter((c) => c.startsWith("/api/blocks/3") && c !== "/api/blocks/3")).toEqual([]);
     await user.click(button);
     expect(await screen.findByText(/Passed\./)).toBeInTheDocument();
     expect(recordCalls(calls)).toHaveLength(1);
@@ -488,16 +507,45 @@ describe("Verify, on the transaction page", () => {
 describe("the internal calls row, and the stage 2 gap", () => {
   it("shows the count of internal calls once the block is derived", async () => {
     await openFinal(undefined, { txDetail: () => reply(txDetail({ callCount: 4 })) });
-    await waitFor(() => expect(row("Internal calls")).toHaveTextContent("4"));
+    await waitFor(() => expect(row("Calls made")).toHaveTextContent("4"));
   });
 
   it("says not derived yet for a final transaction whose block is not derived, and gives no count", async () => {
     await openFinal(undefined, { txDetail: () => reply(txDetail({ derived: false, callCount: null })) });
-    await waitFor(() => expect(row("Internal calls")).toHaveTextContent("not derived yet"));
+    await waitFor(() => expect(row("Calls made")).toHaveTextContent("not derived yet"));
   });
 
   it("has no row for a transaction that is not final", async () => {
     await open(waitingTx());
-    expect(screen.queryByText("Internal calls", { selector: "dt" })).toBeNull();
+    expect(screen.queryByText("Calls made", { selector: "dt" })).toBeNull();
+  });
+});
+
+describe("the facts the block and the detail add to the overview", () => {
+  it("shows the time of its block, the stage, the final head, the gas price, the fees, the burnt fees and its position", async () => {
+    await openFinal(undefined, { txDetail: () => reply(txDetail({ index: 2 })) });
+    await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
+    expect(row("Stage")).toHaveTextContent(/^Final final /);
+    expect(row("Block")).toHaveTextContent("final head is 3");
+    expect(row("Gas price")).toHaveTextContent("1.67 gwei");
+    await waitFor(() => expect(row("Fees")).toHaveTextContent("Base 0.67 gwei · Max 2 gwei · Max priority 1 gwei"));
+    // 0.67 gwei x 51,698 gas
+    expect(row("Burnt fees")).toHaveTextContent("0.0000346 tROME");
+    expect(row("Nonce and position")).toHaveTextContent("1 · position 2 in block 3");
+  });
+
+  it("gives only the base fee for a legacy transaction, which signed no caps, and says the position is unknown rather than guessing it", async () => {
+    await openFinal(undefined, { txDetail: () => reply(txDetail({ index: null, maxFeePerGas: null, maxPriorityFeePerGas: null })) });
+    await waitFor(() => expect(row("Fees")).toHaveTextContent("Base 0.67 gwei"));
+    expect(row("Fees")).not.toHaveTextContent("Max");
+    expect(row("Nonce and position")).not.toHaveTextContent("position 0");
+  });
+
+  it("says reading, then cannot be read, while the block's time is not there; and shows none of these for a transaction in no block", async () => {
+    await openFinal(undefined, { blockDetail: () => reply({ error: "boom" }, 500) });
+    await waitFor(() => expect(row("Time")).toHaveTextContent("cannot be read right now"));
+    cleanup();
+    await open(waitingTx());
+    for (const l of ["Time", "Gas price", "Fees", "Burnt fees"]) expect(screen.queryByText(l, { selector: "dt" })).toBeNull();
   });
 });

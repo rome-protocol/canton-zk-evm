@@ -12,11 +12,11 @@ function Row({ x }: { x: TokenTransfer }) {
     <tr>
       <td><HashLink value={x.from} to={`/address/${x.from}`} /></td>
       <td><HashLink value={x.to} to={`/address/${x.to}`} /></td>
-      <td className="r">{tok ? <Amount raw={x.amount} decimals={tok.decimals} symbol={tok.symbol} /> : <span className="mono" title="The token's decimals cannot be read, so this is the raw amount">{x.amount}</span>}</td>
+      <td className="r">{x.amount === null ? <span className="mono">{tok ? `${tok.symbol} ` : ""}{x.tokenId === null ? "—" : `#${x.tokenId}`}</span> : tok ? <Amount raw={x.amount} decimals={tok.decimals} symbol={tok.symbol} /> : <span className="mono" title="The token's decimals cannot be read, so this is the raw amount">{x.amount}</span>}</td>
       <td>
         <HashLink value={x.token} to={`/token/${x.token}`} />
         {tok ? <span className="tag">{tok.symbol}</span> : null}
-        {x.tokenId !== null && <span className="muted"> id {x.tokenId}</span>}
+        {x.tokenId !== null && x.amount !== null && <span className="muted"> id {x.tokenId}</span>}
       </td>
     </tr>
   );

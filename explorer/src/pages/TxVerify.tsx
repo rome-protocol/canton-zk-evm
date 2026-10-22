@@ -17,11 +17,11 @@ type State =
 const hex = (s: string) => s.replace(/^0x/i, "").toLowerCase();
 
 /**
- * "Verify block N in your browser", on a transaction's page. The block's record is read when the button is pressed and not before: the page itself holds none of it.
+ * "Verify block N in your browser", on a transaction's page. The block's record is read when the button is pressed and not before: the page itself holds none of it: it reads the block's summary, which has no record hex.
  * The check is the one the confirmers run; a pass must commit to this block's own hash.
  */
-export function TxVerify({ number, blockHash, pins, final, proofBytes, load }: {
-  number: number; blockHash: string; pins: ApiStatus["pins"]; final: boolean; proofBytes: number | null; load?: () => Promise<LoadedVerifier>;
+export function TxVerify({ number, blockHash, pins, final, unindexed = false, proofBytes, load }: {
+  number: number; blockHash: string; pins: ApiStatus["pins"]; final: boolean; /** Final on Canton, and the explorer has not read the record yet. */ unindexed?: boolean; proofBytes: number | null; load?: () => Promise<LoadedVerifier>;
 }) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const run = useRef(0);
@@ -56,7 +56,7 @@ export function TxVerify({ number, blockHash, pins, final, proofBytes, load }: {
         <button type="button" className="btn primary" disabled={!final || busy} onClick={press}>
           <Icon name="check" size={13} /> {busy ? "Checking…" : state.kind === "idle" ? `Verify block ${number} in your browser` : "Run again"}
         </button>
-        <span className="muted small">{!final ? "opens once the block is final on Canton" : proofBytes !== null ? `${proofBytes.toLocaleString("en-US")}-byte proof` : ""}</span>
+        <span className="muted small">{!final ? (unindexed ? "opens once the explorer has read the record" : "opens once the block is final on Canton") : proofBytes !== null ? `${proofBytes.toLocaleString("en-US")}-byte proof` : ""}</span>
       </div>
       {state.kind === "running" && <p className="small muted" role="status">{state.step === "record" ? "Reading the block's record…" : "Running the check in your browser…"}</p>}
       {state.kind === "passed" && <p className="small fact-ok" role="status"><Icon name="check" size={13} />Passed. The proof, header and transactions of block {number} check out, and the proof commits to this block's hash. Ran in your browser in {formatTime(state.ms)}.</p>}

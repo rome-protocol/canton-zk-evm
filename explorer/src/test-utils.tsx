@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, ApiTxDetail, BlockDetail, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { ApiAddress, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -47,6 +47,13 @@ export function block(over: Partial<ApiBlock> = {}): ApiBlock {
     transactions: [{ hash: hash(0xf6), from: addr(0x5a + 1), to: addr(0xcb), success: true, transfer: { symbol: "TKA", decimals: 18, to: TRANSFER_TO, value: "10000000000000000000" } }],
     ...over,
   };
+}
+
+/** The block as /api/blocks/:id gives it: its facts and the Canton summary, with no record hex and no list of transactions. */
+export function blockSummary(over: Partial<BlockSummary> = {}): BlockSummary {
+  const { transactions: _t, canton, ...rest } = block();
+  const { headerHex: _h, txsHex: _x, proofHex: _p, ...summary } = canton!;
+  return { ...rest, canton: summary, legsCount: null, derived: true, lifecycle: null, ...over };
 }
 
 /** The same transaction, final in block 3. */
@@ -188,5 +195,5 @@ export function updateDetail(n = 3, over: Partial<UpdateDetail> = {}): UpdateDet
 /** What /api/txs/:hash adds to a final transaction: the stage 2 fields. `derived: false` is a block the explorer has not derived yet. */
 export function txDetail(over: Partial<ApiTxDetail> = {}): ApiTxDetail {
   const { logs: _logs, ...rest } = tx();
-  return { ...rest, derived: true, callCount: 2, revertReason: null, ...over };
+  return { ...rest, derived: true, callCount: 2, revertReason: null, index: 0, maxFeePerGas: "2000000000", maxPriorityFeePerGas: "1000000000", ...over };
 }

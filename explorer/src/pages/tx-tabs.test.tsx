@@ -26,10 +26,10 @@ const used = (calls: string[], part: string) => calls.filter((c) => c.includes(p
 afterEach(cleanup);
 
 describe("the tabs of the transaction page", () => {
-  it("opens on Overview, counts the logs and the internal calls, and keeps the tab in the address", async () => {
+  it("opens on Overview, counts the logs, gives the internal calls tab no count (its list is only the calls that moved value), and keeps the tab in the address", async () => {
     const user = userEvent.setup();
     await open({ txDetail: () => reply(txDetail({ callCount: 3 })), txLogs: () => reply(page([log(0)])) });
-    await waitFor(() => expect(screen.getAllByRole("tab").map((x) => x.textContent)).toEqual(["Overview", "Logs1", "Internal calls3", "Call tree", "Raw"]));
+    await waitFor(() => expect(screen.getAllByRole("tab").map((x) => x.textContent)).toEqual(["Overview", "Logs1", "Internal calls", "Call tree", "Raw"]));
     expect(tab("Overview")).toHaveAttribute("aria-selected", "true");
     await user.click(tab(/^Logs/));
     expect(tab(/^Logs/)).toHaveAttribute("aria-selected", "true");
@@ -53,7 +53,7 @@ describe("the tabs of the transaction page", () => {
     expect(screen.queryByRole("tablist")).toBeNull();
   });
 
-  it("says no count of internal calls when the block is not derived yet", async () => {
+  it("has the internal calls tab even when the block is not derived yet", async () => {
     await open({ txDetail: () => reply(txDetail({ derived: false, callCount: null })) });
     expect(screen.getByRole("tab", { name: "Internal calls" })).toBeInTheDocument();
   });
@@ -164,6 +164,14 @@ describe("the token transfers and the input on Overview", () => {
     expect(row).toHaveTextContent("0x5b5b…5b5b");
     expect(row).toHaveTextContent("0x5a5a…5a5a");
     expect(row).toHaveTextContent("10 TKA");
+  });
+
+  it("shows the token id where an NFT transfer has no amount, and no id beside an amount", async () => {
+    await open({ txTransfers: () => reply({ items: [transfer({ amount: null, tokenId: "3" }), transfer({ logIndex: 1, amount: "5", tokenId: "7" })], next: null, derived: true }), address: () => reply(tokenAddress()) });
+    const card = within(await screen.findByRole("region", { name: "Token transfers" }));
+    await waitFor(() => expect(card.getAllByRole("row")[1]).toHaveTextContent("TKA #3"));
+    expect(card.getAllByRole("row")[1]).not.toHaveTextContent("id 3");
+    expect(card.getAllByRole("row")[2]).toHaveTextContent("id 7");
   });
 
   it("falls back to the raw amount when the token cannot be read", async () => {
