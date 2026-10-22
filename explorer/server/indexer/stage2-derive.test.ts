@@ -6,10 +6,11 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import type { TraceFrame } from "./reads.ts";
+import { keccak256, toHex } from "viem";
 import { RethError } from "../reth.ts";
 import { reindexRange } from "./reindex.ts";
 import { stage2 } from "./stage2.ts";
-import { EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT } from "./proxies.ts";
+import { writeProxies, EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT } from "./proxies.ts";
 
 const opened: Indexer[] = [];
 async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
@@ -231,6 +232,30 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       chain.reads.call = answer;
       await indexer.runOnce();
       expect(await rows(pool, "select kind, implementation from proxies")).toEqual([{ kind: "beacon", implementation: null }]);
+      await indexer.close();
+    });
+  });
+
+  it("looks at a proxy's slots again in a block where it says its implementation changed, and an older block never replaces a newer look", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }, { txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1)]);
+      chain.reads.storage[`${A(0xb1)}:${EIP1967_IMPLEMENTATION_SLOT}`] = word(0x1111);
+      await indexer.runOnce();
+      const proxy = () => rows(pool, "select encode(implementation, 'hex') as i, checked_block::text as c from proxies");
+      expect(await proxy()).toEqual([{ i: A(0x1111).slice(2), c: "1" }]);
+      const upgraded = keccak256(toHex("Upgraded(address)"));
+      await pool.query("insert into logs (block_number, log_index, tx_index, address, topic0, data) values (2, 9999, 0, $1, $2, $3)",
+        [Buffer.from(A(0xb1).slice(2), "hex"), Buffer.from(upgraded.slice(2), "hex"), Buffer.alloc(0)]);
+      chain.reads.storage[`${A(0xb1)}:${EIP1967_IMPLEMENTATION_SLOT}`] = word(0x2222);
+      const at = async (n: number) => { const c = await pool.connect(); try { await writeProxies(c, n, [], chain.reads); } finally { c.release(); } };
+      await at(2);
+      expect(await proxy()).toEqual([{ i: A(0x2222).slice(2), c: "2" }]);
+      // Block 1 has no such log, and a look made for block 1 would not replace the one of block 2.
+      chain.reads.storage[`${A(0xb1)}:${EIP1967_IMPLEMENTATION_SLOT}`] = word(0x3333);
+      await at(1);
+      expect(await proxy()).toEqual([{ i: A(0x2222).slice(2), c: "2" }]);
       await indexer.close();
     });
   });

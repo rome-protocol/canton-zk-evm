@@ -1,7 +1,9 @@
 /**
  * Proxy detection for the contracts a block made (design sections 4.3 and 5.2): the EIP-1967 implementation and beacon slots, the EIP-1822 slot (all
  * read with `eth_getStorageAt` at the block) and the EIP-1167 minimal proxy, which is recognised from its code. A proxy is looked at once, in the
- * block that made it, and `checked_block` says when: a proxy that is pointed at its implementation later is not seen again by this slice.
+ * block that made it, and again in each later block that has an `Upgraded(address)` or `BeaconUpgraded(address)` log from it (the way a proxy is pointed at
+ * a new implementation, or at its first one after it was made); `checked_block` says when, so the API serves the implementation as of that block.
+ * A proxy that changes its slot without one of those logs is not seen again.
  */
 import { hexToBigInt, keccak256, toHex } from "viem";
 import type { PoolClient } from "pg";
@@ -19,6 +21,7 @@ const BEACON_IMPLEMENTATION = "0x5c60da1b";
 export type ProxyKind = "eip1967" | "eip1822" | "beacon" | "eip1167";
 export interface ProxyRow { proxy: string; kind: ProxyKind; implementation: string | null; beacon: string | null }
 
+const UPGRADE_TOPICS = [keccak256(toHex("Upgraded(address)")), keccak256(toHex("BeaconUpgraded(address)"))];
 const MINIMAL_PREFIX = "363d3d373d3d3d363d73", MINIMAL_SUFFIX = "5af43d82803e903d91602b57fd5bf3";
 
 /** The implementation an EIP-1167 minimal proxy delegates to, or null when the code is not exactly that proxy. */
@@ -68,6 +71,16 @@ export async function writeProxies(c: Pick<PoolClient, "query">, n: number, crea
   const last = new Map<string, CreatedContract>();
   for (const k of created) last.set(k.address, k);
   const todo = [...last.values()];
+  // A contract made earlier, that says in this block that its implementation changed: look at its slots again.
+  const again = await c.query(
+    `select distinct encode(l.address, 'hex') as a from logs l join contracts k on k.address = l.address
+     where l.block_number = $1 and l.topic0 = any($2::bytea[]) and (k.origin = 'genesis' or k.creation_block <= $1)`,
+    [n, UPGRADE_TOPICS.map(bytea)],
+  );
+  for (const r of again.rows) {
+    const address = "0x" + (r.a as string);
+    if (!last.has(address)) todo.push({ address, creator: address, txIndex: 0, traceAddress: [], runtimeCode: "0x", initCode: "0x" });
+  }
   const found: ProxyRow[] = [];
   for (let i = 0; i < todo.length; i += WIDTH) {
     const rows = await Promise.all(todo.slice(i, i + WIDTH).map((k) => detect(k, n, reads)));
