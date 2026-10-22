@@ -4,6 +4,8 @@ export interface LatestBlock { number: number; hash: string; timestamp: number; 
 export interface ApiStatus {
   chainId: number;
   chainName: string;
+  /** The Canton network the chain runs on, as the header names it; null when the explorer has not been told. */
+  networkName: string | null;
   coin: { symbol: string; decimals: number };
   pins: { programVK: string; rootC: string; file: string };
   /** True when reth and Canton can be read and every check the index runs passes. */
@@ -169,7 +171,7 @@ export async function search(q: string): Promise<SearchResult> {
 
 /** A page of a list, newest first. `next` is the cursor of the following page, null on the last. */
 export interface Page<T> { items: T[]; next: string | null }
-export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string;
+export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; baseFee: string; updateId: string; recordTime: string;
   /** ZisK's time for the block, and the way from the producer's cut to Canton's record time, in seconds; null where the producer's journal has no times. */
   proofSeconds: number | null; finalSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";

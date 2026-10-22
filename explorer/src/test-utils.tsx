@@ -16,7 +16,7 @@ export const T0 = Date.parse("2026-10-04T01:37:08Z") / 1000;
 /** A status answer in which everything is well: two final blocks, the second still being followed by a block being proven. */
 export function status(over: Partial<ApiStatus> = {}): ApiStatus {
   return {
-    chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 }, pins: { programVK: KEYS, rootC: KEYS, file: "session.txt" },
+    chainId: 770101, chainName: "Ostia", networkName: "DevNet", coin: { symbol: "tROME", decimals: 18 }, pins: { programVK: KEYS, rootC: KEYS, file: "session.txt" },
     ok: true, starting: false, problems: [], evm: true, canton: true,
     final: { number: 3, hash: hash(3), timestamp: T0 + 8, recordTime: "2026-10-04T01:37:23.412Z" },
     proving: { number: 4, hash: hash(4), timestamp: T0 + 16 },
@@ -79,7 +79,7 @@ const gone = (): Reply => reply({ error: NOT_FOUND }, 404);
 /** A block as the list route gives it: the number n was made 8 seconds after n - 1, and committed 7.4 seconds after it was made. */
 export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockListItem {
   const timestamp = T0 + (n - 2) * 8;
-  return { number: n, hash: hash(n), timestamp, txCount: n % 3, gasUsed: 21000 * (n % 3), gasLimit: 30000000, miner: "0x" + "00".repeat(18) + "0fee", legsCount: 0, updateId: update(n), recordTime: new Date(timestamp * 1000 + 7400).toISOString(), proofSeconds: 6.8, finalSeconds: 7.4, ...over };
+  return { number: n, hash: hash(n), timestamp, txCount: n % 3, gasUsed: 21000 * (n % 3), gasLimit: 30000000, miner: "0x" + "00".repeat(18) + "0fee", legsCount: 0, baseFee: "67300000", updateId: update(n), recordTime: new Date(timestamp * 1000 + 7400).toISOString(), proofSeconds: 6.8, finalSeconds: 7.4, ...over };
 }
 /** A final transaction as the list route gives it: the nth, in block n. */
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {

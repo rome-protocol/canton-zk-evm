@@ -53,6 +53,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const list = body(await get("/api/blocks"));
     same(list, F.page);
     for (const b of list.items) same(b, F.blockItem);
+    // The list carries each block's base fee, as the detail does: the header's bar reads it from the newest block.
+    for (const item of list.items) expect(item.baseFee).toBe(body(await get(`/api/blocks/${item.number}`)).baseFee);
     const b = body(await get("/api/blocks/2"));
     same(b, F.blockDetail);
     if (b.lifecycle) same(b.lifecycle, F.blockLifecycle);

@@ -99,7 +99,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return {
       status: serving ? 200 : 503,
       body: {
-        chainId: config.chainId, chainName: config.chainName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
+        chainId: config.chainId, chainName: config.chainName, networkName: config.networkName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),

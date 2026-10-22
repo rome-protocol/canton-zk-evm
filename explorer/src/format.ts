@@ -61,6 +61,15 @@ export function gwei(wei: string): string {
   return `${hundredths / 100n}${fraction ? `.${fraction}` : ""} gwei`;
 }
 
+/** A base fee in gwei to three significant digits ("0.0673 gwei"), or in wei when it is below a millionth of a gwei. Gwei() rounds to hundredths, which would show 0.07 for a fee of 0.0673. */
+export function baseFee(wei: string): string {
+  const v = BigInt(wei);
+  if (v === 0n) return "0 gwei";
+  if (v < 1_000_000n) return `${v} wei`;
+  const g = Number(v) / 1e9;
+  return `${g >= 1000 ? count(Math.round(g)) : String(Number(g.toPrecision(3)))} gwei`;
+}
+
 /** The size of hex data, in bytes. */
 export const bytesOf = (hex: string) => `${count(hex.length / 2)} B`;
 
