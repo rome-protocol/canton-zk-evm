@@ -5,6 +5,7 @@
  */
 import { hexToBigInt, keccak256, toHex } from "viem";
 import type { PoolClient } from "pg";
+import { RethError } from "../reth.ts";
 import type { CreatedContract } from "./calls.ts";
 import type { FinalReads } from "./reads.ts";
 
@@ -47,7 +48,9 @@ async function detect(k: CreatedContract, n: number, reads: ProxyReads): Promise
     let behind: string | null = null;
     try {
       behind = addressOfWord(await reads.call(beaconAddress, BEACON_IMPLEMENTATION, n));
-    } catch {
+    } catch (e) {
+      // Only an answer from reth (a revert) means the beacon has no implementation; a transport failure stops stage 2, which is retried.
+      if (!(e instanceof RethError && e.answered)) throw e;
       behind = null;
     }
     return { proxy: k.address, kind: "beacon", implementation: behind, beacon: beaconAddress };

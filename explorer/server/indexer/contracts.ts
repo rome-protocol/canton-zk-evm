@@ -35,7 +35,8 @@ export async function writeContracts(c: Pick<PoolClient, "query">, n: number, cr
        select t.a, 'create', t.cr, $1::bigint, t.tx, t.path::int[], t.rh, t.ch, null
        from unnest($2::bytea[], $3::bytea[], $4::int[], $5::text[], $6::bytea[], $7::bytea[]) as t(a, cr, tx, path, rh, ch)
        on conflict (address) do update set origin = 'create', creator = excluded.creator, creation_block = excluded.creation_block, creation_tx_index = excluded.creation_tx_index,
-         creation_trace_address = excluded.creation_trace_address, runtime_code_hash = excluded.runtime_code_hash, creation_code_hash = excluded.creation_code_hash, destroyed_block = null
+         creation_trace_address = excluded.creation_trace_address, runtime_code_hash = excluded.runtime_code_hash, creation_code_hash = excluded.creation_code_hash,
+         destroyed_block = case when excluded.creation_block > contracts.creation_block then null else contracts.destroyed_block end
          where contracts.origin = 'create' and contracts.creation_block <= excluded.creation_block`,
       [n, made.map((k) => bytea(k.address)), made.map((k) => bytea(k.creator)), made.map((k) => k.txIndex), made.map((k) => `{${k.traceAddress.join(",")}}`),
         made.map((k) => bytea(codeHash(k.runtimeCode))), made.map((k) => bytea(codeHash(k.initCode)))],
@@ -43,10 +44,10 @@ export async function writeContracts(c: Pick<PoolClient, "query">, n: number, cr
   }
   const targets = [...new Set(destroyed.map((d) => d.address))].sort();
   if (targets.length === 0) return;
-  const known = (await c.query("select encode(address, 'hex') as a from contracts where address = any($1::bytea[]) and destroyed_block is null", [targets.map(bytea)])).rows.map((r) => "0x" + (r.a as string));
+  const known = (await c.query("select encode(address, 'hex') as a from contracts where address = any($1::bytea[]) and destroyed_block is null and (origin = 'genesis' or creation_block <= $2)", [targets.map(bytea), n])).rows.map((r) => "0x" + (r.a as string));
   const gone: string[] = [];
   for (const a of known) if ((await reads.code(a, n)) === "0x") gone.push(a);
-  if (gone.length > 0) await c.query("update contracts set destroyed_block = $1 where address = any($2::bytea[])", [n, gone.map(bytea)]);
+  if (gone.length > 0) await c.query("update contracts set destroyed_block = $1 where address = any($2::bytea[]) and destroyed_block is null and (origin = 'genesis' or creation_block <= $1)", [n, gone.map(bytea)]);
 }
 
 /**

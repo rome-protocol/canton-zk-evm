@@ -6,6 +6,9 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import type { TraceFrame } from "./reads.ts";
+import { RethError } from "../reth.ts";
+import { reindexRange } from "./reindex.ts";
+import { stage2 } from "./stage2.ts";
 import { EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT } from "./proxies.ts";
 
 const opened: Indexer[] = [];
@@ -124,7 +127,7 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
     });
   });
 
-  it("counts nothing twice when a block is read again, and a reindex keeps what is counted", async () => {
+  it("counts nothing twice when the reader's updates are read again", async () => {
     await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 11 }, { txs: 5 }]);
       setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xc003)]);
@@ -179,6 +182,59 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
     });
   });
 
+
+  const contractRows = async (pool: Pool) => rows(pool, "select encode(address, 'hex') as a, origin, creation_block::text, destroyed_block::text, interaction_count::text, last_interaction_block::text from contracts order by address");
+
+  it("a reindex of the derived blocks keeps what is counted, the destroyed contracts and the proxies", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 11 }, { txs: 5 }, { txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xd1), make([1], 0xa1, 0xb1), make([2], 0xa1, 0xc003)]);
+      setFrames(chain, 3, 0, [frame([]), frame([0], { type: "suicide", callType: "selfdestruct", from: A(0xd1), to: A(0xa1), value: 1n })]);
+      chain.reads.storage[`${A(0xb1)}:${EIP1967_IMPLEMENTATION_SLOT}`] = word(0x1111);
+      await indexer.runOnce();
+      const before = { contracts: await contractRows(pool), proxies: await rows(pool, "select * from proxies order by proxy"), addresses: await rows(pool, stored) };
+      expect(before.contracts.find((r) => r.a === A(0xd1).slice(2))).toMatchObject({ creation_block: "1", destroyed_block: "3" });
+      expect(before.proxies.length).toBe(1);
+      for (const [from, to] of [[1, 1], [3, 3], [1, 3]] as const) {
+        await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, from, to);
+        expect({ contracts: await contractRows(pool), proxies: await rows(pool, "select * from proxies order by proxy"), addresses: await rows(pool, stored) }).toEqual(before);
+      }
+      await indexer.close();
+    });
+  });
+
+  it("a reindex of a block before a contract's destruction keeps it destroyed, and a reindex of an old self-destruct does not destroy a contract made again later", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }, { txs: 5 }]);
+      // 0xd1 is made and destroys itself in one transaction of block 1, and is made again in block 2 (the code reth gives is still empty at every block of the synthetic chain, so only block 1's own rows matter).
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xd1), frame([0, 0], { type: "suicide", callType: "selfdestruct", from: A(0xd1), to: A(0xa1), value: 1n })]);
+      setFrames(chain, 2, 2, [frame([]), make([0], 0xa1, 0xd1)]);
+      await indexer.runOnce();
+      const one = () => rows(pool, "select creation_block::text, destroyed_block::text from contracts where address = $1", [Buffer.from(A(0xd1).slice(2), "hex")]);
+      expect(await one()).toEqual([{ creation_block: "2", destroyed_block: null }]);
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, 1);
+      expect(await one()).toEqual([{ creation_block: "2", destroyed_block: null }]);
+      await indexer.close();
+    });
+  });
+
+  it("stops stage 2 when reth cannot be reached for a beacon, and records no implementation only when reth answers with an error", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb2)]);
+      chain.reads.storage[`${A(0xb2)}:${EIP1967_BEACON_SLOT}`] = "0x" + (0xbeac).toString(16).padStart(64, "0");
+      const answer = chain.reads.call;
+      chain.reads.call = async () => { throw new RethError("eth_call: cannot reach reth (timeout)"); };
+      await expect(indexer.runOnce()).rejects.toThrow("cannot reach reth");
+      expect(await rows(pool, "select count(*) as n from proxies")).toEqual([{ n: "0" }]);
+      chain.reads.call = answer;
+      await indexer.runOnce();
+      expect(await rows(pool, "select kind, implementation from proxies")).toEqual([{ kind: "beacon", implementation: null }]);
+      await indexer.close();
+    });
+  });
+
   // What each address's counters must be, counted from the fact tables.
   const recount = `
     with t(a, blk, s, r, i) as (
@@ -224,8 +280,15 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       const counted = await rows(pool, stored);
       expect(counted.length).toBeGreaterThan(0);
       expect(counted).toEqual(await rows(pool, recount));
-      // The derive cursor put back: blocks that are derived already are not counted again.
-      await pool.query("update cursors set position = 2 where stream = 'derive'");
+      // A block that is derived already is not counted again: stage 2's own guard turns it away, and a second catch-up has nothing to do.
+      const c = await pool.connect();
+      try {
+        await c.query("begin");
+        expect(await stage2(c, 1, (await chain.reads.traces(1))!, chain.reads)).toEqual({ derived: false });
+        await c.query("commit");
+      } finally {
+        c.release();
+      }
       expect(await indexer.deriveOnce()).toEqual({ state: "caught-up", indexed: 0 });
       expect(await rows(pool, stored)).toEqual(counted);
       await indexer.close();
