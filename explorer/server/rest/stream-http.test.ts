@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connect, type AddressInfo } from "node:net";
-import { createHttpServer } from "../http.ts";
+import { createHttpServer, endWithin, END_DEADLINE_MS } from "../http.ts";
 import { createStreamHub, type BlockEvent, type StreamHub } from "./stream.ts";
 
 const block = (n: number): BlockEvent => ({ number: n, hash: "0x" + n.toString(16).padStart(64, "0"), txCount: n, recordTime: null, updateId: null });
@@ -161,5 +162,37 @@ describe("GET /api/stream", () => {
     } finally {
       await new Promise((ok) => plain.close(ok));
     }
+  });
+});
+
+describe("an ended replay", () => {
+  const hashes = Array.from({ length: 50 }, (_, i) => "0x" + i.toString(16).padStart(64, "0"));
+  afterEach(() => void vi.useRealTimers());
+
+  it("is destroyed if it has not flushed within 10 s, and the client's slot is freed only when the socket closes", () => {
+    vi.useFakeTimers();
+    const res = Object.assign(new EventEmitter(), { end: vi.fn(), destroy: vi.fn(() => void res.emit("close")), write: () => true, writableLength: 0 });
+    const own = createStreamHub();
+    for (let n = 1; n <= 100; n++) own.publishBlock(block(n), hashes);
+    const attached = own.attach("s", new Set(["blocks", "txs"] as const), 0, { write: () => {}, backlog: () => 0, end: () => endWithin(res as never), destroy: () => void res.destroy() });
+    expect(attached.ok).toBe(true);
+    if (attached.ok) res.on("close", attached.detach);
+    expect(res.end).toHaveBeenCalledTimes(1);
+    expect(END_DEADLINE_MS).toBe(10_000);
+    vi.advanceTimersByTime(9_999);
+    expect(res.destroy).not.toHaveBeenCalled();
+    expect(own.count()).toBe(1); // ended, not yet closed: still counted
+    vi.advanceTimersByTime(1);
+    expect(res.destroy).toHaveBeenCalledTimes(1);
+    expect(own.count()).toBe(0);
+  });
+
+  it("is left alone when it closes on its own before the deadline", () => {
+    vi.useFakeTimers();
+    const res = Object.assign(new EventEmitter(), { end: vi.fn(), destroy: vi.fn() });
+    endWithin(res as never);
+    res.emit("close");
+    vi.advanceTimersByTime(60_000);
+    expect(res.destroy).not.toHaveBeenCalled();
   });
 });

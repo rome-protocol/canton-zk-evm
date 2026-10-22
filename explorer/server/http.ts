@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { gzip } from "node:zlib";
 import { promisify } from "node:util";
 import { textOf } from "./rest/cache.ts";
@@ -18,6 +18,15 @@ const TYPES: Record<string, string> = {
 /** The biggest request body the server reads. The faucet's is one address. */
 /** Room for a human check's token, which can be a few thousand characters. */
 const MAX_BODY = 8192;
+
+/** An ended stream that has not flushed and closed by now is destroyed: a client that stops reading cannot hold its slot. */
+export const END_DEADLINE_MS = 10_000;
+export function endWithin(res: ServerResponse, ms = END_DEADLINE_MS): void {
+  res.end();
+  const t = setTimeout(() => res.destroy(), ms);
+  t.unref();
+  res.once("close", () => clearTimeout(t));
+}
 
 /** The body as text, or null when it is bigger than the limit (what is left is thrown away). */
 function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null> {
@@ -116,7 +125,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
           res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform", "x-accel-buffering": "no", "x-content-type-options": "nosniff" });
           res.write("retry: 3000\n\n");
         };
-        const sink = { write: (c: string) => { open(); res.write(c); }, backlog: () => res.writableLength, end: () => void res.end(), destroy: () => void res.destroy() };
+        const sink = { write: (c: string) => { open(); res.write(c); }, backlog: () => res.writableLength, end: () => endWithin(res), destroy: () => void res.destroy() };
         const attached = stream.attach(clientIp(req, ipHeader), topics, lastIdOf(req.headers["last-event-id"]), sink);
         if (!attached.ok) return fail(429, attached.error, { "retry-after": "5" });
         req.socket.setNoDelay(true);
