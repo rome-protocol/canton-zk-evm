@@ -19,6 +19,9 @@ const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string): Answer => ({ status, body: { error } });
 const sortHelp = (allowed: readonly string[]) => `sort is one of ${allowed.join(", ")}.`;
 
+/** The orders each list can be read in; the first is the default. */
+export const SORTS = { addresses: ["balance", "txs"], contracts: ["interactions", "newest", "oldest"], tokens: ["holders", "transfers", "newest"] } as const;
+
 export const NO_ADDRESS = "An address is 0x and 40 hex digits.";
 export const NO_CONTRACT = "No contract is held at that address.";
 export const NO_TOKEN = "No token is held at that address.";
@@ -54,7 +57,6 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     if (raw !== "true" && raw !== "false") throw new BadRequest("verified is true or false.");
     return raw === "true";
   };
-  const SORTS = { addresses: ["balance", "txs"], contracts: ["interactions", "newest", "oldest"], tokens: ["holders", "transfers", "newest"] } as const;
   const sort = <T extends string>(q: URLSearchParams, allowed: readonly T[]): T => {
     const raw = q.get("sort");
     if (raw !== null && !(allowed as readonly string[]).includes(raw)) throw new BadRequest(sortHelp(allowed));

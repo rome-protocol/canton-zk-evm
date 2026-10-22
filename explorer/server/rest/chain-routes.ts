@@ -112,10 +112,10 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
 
   async function internal(hash: string, q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", here = await finalTx(hash);
-    if (!here) return fail(404, NOT_FOUND_HERE);
-    const after = q.get("after");
+    const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", after = q.get("after");
     if (after !== null && !/^t([0-9]{1,10}(-[0-9]{1,10})*)?$/.test(after)) throw new BadRequest('after is "t" and a trace address, such as t0-1.');
+    const here = await finalTx(hash);
+    if (!here) return fail(404, NOT_FOUND_HERE);
     if (!here.derived) return cached(ok(pick({ derived: false, items: [], next: null }, F.derivedPage)), "composite");
     const rows = await rest.txInternal(here.at, after, limit);
     return cached(ok(page(rows, limit, (c) => traceKey(c.traceAddress), F.internal, true)), raw ? "immutable" : "composite");

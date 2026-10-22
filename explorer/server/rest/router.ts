@@ -15,7 +15,7 @@ export function router(table: Table): Routed {
     for (const { segs, handler } of compiled) {
       if (segs.length !== parts.length) continue;
       let param = "";
-      if (segs.every((s, i) => (s.startsWith("{") ? ((param = parts[i]!), true) : s === parts[i]))) return () => handler(param, q);
+      if (segs.every((s, i) => (s.startsWith("{") ? ((param = parts[i]!) !== "") : s === parts[i]))) return () => handler(param, q);
     }
     return undefined;
   };
