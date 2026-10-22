@@ -1,15 +1,15 @@
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { getTxs, type ApiStatus } from "../api.ts";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { getTx, getTxs, type ApiStatus } from "../api.ts";
 import { AddToWallet } from "../components/AddToWallet.tsx";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, short, utc } from "../format.ts";
-import { listPoll, readOf, summarize, useBlocks, useInFlight } from "../stats.ts";
+import { listPoll, readOf, summarize, useBlocks, useFaucetAddress, useInFlight, usualProof } from "../stats.ts";
 import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
-import { Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
+import { type Details, Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
 
 const LEGS = "Daml legs settled with a block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 
@@ -32,6 +32,7 @@ function Strip({ status: s }: { status: ApiStatus }) {
         <span className={`sd ${d.evm}`}><i />EVM node</span>
         <span className={`sd ${d.canton}`}><i />Canton</span>
         <span className={`sd ${d.checks}`}><i />{d.checksText}</span>
+        {s.indexLag !== null && <span className={`sd ${s.indexLag > 0 ? "off" : "ok"}`}><i />Index lag {s.indexLag} block{s.indexLag === 1 ? "" : "s"}</span>}
       </div>
       <div className="strip-lines">
         <div className="sl">
@@ -89,6 +90,11 @@ export function Home() {
   const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live) });
   const flight = useInFlight(live);
   const flightRead = readOf(flight);
+  // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once.
+  const faucet = useFaucetAddress();
+  const pending = flight.data?.transactions ?? [];
+  const detail = useQueries({ queries: pending.map((p) => ({ queryKey: ["tx", p.hash], queryFn: () => getTx(p.hash), staleTime: Infinity, retry: false })) });
+  const details: Record<string, Details> = Object.fromEntries(pending.map((p, i) => [p.hash, detail[i]!.data ?? (detail[i]!.isError ? "error" : "reading")]));
   const newest = blocks.data?.items[0], first = txs.data?.items[0];
   const tries = [
     ...(newest ? [{ label: String(newest.number), q: String(newest.number) }] : []),
@@ -102,11 +108,11 @@ export function Home() {
       <Hero tries={tries} />
       <Strip status={data} />
       <Stats summary={summarize(data, blocks.data?.items ?? [], flightRead === "ok" ? flight.data! : null)} flight={flightRead} />
-      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} />
+      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} usual={usualProof(blocks.data?.items ?? [])} later={pending} />
       <AddToWallet status={data} />
       <div className="cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
-        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} />
+        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} faucet={faucet} chain={data.chainName} />
       </div>
       <CanCannot />
     </>

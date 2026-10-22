@@ -34,6 +34,14 @@ export function limitOf(raw: string | null): number {
   return Math.min(Number(raw), MAX_LIMIT);
 }
 
+export const AROUND_DEFAULT = 3, AROUND_MAX = 10;
+/** `n` from the query: how many rows on each side. Absent means the default; more than the cap is the cap; anything that is not a positive whole number is refused. */
+export function aroundOf(raw: string | null): number {
+  if (raw === null) return AROUND_DEFAULT;
+  if (!isInt(raw) || Number(raw) < 1) throw new BadRequest(`n is a whole number from 1 to ${AROUND_MAX}.`);
+  return Math.min(Number(raw), AROUND_MAX);
+}
+
 /** `before` from the query as its parts, or null when it is absent (the first page). The parts must be those the route sorts by. */
 export function cursorOf(raw: string | null, shape: readonly Part[]): (number | string)[] | null {
   if (raw === null || raw === "") return null;

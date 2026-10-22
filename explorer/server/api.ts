@@ -99,7 +99,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return {
       status: serving ? 200 : 503,
       body: {
-        chainId: config.chainId, chainName: config.chainName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
+        chainId: config.chainId, chainName: config.chainName, networkName: config.networkName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
@@ -172,7 +172,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   /** The attempts that are not final yet. Every answer says so: nothing here is a fact of the chain until its block is final. */
   async function inFlight(): Promise<Answer> {
     const f = await chain.inFlight();
-    return ok({ final: false, attempts: f.attempts.map((a) => pick(a, FIELDS.inFlightAttempt)), poolWaiting: f.poolWaiting && pick(f.poolWaiting, FIELDS.poolSample) });
+    return ok({ final: false, attempts: f.attempts.map((a) => pick(a, FIELDS.inFlightAttempt)), poolWaiting: f.poolWaiting && pick(f.poolWaiting, FIELDS.poolSample), transactions: f.transactions.map((t) => pick(t, FIELDS.inFlightTx)) });
   }
 
   async function transaction(hash: string): Promise<Answer> {

@@ -1,8 +1,11 @@
+import type { Lifecycle } from "./block-times.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
 export interface ApiStatus {
   chainId: number;
   chainName: string;
+  /** The Canton network the chain runs on, as the header names it; null when the explorer has not been told. */
+  networkName: string | null;
   coin: { symbol: string; decimals: number };
   pins: { programVK: string; rootC: string; file: string };
   /** True when reth and Canton can be read and every check the index runs passes. */
@@ -168,20 +171,30 @@ export async function search(q: string): Promise<SearchResult> {
 
 /** A page of a list, newest first. `next` is the cursor of the following page, null on the last. */
 export interface Page<T> { items: T[]; next: string | null }
-export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string }
-export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null }
+export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; baseFee: string; updateId: string; recordTime: string;
+  /** ZisK's time for the block, and the way from the producer's cut to Canton's record time, in seconds; null where the producer's journal has no times. */
+  proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
+export type BlockFilter = "all" | "transactions" | "empty";
+export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null }
 /** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */
 export interface InFlightAttempt {
   number: number; strategy: string; cutReason: string; stage: "cut" | "built" | "proving" | "proved" | "submitted" | "committed";
   txCount: number | null; poolWaiting: number | null;
   cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null; outcome: string | null;
 }
-export interface InFlight { final: false; attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null }
+/** A transaction that is not final: waiting in reth's pool, or in a block being proven. `at` is when the explorer accepted it (UTC, ISO). */
+export interface InFlightTx { hash: string; stage: "waiting" | "proving"; at: string }
+export interface InFlight { final: false; attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null; transactions: InFlightTx[] }
 
 export const getBlocks = async (limit: number) => (await call(`/api/blocks?limit=${limit}`, [200])).body as Page<BlockListItem>;
 export const getTxs = async (limit: number) => (await call(`/api/txs?limit=${limit}`, [200])).body as Page<TxListItem>;
 export const getInFlight = async () => (await call("/api/in-flight", [200])).body as InFlight;
 
+/** What /api/blocks/:id adds to a block's page: the producer's times for the attempt that made it (null when the journal holds none) and its gateway legs. */
+export interface BlockDetail { number: number; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null }
+export const getBlockDetail = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockDetail;
+/** The faucet's own address, or null when it has none (the faucet is off). */
+export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).body as { address?: string | null }).address ?? null;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;
@@ -199,11 +212,18 @@ export interface UpdateDetail extends UpdateItem {
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
 }
 
+/** An update in the window around one. The template and the choice are what the producer's log says it submitted, null where the log does not hold the update; `txCount` is the block's. */
+export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null; txCount: number | null }
+
 const PAGE = 25;
 const cursor = (name: string, c: string | null) => (c ? `&${name}=${encodeURIComponent(c)}` : "");
 /** The paged lists. `before` is the cursor of a list that runs newest first, `after` of one that runs in order; null asks for the first page. */
-export const getBlockPage = async (before: string | null, limit = PAGE) => (await call(`/api/blocks?limit=${limit}${cursor("before", before)}`, [200])).body as Page<BlockListItem>;
+export const getBlockPage = async (before: string | null, limit = PAGE, filter: BlockFilter = "all") => (await call(`/api/blocks?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as Page<BlockListItem>;
+/** The address of the blocks as a file: the newest blocks of the filter, with the list's columns. */
+export const blocksCsvPath = (filter: BlockFilter) => `/api/blocks?format=csv&filter=${filter}`;
 export const getBlockTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
 export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem>;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
 export const getUpdate = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}`, [200])).body as UpdateDetail;
+/** The updates just newer and just older than one, by the list's key, newest first, the update itself among them. */
+export const getUpdatesAround = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/around`, [200])).body as { items: UpdateAroundItem[] };

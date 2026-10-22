@@ -16,6 +16,7 @@ export const CACHE_CONTROL: Record<Rule, string> = {
 const texts = new WeakMap<object, string>();
 /** A body as text, serialised once: the tag is made from the same text that is sent. */
 export function textOf(body: unknown): string {
+  if (typeof body === "string") return body;
   if (typeof body !== "object" || body === null) return JSON.stringify(body);
   let text = texts.get(body);
   if (text === undefined) { text = JSON.stringify(body); texts.set(body, text); }

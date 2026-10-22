@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { fakeApi, renderApp, route, T0, status, reply } from "../test-utils.tsx";
+import { blockItem, fakeApi, page, renderApp, route, T0, status, reply } from "../test-utils.tsx";
 
 describe("the header", () => {
   it("links only the pages that exist, in the order of the approved screens, and marks the one that is open; the API link opens the API's description", async () => {
@@ -54,6 +54,35 @@ describe("the header", () => {
     expect(bar.getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
     expect(bar.getByRole("link", { name: "block 4" })).toHaveAttribute("href", "/block/4");
     expect(bar.getByText("Chain 770101 · coin tROME")).toBeInTheDocument();
+  });
+
+  it("names the network in a pill, and says that the coin is a test coin, when the status names a network", async () => {
+    fakeApi(route({}));
+    renderApp("/blocks");
+    expect(await within(screen.getByRole("banner")).findByText("DevNet")).toHaveClass("pill");
+    expect(within(screen.getByRole("banner")).queryByText("chain 770101")).toBeNull();
+    expect(within(await screen.findByRole("region", { name: "Chain at a glance" })).getByText("tROME is a test coin. It has no value.")).toBeInTheDocument();
+  });
+
+  it("names no network, and does not call the coin a test coin, when the status names none", async () => {
+    fakeApi(route({ status: () => reply(status({ networkName: null })) }));
+    renderApp("/blocks");
+    const bar = within(await screen.findByRole("region", { name: "Chain at a glance" }));
+    expect(bar.getByText("All checks ok")).toBeInTheDocument();
+    expect(bar.queryByText(/test coin/)).toBeNull();
+    expect(screen.queryByText("DevNet")).toBeNull();
+  });
+
+  it("reads the base fee from the newest final block, to three digits, and says so when it cannot be read", async () => {
+    fakeApi(route({ blocks: () => reply(page([blockItem(3, { baseFee: "67300000" })])) }));
+    renderApp("/blocks");
+    expect(await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("Base fee 0.0673 gwei")).toBeInTheDocument();
+  });
+
+  it("says the base fee cannot be read when the blocks cannot be, and that none is known for a chain with no block", async () => {
+    fakeApi(route({ blocks: () => reply({ error: "no" }, 500) }));
+    renderApp("/faucet");
+    expect(await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("Base fee cannot be read right now")).toBeInTheDocument();
   });
 
   it("names a failed check in the bar", async () => {

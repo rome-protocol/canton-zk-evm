@@ -353,3 +353,9 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .note { border: 1px solid var(--canton-line); background: var(--canton-tint); border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px; }
 .crumbs { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
 .updid { font-size: 13.5px; word-break: break-all; margin: 4px 0 14px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; border-right: 1px solid var(--line); padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 500; background: transparent; color: var(--ink); cursor: pointer; }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--canton-tint); color: var(--canton); font-weight: 600; }
+.csv { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font-size: 13px; background: var(--surface); color: var(--ink); text-decoration: none; }
+.amber { color: var(--amber); }

@@ -11,7 +11,7 @@ describe("the search page", () => {
     const m = { ...match("contract", "Block Three", null, 0xcb), path: "/block/3" };
     fakeApi(route({ search: () => reply({ path: m.path, matches: [m] }), block: () => reply(block()) }));
     renderApp("/search?q=block");
-    expect(await screen.findByRole("heading", { name: "Block 3" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Block #3" })).toBeInTheDocument();
   });
 
   it("lists the matches when a name matched more than one, tokens first, each with its kind and a link", async () => {
