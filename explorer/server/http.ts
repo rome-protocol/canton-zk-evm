@@ -61,6 +61,9 @@ export interface RpcDoor { handler: PublicRpc; ipHeader: string | null }
 const JSON_TYPE = { "content-type": "application/json" };
 const CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" };
 
+/** The Etherscan door is read from a browser too (ethers' EtherscanProvider), by any origin, as Etherscan's own API is. */
+const ETHERSCAN_CORS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "86400" };
+
 /** The client's address: the socket's, or the last one in the trusted header (a proxy adds the client's address at the end). */
 function clientIp(req: IncomingMessage, ipHeader: string | null): string {
   const sent = ipHeader ? req.headers[ipHeader] : undefined;
@@ -137,27 +140,36 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         return void open();
       }
       if (pathname === "/api" || pathname === "/v2/api") {
-        // The Etherscan door: its own rate, and its own answer when the client is over it (HTTP 200, as Etherscan gives, and a Retry-After).
-        const send = (status: number, body: unknown, headers: Record<string, string> = {}) =>
-          void res.writeHead(status, { ...JSON_TYPE, "cache-control": "no-store", ...headers }).end(JSON.stringify(body));
+        // The Etherscan door: its own rate, and its own answer when the client is over it (HTTP 200, as Etherscan gives, and a Retry-After). Any origin may read it, as
+        // Etherscan's allows, and a big answer (a list is up to 10,000 rows) goes gzipped to a client that accepts it, off the event loop, as the REST routes' do.
+        const send = async (status: number, body: unknown, headers: Record<string, string> = {}) => {
+          const text = JSON.stringify(body);
+          const out = { ...JSON_TYPE, ...ETHERSCAN_CORS, "cache-control": "no-store", vary: "accept-encoding", ...headers };
+          if (text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
+            const zipped = await gzipAsync(text);
+            return void res.writeHead(status, { ...out, "content-encoding": "gzip", "content-length": zipped.length }).end(method === "HEAD" ? undefined : zipped);
+          }
+          res.writeHead(status, out).end(text);
+        };
+        if (method === "OPTIONS") return void res.writeHead(204, ETHERSCAN_CORS).end();
         const ip = clientIp(req, ipHeader);
         const wait = limits.etherscan.take(ip);
-        if (wait !== null) return send(200, ETHERSCAN_REFUSED, retryAfter(wait));
+        if (wait !== null) return await send(200, ETHERSCAN_REFUSED, retryAfter(wait));
         const query = new URL(target, "http://explorer").searchParams;
         let sent: string | undefined;
         if (method === "POST") {
           // The action may be in the form, so a body is read up to a verification's 500 KB; one that is not a verification may be no bigger than the other routes' bodies.
-          if (Number(req.headers["content-length"] ?? 0) > MAX_VERIFY_BODY) return send(200, verificationTooBig(), { connection: "close" });
+          if (Number(req.headers["content-length"] ?? 0) > MAX_VERIFY_BODY) return await send(200, verificationTooBig(), { connection: "close" });
           const body = await readBody(req, MAX_VERIFY_BODY);
-          if (body === null || (body.length > MAX_BODY && !isVerification(query, body))) return send(200, verificationTooBig(), { connection: "close" });
+          if (body === null || (body.length > MAX_BODY && !isVerification(query, body))) return await send(200, verificationTooBig(), { connection: "close" });
           sent = body;
         }
         if (isVerification(query, sent)) {
           const later = limits.verification.take(ip);
-          if (later !== null) return send(200, verificationRefused(later), retryAfter(later));
+          if (later !== null) return await send(200, verificationRefused(later), retryAfter(later));
         }
         const { status, body, headers } = await api(method, target, sent, ip);
-        return send(status, body, { ...headers });
+        return await send(status, body, { ...headers });
       }
       // The pages' REST routes share one rate per client, and `/healthz` is in it: it answers the same as `/api/status` (reth and Canton on every call), so it must not be a way round the limit. The rate is far above any proxy's probe. A faucet request (`POST /api/faucet`) has the faucet's own limits, and the live stream its own count; `GET /api/faucet` and the ticket route read from reth, so they take a token like the rest.
       if ((pathname.startsWith("/api/") && !(method === "POST" && pathname === "/api/faucet")) || pathname === "/healthz") {
