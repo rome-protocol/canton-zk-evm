@@ -10,17 +10,27 @@ export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;
 
 /**
- * The part kinds a key can have: a non-negative integer (in a JavaScript safe range), a token of lowercase letters and digits (a 0x address, or a decimal
- * number too large for an integer), or a trace address, "t" and its indexes joined by "-" (t0-1).
+ * The part kinds a key can have, each the shape of the column it is compared with, so that a key the database would refuse is a 400 here:
+ * `int` a non-negative integer in a JavaScript safe range (a bigint column), `int4` one that fits a 32-bit column, `uint` a decimal number up to 2^256 - 1 (a token
+ * amount or id), `addr` a lowercase 0x address, `text` a token of lowercase letters and digits (an update id), or a trace address, "t" and its indexes
+ * (each a 32-bit integer) joined by "-" (t0-1).
  */
-export type Part = "int" | "text" | "trace";
-const INT = /^(0|[1-9][0-9]{0,15})$/, TEXT = /^[0-9a-z]{1,128}$/, TRACE = /^t([0-9]{1,10}(-[0-9]{1,10})*)?$/;
-const FITS: Record<Part, (p: string) => boolean> = { int: (p) => INT.test(p) && Number.isSafeInteger(Number(p)), text: (p) => TEXT.test(p), trace: (p) => TRACE.test(p) };
+export type Part = "int" | "int4" | "uint" | "addr" | "text" | "trace";
+const INT = /^(0|[1-9][0-9]{0,15})$/, TEXT = /^[0-9a-z]{1,128}$/, ADDR = /^0x[0-9a-f]{40}$/, UINT = /^(0|[1-9][0-9]{0,77})$/, TRACE = /^t([0-9]{1,10}(-[0-9]{1,10})*)?$/;
+const INT4_MAX = 2 ** 31 - 1;
+const isInt = (p: string): boolean => INT.test(p) && Number.isSafeInteger(Number(p));
+const isInt4 = (p: string): boolean => /^(0|[1-9][0-9]{0,9})$/.test(p) && Number(p) <= INT4_MAX;
+/** True for "t" and indexes that each fit a 32-bit integer. */
+export const isTrace = (p: string): boolean => TRACE.test(p) && p.slice(1).split("-").every((i) => i === "" || isInt4(i));
+const FITS: Record<Part, (p: string) => boolean> = {
+  int: isInt, int4: isInt4, uint: (p) => UINT.test(p) && BigInt(p) < 2n ** 256n, addr: (p) => ADDR.test(p), text: (p) => TEXT.test(p), trace: isTrace,
+};
+const WORDS: Record<Part, string> = { int: "a number", int4: "a number", uint: "a number", addr: "an address", text: "a key", trace: "a trace address" };
 
 /** `limit` from the query: absent means the default; more than the cap is the cap; anything that is not a positive whole number is refused. */
 export function limitOf(raw: string | null): number {
   if (raw === null) return DEFAULT_LIMIT;
-  if (!INT.test(raw) || Number(raw) < 1) throw new BadRequest(`limit is a whole number from 1 to ${MAX_LIMIT}.`);
+  if (!isInt(raw) || Number(raw) < 1) throw new BadRequest(`limit is a whole number from 1 to ${MAX_LIMIT}.`);
   return Math.min(Number(raw), MAX_LIMIT);
 }
 
@@ -29,8 +39,8 @@ export function cursorOf(raw: string | null, shape: readonly Part[]): (number | 
   if (raw === null || raw === "") return null;
   const parts = raw.split(":");
   const ok = parts.length === shape.length && parts.every((p, i) => FITS[shape[i] as Part](p));
-  if (!ok) throw new BadRequest(`before is ${shape.map((s) => (s === "int" ? "a number" : s === "trace" ? "a trace address" : "a key")).join(" then ")}, joined by ":".`);
-  return parts.map((p, i) => (shape[i] === "int" ? Number(p) : p));
+  if (!ok) throw new BadRequest(`before is ${shape.map((s) => WORDS[s]).join(" then ")}, joined by ":".`);
+  return parts.map((p, i) => (shape[i] === "int" || shape[i] === "int4" ? Number(p) : p));
 }
 
 export const keyOf = (...parts: (number | string)[]): string => parts.join(":");

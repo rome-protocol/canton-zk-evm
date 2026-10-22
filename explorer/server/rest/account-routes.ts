@@ -74,7 +74,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function addressList(q: URLSearchParams): Promise<Answer> {
     const by = sort<AddressSort>(q, SORTS.addresses), limit = limitOf(q.get("limit"));
-    const before = cursorOf(q.get("before"), by === "balance" ? ["text", "text"] : ["int", "text"]);
+    const before = cursorOf(q.get("before"), by === "balance" ? ["uint", "addr"] : ["int", "addr"]);
     const rows = await accounts.addresses(by, before, limit);
     return cached(ok(page(rows, limit, (a) => keyOf(by === "balance" ? (a.balance as string) : a.txCount, a.address), F.addressItem, await isDerived())), "list");
   }
@@ -93,7 +93,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function addressTxs(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
     const rows = await accounts.addressTxs(a, before, limit);
     const p = pageOf(rows, limit, (t) => keyOf(t.block, t.index));
     return cached(ok(pick({ items: p.items.map((t) => pick(t, F.txItem)), next: p.next }, F.page)), "list");
@@ -101,21 +101,21 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function addressInternal(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int", "trace"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "trace"]);
     const rows = await accounts.addressInternal(a, before, limit);
     return cached(ok(page(rows, limit, (c) => keyOf(c.block, c.txIndex, "t" + c.traceAddress.join("-")), F.addressInternal, await isDerived())), "list");
   }
 
   async function addressTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int", "int"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]);
     const rows = await accounts.addressTransfers(a, before, limit);
     return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
   }
 
   async function addressTokens(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), after = cursorOf(q.get("after"), ["text", "text"]);
+    const limit = limitOf(q.get("limit")), after = cursorOf(q.get("after"), ["addr", "uint"]);
     const rows = await accounts.holdings(a, after, limit);
     return cached(ok(page(rows, limit, (h) => keyOf(h.token, h.tokenId), F.holding, await isDerived())), "composite");
   }
@@ -129,7 +129,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function contractList(q: URLSearchParams): Promise<Answer> {
     const by = sort<ContractSort>(q, SORTS.contracts), limit = limitOf(q.get("limit")), verified = verifiedOf(q.get("verified"));
-    const before = cursorOf(q.get("before"), by === "interactions" ? ["int", "text"] : ["int", "int", "text"]);
+    const before = cursorOf(q.get("before"), by === "interactions" ? ["int", "addr"] : ["int", "int4", "addr"]);
     const rows = await accounts.contracts(by, verified, before, limit);
     const key = (c: (typeof rows)[number]) => (by === "interactions" ? keyOf(c.interactionCount, c.address) : keyOf(c.creationBlock ?? 0, c.creationTxIndex ?? 0, c.address));
     return cached(ok(page(rows, limit, key, F.contractItem, await isDerived())), "list");
@@ -152,7 +152,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   }
 
   async function tokenList(q: URLSearchParams): Promise<Answer> {
-    const by = sort<TokenSort>(q, SORTS.tokens), limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "text"]);
+    const by = sort<TokenSort>(q, SORTS.tokens), limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "addr"]);
     const rows = await accounts.tokens(by, before, limit);
     const key = (t: (typeof rows)[number]) => keyOf(by === "holders" ? t.holderCount : by === "transfers" ? t.transferCount : t.firstTransferBlock, t.address);
     return cached(ok(page(rows, limit, key, F.tokenItem, await isDerived())), "list");
@@ -167,7 +167,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function tokenHolders(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["text", "text", "text"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["uint", "addr", "uint"]);
     if (!(await accounts.token(a))) return missing(NO_TOKEN);
     const rows = await accounts.holders(a, before, limit);
     return cached(ok(page(rows, limit, (h) => keyOf(h.value, h.holder, h.tokenId), F.holder, await isDerived())), "list");
@@ -175,7 +175,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function tokenTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int", "int"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]);
     if (!(await accounts.token(a))) return missing(NO_TOKEN);
     const rows = await accounts.tokenTransfers(a, before, limit);
     return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
@@ -183,7 +183,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   // The legs are stage 1 facts: they are complete as soon as their block is final.
   async function legList(q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
     const p = pageOf(await accounts.legs(before, limit), limit, (l) => keyOf(l.block, l.legIndex));
     return cached(ok(pick({ items: p.items.map((l) => pick(l, F.legItem)), next: p.next }, F.page)), "list");
   }

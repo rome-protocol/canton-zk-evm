@@ -163,7 +163,7 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   });
 
   it("refuses a limit or a key that is not one", async () => {
-    for (const bad of ["/api/blocks?limit=0", "/api/blocks?limit=abc", "/api/blocks?before=-1", "/api/blocks?before=1:2", "/api/txs?before=5", "/api/canton/updates?before=1:ZZ", `/api/txs/${tx(2, 0)}/internal?after=x`]) {
+    for (const bad of ["/api/blocks?limit=0", "/api/blocks?limit=abc", "/api/blocks?before=-1", "/api/blocks?before=1:2", "/api/txs?before=5", "/api/canton/updates?before=1:ZZ", "/api/txs?before=5:9999999999", "/api/blocks/2/transactions?after=9999999999", `/api/txs/${tx(2, 0)}/internal?after=t9999999999`, `/api/txs/${tx(2, 0)}/internal?after=x`]) {
       expect((await get(bad)).status, bad).toBe(400);
     }
     expect((await get("/api/blocks/xyz")).status).toBe(400);

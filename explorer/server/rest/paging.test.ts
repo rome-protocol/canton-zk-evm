@@ -25,6 +25,21 @@ describe("before", () => {
   });
 });
 
+describe("parts that are the shape of their column", () => {
+  const addr = "0x" + "ab".repeat(20);
+  it("keeps a 32-bit part within 2^31 - 1, so the database never refuses a key", () => {
+    expect(cursorOf("5:2147483647", ["int", "int4"])).toEqual([5, 2147483647]);
+    for (const bad of ["5:2147483648", "5:9999999999", "5:00"]) expect(() => cursorOf(bad, ["int", "int4"]), bad).toThrow(BadRequest);
+    expect(() => cursorOf("t9999999999", ["trace"])).toThrow(BadRequest);
+    expect(cursorOf("t2147483647-0", ["trace"])).toEqual(["t2147483647-0"]);
+  });
+  it("takes an amount as decimal digits only, and an address as 0x and 40 lowercase hex digits", () => {
+    expect(cursorOf(`123:${addr}`, ["uint", "addr"])).toEqual(["123", addr]);
+    for (const bad of [`zz:${addr}`, `1e5:${addr}`, `${"9".repeat(78)}:${addr}`, "1:0x00", `1:0xzz${"00".repeat(19)}`, `1:${addr.toUpperCase()}`, `1:${addr.replace("0x", "")}`]) expect(() => cursorOf(bad, ["uint", "addr"]), bad).toThrow(BadRequest);
+    expect(cursorOf(`${"9".repeat(77)}:${addr}`, ["uint", "addr"])).toEqual(["9".repeat(77), addr]);
+  });
+});
+
 describe("a trace address part", () => {
   it("is t and the indexes, and nothing else", () => {
     expect(cursorOf("5:2:t", ["int", "int", "trace"])).toEqual([5, 2, "t"]);

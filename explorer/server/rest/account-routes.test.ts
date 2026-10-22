@@ -315,6 +315,12 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     for (const p of ["/api/addresses", `/api/addresses/${A}`, "/api/contracts", `/api/tokens/${T1}`]) expect(body(await get(p)).derived, p).toBe(true);
   });
 
+  it("answers 400 to a key that the database would refuse", async () => {
+    for (const bad of ["/api/addresses?sort=balance&before=zz:" + A, `/api/addresses/${A}/tokens?after=${T1}:zz`, `/api/addresses/${A}/tokens?after=0xzz${"00".repeat(19)}:0`, "/api/contracts?before=5:9999999999:" + A, `/api/tokens/${T1}/holders?before=1:zz:0`]) {
+      expect((await get(bad)).status, bad).toBe(400);
+    }
+  });
+
   it("does not say a contract or a token is absent while stage 2 has not reached its block", async () => {
     const X = "0x" + "e7".repeat(20);
     const calls = [`/api/contracts/${X}`, `/api/contracts/${X}/source`, `/api/tokens/${X}`, `/api/tokens/${X}/holders`, `/api/tokens/${X}/transfers`];

@@ -8,7 +8,7 @@ import { cached } from "./cache.ts";
 import type { ChainRest } from "./chain-rest.ts";
 import { traceKey } from "./chain-rest.ts";
 import { REST_FIELDS as F, pick } from "./fields.ts";
-import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
+import { BadRequest, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import { traceOf, type CallFrame } from "./trace.ts";
 import type { Reth } from "../reth.ts";
@@ -68,13 +68,13 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
 
   async function blockTxs(id: string, q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int"]), n = await finalBlock(id);
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int4"]), n = await finalBlock(id);
     if (n === undefined) return fail(404, NOT_FOUND_HERE);
     return cached(ok(page(await rest.blockTxs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (t) => keyOf(t.index), F.txItem)), "composite");
   }
 
   async function blockLegs(id: string, q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int"]), n = await finalBlock(id);
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int4"]), n = await finalBlock(id);
     if (n === undefined) return fail(404, NOT_FOUND_HERE);
     return cached(ok(page(await rest.blockLegs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (l) => keyOf(l.legIndex), F.leg)), "composite");
   }
@@ -87,7 +87,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
 
   async function txs(q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int"]);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
     return cached(ok(page(await rest.txs(before, limit), limit, (t) => keyOf(t.block, t.index), F.txItem)), "list");
   }
 
@@ -103,7 +103,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
 
   async function logs(hash: string, q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int"]), raw = q.get("raw") === "1", here = await finalTx(hash);
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int4"]), raw = q.get("raw") === "1", here = await finalTx(hash);
     if (!here) return fail(404, NOT_FOUND_HERE);
     const rows = await rest.txLogs(here.at, (after?.[0] as number | undefined) ?? null, limit);
     // Logs are decoded once a contract is verified; until then `decoded` is null. The raw form has no such field, and a final transaction's raw logs never change.
@@ -113,7 +113,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
 
   async function internal(hash: string, q: URLSearchParams): Promise<Answer> {
     const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", after = q.get("after");
-    if (after !== null && !/^t([0-9]{1,10}(-[0-9]{1,10})*)?$/.test(after)) throw new BadRequest('after is "t" and a trace address, such as t0-1.');
+    if (after !== null && !isTrace(after)) throw new BadRequest('after is "t" and a trace address, such as t0-1.');
     const here = await finalTx(hash);
     if (!here) return fail(404, NOT_FOUND_HERE);
     if (!here.derived) return cached(ok(pick({ derived: false, items: [], next: null }, F.derivedPage)), "composite");
@@ -122,7 +122,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
 
   async function transfers(hash: string, q: URLSearchParams): Promise<Answer> {
-    const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", after = afterOf(q, ["int", "int"]), here = await finalTx(hash);
+    const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", after = afterOf(q, ["int4", "int4"]), here = await finalTx(hash);
     if (!here) return fail(404, NOT_FOUND_HERE);
     if (!here.derived) return cached(ok(pick({ derived: false, items: [], next: null }, F.derivedPage)), "composite");
     const rows = await rest.txTransfers(here.at, after, limit);
