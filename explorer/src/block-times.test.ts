@@ -20,7 +20,7 @@ describe("ago", () => {
   it("tells seconds, minutes and hours", () => {
     expect(ago("2026-10-20T17:59:48Z", now)).toBe("12 s ago");
     expect(ago("2026-10-20T17:20:00Z", now)).toBe("40 min ago");
-    expect(ago("2026-10-20T12:49:17Z", now)).toBe("5 h 11 min ago");
+    expect(ago("2026-10-20T12:49:17Z", now)).toBe("5 h 10 min ago");
     expect(ago("2026-10-18T12:00:00Z", now)).toBe("2 d 6 h ago");
   });
   it("never says the future", () => expect(ago("2026-10-20T18:00:05Z", now)).toBe("0 s ago"));
