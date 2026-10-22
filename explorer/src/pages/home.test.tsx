@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { ApiStatus, BlockListItem } from "../api.ts";
+import type { ApiStatus, BlockListItem, StatsSummary, StatsWindow } from "../api.ts";
+import { series, summary } from "./stats-fixtures.ts";
 import { addr, blockItem, fakeApi, hash, inFlight, page, renderApp, reply, route, status, tx, txItem, update } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:37:27Z");
@@ -277,36 +278,99 @@ describe("the list of latest transactions, with those not final yet", () => {
 /** The card whose label begins with `label`; the first one when two do. */
 const tile = (label: string) => Array.from(screen.getByRole("region", { name: "Numbers" }).querySelectorAll(".stat")).find((e) => e.querySelector(".stat-k")!.textContent!.startsWith(label))! as HTMLElement;
 
-describe("the numbers, from what the API gives today", () => {
-  it("shows the height, the times of the newest blocks from the producer's log, their transactions and what is not final yet", async () => {
-    await home({}, 200, [blockItem(3, { finalSeconds: 8.5, proofSeconds: 7.4 }), blockItem(2, { finalSeconds: 8.5, proofSeconds: 7.4 })]);
-    expect(tile("Block height")).toHaveTextContent("3final on Canton · block 4 is being proven");
-    expect(tile("Time to final")).toHaveTextContent("latest 2 blocks8.5 s p95 8.5 sfrom the producer's cut to Canton's record time");
-    expect(tile("Proof time")).toHaveTextContent("latest 2 blocks7.4 s p95 7.4 sZisK, one proof per block, 2 blocks · producer log");
-    expect(tile("Transactions ·")).toHaveTextContent("2in 2 final blocks");
+/** The stats routes of the fake chain: the hour and the day have their own answers, the series is the median time to final by the hour over seven days. */
+const statsRoute = (h: { hour?: Partial<StatsSummary>; day?: Partial<StatsSummary>; failing?: boolean; series?: (i: number, n: number) => number | null } = {}) => (path: string) => {
+  if (h.failing) return reply({ error: "stats are down" }, 500);
+  const u = new URL(path, "http://x");
+  if (u.pathname === "/api/stats/series") return reply(series("time_to_final_p50", h.series ?? (() => 8.5), { window: u.searchParams.get("window") as StatsWindow }));
+  const w = u.searchParams.get("window") as StatsWindow;
+  return reply(summary({ window: w, ...(w === "1h" ? h.hour : h.day) }));
+};
+const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => ReturnType<typeof reply>) => async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  const calls = fakeApi(route({ status: () => reply(status()), stats: statsRoute(h), ...(flight && { inFlight: flight }) }));
+  renderApp("/");
+  await screen.findByText("Final on Canton");
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  return calls;
+};
+
+describe("the numbers, from the stats routes", () => {
+  it("shows the last hour's times from the hour's summary: time to final, proof time and Canton commit time, each with its 95th percentile", async () => {
+    await withStats({ hour: { timeToFinal: { median: 8.5, p95: 8.7, samples: 12, capped: false }, proofTime: { median: 7.4, p95: 7.7, samples: 4, capped: false, bySize: [] }, commitTime: { median: 0.59, p95: 0.6, samples: 4, capped: false } } })();
+    expect(tile("Time to final · last hour")).toHaveTextContent("8.5 s p95 8.7 saccepted to final on Canton, 12 transactions");
+    expect(tile("Proof time · last hour")).toHaveTextContent("7.4 s p95 7.7 sZisK, one proof per block, 4 blocks");
+    expect(tile("Canton commit time · last hour")).toHaveTextContent("0.59 s p95 0.60 ssent to Canton's record time");
   });
 
-  it("shows a dash and says why when the producer's log has no times for the blocks", async () => {
-    await home({}, 200, [blockItem(3, { finalSeconds: null, proofSeconds: null, commitSeconds: null })]);
-    expect(tile("Time to final")).toHaveTextContent("—the producer's log has no times for these blocks");
-    expect(tile("Proof time")).toHaveTextContent("—the producer's log has no times for these blocks");
+  it("shows the rate now with the busiest minute of the day, and says when it was", async () => {
+    await withStats({ day: { tps: { now: 0.03, peak: 10.2, peakAt: "2026-10-04T12:49:00.000Z" } } })();
+    expect(tile("Transactions per second")).toHaveTextContent("0.03 now peak 10.2peak: the busiest minute in 24 h, 12:49 UTC");
   });
 
-  it("fills the Canton commit time from the latest blocks, the producer's submit to Canton's record time, and says so", async () => {
-    await home({}, 200, [blockItem(3, { commitSeconds: 0.9 }), blockItem(2, { commitSeconds: 0.7 })]);
-    expect(tile("Canton commit time")).toHaveTextContent("0.9");
-    expect(tile("Canton commit time")).toHaveTextContent("latest 2 blocks");
-    expect(tile("Canton commit time")).toHaveTextContent("producer log");
+  it("shows a rate of nothing as 0, and no peak when the day had no transaction", async () => {
+    await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, successRate: null, accepted: 0 } } })();
+    expect(tile("Transactions per second")).toHaveTextContent("0 nowno transaction in 24 h");
+    expect(tile("Transactions per second")).not.toHaveTextContent("peak");
   });
 
-  it("shows a dash and names the missing source for each number that needs the stats rollups, and invents none", async () => {
-    await home();
-    for (const label of ["Transactions per second", "Lost transactions", "Success rate", "Time to final · 72 h"]) {
+  it("counts the day's transactions and blocks, and gives the success rate with the reverted ones, cut and never rounded up", async () => {
+    await withStats({ day: { txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017 }, blocks: { count: 21, empty: 0, busy: 0, bySize: [] } } })();
+    expect(tile("Transactions · 24 h")).toHaveTextContent("1,017in 21 blocks, each one Canton transaction");
+    expect(tile("Success rate")).toHaveTextContent("99.9%1,016 of 1,017 final transactions; 1 reverted");
+  });
+
+  it("shows no success rate for a day with no transaction, and never makes one up", async () => {
+    await withStats({ day: { txs: { count: 0, failed: 0, successRate: null, accepted: 0 }, blocks: { count: 0, empty: 0, busy: 0, bySize: [] } } })();
+    expect(tile("Success rate").querySelector(".stat-v")!.textContent).toBe("—");
+    expect(tile("Success rate")).toHaveTextContent("no transaction in 24 h");
+  });
+
+  it("says none are lost, in green, and says how many and where to look when some are", async () => {
+    await withStats()();
+    expect(tile("Lost transactions").querySelector(".stat-v")!.textContent).toBe("0");
+    expect(tile("Lost transactions").querySelector(".stat-v")).toHaveClass("ok");
+    expect(tile("Lost transactions")).toHaveTextContent("Accepted by Ostia and never made final");
+  });
+
+  it("names lost transactions in red and leads to the stats page, which lists them with the reason", async () => {
+    await withStats({ day: { lost: { window: 2, total: 2, listed: [] } } })();
+    const t = tile("Lost transactions");
+    expect(t.querySelector(".stat-v")!.textContent).toBe("2");
+    expect(t.querySelector(".stat-v")).toHaveClass("bad");
+    expect(within(t).getByRole("link", { name: /Stats/ })).toHaveAttribute("href", "/stats");
+  });
+
+  it("draws the median time to final of the last 72 hours, one bar an hour, with a gap for an hour with no block", async () => {
+    await withStats({ series: (i) => (i % 10 === 3 ? null : 8 + (i % 4)) })();
+    const t = tile("Time to final · 72 h");
+    expect(t.querySelectorAll("svg rect")).toHaveLength(65); // the last 72 of 168 hourly points, and 7 of them (every 10th from 103) have no block
+    expect(t.querySelector("svg")).toHaveAccessibleName(/last 72 hours/);
+    expect(t).toHaveTextContent("median per hour; gaps are hours with no blocks");
+  });
+
+  it("shows a dash and says why for every number the stats cannot give, while the rest of the page stays", async () => {
+    await withStats({ failing: true })();
+    for (const label of ["Time to final · last hour", "Proof time", "Canton commit time", "Transactions per second", "Transactions · 24 h", "Lost transactions", "Success rate", "Time to final · 72 h"]) {
       const t = tile(label);
-      expect(t, label).toHaveTextContent("—");
-      expect(t, label).toHaveTextContent("not served yet: the API has no stats route for it");
       expect(t.querySelector(".stat-v")!.textContent, label).toBe("—");
+      expect(t, label).toHaveTextContent("the stats cannot be read right now");
     }
+    expect(tile("Block height")).toHaveTextContent("3");
+  });
+
+  it("asks for the hour, the day and the seven-day series, and for nothing from the blocks to fill its cards", async () => {
+    const calls = await withStats()();
+    expect(calls).toContain("/api/stats/summary?window=1h");
+    expect(calls).toContain("/api/stats/summary?window=24h");
+    expect(calls).toContain("/api/stats/series?metric=time_to_final_p50&window=7d&step=1h");
+  });
+
+  it("keeps the height, and what is not final yet from the in-flight route, and says nothing of a log window of ten blocks", async () => {
+    await withStats()();
+    expect(tile("Block height")).toHaveTextContent("3final on Canton · block 4 is being proven");
+    expect(screen.getByRole("region", { name: "Numbers" })).not.toHaveTextContent(/latest \d+ blocks|producer log|not served yet/);
   });
 });
 
