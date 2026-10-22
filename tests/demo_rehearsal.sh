@@ -229,6 +229,25 @@ first_stress=$(w1py stress "$STRESS" 15 | head -n 1)
 cut_block
 W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)
 echo "the first Stress call: $(receipt_of "$first_stress" | jq -c .)"
+# The contracts of the trace reading (explorer/test/fixtures/Lab.sol): one transaction makes every kind, a second makes a contract and fails, a third
+# destroys a contract made by the first. Each goes into a block of its own.
+lab_tx=$(w1py deploy "$WORK/w1/Lab.bin" 6000000)
+cut_block
+LAB=$(receipt_of "$lab_tx" | jq -r .contract)
+[[ $LAB =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "Lab was not deployed: $(receipt_of "$lab_tx")"
+lab_build=$(w1py lab "$LAB" 'build()')
+cut_block
+[ "$(receipt_of "$lab_build" | jq -r .status)" = 1 ] || fail "Lab.build() did not succeed: $(receipt_of "$lab_build")"
+LAB_BUILD_BLOCK=$(receipt_of "$lab_build" | jq -r .block)
+lab_undone=$(w1py lab "$LAB" 'undone()')
+cut_block
+[ "$(receipt_of "$lab_undone" | jq -r .status)" = 0 ] || fail "Lab.undone() did not fail: $(receipt_of "$lab_undone")"
+LAB_UNDONE_BLOCK=$(receipt_of "$lab_undone" | jq -r .block)
+lab_kill=$(w1py lab "$LAB" 'kill()')
+cut_block
+[ "$(receipt_of "$lab_kill" | jq -r .status)" = 1 ] || fail "Lab.kill() did not succeed: $(receipt_of "$lab_kill")"
+LAB_KILL_BLOCK=$(receipt_of "$lab_kill" | jq -r .block)
+echo "Lab $LAB: build in block $LAB_BUILD_BLOCK, the undone call in $LAB_UNDONE_BLOCK, the self-destruct in $LAB_KILL_BLOCK"
 echo "revert block $REVERT_BLOCK, W1 block $W1_BLOCK: $(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$W1_BLOCK")\",false" | jq -c '{transactions: (.result.transactions | length), gasUsed: .result.gasUsed}')"
 
 PGPW=$(openssl rand -hex 16)
@@ -241,6 +260,7 @@ done
 [ "$ok" -ge 3 ] || fail "the test database did not start"
 docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -e EXPLORER_TEST_RETH_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e EXPLORER_TEST_REVERT_BLOCK="$REVERT_BLOCK" -e EXPLORER_TEST_W1_BLOCK="$W1_BLOCK" \
+  -e EXPLORER_TEST_LAB="$LAB" -e EXPLORER_TEST_LAB_BUILD_BLOCK="$LAB_BUILD_BLOCK" -e EXPLORER_TEST_LAB_UNDONE_BLOCK="$LAB_UNDONE_BLOCK" -e EXPLORER_TEST_LAB_KILL_BLOCK="$LAB_KILL_BLOCK" \
   -e EXPLORER_TEST_LEDGER_URL=http://127.0.0.1:7577 -e READER_PARTY="$READER_PARTY" -e GATEWAY_ADDRESS="$GATEWAY_ADDRESS" -e CHAIN_ID="$(($(rpc eth_chainId | jq -r .result)))" \
   -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL="postgres://explorer:$PGPW@127.0.0.1:55433/explorer" \
   -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
