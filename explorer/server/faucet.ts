@@ -103,6 +103,8 @@ export interface Faucet {
   served(): number;
   /** How many requests wait for a batch. */
   queued(): number;
+  /** True while this instance runs the worker (it holds the faucet's lock, or there is no database and so one instance). */
+  isLeading(): boolean;
 }
 
 /**
@@ -689,6 +691,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
     address,
     served: () => addresses.size,
     queued: () => queue.length,
+    isLeading: () => leading,
     process,
     ready: () => loaded,
     async find(id) {

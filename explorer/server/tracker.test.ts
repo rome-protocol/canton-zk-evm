@@ -191,6 +191,21 @@ describe("the tracker", () => {
     expect(tracker.state(hashOf(1))).toMatchObject({ state: "pending", attempts: 2 });
   });
 
+  it("counts, for the health row, the transactions it follows and those it gave up on in the last hour, and says that it leads", async () => {
+    const chain = fakeChain();
+    const { tracker, clock } = await make(chain, { maxAttempts: 2 });
+    expect(tracker.isLeading()).toBe(true);
+    tracker.track(rawOf(1), hashOf(1), SENDER, 0);
+    tracker.track(rawOf(2), hashOf(2), SENDER, 1);
+    expect(tracker.stats()).toEqual({ open: 2, droppedLastHour: 0 });
+    chain.where.set(hashOf(2), null); // 2 stays in the pool; 1 keeps going missing
+    for (let i = 0; i < 2; i++) { clock.now += 6000; await tracker.poll(); }
+    expect(tracker.stats()).toEqual({ open: 1, droppedLastHour: 1 });
+    chain.where.set(hashOf(2), 1); chain.finalized = 1; // 2 is final, so only the one given up on is left
+    clock.now += 3600_000 + 1; await tracker.poll();
+    expect(tracker.stats()).toEqual({ open: 0, droppedLastHour: 0 });
+  });
+
   it("drops a transaction that keeps going missing after it is accepted again each time", async () => {
     const chain = fakeChain();
     const { tracker, clock } = await make(chain, { maxAttempts: 3 });
