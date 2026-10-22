@@ -17,7 +17,7 @@ const withProof = (proof: Partial<NonNullable<ApiBlock["canton"]>>) => block({ c
 async function open(b: ApiBlock = block(), st: ApiStatus = status(), id = String(b.number), more: Parameters<typeof route>[0] = {}) {
   const calls = fakeApi(route({ block: () => reply(b), status: () => reply(st), ...more }));
   renderApp(`/block/${id}`);
-  await screen.findByRole("heading", { name: `Block ${b.number}` });
+  await screen.findByRole("heading", { name: `Block #${b.number}` });
   return calls;
 }
 /** The API as `open` has it, and the check's file as the explorer serves it: a HEAD says how big it is, a GET gives it (or the status `get`). Every request is kept in `calls`, as "METHOD path". */
@@ -44,7 +44,7 @@ const steps = () => within(screen.getByRole("region", { name: "How it happened" 
 describe("the block page, for a final block", () => {
   it("names the block and says it is final, with its neighbours", async () => {
     await open();
-    const title = screen.getByRole("heading", { name: "Block 3" }).parentElement!;
+    const title = screen.getByRole("heading", { name: "Block #3" }).parentElement!;
     expect(within(title).getByText("Final")).toHaveClass("chip-final");
     const nav = within(screen.getByRole("navigation", { name: "Neighbouring blocks" }));
     expect(nav.getByRole("link", { name: "Previous block, 2" })).toHaveAttribute("href", "/block/2");
@@ -64,7 +64,7 @@ describe("the block page, for a final block", () => {
     expect(evm.getByText("from reth")).toBeInTheDocument();
     expect(row(evm, "Hash")).toHaveTextContent("0x03030303…03030303");
     expect(row(evm, "Parent")).toHaveTextContent("Block 2 · 0x0202…0202");
-    expect(within(row(evm, "Parent")).getByRole("link", { name: "Block 2" })).toHaveAttribute("href", "/block/2");
+    expect(within(row(evm, "Parent")).getByRole("link", { name: "Block #2" })).toHaveAttribute("href", "/block/2");
     expect(within(row(evm, "Parent")).getByRole("link", { name: "0x0202…0202" })).toHaveAttribute("href", `/block/${hash(2)}`);
     expect(row(evm, "Time")).toHaveTextContent("01:37:16 UTC · 2026-10-04");
     expect(row(evm, "Transactions")).toHaveTextContent("1");
@@ -359,7 +359,7 @@ describe("when something does not match", () => {
 describe("a block that Canton holds and the indexer has not read", () => {
   it("says it is final on Canton and not indexed, and not that it is being proven", async () => {
     await open(block({ status: "unindexed", number: 4, hash: hash(4), parentHash: hash(3), canton: null }));
-    const title = screen.getByRole("heading", { name: "Block 4" }).parentElement!;
+    const title = screen.getByRole("heading", { name: "Block #4" }).parentElement!;
     expect(within(title).getByText("Not indexed yet")).toHaveClass("chip-unindexed");
     const canton = side("On Canton");
     expect(canton.getByText("Final on Canton, not indexed yet.")).toBeInTheDocument();
@@ -370,7 +370,7 @@ describe("a block that Canton holds and the indexer has not read", () => {
 describe("a block that is still being proven", () => {
   it("says so, and says that Canton does not have it yet", async () => {
     await open(proving());
-    const title = screen.getByRole("heading", { name: "Block 4" }).parentElement!;
+    const title = screen.getByRole("heading", { name: "Block #4" }).parentElement!;
     expect(within(title).getByText("Being proven")).toHaveClass("chip-proving");
     const canton = side("On Canton");
     expect(canton.getByText("Not on Canton yet.")).toBeInTheDocument();
@@ -443,14 +443,14 @@ describe("a block that is still being proven", () => {
     gone = true;
     await tick();
     expect(screen.getByRole("heading", { name: "Not found" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Block 4" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Block #4" })).toBeNull();
   });
 });
 
 describe("block 0", () => {
   it("is Genesis: the EVM side from reth, no parent, and no steps, legs line or transactions", async () => {
     await open(genesis());
-    const title = screen.getByRole("heading", { name: "Block 0" }).parentElement!;
+    const title = screen.getByRole("heading", { name: "Block #0" }).parentElement!;
     expect(within(title).getByText("Genesis")).toHaveClass("chip-genesis");
     expect(row(side("On the EVM"), "Parent")).toHaveTextContent("none");
     expect(screen.queryByRole("region", { name: "How it happened" })).toBeNull();
@@ -518,7 +518,7 @@ describe("a block that cannot be shown", () => {
     expect(screen.getByText("The page tries again in a few seconds.")).toBeInTheDocument();
     healthy = true;
     await tick();
-    expect(screen.getByRole("heading", { name: "Block 3" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Block #3" })).toBeInTheDocument();
     expect(calls.filter((c) => c.startsWith("/api/block")).length).toBeGreaterThan(1);
   });
 
@@ -527,9 +527,9 @@ describe("a block that cannot be shown", () => {
     let healthy = true;
     fakeApi(route({ block: () => (healthy ? reply(proving()) : reply({ error: "The explorer cannot read the chain right now." }, 502)) }));
     renderApp("/block/4");
-    await screen.findByRole("heading", { name: "Block 4" });
+    await screen.findByRole("heading", { name: "Block #4" });
     healthy = false;
     await tick();
-    expect(screen.getByRole("heading", { name: "Block 4" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Block #4" })).toBeInTheDocument();
   });
 });

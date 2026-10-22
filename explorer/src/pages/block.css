@@ -1,0 +1,40 @@
+/* The block page, to the approved screen. Colours come from the tokens in styles.css. */
+.crumbs { font-size: 13px; color: var(--muted); margin: 6px 0 2px; }
+.crumbs a { color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tile-k { font-size: 13px; color: var(--muted); }
+.tile-v { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
+.tile-s { font-size: 12.5px; color: var(--muted); }
+.how-bar-w { margin: 4px 0 18px; }
+.how-bar { display: flex; gap: 2px; height: 26px; border-radius: 6px; overflow: hidden; }
+.how-bar .part { min-width: 3px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; }
+.part-prepare { background: var(--evm); }
+.part-proof { background: var(--canton); }
+.part-send { background: var(--faint); }
+.part-canton { background: color-mix(in srgb, var(--canton) 70%, #000); }
+.how-axis { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--faint); margin-top: 4px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.how-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(6, 1fr); gap: 0 12px; }
+.how-steps li { position: relative; display: flex; flex-direction: column; gap: 3px; padding-top: 22px; min-width: 0; }
+.how-steps li::before { content: ""; position: absolute; left: 0; right: -12px; top: 6px; height: 2px; background: var(--ok-line); }
+.how-steps li:last-child::before { display: none; }
+.how-dot { position: absolute; left: 0; top: 0; width: 14px; height: 14px; border-radius: 50%; background: var(--ok); border: 2px solid var(--surface); box-sizing: content-box; }
+.how-steps .last .how-dot { background: var(--canton); }
+.how-steps .none .how-dot { background: var(--surface); border-color: var(--line); outline: 1.5px dashed var(--faint); outline-offset: -3px; }
+.how-steps .none::before { background: var(--line); }
+.how-n { font-weight: 600; font-size: 13.5px; }
+.how-t { font-size: 13px; }
+.how-src { margin-left: 0; align-self: flex-start; font-size: 11px; }
+.method { font-family: "IBM Plex Mono", ui-monospace, monospace; background: var(--surface-2); }
+.arrow { padding-left: 0; padding-right: 0; }
+@media (max-width: 900px) {
+  .tiles { grid-template-columns: repeat(2, 1fr); }
+  .how-steps { grid-template-columns: 1fr; gap: 10px; }
+  .how-steps li { padding: 0 0 0 26px; }
+  .how-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
+  .how-dot { top: 3px; }
+}
+.btn-line { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 600; color: var(--ink); background: var(--surface); }
+.btn-line:hover { text-decoration: none; border-color: var(--canton-line); }
+.facts .wide2 { grid-column: 2 / -1; }
+.proof .verify { border: 0; padding: 0; margin-top: 18px; background: transparent; }
