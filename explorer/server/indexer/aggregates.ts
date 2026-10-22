@@ -20,13 +20,28 @@ const TOUCHED = `
   union select from_address from token_transfers where block_number between $1 and $2 and from_address <> ${ZERO}
   union select to_address from token_transfers where block_number between $1 and $2 and to_address <> ${ZERO}`;
 
-export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: number, to: number, derived: number): Promise<void> {
+/**
+ * `full` is a reindex of every block (1 to the head): the rows no fact supports any more (a decoding rule changed, so a transfer or an account is gone)
+ * are deleted first, so the tables are what the facts say outright. A range keeps the rows it does not name: the facts it replaced are already gone,
+ * so it cannot tell which rows only they supported.
+ */
+export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: number, to: number, derived: number, full = false): Promise<void> {
   const last = Math.min(to, derived);
   if (last < from) return;
   // The planner chooses the holder's indexes for the look-ups below only when it knows the table; a reindex is rare and the sample is cheap.
   await c.query("analyze token_transfers");
   // $1, $2: the range; $3: the facts that count.
   const range = [from, last, derived];
+
+  if (full) {
+    await c.query(`delete from nft_owners o where not exists (select 1 from token_transfers t where t.token = o.token and t.token_id = o.token_id)`);
+    await c.query(`delete from token_balances b where not exists (select 1 from token_transfers t where t.token = b.token and (t.from_address = b.holder or t.to_address = b.holder))`);
+    await c.query(
+      `delete from addresses a where not exists (select 1 from transactions t where t.from_address = a.address or t.to_address = a.address or t.created_contract = a.address)
+         and not exists (select 1 from internal_calls i where i.from_address = a.address or i.to_address = a.address)
+         and not exists (select 1 from token_transfers t where a.address <> ${ZERO} and (t.from_address = a.address or t.to_address = a.address))`,
+    );
+  }
 
   // The tokens and the holders' balances. The keys are the (token, holder, id) the range moves; each key's legs are looked up through the holder's
   // indexes, so the time follows the range and not the token's whole history.
@@ -73,8 +88,8 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
        transfer_count = (select count(*) from token_transfers t where t.token = k.address and t.block_number <= $3),
        first_transfer_block = coalesce((select min(block_number) from token_transfers t where t.token = k.address and t.block_number <= $3), k.first_transfer_block),
        holder_count = (select count(distinct b.holder) from token_balances b where b.token = k.address and b.value > 0)
-     where k.address in (select token from token_transfers where block_number between $1 and $2)`,
-    [from, last, derived],
+     where $4::boolean or k.address in (select token from token_transfers where block_number between $1 and $2)`,
+    [from, last, derived, full],
   );
 
   // The addresses.
@@ -87,15 +102,15 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
          (select count(*) from transactions where from_address = a.a and block_number <= $3) as sent,
          (select count(*) from transactions where to_address = a.a and block_number <= $3) + (select count(*) from transactions where created_contract = a.a and to_address is null and block_number <= $3) as received,
          (select count(*) from internal_calls where from_address = a.a and block_number <= $3) + (select count(*) from internal_calls where to_address = a.a and to_address <> from_address and block_number <= $3) as internal,
-         (select count(*) from token_transfers where from_address = a.a and block_number <= $3) + (select count(*) from token_transfers where to_address = a.a and to_address <> from_address and block_number <= $3) as transfers,
+         (select count(*) from token_transfers where from_address = a.a and a.a <> ${ZERO} and block_number <= $3) + (select count(*) from token_transfers where to_address = a.a and a.a <> ${ZERO} and to_address <> from_address and block_number <= $3) as transfers,
          (select min(block_number) from (select min(block_number) as block_number from transactions where from_address = a.a union all select min(block_number) from transactions where to_address = a.a
             union all select min(block_number) from transactions where created_contract = a.a) q) as first_tx,
          (select max(block_number) from (select max(block_number) as block_number from transactions where from_address = a.a and block_number <= $3 union all select max(block_number) from transactions where to_address = a.a and block_number <= $3
             union all select max(block_number) from transactions where created_contract = a.a and block_number <= $3) q) as last_tx,
          (select min(block_number) from (select min(block_number) as block_number from internal_calls where from_address = a.a union all select min(block_number) from internal_calls where to_address = a.a) q) as first_in,
          (select max(block_number) from (select max(block_number) as block_number from internal_calls where from_address = a.a and block_number <= $3 union all select max(block_number) from internal_calls where to_address = a.a and block_number <= $3) q) as last_in,
-         (select min(block_number) from (select min(block_number) as block_number from token_transfers where from_address = a.a union all select min(block_number) from token_transfers where to_address = a.a) q) as first_tt,
-         (select max(block_number) from (select max(block_number) as block_number from token_transfers where from_address = a.a and block_number <= $3 union all select max(block_number) from token_transfers where to_address = a.a and block_number <= $3) q) as last_tt
+         (select min(block_number) from (select min(block_number) as block_number from token_transfers where from_address = a.a and a.a <> ${ZERO} union all select min(block_number) from token_transfers where to_address = a.a and a.a <> ${ZERO}) q) as first_tt,
+         (select max(block_number) from (select max(block_number) as block_number from token_transfers where from_address = a.a and a.a <> ${ZERO} and block_number <= $3 union all select max(block_number) from token_transfers where to_address = a.a and a.a <> ${ZERO} and block_number <= $3) q) as last_tt
      ) f where a.a is not null order by a.a
      on conflict (address) do update set first_seen_block = excluded.first_seen_block, last_active_block = excluded.last_active_block, sent_count = excluded.sent_count,
        received_count = excluded.received_count, internal_count = excluded.internal_count, token_transfer_count = excluded.token_transfer_count, is_contract = excluded.is_contract`,
@@ -114,7 +129,22 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
     range,
   );
 
-  // The balances read from reth: the range's history is dropped, and the check goes back over the range.
+  // The balances read from reth: the range's history is dropped and read again by a catch-up of its own, which does not move the check's live cursor
+  // (a reindex of old blocks must not make it walk the whole later chain again). A full reindex starts the live walk over, since it rebuilt the addresses.
   await c.query("delete from coin_balance_history where block_number between $1 and $2", range.slice(0, 2));
-  await c.query("update cursors set position = least(position, $1) where stream = 'balances'", [from - 1]);
+  if (full) {
+    await c.query("delete from cursors where stream in ('balances_redo', 'balances_redo_end')");
+    await c.query("update cursors set position = 0 where stream = 'balances'");
+    return;
+  }
+  const live = Number((await c.query("select position from cursors where stream = 'balances'")).rows[0]?.position ?? 0);
+  const end = Math.min(last, live); // blocks the live walk has not reached are read by it when it gets there
+  if (end >= from) {
+    await c.query(
+      `insert into cursors (stream, position, updated_at) values ('balances_redo', $1, now())
+       on conflict (stream) do update set position = least(cursors.position, excluded.position), updated_at = excluded.updated_at`, [from - 1]);
+    await c.query(
+      `insert into cursors (stream, position, updated_at) values ('balances_redo_end', $1, now())
+       on conflict (stream) do update set position = greatest(cursors.position, excluded.position), updated_at = excluded.updated_at`, [end]);
+  }
 }

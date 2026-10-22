@@ -128,7 +128,9 @@ describe.skipIf(!TEST_URL)("balances, owners and the check, on the pinned Postgr
       const hist = await rows(pool, "select block_number, count(*) as n from coin_balance_history group by block_number order by block_number");
       expect(hist.map((x) => x.block_number)).toEqual(["1", "2", "3"]);
       expect((await rows(pool, "select position from cursors where stream = 'balances'"))[0].position).toBe("3");
-      const sample = (await rows(pool, "select address, value::text as v, block_number from coin_balance_history where block_number = 3 limit 1"))[0];
+      // The block's fee recipient (its balance moves with every block's priority fees) is read too, and has a history though no transaction names it.
+      expect(await rows(pool, "select 1 from coin_balance_history where address = $1 and block_number = 3", [hx(0xbeef)])).toHaveLength(1);
+      const sample = (await rows(pool, "select h.address, h.value::text as v, h.block_number from coin_balance_history h join addresses a on a.address = h.address where h.block_number = 3 limit 1"))[0];
       expect(sample.v).toBe(String(3000n + BigInt(sample.address.at(-1))));
       const addr = (await rows(pool, "select coin_balance::text as v, coin_balance_block from addresses where address = $1", [sample.address]))[0];
       expect(addr).toEqual({ v: sample.v, coin_balance_block: "3" });
@@ -206,8 +208,12 @@ describe.skipIf(!TEST_URL)("the reindex rebuilds every aggregate, on the pinned 
       expect(after.filter((x) => x[5] === null).length).toBe(after.length - after.filter((x) => Number(x[4]) < 3).length);
       expect(Number((await rows(pool, "select count(*) as n from coin_balance_history where block_number between 3 and 4"))[0].n)).toBe(0);
       expect(Number((await rows(pool, "select count(*) as n from coin_balance_history where block_number < 3"))[0].n)).toBeGreaterThan(0);
-      expect((await rows(pool, "select position from cursors where stream = 'balances'"))[0].position).toBe("2");
+      // The live walk keeps its place; a catch-up of its own reads the range again.
+      expect((await rows(pool, "select position from cursors where stream = 'balances'"))[0].position).toBe("4");
+      expect((await rows(pool, "select stream, position from cursors where stream like 'balances_redo%' order by stream")).map((x) => [x.stream, x.position])).toEqual([["balances_redo", "2"], ["balances_redo_end", "4"]]);
       await indexer.balancesOnce(); await indexer.balancesOnce();
+      expect(await rows(pool, "select 1 from cursors where stream like 'balances_redo%'")).toEqual([]);
+      expect((await rows(pool, "select position from cursors where stream = 'balances'"))[0].position).toBe("4");
       expect((await balances(pool)).every((x) => x[5] !== null)).toBe(true);
       expect(Number((await rows(pool, "select count(*) as n from coin_balance_history where block_number between 3 and 4"))[0].n)).toBe(history);
       await indexer.close();

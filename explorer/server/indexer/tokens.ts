@@ -95,7 +95,7 @@ export async function tryCall(reads: Pick<FinalReads, "call">, to: string, input
 
 export interface Metadata { name: string | null; symbol: string | null; decimals: number | null; totalSupply: bigint | null; status: "read" | "failed" }
 
-/** A token's metadata at block `n`. An ERC-1155 has none to read. A token is `read` when its supply is answered. */
+/** A token's metadata at block `n`. An ERC-1155 has none to read. A token is `read` when what its standard requires is answered (see below). */
 export async function readMetadata(reads: Pick<FinalReads, "call">, token: string, standard: Standard, n: number): Promise<Metadata> {
   if (standard === "ERC-1155") return { name: null, symbol: null, decimals: null, totalSupply: null, status: "read" };
   const [name, symbol, decimals, supply] = (await Promise.all([SELECTORS.name, SELECTORS.symbol, SELECTORS.decimals, SELECTORS.totalSupply].map((s) => tryCall(reads, token, s, n)))) as (string | null)[];
@@ -103,7 +103,8 @@ export async function readMetadata(reads: Pick<FinalReads, "call">, token: strin
   const totalSupply = supply == null ? null : uint(supply);
   return {
     name: name == null ? null : decodeText(name), symbol: symbol == null ? null : decodeText(symbol), decimals: d !== null && d <= 255n ? Number(d) : null, totalSupply,
-    status: totalSupply === null ? "failed" : "read",
+    // An ERC-20 is read when its supply answers; an ERC-721's supply comes only with the Enumerable extension, so its name or symbol is enough.
+    status: totalSupply !== null || (standard === "ERC-721" && (name !== null || symbol !== null)) ? "read" : "failed",
   };
 }
 

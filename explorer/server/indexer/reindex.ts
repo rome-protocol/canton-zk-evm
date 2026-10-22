@@ -112,7 +112,7 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
       const c = await o.pool.connect();
       try {
         await c.query("begin");
-        await rebuildAggregates(c, from, last, derived);
+        await rebuildAggregates(c, from, last, derived, from === 1 && last === head);
         await c.query("commit");
       } catch (e) {
         await c.query("rollback").catch(() => undefined);
