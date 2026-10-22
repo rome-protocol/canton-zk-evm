@@ -181,6 +181,8 @@ export function createChainRest(pool: Pool) {
     return rows.map((r) => ({ logIndex: r.log_index, batchIndex: r.batch_index, token: hex(r.token), from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id }));
   }
 
+  /** The key carries the record time in whole microseconds; it is compared as a time (exactly) on the column itself, so the index on (record_time, update_id) answers it. */
+  const EPOCH = "timestamptz 'epoch'";
   const MICROS = "(extract(epoch from u.record_time) * 1000000)::bigint";
   const updateSelect = `u.update_id, ${US("u.record_time")} as record_time, ${US("u.effective_at")} as effective_at, p.participant_id, u.reader_offset, s.synchronizer_id, ${MICROS} as micros,
     (select min(b.number) from blocks b where b.update_id = u.update_id) as block`;
@@ -194,7 +196,7 @@ export function createChainRest(pool: Pool) {
     const [at, id] = before ?? [null, null];
     const rows = await query(
       `select ${updateSelect} from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer
-       where ($1::bigint is null or (${MICROS}, u.update_id) < ($1::bigint, $2::text)) order by u.record_time desc, u.update_id desc limit $3`,
+       where ($1::bigint is null or (u.record_time, u.update_id) < (${EPOCH} + $1::bigint * interval '1 microsecond', $2::text)) order by u.record_time desc, u.update_id desc limit $3`,
       [at, id, limit + 1],
     );
     return rows.map((r) => ({ ...updateItem(r), micros: Number(r.micros) }));
