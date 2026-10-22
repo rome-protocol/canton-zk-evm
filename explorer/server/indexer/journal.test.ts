@@ -267,16 +267,35 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const chain = makeChain([{ txs: 1 }]);
       const dir = makeFolder();
       const r = new Run(RUN1);
-      // the journal starts after the block's record time, so the update is one the journal cannot cover
+      // the journal starts long after the block's record time (more than the join's slack), so the update is one the journal cannot cover
       const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
-      r.start(recordMs + 10_000);
-      attemptLines(r, chain, 1, 1, recordMs + 20_000);
-      r.add(recordMs + 20_030, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: chain.blocks[0]!.record.updateId, completion_offset: 10, traffic_bytes: 5 });
+      r.start(recordMs + 2 * 3_600_000);
+      attemptLines(r, chain, 1, 1, recordMs + 2 * 3_600_000 + 10_000);
+      r.add(recordMs + 2 * 3_600_000 + 10_030, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: chain.blocks[0]!.record.updateId, completion_offset: 10, traffic_bytes: 5 });
       putFile(dir, "2026-10-21.jsonl", r.lines);
       const ix = await start(pool, chain, { journalDir: dir });
       await ix.runOnce();
       await ix.loadJournal();
       expect(await one(pool, "select command_id from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({ command_id: null });
+    });
+  });
+
+  it("an update is joined although the producer's clock is ahead of Canton's: the first cut is a few seconds after the record time", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }]);
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      // Canton's record time and the producer's cut time are two clocks: a producer ahead of Canton by a minute cuts "after" the block was recorded
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      r.start(recordMs + 4_000);
+      attemptLines(r, chain, 1, 1, recordMs + 5_000);
+      r.add(recordMs + 5_030, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: chain.blocks[0]!.record.updateId, completion_offset: 10, traffic_bytes: 5 });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.runOnce();
+      await ix.loadJournal();
+      expect(await one(pool, "select command_id, argument_bytes, traffic_bytes from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({
+        command_id: expect.stringMatching(/^ostia-770101-1-/), traffic_bytes: 5 });
     });
   });
 

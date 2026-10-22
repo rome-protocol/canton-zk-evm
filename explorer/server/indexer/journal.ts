@@ -299,7 +299,7 @@ export async function joinAttempts(pool: Pool): Promise<void> {
     `update canton_updates u set command_id = a.command_id, submitted_template = 'Zk.Chain:ZkChain', submitted_choice = 'Advance', argument_bytes = a.argument_bytes,
             traffic_bytes = a.traffic_bytes, completion_offset = a.completion_offset
        from block_attempts a where a.update_id = u.update_id and u.command_id is null and a.command_id is not null
-        and u.record_time >= (select min(cut_at) from block_attempts)
+        and u.record_time >= (select min(cut_at) from block_attempts) - interval '1 hour'   -- Canton's clock and the producer's differ: slack, never a tight bound
         and (a.outcome = 'committed' or a.resolved_outcome = 'committed')`,
   );
 }
