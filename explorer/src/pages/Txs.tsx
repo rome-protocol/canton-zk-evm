@@ -10,7 +10,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { count, duration, exact, span, units } from "../format.ts";
 import { methodOf } from "../method.ts";
-import { listPoll, notFinalCounts, summarize, useInFlight } from "../stats.ts";
+import { finalSpread, listPoll, notFinalCounts, summarize, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
 
@@ -84,8 +84,8 @@ const more = (t: Total) => `${t.atLeast ? "at least " : ""}${count(t.total)}`;
 function Cards({ st, live }: { st: ApiStatus | undefined; live: boolean }) {
   const blocks = useQuery({ queryKey: ["blocks", 10], queryFn: () => getBlocks(10), refetchInterval: listPoll(live) }).data;
   const flight = useInFlight(live).data ?? null;
-  const sum = st && blocks ? summarize(st, blocks.items, flight) : null;
-  const ttf = sum?.timeToFinal;
+  const sum = st && blocks ? summarize(st, flight) : null;
+  const ttf = sum && blocks ? finalSpread(blocks.items) : undefined;
   const nf = sum?.notFinal;
   const total = nf ? nf.inBlocks + (nf.waiting ?? 0) : null;
   return (

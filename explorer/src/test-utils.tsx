@@ -109,7 +109,7 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 /** What the fake chain answers to each path of the API. The status is always well; anything not given is not found. */
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
-  blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
+  blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
@@ -131,6 +131,8 @@ export function route(h: {
       return pick ? pick() : gone();
     }
     if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));
+    if (kind === "openapi.json") return h.openapi ? h.openapi() : gone();
+    if (kind === "stats") return h.stats ? h.stats(path) : gone();
     if (kind === "in-flight") return h.inFlight ? h.inFlight() : reply(inFlight({ attempts: [], poolWaiting: null }));
     const q = path.split("q=")[1];
     const pick = { block: h.block, tx: h.tx, address: h.address, search: h.search && (() => h.search!(decodeURIComponent(q ?? ""))) }[kind ?? ""];
@@ -145,7 +147,7 @@ export function fakeApi(answer: ((path: string) => { status: number; body: unkno
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
     calls.push(input);
     // A test that answers every path with one body (the status) still gets the plain lists, which it does not care about.
-    const a = !answer.routed && /^\/api\/(blocks|txs|in-flight)\b/.test(input) ? route({})(input) : answer(input);
+    const a = !answer.routed && /^\/api\/(blocks|txs|in-flight|stats)\b/.test(input) ? route({})(input) : answer(input);
     return new Response(JSON.stringify(a.body), { status: a.status, headers: { "content-type": "application/json" } });
   }));
   return calls;

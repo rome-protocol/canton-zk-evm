@@ -5,6 +5,7 @@ export type Command =
   | { kind: "rebuild"; records: string }
   | { kind: "export-records"; file: string }
   | { kind: "reset" }
+  | { kind: "stats-rebuild" }
   | { kind: "reader-moved"; participant: string }
   | { kind: "clear-check"; check: string };
 
@@ -14,6 +15,7 @@ export const USAGE = `usage: node server/indexer/cli.ts [run]
        node server/indexer/cli.ts reindex <from> [<to>]        (or --from N [--to M]; the stage 1 tables for that range, from stored records and reth)
        node server/indexer/cli.ts reindex --records <file>     (a fresh database from an export, and reth)
        node server/indexer/cli.ts export-records <file>
+       node server/indexer/cli.ts stats-rebuild                (the minute, hour and day rollups again, from the facts)
        node server/indexer/cli.ts reset --yes | reader-moved <participant id> | clear-check C10`;
 
 const block = (v: string | undefined, what: string): number => {
@@ -57,6 +59,10 @@ export function parseCommand(argv: string[]): Command {
     if (!rest[0]) throw new UsageError("usage: reader-moved <participant id>");
     if (rest.length !== 1) throw new UsageError(USAGE);
     return { kind: "reader-moved", participant: rest[0] };
+  }
+  if (name === "stats-rebuild") {
+    if (rest.length > 0) throw new UsageError(USAGE);
+    return { kind: "stats-rebuild" };
   }
   if (name === "clear-check") {
     if (!rest[0]) throw new UsageError("usage: clear-check C10");

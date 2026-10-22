@@ -1,4 +1,5 @@
 import type { Lifecycle } from "./block-times.ts";
+import type { FaucetInfo } from "./faucet/faucet-client.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
 export interface ApiStatus {
@@ -192,10 +193,66 @@ export const getBlocks = async (limit: number) => (await call(`/api/blocks?limit
 export const getTxs = async (limit: number) => (await call(`/api/txs?limit=${limit}`, [200])).body as Page<TxListItem>;
 export const getInFlight = async () => (await call("/api/in-flight", [200])).body as InFlight;
 
+/** The windows of the stats routes, and the metrics /api/stats/series draws. */
+export type StatsWindow = "1h" | "6h" | "24h" | "7d" | "30d";
+export const STATS_WINDOWS: readonly StatsWindow[] = ["1h", "6h", "24h", "7d", "30d"];
+/** A time as its middle and its 95th percentile, in seconds, and how many facts it is read from (null where there is none). `capped`: a figure at the top of the histogram's range. */
+export interface StatsSpread { median: number; p95: number; samples: number; capped: boolean }
+export interface StatsSize { size: string; median: number | null; p95: number | null; samples: number; capped: boolean }
+export interface StatsLostItem { txHash: string; state: string; reason: string | null; at: string }
+export interface StatsSummary {
+  window: StatsWindow; rows: "minute" | "hour" | "day"; from: string; to: string; asOf: string | null; dataSince: string | null;
+  tps: { now: number; peak: number | null; peakAt: string | null };
+  blockTime: StatsSpread | null; timeToFinal: StatsSpread | null; commitTime: StatsSpread | null; served: StatsSpread | null;
+  proofTime: (StatsSpread & { bySize: StatsSize[] }) | null;
+  txsPerBlock: { mean: number | null; median: number | null; max: number | null; nonEmptyMean: number | null; nonEmptyMedian: number | null };
+  blocks: { count: number; empty: number; busy: number; bySize: { size: string; count: number }[] };
+  txs: { count: number; failed: number; successRate: number | null; accepted: number };
+  attempts: { total: number; refused: number; failed: number; notTaken: number; refusedShare: number | null; failedShare: number | null; notTakenShare: number | null };
+  fullness: number | null;
+  canton: { argumentBytesPerBlock: number | null; argumentBytesPerTx: number | null; trafficBytesPerBlock: number | null; trafficReported: number };
+  prover: { maxBusyRatio10m: number | null; windowsOver: number; windowsCounted: number; windowSeconds: number; loadedAbove: number; meanBusyRatio: number; busyMs: number };
+  quality: { withoutAcceptanceTime: number; clockSkew: number };
+  test: { blocks: number; txs: number; attempts: number; proverBusyMs: number };
+  today: { date: string; activeAddresses: number | null; newAddresses: number | null; newContracts: number | null; verifiedContracts: number | null; countedAt: string | null } | null;
+  waiting: { open: number; pool: { waiting: number; at: string; ageSeconds: number } | null };
+  acceptedNotFinal: {
+    normal: number | null; slow: number | null; stuck: number; beingProven: number; waiting: number; noAcceptanceTime: number;
+    slowAfterSeconds: number | null; stuckAfterSeconds: number; listed: { txHash: string; state: string; ageSeconds: number; acceptedAt: string }[];
+  };
+  lost: { window: number; total: number; listed: StatsLostItem[] };
+  dropped: { window: number; total: number; listed: StatsLostItem[] };
+  replaced: { window: number; total: number };
+  cutting: { strategy: string; since: string } | null;
+  faucet: { requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null; turnedAway: number | null };
+}
+export type StatsMetric = "txs" | "tps" | "busiest_minute_tps" | "blocks" | "empty_blocks" | "txs_per_block" | "success_rate" | "time_to_final_p50" | "time_to_final_p95" | "proof_time_p50" | "proof_time_p95" | "busy_ratio";
+export interface StatsSeries { metric: string; unit: string; window: StatsWindow; step: "1m" | "10m" | "1h" | "1d"; from: string; to: string; asOf: string | null; points: { at: string; value: number | null }[] }
+/** The API's own description (OpenAPI), which the API page lists its routes from. */
+/** The limits the server holds, as its description states them (each group is there as the server applies it). */
+export interface ApiLimits {
+  pageSize?: number; rpcPerMinute?: number;
+  rest?: { perSecond: number; burst: number };
+  etherscan?: { perSecond: number; perMinute: number };
+  verification?: { perHour: number; maxBodyKb: number };
+  streams?: { perClient: number };
+}
+export interface OpenApiDoc {
+  info?: { "x-limits"?: ApiLimits };
+  /** `/api` itself is the Etherscan-compatible door: it is listed only where the server serves it, with each module's actions in `x-modules`. */
+  paths?: Record<string, Partial<Record<"get" | "post", { summary?: string; "x-modules"?: Record<string, string[]> }>>>;
+}
+export const getOpenApi = async () => (await call("/api/openapi.json", [200])).body as OpenApiDoc;
+export const getStatsSummary = async (window: StatsWindow) => (await call(`/api/stats/summary?window=${window}`, [200])).body as StatsSummary;
+export const getStatsSeries = async (metric: StatsMetric, window: StatsWindow, step?: StatsSeries["step"]) =>
+  (await call(`/api/stats/series?metric=${metric}&window=${window}${step ? `&step=${step}` : ""}`, [200])).body as StatsSeries;
+
 /** What /api/blocks/:id adds to a block's page: the producer's times for the attempt that made it (null when the journal holds none) and its gateway legs. */
 export interface BlockDetail { number: number; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null }
 export const getBlockDetail = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockDetail;
 /** The faucet's own address, or null when it has none (the faucet is off). */
+/** What /api/faucet says; null when the faucet is off or cannot be read. */
+export const getFaucetInfo = async () => { try { return (await call("/api/faucet", [200])).body as FaucetInfo; } catch { return null; } };
 export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).body as { address?: string | null }).address ?? null;
 /** A block as /api/blocks/:id gives it: the block's own facts, the Canton summary with no record hex, and no list of transactions. */
 export type BlockSummary = Omit<ApiBlock, "transactions" | "canton"> & { canton: CantonSummary | null; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null };

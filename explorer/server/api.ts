@@ -10,6 +10,8 @@ import { cached, type Rule } from "./rest/cache.ts";
 import { chainRoutes } from "./rest/chain-routes.ts";
 import type { ChainRest } from "./rest/chain-rest.ts";
 import { accountRoutes } from "./rest/account-routes.ts";
+import { statsRoutes } from "./rest/stats-routes.ts";
+import type { StatsRest } from "./rest/stats-rest.ts";
 import type { AccountRest } from "./rest/account-rest.ts";
 import { BadRequest } from "./rest/paging.ts";
 import { buildOpenApi } from "./rest/openapi.ts";
@@ -38,6 +40,8 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   rest?: ChainRest;
   /** The reads behind the REST routes of addresses, contracts, tokens and legs, and the search by name; without them those routes are off. */
   accounts?: AccountRest;
+  /** The reads behind `/api/stats/summary` and `/api/stats/series`; without them those routes are off. */
+  stats?: StatsRest;
   /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
   live?: boolean;
   /** The checks this API instance writes about what it sees: its own timer writes the rows in the background, and `/api/health` only reads the table and says which instance answered. Without it the answer shows the rows the other roles wrote. */
@@ -58,7 +62,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, stats, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -284,6 +288,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
 
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
+  const statsRestRoutes = stats && statsRoutes({ stats, now });
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
   const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list", "openapi.json": "composite" };
   const legacy = router([
@@ -299,8 +304,8 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/openapi.json", async () => ok(openapi)],
   ]);
   // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
-  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
-  const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API` });
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API`, limits: config.publicRpc.on ? { rpcPerMinute: config.publicRpc.ratePerMinute } : undefined });
 
   const api: Api = async (method, target, body, ip) => {
     let url: URL, parts: string[];
@@ -315,7 +320,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     try {
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
       if (root !== "api") return fail(404, "No such route.");
-      const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams);
+      const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams) ?? statsRestRoutes?.(parts, url.searchParams);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
       if (name === "faucet" && parts.length === 2) {
         if (method === "POST") return await giveCoin(body, ip);

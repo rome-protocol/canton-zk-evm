@@ -9,6 +9,8 @@ import { CantonUpdate, CantonUpdates } from "./pages/Canton.tsx";
 import { Faucet } from "./pages/Faucet.tsx";
 import { Home } from "./pages/Home.tsx";
 import { Search } from "./pages/Search.tsx";
+import { ApiDocs } from "./pages/ApiDocs.tsx";
+import { Stats } from "./pages/Stats.tsx";
 import { Tx } from "./pages/Tx.tsx";
 import { Txs } from "./pages/Txs.tsx";
 
@@ -30,6 +32,8 @@ export function App() {
           <Route path="/txs" element={<Txs />} />
           <Route path="/tx/:hash" element={<Tx />} />
           <Route path="/search" element={<Search />} />
+          <Route path="/stats" element={<Stats />} />
+          <Route path="/docs/api" element={<ApiDocs />} />
           <Route path="*" element={<NoPage />} />
         </Routes>
       </ErrorBoundary>

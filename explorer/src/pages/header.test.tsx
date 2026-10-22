@@ -4,12 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 import { blockItem, fakeApi, page, renderApp, route, T0, status, reply } from "../test-utils.tsx";
 
 describe("the header", () => {
-  it("links only the pages that exist, in the order of the approved screens, and marks the one that is open; the API link opens the API's description", async () => {
+  it("links only the pages that exist, in the order of the approved screens, and marks the one that is open; the API link opens the API page", async () => {
     fakeApi(route({}));
     renderApp("/faucet");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
     expect(nav.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
-      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Canton", "/canton"], ["Faucet", "/faucet"], ["API", "/api/openapi.json"],
+      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Canton", "/canton"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
     ]);
     expect(nav.getByRole("link", { name: "Faucet" })).toHaveClass("active");
     expect(nav.getByRole("link", { name: "Home" })).not.toHaveClass("active");
@@ -19,7 +19,7 @@ describe("the header", () => {
     fakeApi(route({}));
     renderApp("/");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
-    for (const gone of ["Contracts", "Tokens", "Stats"]) expect(nav.queryByRole("link", { name: gone })).toBeNull();
+    for (const gone of ["Contracts", "Tokens"]) expect(nav.queryByRole("link", { name: gone })).toBeNull();
   });
 
   it("has the search box in the header on every page but the home page, where the big one is", async () => {
