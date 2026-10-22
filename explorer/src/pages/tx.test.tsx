@@ -19,7 +19,7 @@ async function open(t: ApiTx = tx()) {
 }
 /** The value beside a label in a list of facts. */
 const row = (label: string) => {
-  const own = screen.getAllByText(label, { selector: "dt" }).filter((d) => d.closest("section")?.matches('[aria-label="Transaction"], [aria-label="Input and logs"]'));
+  const own = screen.getAllByText(label, { selector: "dt" }).filter((d) => d.closest("section")?.matches('[aria-label="Transaction"], [aria-label="Input data"]'));
   expect(own).toHaveLength(1);
   return own[0]!.nextElementSibling as HTMLElement;
 };
@@ -94,25 +94,6 @@ describe("the transaction page, for a final transaction", () => {
   it("says when there is no input", async () => {
     await open(tx({ input: "0x", transfer: null, toToken: null }));
     expect(row("Input data")).toHaveTextContent("none");
-  });
-
-  it("shows each log with its address, its topics and its data, and names a Transfer", async () => {
-    await open();
-    expect(row("Logs")).toHaveTextContent("1");
-    const log = within(screen.getByRole("group", { name: "Log 1" }));
-    expect(log.getByText("Address", { selector: "dt" }).nextElementSibling).toHaveTextContent("0xcbcb…cbcb");
-    expect(log.getByText("Address", { selector: "dt" }).nextElementSibling).toHaveTextContent("TKA");
-    const topics = log.getByText("Topics", { selector: "dt" }).nextElementSibling!;
-    expect(topics).toHaveTextContent("0 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef Transfer");
-    expect(topics).toHaveTextContent("1 0x" + "0".repeat(24) + "5b".repeat(20));
-    expect(topics).toHaveTextContent("2 0x" + "0".repeat(24) + "5a".repeat(20));
-    expect(log.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent(tx().logs[0]!.data);
-  });
-
-  it("does not say Transfer for a topic that is not one", async () => {
-    const l = tx().logs[0]!;
-    await open(tx({ logs: [{ ...l, topics: ["0x" + "12".repeat(32)] }] }));
-    expect(screen.queryByText("Transfer")).toBeNull();
   });
 
   it("says when it created a contract", async () => {

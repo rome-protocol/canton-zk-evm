@@ -103,7 +103,7 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
-  txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply;
+  txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
@@ -119,6 +119,7 @@ export function route(h: {
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
     if (kind === "txs" && arg) {
       const [x, p] = [decodeURIComponent(arg), path];
+      if (p.includes("raw=1")) return h.txRaw ? h.txRaw(x) : gone();
       const pick = { "": h.txDetail && (() => h.txDetail!(x)), logs: h.txLogs && (() => h.txLogs!(x, p)), internal: h.txInternal && (() => h.txInternal!(x, p)), "token-transfers": h.txTransfers && (() => h.txTransfers!(x, p)), trace: h.txTrace && (() => h.txTrace!(x, p)) }[sub];
       return pick ? pick() : gone();
     }

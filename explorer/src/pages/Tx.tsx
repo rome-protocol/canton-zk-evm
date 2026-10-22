@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getBlock, getTx, getTxDetail, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen, type Log } from "../api.ts";
+import { getBlock, getTx, getTxDetail, type ApiBlock, type ApiStatus, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
 import { unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
@@ -12,11 +12,12 @@ import { count, gwei, short } from "../format.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
 import { CantonRecord, ProofSide } from "./TxSides.tsx";
+import { InternalTab, LogsTab, Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
+import { RawTab, TreeTab } from "./TxTrace.tsx";
+import { TransfersCard } from "./TxTransfers.tsx";
 import "./tx.css";
 
 const TYPES: Record<number, string> = { 0: "legacy", 1: "EIP-2930", 2: "EIP-1559", 3: "EIP-4844", 4: "EIP-7702" };
-/** The first topic of an ERC-20 Transfer. */
-const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const CLIP = 74;
 
 const Good = ({ children }: { children: string }) => <span className="fact-ok"><Icon name="check" size={13} />{children}</span>;
@@ -118,25 +119,14 @@ function Input({ data }: { data: string }) {
   );
 }
 
-function LogEntry({ log, n, t }: { log: Log; n: number; t: ApiTxSeen }) {
+/** The input as it was sent, with its 4-byte method id. The explorer holds no verified interface for the contract, so there is no decode. */
+function InputCard({ t }: { t: ApiTxSeen }) {
+  const method = t.input.length >= 10 ? t.input.slice(0, 10) : null;
   return (
-    <dl className="log" role="group" aria-label={`Log ${n}`}>
-      <dt className="log-k">Address</dt>
-      <dd><HashLink value={log.address} to={`/address/${log.address}`} />{log.address === t.to && t.toToken && <span className="tag">{t.toToken}</span>}</dd>
-      <dt className="log-k">Topics</dt>
-      <dd>{log.topics.map((topic, i) => <div key={i}><span className="muted">{i}</span> <span className="mono wrap">{topic}</span>{i === 0 && topic === TRANSFER_TOPIC && <> <span className="muted">Transfer</span></>}</div>)}</dd>
-      <dt className="log-k">Data</dt>
-      <dd><span className="mono wrap">{log.data}</span></dd>
-    </dl>
-  );
-}
-
-function InputAndLogs({ t }: { t: ApiTxSeen }) {
-  return (
-    <section className="card" aria-label="Input and logs">
+    <section className="card" aria-label="Input data">
       <Kv wide>
         <Item label="Input data"><Input data={t.input} /></Item>
-        <Item label="Logs">{t.logs.length}{t.logs.map((l, i) => <LogEntry key={i} log={l} n={i + 1} t={t} />)}</Item>
+        {method && <Item label="Method id"><span className="mono">{method}</span> <span className="muted">The verified interface is not held, so the input is not decoded.</span></Item>}
       </Kv>
     </section>
   );
@@ -199,13 +189,50 @@ export function Tx() {
       {t.value === null && <Unseen t={t} />}
       {t.value !== null && t.status !== "final" && <NotFinal t={t} />}
       {t.value !== null && <TxFinal t={t} block={blockQ.data} read={read} />}
-      {t.value !== null && (
-        <div className="tx-grid">
-          <div className="tx-main"><Facts t={t} coin={coin} detail={detail} />
-          {t.status !== "waiting" && <InputAndLogs t={t} />}</div>
-          <aside className="tx-side"><CantonRecord t={t} block={blockQ.data} read={read} /><ProofSide t={t} block={blockQ.data} st={st} read={read} /></aside>
-        </div>
-      )}
+      {t.value !== null && <Body t={t} coin={coin} detail={detail} block={blockQ.data} read={read} st={st} />}
+    </>
+  );
+}
+
+const TAB_IDS: TabId[] = ["overview", "logs", "internal", "tree", "raw"];
+
+/** The facts, and for a transaction in a block the tabs: the overview, the logs, the internal calls, the call tree and the raw receipt. The tab is in the address. */
+function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin | undefined; detail: { data: ApiTxDetail | undefined; failed: boolean }; block: ApiBlock | undefined; read: BlockRead; st: ApiStatus | undefined }) {
+  const [params, setParams] = useSearchParams();
+  const final = t.status === "final";
+  const tabs: TabSpec[] = t.status === "waiting" ? [] : [
+    { id: "overview", label: "Overview" },
+    { id: "logs", label: "Logs", count: t.logs.length },
+    ...(final ? [
+      { id: "internal" as const, label: "Internal calls", count: detail.data?.derived ? detail.data.callCount : null },
+      { id: "tree" as const, label: "Call tree" },
+      { id: "raw" as const, label: "Raw" },
+    ] : []),
+  ];
+  const asked = params.get("tab") as TabId | null;
+  const tab: TabId = asked && TAB_IDS.includes(asked) && tabs.some((x) => x.id === asked) ? asked : "overview";
+  const pick = (id: TabId) => setParams((p) => { const n = new URLSearchParams(p); if (id === "overview") n.delete("tab"); else n.set("tab", id); return n; }, { replace: true });
+  const overview = (
+    <div className="tx-grid">
+      <div className="tx-main">
+        <Facts t={t} coin={coin} detail={detail} />
+        {final && <TransfersCard hash={t.hash} />}
+        {t.status !== "waiting" && <InputCard t={t} />}
+      </div>
+      <aside className="tx-side"><CantonRecord t={t} block={block} read={read} /><ProofSide t={t} block={block} st={st} read={read} /></aside>
+    </div>
+  );
+  if (tabs.length === 0) return overview;
+  return (
+    <>
+      <Tabs tabs={tabs} current={tab} onPick={pick} />
+      <Panel id={tab}>
+        {tab === "overview" && overview}
+        {tab === "logs" && <LogsTab t={t} />}
+        {tab === "internal" && <InternalTab t={t} coin={coin} />}
+        {tab === "tree" && <TreeTab hash={t.hash} coin={coin} />}
+        {tab === "raw" && <RawTab hash={t.hash} />}
+      </Panel>
     </>
   );
 }
