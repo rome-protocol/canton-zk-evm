@@ -177,7 +177,8 @@ mv "$WORK/genesis.json.kept" "$S/genesis.json"
 stopped=$(dry stop)
 grep -qx 'docker stop -t 30 cze-explorer' <<<"$stopped" || fail "stop does not stop the explorer: $stopped"
 grep -qx 'docker stop -t 30 cze-explorer-indexer' <<<"$stopped" || fail "stop does not stop the indexer: $stopped"
-grep -qx 'docker stop -t 30 cze-explorer-verifier' <<<"$stopped" || fail "stop does not stop the verifier: $stopped"
+# The verifier is waited for as long as a compile may run (SOLC_TIMEOUT_MS, 60 s by default) and 30 s more.
+grep -qx 'docker stop -t 90 cze-explorer-verifier' <<<"$stopped" || fail "stop does not stop the verifier: $stopped"
 
 # The default database follows the network's life: a stop of a network that is not persistent removes the database start made; a persistent one keeps it;
 # a database the caller named is never removed; with none made there is nothing to remove.
@@ -240,7 +241,7 @@ has "$stopped" "docker stop -t 30 cze-explorer" "stop is graceful"
 has "$stopped" "docker rm cze-explorer" "stop removes the container after it has stopped"
 lacks "$stopped" " -f" "stop never kills"
 lacks "$start" "rm -f" "start never kills the old container"
-order=$(grep -n "^docker stop -t 30 \|^docker run -d" <<<"$start" | cut -d: -f2 | cut -d' ' -f1-2 | tr '\n' ',')
+order=$(grep -n "^docker stop -t [0-9]* \|^docker run -d" <<<"$start" | cut -d: -f2 | cut -d' ' -f1-2 | tr '\n' ',')
 [ "$order" = "docker stop,docker run,docker stop,docker stop,docker run," ] || fail "start must stop each old container (the indexer, the verifier, then the explorer) before it runs the new one, and run no verifier while its switch is off: $order"
 if dry nonsense >/dev/null 2>&1; then fail "run.sh accepted a command it does not have"; fi
 echo "explorer run checks passed"
