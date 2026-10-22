@@ -8,10 +8,12 @@ import type { Page } from "../api.ts";
  */
 export function useNumbered<T>(key: readonly unknown[], total: number, per: number, read: (after: string | null) => Promise<Page<T>>) {
   const pages = Math.max(1, Math.ceil(total / per));
-  const [asked, setPage] = useState(1);
+  const id = JSON.stringify(key);
+  const [ask, setAsk] = useState({ id, n: 1 });
+  const asked = ask.id === id ? ask.n : 1;
   const page = Math.min(asked, pages);
   const q = useQuery({ queryKey: [...key, page], queryFn: () => read(page > 1 ? String((page - 1) * per - 1) : null), placeholderData: keepPreviousData });
-  const go = (n: number) => setPage(Math.min(Math.max(1, n), pages));
+  const go = (n: number) => setAsk({ id, n: Math.min(Math.max(1, n), pages) });
   return { data: q.data, error: q.error, page, pages, from: (page - 1) * per, go };
 }
 

@@ -118,7 +118,7 @@ export function Block() {
           {b.canton && <ProofCard c={b.canton} pins={st?.pins}><Verify b={b} st={st} /></ProofCard>}
           {!b.canton && <Verify b={b} st={st} />}
           <div className="legs"><Icon name="lock" size={14} /><span>{LEGS_THIS_BLOCK}</span></div>
-          {final ? (st && <PagedTransactions key={b.number} id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}
+          {final ? (st && <PagedTransactions id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}
           {final && <BlockLegs key={b.number} id={String(b.number)} />}
           {b.canton && <RecordData c={b.canton} />}
         </>
