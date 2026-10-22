@@ -14,6 +14,7 @@ import type { AccountRest } from "./rest/account-rest.ts";
 import { BadRequest } from "./rest/paging.ts";
 import { buildOpenApi } from "./rest/openapi.ts";
 import { router } from "./rest/router.ts";
+import type { VerifyApi } from "./verifier/api.ts";
 import { FIELDS, pick } from "./rest/fields.ts";
 
 export { FIELDS };
@@ -36,7 +37,9 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   /** The reads behind the REST routes of addresses, contracts, tokens and legs, and the search by name; without them those routes are off. */
   accounts?: AccountRest;
   /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
-  live?: boolean }
+  live?: boolean;
+  /** The verification routes: a submission and where one is. Without it they are off. */
+  verify?: VerifyApi }
 
 /** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */
 type ApiTxState = TxState | "unindexed";
@@ -51,7 +54,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, live, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, live, verify, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -245,6 +248,17 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return t ? ok(pick(t, FIELDS.faucetTicket)) : fail(404, "No such ticket. A ticket is kept for a while after its coin is final, and is lost if the explorer is rebuilt.");
   }
 
+  /** Takes a contract's source for verification; the answer is the GUID to ask about. */
+  async function submitSource(body: string | undefined, ip: string | undefined): Promise<Answer> {
+    const a = await verify!.submit(body, ip);
+    return a.status === 202 ? { ...a, body: pick(a.body as { guid: string }, FIELDS.verifyQueued) } : a;
+  }
+
+  async function verification(guid: string): Promise<Answer> {
+    const a = await verify!.status(guid);
+    return a.status === 200 ? { ...a, body: pick(a.body as { guid: string; status: string; result: string }, FIELDS.verifyJob) } : a;
+  }
+
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
@@ -257,10 +271,11 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/in-flight", () => inFlight()],
     ["/api/search", (_, q) => search((q.get("q") ?? "").trim().toLowerCase())],
     ["/api/faucet/ticket/{ticket}", (t) => ticket(t)],
+    ...(verify ? ([["/api/verify/{guid}", (guid: string) => verification(guid)]] as const) : []),
     ["/api/openapi.json", async () => ok(openapi)],
   ]);
   // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
-  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
   const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API` });
 
   const api: Api = async (method, target, body, ip) => {
@@ -284,6 +299,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         const info = await faucet.info();
         return ok({ ...pick(info, FIELDS.faucetInfo), captcha: info.captcha && pick(info.captcha, FIELDS.faucetCaptcha) });
       }
+      if (verify && name === "verify" && parts.length === 2) return method === "POST" ? await submitSource(body, ip) : fail(405, "Use POST.");
       const route = legacy(parts, url.searchParams);
       if (!route) return fail(404, "No such route.");
       if (method !== "GET") return fail(405, "Use GET.");
