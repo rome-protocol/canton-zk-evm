@@ -187,8 +187,7 @@ function compareCreation(compiled: Buffer, runtime: Buffer, input: Buffer, ctx: 
   const head = input.subarray(0, compiled.length);
   const own = metadataOf(compiled, ctx);
   const places: { start: number; length: number }[] = [];
-  let hashed = false;
-  if (own) { places.push(...own.hashes); hashed = own.hashes.length > 0; }
+  if (own) places.push(...own.hashes);
   const inner = metadataOf(runtime, ctx);
   if (inner && inner.hashes.length > 0) {
     const cbor = runtime.subarray(inner.start, runtime.length - 2);
@@ -196,7 +195,8 @@ function compareCreation(compiled: Buffer, runtime: Buffer, input: Buffer, ctx: 
       for (const h of inner.hashes) places.push({ start: at + h.start - inner.start, length: h.length });
     }
   }
-  if (compiled.equals(head)) return hashed ? "full" : "partial";
+  // A hash anywhere in the creation code pins the source: a creation code that ends in data (a constant's initial value) has its hash only in the runtime code it holds.
+  if (compiled.equals(head)) return places.length > 0 ? "full" : "partial";
   return places.length > 0 && equalOutside(compiled, head, places) ? "partial" : null;
 }
 

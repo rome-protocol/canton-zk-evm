@@ -243,6 +243,75 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
     expect(await stored()).toHaveLength(0);
   });
 
+  describe("a deployed check that was changed, behind a tail that looks like metadata", () => {
+    const VAULT = `// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+contract Vault {
+    address public owner;
+    bytes public note = hex"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    constructor() { owner = msg.sender; }
+    function take() external view { require(msg.sender == owner, "not owner"); }
+}
+`;
+    const compileVault = async (appendCBOR: boolean) => {
+      const settings = { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, ...(appendCBOR ? {} : { metadata: { appendCBOR: false } }) };
+      const input = { language: "Solidity", sources: { "Vault.sol": { content: VAULT } }, settings };
+      const out = (await runner.compile(VERSION, { ...input, settings: { ...settings, outputSelection: { "*": { "*": ["evm.bytecode.object", "evm.deployedBytecode.object"] } } } })).output as {
+        contracts: Record<string, Record<string, { evm: { bytecode: { object: string }; deployedBytecode: { object: string } } }>>;
+      };
+      const evm = out.contracts["Vault.sol"]!["Vault"]!.evm;
+      return { input, runtime: Buffer.from(evm.deployedBytecode.object, "hex"), creation: Buffer.from(evm.bytecode.object, "hex") };
+    };
+    const submit = (input: unknown) => ({ codeFormat: "solidity-standard-json-input" as const, sourceCode: JSON.stringify(input), contractName: "Vault.sol:Vault" });
+    /** The deployed code with its owner check (CALLER, then EQ) made to always pass: POP, CALLER. The same change in the creation input's copy of the runtime code. */
+    const forge = (c: { runtime: Buffer; creation: Buffer }, lastTwo: boolean): { runtime: Buffer; input: Buffer } => {
+      const at = c.runtime.indexOf(Buffer.from("3314", "hex"));
+      expect(at).toBeGreaterThan(0);
+      const runtime = Buffer.from(c.runtime);
+      runtime[at] = 0x50; runtime[at + 1] = 0x33;
+      const input = Buffer.from(c.creation);
+      const inside = input.indexOf(c.runtime);
+      expect(inside).toBeGreaterThan(0);
+      runtime.copy(input, inside);
+      if (lastTwo) {
+        // The tail now says that the code from the change on is metadata, to anyone who reads the last two bytes.
+        const n = runtime.length - 2 - at;
+        runtime.writeUInt16BE(n, runtime.length - 2);
+        runtime.copy(input, inside);
+      }
+      return { runtime, input };
+    };
+
+    for (const append of [false, true]) {
+      it(`is refused, with the compiler's metadata ${append ? "on" : "off"}`, async () => {
+        const c = await compileVault(append);
+        for (const lastTwo of [false, true]) {
+          const f = forge(c, lastTwo);
+          await db.pool.query("delete from contracts");
+          await addContract(db.pool, A, f.runtime, f.input);
+          expect((await v.verify(req(A, submit(c.input)))).status).toBe("fail");
+        }
+        expect(await stored()).toHaveLength(0);
+      });
+    }
+
+    it("is a partial match when only the metadata hash differs, and a full match when nothing does", async () => {
+      const c = await compileVault(true);
+      const md = c.runtime.readUInt16BE(c.runtime.length - 2);
+      const hash = c.runtime.length - 2 - md + 1 + 5; // inside the CBOR map: past its head and the "ipfs" key
+      const other = Buffer.from(c.runtime);
+      other[hash + 4] = ~other[hash + 4]! & 0xff;
+      const input = Buffer.from(c.creation);
+      const inside = input.indexOf(c.runtime);
+      other.copy(input, inside);
+      await addContract(db.pool, A, other, input);
+      expect(await v.verify(req(A, submit(c.input)))).toMatchObject({ status: "pass", match: "partial" });
+      await db.pool.query("delete from contracts; delete from verified_sources");
+      await addContract(db.pool, A, c.runtime, c.creation);
+      expect(await v.verify(req(A, submit(c.input)))).toMatchObject({ status: "pass", match: "full", creationMatch: "full" });
+    });
+  });
+
   it("lets a full match replace a partial one, in the same row", async () => {
     const d = await deployed(SOURCE, arg(42), true);
     await addContract(db.pool, A, d.runtime, d.input);
