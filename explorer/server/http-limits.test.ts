@@ -124,14 +124,12 @@ describe("the verification limit: 30 an hour, 500 KB a request", () => {
 
   it("takes a verification of 500 KB, and refuses 500 KB and a byte, without calling the API", async () => {
     await start();
-    const pad = (n: number) => "&x=" + "a".repeat(n - 3);
     const head = "module=contract&action=verifysourcecode&sourceCode=";
     const ok = await at("/api", { method: "POST", body: head + "a".repeat(MAX_VERIFY_BODY - head.length) });
     expect(await ok.json()).toEqual({ ok: true });
     const big = await at("/api", { method: "POST", body: head + "a".repeat(MAX_VERIFY_BODY - head.length + 1) });
     expect(await big.json()).toMatchObject({ status: "0", message: "NOTOK", result: expect.stringMatching(/at most 500 KB/) });
     expect(calls).toHaveLength(1);
-    void pad;
   });
 
   it("holds anything that is not a verification to the small body of the other routes", async () => {
