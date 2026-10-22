@@ -122,6 +122,10 @@ export function createStreamHub(o: HubOptions = {}) {
       perKey.set(key, (perKey.get(key) ?? 0) + 1);
       if (lastId !== null) {
         for (const b of buffer) if (b.number > lastId) for (const e of b.events) if (topics.has(e.topic) && clients.has(c)) send(c, frame(e), true);
+        // The replay is sent whole, so the bound that the live events keep is applied once after it.
+        if (clients.has(c) && !c.cut && c.sink.backlog() > BACKLOG_MAX) {
+          if (c.sink.destroy) { c.cut = true; c.sink.destroy(); } else { drop(c); c.sink.end(); }
+        }
       }
       return { ok: true, detach: () => drop(c) };
     },

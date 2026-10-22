@@ -315,6 +315,16 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     for (const p of ["/api/addresses", `/api/addresses/${A}`, "/api/contracts", `/api/tokens/${T1}`]) expect(body(await get(p)).derived, p).toBe(true);
   });
 
+  it("orders the holders by the number of their balance, not by its digits, and pages through them once each", async () => {
+    const extra = [9, 10, 100, 2].map((v, i) => [who(0xd0 + i), v] as const);
+    for (const [h, v] of extra) await sql("insert into token_balances (token, holder, token_id, value, updated_block) values ($1, $2, 0, $3, 3)", [who(0xb1), h, v]);
+    try {
+      for (const limit of [1, 2, 100]) expect((await walk(`/api/tokens/${T1}/holders`, "before", limit)).map((x) => x.value), `at ${limit}`).toEqual(["100", "60", "40", "10", "9", "2"]);
+    } finally {
+      for (const [h] of extra) await sql("delete from token_balances where token = $1 and holder = $2", [who(0xb1), h]);
+    }
+  });
+
   it("answers 400 to a key that the database would refuse", async () => {
     for (const bad of ["/api/addresses?sort=balance&before=zz:" + A, `/api/addresses/${A}/tokens?after=${T1}:zz`, `/api/addresses/${A}/tokens?after=0xzz${"00".repeat(19)}:0`, "/api/contracts?before=5:9999999999:" + A, `/api/tokens/${T1}/holders?before=1:zz:0`]) {
       expect((await get(bad)).status, bad).toBe(400);
@@ -334,7 +344,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       for (const p of calls) {
         const a = await get(p);
         expect(a.status, p).toBe(404);
-        expect(body(a).derived, p).toBe(false);
+        expect(Object.keys(body(a)), p).toEqual(["error"]);
         expect(body(a).error, p).toContain("stage 2 is at block 1");
         expect(a.headers?.["cache-control"]).toBeUndefined();
       }

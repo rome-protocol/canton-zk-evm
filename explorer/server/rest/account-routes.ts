@@ -50,12 +50,12 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   };
   /**
    * Nothing is held at an address: a final 404 when stage 2 has caught up. While it is behind, the contract or the token may be in a block that it has not
-   * reached, so the answer is the same 404 with `derived: false` and where stage 2 is, not a final no.
+   * reached, so the answer is the same 404 `{ error }` with where stage 2 is in its text, not a final no.
    */
   const missing = async (none: string): Promise<Answer> => {
     const { head, cursor } = await accounts.derivedThrough();
     if (head === null || cursor >= head) return fail(404, none);
-    return { status: 404, body: { derived: false, error: `${none} It may be in a block that is not counted yet: stage 2 is at block ${cursor} of ${head}.` } };
+    return { status: 404, body: { error: `${none} It may be in a block that is not counted yet: stage 2 is at block ${cursor} of ${head}.` } };
   };
   const addressOf = (a: string): string => {
     if (!ADDRESS.test(a)) throw new BadRequest(NO_ADDRESS);

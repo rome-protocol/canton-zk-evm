@@ -58,6 +58,15 @@ describe("the stream hub", () => {
     expect(ahead.text).toBe("");
   });
 
+  it("cuts a client whose backlog is over the bound after a resume replay, and frees its slot", () => {
+    const hub = createStreamHub();
+    for (let n = 1; n <= 5; n++) hub.publishBlock(block(n), hashes(1));
+    const slow = client(10 * (1 << 20));
+    expect(hub.attach("s", all, 0, slow).ok).toBe(true);
+    expect(slow.ended).toBe(true);
+    expect(hub.count()).toBe(0);
+  });
+
   it("keeps the newest 100 blocks, and a seeded buffer resumes a client without telling anyone", () => {
     const hub = createStreamHub();
     const live = client();

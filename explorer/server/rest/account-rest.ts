@@ -286,8 +286,8 @@ export function createAccountRest(pool: Pool) {
   async function holders(a: string, before: Key | null, limit: number): Promise<HolderItem[]> {
     const [value, holder, id] = before ?? [null, null, null];
     const rows = await query(
-      `select holder, token_id::text as token_id, value::text as value, updated_block from token_balances
-       where token = $1 and value > 0 and ($2::numeric is null or (value, holder, token_id) < ($2::numeric, $3::bytea, $4::numeric)) order by value desc, holder desc, token_id desc limit $5`,
+      `select b.holder, b.token_id::text as token_id, b.value::text as value, b.updated_block from token_balances b
+       where b.token = $1 and b.value > 0 and ($2::numeric is null or (b.value, b.holder, b.token_id) < ($2::numeric, $3::bytea, $4::numeric)) order by b.value desc, b.holder desc, b.token_id desc limit $5`,
       [bytes(a), value, holder === null ? null : bytes(holder as string), id, limit + 1],
     );
     return rows.map((r) => ({ holder: hex(r.holder), tokenId: r.token_id, value: r.value, updatedBlock: Number(r.updated_block) }));
