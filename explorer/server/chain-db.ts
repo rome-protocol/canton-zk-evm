@@ -243,7 +243,13 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return (await query("select 1 from blocks where number = 1")).length > 0;
   }
 
-  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, genesisReferenced };
+  /** Where stage 2 is (the derive cursor), and the chain instance this database belongs to (the update of block 1). Null while there is none. */
+  async function indexFacts(): Promise<{ deriveCursor: number | null; chainInstance: string | null }> {
+    const [r] = await query("select (select position from cursors where stream = 'derive') as derive, (select value from meta where key = 'chain_instance') as instance");
+    return { deriveCursor: r?.derive === null || r?.derive === undefined ? null : Number(r.derive), chainInstance: r?.instance ?? null };
+  }
+
+  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, genesisReferenced, indexFacts };
 }
 
 export type ChainDb = ReturnType<typeof createChainDb>;

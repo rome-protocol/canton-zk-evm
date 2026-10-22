@@ -81,9 +81,12 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
-    const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer()]).then((r) => r, (e: unknown) => e as Error);
+    const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer(), chain.indexFacts()]).then((r) => r, (e: unknown) => e as Error);
     if (read instanceof Error) console.error(`status: ${read.message}`);
-    const [head, newest, s] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], down: true, signers: null }] as const : read;
+    const [head, newest, s, facts] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], down: true, signers: null }, { deriveCursor: null, chainInstance: null }] as const : read;
+    // How far the index is behind Canton's finalized blocks (reth's finalized block is Canton's head); null while either is unknown.
+    const finalizedNow = await finalizedNumber();
+    const indexLag = head && finalizedNow !== undefined ? Math.max(0, finalizedNow - head.number) : null;
     // Above the indexed head, reth's newest block is being proven only if Canton does not hold it yet: at or below reth's finalized block it is final and the
     // indexer is behind (the problems line says so, and the block's page calls it unindexed), so it is not named as proving.
     const finalizedAt = latest && latest.number > (head?.number ?? 0) ? await finalizedNumber() : undefined;
@@ -101,6 +104,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
         signers: s.signers && pick(s.signers, FIELDS.signers), faucet: { on: faucet.on }, publicRpc: config.publicRpc.on,
+        indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };
   }
