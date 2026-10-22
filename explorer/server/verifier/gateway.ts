@@ -17,7 +17,7 @@ export const reservedAddresses = (g: Gateway | null): string[] => (g ? [g.addres
  * 200 runs, no metadata at the end of the code (so the match is partial, never full). "waiting" when the contract is not in the database yet or the compiler could
  * not be had (try again later), "done" when it has a verified source, "failed" when the sources do not match the code on chain (a deployment fault: not retried).
  */
-export async function seedGateway(pool: Pool, verifier: Verifier, g: Gateway, signal?: AbortSignal): Promise<"done" | "waiting" | "failed"> {
+export async function seedGateway(pool: Pool, verifier: Pick<Verifier, "verify">, g: Gateway, signal?: AbortSignal): Promise<"done" | "waiting" | "failed"> {
   const addr = Buffer.from(g.address.slice(2), "hex");
   const { rows } = await pool.query<{ verified: boolean }>(
     "select exists (select 1 from verified_sources v where v.address = c.address) as verified from contracts c where c.address = $1", [addr],

@@ -33,9 +33,15 @@ async function main(): Promise<number> {
   });
   const queue = new JobQueue(pool);
   const verifier = new Verifier(pool, new SolcRunner(store, sandbox), s.compileMaxInputBytes, reservedAddresses(s.gateway));
-  const worker = new VerifierWorker(pool, queue, verifier, {
+  // One verification at a time, a job's or the gateway seed's: two compiles never run at once (a verification is a few compiles, one after another).
+  let line: Promise<unknown> = Promise.resolve();
+  const serial: Pick<Verifier, "verify"> = {
+    verify: (req, opts) => { const r = line.then(() => verifier.verify(req, opts)); line = r.catch(() => undefined); return r; },
+  };
+  const worker = new VerifierWorker(pool, queue, serial, {
     cacheUsable: () => access(s.cacheDir, constants.W_OK).then(() => null, (e: Error) => `the compiler cache folder cannot be written: ${e.message}`),
-    jobTimeoutMs: FETCH_MS * 2 + s.compileTimeoutMs + 30_000,
+    // A verification is two compiles (the source, and the source with a space added, to find the metadata) and, for an old compiler with viaIR, two more.
+    jobTimeoutMs: FETCH_MS * 2 + 4 * s.compileTimeoutMs + 30_000,
   });
   const stop = new AbortController();
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
@@ -44,11 +50,12 @@ async function main(): Promise<number> {
   let seeding: NodeJS.Timeout | undefined;
   if (s.gateway) {
     const g = s.gateway;
-    const seed = (): void => {
-      seedGateway(pool, verifier, g, stop.signal).then((r) => { if (r !== "waiting") clearInterval(seeding); }, (e: Error) => console.error(`verifier: gateway source: ${e.message}`));
+    const seed = (): Promise<void> => {
+      return seedGateway(pool, serial, g, stop.signal).then((r) => { if (r !== "waiting") clearInterval(seeding); }, (e: Error) => console.error(`verifier: gateway source: ${e.message}`));
     };
-    seeding = setInterval(seed, 60_000);
-    seed();
+    seeding = setInterval(() => void seed(), 60_000);
+    // The first attempt is finished before the worker takes its first job.
+    await seed();
   }
   console.log("verifier: running");
   try {
