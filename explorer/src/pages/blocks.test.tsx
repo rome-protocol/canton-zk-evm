@@ -2,13 +2,15 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { ApiBlock } from "../api.ts";
 import { block, blockItem, fakeApi, inFlight, page, renderApp, reply, route, status, update } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:38:00Z");
+const genesis = (over: Partial<ApiBlock> = {}): ApiBlock => block({ status: "genesis", number: 0, parentHash: "0x" + "00".repeat(32), timestamp: 0, txCount: 0, gasUsed: 0, canton: null, transactions: [], genesisReferenced: true, ...over });
 async function open(h: Parameters<typeof route>[0] = {}) {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
-  const calls = fakeApi(route({ block: () => reply(block({ status: "proving", number: 4, txCount: 3, gasUsed: 201706 })), ...h }));
+  const calls = fakeApi(route({ block: (id) => reply(id === "0" ? genesis() : block({ status: "proving", number: 4, txCount: 3, gasUsed: 201706 })), ...h }));
   renderApp("/blocks");
   await screen.findByRole("heading", { name: "Blocks" });
   await screen.findByRole("table");
@@ -20,13 +22,39 @@ describe("the blocks page", () => {
   it("lists the final blocks newest first, with the block being proven above them", async () => {
     await open();
     const r = rows();
-    expect(r).toHaveLength(3);
+    expect(r).toHaveLength(4);
     expect(within(r[0]!).getByRole("link", { name: "4" })).toHaveAttribute("href", "/block/4");
     expect(r[0]).toHaveTextContent("Being proven");
     expect(r[0]).toHaveTextContent("not on Canton yet");
     expect(within(r[1]!).getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
     expect(r[1]).toHaveTextContent("Final");
     expect(r[2]).toHaveTextContent("2");
+    expect(within(r[3]!).getByRole("link", { name: "0" })).toHaveAttribute("href", "/block/0");
+  });
+
+  it("ends the last page of All with the genesis row: no record, named as parent by block 1's record, the Genesis chip", async () => {
+    await open();
+    const g = (await screen.findByText("genesis")).closest("tr")!;
+    expect(rows().at(-1)).toBe(g);
+    expect(g).toHaveTextContent("no record; block 1's record names it as parent");
+    expect(within(g).getByText("Genesis")).toHaveClass("chip-genesis");
+    expect(g.querySelectorAll("td")[2]).toHaveTextContent("0");
+    expect(g.querySelectorAll("td")[4]).toHaveTextContent("—");
+    expect(g.querySelectorAll("td")[5]).toHaveTextContent("—");
+    expect(screen.getByText("Showing blocks 4 to 0")).toBeInTheDocument();
+  });
+
+  it("says block 1's record names the genesis as parent only when it does", async () => {
+    await open({ block: (id) => reply(id === "0" ? genesis({ genesisReferenced: false }) : block({ status: "proving", number: 4 })) });
+    const g = (await screen.findByText("genesis")).closest("tr")!;
+    await waitFor(() => expect(g).toHaveTextContent("no record"));
+    expect(g).not.toHaveTextContent("names it as parent");
+  });
+
+  it("does not draw the genesis row on a page that is not the last", async () => {
+    await open({ status: () => reply(status({ proving: null, final: { ...status().final!, number: 40 } })), blocks: () => reply(page([blockItem(40)])) });
+    await screen.findByText("Page 1 of 2");
+    expect(screen.queryByText("genesis")).toBeNull();
   });
 
   it("counts the blocks in the title: all, final on Canton (the genesis is not a record) and being proven", async () => {
@@ -46,7 +74,7 @@ describe("the blocks page", () => {
   it("does not draw a block twice when the list already holds the block the status still says is being proven", async () => {
     await open({ blocks: () => reply(page([blockItem(4), blockItem(3)])) });
     const r = rows();
-    expect(r).toHaveLength(2);
+    expect(r).toHaveLength(3);
     expect(r[0]).toHaveTextContent("Final");
     expect(r[0]).not.toHaveTextContent("Being proven");
   });
@@ -82,8 +110,8 @@ describe("the blocks page", () => {
     expect(cells[5]).toBe("—");
   });
 
-  it("counts and pages only the blocks the API serves: block 1 is the first, so 25 final blocks are one page", async () => {
-    const calls = await open({ status: () => reply(status({ proving: null, final: { ...status().final!, number: 25 } })), blocks: () => reply(page([blockItem(25)])) });
+  it("pages the rows, the genesis among them: 24 final blocks and the genesis are one page, 25 are two", async () => {
+    const calls = await open({ status: () => reply(status({ proving: null, final: { ...status().final!, number: 24 } })), blocks: () => reply(page([blockItem(24)])) });
     expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
     expect(calls.some((c) => c.includes("before="))).toBe(false);
@@ -96,9 +124,9 @@ describe("the blocks page", () => {
     await user.click(screen.getByRole("button", { name: "Last" }));
     await screen.findByText("Page 2 of 2");
     expect(calls.some((c) => c.includes("/api/blocks?limit=25&before=2"))).toBe(true);
-    expect(rows()).toHaveLength(1);
+    expect(rows()).toHaveLength(2);
     expect(rows()[0]).toHaveTextContent("1");
-    expect(screen.queryByText("genesis")).toBeNull();
+    expect(await screen.findByText("genesis")).toBeInTheDocument();
   });
 
   it("stops counting the proof time of a block being proven once its proof has ended, and shows the time the proof took", async () => {

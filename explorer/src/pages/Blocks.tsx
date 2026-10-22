@@ -32,7 +32,7 @@ function Row({ b, now }: { b: BlockListItem; now: number }) {
       <td className="r mono"><Gas used={b.gasUsed} limit={b.gasLimit} /></td>
       <td className="r">{b.proofSeconds === null ? <span className="muted">—</span> : <>{span(b.proofSeconds)}{b.proofSeconds > SLOW_PROOF_SECONDS && <span className="tag"> slow proof</span>}</>}</td>
       <td className="r">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
-      <td>{b.updateId ? <HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /> : <span className="muted">no record</span>}</td>
+      <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /></td>
       <td><Chip status="final" /></td>
     </tr>
   );
@@ -59,7 +59,24 @@ function ProvingRow({ proving, now, live }: { proving: NonNullable<ApiStatus["pr
   );
 }
 
-interface View { items: BlockListItem[] | undefined; error: Error | null; first: boolean }
+/** Block 0, the last row of the whole list: it has no record, and says whether block 1's record names its hash as the parent. */
+function GenesisRow() {
+  const g = useQuery({ queryKey: ["block", "0"], queryFn: () => getBlock("0"), refetchInterval: POLL_MS }).data;
+  return (
+    <tr>
+      <td><Link className="num" to="/block/0">0</Link></td>
+      <td className="muted">genesis</td>
+      <td className="r">{g ? g.txCount : "—"}</td>
+      <td className="r mono">{g ? count(g.gasUsed) : "—"}</td>
+      <td className="r muted">—</td>
+      <td className="r muted">—</td>
+      <td className="muted">{g?.genesisReferenced ? "no record; block 1's record names it as parent" : "no record"}</td>
+      <td><Chip status="genesis" /></td>
+    </tr>
+  );
+}
+
+interface View { items: BlockListItem[] | undefined; error: Error | null; first: boolean; genesis?: boolean }
 
 function Table({ view, st, pager, now, live }: { view: View; st: ApiStatus | undefined; pager: React.ReactNode; now: number; live: boolean }) {
   const { items } = view;
@@ -69,13 +86,14 @@ function Table({ view, st, pager, now, live }: { view: View; st: ApiStatus | und
   const top = proving?.number ?? items[0]?.number;
   return (
     <section className="card" aria-label="Blocks">
-      <div className="list-h"><span className="muted">{top !== undefined ? `Showing blocks ${top} to ${items[items.length - 1]?.number ?? top}` : "No blocks yet."}</span>{pager}</div>
+      <div className="list-h"><span className="muted">{top !== undefined ? `Showing blocks ${top} to ${view.genesis ? 0 : items[items.length - 1]?.number ?? top}` : "No blocks yet."}</span>{pager}</div>
       <div className="scroll">
         <table className="tbl">
           <thead><tr><th>Block</th><th>Age</th><th className="r">Transactions</th><th className="r">Gas used</th><th className="r">Proof time</th><th className="r">Time to final</th><th>Canton update</th><th>Stage</th></tr></thead>
           <tbody>
             {proving && <ProvingRow proving={proving} now={now} live={live} />}
             {items.map((b) => <Row key={b.number} b={b} now={now} />)}
+            {view.genesis && <GenesisRow />}
           </tbody>
         </table>
       </div>
@@ -84,11 +102,11 @@ function Table({ view, st, pager, now, live }: { view: View; st: ApiStatus | und
   );
 }
 
-/** Every final block: block 1 is the first the API serves (block 0 is the genesis, which has no record), so the blocks run in one count of `final.number`, any page can be asked for and the last page is known. */
+/** Every final block and the genesis under them: the API serves blocks 1 to `final.number`, and the last row of the last page is block 0, so the rows run in one count of `final.number + 1`, any page can be asked for and the last page is known. */
 function AllBlocks({ st, now, live }: { st: ApiStatus | undefined; now: number; live: boolean }) {
-  const total = st?.final ? st.final.number : 0;
-  const p = useNumbered(["blocks", "page"], total, PER, (before) => getBlockPage(before, PER), (n, per) => String(total + 1 - (n - 1) * per), listPoll(live));
-  return <Table view={{ items: p.data?.items, error: p.error, first: p.page === 1 }} st={st} now={now} live={live} pager={<NumberedPager p={p} label="Pages of blocks" always />} />;
+  const top = st?.final ? st.final.number : 0;
+  const p = useNumbered(["blocks", "page"], st?.final ? top + 1 : 0, PER, (before) => getBlockPage(before, PER), (n, per) => String(top + 1 - (n - 1) * per), listPoll(live));
+  return <Table view={{ items: p.data?.items, error: p.error, first: p.page === 1, genesis: !!st?.final && p.page === p.pages && !!p.data }} st={st} now={now} live={live} pager={<NumberedPager p={p} label="Pages of blocks" always />} />;
 }
 
 /** The blocks of a filter: their numbers have gaps, so the pages are walked by the server's cursor. */

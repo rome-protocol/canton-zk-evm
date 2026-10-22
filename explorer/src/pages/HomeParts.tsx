@@ -92,7 +92,7 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
                     <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></td>
                     <td className="r">{b.txCount}</td>
                     <td className="r" title="from the producer's cut to Canton's record time">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
-                    <td>{b.updateId ? <HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /> : <span className="muted">no record</span>}</td>
+                    <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /></td>
                     <td><Chip status="final" /></td>
                   </tr>
                 ))}
