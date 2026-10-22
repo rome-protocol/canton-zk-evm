@@ -50,8 +50,27 @@ describe("the REST routes' limit: 20 a second, bursts of 60", () => {
     clock.advance(1000);
     expect((await at("/healthz")).status).toBe(200);
     expect((await at("/api/faucet", { method: "POST", body: "{}" })).status).toBe(200);
-    expect((await at("/api/faucet/ticket/abc")).status).toBe(200);
     expect(await (await at("/some/page")).text()).toContain("home");
+  });
+
+  it("counts GET /api/faucet and the ticket route in the REST rate (they call reth), and leaves POST /api/faucet to the faucet's own rules", async () => {
+    await start();
+    for (let i = 0; i < 60; i++) expect((await at("/api/status")).status).toBe(200);
+    const before = calls.length;
+    for (const path of ["/api/faucet", "/api/faucet/ticket/abc"]) {
+      const over = await at(path);
+      expect(over.status).toBe(429);
+      expect(over.headers.get("retry-after")).toBe("1");
+      expect((await over.json()).error).toMatch(/Too many requests/);
+    }
+    expect(calls).toHaveLength(before); // neither reached the API, so reth saw no call
+    const post = await at("/api/faucet", { method: "POST", body: "{}" });
+    expect(post.status).toBe(200);
+    expect(calls).toHaveLength(before + 1);
+    expect(calls.at(-1)).toMatchObject({ method: "POST", target: "/api/faucet" });
+    clock.advance(1000);
+    expect((await at("/api/faucet")).status).toBe(200);
+    expect((await at("/api/faucet/ticket/abc")).status).toBe(200);
   });
 
   it("tells clients apart by the trusted header when there is one, the last address in it, and ignores the header when none is named", async () => {
