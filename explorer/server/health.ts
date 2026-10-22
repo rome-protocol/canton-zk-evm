@@ -142,3 +142,9 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
 
 /** The HTTP status of an overall word: a load balancer stops sending traffic to an instance only when final data is stale or wrong. */
 export const httpStatusOf = (s: Status): number => (s === "down" ? 503 : 200);
+
+/** Before the indexer has written its first record there is nothing to be healthy about: the answer says so, and is down, as `/api/status` is. */
+export function withNotStarted(e: Evaluation): Evaluation {
+  const entry = synthetic("indexer", "indexer", "down", "the indexer has not written its first record yet");
+  return { status: "down", checks: [entry, ...e.checks], problems: [`indexer: ${entry.detail}`, ...e.problems], down: true };
+}

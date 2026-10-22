@@ -1,6 +1,8 @@
+import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createApi } from "./api.ts";
+import { createApiHealth } from "./api-health.ts";
 import { createFinalBlocks } from "./chain-db.ts";
 import { ConfigError, loadConfig } from "./config.ts";
 import { createFaucet, loadFaucetKey } from "./faucet.ts";
@@ -29,7 +31,9 @@ try {
     ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
     : undefined;
   const dist = process.env.EXPLORER_DIST || resolve(fileURLToPath(new URL(".", import.meta.url)), "../dist");
-  const api = createApi({ config, reth, ledger, chain, faucet, tracker, ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), live: Boolean(storage.pool && config.database) });
+  // Each API instance writes its own health rows (design 6.5). The name is EXPLORER_INSTANCE, or the host's name.
+  const health = storage.pool ? createApiHealth({ pool: storage.pool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker }) : undefined;
+  const api = createApi({ config, reth, ledger, chain, faucet, tracker, ...(health ? { health } : {}), ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), live: Boolean(storage.pool && config.database) });
   // Live updates (design 6.4): the indexer's NOTIFY, heard on a connection of its own, told to the clients of GET /api/stream.
   const hub = createStreamHub();
   const source = storage.pool && config.database
@@ -42,9 +46,10 @@ try {
     tracker.start();
     faucet.start();
     void source?.start();
+    health?.start();
   });
   const stopTimers = startStreamTimers(hub);
-  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => hub.close(), stopTimers], server, tracker, also: [faucet], release: [() => faucet.close(), () => tracker.close(), async () => void (await source?.stop()), () => storage.close()] });
+  onShutdown({ stop: [() => health?.stop(), () => faucet.stop(), () => tracker.stop(), () => hub.close(), stopTimers], server, tracker, also: [faucet], release: [() => faucet.close(), () => tracker.close(), async () => void (await source?.stop()), () => storage.close()] });
 } catch (e) {
   if (!(e instanceof ConfigError)) throw e;
   console.error(`explorer: ${e.message}`);

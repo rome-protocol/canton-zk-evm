@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { evaluate, specOf, type Evaluation, type RawRow } from "./health.ts";
+import { evaluate, specOf, withNotStarted, type Evaluation, type RawRow } from "./health.ts";
 
 /** The database could not be read. The routes answer 502 for it, like a read that reth failed. */
 export class ChainDbError extends Error {}
@@ -229,7 +229,7 @@ export function createChainDb(pool: Pool) {
   async function health(instance?: string): Promise<Evaluation & { started: boolean }> {
     const [rows, begun] = await Promise.all([healthRows(), started()]);
     const e = evaluate(rows, { ...(instance !== undefined ? { instance } : {}), started: begun });
-    return { ...e, started: begun };
+    return { ...(begun ? e : withNotStarted(e)), started: begun };
   }
 
   /**

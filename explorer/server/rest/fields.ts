@@ -7,6 +7,9 @@ export const pick = <T extends object, K extends keyof T>(o: T, fields: readonly
 export const FIELDS = {
   status: ["chainId", "chainName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc", "indexHead", "indexLag", "deriveCursor", "chainInstance"],
   coin: ["symbol", "decimals"],
+  /** The answer of /api/health, and one check in it. */
+  health: ["status", "instance", "starting", "problems", "checks"],
+  healthCheck: ["id", "role", "status", "written", "value", "threshold", "detail", "sinceSeconds", "changedAt", "refreshedAt", "refreshedAgoSeconds", "intervalSeconds", "stale", "elsewhere"],
   pins: ["programVK", "rootC", "file"],
   final: ["number", "hash", "timestamp", "recordTime"],
   proving: ["number", "hash", "timestamp"],
