@@ -5,6 +5,7 @@
  */
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
+import { MAX_VERIFY_BODY, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
 import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
@@ -157,7 +158,13 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
     info: {
       title: info.title, version: "1",
       // The limits the server holds, for the API page to show: the numbers come from the same constants and settings the server enforces.
-      "x-limits": { pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}) },
+      "x-limits": {
+        pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}),
+        rest: { perSecond: RULES.rest[0].perSecond, burst: RULES.rest[0].capacity },
+        etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity },
+        verification: { perHour: RULES.verification[0].capacity, maxBodyKb: MAX_VERIFY_BODY / 1024 },
+        streams: { perClient: PER_CLIENT },
+      },
       description: "Read-only. Every list is a keyset page (`next` is the cursor for the following page). Amounts are decimal strings. Times are ISO 8601 UTC.",
     },
     paths: out,

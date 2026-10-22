@@ -15,7 +15,6 @@
 .api-table td { padding: 9px 8px; border-top: 1px solid var(--line-2); vertical-align: baseline; }
 .api-table tr:first-child td { border-top: 0; }
 .api-table .mod { color: var(--canton); font-weight: 500; white-space: nowrap; }
-.api-table .soon { text-align: right; white-space: nowrap; }
 .mchip { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 8px; border-radius: 6px; background: var(--surface-2); font-size: 12px; color: var(--muted); }
 .api-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; margin-bottom: 18px; }
 .api-lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); align-items: start; }
@@ -31,5 +30,4 @@
 .pad { margin: 8px 0 0; }
 @media (max-width: 880px) {
   .api-eth, .api-lower { grid-template-columns: minmax(0, 1fr); }
-  .api-table .soon { display: none; }
 }

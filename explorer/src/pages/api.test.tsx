@@ -4,8 +4,11 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
 
+const LIMITS = { pageSize: 100, rpcPerMinute: 300, rest: { perSecond: 20, burst: 60 }, etherscan: { perSecond: 10, perMinute: 600 }, verification: { perHour: 30, maxBodyKb: 500 }, streams: { perClient: 4 } };
+const door = { "/api": { get: { summary: "Etherscan-compatible: the module and the action are in the query.", "x-modules": {
+  account: ["balance", "txlist"], contract: ["getabi", "verifysourcecode"], proxy: ["eth_blockNumber"] } } } };
 const doc = (over: Record<string, unknown> = {}) => ({
-  openapi: "3.1.0", info: { title: "Ostia explorer API", version: "1", "x-limits": { pageSize: 100, rpcPerMinute: 300 } },
+  openapi: "3.1.0", info: { title: "Ostia explorer API", version: "1", "x-limits": LIMITS },
   paths: {
     "/api/status": { get: { summary: "The status strip: heads, checks, pins." } },
     "/api/blocks/{id}": { get: { summary: "One block. Longer words follow the first sentence." } },
@@ -29,28 +32,39 @@ describe("the API page", () => {
     expect(within(screen.getByRole("navigation", { name: "Pages" })).getByRole("link", { name: "API" })).toHaveClass("active");
   });
 
-  it("lists the Etherscan modules, and says of each that it comes with E8a, since none is built", async () => {
+  it("says in plain words, once, that the Etherscan-compatible API is not served, and shows no module table, example or verify setup, while the description does not list /api", async () => {
     await open();
-    const table = await screen.findByRole("table", { name: "Etherscan-compatible modules" });
-    const rows = within(table).getAllByRole("row");
-    expect(rows.map((r) => within(r).getAllByRole("cell")[0]?.textContent)).toEqual(["account", "contract", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"]);
-    expect(within(rows[0]!).getByText("txlist")).toBeInTheDocument();
-    for (const r of rows) expect(within(r).getByText("coming with E8a")).toBeInTheDocument();
-    expect(screen.getByText(/apikey is accepted and ignored/)).toBeInTheDocument();
+    await screen.findByRole("table", { name: "REST routes" });
+    expect(screen.getAllByText("The Etherscan-compatible API is not served yet.")).toHaveLength(1);
+    expect(screen.queryByRole("table", { name: "Etherscan-compatible modules" })).toBeNull();
+    expect(screen.queryByLabelText("Example request")).toBeNull();
+    expect(screen.queryByLabelText("Foundry setup")).toBeNull();
+    expect(screen.queryByLabelText("Hardhat setup")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/E8a|coming with/);
+    expect(screen.getByLabelText("REST routes").textContent).not.toContain("Etherscan-compatible: the module");
   });
 
-  it("shows an example request and answer with the chain's id, and says that the example is not served yet", async () => {
-    await open();
-    const ex = await screen.findByLabelText("Example request");
+  it("draws the module table from the server's description where it lists /api, with an example and no internal ids", async () => {
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })) });
+    const table = await screen.findByRole("table", { name: "Etherscan-compatible modules" });
+    const rows = within(table).getAllByRole("row");
+    expect(rows.map((r) => within(r).getAllByRole("cell")[0]?.textContent)).toEqual(["account", "contract", "proxy"]);
+    expect(within(rows[0]!).getByText("txlist")).toBeInTheDocument();
+    expect(screen.getByText(/apikey is accepted and ignored/)).toBeInTheDocument();
+    const ex = screen.getByLabelText("Example request");
     expect(ex.textContent).toContain(`${location.origin}/api`);
     expect(ex.textContent).toContain("module=account&action=balance");
     expect(screen.getByLabelText("Example answer").textContent).toContain('"status": "1"');
+    expect(screen.queryByText("The Etherscan-compatible API is not served yet.")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/E8a|coming with/);
+    // The /api door is not a REST route.
+    expect(within(screen.getByRole("table", { name: "REST routes" })).queryByText("/api")).toBeNull();
   });
 
   it("gives Foundry and Hardhat blocks with the explorer's own address and chain id, each with a Copy button that copies its text", async () => {
     const user = userEvent.setup();
     const write = vi.spyOn(navigator.clipboard, "writeText");
-    await open();
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })) });
     const foundry = await screen.findByLabelText("Foundry setup");
     expect(foundry.textContent).toContain(`--chain-id ${status().chainId}`);
     expect(foundry.textContent).toContain(`--verifier-url ${location.origin}/api`);
@@ -81,7 +95,7 @@ describe("the API page", () => {
     await open({ openapi: () => reply({ error: "down" }, 502) });
     expect(await screen.findByText(/the routes cannot be read right now/i)).toBeInTheDocument();
     expect(screen.queryByRole("table", { name: "REST routes" })).toBeNull();
-    expect(screen.getByRole("table", { name: "Etherscan-compatible modules" })).toBeInTheDocument();
+    expect(screen.getByText("The Etherscan-compatible API is not served yet.")).toBeInTheDocument();
   });
 
   it("shows the add-to-wallet card where the public RPC is on, and the limits the server states; no rate that the server did not state", async () => {
@@ -92,8 +106,19 @@ describe("the API page", () => {
     expect(within(card).getByText("Page size")).toBeInTheDocument();
     expect(within(card).getByText("at most 100 a page")).toBeInTheDocument();
     expect(within(card).getByText(/HTTP 429 with Retry-After/)).toBeInTheDocument();
-    expect(within(card).queryByText(/a second/)).toBeNull();
+    // The limits the server applies, as its description states them; the Etherscan ones only while it serves that door.
+    expect(within(card).getByText("20 a second, bursts of 60")).toBeInTheDocument();
+    expect(within(card).getByText("4 open at a time")).toBeInTheDocument();
+    expect(within(card).queryByText("Etherscan-compatible")).toBeNull();
+    expect(within(card).queryByText("Verification")).toBeNull();
     expect(screen.getByRole("button", { name: /Add .* to your wallet/ })).toBeInTheDocument();
+  });
+
+  it("adds the Etherscan-compatible and verification limits to the card where the description lists /api", async () => {
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })) });
+    const card = await screen.findByRole("region", { name: "Rate limits" });
+    expect(await within(card).findByText("10 a second and 600 a minute")).toBeInTheDocument();
+    expect(within(card).getByText("30 an hour, 500 KB a request")).toBeInTheDocument();
   });
 
   it("leaves out the JSON-RPC rate and the wallet card where the explorer does not serve the public RPC", async () => {

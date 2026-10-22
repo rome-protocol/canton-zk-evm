@@ -229,9 +229,18 @@ export interface StatsSummary {
 export type StatsMetric = "txs" | "tps" | "blocks" | "empty_blocks" | "txs_per_block" | "success_rate" | "time_to_final_p50" | "time_to_final_p95" | "proof_time_p50" | "proof_time_p95" | "busy_ratio";
 export interface StatsSeries { metric: string; unit: string; window: StatsWindow; step: "1m" | "10m" | "1h" | "1d"; from: string; to: string; asOf: string | null; points: { at: string; value: number | null }[] }
 /** The API's own description (OpenAPI), which the API page lists its routes from. */
+/** The limits the server holds, as its description states them (each group is there as the server applies it). */
+export interface ApiLimits {
+  pageSize?: number; rpcPerMinute?: number;
+  rest?: { perSecond: number; burst: number };
+  etherscan?: { perSecond: number; perMinute: number };
+  verification?: { perHour: number; maxBodyKb: number };
+  streams?: { perClient: number };
+}
 export interface OpenApiDoc {
-  info?: { "x-limits"?: { pageSize?: number; rpcPerMinute?: number } };
-  paths?: Record<string, Partial<Record<"get" | "post", { summary?: string }>>>;
+  info?: { "x-limits"?: ApiLimits };
+  /** `/api` itself is the Etherscan-compatible door: it is listed only where the server serves it, with each module's actions in `x-modules`. */
+  paths?: Record<string, Partial<Record<"get" | "post", { summary?: string; "x-modules"?: Record<string, string[]> }>>>;
 }
 export const getOpenApi = async () => (await call("/api/openapi.json", [200])).body as OpenApiDoc;
 export const getStatsSummary = async (window: StatsWindow) => (await call(`/api/stats/summary?window=${window}`, [200])).body as StatsSummary;
