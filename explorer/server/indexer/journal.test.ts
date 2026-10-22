@@ -334,10 +334,74 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       expect(h.detail).toMatch(/1 journal lines of the producer's run were lost/);
       expect(h.detail).toMatch(/1 journal lines belong to attempts with no cut line/);
       expect(h.detail).toMatch(/1 journal lines are of a format/);
-      // the gap is shown for an hour
+      // the next load reads no new line, and the row still says them: they are kept in the cursor
+      now += 1_000;
+      const again = await j.load();
+      expect(again).toMatchObject({ lines: 0, orphans: 0, unknownVersion: 0 });
+      const h2 = await health(pool, "journal");
+      expect(h2.status).toBe("degraded");
+      expect(h2.detail).toMatch(/1 journal lines belong to attempts with no cut line/);
+      expect(h2.detail).toMatch(/1 journal lines are of a format/);
+      expect(h2.value).toMatchObject({ orphans: 1, unknownVersion: 1, malformed: 0 });
+      // they are shown for an hour, as the gap is
       now += 3_700_000;
       await j.load();
-      expect(String((await health(pool, "journal")).detail ?? "")).not.toMatch(/were lost/);
+      expect(String((await health(pool, "journal")).detail ?? "")).not.toMatch(/were lost|no cut line|format/);
+      expect((await health(pool, "journal")).status).toBe("ok");
+    });
+  });
+
+  it("a malformed line is kept in the cursor and said until an hour after", async () => {
+    await inDb(async (pool) => {
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0);
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      appendFileSync(join(dir, "2026-10-21.jsonl"), "this is not json\n");
+      let now = T0 + 5_000;
+      const j = createJournal({ pool, folder: dir, now: () => now });
+      expect((await j.load()).malformed).toBe(1);
+      now += 1_000;
+      expect((await j.load()).malformed).toBe(0);
+      expect(await health(pool, "journal")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/1 journal lines could not be read/) });
+      now += 3_700_000;
+      await j.load();
+      expect((await health(pool, "journal")).status).toBe("ok");
+    });
+  });
+
+  it("joins only when a line was applied or the indexed head moved", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }, { txs: 1 }]);
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0 - 60_000);
+      r.committed(1, 1, chain);
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      chain.ledger.ledgerHead = 1;
+      const ix = await start(pool, chain, { journalDir: dir, producerStatusFile: null });
+      await ix.runOnce();
+      await ix.loadJournal();
+      const joined = async () => Number((await one(pool, "select count(*) as n from blocks where attempt_id is not null")).n);
+      expect(await joined()).toBe(1);
+      // a spy on the pool: a load that reads nothing and sees the same head runs none of the three updates
+      const seen: string[] = [];
+      const q = pool.query.bind(pool) as (...a: unknown[]) => unknown;
+      (pool as unknown as { query: unknown }).query = (...a: unknown[]) => { if (typeof a[0] === "string") seen.push(a[0]); return q(...a); };
+      try {
+        await ix.loadJournal();
+        expect(seen.some((x) => /select coalesce\(max\(number\)/.test(x))).toBe(true); // the spy sees the loader's queries
+        expect(seen.filter((x) => /^\s*update (block_attempts|blocks|canton_updates)/.test(x))).toEqual([]);
+        // the head moves: the join runs again, and the second block (no attempt in the journal) stays unjoined
+        chain.ledger.ledgerHead = 2;
+        seen.length = 0;
+        await ix.runOnce();
+        expect(Number((await one(pool, "select max(number) as n from blocks")).n)).toBe(2);
+        await ix.loadJournal();
+        expect(seen.filter((x) => /^\s*update (block_attempts|blocks)/.test(x)).length).toBeGreaterThan(0);
+      } finally {
+        (pool as unknown as { query: unknown }).query = q;
+      }
     });
   });
 
