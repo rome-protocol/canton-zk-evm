@@ -481,7 +481,7 @@ table token_balances
   column token bytea not null
   column holder bytea not null
   column token_id numeric(78,0) not null default 0
-  column value numeric(78,0) not null
+  column value numeric not null
   column updated_block bigint not null
   column checked_block bigint
   column unanswered boolean not null default false
