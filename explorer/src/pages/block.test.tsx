@@ -39,6 +39,9 @@ function serving(h: Parameters<typeof route>[0], file: { size?: number; get?: nu
 const side = (name: string) => within(screen.getByRole("region", { name }));
 /** The value beside a label in one of the page's lists of facts. */
 const row = (scope: ReturnType<typeof within>, label: string) => scope.getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
+/** The status word in the page's title, which the EVM side repeats as its Stage. */
+const titleWord = (n: number, text: string) => within(screen.getByRole("heading", { name: `Block #${n}` }).parentElement!).getByText(text);
+const midway = () => blockDetail({ number: 4, lifecycle: { ...blockDetail().lifecycle!, proofEndedAt: null, submittedAt: null, answeredAt: null } });
 const steps = () => within(screen.getByRole("region", { name: "How this block became final" })).getAllByRole("listitem");
 
 describe("the block page, for a final block", () => {
@@ -397,8 +400,8 @@ describe("a block that is still being proven", () => {
     const canton = side("On Canton");
     expect(canton.getByText("Not on Canton yet.")).toBeInTheDocument();
     expect(canton.getByText("reth has made this block and it is being proven. It becomes final when Canton commits it. It can still disappear if Canton refuses it.")).toBeInTheDocument();
-    expect(canton.queryByText("Canton update")).toBeNull();
-    expect(row(side("On the EVM"), "Hash")).toHaveTextContent("0x04040404…04040404");
+    expect(canton.queryByText("Update id")).toBeNull();
+    expect(row(side("On the EVM"), "Hash")).toHaveTextContent(hash(4));
   });
 
   it("has a link back to the block before it, and none forward", async () => {
@@ -408,18 +411,16 @@ describe("a block that is still being proven", () => {
     expect(nav.queryByRole("link", { name: /Next block/ })).toBeNull();
   });
 
-  it("shows step 1 with its time and says of the rest that they are not on Canton yet", async () => {
-    await open(proving());
+  it("shows the steps it has the producer's times for, and a dash for the rest, which Canton does not have yet", async () => {
+    await open(proving(), status(), "4", { blockDetail: () => reply(midway()) });
+    await screen.findByText(/This block is not final yet/);
+    await screen.findByText("01:37:16.200");
     const items = steps();
-    expect(items[0]).toHaveClass("done");
-    expect(items[0]).toHaveTextContent("01:37:24 UTC1reth made the block.");
-    expect(items.slice(1).map((li) => li.className)).toEqual(["todo", "todo", "todo", "todo"]);
-    expect(items[1]).toHaveTextContent("2ZisK proves it.Not on Canton yet");
-    for (const li of items.slice(2)) expect(li).toHaveTextContent("Not on Canton yet");
-    // step 4 does not point at the Verify button, which is greyed out until the block is final
-    expect(items[3]).toHaveTextContent("4The sidecars of both confirming participants checked the proof.Not on Canton yet");
-    expect(items[3]).not.toHaveTextContent("Verify");
-    expect(within(screen.getByRole("region", { name: "How this block became final" })).getAllByText(/UTC$/)).toHaveLength(1);
+    expect(items.map((li) => li.className)).toEqual(["got", "got", "got", "none", "none", "none"]);
+    expect(items[1]).toHaveTextContent("Built01:37:16.100");
+    expect(items[3]).toHaveTextContent("Proof done—");
+    expect(items[5]).toHaveTextContent("Final on Canton—");
+    expect(within(screen.getByRole("region", { name: "How this block became final" })).queryByRole("img")).toBeNull();
   });
 
   it("still says that Daml legs are not shown, and still lists the transactions", async () => {
@@ -443,17 +444,18 @@ describe("a block that is still being proven", () => {
     let answer = proving();
     const calls = fakeApi(route({ block: () => reply(answer) }));
     renderApp("/block/4");
-    await screen.findByText("Being proven", { selector: ".chip" });
+    await screen.findAllByText("Being proven", { selector: ".chip" });
     await tick();
-    expect(calls.filter((c) => c.startsWith("/api/block"))).toHaveLength(2);
-    expect(screen.getByText("Being proven", { selector: ".chip" })).toBeInTheDocument();
+    expect(calls.filter((c) => c.startsWith("/api/block") && !c.includes("/transactions")).length).toBeGreaterThanOrEqual(2);
+    expect(titleWord(4, "Being proven")).toBeInTheDocument();
     answer = block({ number: 4, hash: hash(4), parentHash: hash(3) });
     await tick();
-    expect(screen.getByText("Final", { selector: ".chip" })).toBeInTheDocument();
-    expect(screen.getByText("Canton update")).toBeInTheDocument();
-    const seen = calls.filter((c) => c.startsWith("/api/block")).length;
+    expect(titleWord(4, "Final on Canton")).toBeInTheDocument();
+    expect(screen.getByText("Update id")).toBeInTheDocument();
+    const polls = () => calls.filter((c) => /^\/api\/blocks?\/4$/.test(c)).length;
+    const seen = polls();
     await tick(10_000);
-    expect(calls.filter((c) => c.startsWith("/api/block"))).toHaveLength(seen);
+    expect(polls()).toBe(seen);
   });
 
   it("says Not found when Canton refuses the block and it goes away", async () => {
@@ -461,7 +463,7 @@ describe("a block that is still being proven", () => {
     let gone = false;
     fakeApi(route({ block: () => (gone ? reply({ error: NOT_FOUND }, 404) : reply(proving())) }));
     renderApp("/block/4");
-    await screen.findByText("Being proven", { selector: ".chip" });
+    await screen.findAllByText("Being proven", { selector: ".chip" });
     gone = true;
     await tick();
     expect(screen.getByRole("heading", { name: "Not found" })).toBeInTheDocument();

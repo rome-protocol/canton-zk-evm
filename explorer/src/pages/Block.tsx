@@ -89,12 +89,13 @@ export function Block() {
   const { id = "" } = useParams();
   const st = useStatus().data;
   const q = useFollowing(["block", id], () => getBlock(id), (b) => b.status === "final" || (b.status === "genesis" && b.genesisReferenced === true));
-  const detail = useQuery({ queryKey: ["block-detail", id], queryFn: () => getBlockDetail(id), enabled: q.data?.status === "final", retry: false, staleTime: 30_000 });
+  const timed = q.data?.status === "final" || q.data?.status === "proving";
+  const detail = useQuery({ queryKey: ["block-detail", id, q.data?.status], queryFn: () => getBlockDetail(id), enabled: timed, retry: false, staleTime: 30_000 });
   const wait = unready(q, "Reading the block…");
   if (wait) return wait;
   const b = q.data!;
   const final = b.status === "final";
-  const times = timesOf(detail.data?.lifecycle, b.canton?.recordTime ?? null, final && detail.isPending && !detail.isError);
+  const times = timesOf(detail.data?.lifecycle, b.canton?.recordTime ?? null, timed && detail.isPending && !detail.isError);
   return (
     <>
       <nav className="crumbs" aria-label="Where this is"><Link to="/blocks">Blocks</Link> / Block {b.number}</nav>
