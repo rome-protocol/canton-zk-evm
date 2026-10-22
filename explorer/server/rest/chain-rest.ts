@@ -19,8 +19,8 @@ export const traceKey = (a: number[]): string => "t" + a.join("-");
 export const addressOfKey = (key: string): number[] => (key === "t" ? [] : key.slice(1).split("-").map(Number));
 
 export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; baseFee: string; updateId: string; recordTime: string;
-  /** ZisK's time for the block and the way from the producer's cut to Canton's record time, in seconds; null for a block the journal did not write. */
-  proofSeconds: number | null; finalSeconds: number | null }
+  /** ZisK's time for the block, the way from the producer's cut to Canton's record time, and Canton's own commit (the producer's submit to the record time), in seconds; null for a block the journal did not write. */
+  proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";
 export interface TxListItem {
   hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null;
@@ -83,13 +83,14 @@ export function createChainRest(pool: Pool) {
     const where = { all: "", transactions: "and b.tx_count > 0", empty: "and b.tx_count = 0 and b.number > 0" }[filter];
     const rows = await query(
       `select b.number, b.hash, extract(epoch from b.timestamp)::bigint as ts, b.tx_count, b.gas_used, b.gas_limit, b.fee_recipient, b.legs_count, b.base_fee_per_gas::text as base_fee, b.update_id, ${US("b.record_time")} as record_time,
-         round(extract(epoch from a.proof_ended_at - a.proof_started_at)::numeric, 3)::float8 as proof_seconds, round(extract(epoch from b.record_time - a.cut_at)::numeric, 3)::float8 as final_seconds
+         round(extract(epoch from a.proof_ended_at - a.proof_started_at)::numeric, 3)::float8 as proof_seconds, round(extract(epoch from b.record_time - a.cut_at)::numeric, 3)::float8 as final_seconds,
+         round(extract(epoch from b.record_time - a.submitted_at)::numeric, 3)::float8 as commit_seconds
        from blocks b left join block_attempts a on a.attempt_id = b.attempt_id where ($1::bigint is null or b.number < $1) ${where} order by b.number desc limit $2`,
       [before, limit + 1],
     );
     return rows.map((r) => ({
       number: Number(r.number), hash: hex(r.hash), timestamp: Number(r.ts), txCount: r.tx_count, gasUsed: Number(r.gas_used), gasLimit: Number(r.gas_limit), miner: hex(r.fee_recipient),
-      legsCount: r.legs_count, baseFee: r.base_fee, updateId: r.update_id, recordTime: isoTime(r.record_time), proofSeconds: r.proof_seconds, finalSeconds: r.final_seconds,
+      legsCount: r.legs_count, baseFee: r.base_fee, updateId: r.update_id, recordTime: isoTime(r.record_time), proofSeconds: r.proof_seconds, finalSeconds: r.final_seconds, commitSeconds: r.commit_seconds,
     }));
   }
 

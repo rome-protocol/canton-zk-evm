@@ -253,17 +253,24 @@ describe("the numbers, from what the API gives today", () => {
   });
 
   it("shows a dash and says why when the producer's log has no times for the blocks", async () => {
-    await home({}, 200, [blockItem(3, { finalSeconds: null, proofSeconds: null })]);
+    await home({}, 200, [blockItem(3, { finalSeconds: null, proofSeconds: null, commitSeconds: null })]);
     expect(tile("Time to final")).toHaveTextContent("—the producer's log has no times for these blocks");
     expect(tile("Proof time")).toHaveTextContent("—the producer's log has no times for these blocks");
   });
 
+  it("fills the Canton commit time from the latest blocks, the producer's submit to Canton's record time, and says so", async () => {
+    await home({}, 200, [blockItem(3, { commitSeconds: 0.9 }), blockItem(2, { commitSeconds: 0.7 })]);
+    expect(tile("Canton commit time")).toHaveTextContent("0.9");
+    expect(tile("Canton commit time")).toHaveTextContent("latest 2 blocks");
+    expect(tile("Canton commit time")).toHaveTextContent("producer log");
+  });
+
   it("shows a dash and names the missing source for each number that needs the stats rollups, and invents none", async () => {
     await home();
-    for (const label of ["Canton commit time", "Transactions per second", "Lost transactions", "Success rate", "Time to final · 72 h"]) {
+    for (const label of ["Transactions per second", "Lost transactions", "Success rate", "Time to final · 72 h"]) {
       const t = tile(label);
       expect(t, label).toHaveTextContent("—");
-      expect(t, label).toHaveTextContent("not read yet: the stats rollups are not served");
+      expect(t, label).toHaveTextContent("not served yet: the API has no stats route for it");
       expect(t.querySelector(".stat-v")!.textContent, label).toBe("—");
     }
   });

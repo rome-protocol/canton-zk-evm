@@ -41,8 +41,8 @@ function NotFinal({ n, read }: { n: Summary["notFinal"]; read: Read }) {
 const s1 = (ms: number) => (ms < 120_000 ? `${(ms / 1000).toFixed(1)}` : duration(ms));
 const unit = (ms: number) => (ms < 120_000 ? "s" : "");
 const NO_TIMES = "the producer's log has no times for these blocks";
-/** The stat whose numbers need the stats rollups, which the API does not serve yet: a dash, and the reason. Nothing is made up. */
-const SEAM = "not read yet: the stats rollups are not served";
+/** The stat whose numbers need a stats route, which the API does not have yet: a dash, and the reason. Nothing is made up. */
+const SEAM = "not served yet: the API has no stats route for it";
 
 /** A median and a 95th percentile in one card: "8.5 s p95 8.7 s". */
 function Spread({ v }: { v: Summary["timeToFinal"] }) {
@@ -52,17 +52,17 @@ function Spread({ v }: { v: Summary["timeToFinal"] }) {
 /**
  * The cards of screen 01 in its order. Those the API can fill today are filled from the latest blocks, and say how many (the stats rollups will
  * make them an hour and a day): height, time to final and proof time (the producer's log), transactions, and what is not final yet. The others
- * need the rollups, so they show a dash and why: commit time, rate, lost transactions, success and the 72 h chart.
+ * need the rollups, so they show a dash and why: rate, lost transactions, success and the 72 h chart.
  */
 export function Stats({ summary: s, flight = "ok" }: { summary: Summary; flight?: Read }) {
-  const t = s.timeToFinal, p = s.proofTime;
+  const t = s.timeToFinal, p = s.proofTime, c = s.commitTime;
   const window = (v: { blocks: number } | null) => (v ? `latest ${v.blocks} blocks` : undefined);
   return (
     <section className="stats" aria-label="Numbers">
       <Stat label="Block height" foot={s.height === null ? "No final block yet." : `final on Canton${s.proving !== null ? ` · block ${s.proving} is being proven` : ""}`}>{s.height ?? "—"}</Stat>
       <Stat label="Time to final" note={window(t)} foot={t ? "from the producer's cut to Canton's record time" : NO_TIMES}><Spread v={t} /></Stat>
       <Stat label="Proof time" note={window(p)} foot={p ? `ZisK, one proof per block, ${p.blocks} block${p.blocks === 1 ? "" : "s"} · producer log` : NO_TIMES}><Spread v={p} /></Stat>
-      <Stat label="Canton commit time" foot={SEAM}>—</Stat>
+      <Stat label="Canton commit time" note={window(c)} foot={c ? `the producer's submit to Canton's record time, ${c.blocks} block${c.blocks === 1 ? "" : "s"} · producer log` : NO_TIMES}><Spread v={c} /></Stat>
       <Stat label="Transactions per second" foot={SEAM}>—</Stat>
       <Stat label="Transactions" note={`latest ${s.transactions.blocks} blocks`} foot={`in ${s.transactions.blocks} final block${s.transactions.blocks === 1 ? "" : "s"}, each one Canton transaction`}>{count(s.transactions.count)}</Stat>
       <NotFinal n={s.notFinal} read={flight} />

@@ -173,7 +173,7 @@ export async function search(q: string): Promise<SearchResult> {
 export interface Page<T> { items: T[]; next: string | null }
 export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; baseFee: string; updateId: string; recordTime: string;
   /** ZisK's time for the block, and the way from the producer's cut to Canton's record time, in seconds; null where the producer's journal has no times. */
-  proofSeconds: number | null; finalSeconds: number | null }
+  proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";
 export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null }
 /** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */

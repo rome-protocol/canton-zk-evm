@@ -13,6 +13,8 @@ export interface Summary {
   timeToFinal: Spread | null;
   /** ZisK's time per block, from the producer's log: the middle one and the 95th percentile, in ms, over the blocks the log has a time for. */
   proofTime: Spread | null;
+  /** Canton's own commit, from the producer's submit to the record time, from the producer's log: the middle one and the 95th percentile over the blocks the log has a time for. */
+  commitTime: Spread | null;
   /** The transactions in those blocks. */
   transactions: { count: number; blocks: number };
   /** Transactions that are not final: in a block being made or proven, and waiting in reth's pool. Null when the in-flight route has not answered; `waiting` is null when the pool has not been counted. */
@@ -36,6 +38,7 @@ export function summarize(status: ApiStatus, blocks: BlockListItem[], flight: In
     proving: status.proving?.number ?? null,
     timeToFinal: spread(blocks.map((b) => b.finalSeconds)),
     proofTime: spread(blocks.map((b) => b.proofSeconds)),
+    commitTime: spread(blocks.map((b) => b.commitSeconds)),
     transactions: { count: blocks.reduce((n, b) => n + b.txCount, 0), blocks: blocks.length },
     notFinal: flight ? { inBlocks: flight.attempts.reduce((n, a) => n + (a.txCount ?? 0), 0), waiting: flight.poolWaiting?.waiting ?? null } : null,
   };

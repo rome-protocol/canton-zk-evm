@@ -79,7 +79,7 @@ const gone = (): Reply => reply({ error: NOT_FOUND }, 404);
 /** A block as the list route gives it: the number n was made 8 seconds after n - 1, and committed 7.4 seconds after it was made. */
 export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockListItem {
   const timestamp = T0 + (n - 2) * 8;
-  return { number: n, hash: hash(n), timestamp, txCount: n % 3, gasUsed: 21000 * (n % 3), gasLimit: 30000000, miner: "0x" + "00".repeat(18) + "0fee", legsCount: 0, baseFee: "67300000", updateId: update(n), recordTime: new Date(timestamp * 1000 + 7400).toISOString(), proofSeconds: 6.8, finalSeconds: 7.4, ...over };
+  return { number: n, hash: hash(n), timestamp, txCount: n % 3, gasUsed: 21000 * (n % 3), gasLimit: 30000000, miner: "0x" + "00".repeat(18) + "0fee", legsCount: 0, baseFee: "67300000", updateId: update(n), recordTime: new Date(timestamp * 1000 + 7400).toISOString(), proofSeconds: 6.8, finalSeconds: 7.4, commitSeconds: 0.6, ...over };
 }
 /** A final transaction as the list route gives it: the nth, in block n. */
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {

@@ -156,8 +156,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   it("lists blocks with the proof time and the time to final, filtered, and as a bounded CSV", async () => {
     await pool.query("insert into producer_runs (run_id, started_at, strategy, settings, source_commit) values ('00000000-0000-0000-0000-000000000009', now(), 'rhythm', '{}', 'x') on conflict do nothing");
     const [a] = (await pool.query(
-      `insert into block_attempts (run_id, attempt_seq, number, strategy, cut_reason, cut_at, proof_started_at, proof_ended_at)
-       select '00000000-0000-0000-0000-000000000009', 1, 2, 'rhythm', 'pool', b.record_time - interval '8 seconds', b.record_time - interval '7.5 seconds', b.record_time - interval '0.5 seconds' from blocks b where b.number = 2 returning attempt_id`)).rows;
+      `insert into block_attempts (run_id, attempt_seq, number, strategy, cut_reason, cut_at, proof_started_at, proof_ended_at, submitted_at)
+       select '00000000-0000-0000-0000-000000000009', 1, 2, 'rhythm', 'pool', b.record_time - interval '8 seconds', b.record_time - interval '7.5 seconds', b.record_time - interval '0.5 seconds', b.record_time - interval '0.4 seconds' from blocks b where b.number = 2 returning attempt_id`)).rows;
     await pool.query("update blocks set attempt_id = $1 where number = 2", [a.attempt_id]);
     const all = body(await get("/api/blocks"));
     const two = all.items.find((b: { number: number }) => b.number === 2), three = all.items.find((b: { number: number }) => b.number === 3);
@@ -165,6 +165,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(two.finalSeconds).toBeCloseTo(8, 3);
     expect(three.proofSeconds).toBeNull();
     expect(three.finalSeconds).toBeNull();
+    expect(two.commitSeconds).toBeCloseTo(0.4, 3);
+    expect(three.commitSeconds).toBeNull();
     expect(body(await get("/api/blocks?filter=transactions")).items.map((b: { number: number }) => b.number)).toEqual([3, 2]);
     expect(body(await get("/api/blocks?filter=empty")).items.map((b: { number: number }) => b.number)).toEqual([1]);
     expect(body(await get("/api/blocks?filter=all")).items.length).toBe(3);
