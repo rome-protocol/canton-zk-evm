@@ -7,6 +7,7 @@
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { CURSOR, HISTS, SCALARS, TABLES } from "../indexer/stats.ts";
+import { TIME_EDGES, histLength } from "../indexer/stats-hist.ts";
 import { hex } from "./chain-rest.ts";
 
 export type Span = keyof typeof TABLES;
@@ -17,7 +18,7 @@ const COLUMNS: ReadonlySet<string> = new Set<string>([...SCALARS, ...Object.keys
 /** A rollup row: the start of its bucket in ms, and the columns asked for (numbers, number arrays, or null where a day's extra is not counted yet). */
 export type StatsRow = { bucket: number } & Partial<Record<Column, number | number[] | null>>;
 
-export interface OpenCounts { open: number; noAcceptanceTime: number; normal: number | null; slow: number | null; stuck: number }
+export interface OpenCounts { open: number; noAcceptanceTime: number; normal: number | null; slow: number | null; stuck: number; beingProven: number; waiting: number }
 export interface StuckItem { txHash: string; state: string; ageSeconds: number; acceptedAt: string }
 export interface LostItem { txHash: string; state: string; reason: string | null; at: string }
 
@@ -41,8 +42,12 @@ export interface StatsRest {
   open(now: number, slowAfterSeconds: number | null): Promise<OpenCounts>;
   /** The stuck ones, oldest first, at most LIST_MAX. */
   stuck(now: number): Promise<StuckItem[]>;
-  /** The dropped and lost transactions: all of them ever, and the newest LIST_MAX. */
-  lost(): Promise<{ total: number; items: LostItem[] }>;
+  /** The lost transactions and the dropped ones, each: all of them ever, and the newest LIST_MAX; and how many were replaced by their sender, ever. */
+  lost(): Promise<{ lost: { total: number; items: LostItem[] }; dropped: { total: number; items: LostItem[] }; replaced: number }>;
+  /** The newest run of the producer that is not a test run: its strategy and when it started. Null when no run is known. */
+  cutting(): Promise<{ strategy: string; since: number } | null>;
+  /** The faucet's requests made in [from, to): by state, and the time from request to final as a time histogram (empty when none is final). */
+  faucet(from: number, to: number): Promise<{ requests: number; sent: number; final: number; failed: number; hist: number[] }>;
 }
 
 export function createStatsRest(pool: Pool): StatsRest {
@@ -97,14 +102,14 @@ export function createStatsRest(pool: Pool): StatsRest {
 
   async function open(now: number, slowAfter: number | null): Promise<OpenCounts> {
     const [r = {}] = await query(
-      `with o as (select extract(epoch from ($1::timestamptz - accepted_at))::float8 as age from tx_lifecycle where state in ('pending', 'proving'))
-       select count(*)::int as open, count(*) filter (where age is null)::int as none,
+      `with o as (select state, extract(epoch from ($1::timestamptz - accepted_at))::float8 as age from tx_lifecycle where state in ('pending', 'proving'))
+       select count(*)::int as open, count(*) filter (where state = 'proving')::int as proving, count(*) filter (where state = 'pending')::int as pending, count(*) filter (where age is null)::int as none,
               count(*) filter (where age > $2)::int as stuck,
               count(*) filter (where age <= $2 and ($3::float8 is null or age <= $3))::int as normal,
               count(*) filter (where age <= $2 and $3::float8 is not null and age > $3)::int as slow
          from o`,
       [new Date(now), STUCK_SECONDS, slowAfter]);
-    return { open: Number(r.open), noAcceptanceTime: Number(r.none), normal: slowAfter === null ? null : Number(r.normal), slow: slowAfter === null ? null : Number(r.slow), stuck: Number(r.stuck) };
+    return { open: Number(r.open), noAcceptanceTime: Number(r.none), normal: slowAfter === null ? null : Number(r.normal), slow: slowAfter === null ? null : Number(r.slow), stuck: Number(r.stuck), beingProven: Number(r.proving), waiting: Number(r.pending) };
   }
 
   async function stuck(now: number): Promise<StuckItem[]> {
@@ -115,13 +120,35 @@ export function createStatsRest(pool: Pool): StatsRest {
     return out.map((r) => ({ txHash: hex(r.tx_hash), state: r.state, ageSeconds: Math.floor((now - Number(r.at)) / 1000), acceptedAt: iso(Number(r.at)) }));
   }
 
-  async function lost() {
-    const [t] = await query("select count(*)::int as n from tx_lifecycle where state in ('dropped', 'lost')");
+  async function lostOf(state: string) {
+    const [t] = await query("select count(*)::int as n from tx_lifecycle where state = $1", [state]);
     const out = await query(
       `select tx_hash, state, state_reason, extract(epoch from updated_at)::float8 * 1000 as at from tx_lifecycle
-        where state in ('dropped', 'lost') order by updated_at desc, tx_hash limit $1`, [LIST_MAX]);
+        where state = $1 order by updated_at desc, tx_hash limit $2`, [state, LIST_MAX]);
     return { total: Number(t?.n ?? 0), items: out.map((r): LostItem => ({ txHash: hex(r.tx_hash), state: r.state, reason: r.state_reason, at: iso(Number(r.at)) })) };
   }
+  async function lost() {
+    const [lost, dropped, [r]] = await Promise.all([lostOf("lost"), lostOf("dropped"), query("select count(*)::int as n from tx_lifecycle where state = 'replaced'")]);
+    return { lost, dropped, replaced: Number(r?.n ?? 0) };
+  }
 
-  return { rows, peak, lastMinuteTxs, state, pool: poolSample, open, stuck, lost };
+  async function cutting() {
+    const [r] = await query(
+      "select strategy, extract(epoch from started_at)::float8 * 1000 as at from producer_runs where coalesce(settings->>'test', '') <> 'true' order by started_at desc, run_id limit 1");
+    return r ? { strategy: String(r.strategy), since: Number(r.at) } : null;
+  }
+
+  async function faucet(from: number, to: number) {
+    const [c = {}] = await query(
+      `select count(*)::int as requests, count(*) filter (where sent_at is not null)::int as sent, count(*) filter (where state = 'final')::int as final,
+              count(*) filter (where state = 'failed')::int as failed from faucet_requests where requested_at >= $1 and requested_at < $2`, [new Date(from), new Date(to)]);
+    const k = await query(
+      `select width_bucket(greatest(0, extract(epoch from final_at - requested_at)::float8), $3::float8[]) as k, count(*)::int as n from faucet_requests
+        where requested_at >= $1 and requested_at < $2 and state = 'final' and final_at is not null group by 1`, [new Date(from), new Date(to), TIME_EDGES as number[]]);
+    const hist = new Array(histLength("time")).fill(0) as number[];
+    for (const x of k) hist[Number(x.k)] = Number(x.n);
+    return { requests: Number(c.requests ?? 0), sent: Number(c.sent ?? 0), final: Number(c.final ?? 0), failed: Number(c.failed ?? 0), hist };
+  }
+
+  return { rows, peak, lastMinuteTxs, state, pool: poolSample, open, stuck, lost, cutting, faucet };
 }

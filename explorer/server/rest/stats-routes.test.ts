@@ -103,6 +103,12 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.waiting).toEqual({ open: 0, pool: null });
     expect(s.acceptedNotFinal).toMatchObject({ normal: null, slow: null, stuck: 0, noAcceptanceTime: 0, slowAfterSeconds: null, stuckAfterSeconds: 120, listed: [] });
     expect(s.lost).toEqual({ window: 0, total: 0, listed: [] });
+    expect(s.dropped).toEqual({ window: 0, total: 0, listed: [] });
+    expect(s.replaced).toEqual({ window: 0, total: 0 });
+    expect(s.blocks.bySize).toEqual([["0"], ["1-10"], ["11-100"], ["101-1000"], ["over 1000"]].map(([size]) => ({ size, count: 0 })));
+    expect(s.acceptedNotFinal).toMatchObject({ beingProven: 0, waiting: 0 });
+    expect(s.cutting).toBeNull(); // no producer run is known
+    expect(s.faucet).toEqual({ requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null });
   });
 
   it("draws a series of empty steps: 0 for a count, null for a time and a rate", async () => {
@@ -130,22 +136,22 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     // Minute rows. 11:30 is outside the 1 h window (11:31 to 12:30 inclusive), and has the most transactions of all.
     await seed(pool, "stats_minute", t(11, 30), { blocks: 1, txs: 1000, max_txs_in_block: 1000, busy_gap_hist: time({ [A]: 1 }), proof_busy_ms: 999999 });
     await seed(pool, "stats_minute", t(11, 31), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, txs: 4, gas_used: 100, gas_limit_sum: 2000, argument_bytes: 400, accepted: 4, attempts: 1, max_txs_in_block: 4, proof_busy_ms: 30000,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 4, gas_used: 100, gas_limit_sum: 2000, argument_bytes: 400, accepted: 4, attempts: 1, max_txs_in_block: 4, proof_busy_ms: 30000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 4 }), proof_hist: time({ [B]: 1 }), commit_hist: time({ [B]: 1 }), served_hist: time({ [B]: 1 }),
       txs_per_block_hist: count({ 0: 1, 4: 1 }), proof_size_hist: hist(5 * TL, { [B]: 1 }, 1 * TL),
     });
     await seed(pool, "stats_minute", t(12, 28), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, lost: 1, attempts: 3, attempts_refused: 1,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, lost: 1, dropped: 1, replaced: 2, attempts: 3, attempts_refused: 1,
       attempts_failed: 1, ttf_without_acceptance: 1, clock_skew: 1, max_txs_in_block: 6, traffic_bytes: 1000, traffic_updates: 2, proof_busy_ms: 60000,
       test_blocks: 1, test_txs: 9, test_attempts: 1, test_proof_busy_ms: 5000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 1, [C]: 1 }), proof_hist: time({ [A]: 1 }), served_hist: time({ [C]: 1 }),
       txs_per_block_hist: count({ 0: 1, 6: 1 }), proof_size_hist: hist(5 * TL, { [A]: 1 }, 2 * TL),
     });
     await seed(pool, "stats_minute", t(12, 29), {
-      blocks: 3, busy_blocks: 3, txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, lost: 2, attempts: 4, attempts_refused: 1,
+      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, lost: 2, replaced: 1, attempts: 4, attempts_refused: 1,
       attempts_not_taken: 1, max_txs_in_block: 12, traffic_bytes: 2000, traffic_updates: 3, proof_busy_ms: 10000, txs_per_block_hist: count({ 6: 1, 12: 2 }),
     });
-    await seed(pool, "stats_minute", t(12, 30), { blocks: 1, txs: 2, gas_used: 50, gas_limit_sum: 1000, attempts: 1, max_txs_in_block: 2, txs_per_block_hist: count({ 2: 1 }) });
+    await seed(pool, "stats_minute", t(12, 30), { blocks: 1, size_blocks_1: 1, txs: 2, gas_used: 50, gas_limit_sum: 1000, attempts: 1, max_txs_in_block: 2, txs_per_block_hist: count({ 2: 1 }) });
     // Hour and day rows: 11:00 holds the 11:30 and 11:31 minutes and 12:00 the others, as the rollup would have summed them, so that a 24 h or 7 d series has data.
     await seed(pool, "stats_hour", t(11, 0), { blocks: 3, txs: 1004, proof_busy_ms: 1029999, time_to_final_hist: time({ [B]: 4 }) });
     await seed(pool, "stats_hour", t(12, 0), { blocks: 8, txs: 42, txs_failed: 4, time_to_final_hist: time({ [B]: 5, [C]: 1 }), proof_busy_ms: 100000 });
@@ -170,6 +176,19 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     await life(9, "final", 400); await life(10, "replaced", 400);
     await life(11, "dropped", 40, { state_reason: "nonce too low", updated_at: at(NOW - 100_000) });
     await life(12, "lost", 40, { state_reason: "reth would not take it back", updated_at: at(NOW - 50_000) });
+    // Runs: the test run (an hour old) and an older and a newer ordinary one. The strategy is the newest ordinary run's.
+    for (const [strategy, ago] of [["timer", 7200_000], ["on_demand", 1800_000]] as const)
+      await ins(pool, "producer_runs", { run_id: randomUUID(), started_at: at(NOW - ago), strategy, settings: "{}", source_commit: "x" });
+    // Faucet requests (requested_at; state; final_at): in the 24 h window 12:30 - 24 h = 12:30 yesterday (day rows: the day), the 1 h window from 11:31.
+    // final in 10 s (B edge 3.49 s < 10 s <= A edge 10.21 s), final in 25 s (C edge 24.55 < 25 <= next), failed, queued, one sent not final, and one 2 hours ago.
+    const fq = (n: number, state: string, agoMs: number, o: Record<string, unknown> = {}) =>
+      ins(pool, "faucet_requests", { ticket: randomUUID(), address: hex(50 + n), client_key: hex(60 + n), amount: "1", state, requested_at: at(NOW - agoMs), ...o });
+    await fq(1, "final", 600_000, { sent_at: at(NOW - 598_000), final_at: at(NOW - 590_000) });
+    await fq(2, "final", 500_000, { sent_at: at(NOW - 498_000), final_at: at(NOW - 475_000) });
+    await fq(3, "failed", 400_000, { reason: "x" });
+    await fq(4, "queued", 10_000);
+    await fq(5, "sent", 20_000, { sent_at: at(NOW - 15_000) });
+    await fq(6, "final", 7200_000, { sent_at: at(NOW - 7199_000), final_at: at(NOW - 7190_000) });
   });
   afterAll(async () => { await db?.drop(); });
 
@@ -184,7 +203,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     // The 11:30 minute is outside the window: its 1,000 transactions are not the peak. The peak minute is 12:29 with 30, and the rate now is 6 over the last 60 s.
     expect(s.tps).toEqual({ now: 6 / 60, peak: 30 / 60, peakAt: new Date(t(12, 29)).toISOString() });
     // blocks 2+2+3+1 = 8, empty 1+1 = 2, busy 1+1+3 = 5, transactions 4+6+30+2 = 42, failed 1+3 = 4
-    expect(s.blocks).toEqual({ count: 8, empty: 2, busy: 5 });
+    expect(s.blocks).toMatchObject({ count: 8, empty: 2, busy: 5 });
     expect(s.txs).toEqual({ count: 42, failed: 4, successRate: 38 / 42, accepted: 35 });
     // per block: 0, 0, 2, 4, 6, 6, 12, 12 -> mean 5.25, the 4th of 8 is 4; without the empty ones 2, 4, 6, 6, 12, 12 -> mean 7, the 3rd of 6 is 6
     expect(s.txsPerBlock).toEqual({ mean: 5.25, median: 4, max: 12, nonEmptyMean: 7, nonEmptyMedian: 6 });
@@ -228,9 +247,36 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     // lost: 1 + 2 in the window's rows, 2 transactions in the table, the newer first
     same(s.lost, F.statsLost);
     expect(s.lost.window).toBe(3);
-    expect(s.lost.total).toBe(2);
-    expect(s.lost.listed.map((x: { state: string; reason: string }) => [x.state, x.reason])).toEqual([["lost", "reth would not take it back"], ["dropped", "nonce too low"]]);
+    expect(s.lost.total).toBe(1);
+    expect(s.lost.listed.map((x: { state: string; reason: string }) => [x.state, x.reason])).toEqual([["lost", "reth would not take it back"]]);
     same(s.lost.listed[0], F.statsLostItem);
+    // dropped apart from lost: 1 in the window's rows, 1 in the table; replaced: 2 + 1 in the rows, 1 in the table (no list: a replaced transaction was not lost)
+    same(s.dropped, F.statsLost); same(s.replaced, F.statsReplaced);
+    expect(s.dropped).toMatchObject({ window: 1, total: 1 });
+    expect(s.dropped.listed.map((x: { state: string; reason: string }) => [x.state, x.reason])).toEqual([["dropped", "nonce too low"]]);
+    expect(s.replaced).toEqual({ window: 3, total: 1 });
+    // open: proving 30, 100, 500 s old = 3, pending 10, 50, 120, 121 s old and the one with no time = 5
+    expect(s.acceptedNotFinal).toMatchObject({ beingProven: 3, waiting: 5 });
+  });
+
+  it("counts blocks by size class from the rows, apart from the proofs", async () => {
+    const s = body(await get("/api/stats/summary?window=1h"));
+    // blocks: 0 txs x2 (11:31, 12:28); 1-10 txs: 4 (11:31), 6 (12:28), 6 (12:29), 2 (12:30); 11-100 txs: 12 x2 (12:29). Proofs are 2 (B and A): a different count.
+    expect(s.blocks.bySize).toEqual([{ size: "0", count: 2 }, { size: "1-10", count: 4 }, { size: "11-100", count: 2 }, { size: "101-1000", count: 0 }, { size: "over 1000", count: 0 }]);
+    expect(s.blocks.bySize.reduce((a: number, x: { count: number }) => a + x.count, 0)).toBe(s.blocks.count);
+    expect(s.proofTime.bySize.map((x: { samples: number }) => x.samples)).toEqual([0, 1, 1, 0, 0]);
+  });
+
+  it("names the cutting strategy of the newest ordinary run, and reads the faucet's requests of the window", async () => {
+    const s = body(await get("/api/stats/summary?window=1h"));
+    same(s.cutting, F.statsCutting);
+    expect(s.cutting).toEqual({ strategy: "on_demand", since: new Date(NOW - 1800_000).toISOString() });
+    // 1 h window: requests 600, 500, 400, 10, 20 s old = 5 (the one 2 h old is outside); sent (sent_at set) 3; final 2, failed 1. The times from request to final: 10 s and 25 s.
+    same(s.faucet, F.statsFaucet);
+    expect(s.faucet).toMatchObject({ requests: 5, sent: 3, final: 2, failed: 1, turnedAway: null });
+    expect(s.faucet.timeToFinal).toEqual({ median: edge(A), p95: edge(C + 1), samples: 2, capped: false });
+    const d = body(await get("/api/stats/summary?window=6h"));
+    expect(d.faucet).toMatchObject({ requests: 6, sent: 4, final: 3, failed: 1 });
   });
 
   it("splits no open transaction into normal and slow while there is no time to final to measure against", async () => {

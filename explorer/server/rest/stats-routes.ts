@@ -90,7 +90,7 @@ export const METRICS: Record<string, Metric> = {
   txs_per_block: { unit: "transactions", columns: ["txs", "blocks"], none: null, value: (rows) => ratio(sum(rows, "txs"), sum(rows, "blocks")) },
   success_rate: { unit: "ratio", columns: ["txs", "txs_failed"], none: null, value: (rows) => ratio(sum(rows, "txs") - sum(rows, "txs_failed"), sum(rows, "txs")) },
   accepted: count("accepted"),
-  lost: count("lost"),
+  lost: count("lost"), dropped: count("dropped"), replaced: count("replaced"),
   fullness: { unit: "ratio", columns: ["gas_used", "gas_limit_sum"], none: null, value: (rows) => ratio(sum(rows, "gas_used"), sum(rows, "gas_limit_sum")) },
   block_time_busy_p50: quant("busy_gap_hist", 0.5), block_time_busy_p95: quant("busy_gap_hist", 0.95),
   time_to_final_p50: quant("time_to_final_hist", 0.5), time_to_final_p95: quant("time_to_final_hist", 0.95),
@@ -116,17 +116,18 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const name = windowOf(q.get("window"));
     const t = now(), w = WINDOWS[name], span = { minute: MINUTE, hour: HOUR, day: DAY }[w.rows];
     const to = Math.floor(t / span) * span + span, from = to - w.ms;
-    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes] = await Promise.all([
+    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
         "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed", "attempts",
-        "attempts_not_taken", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates", "proof_busy_ms", "test_blocks",
+        "attempts_not_taken", "dropped", "replaced", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates", "proof_busy_ms", "test_blocks",
         "test_txs", "test_attempts", "test_proof_busy_ms", "busy_gap_hist", "time_to_final_hist", "proof_hist", "commit_hist", "served_hist", "txs_per_block_hist", "proof_size_hist",
       ]),
       stats.peak(from, to), stats.lastMinuteTxs(t), stats.pool(),
       stats.rows("day", Math.floor(t / DAY) * DAY, Math.floor(t / DAY) * DAY + DAY, ["active_addresses", "new_addresses", "new_contracts", "verified_contracts"]),
       stats.lost(),
       stats.rows("minute", from, Math.floor(t / MINUTE) * MINUTE + MINUTE, ["proof_busy_ms"]),
+      stats.cutting(), stats.faucet(from, to),
     ]);
 
     const blocks = sum(rows, "blocks"), txs = sum(rows, "txs"), empty = sum(rows, "empty_blocks"), attempts = sum(rows, "attempts");
@@ -157,7 +158,10 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
         mean: ratio(txs, blocks), median: blocks ? median(perBlock) : null, max: blocks ? max(rows, "max_txs_in_block") : null,
         nonEmptyMean: ratio(txs, blocks - empty), nonEmptyMedian: blocks - empty > 0 ? median(nonEmpty) : null,
       }, F.statsTxsPerBlock),
-      blocks: pick({ count: blocks, empty, busy: sum(rows, "busy_blocks") }, F.statsBlocks),
+      blocks: pick({
+        count: blocks, empty, busy: sum(rows, "busy_blocks"),
+        bySize: SIZE_LABELS.map((size, k) => pick({ size, count: sum(rows, `size_blocks_${k}` as Column) }, F.statsBlockSize)),
+      }, F.statsBlocks),
       txs: pick({ count: txs, failed: sum(rows, "txs_failed"), successRate: ratio(txs - sum(rows, "txs_failed"), txs), accepted: sum(rows, "accepted") }, F.statsTxs),
       attempts: pick({
         total: attempts, refused: sum(rows, "attempts_refused"), failed: sum(rows, "attempts_failed"), notTaken: sum(rows, "attempts_not_taken"),
@@ -184,10 +188,17 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
         pool: pool && pick({ waiting: pool.waiting, at: iso(pool.at), ageSeconds: Math.max(0, Math.floor((t - pool.at) / 1000)) }, F.statsPool),
       }, F.statsWaiting),
       acceptedNotFinal: pick({
-        normal: open.normal, slow: open.slow, stuck: open.stuck, noAcceptanceTime: open.noAcceptanceTime,
+        normal: open.normal, slow: open.slow, stuck: open.stuck, beingProven: open.beingProven, waiting: open.waiting, noAcceptanceTime: open.noAcceptanceTime,
         slowAfterSeconds: timeToFinal ? 2 * timeToFinal.p95 : null, stuckAfterSeconds: STUCK_SECONDS, listed: stuck.map((s) => pick(s, F.statsStuckItem)),
       }, F.statsOpen),
-      lost: pick({ window: sum(rows, "lost"), total: lost.total, listed: lost.items.map((i) => pick(i, F.statsLostItem)) }, F.statsLost),
+      lost: pick({ window: sum(rows, "lost"), total: lost.lost.total, listed: lost.lost.items.map((i) => pick(i, F.statsLostItem)) }, F.statsLost),
+      dropped: pick({ window: sum(rows, "dropped"), total: lost.dropped.total, listed: lost.dropped.items.map((i) => pick(i, F.statsLostItem)) }, F.statsLost),
+      replaced: pick({ window: sum(rows, "replaced"), total: lost.replaced }, F.statsReplaced),
+      cutting: cutting && pick({ strategy: cutting.strategy, since: iso(cutting.since) }, F.statsCutting),
+      // Refusals by a limit are not stored anywhere, so there is no number to give.
+      faucet: pick({
+        requests: faucet.requests, sent: faucet.sent, final: faucet.final, failed: faucet.failed, timeToFinal: (() => { const x = spread(faucet.hist); return x && pick(x, F.statsSpread); })(), turnedAway: null,
+      }, F.statsFaucet),
     };
     return cached(ok(pick(body, F.statsSummary)), "list");
   }
