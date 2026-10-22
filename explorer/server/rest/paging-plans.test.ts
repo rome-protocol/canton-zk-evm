@@ -44,4 +44,20 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     await accounts.holdings(addr, [addr, "0"], 10);
     expect(await plan(/b\.holder = \$1/)).toMatch(/token_balances_holdings_idx/);
   });
+
+  it("the lists sorted on a count or a balance page by their own index, with the address as the tie-breaker", async () => {
+    const accounts = createAccountRest(recording());
+    await accounts.addresses("balance", [5, addr], 10);
+    expect(await plan(/order by a\.coin_balance desc, a\.address desc/)).toMatch(/Index Cond: \(ROW\(coin_balance, address\) </);
+    await accounts.addresses("txs", [5, addr], 10);
+    expect(await plan(/order by \(a\.sent_count \+ a\.received_count\) desc, a\.address desc/)).toMatch(/Index Cond: \(ROW\(\(sent_count \+ received_count\), address\) </);
+    await accounts.contracts("interactions", null, [5, addr], 10);
+    expect(await plan(/order by c\.interaction_count desc, c\.address desc/)).toMatch(/Index Cond: \(ROW\(interaction_count, address\) </);
+    await accounts.tokens("holders", [5, addr], 10);
+    expect(await plan(/order by holder_count desc, address desc/)).toMatch(/Index Cond: \(ROW\(holder_count, address\) </);
+    await accounts.tokens("transfers", [5, addr], 10);
+    expect(await plan(/order by transfer_count desc, address desc/)).toMatch(/Index Cond: \(ROW\(transfer_count, address\) </);
+    await accounts.holders(addr, ["7", addr, "0"], 10);
+    expect(await plan(/order by b\.value desc, b\.holder desc, b\.token_id desc/)).toMatch(/Index Cond: .*ROW\(value, holder, token_id\) </s);
+  });
 });
