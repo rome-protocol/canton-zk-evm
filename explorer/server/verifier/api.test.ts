@@ -1,0 +1,119 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createApi, type RoutedApi } from "../api.ts";
+import { createChainDb } from "../chain-db.ts";
+import { loadConfig } from "../config.ts";
+import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "../db/testing.ts";
+import type { Reth } from "../reth.ts";
+import { PINS } from "../../test/synthetic-chain.ts";
+import { createVerifyApi } from "./api.ts";
+import { JobQueue } from "./jobs.ts";
+import { Verifier } from "./verify.ts";
+import { addContract, outputFor, StubCompile } from "./verify-fixtures.ts";
+import { VerifierWorker } from "./worker.ts";
+
+checkRequired();
+const suite = TEST_URL ? describe : describe.skip;
+
+const meta = (tag: number): Buffer => {
+  const body = Buffer.concat([Buffer.from("a264697066735822", "hex"), Buffer.alloc(34, tag), Buffer.from("64736f6c6343", "hex"), Buffer.from("00081c", "hex")]);
+  return Buffer.concat([body, Buffer.from([0, body.length])]);
+};
+const runtime = Buffer.concat([Buffer.from("6080604052348015600e575f80fd5b50600436106030575f3560e01c8063".padEnd(120, "5b"), "hex"), meta(1)]);
+const creation = Buffer.concat([Buffer.from("608060405234801561000f575f80fd5b50610150806100305f395ff3fe", "hex"), runtime, meta(1)]);
+const A = "0x" + "a1".repeat(20);
+const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`);
+const body = (over: Record<string, unknown> = {}) => JSON.stringify({
+  address: A, codeFormat: "solidity-single-file", sourceCode: "// SPDX-License-Identifier: MIT\ncontract Box {}", contractName: "Box", compilerVersion: "v0.8.28+commit.7893614a",
+  optimizationUsed: "1", runs: 200, ...over,
+});
+
+suite("the verification routes", () => {
+  let db: TestDatabase;
+  let api: RoutedApi;
+  const stub = new StubCompile();
+  const queue = (limits = {}) => new JobQueue(db.pool, limits);
+  const make = (limits = {}) => createApi({
+    config, reth: {} as unknown as Reth, ledger: {} as never, chain: createChainDb(db.pool),
+    verify: createVerifyApi({ pool: db.pool, queue: queue(limits), clientHash: (c) => c.padEnd(64, "0").replace(/[^0-9a-f]/g, "0").slice(0, 64) }),
+  });
+  const running = () => db.pool.query(
+    "insert into health_checks (check_id, status, value, changed_at, checked_at) values ('verifier/compilers', 'ok', '{}'::jsonb, now(), now()) on conflict (check_id) do update set checked_at = now()");
+  beforeAll(async () => { db = await makeDatabase(true); });
+  afterAll(async () => { await db.drop(); });
+  beforeEach(async () => {
+    await db.pool.query("truncate verification_jobs, verified_sources, contracts, bytecodes, health_checks cascade");
+    stub.calls = 0; stub.fail = null;
+    stub.output = outputFor("Box.sol", "Box", { creation: creation.toString("hex"), runtime: runtime.toString("hex") });
+    await addContract(db.pool, A, runtime, creation);
+    api = make();
+  });
+
+  it("takes a submission, answers with a GUID, and tells the result once the role has run it", async () => {
+    await running();
+    const sent = await api("POST", "/api/verify", body(), "203.0.113.5");
+    expect(sent.status).toBe(202);
+    expect(Object.keys(sent.body as object)).toEqual(["guid"]);
+    const guid = (sent.body as { guid: string }).guid;
+    const waiting = await api("GET", `/api/verify/${guid}`);
+    expect(waiting).toMatchObject({ status: 200, body: { guid, status: "pending", result: "Pending in queue" } });
+    expect(waiting.headers?.["cache-control"]).toBeUndefined();
+    const w = new VerifierWorker(db.pool, queue(), new Verifier(db.pool, stub), { cacheUsable: async () => null, log: () => undefined });
+    expect(await w.step()).toBe("ended");
+    const done = await api("GET", `/api/verify/${guid}`);
+    expect(done.status).toBe(200);
+    expect(Object.keys(done.body as object).sort()).toEqual(["guid", "result", "status"]);
+    expect(done.body).toMatchObject({ status: "pass" });
+    // the same contract again is answered as already verified
+    const again = (await api("POST", "/api/verify", body(), "203.0.113.5")).body as { guid: string };
+    await w.step();
+    expect((await api("GET", `/api/verify/${again.guid}`)).body).toMatchObject({ status: "already" });
+  });
+
+  it("answers 503 while no verifier role has run lately, and when its row is a minute old", async () => {
+    expect((await api("POST", "/api/verify", body())).status).toBe(503);
+    await running();
+    await db.pool.query("update health_checks set checked_at = now() - interval '61 seconds' where check_id = 'verifier/compilers'");
+    const off = await api("POST", "/api/verify", body());
+    expect(off).toMatchObject({ status: 503, body: { error: "Verification is not running." } });
+    expect((await db.pool.query("select 1 from verification_jobs")).rowCount).toBe(0);
+  });
+
+  it("refuses a body that is not what it needs, before the queue is touched", async () => {
+    await running();
+    for (const text of ["", "nope", "[]", body({ sourceCode: "" }), body({ address: 5 }), body({ libraries: "x" })]) {
+      expect((await api("POST", "/api/verify", text)).status, text.slice(0, 30)).toBe(400);
+    }
+    expect((await api("POST", "/api/verify", body({ address: "0x12" }))).status).toBe(400);
+    expect((await api("GET", "/api/verify")).status).toBe(405);
+    expect((await db.pool.query("select 1 from verification_jobs")).rowCount).toBe(0);
+  });
+
+  it("refuses a source that is too large with 413, and a client over its hourly limit or a full queue", async () => {
+    await running();
+    const big = await api("POST", "/api/verify", body({ sourceCode: "x".repeat(500 * 1024 + 1) }));
+    expect(big.status).toBe(413);
+    expect((await db.pool.query("select 1 from verification_jobs")).rowCount).toBe(0);
+    const limited = make({ perClientPerHour: 2, maxWaiting: 3 });
+    expect((await limited("POST", "/api/verify", body(), "198.51.100.1")).status).toBe(202);
+    expect((await limited("POST", "/api/verify", body(), "198.51.100.1")).status).toBe(202);
+    expect((await limited("POST", "/api/verify", body(), "198.51.100.1")).status).toBe(429);
+    expect((await limited("POST", "/api/verify", body(), "198.51.100.2")).status).toBe(202);
+    expect((await limited("POST", "/api/verify", body(), "198.51.100.3")).status).toBe(503);
+  });
+
+  it("stores the client only as a hash of its address", async () => {
+    await running();
+    await api("POST", "/api/verify", body(), "203.0.113.77");
+    const row = (await db.pool.query("select * from verification_jobs")).rows[0] as Record<string, unknown>;
+    expect(JSON.stringify(row, (_k, v) => (typeof v === "object" && v !== null && (v as { type?: string }).type === "Buffer" ? Buffer.from((v as { data: number[] }).data).toString("hex") : v))).not.toContain("203.0.113.77");
+  });
+
+  it("answers 404 for an unknown or malformed GUID, and has no route at all without the dependency", async () => {
+    expect((await api("GET", "/api/verify/00000000-0000-4000-8000-000000000000")).status).toBe(404);
+    expect((await api("GET", "/api/verify/not-a-guid")).status).toBe(404);
+    const plain = createApi({ config, reth: {} as unknown as Reth, ledger: {} as never, chain: createChainDb(db.pool) });
+    expect(plain.routes).not.toContain("/api/verify");
+    expect((await plain("GET", "/api/verify/00000000-0000-4000-8000-000000000000")).status).toBe(404);
+    expect((await plain("POST", "/api/verify", body())).status).toBe(404);
+  });
+});

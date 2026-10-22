@@ -19,6 +19,8 @@ const TYPES: Record<string, string> = {
 /** The biggest request body the server reads. The faucet's is one address. */
 /** Room for a human check's token, which can be a few thousand characters. */
 const MAX_BODY = 8192;
+/** The one POST that takes a contract's source: up to 500 KB of it and its JSON around it. */
+const VERIFY_BODY_MAX = 600 * 1024;
 
 /** An ended stream that has not flushed and closed by now is destroyed: a client that stops reading cannot hold its slot. */
 export const END_DEADLINE_MS = 10_000;
@@ -163,7 +165,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         if (wait !== null) return void res.writeHead(429, { ...JSON_TYPE, "cache-control": "no-store", ...retryAfter(wait) }).end(JSON.stringify({ error: REST_REFUSED(wait) }));
       }
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
-        const sent = method === "POST" ? await readBody(req) : undefined;
+        const sent = method === "POST" ? await readBody(req, pathname === "/api/verify" ? VERIFY_BODY_MAX : MAX_BODY) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
         const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
         const text = textOf(body);

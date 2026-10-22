@@ -31,6 +31,58 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npm run typecheck && npm test && npm run build"
 
+  # The verifier's sandbox, for real: a compile runs in a container of the pinned image (BUSYBOX_IMAGE) with no network, a read-only filesystem,
+  # a memory limit and a time limit, and the tests check each of them. The tests run in the pinned Node image, which talks to the runner's own
+  # Docker through its socket (the Docker program is the static build that PINS pins, checked against its SHA-256 and mounted in). The compilers the tests make sit in a folder that the container
+  # and the daemon see at the same path. EXPLORER_TEST_REQUIRE_SANDBOX makes a missing Docker a failure instead of a skip.
+  verifier-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE BUSYBOX_IMAGE POSTGRES_IMAGE SOLC_IMAGE
+      - name: Start the pinned PostgreSQL, on this machine's loopback only
+        run: |
+          set -a; . ./PINS; set +a
+          PGPW=$(openssl rand -hex 16)
+          echo "::add-mask::$PGPW"
+          echo "PGPW=$PGPW" >> "$GITHUB_ENV"
+          docker run -d --name explorer-verifier-db --security-opt no-new-privileges -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE"
+          ok=0
+          for _ in $(seq 1 60); do
+            if docker exec explorer-verifier-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
+            sleep 1
+          done
+          [ "$ok" -ge 3 ] || { docker logs explorer-verifier-db; exit 1; }
+      - name: Run the verifier's tests with the sandbox
+        run: |
+          set -a; . ./PINS; set +a
+          # The sandbox image is on the runner under the pinned name, and the tests read the same name from PINS.
+          docker image inspect --format '{{.Id}}' "$BUSYBOX_IMAGE"
+          SHARED="$RUNNER_TEMP/verifier-tmp"
+          mkdir -p "$SHARED/bin"
+          curl -fsSL -A "Rome Protocol rome@romeprotocol.com" -o "$SHARED/docker.tgz" "https://download.docker.com/linux/static/stable/x86_64/docker-$DOCKER_CLI_VERSION.tgz"
+          echo "$DOCKER_CLI_SHA256  $SHARED/docker.tgz" | sha256sum -c -
+          tar -xzf "$SHARED/docker.tgz" -C "$SHARED/bin" --strip-components=1 docker/docker
+          # The compiler the verification test serves is the static solc of the pinned image (PINS' SOLC_VERSION), copied out of it.
+          mkdir -p "$SHARED/solc"
+          docker create --name explorer-verifier-solc "$SOLC_IMAGE" > /dev/null
+          docker cp explorer-verifier-solc:/usr/bin/solc "$SHARED/solc/solc"
+          docker rm explorer-verifier-solc > /dev/null
+          docker run --rm --user "$(id -u):$(id -g)" --group-add "$(stat -c %g /var/run/docker.sock)" -e HOME=/tmp \
+            --network host -e EXPLORER_TEST_REQUIRE_SANDBOX=1 -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_SOLC="$SHARED/solc/solc" \
+            -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer -e TMPDIR="$SHARED" -v "$SHARED:$SHARED" \
+            -v /var/run/docker.sock:/var/run/docker.sock -v "$SHARED/bin/docker:/usr/local/bin/docker:ro" \
+            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run server/verifier"
+      - name: Remove what the run made
+        if: always()
+        run: |
+          docker rm -f -v explorer-verifier-db explorer-verifier-solc > /dev/null 2>&1 || true
+          rm -rf "$RUNNER_TEMP/verifier-tmp"
+
   # The Ledger API calls, against the OpenAPI document that the pinned Canton writes itself: the requests the explorer sends must be
   # fields that document names, and the fake Ledger API's answers must have its shape. Starts Canton's participants; no bootstrap, no GPU.
   ledger-api:
