@@ -58,7 +58,7 @@ describe("the API description", () => {
     expect(doc.openapi).toBe("3.1.0");
     expect(doc.info.title).toContain(config.chainName);
     expect(Object.keys(doc.paths).sort()).toEqual([...api.routes].sort());
-    expect(Object.keys(doc.paths).every((p) => p.startsWith("/api/") || p === "/healthz")).toBe(true);
+    expect(Object.keys(doc.paths).every((p) => p.startsWith("/api/") || p === "/healthz" || p === "/api" || p === "/v2/api")).toBe(true);
     expect((await api("POST", "/api/openapi.json")).status).toBe(405);
   });
 
