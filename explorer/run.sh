@@ -38,6 +38,8 @@
 # the container and port it was made with are read back from persist.env. For a network that is not persistent, `stop` wipes it (network/explorer-db.sh
 # wipe), and so does network/down.sh: a new chain made from the same genesis would otherwise meet the old chain's rows and the indexer would stop on them.
 # A database the caller named (EXPLORER_DATABASE_URL, EXPLORER_DB_PASSWORD_FILE) is never wiped here.
+# The Ledger API token: LEDGER_TOKEN_FILE (or CZE_TOKEN_FILE_READER, for the reader user of an existing participant) names a 0600 file with the reader's bearer token;
+# it is mounted read-only at /run/explorer/<its name>, and the explorer and the indexer both get it and read it again on every call, so a refreshed file is picked up. Its value is never on the command.
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).
@@ -119,6 +121,11 @@ chain_args() {
   local pins=${PINS_FILE:-}
   [ -n "$pins" ] || { [ ! -f "$STATE/net/guest.txt" ] || pins=$STATE/net/guest.txt; }
   [ -z "$pins" ] || mount_file PINS_FILE "$pins"
+  # A participant that needs a login: the reader's token file (mode 0600, one token), mounted read-only. LEDGER_TOKEN_FILE names it; on an existing
+  # participant (network/README.md, "Running on an existing participant") CZE_TOKEN_FILE_READER, the reader user's file, is used when LEDGER_TOKEN_FILE is not set.
+  # Both containers read Canton, so both get it. They read the file on every call and refuse one that others can read. Without either, Canton is read without a token.
+  local tokenfile=${LEDGER_TOKEN_FILE:-${CZE_TOKEN_FILE_READER:-}}
+  [ -z "$tokenfile" ] || mount_file LEDGER_TOKEN_FILE "$tokenfile"
 }
 
 # The explorer's container, in ARGS (without the database's settings: the files named here are checked first, before anything runs).

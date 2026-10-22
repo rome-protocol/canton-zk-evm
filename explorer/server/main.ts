@@ -5,7 +5,7 @@ import { createFinalBlocks } from "./chain-db.ts";
 import { ConfigError, loadConfig } from "./config.ts";
 import { createFaucet, loadFaucetKey } from "./faucet.ts";
 import { createHttpServer } from "./http.ts";
-import { createLedger } from "./ledger.ts";
+import { ledgerFromConfig } from "./ledger-config.ts";
 import { createPublicRpc } from "./public-rpc.ts";
 import { createReth } from "./reth.ts";
 import { onShutdown } from "./shutdown.ts";
@@ -19,7 +19,7 @@ try {
   const chain = storage.chain;
   if (!chain) throw new ConfigError("the explorer reads blocks and transactions from its database, which the indexer fills: set EXPLORER_DATABASE_URL, or EXPLORER_DB_PASSWORD_FILE with its parts");
   const reth = createReth(config.rethUrl, config.rpcTimeoutMs);
-  const ledger = createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty);
+  const ledger = ledgerFromConfig(config);
   const index = createFinalBlocks(chain);
   const tracker = createTracker({ reth, index, file: config.tracker.file, ...storage.tracker, max: config.tracker.max, maxBytes: config.tracker.maxBytes, maxPerSender: config.tracker.perSender, maxPendingMs: config.tracker.maxPendingMinutes * 60000, pollMs: config.pollMs });
   const faucet = createFaucet({ ...config.faucet, captcha: config.captcha, key: loadFaucetKey(config.faucet.keyFile), ...storage.faucet, chainId: config.chainId, reth, tracker });

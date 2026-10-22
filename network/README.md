@@ -148,7 +148,9 @@ In (a), do not start the sidecar yourself first; if you did, `up.sh` finds it ru
 
 **Privacy.** The operator of the participant sees every contract of every Ostia party, because all of them are hosted there, and holds what it takes to act as them. Nothing about Ostia keeps a chain's data from the validator's operator. Use a participant whose operator you trust with the chain, and keep the token files off shared machines.
 
-**Not covered here.** The explorer and the demo's helpers still talk to the local network's ports and users; pointing them at this participant, with a token, is their own change.
+**The explorer.** It and its indexer read Canton as the reader party, with the reader user's token: make a 0600 token file for `ostia-reader` (HS256, audience `https://canton.network.global`, `sub` `ostia-reader`, or your `CZE_USER_PREFIX`'s reader) and give it to `explorer/run.sh` as `LEDGER_TOKEN_FILE` (or `CZE_TOKEN_FILE_READER`), with `LEDGER_URL` and `READER_PARTY` for this participant. The file is read again on every call, so refresh it in place. See `explorer/README.md`.
+
+**Not covered here.** The demo's helpers still talk to the local network's ports and users; pointing them at this participant, with a token, is their own change.
 
 ## The smoke test
 

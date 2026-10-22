@@ -1,3 +1,5 @@
+import { readFileSync, statSync } from "node:fs";
+
 /**
  * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, two calls only, both reads.
  * It asks for the reader party's transactions, filtered to the block record, and keeps nothing else the answer might carry.
@@ -9,6 +11,25 @@ export const BLOCK_RECORD_TEMPLATE = "#canton-zk-evm:Zk.Chain:BlockRecord";
 const RECORD_SUFFIX = ":Zk.Chain:BlockRecord";
 
 export class LedgerError extends Error {}
+
+/**
+ * The bearer token of a participant that needs a login, read from the file LEDGER_TOKEN_FILE names. It is read on every call, so a file
+ * that a refresh job rewrites is picked up without a restart, and only a file that its owner alone can read is used. Neither the token
+ * nor any part of it goes into an error: the messages name the file and say what is wrong with it.
+ */
+export function readLedgerToken(file: string, setting = "LEDGER_TOKEN_FILE"): string {
+  let text: string;
+  try {
+    if (statSync(file).mode & 0o077) throw new LedgerError(`${setting} ${file} must be readable by its owner only (chmod 600)`);
+    text = readFileSync(file, "utf8");
+  } catch (e) {
+    if (e instanceof LedgerError) throw e;
+    throw new LedgerError(`${setting} ${file} cannot be read`);
+  }
+  const token = text.trim();
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(token)) throw new LedgerError(`${setting} ${file} must hold one token and nothing else`);
+  return token;
+}
 
 /** One block's record on Canton. Hashes are 0x and lowercase; the header, transactions and proof are lowercase hex, exactly as the record holds them. */
 export interface BlockRecord {
@@ -103,13 +124,15 @@ function recordsIn(item: unknown): { offset: number; records: BlockRecord[] } {
   return { offset: offset as number, records };
 }
 
-export function createLedger(url: string, timeoutMs: number, readerParty: string | null, pageSize = 100) {
+export function createLedger(url: string, timeoutMs: number, readerParty: string | null, pageSize = 100, tokenFile: string | null = null) {
   async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     const route = `${method} ${path.split("?")[0]}`;
     if (!ALLOWED_ENDPOINTS.has(route)) throw new LedgerError(`${route} is not on the list of calls the explorer may make`);
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (tokenFile) headers.authorization = `Bearer ${readLedgerToken(tokenFile)}`;
     try {
       const res = await fetch(url + path, {
-        method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
+        method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
