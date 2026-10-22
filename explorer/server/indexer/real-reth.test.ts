@@ -221,6 +221,18 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
           console.log(`W1 ${shape} block's shape: ${shape1.ok} transactions succeeded, ${shape1.failed} failed, ${shape1.calls} internal calls, ${shape1.logs} logs`);
           expect(Number(shape1.ok), "the Stress calls must succeed, or the block is not the costly one").toBeGreaterThan(0);
           expect(Number(shape1.logs)).toBeGreaterThan(0);
+          // The token traffic of the block (test/fixtures/Flood.sol): ERC-20 transfers to new holders, ERC-1155 batches, and tokens made in the block. Without it
+          // stage 2's token path would not be in the time that sets INDEX_DERIVE.
+          const tok = (await pool.query(
+            `select (select count(*) from token_transfers where block_number = $1) as transfers,
+                    (select count(*) from token_transfers where block_number = $1 and token_id is not null) as nft_legs,
+                    (select count(*) from tokens where first_transfer_block = $1) as tokens,
+                    (select count(*) from tokens where first_transfer_block = $1 and metadata_status = 'read') as read,
+                    (select count(distinct to_address) from token_transfers where block_number = $1) as holders`, [W1_BLOCK])).rows[0];
+          console.log(`W1 ${shape} block's token traffic: ${tok.transfers} transfers (${tok.nft_legs} ERC-1155 legs) to ${tok.holders} accounts, ${tok.tokens} new tokens, ${tok.read} with their metadata read`);
+          expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(3000);
+          expect(Number(tok.nft_legs)).toBeGreaterThan(0);
+          expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(10);
           const t0 = Date.now();
           const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
           const readMs = Date.now() - t0;

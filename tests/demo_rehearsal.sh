@@ -218,14 +218,22 @@ cut_block() {
 receipt_of() { "$PY" "$ROOT/demo/evm.py" receipt "$1"; }
 "$ROOT/tests/build_w1_fixtures.sh" "$WORK/w1"
 reverts_tx=$(w1py deploy "$WORK/w1/Reverts.bin"); stress_tx=$(w1py deploy "$WORK/w1/Stress.bin")
+flood_tx=$(w1py deploy "$WORK/w1/Flood.bin"); multi_tx=$(w1py deploy "$WORK/w1/Multi.bin")
 cut_block
 REVERTS=$(receipt_of "$reverts_tx" | jq -r .contract); STRESS=$(receipt_of "$stress_tx" | jq -r .contract)
-[[ $REVERTS =~ ^0x[0-9a-fA-F]{40}$ && $STRESS =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "the two fixture contracts were not deployed: $REVERTS $STRESS"
+FLOOD=$(receipt_of "$flood_tx" | jq -r .contract); MULTI=$(receipt_of "$multi_tx" | jq -r .contract)
+[[ $REVERTS =~ ^0x[0-9a-fA-F]{40}$ && $STRESS =~ ^0x[0-9a-fA-F]{40}$ && $FLOOD =~ ^0x[0-9a-fA-F]{40}$ && $MULTI =~ ^0x[0-9a-fA-F]{40}$ ]] \
+  || fail "the fixture contracts were not deployed: $REVERTS $STRESS $FLOOD $MULTI"
 first_failed=$(w1py reverts "$REVERTS" | head -n 1)
 cut_block
 REVERT_BLOCK=$(receipt_of "$first_failed" | jq -r .block)
 [ "$(receipt_of "$first_failed" | jq -r .status)" = 0 ] || fail "the first call to Reverts did not fail: $(receipt_of "$first_failed")"
-first_stress=$(w1py stress "$STRESS" 15 | head -n 1)
+# The W1 block: the log-heavy call chains, and the token traffic as costly as the cap allows (ERC-20 transfers to new holders, ERC-1155 batches, new
+# tokens that need their metadata read). Fifteen calls of 2 Mgas fill the 30 Mgas cap; the block is the one the first call lands in.
+first_stress=$(w1py stress "$STRESS" 8 | head -n 1)
+w1py flood "$FLOOD" transfers 3 >/dev/null
+w1py flood "$MULTI" batches 2 >/dev/null
+w1py flood "$FLOOD" spawn 2 >/dev/null
 cut_block
 W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)
 echo "the first Stress call: $(receipt_of "$first_stress" | jq -c .)"
