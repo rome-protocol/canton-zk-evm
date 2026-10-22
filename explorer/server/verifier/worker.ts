@@ -40,7 +40,7 @@ export class VerifierWorker {
   async step(): Promise<Step> {
     const job = await this.queue.claim(this.o.leaseMs);
     if (!job) return "idle";
-    const age = Date.now() - job.createdAt.getTime();
+    const age = Math.max(0, Date.now() - job.createdAt.getTime()); // the database's clock may be a little ahead of this one
     let outcome: Outcome | { status: "fail"; result: string };
     let timer: NodeJS.Timeout | undefined;
     try {
