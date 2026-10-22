@@ -153,6 +153,24 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     }
   });
 
+  it("lists transactions filtered to the failed and to the calls, and as a bounded CSV", async () => {
+    const all = body(await get("/api/txs?limit=100")).items as { hash: string; success: boolean; methodId: string | null }[];
+    const failed = body(await get("/api/txs?filter=failed&limit=100")).items as typeof all;
+    expect(failed.map((t) => t.hash)).toEqual(all.filter((t) => !t.success).map((t) => t.hash));
+    const calls = body(await get("/api/txs?filter=calls&limit=100")).items as typeof all;
+    expect(calls.map((t) => t.hash)).toEqual(all.filter((t) => t.methodId !== null).map((t) => t.hash));
+    for (const t of calls) same(t, F.txItem);
+    expect((await get("/api/txs?filter=nope")).status).toBe(400);
+    expect((await get("/api/txs?format=json")).status).toBe(400);
+    const csv = await get("/api/txs?format=csv&filter=calls");
+    expect(csv.status).toBe(200);
+    expect(csv.headers?.["content-type"]).toMatch(/^text\/csv/);
+    expect(csv.headers?.["content-disposition"]).toMatch(/attachment; filename="transactions\.csv"/);
+    const lines = String(csv.body).trim().split("\r\n");
+    expect(lines[0]).toMatch(/^hash,block,index,time,from,to,/);
+    expect(lines.length - 1).toBe(calls.length);
+  });
+
   it("lists blocks with the proof time and the time to final, filtered, and as a bounded CSV", async () => {
     await pool.query("insert into producer_runs (run_id, started_at, strategy, settings, source_commit) values ('00000000-0000-0000-0000-000000000009', now(), 'rhythm', '{}', 'x') on conflict do nothing");
     const [a] = (await pool.query(

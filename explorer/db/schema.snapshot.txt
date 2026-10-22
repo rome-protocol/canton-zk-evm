@@ -588,7 +588,9 @@ table transactions partition by RANGE (block_number)
   column authorization_list jsonb
   column log_count integer not null
   constraint transactions_pkey PRIMARY KEY (block_number, tx_index)
+  CREATE INDEX transactions_calls_idx ON ONLY public.transactions USING btree (block_number DESC, tx_index DESC) WHERE (method_id IS NOT NULL)
   CREATE INDEX transactions_created_contract_idx ON ONLY public.transactions USING btree (created_contract) WHERE (created_contract IS NOT NULL)
+  CREATE INDEX transactions_failed_idx ON ONLY public.transactions USING btree (block_number DESC, tx_index DESC) WHERE (status = 0)
   CREATE INDEX transactions_from_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (from_address, block_number DESC, tx_index DESC)
   CREATE INDEX transactions_to_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (to_address, block_number DESC, tx_index DESC) WHERE (to_address IS NOT NULL)
   CREATE UNIQUE INDEX transactions_pkey ON ONLY public.transactions USING btree (block_number, tx_index)

@@ -22,6 +22,7 @@ export interface BlockListItem { number: number; hash: string; timestamp: number
   /** ZisK's time for the block, the way from the producer's cut to Canton's record time, and Canton's own commit (the producer's submit to the record time), in seconds; null for a block the journal did not write. */
   proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";
+export type TxFilter = "all" | "failed" | "calls";
 export interface TxListItem {
   hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null;
   /** The input's first 4 bytes as 0x hex; null for a transaction with no input (a plain transfer or a creation with no arguments). */
@@ -110,12 +111,13 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  /** All transactions, newest first, after the key (block, index) when one is given. */
-  async function txs(before: (number | string)[] | null, limit: number): Promise<TxListItem[]> {
+  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. */
+  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all"): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
+    const where = { all: "", failed: "and t.status = 0", calls: "and t.method_id is not null" }[filter];
     const rows = await query(
       `select ${txSelect} from transactions t join blocks b on b.number = t.block_number
-       where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) order by t.block_number desc, t.tx_index desc limit $3`,
+       where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) ${where} order by t.block_number desc, t.tx_index desc limit $3`,
       [bn, ix, limit + 1],
     );
     return rows.map(txItem);

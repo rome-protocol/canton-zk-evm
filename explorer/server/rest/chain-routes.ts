@@ -108,9 +108,28 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(pick({ number: r.number, hash: r.hash, contractId: r.contractId, header: r.headerHex, txs: r.txsHex, proof: r.proofHex }, F.record)), "immutable");
   }
 
+  const TX_FILTERS = ["all", "failed", "calls"] as const;
+
   async function txs(q: URLSearchParams): Promise<Answer> {
+    const f = q.get("filter") ?? "all", format = q.get("format");
+    if (!(TX_FILTERS as readonly string[]).includes(f)) throw new BadRequest(`filter is one of ${TX_FILTERS.join(", ")}.`);
+    if (format !== null && format !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
+    const filter = f as (typeof TX_FILTERS)[number];
+    if (format === "csv") return txsCsv(q, filter);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
-    return cached(ok(page(await rest.txs(before, limit), limit, (t) => keyOf(t.block, t.index), F.txItem)), "list");
+    return cached(ok(page(await rest.txs(before, limit, filter), limit, (t) => keyOf(t.block, t.index), F.txItem)), "list");
+  }
+
+  /** The newest transactions as a file, with the columns of the list: a bounded export, not a way to walk the chain. */
+  async function txsCsv(q: URLSearchParams, filter: (typeof TX_FILTERS)[number]): Promise<Answer> {
+    const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
+    const rows = (await rest.txs(null, limit, filter)).slice(0, limit);
+    const lines = ["hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success"];
+    for (const t of rows) {
+      lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false"].map(csvCell).join(","));
+    }
+    const answer = ok(lines.join("\r\n") + "\r\n");
+    return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="transactions.csv"' } }, "list");
   }
 
   async function oneTx(hash: string, q: URLSearchParams): Promise<Answer> {
