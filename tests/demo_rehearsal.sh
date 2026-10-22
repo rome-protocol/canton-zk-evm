@@ -229,10 +229,10 @@ cut_block
 REVERT_BLOCK=$(receipt_of "$first_failed" | jq -r .block)
 [ "$(receipt_of "$first_failed" | jq -r .status)" = 0 ] || fail "the first call to Reverts did not fail: $(receipt_of "$first_failed")"
 # The W1 block: the log-heavy call chains, and the token traffic as costly as the cap allows (ERC-20 transfers to new holders, ERC-1155 batches, new
-# tokens that need their metadata read). Fourteen calls of 2 Mgas fill the 30 Mgas cap (the builder keeps a margin, so it takes 14 and not 15); the block is the one the first call lands in.
-first_stress=$(w1py stress "$STRESS" 7 | head -n 1)
-w1py flood "$FLOOD" transfers 3 >/dev/null
-w1py flood "$MULTI" batches 2 >/dev/null
+# tokens that need their metadata read). The calls' gas limits add up to 27.8 Mgas of the 30 Mgas cap (the builder keeps a margin): 2 Stress calls, 2 of ERC-20 transfers and 2 of new tokens at 2 Mgas, and one call of five 4,096-id ERC-1155 batches at 15.7 Mgas, the costliest token traffic for stage 2 (about 20k legs). The block is the one the first call lands in.
+first_stress=$(w1py stress "$STRESS" 2 | head -n 1)
+w1py flood "$FLOOD" transfers 2 >/dev/null
+w1py flood "$MULTI" batches 1 >/dev/null
 w1py flood "$FLOOD" spawn 2 >/dev/null
 cut_block
 W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)

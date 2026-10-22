@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /// The token traffic of the W1 block (design section 9), as costly as the gas cap allows: a contract can emit a Transfer log for about 2k gas, so one
 /// block holds thousands of them. `Flood` sends ERC-20 transfers, each to a holder no block has seen, and spawns new tokens that each need their metadata
-/// read; `Multi` sends ERC-1155 batches. The holders are derived from a seed, so every call names new ones.
+/// read; `Multi` sends ERC-1155 batches of 4,096 ids. The holders are derived from a seed, so every call names new ones.
 contract Flood {
     event Transfer(address indexed from, address indexed to, uint256 value);
 
@@ -21,10 +21,13 @@ contract Flood {
 contract Multi {
     event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values);
 
+    uint256 constant IDS = 4096; // the most ids one TransferBatch can carry that the indexer's decodeTransfers reads (its MAX_BATCH)
+
+    /// `n` TransferBatch logs of 4,096 ids each, every one to a holder no block has seen (derived from `seed`): the costliest ERC-1155 traffic a block holds.
     function batches(uint256 n, uint256 seed) external {
-        uint256[] memory ids = new uint256[](4);
-        uint256[] memory values = new uint256[](4);
-        for (uint256 k = 0; k < 4; k++) { ids[k] = k + 1; values[k] = 1; }
+        uint256[] memory ids = new uint256[](IDS);
+        uint256[] memory values = new uint256[](IDS);
+        for (uint256 k = 0; k < IDS; k++) { ids[k] = k + 1; values[k] = 1; }
         for (uint256 i = 0; i < n; i++) {
             emit TransferBatch(msg.sender, address(this), address(uint160(uint256(keccak256(abi.encode(seed, i))))), ids, values);
         }
