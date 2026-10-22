@@ -40,10 +40,10 @@ const clock = (iso: string, digits: 3 | 6) => {
 };
 
 /** The six steps of a block's way to final, from the producer's journal and Canton's record time. Nothing is guessed: a time that is not there is null. */
-export function howItBecameFinal(l: Lifecycle | null, recordTime: string | null): Became {
+export function howItBecameFinal(l: Lifecycle | null, recordTime: string | null, proofBytes: number | null = null): Became {
   const times: (string | null)[] = [l?.cutAt ?? null, l?.builtAt ?? null, l?.proofStartedAt ?? null, l?.proofEndedAt ?? null, l?.submittedAt ?? null, recordTime];
   const names = ["Cut", "Built", "Proof started", "Proof done", "Sent to Canton", "Final on Canton"];
-  const notes = ["start", "reth made the block", "", "ZisK", "ZkChain · Advance", ""];
+  const notes = ["start", "reth made the block", "", proofBytes === null ? "ZisK" : `ZisK, ${proofBytes.toLocaleString("en-US")} bytes`, "ZkChain · Advance", ""];
   const steps = times.map((t, i): Step => {
     const prev = i > 0 ? times[i - 1] : null;
     return {

@@ -100,7 +100,7 @@ export function Block() {
   const proving = b.status === "proving";
   const src = proving ? flight : detail;
   const lifecycle = proving ? flight.data?.attempts.find((a) => a.number === b.number) : detail.data?.lifecycle;
-  const times = timesOf({ lifecycle, recordTime: b.canton?.recordTime ?? null, reading: (final || proving) && src.isPending && !src.isError, failed: (final || proving) && src.isError, final });
+  const times = timesOf({ proofBytes: b.canton?.proofBytes ?? null, lifecycle, recordTime: b.canton?.recordTime ?? null, reading: (final || proving) && src.isPending && !src.isError, failed: (final || proving) && src.isError, final });
   return (
     <>
       <nav className="crumbs" aria-label="Where this is"><Link to="/blocks">Blocks</Link> / Block {b.number}</nav>

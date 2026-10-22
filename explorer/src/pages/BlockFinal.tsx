@@ -8,12 +8,12 @@ export type Times =
   | { state: "unreadable"; became: Became }
   | { state: "read"; became: Became; lifecycle: Lifecycle | null; final: boolean };
 
-export interface TimesSource { lifecycle: Lifecycle | null | undefined; recordTime: string | null; reading: boolean; failed: boolean; final: boolean }
+export interface TimesSource { proofBytes?: number | null; lifecycle: Lifecycle | null | undefined; recordTime: string | null; reading: boolean; failed: boolean; final: boolean }
 
-export function timesOf({ lifecycle, recordTime, reading, failed, final }: TimesSource): Times {
-  const became = howItBecameFinal(lifecycle ?? null, recordTime);
+export function timesOf({ lifecycle, recordTime, reading, failed, final, proofBytes = null }: TimesSource): Times {
+  const became = howItBecameFinal(lifecycle ?? null, recordTime, proofBytes);
   if (reading) return { state: "reading" };
-  if (failed) return { state: "unreadable", became: howItBecameFinal(null, recordTime) };
+  if (failed) return { state: "unreadable", became: howItBecameFinal(null, recordTime, proofBytes) };
   return { state: "read", became, lifecycle: lifecycle ?? null, final };
 }
 
@@ -55,7 +55,7 @@ export function HowFinal({ times, final }: { times: Times; final: boolean }) {
       {final && t?.bar && total > 0 && (
         <div className="how-bar-w">
           <div className="how-bar" role="img" aria-label={`The way to final, ${secs(total, 2)} in all`}>
-            {t.bar.map((p) => <span key={p.name} className={`part part-${p.name}`} style={{ flexGrow: Math.max(p.ms, 1) }}>{p.name === "proof" ? `${PART_LABEL.proof} ${secs(p.ms)}` : p.name === "canton" ? secs(p.ms) : ""}</span>)}
+            {t.bar.map((p) => <span key={p.name} className={`part part-${p.name}`} style={{ flexGrow: Math.max(p.ms, 1) }}>{p.name === "proof" ? `${PART_LABEL.proof} ${secs(p.ms)}` : p.name === "canton" ? (p.ms / 1000).toFixed(2) : ""}</span>)}
           </div>
           <div className="how-axis" aria-hidden="true">{[0, 1, 2, 3].map((i) => <span key={i}>{secs((total * i) / 4, i === 0 ? 0 : 1)}</span>)}<span>{secs(total)}</span></div>
         </div>

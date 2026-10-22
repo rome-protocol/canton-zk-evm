@@ -92,6 +92,7 @@ describe("the block page, for a final block", () => {
     expect(row(evm, "Base fee")).toHaveTextContent("0.67 gwei");
     expect(row(evm, "Burnt fees")).toHaveTextContent("0.0000346 tROME");
     expect(within(row(evm, "Fee recipient")).getByRole("link")).toHaveAttribute("href", `/address/${block().miner}`);
+    expect(row(evm, "Fee recipient")).toHaveTextContent("priority fees only");
     expect(row(evm, "State root")).toHaveTextContent("0x10101010…10101010");
     expect(row(evm, "Record data")).toHaveTextContent("2,137 bytes · header 612, transactions 181, proof 1,344");
   });
@@ -106,6 +107,7 @@ describe("the block page, for a final block", () => {
     expect(row(canton, "Synchronizer")).toHaveTextContent("da::1220…e8e8");
     expect(row(canton, "Offset")).toHaveTextContent("on the reader's participant");
     expect(row(canton, "Template")).toHaveTextContent("Zk.Chain:ZkChain · choice Advance");
+    expect(within(row(canton, "Template")).getByText("producer log")).toHaveClass("tag");
     expect(row(canton, "Created")).toHaveTextContent("Zk.Chain:BlockRecord for block 3");
     const signers = row(canton, "Signed by");
     expect(signers).toHaveTextContent("the chain's operator operator::1220…abab");
@@ -163,12 +165,20 @@ describe("the block page, for a final block", () => {
       "Cut01:37:15.900startproducer log",
       "Built01:37:16.100+0.200 s · reth made the blockproducer log",
       "Proof started01:37:16.200+0.100 sproducer log",
-      "Proof done01:37:23.000+6.800 s · ZisKproducer log",
+      "Proof done01:37:23.000+6.800 s · ZisK, 1,344 bytesproducer log",
       "Sent to Canton01:37:23.050+0.050 s · ZkChain · Advanceproducer log",
       "Final on Canton01:37:23.412000+0.362 sCanton record time",
     ]);
     expect(items[5]).toHaveClass("last");
     expect(screen.getByText(/Cut to final in 7\.512 s\./)).toBeInTheDocument();
+  });
+
+  it("labels the bar's parts: the proof with its time and the Canton part by its seconds alone", async () => {
+    await open();
+    await screen.findByText(/Cut to final in/);
+    const bar = within(screen.getByRole("region", { name: "How this block became final" })).getByRole("img");
+    expect(within(bar).getByText("Proof 6.80 s")).toBeInTheDocument();
+    expect(within(bar).getByText("0.36")).toBeInTheDocument();
   });
 
   it("lists the block's transactions a page at a time, in order, from the block's own route", async () => {

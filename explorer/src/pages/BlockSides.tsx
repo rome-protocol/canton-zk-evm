@@ -45,7 +45,7 @@ export function EvmSide({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
         <Item label="Gas used"><span className="mono">{count(b.gasUsed)}</span> <span className="muted">({share(b.gasUsed, b.gasLimit)} of {count(b.gasLimit)})</span></Item>
         <Item label="Base fee">{b.baseFee === null ? "none" : <span className="mono" title={`${b.baseFee} wei`}>{exact(b.baseFee, 9)} gwei</span>}</Item>
         <Item label="Burnt fees">{burnt === null || !coin ? "—" : <span className="mono" title={`${exact(burnt, coin.decimals)} ${coin.symbol}`}>{units(burnt, coin.decimals)} {coin.symbol}</span>}</Item>
-        <Item label="Fee recipient"><HashLink value={b.miner} to={`/address/${b.miner}`} /></Item>
+        <Item label="Fee recipient"><HashLink value={b.miner} to={`/address/${b.miner}`} />{b.baseFee !== null && <span className="muted"> · priority fees only</span>}</Item>
         <Item label="State root"><HashLink value={b.stateRoot} long /></Item>
         {sizes && (
           <Item label="Record data">
@@ -70,7 +70,7 @@ function Record({ b, c, st, update }: { b: ApiBlock; c: CantonSide; st: ApiStatu
       <Item label="Synchronizer">{update ? <HashLink value={update.synchronizer} kind="party" /> : <span className="muted">—</span>}</Item>
       <Item label="Offset">{update ? <><span className="mono">{update.offset}</span> <span className="tag">on the reader's participant</span></> : <span className="muted">—</span>}</Item>
       <Item label="Template">
-        {sent?.template ? <><span className="mono">{sent.template}</span>{choice && <> <span className="muted">· choice</span> <span className="mono">{choice}</span></>}</> : <span className="muted">not in the producer's log</span>}
+        {sent?.template ? <><span className="mono">{sent.template}</span>{choice && <> <span className="muted">· choice</span> <span className="mono">{choice}</span></>} <span className="tag">producer log</span></> : <span className="muted">not in the producer's log</span>}
       </Item>
       <Item label="Created"><span className="mono">{created}</span> <span className="muted">for block {b.number}</span></Item>
       {signers && (
