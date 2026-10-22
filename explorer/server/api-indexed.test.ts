@@ -61,7 +61,7 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
       expect(txs.map((t) => t.success)).toEqual(b.receipts.map((r) => r.status === 1));
       expect(txs[1]!.transfer).toMatchObject({ symbol: "TKN", decimals: 6, value: "0" }); // the second one is an ERC-20 transfer
       expect((await get(`/api/block/${b.block.hash}`)).body).toEqual(body);
-      expect((await get(`/api/search?q=${b.record.updateId}`)).body).toEqual({ path: "/block/2" });
+      expect((await get(`/api/search?q=${b.record.updateId}`)).body).toEqual({ path: `/canton/${b.record.updateId}` });
     });
   });
 

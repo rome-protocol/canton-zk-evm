@@ -441,7 +441,7 @@ describe.skipIf(!TEST_URL)("search", () => {
     expect(await path(POOL_TX)).toEqual({ path: `/tx/${POOL_TX}` });
     expect(await path(hashOf(1))).toEqual({ path: `/block/${hashOf(1)}` });
     expect(await path(BOB)).toEqual({ path: `/address/${BOB}` });
-    expect(await path(updateIdOf(2))).toEqual({ path: "/block/2" });
+    expect(await path(updateIdOf(2))).toEqual({ path: `/canton/${updateIdOf(2)}` });
     for (const q of ["", "9", "hello", "0x" + "00".repeat(32), "1220" + "00".repeat(32)]) expect(await get(`/api/search?q=${q}`)).toEqual({ status: 404, body: { error: NOT_FOUND } });
   });
 });
