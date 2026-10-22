@@ -8,5 +8,5 @@ create index token_transfers_to_erc721_idx on token_transfers (to_address, block
 create index token_transfers_from_erc1155_idx on token_transfers (from_address, block_number desc, log_index desc, batch_index desc) where amount is not null and token_id is not null;
 create index token_transfers_to_erc1155_idx on token_transfers (to_address, block_number desc, log_index desc, batch_index desc) where amount is not null and token_id is not null;
 -- An address and one token together (the contractaddress filter): the rows of that token alone, whatever else the address moved.
-create index token_transfers_from_token_idx on token_transfers (from_address, token, block_number desc, log_index desc, batch_index desc);
-create index token_transfers_to_token_idx on token_transfers (to_address, token, block_number desc, log_index desc, batch_index desc);
+create index token_transfers_from_address_token_idx on token_transfers (from_address, token, block_number desc, log_index desc, batch_index desc);
+create index token_transfers_to_address_token_idx on token_transfers (to_address, token, block_number desc, log_index desc, batch_index desc);
