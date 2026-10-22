@@ -75,9 +75,9 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
     }
     const missing = (await o.pool.query(
       `select count(*) as n, min(a.number) as first from block_attempts a
-        where a.outcome = 'committed' and a.update_id is not null and a.answered_at < now() - make_interval(secs => $1)
+        where a.outcome = 'committed' and a.update_id is not null and a.cut_at > to_timestamp($2 / 1000.0) - interval '6 hours' and a.answered_at < now() - make_interval(secs => $1)
           and a.answered_at >= (select coalesce(min(record_time), 'infinity') from canton_updates)
-          and not exists (select 1 from canton_updates u where u.update_id = a.update_id)`, [C8_WITHIN_S])).rows[0];
+          and not exists (select 1 from canton_updates u where u.update_id = a.update_id)`, [C8_WITHIN_S, now()])).rows[0];
     const orphan = (await o.pool.query(
       `select count(*) as n, min(b.number) as first from blocks b
         where b.attempt_id is null and b.record_time < now() - make_interval(secs => $1) and b.record_time >= (select min(started_at) from producer_runs)`, [C8_WITHIN_S])).rows[0];
