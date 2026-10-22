@@ -11,6 +11,8 @@ import { chainRoutes } from "./rest/chain-routes.ts";
 import type { ChainRest } from "./rest/chain-rest.ts";
 import { accountRoutes } from "./rest/account-routes.ts";
 import type { AccountRest } from "./rest/account-rest.ts";
+import { etherscan } from "./rest/etherscan.ts";
+import type { EtherscanRest } from "./rest/etherscan-rest.ts";
 import { BadRequest } from "./rest/paging.ts";
 import { buildOpenApi } from "./rest/openapi.ts";
 import { router } from "./rest/router.ts";
@@ -38,6 +40,8 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   rest?: ChainRest;
   /** The reads behind the REST routes of addresses, contracts, tokens and legs, and the search by name; without them those routes are off. */
   accounts?: AccountRest;
+  /** The reads behind the Etherscan-compatible `/api` and `/v2/api`; without them that door is off. */
+  etherscanRest?: EtherscanRest;
   /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
   live?: boolean;
   /** The checks this API instance writes about what it sees: its own timer writes the rows in the background, and `/api/health` only reads the table and says which instance answered. Without it the answer shows the rows the other roles wrote. */
@@ -58,7 +62,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, etherscanRest, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -282,6 +286,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return a.status === 200 ? { ...a, body: pick(a.body as { guid: string; status: string; result: string }, FIELDS.verifyJob) } : a;
   }
 
+  const etherscanDoor = etherscanRest && etherscan({ rest: etherscanRest, reth, chainId: config.chainId });
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
@@ -314,6 +319,12 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const [root, name] = parts;
     try {
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
+      // Etherscan's door, at `/api` and at `/v2/api`: GET and POST, and always HTTP 200, as its answers are.
+      if (url.pathname === "/api" || url.pathname === "/v2/api") {
+        if (!etherscanDoor) return fail(404, "The Etherscan-compatible API is off on this explorer.");
+        if (method !== "GET" && method !== "POST") return fail(405, "Use GET or POST.");
+        return await etherscanDoor(url.searchParams, method === "POST" ? body : undefined);
+      }
       if (root !== "api") return fail(404, "No such route.");
       const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");

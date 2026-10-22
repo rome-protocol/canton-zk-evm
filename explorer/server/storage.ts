@@ -4,6 +4,7 @@ import { ConfigError, type Config } from "./config.ts";
 import { createChainDb, type ChainDb } from "./chain-db.ts";
 import { createChainRest, type ChainRest } from "./rest/chain-rest.ts";
 import { createAccountRest, type AccountRest } from "./rest/account-rest.ts";
+import { createEtherscanRest, type EtherscanRest } from "./rest/etherscan-rest.ts";
 import { migrate } from "./db/migrate.ts";
 import { TICKETS_MAX, type FaucetOptions } from "./faucet.ts";
 import { clientHasher, databaseFaucetStore, fileFaucetStore, loadClientKey, type FaucetStore } from "./faucet-store.ts";
@@ -27,6 +28,8 @@ export interface Storage {
   /** The reads behind the REST routes, on the same database. */
   chainRest: ChainRest | null;
   accountRest: AccountRest | null;
+  /** The reads behind the Etherscan-compatible `/api`. */
+  etherscanRest: EtherscanRest | null;
   /** The database's pool, for the live stream's reads. Null without a database. */
   pool: pg.Pool | null;
   /** A small pool of its own for the health route's reads and this instance's health writes, so that they never queue behind the pages' queries. Null without a database. */
@@ -37,7 +40,7 @@ export interface Storage {
   close(): Promise<void>;
 }
 
-const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, accountRest: null, pool: null, healthPool: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
+const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, accountRest: null, etherscanRest: null, pool: null, healthPool: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
 
 /** The old file, once its contents are in the database: renamed, so that it is not read again and is still there to look at. */
 function retire(file: string): void {
@@ -98,6 +101,7 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
       chain: createChainDb(pool, healthPool),
       chainRest: createChainRest(pool),
       accountRest: createAccountRest(pool),
+      etherscanRest: createEtherscanRest(pool),
       pool,
       healthPool,
       imported,

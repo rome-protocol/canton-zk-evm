@@ -136,7 +136,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         res.on("close", attached.detach);
         return void open();
       }
-      if (pathname === "/api") {
+      if (pathname === "/api" || pathname === "/v2/api") {
         // The Etherscan door: its own rate, and its own answer when the client is over it (HTTP 200, as Etherscan gives, and a Retry-After).
         const send = (status: number, body: unknown, headers: Record<string, string> = {}) =>
           void res.writeHead(status, { ...JSON_TYPE, "cache-control": "no-store", ...headers }).end(JSON.stringify(body));
