@@ -28,7 +28,7 @@ describe("settings", () => {
     const c = load();
     expect(c).toMatchObject({
       host: "127.0.0.1", port: 8088, chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 },
-      rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", pollMs: 2000,
+      rethUrl: "http://127.0.0.1:8545", ledgerUrl: "http://127.0.0.1:7577", readerParty: "reader::1220ab", ledgerTokenFile: null, pollMs: 2000,
     });
     expect(c.database).toBeNull();
     expect(c.faucet).toEqual({ keyFile: null, clientKeyFile: null, amountWei: 10n ** 18n, perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, batch: 100, queueMax: 5000, stateFile: null });
@@ -76,6 +76,11 @@ describe("settings", () => {
     expect(() => load({ ...all, CAPTCHA_VERIFY_URL: "check.example" })).toThrow(/CAPTCHA_VERIFY_URL/);
     expect(() => load({ ...all, CAPTCHA_WIDGET_CLASS: "two classes" })).toThrow(/CAPTCHA_WIDGET_CLASS/);
     expect(load({ ...all, CAPTCHA_SECRET: "" }).captcha).toBeNull();
+  });
+
+  it("takes the Ledger API token file from LEDGER_TOKEN_FILE, and none when it is not set", () => {
+    expect(load({ LEDGER_TOKEN_FILE: "/run/explorer/ledger-token" }).ledgerTokenFile).toBe("/run/explorer/ledger-token");
+    expect(load({ LEDGER_TOKEN_FILE: "" }).ledgerTokenFile).toBeNull();
   });
 
   it("names the setting that is wrong", () => {

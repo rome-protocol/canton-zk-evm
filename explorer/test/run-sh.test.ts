@@ -12,17 +12,20 @@ beforeEach(() => {
   state = mkdtempSync(join(tmpdir(), "run-sh-"));
   mkdirSync(join(state, "canton"), { recursive: true });
   writeFileSync(join(state, "canton", "parties.env"), "READER_PARTY=reader::1220abcd\n");
+  // What network/make-state.sh and network/explorer-db.sh leave in a run's state folder, as tests/demo_explorer_static.sh writes them: start needs both.
+  writeFileSync(join(state, "genesis.json"), '{"alloc":{}}\n');
+  writeFileSync(join(state, "explorer-db.env"), "POSTGRES_PASSWORD=x\n");
 });
 afterEach(() => rmSync(state, { recursive: true, force: true }));
 
-/** The Docker command `run.sh start` would run. Nothing is run: EXPLORER_DRY_RUN=1 prints it. */
+/** The Docker command `run.sh start` would run for the explorer (the indexer's is the one before it). Nothing is run: EXPLORER_DRY_RUN=1 prints it. */
 function start(env: Record<string, string> = {}): string {
   const r = spawnSync("bash", [RUN, "start"], {
     encoding: "utf8",
     env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, ...env },
   });
   expect(r.status, `${r.error ?? ""} ${r.signal ?? ""} ${r.stderr}`).toBe(0);
-  return r.stdout.split("\n").find((l) => l.startsWith("docker run -d")) ?? "";
+  return r.stdout.split("\n").find((l) => l.startsWith("docker run -d") && l.includes("--name cze-explorer ")) ?? "";
 }
 
 describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
@@ -63,7 +66,7 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(r.status, r.stderr).toBe(0);
     const lines = r.stdout.split("\n").filter((l) => l.startsWith("docker "));
     const stopAt = lines.findIndex((l) => /^docker stop -t 30 /.test(l));
-    const runAt = lines.findIndex((l) => l.startsWith("docker run -d"));
+    const runAt = lines.findIndex((l) => l.startsWith("docker run -d") && l.includes("--name cze-explorer "));
     expect(stopAt).toBeGreaterThanOrEqual(0);
     expect(stopAt).toBeLessThan(runAt);
     expect(lines.some((l) => /^docker rm /.test(l) && !/ -f/.test(l))).toBe(true);
@@ -72,13 +75,22 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
 });
 
 describe.skipIf(!HAS_BASH)("explorer/run.sh stop", () => {
-  it("lets the explorer finish (docker stop -t 30), then removes the container without -f", () => {
-    const r = spawnSync("bash", [RUN, "stop"], {
+  const stop = () =>
+    spawnSync("bash", [RUN, "stop"], {
       encoding: "utf8",
       env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state },
     });
+
+  it("lets the explorer and the indexer finish (docker stop -t 30), then removes the containers without -f", () => {
+    const r = stop();
     expect(r.status, r.stderr).toBe(0);
     const lines = r.stdout.split("\n").filter((l) => l.startsWith("docker "));
-    expect(lines).toEqual(["docker stop -t 30 cze-explorer", "docker rm cze-explorer"]);
+    expect(lines).toEqual(["docker stop -t 30 cze-explorer", "docker rm cze-explorer", "docker stop -t 30 cze-explorer-indexer", "docker rm cze-explorer-indexer"]);
+  });
+
+  it("removes the database it started when the network is not persistent, and keeps it when the network is", () => {
+    expect(stop().stdout).toContain("network/explorer-db.sh wipe");
+    writeFileSync(join(state, "persist.env"), "CZE_PERSIST=1\n");
+    expect(stop().stdout).not.toContain("explorer-db.sh wipe");
   });
 });

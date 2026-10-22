@@ -295,6 +295,17 @@ describe("when something does not match", () => {
   });
 });
 
+describe("a block that Canton holds and the indexer has not read", () => {
+  it("says it is final on Canton and not indexed, and not that it is being proven", async () => {
+    await open(block({ status: "unindexed", number: 4, hash: hash(4), parentHash: hash(3), canton: null }));
+    const title = screen.getByRole("heading", { name: "Block 4" }).parentElement!;
+    expect(within(title).getByText("Not indexed yet")).toHaveClass("chip-unindexed");
+    const canton = side("On Canton");
+    expect(canton.getByText("Final on Canton, not indexed yet.")).toBeInTheDocument();
+    expect(canton.queryByText("Not on Canton yet.")).toBeNull();
+  });
+});
+
 describe("a block that is still being proven", () => {
   it("says so, and says that Canton does not have it yet", async () => {
     await open(proving());

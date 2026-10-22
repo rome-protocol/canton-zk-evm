@@ -147,4 +147,19 @@ if out=$(run CZE_LEDGER_NO_AUTH=1 CZE_USER_PREFIX=ostia- "$WORK/repo/network/res
 grep -q "CZE_USER_PREFIX is 'ostia-' here, but the chain.*was made with 'team-'" <<<"$out" || fail "restart.sh refusal does not say why: $out"
 [ ! -s "$FAKE_DOCKER_LOG" ] || fail "Docker was called after the prefix refusal"
 echo "ok: the Ledger API users' prefix is recorded, used, and not overridden"
+# 5. A network that is not persistent takes the explorer's default database with it: down.sh removes the container and the volume (explorer/run.sh
+# stop does the same, see tests/demo_explorer_static.sh), so a new chain from the same genesis does not meet the old chain's rows. A failed removal is reported.
+fresh; rm -f "$WORK/state/persist.env"; echo 'POSTGRES_PASSWORD=x' > "$WORK/state/explorer-db.env"
+out=$(run "$WORK/repo/network/down.sh" 2>&1) || fail "down.sh of a network that is not persistent failed: $out"
+grep -q -- "rm -f cze-explorer-db" "$FAKE_DOCKER_LOG" || fail "down.sh left the explorer's container of a network that is not persistent: $(cat "$FAKE_DOCKER_LOG")"
+grep -q -- "volume rm -f cze-explorer-db-data" "$FAKE_DOCKER_LOG" || fail "down.sh left the explorer's database volume of a network that is not persistent"
+grep -q "explorer's database is removed" <<<"$out" || fail "down.sh does not say that the explorer's database is removed: $out"
+[ ! -e "$WORK/state/explorer-db.env" ] || fail "the explorer's password file is still there"
+fresh; rm -f "$WORK/state/persist.env"; echo 'POSTGRES_PASSWORD=x' > "$WORK/state/explorer-db.env"
+if out=$(run FAKE_DOCKER_FAIL=rm "$WORK/repo/network/down.sh" 2>&1); then fail "down.sh succeeded although the explorer's database could not be removed"; fi
+grep -q "NOT wiped: the explorer's database" <<<"$out" || fail "down.sh does not say that the explorer's database is left: $out"
+fresh; rm -f "$WORK/state/persist.env"
+run "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh failed with no explorer database"
+! grep -q "cze-explorer-db" "$FAKE_DOCKER_LOG" || fail "down.sh touched an explorer database that was never made"
+echo "ok: a network that is not persistent removes the explorer's database with it"
 echo "persist scripts tests passed"

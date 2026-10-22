@@ -5,8 +5,9 @@
 # What is not real: the zero-knowledge proof. The prover is a stand-in that writes a fixed proof that carries the block hash (tests/demo_fake_prove.sh) and
 # the `verify` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
 # sidecar does. So this checks everything except the proof check itself, which the sidecar's own tests and the GPU session cover.
-# The explorer runs beside it, from its image (explorer/run.sh), and is checked against this chain: the page of run 1's block, the Verify check
-# (which says no, because the proof is a stand-in), the faucet, and the calls the explorer made to reth and to Canton.
+# The explorer runs beside it, from its image (explorer/run.sh), with its own database and its indexer (run.sh starts both), and is checked against this
+# chain: the page of run 1's block once the indexer has written it, the Verify check (which says no, because the proof is a stand-in), the faucet, and the
+# calls the explorer and its indexer made to reth and to Canton.
 # Needs Docker, Java 21, Rust, Python 3, jq, curl and network access. No GPU.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -19,6 +20,8 @@ umask 077
 mkdir -p "$NET/logs" "$CZE_DEMO_RESULTS"
 : > "$FAKE_LOG"
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# The explorer's database and indexer are made by explorer/run.sh start, in containers of their own name and port, so that this run touches no other.
+export CZE_EXPLORER_DB_CONTAINER=cze-rehearsal-explorer-db CZE_EXPLORER_DB_PORT=55434 EXPLORER_INDEXER_CONTAINER=cze-rehearsal-explorer-indexer
 pids=()
 cleanup() {
   local status=$?
@@ -27,8 +30,10 @@ cleanup() {
     echo "--- Canton log (tail)"; tail -n 30 "$NET/logs/canton.log" 2>/dev/null || true
     echo "--- reth log (tail)"; docker logs --tail 30 "${RETH_CONTAINER:-cze-reth}" 2>&1 || true
     echo "--- explorer log (tail)"; docker logs --tail 30 "${EXPLORER_CONTAINER:-cze-explorer}" 2>&1 || true
+    echo "--- indexer log (tail)"; docker logs --tail 30 "$EXPLORER_INDEXER_CONTAINER" 2>&1 || true
   fi
   "$ROOT/explorer/run.sh" stop || true
+  "$ROOT/network/explorer-db.sh" wipe || true
   docker rm -f cze-w1-db >/dev/null 2>&1 || true
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
   "$ROOT/network/reth/stop.sh" || true
@@ -61,7 +66,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 "$ROOT/network/canton/dar-id.sh" "$CZE_DAR" > "$NET/dar.txt"
 
 echo "== the sidecars: the real one for legs, the stand-in in front of it for verify"
-VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 832))
+VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 768))$VK$RC
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085
 for port in 8085 8086; do
@@ -82,6 +87,8 @@ python3 "$ROOT/network/canton/propose.py" --genesis-hash "${GENESIS_HASH#0x}" --
 printf 'elf_sha256=%s\nprogramVK=0x%s\nrootC=0x%s\nrulesHash=%s\n' "$(printf '00%.0s' $(seq 32))" "$VK" "$RC" "$(printf '12%.0s' $(seq 32))" > "$NET/guest.txt"
 
 echo "== the demo"
+# The stand-in proof carries the run's program key and release root, as a real one does: the explorer's indexer checks them against the pins.
+export DEMO_PROOF_PROGRAM_VK=$VK DEMO_PROOF_ROOT_C=$RC
 export CZE_MAKE_INPUT_CMD=$ROOT/builder/tests/fake-make-input.sh CZE_PROVE_CMD=$ROOT/tests/demo_fake_prove.sh
 CZE_SOURCE_COMMIT=$(printf 'a%.0s' $(seq 40)) "$ROOT/demo/run.sh"
 
@@ -95,14 +102,16 @@ grep -q ' legs submission$' "$FAKE_LOG" || fail "no legs call: the legs were nev
 echo "--- Canton's warnings about the external call, if any:"
 { grep -E "WARN|ERROR" "$NET/logs/canton.log" | grep -i 'extension' | cut -c1-300; } || echo "none"
 
-echo "== the explorer, beside the chain: its calls to reth and to Canton go through a log"
+echo "== the explorer and its indexer, beside the chain: the explorer's calls to reth, and both their calls to Canton, go through a log"
 # shellcheck disable=SC1091
 . "$CZE_STATE_DIR/canton/parties.env"
 EXPLORER=http://127.0.0.1:${EXPLORER_PORT:-8088}
 : > "$WORK/ledger-calls"; : > "$WORK/reth-calls"
 background ledger-calls python3 "$ROOT/tests/demo_call_log.py" 7597 http://127.0.0.1:7577 "$WORK/ledger-calls"
 background reth-calls python3 "$ROOT/tests/demo_call_log.py" 8595 "http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$WORK/reth-calls"
-LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 "$ROOT/explorer/run.sh" start
+# The indexer asks reth for trace_ methods as well, so it reads reth directly; the explorer's own calls to reth are logged. Both read Canton through the log.
+LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 INDEXER_RETH_RPC_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$ROOT/explorer/run.sh" start
+# Healthy means the indexer has started and its checks are fresh; the blocks follow as it writes them.
 for _ in $(seq 1 120); do curl -sf "$EXPLORER/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -sf "$EXPLORER/healthz" >/dev/null || fail "the explorer is not healthy: $(curl -s "$EXPLORER/healthz" | cut -c1-600)"
 
@@ -118,8 +127,14 @@ run1_block=$(sed -n 's/^block=//p' "$run1"); run1_hash=$(sed -n 's/^block_hash=/
 [ -n "$run1_block" ] || fail "run1.txt names no block"
 [ -n "$run1_hash" ] || fail "run1.txt names no block hash"
 [ -n "$run1_update" ] || fail "run1.txt names no Canton update"
-api=$(curl -sf "$EXPLORER/api/block/$run1_block")
-[ "$(jq -r .status <<<"$api")" = final ] || fail "the explorer's block $run1_block is not final: $(cut -c1-300 <<<"$api")"
+# The indexer writes the chain from the start; run 1's block is final on the page once it has the block and Canton's record of it.
+for _ in $(seq 1 180); do
+  api=$(curl -sf "$EXPLORER/api/block/$run1_block" || true)
+  [ "$(jq -r .status <<<"${api:-null}" 2>/dev/null)" = final ] && break
+  sleep 1
+done
+api=$(curl -sf "$EXPLORER/api/block/$run1_block") || fail "the explorer has no block $run1_block"
+[ "$(jq -r .status <<<"$api")" = final ] || fail "the explorer's block $run1_block is not final after the indexer had time to write it: $(cut -c1-300 <<<"$api"); indexer: $(docker logs --tail 10 "$EXPLORER_INDEXER_CONTAINER" 2>&1 | cut -c1-300)"
 [ "$(jq -r .hash <<<"$api")" = "$run1_hash" ] || fail "the explorer's block $run1_block is not the block run 1 made: $(cut -c1-300 <<<"$api")"
 [ "$(jq -r .canton.updateId <<<"$api")" = "$run1_update" ] || fail "the explorer's Canton update for block $run1_block is not the one run 1 recorded"
 echo "--- the pages and the Verify check, on run 1's block (block $run1_block)"
@@ -159,17 +174,18 @@ payout_block=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_
   "$CZE_STATE_DIR/venv/bin/python3" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $payout_block"
 echo "$payout_block" | jq -c .
 jq -e --arg h "$payout" '.committed == true and (.transactions | index($h) != null)' <<<"$payout_block" >/dev/null || fail "the builder did not commit a block with the payout: $payout_block"
-for _ in $(seq 1 60); do [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = final ] && break; sleep 1; done
+for _ in $(seq 1 90); do [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = final ] && break; sleep 1; done
 [ "$(curl -sf "$EXPLORER/api/tx/$payout" | jq -r .status)" = final ] || fail "the explorer does not show the payout as Final"
-for _ in $(seq 1 60); do [ "$(curl -sf "$EXPLORER/api/faucet/ticket/$ticket" | jq -r .status)" = final ] && break; sleep 1; done
+for _ in $(seq 1 90); do [ "$(curl -sf "$EXPLORER/api/faucet/ticket/$ticket" | jq -r .status)" = final ] && break; sleep 1; done
 [ "$(curl -sf "$EXPLORER/api/faucet/ticket/$ticket" | jq -r .status)" = final ] || fail "the ticket is not final after the block is final on Canton: $(curl -s "$EXPLORER/api/faucet/ticket/$ticket")"
 [ "$(balance)" = 0xde0b6b3a7640000 ] || fail "the address does not hold 1 tROME after the payout: $(balance)"
 [ "$(ask)" = 429 ] || fail "the faucet sent to the same address again"
 
 echo "--- what the explorer asked reth and Canton for"
-# Canton: the ledger end and the updates, and nothing else; every update request names the reader party and the block record, and no other party.
-[ "$(jq -r '.method + " " + (.path | split("?")[0])' "$WORK/ledger-calls" | sort -u)" = $'GET /v2/state/ledger-end\nPOST /v2/updates' ] \
-  || fail "the explorer called Canton's Ledger API for something else than the ledger end and the updates: $(jq -r '.method + " " + .path' "$WORK/ledger-calls" | sort | uniq -c)"
+# Canton, asked by the explorer (the ledger end, for its status) and by the indexer (the ledger end, the updates and the participant id), and nothing else;
+# every update request names the reader party and the block record, and no other party.
+[ "$(jq -r '.method + " " + (.path | split("?")[0])' "$WORK/ledger-calls" | sort -u)" = $'GET /v2/parties/participant-id\nGET /v2/state/ledger-end\nPOST /v2/updates' ] \
+  || fail "the explorer or its indexer called Canton's Ledger API for something else than the ledger end, the updates and the participant id: $(jq -r '.method + " " + .path' "$WORK/ledger-calls" | sort | uniq -c)"
 # Every update request is, in structure: filtersByParty has the reader party as its only key, there is no filtersForAnyParty, and every template is the block record.
 jq -s -e --arg r "$READER_PARTY" '
   [.[] | select(.method == "POST") | .body | fromjson] as $bodies
@@ -186,7 +202,7 @@ done
 # reth: only eth_, net_ and web3_ methods.
 [ -s "$WORK/reth-calls" ] || fail "the explorer made no call to reth"
 jq -e -s 'all(.[] | .body | fromjson | if type == "array" then .[] else . end | .method; test("^(eth|net|web3)_"))' "$WORK/reth-calls" >/dev/null || fail "the explorer called a method of reth that is not eth_, net_ or web3_"
-echo "the explorer called only the ledger end and the updates on Canton, and only eth_, net_ and web3_ on reth"
+echo "the explorer and its indexer called only the ledger end, the updates and the participant id on Canton, and the explorer only eth_, net_ and web3_ on reth"
 echo "== the indexer's real-reth tests: revert data (Error(string), Panic(uint256), a custom error) and W1, the worst-case block"
 # The explorer's indexer reads this chain's reth and Canton as it would a deployed one. The proofs here are stand-ins, so the test takes its pins
 # from the first proof; everything else is the real thing. The block of three failed transactions and a block that fills the gas cap are made
