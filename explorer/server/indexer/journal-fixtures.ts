@@ -31,7 +31,8 @@ export const iso = (ms: number) => new Date(ms).toISOString();
 export class Run {
   lines: string[] = [];
   seq = 0;
-  constructor(readonly id: string) {}
+  readonly id: string;
+  constructor(id: string) { this.id = id; }
   add(ms: number, event: string, fields: Record<string, unknown> = {}): string {
     const l = JSON.stringify({ v: 1, run: this.id, seq: ++this.seq, time: iso(ms), event, ...fields });
     this.lines.push(l);

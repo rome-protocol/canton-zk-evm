@@ -41,6 +41,19 @@ export interface FinalTxRow {
   logs: { address: string; topics: string[]; data: string }[];
 }
 
+/** Where a transaction has been, from the lifecycle rows: the times are UTC, null for a stage that has no time (a transaction that came another way has no acceptance time). */
+export interface TxLifecycle {
+  state: string; reason: string | null; acceptedAt: string | null; acceptedVia: string | null; includedAt: string | null; attempts: number; leftOutReason: string | null;
+  proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; committedAt: string | null; finalAt: string | null; finalBlock: number | null; timeToFinalMs: number | null;
+}
+
+/** An attempt that is not final yet, as the in-flight panel lists it. */
+export interface InFlightAttempt {
+  number: number; strategy: string; cutReason: string; stage: "cut" | "built" | "proving" | "proved" | "submitted" | "committed"; txCount: number | null; poolWaiting: number | null;
+  cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null; outcome: string | null;
+}
+export interface InFlight { attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null }
+
 export interface Signers { operator: string; confirmer: string }
 
 /** What the indexer's rows say about the indexer: used for the health route. `started` is false until it has written its first record. */
@@ -53,6 +66,7 @@ const bytes = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "hex");
 const isoTime = (s: string): string => s.replace(/(\.\d{3})000Z$/, "$1Z");
 
 const TIME = `to_char(b.record_time at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+const MS = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 const SUMMARY = `b.number, b.hash, extract(epoch from b.timestamp)::bigint as ts, b.tx_count, b.update_id, ${TIME} as record_time`;
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -152,6 +166,53 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return r && { hash: hex(r.hash), updateId: r.update_id };
   }
 
+  /** The lifecycle of a transaction: its row, and the attempt that held it (the committed one first, else the latest). Undefined when no row is kept (no journal, or a transaction nobody accepted). */
+  async function lifecycleOf(hash: string): Promise<TxLifecycle | undefined> {
+    const [r] = await query(
+      `select l.state, l.state_reason, ${MS("l.accepted_at")} as accepted_at, l.accepted_via, ${MS("l.first_included_at")} as included_at, l.attempts, l.last_left_out_reason,
+         ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at, ${MS("a.submitted_at")} as submitted_at,
+         ${MS("case when a.outcome = 'committed' then a.answered_at end")} as committed_at, ${MS("l.final_at")} as final_at, l.final_block,
+         (extract(epoch from l.final_at - l.accepted_at) * 1000)::bigint as time_to_final
+       from tx_lifecycle l left join lateral (
+         select ba.* from attempt_transactions x join block_attempts ba on ba.attempt_id = x.attempt_id
+          where x.tx_hash = l.tx_hash and x.left_out_reason is null order by (ba.outcome = 'committed') desc, ba.attempt_id desc limit 1) a on true
+       where l.tx_hash = $1`,
+      [bytes(hash)],
+    );
+    return r && {
+      state: r.state, reason: r.state_reason, acceptedAt: r.accepted_at, acceptedVia: r.accepted_via, includedAt: r.included_at, attempts: r.attempts, leftOutReason: r.last_left_out_reason,
+      proofStartedAt: r.proof_started_at, proofEndedAt: r.proof_ended_at, submittedAt: r.submitted_at, committedAt: r.committed_at, finalAt: r.final_at,
+      finalBlock: r.final_block === null ? null : Number(r.final_block), timeToFinalMs: r.time_to_final === null ? null : Number(r.time_to_final),
+    };
+  }
+
+  /**
+   * The attempts that are not final: the producer cut a block and neither Canton's refusal nor the index's block has closed it. An attempt that was
+   * settled as not committed, or that is older than an hour (a run that stopped in the middle), is not in flight.
+   */
+  async function inFlight(max = 50): Promise<InFlight> {
+    const rows = await query(
+      `select a.number, a.strategy, a.cut_reason, a.tx_count, a.pool_waiting, a.outcome, ${MS("a.cut_at")} as cut_at, ${MS("a.built_at")} as built_at,
+         ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at, ${MS("a.submitted_at")} as submitted_at, ${MS("a.answered_at")} as answered_at,
+         a.proof_outcome
+       from block_attempts a
+       where a.final_seen_at is null and (a.outcome is null or a.outcome in ('unknown', 'committed')) and a.proof_outcome is distinct from 'failed'
+         and (a.resolved_outcome is null or a.resolved_outcome = 'committed') and a.cut_at > now() - interval '1 hour'
+         and not exists (select 1 from blocks b where b.attempt_id = a.attempt_id)
+       order by a.number, a.attempt_id limit $1`,
+      [max],
+    );
+    const attempts = rows.map((r): InFlightAttempt => {
+      const stage = r.outcome === "committed" ? "committed" : r.submitted_at ? "submitted" : r.proof_ended_at ? "proved" : r.proof_started_at ? "proving" : r.built_at ? "built" : "cut";
+      return {
+        number: Number(r.number), strategy: r.strategy, cutReason: r.cut_reason, stage, txCount: r.tx_count, poolWaiting: r.pool_waiting, cutAt: r.cut_at, builtAt: r.built_at,
+        proofStartedAt: r.proof_started_at, proofEndedAt: r.proof_ended_at, submittedAt: r.submitted_at, answeredAt: r.answered_at, outcome: r.outcome,
+      };
+    });
+    const [p] = await query(`select waiting, ${MS("at")} as at from pool_samples order by at desc limit 1`);
+    return { attempts, poolWaiting: p ? { waiting: p.waiting, at: p.at } : null };
+  }
+
   /**
    * The indexer's own word on itself: a record written, every check row that is not ok, the checks it has stopped refreshing (a stopped or crashed indexer
    * leaves its last ok rows behind, so a row's age counts as much as its status), and the two signers. Block 1 exists when the genesis is referenced.
@@ -179,7 +240,7 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return (await query("select 1 from blocks where number = 1")).length > 0;
   }
 
-  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, indexer, genesisReferenced };
+  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, genesisReferenced };
 }
 
 export type ChainDb = ReturnType<typeof createChainDb>;

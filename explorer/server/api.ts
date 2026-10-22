@@ -34,7 +34,13 @@ export const FIELDS = {
   transfer: ["symbol", "decimals", "to", "value"],
   txBlock: ["number", "hash", "updateId"],
   log: ["address", "topics", "data"],
-  tx: ["hash", "status", "state", "reason", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
+  /** Where a transaction has been, from the producer's journal and the API: null when no row is kept for it. */
+  lifecycle: ["state", "reason", "acceptedAt", "acceptedVia", "includedAt", "attempts", "leftOutReason", "proofStartedAt", "proofEndedAt", "submittedAt", "committedAt", "finalAt", "finalBlock", "timeToFinalMs"],
+  /** The attempts that are not final, and reth's pool count from the producer's latest sample. */
+  inFlight: ["final", "attempts", "poolWaiting"],
+  inFlightAttempt: ["number", "strategy", "cutReason", "stage", "txCount", "poolWaiting", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt", "outcome"],
+  poolSample: ["waiting", "at"],
+  tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
   address: ["address", "kind", "balance", "nonce", "token", "createdBy"],
   token: ["name", "symbol", "decimals"],
   createdBy: ["txHash", "block"],
@@ -163,11 +169,23 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
   }
 
   /** What the explorer says about a transaction that reth no longer holds, but the tracker accepted: it is being sent again, or it was replaced or dropped. */
-  function gone(hash: string, tr: ReturnType<Tracker["state"]> & object): Answer {
+  async function gone(hash: string, tr: ReturnType<Tracker["state"]> & object): Promise<Answer> {
     return ok({
-      hash, status: tr.state === "pending" ? "waiting" : tr.state, state: tr.state, reason: tr.reason, block: null, from: tr.from, to: null, value: null, nonce: tr.nonce, type: null, gas: null,
+      hash, status: tr.state === "pending" ? "waiting" : tr.state, state: tr.state, reason: tr.reason, lifecycle: await lifecycleOf(hash), block: null, from: tr.from, to: null, value: null, nonce: tr.nonce, type: null, gas: null,
       gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null,
     });
+  }
+
+  /** The lifecycle rows of a transaction, in the fields of FIELDS.lifecycle; null for a transaction with none. */
+  async function lifecycleOf(hash: string) {
+    const l = await chain.lifecycleOf(hash);
+    return l ? pick(l, FIELDS.lifecycle) : null;
+  }
+
+  /** The attempts that are not final yet. Every answer says so: nothing here is a fact of the chain until its block is final. */
+  async function inFlight(): Promise<Answer> {
+    const f = await chain.inFlight();
+    return ok({ final: false, attempts: f.attempts.map((a) => pick(a, FIELDS.inFlightAttempt)), poolWaiting: f.poolWaiting && pick(f.poolWaiting, FIELDS.poolSample) });
   }
 
   async function transaction(hash: string): Promise<Answer> {
@@ -178,7 +196,7 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
       const transfer = await transferOf(final.input, final.to);
       const toToken = transfer?.symbol ?? (final.to ? (await tokenOf(final.to))?.symbol ?? null : null);
       return ok({
-        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null,
+        hash: final.hash, status: "final", state: "final", reason: tr?.state === "final" ? tr.reason : null, lifecycle: await lifecycleOf(hash),
         block: pick(final.block, FIELDS.txBlock),
         from: final.from, to: final.to, value: final.value, nonce: final.nonce, type: final.type, gas: final.gas,
         gasUsed: final.gasUsed, gasPrice: final.gasPrice, fee: dec(BigInt(final.gasUsed) * BigInt(final.gasPrice)), success: final.success,
@@ -187,7 +205,7 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     }
     // Not in the database: waiting in reth's pool, or in a block that is still being proven (or not indexed yet), or only the tracker knows it.
     const t = await reth.transaction(hash);
-    if (!t) return tr ? gone(hash, tr) : fail(404, NOT_FOUND);
+    if (!t) return tr ? await gone(hash, tr) : fail(404, NOT_FOUND);
     const r = t.blockNumber === null ? null : await reth.receipt(hash);
     const transfer = await transferOf(t.input, t.to);
     const finalizedAt = t.blockNumber === null ? undefined : await finalizedNumber();
@@ -195,7 +213,7 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     const status = t.blockNumber === null ? "waiting" : unindexed ? "unindexed" : "proving";
     const state: ApiTxState = status === "waiting" ? "pending" : status;
     return ok({
-      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null,
+      hash: t.hash, status, state, reason: tr?.state === (unindexed ? "final" : state) ? tr.reason : null, lifecycle: await lifecycleOf(hash),
       block: t.blockNumber === null ? null : { number: t.blockNumber, hash: t.blockHash, updateId: null },
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,
@@ -266,6 +284,7 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
         ["block", arg ? () => block(arg) : undefined],
         ["tx", arg ? () => transaction(arg) : undefined],
         ["address", arg ? () => address(arg) : undefined],
+        ["in-flight", parts.length === 2 ? inFlight : undefined],
         ["search", parts.length === 2 ? () => search((url.searchParams.get("q") ?? "").trim().toLowerCase()) : undefined],
       ]);
       const route = read.get(name ?? "");
