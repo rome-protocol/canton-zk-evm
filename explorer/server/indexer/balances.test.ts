@@ -309,3 +309,79 @@ describe.skipIf(!TEST_URL)("metadata retries and unanswered balances, on the pin
     });
   });
 });
+
+describe.skipIf(!TEST_URL)("a reindex keeps what stage 2 made, on the pinned PostgreSQL", () => {
+  checkRequired();
+  const settle = async (indexer: Indexer) => { for (let i = 0; i < 4; i++) await indexer.balancesOnce(); };
+  const feeAnswers = (chain: SyntheticChain) => { honest(chain); answer(chain, FEE, ALICE, 900); answer(chain, FEE, BOB, 88); answer(chain, FEE, CAROL, 9); };
+
+  it("does not set a read-mode holder's updated_block back when the range ends before its last transfer", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 4);
+      feeAnswers(chain);
+      await indexer.runOnce(); await settle(indexer);
+      const bob = async () => (await rows(pool, "select value::text as v, updated_block as u, checked_block as c from token_balances where token = $1 and holder = $2", [hx(FEE), hx(BOB)]))[0];
+      expect(await bob()).toEqual({ v: "88", u: "4", c: "4" });
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 2, 3);
+      expect(await bob()).toEqual({ v: "88", u: "4", c: null });
+      await settle(indexer);
+      expect(await bob()).toEqual({ v: "88", u: "4", c: "4" });
+      await indexer.close();
+    });
+  });
+
+  it("gives the zero address the row stage 2 gave it, with no token transfers counted", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 4);
+      feeAnswers(chain);
+      chain.blocks[2]!.traces[0]!.frames.push({ traceAddress: [0], type: "call", callType: "call", from: A(1), to: A(0), value: 1n, gas: 1000, gasUsed: 10, input: "0x", error: null, created: null });
+      chain.blocks[2]!.traces[0]!.calls = chain.blocks[2]!.traces[0]!.frames.length;
+      await indexer.runOnce();
+      const zero = async () => (await rows(pool, "select first_seen_block as f, last_active_block as l, token_transfer_count as t, internal_count as i from addresses where address = $1", [hx(0)]))[0];
+      const made = await zero();
+      expect(made).toMatchObject({ f: "3", t: "0" });
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 2, 4);
+      expect(await zero()).toEqual(made);
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, null);
+      expect(await zero()).toEqual(made);
+      await indexer.close();
+    });
+  });
+
+  it("deletes the rows no fact supports on a full reindex, and keeps them on a range", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 4);
+      feeAnswers(chain);
+      await indexer.runOnce(); await settle(indexer);
+      const ghost = hx(0x99);
+      await pool.query("insert into token_balances (token, holder, token_id, value, updated_block, checked_block) values ($1, $2, 0, 50, 2, 2)", [hx(ERC20), ghost]);
+      await pool.query("insert into nft_owners (token, token_id, owner, updated_block) values ($1, 99, $2, 2)", [hx(ERC721), ghost]);
+      await pool.query("insert into addresses (address, first_seen_block, last_active_block) values ($1, 2, 2)", [ghost]);
+      await pool.query("update tokens set holder_count = holder_count + 1 where address = $1", [hx(ERC20)]);
+      const o = { pool, reads: chain.reads, gateway: GATEWAY };
+      const left = async () => [
+        (await rows(pool, "select 1 from token_balances where holder = $1", [ghost])).length, (await rows(pool, "select 1 from nft_owners where owner = $1", [ghost])).length,
+        (await rows(pool, "select 1 from addresses where address = $1", [ghost])).length,
+      ];
+      await reindexRange(o, 2, 4);
+      expect(await left()).toEqual([1, 1, 1]);
+      await reindexRange(o, 1, null);
+      expect(await left()).toEqual([0, 0, 0]);
+      expect((await rows(pool, "select holder_count from tokens where address = $1", [hx(ERC20)]))[0].holder_count).toBe("2");
+      // A full reindex starts the live walk of coin balances over: the addresses were rebuilt.
+      expect((await rows(pool, "select position from cursors where stream = 'balances'"))[0].position).toBe("0");
+      await indexer.close();
+    });
+  });
+
+  it("counts an ERC-1155 holder once when the check finds one of its ids at another value", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 4);
+      feeAnswers(chain);
+      answer(chain, ERC1155, CAROL, 0, 7); // CAROL's id 7 is not what the transfers add up to, but her id 8 still holds 3
+      await indexer.runOnce(); await settle(indexer);
+      expect((await rows(pool, "select balance_mode as m, holder_count as h from tokens where address = $1", [hx(ERC1155)]))[0]).toEqual({ m: "read", h: "2" });
+      await indexer.close();
+    });
+  });
+});
