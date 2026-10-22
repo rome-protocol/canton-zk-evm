@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { addr, block, fakeApi, reply, renderApp, route } from "../test-utils.tsx";
 
