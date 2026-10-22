@@ -210,14 +210,35 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
       await failing.run(true, true);
       expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/3 blocks in a row have failed: the prover is down/) });
 
-      const f = statusFile({ blocksUnknown: 1 });
+      // `blocksUnknown` counts since the loop started and never goes down: it is no news by itself. `waitingToBeResolved` is the block not settled.
+      const waiting = { number: 3, hash: "0x" + "ab".repeat(32) };
+      const settled = checks(pool, statusFile({ blocksUnknown: 1, waitingToBeResolved: null }), () => now);
+      await settled.run(true, true);
+      now += 61_000;
+      await settled.run(true, true);
+      expect(await health(pool, "producer_state")).toMatchObject({ status: "ok", value: { blocksUnknown: 1, waitingToBeResolved: null } });
+
+      const f = join(makeFolder(), "s.json");
+      const write = (w: unknown) => writeFileSync(f, JSON.stringify({ state: "running", updatedAt: iso(now), consecutiveFailures: 0, blocksUnknown: 1, waitingToBeResolved: w }));
       const unsure = checks(pool, f, () => now);
+      write(waiting);
       await unsure.run(true, true);
       expect((await health(pool, "producer_state")).status).toBe("ok"); // not yet a minute
       now += 61_000;
-      writeFileSync(f, JSON.stringify({ state: "running", updatedAt: iso(now), consecutiveFailures: 0, blocksUnknown: 1 }));
+      write(waiting);
       await unsure.run(true, true);
-      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/outcome of 1 block\(s\) has not been known for 61 s/) });
+      expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/outcome of block 3 has not been known for 61 s/) });
+      // once the block is settled the timer is reset: a new wait starts from zero
+      write(null);
+      await unsure.run(true, true);
+      expect((await health(pool, "producer_state")).status).toBe("ok");
+      now += 30_000;
+      write(waiting);
+      await unsure.run(true, true);
+      now += 30_000;
+      write(waiting);
+      await unsure.run(true, true);
+      expect((await health(pool, "producer_state")).status).toBe("ok");
 
       await checks(pool, statusFile({ journalError: { time: iso(NOW), error: "disk full" } }), () => now).run(true, true);
       expect(await health(pool, "producer_state")).toMatchObject({ status: "degraded", detail: expect.stringMatching(/cannot write its journal: disk full/) });

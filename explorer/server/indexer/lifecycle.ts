@@ -11,7 +11,7 @@ import { setHealth, type HealthRow } from "./health.ts";
 export const C8_EVERY_MS = 10_000, C8_WITHIN_S = 10, C9_TOLERANCE_MS = 100, ALIVE_WITHIN_MS = 15_000, UNKNOWN_FOR_MS = 60_000, FAILURES_DEGRADED = 3;
 
 export interface ProducerStatus {
-  state?: string; updatedAt?: string; consecutiveFailures?: number; blocksUnknown?: number; journalError?: { time?: string; error?: string } | null;
+  state?: string; updatedAt?: string; consecutiveFailures?: number; blocksUnknown?: number; waitingToBeResolved?: { number?: number; hash?: string } | null; journalError?: { time?: string; error?: string } | null;
   lastError?: { time?: string; error?: string } | null;
 }
 
@@ -46,18 +46,21 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
       const stale = age === null || age > ALIVE_WITHIN_MS;
       rows.push({ id: "producer_alive", status: stale ? "degraded" : "ok", value: { ageMs: age }, threshold: { ms: ALIVE_WITHIN_MS },
         detail: stale ? (age === null ? "the producer's status file has no updatedAt" : `the producer's status file was last written ${Math.round(age / 1000)} s ago`) : null });
+      // `blocksUnknown` counts since the loop started and never goes down; `waitingToBeResolved` is set while a block's outcome is not known.
+      const waiting = typeof s.waitingToBeResolved === "object" && s.waitingToBeResolved !== null ? s.waitingToBeResolved : null;
       const unknown = typeof s.blocksUnknown === "number" ? s.blocksUnknown : 0;
-      if (unknown > 0) unknownSince ??= now(); else unknownSince = null;
+      if (waiting) unknownSince ??= now(); else unknownSince = null;
       const failures = typeof s.consecutiveFailures === "number" ? s.consecutiveFailures : 0;
       const why: string[] = [];
       if (s.state !== undefined && s.state !== "running") why.push(`the producer is ${s.state}`);
       if (failures >= FAILURES_DEGRADED) why.push(`${failures} blocks in a row have failed${s.lastError?.error ? `: ${s.lastError.error.slice(0, 200)}` : ""}`);
-      if (unknownSince !== null && now() - unknownSince > UNKNOWN_FOR_MS) why.push(`the outcome of ${unknown} block(s) has not been known for ${Math.round((now() - unknownSince) / 1000)} s`);
+      if (unknownSince !== null && now() - unknownSince > UNKNOWN_FOR_MS) why.push(`the outcome of block ${waiting?.number ?? "?"} has not been known for ${Math.round((now() - unknownSince) / 1000)} s`);
       if (s.journalError) why.push(`the producer cannot write its journal: ${String(s.journalError.error ?? "").slice(0, 200)}`);
-      rows.push({ id: "producer_state", status: why.length ? "degraded" : "ok", value: { state: s.state ?? null, consecutiveFailures: failures, blocksUnknown: unknown },
+      rows.push({ id: "producer_state", status: why.length ? "degraded" : "ok", value: { state: s.state ?? null, consecutiveFailures: failures, blocksUnknown: unknown, waitingToBeResolved: waiting },
         threshold: { consecutiveFailures: FAILURES_DEGRADED, unknownMs: UNKNOWN_FOR_MS }, detail: why.join("; ") || null });
     }
-    const last = await o.pool.query("select number, proof_outcome, reason from block_attempts where proof_outcome is not null order by proof_ended_at desc nulls last, cut_at desc limit 1");
+    // Only the last six hours of attempts is read: cut_at is indexed, and a proof that ended longer ago is no news.
+    const last = await o.pool.query("select number, proof_outcome, reason from block_attempts where proof_outcome is not null and cut_at > to_timestamp($1 / 1000.0) - interval '6 hours' order by proof_ended_at desc nulls last, cut_at desc limit 1", [now()]);
     const bad = last.rowCount ? last.rows[0].proof_outcome !== "ok" : false;
     rows.push({ id: "prover", status: bad ? "degraded" : "ok", value: last.rowCount ? { number: Number(last.rows[0].number), outcome: last.rows[0].proof_outcome } : null,
       detail: bad ? `the last proof (block ${last.rows[0].number}) ended ${last.rows[0].proof_outcome}` : null });
@@ -88,7 +91,7 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
   async function c9(): Promise<HealthRow> {
     const r = await o.pool.query(
       `select a.number, extract(epoch from (a.answered_at - u.record_time)) * 1000 as ms from block_attempts a join canton_updates u on u.update_id = a.update_id
-        where a.outcome = 'committed' and a.answered_at is not null order by a.answered_at desc limit 100`);
+        where a.outcome = 'committed' and a.answered_at is not null and a.cut_at > to_timestamp($1 / 1000.0) - interval '6 hours' order by a.answered_at desc limit 100`, [now()]);
     let worst: { number: number; ms: number } | null = null;
     for (const x of r.rows) if (worst === null || Number(x.ms) < worst.ms) worst = { number: Number(x.number), ms: Math.round(Number(x.ms)) };
     const bad = worst !== null && worst.ms < -C9_TOLERANCE_MS;

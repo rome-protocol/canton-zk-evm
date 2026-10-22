@@ -32,7 +32,11 @@ export interface LoadResult {
   gapAt: string | null;
 }
 
-interface Cursor { file: string | null; position: number; run: string | null; seq: number; gaps: number; gapAt: string | null }
+/** `gaps`/`gapAt` and `orphans`/`unknownVersion`/`malformed`/`oddAt` are kept in the cursor, so the health row still says them on the next load. */
+interface Cursor {
+  file: string | null; position: number; run: string | null; seq: number; gaps: number; gapAt: string | null;
+  orphans: number; unknownVersion: number; malformed: number; oddAt: string | null;
+}
 
 const bytes = (h: unknown): Buffer | null => (typeof h === "string" && /^(0x)?([0-9a-fA-F]{2})+$/.test(h) ? Buffer.from(h.replace(/^0x/, ""), "hex") : null);
 const whole = (n: unknown): number | null => (typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : typeof n === "string" && /^\d{1,15}$/.test(n) ? Number(n) : null);
@@ -265,16 +269,25 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
  * as committed when its block hash is an indexed block.
  */
 export async function joinAttempts(pool: Pool): Promise<void> {
+  // Only attempts whose outcome is open and blocks with no attempt yet (the partial indexes of migration 0015 hold exactly those).
   await pool.query(
     `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id)
-       from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and coalesce(a.resolved_outcome, '') <> 'committed'`,
+       from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed'`,
   );
+  const best = `select a.attempt_id from block_attempts a
+                  where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed')
+                  order by coalesce(a.outcome = 'committed', false) desc, a.cut_at desc, a.attempt_id desc limit 1`;
   await pool.query(
-    `update blocks b set attempt_id = m.attempt_id
-       from (select distinct on (block_hash) block_hash, attempt_id from block_attempts
-              where outcome = 'committed' or resolved_outcome = 'committed' order by block_hash, (outcome = 'committed') desc, cut_at desc) m
-      where m.block_hash = b.hash and b.attempt_id is distinct from m.attempt_id
-        and b.number >= coalesce((select min(number) from block_attempts), 0)`,
+    `update blocks b set attempt_id = (${best})
+      where b.attempt_id is null and b.number >= coalesce((select min(number) from block_attempts), 0)
+        and exists (select 1 from block_attempts a where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed'))`,
+  );
+  // A block that was joined to an attempt only settled as committed moves to one the producer itself saw committed, when that one arrives later.
+  await pool.query(
+    `update blocks b set attempt_id = (${best})
+      from block_attempts cur
+      where cur.attempt_id = b.attempt_id and cur.resolved_outcome = 'committed' and cur.outcome is distinct from 'committed'
+        and exists (select 1 from block_attempts a where a.block_hash = b.hash and a.outcome = 'committed')`,
   );
   await pool.query(
     `update canton_updates u set command_id = a.command_id, submitted_template = 'Zk.Chain:ZkChain', submitted_choice = 'Advance', argument_bytes = a.argument_bytes,
@@ -287,14 +300,15 @@ export async function joinAttempts(pool: Pool): Promise<void> {
 async function readCursor(pool: Pool | PoolClient): Promise<Cursor> {
   const r = await pool.query("select position, detail from cursors where stream = 'journal'");
   const d = (r.rows[0]?.detail ?? {}) as Partial<Cursor>;
-  return { file: d.file ?? null, position: Number(r.rows[0]?.position ?? 0), run: d.run ?? null, seq: d.seq ?? 0, gaps: d.gaps ?? 0, gapAt: d.gapAt ?? null };
+  return { file: d.file ?? null, position: Number(r.rows[0]?.position ?? 0), run: d.run ?? null, seq: d.seq ?? 0, gaps: d.gaps ?? 0, gapAt: d.gapAt ?? null,
+    orphans: d.orphans ?? 0, unknownVersion: d.unknownVersion ?? 0, malformed: d.malformed ?? 0, oddAt: d.oddAt ?? null };
 }
 
 async function writeCursor(c: PoolClient, k: Cursor): Promise<void> {
   await c.query(
     `insert into cursors (stream, position, detail, updated_at) values ('journal', $1, $2, now())
      on conflict (stream) do update set position = excluded.position, detail = excluded.detail, updated_at = excluded.updated_at`,
-    [k.position, JSON.stringify({ file: k.file, run: k.run, seq: k.seq, gaps: k.gaps, gapAt: k.gapAt })],
+    [k.position, JSON.stringify({ file: k.file, run: k.run, seq: k.seq, gaps: k.gaps, gapAt: k.gapAt, orphans: k.orphans, unknownVersion: k.unknownVersion, malformed: k.malformed, oddAt: k.oddAt })],
   );
 }
 
@@ -332,6 +346,8 @@ export function createJournal(o: JournalOptions) {
   }
 
   /** Reads and applies everything new in the journal, joins it to the blocks, and writes the row `journal` of health_checks. */
+  let joinedHead: number | null = null;
+
   async function load(): Promise<LoadResult> {
     const res: LoadResult = { available: false, error: null, lines: 0, malformed: 0, unknownVersion: 0, orphans: 0, gaps: 0, gapAt: null };
     try {
@@ -352,19 +368,28 @@ export function createJournal(o: JournalOptions) {
     const k = await readCursor(o.pool);
     res.gaps = k.gaps;
     res.gapAt = k.gapAt;
-    if (res.available) await joinAttempts(o.pool);
+    if (res.available) {
+      // The join looks only at what is not joined yet, and only when a line was applied or the indexed head moved.
+      const head = Number((await o.pool.query("select coalesce(max(number), -1) as n from blocks")).rows[0].n);
+      if (res.lines > 0 || joinedHead === null || head !== joinedHead) {
+        await joinAttempts(o.pool);
+        joinedHead = head;
+      }
+    }
     if (now() - lastPrune > 3_600_000) {
       lastPrune = now();
       await o.pool.query("delete from pool_samples where at < now() - make_interval(days => $1)", [POOL_KEPT_DAYS]);
     }
     const recentGap = k.gapAt !== null && now() - Date.parse(k.gapAt) < GAP_SHOWN_MS && k.gaps > 0;
+    const recentOdd = k.oddAt !== null && now() - Date.parse(k.oddAt) < GAP_SHOWN_MS;
     const problems = [
       res.error,
       recentGap ? `${k.gaps} journal lines of the producer's run were lost (a gap in the sequence); the lifecycle misses what they said` : null,
-      res.orphans > 0 ? `${res.orphans} journal lines belong to attempts with no cut line` : null,
-      res.unknownVersion > 0 ? `${res.unknownVersion} journal lines are of a format this indexer does not know` : null,
+      recentOdd && k.orphans > 0 ? `${k.orphans} journal lines belong to attempts with no cut line` : null,
+      recentOdd && k.unknownVersion > 0 ? `${k.unknownVersion} journal lines are of a format this indexer does not know` : null,
+      recentOdd && k.malformed > 0 ? `${k.malformed} journal lines could not be read` : null,
     ].filter((x): x is string => x !== null);
-    await setHealth(o.pool, [{ id: "journal", status: problems.length ? "degraded" : "ok", value: { available: res.available, gaps: k.gaps, orphans: res.orphans, unknownVersion: res.unknownVersion, malformed: res.malformed }, detail: problems.join("; ") || null }]);
+    await setHealth(o.pool, [{ id: "journal", status: problems.length ? "degraded" : "ok", value: { available: res.available, gaps: k.gaps, orphans: k.orphans, unknownVersion: k.unknownVersion, malformed: k.malformed, oddAt: k.oddAt }, detail: problems.join("; ") || null }]);
     return res;
   }
 
@@ -391,6 +416,7 @@ export function createJournal(o: JournalOptions) {
       if (next === undefined) return;
       k = { ...k, file: next, position: 0 };
     }
+    let savedUnknown = res.unknownVersion, savedMalformed = res.malformed; // what the cursor already holds of this load's counts
     for (;;) {
       const file = k.file as string;
       const nextFile = names.find((n) => n > file);
@@ -425,8 +451,18 @@ export function createJournal(o: JournalOptions) {
         }
         const arranged = arrange(parsed, k);
         const gaps = arranged.lastRun === k.run ? k.gaps + arranged.gapped : arranged.gapped;
-        const next: Cursor = { file, position: base + slice[slice.length - 1]!.end, run: arranged.lastRun, seq: arranged.lastSeq, gaps, gapAt: arranged.gapTime ?? k.gapAt };
-        await commitCursor(next, async (c) => { res.orphans += await applyLines(c, arranged.ordered); });
+        const next: Cursor = { ...k, file, position: base + slice[slice.length - 1]!.end, run: arranged.lastRun, seq: arranged.lastSeq, gaps, gapAt: arranged.gapTime ?? k.gapAt };
+        const odd = (extra: { orphans: number; unknownVersion: number; malformed: number }) => {
+          if (extra.orphans + extra.unknownVersion + extra.malformed === 0) return;
+          const at = new Date(now()).toISOString();
+          if (next.oddAt === null || now() - Date.parse(next.oddAt) >= GAP_SHOWN_MS) { next.orphans = 0; next.unknownVersion = 0; next.malformed = 0; }
+          next.orphans += extra.orphans; next.unknownVersion += extra.unknownVersion; next.malformed += extra.malformed; next.oddAt = at;
+        };
+        const du = res.unknownVersion - savedUnknown, dm = res.malformed - savedMalformed;
+        savedUnknown = res.unknownVersion; savedMalformed = res.malformed;
+        odd({ orphans: 0, unknownVersion: du, malformed: dm });
+        // `next` is written after this runs, in the same transaction, so the orphans counted by applyLines are in it.
+        await commitCursor(next, async (c) => { const n = await applyLines(c, arranged.ordered); res.orphans += n; odd({ orphans: n, unknownVersion: 0, malformed: 0 }); });
         k = next;
         res.lines += parsed.length;
       }
