@@ -79,13 +79,16 @@ export function createLifecycleChecks(o: LifecycleChecksOptions) {
           and a.answered_at >= (select coalesce(min(record_time), 'infinity') from canton_updates)
           and not exists (select 1 from canton_updates u where u.update_id = a.update_id)`, [C8_WITHIN_S, now()])).rows[0];
     const orphan = (await o.pool.query(
-      `select count(*) as n, min(b.number) as first from blocks b
-        where b.attempt_id is null and b.record_time < now() - make_interval(secs => $1) and b.record_time >= (select min(started_at) from producer_runs)`, [C8_WITHIN_S])).rows[0];
-    const m = Number(missing.n), w = Number(orphan.n);
+      `select count(*) as total, count(*) filter (where b.record_time > to_timestamp($2 / 1000.0) - interval '6 hours') as n,
+              min(b.number) filter (where b.record_time > to_timestamp($2 / 1000.0) - interval '6 hours') as first
+         from blocks b
+        where b.attempt_id is null and b.record_time < now() - make_interval(secs => $1) and b.record_time >= (select min(started_at) from producer_runs)`, [C8_WITHIN_S, now()])).rows[0];
+    // The status follows the last six hours, as the first count does: one lost line must not keep C8 degraded for the life of the database. The value keeps the all-time number.
+    const m = Number(missing.n), w = Number(orphan.n), wAll = Number(orphan.total);
     const why: string[] = [];
     if (m > 0) why.push(`${m} blocks the producer says committed have no update in the index after ${C8_WITHIN_S} s (the first is block ${missing.first})`);
     if (w > 0) why.push(`${w} indexed blocks have no committed attempt in the journal (the first is block ${orphan.first}): another producer, or a lost journal`);
-    return { id: "C8", status: why.length ? "degraded" : "ok", value: { committedWithoutUpdate: m, blocksWithoutAttempt: w }, threshold, detail: why.join("; ") || null };
+    return { id: "C8", status: why.length ? "degraded" : "ok", value: { committedWithoutUpdate: m, blocksWithoutAttempt: wAll, blocksWithoutAttemptLastSixHours: w }, threshold, detail: why.join("; ") || null };
   }
 
   async function c9(): Promise<HealthRow> {

@@ -174,6 +174,20 @@ describe.skipIf(!TEST_URL)("the checks that need the producer", () => {
     });
   });
 
+  it("C8 counts the blocks with no attempt of the last six hours only, and keeps the all-time number in its value", async () => {
+    await inDb(async (pool) => {
+      const w = await world(pool, { second: false });
+      w.chain.ledger.ledgerHead = 2;
+      await w.ix.runOnce(); // block 2 has no attempt in the journal
+      await checks(pool, statusFile()).run(true, true);
+      expect(await health(pool, "C8")).toMatchObject({ status: "degraded", value: { blocksWithoutAttempt: 1 } });
+      // seven hours later the block is no news: ok, and the value still says one
+      const later = NOW + 7 * 3_600_000;
+      await checks(pool, statusFile({}, later), () => later).run(true, true);
+      expect(await health(pool, "C8")).toMatchObject({ status: "ok", detail: null, value: { blocksWithoutAttempt: 1 } });
+    });
+  });
+
   it("C9 is degraded when the producer's answer is before Canton's record time by more than 100 ms, and not for less", async () => {
     await inDb(async (pool) => {
       await world(pool, { answerMs: -50 });

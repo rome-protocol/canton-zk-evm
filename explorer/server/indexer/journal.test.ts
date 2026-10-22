@@ -206,6 +206,93 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
     });
   });
 
+  /** One attempt for block n of the chain, cut and built and submitted; the caller adds the answer. */
+  const attemptLines = (r: Run, chain: SyntheticChain, attempt: number, n: number, ms: number) => {
+    const b = chain.blocks[n - 1]!;
+    r.add(ms, "cut", { attempt, number: n, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 0, in_flight_at_cut: 0 });
+    r.add(ms + 10, "built", { attempt, block_hash: b.block.hash, parent_hash: b.block.parentHash, tx_hashes: [b.block.transactions[0]!.hash], gas_used: 21000, legs: 0, rebuilds: 0, left_out: [] });
+    r.add(ms + 20, "submitted", { attempt, command_id: `ostia-770101-${n}-x-${attempt}`, argument_bytes: 777 });
+  };
+
+  it("an attempt the producer settled itself (unknown, then resolved committed) still gets the update id and the Canton side from the indexed block", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }]);
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0 - 1000);
+      attemptLines(r, chain, 1, 1, T0);
+      r.add(T0 + 30, "answered", { attempt: 1, outcome: "unknown", reason: "no reply", update_id: null, completion_offset: null, traffic_bytes: 99 });
+      r.add(T0 + 40, "resolved", { attempt: 1, outcome: "committed" });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.loadJournal();
+      await ix.runOnce();
+      await ix.loadJournal();
+      const a = await one(pool, "select attempt_id, update_id, resolved_outcome from block_attempts");
+      expect(a).toMatchObject({ resolved_outcome: "committed", update_id: chain.blocks[0]!.record.updateId });
+      expect(await one(pool, "select attempt_id from blocks where number = 1")).toMatchObject({ attempt_id: a.attempt_id });
+      expect(await one(pool, "select command_id, argument_bytes, traffic_bytes from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({
+        command_id: "ostia-770101-1-x-1", argument_bytes: 777, traffic_bytes: 99 });
+    });
+  });
+
+  it("an attempt closed by the next run and then settled as committed by the index takes the block's record time, not the restart time", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }]);
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      r.start(T0 - 1000);
+      attemptLines(r, chain, 1, 1, T0);
+      r.add(T0 + 30, "answered", { attempt: 1, outcome: "unknown", reason: "no reply", update_id: null, completion_offset: null });
+      const r2 = new Run(RUN2);
+      const restartMs = recordMs + 60_000;
+      r2.start(restartMs - 100);
+      r2.add(restartMs, "resolved", { attempt: 1, attempt_run: RUN1, outcome: "restarted" });
+      putFile(dir, "2026-10-21.jsonl", [...r.lines, ...r2.lines]);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.loadJournal();
+      expect(await one(pool, "select resolved_outcome from block_attempts")).toMatchObject({ resolved_outcome: "restarted" });
+      await ix.runOnce(); // the index has the block after all
+      await ix.loadJournal();
+      const a = await one(pool, "select resolved_outcome, resolved_at, update_id from block_attempts");
+      expect(a.resolved_outcome).toBe("committed");
+      expect(new Date(a.resolved_at).getTime()).toBe(recordMs);
+      expect(a.update_id).toBe(chain.blocks[0]!.record.updateId);
+    });
+  });
+
+  it("an update from before the journal began is left alone by the join", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }]);
+      const dir = makeFolder();
+      const r = new Run(RUN1);
+      // the journal starts after the block's record time, so the update is one the journal cannot cover
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      r.start(recordMs + 10_000);
+      attemptLines(r, chain, 1, 1, recordMs + 20_000);
+      r.add(recordMs + 20_030, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: chain.blocks[0]!.record.updateId, completion_offset: 10, traffic_bytes: 5 });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.runOnce();
+      await ix.loadJournal();
+      expect(await one(pool, "select command_id from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({ command_id: null });
+    });
+  });
+
+  it("the blocks table is searched by attempt id through an index", async () => {
+    await inDb(async (pool) => {
+      const c = await pool.connect();
+      try {
+        await c.query("set enable_seqscan = off");
+        const plan = (await c.query("explain select 1 from blocks b where b.attempt_id = 1")).rows.map((x) => x["QUERY PLAN"]).join("\n");
+        expect(plan).toContain("blocks_attempt_id_idx");
+      } finally {
+        c.release();
+      }
+    });
+  });
+
   it("takes lines repeated, out of order, or read again from the start without a change", async () => {
     await inDb(async (pool) => {
       const chain = makeChain([{ txs: 2 }, { txs: 2 }]);

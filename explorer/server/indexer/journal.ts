@@ -271,8 +271,14 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
 export async function joinAttempts(pool: Pool): Promise<void> {
   // Only attempts whose outcome is open and blocks with no attempt yet (the partial indexes of migration 0015 hold exactly those).
   await pool.query(
-    `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = coalesce(a.resolved_at, b.record_time)
+    // The attempt was not committed as far as the journal knows, so a resolved_at it has is the time of something else (the next run's restart): the block's record time replaces it.
+    `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = b.record_time
        from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed'`,
+  );
+  // An attempt the producer settled itself (unknown, then resolved committed) never had an update id: the indexed block gives it.
+  await pool.query(
+    `update block_attempts a set update_id = b.update_id
+       from blocks b where b.hash = a.block_hash and a.update_id is null and (a.outcome = 'committed' or a.resolved_outcome = 'committed')`,
   );
   const best = `select a.attempt_id from block_attempts a
                   where a.block_hash = b.hash and (a.outcome = 'committed' or a.resolved_outcome = 'committed')
@@ -293,6 +299,7 @@ export async function joinAttempts(pool: Pool): Promise<void> {
     `update canton_updates u set command_id = a.command_id, submitted_template = 'Zk.Chain:ZkChain', submitted_choice = 'Advance', argument_bytes = a.argument_bytes,
             traffic_bytes = a.traffic_bytes, completion_offset = a.completion_offset
        from block_attempts a where a.update_id = u.update_id and u.command_id is null and a.command_id is not null
+        and u.record_time >= (select min(cut_at) from block_attempts)
         and (a.outcome = 'committed' or a.resolved_outcome = 'committed')`,
   );
 }
