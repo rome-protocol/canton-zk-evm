@@ -230,9 +230,6 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
                     (select count(*) from tokens where first_transfer_block = $1 and metadata_status = 'read') as read,
                     (select count(distinct to_address) from token_transfers where block_number = $1) as holders`, [W1_BLOCK])).rows[0];
           console.log(`W1 ${shape} block's token traffic: ${tok.transfers} transfers (${tok.nft_legs} ERC-1155 legs) to ${tok.holders} accounts, ${tok.tokens} new tokens, ${tok.read} with their metadata read`);
-          expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(3000);
-          expect(Number(tok.nft_legs)).toBeGreaterThan(0);
-          expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(10);
           const t0 = Date.now();
           const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
           const readMs = Date.now() - t0;
@@ -244,6 +241,10 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
             + `reads in stage 1 ${s1.readMs} ms (block, receipts${shape === "inline" ? ", traces" : ""}), stage 1 write ${s1.writeMs} ms, `
             + `stage 2 reads ${s2.readMs} ms, stage 2 write ${s2.writeMs} ms; all three reads again ${readMs} ms, the trace read alone ${traceMs} ms; `
             + `${timings.filter((t) => t.stage === 1).length} blocks in all`);
+          // After the timings are said, so that a run that falls short of the shape still prints them.
+          expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(3000);
+          expect(Number(tok.nft_legs)).toBeGreaterThan(0);
+          expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(10);
           // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
           expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(1000);
           expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(3000);
