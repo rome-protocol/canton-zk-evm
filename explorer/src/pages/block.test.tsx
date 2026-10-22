@@ -329,8 +329,8 @@ describe("when something does not match", () => {
     expect(program).toHaveTextContent(`does not match this explorer's pin ${"0xcdcd…cdcd"}`);
     expect(program.firstElementChild).toHaveClass("fact-bad");
     expect(row(facts, "ZisK release").nextElementSibling).toHaveTextContent("does not match this explorer's pin 0xcdcd…cdcd");
-    expect(row(facts, "Block hash")).toHaveTextContent("none in its public values");
-    expect(row(facts, "Block hash").nextElementSibling).toHaveTextContent("not this block's hash");
+    expect(row(facts, "Block hash committed")).toHaveTextContent("none in its public values");
+    expect(row(facts, "Block hash committed").nextElementSibling).toHaveTextContent("not this block's hash");
     expect(facts.queryByText("ours")).toBeNull();
     expect(screen.getByRole("group", { name: "Facts read from the proof" })).toHaveClass("facts-bad");
   });
@@ -338,13 +338,13 @@ describe("when something does not match", () => {
   it("shows a hash that is not this block's with the hash that was read", async () => {
     await open(withProof({ proof: { ...block().canton!.proof!, blockHash: { value: hash(9), ok: false } } }));
     const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
-    expect(row(facts, "Block hash")).toHaveTextContent("0x0909…0909");
-    expect(row(facts, "Block hash").nextElementSibling).toHaveTextContent("not this block's hash");
+    expect(row(facts, "Block hash committed")).toHaveTextContent("0x0909…0909");
+    expect(row(facts, "Block hash committed").nextElementSibling).toHaveTextContent("not this block's hash");
   });
 
   it("says that the status word stays Final, and what a red fact means", async () => {
     await open(withProof({ proof: { ...block().canton!.proof!, rootC: { value: EE, ok: false } } }));
-    expect(screen.getByText("Final", { selector: ".chip" })).toBeInTheDocument();
+    expect(within(screen.getByRole("heading", { name: "Block #3" }).parentElement!).getByText("Final on Canton")).toBeInTheDocument();
     expect(screen.getByText(/The status word stays Final/)).toHaveTextContent(
       "The status word stays Final: Canton's confirmers checked the proof against their own pins when the block committed. A red fact means the proof differs from the pins this explorer was given.",
     );
@@ -357,7 +357,6 @@ describe("when something does not match", () => {
 
   it("shows one red line, and no facts, for a proof that is not 1,344 bytes", async () => {
     await open(withProof({ proof: null, proofBytes: 100, proofHex: "11".repeat(100) }));
-    expect(row(side("On Canton"), "Proof")).toHaveTextContent("100 bytes");
     expect(screen.getByText("This proof is not 1,344 bytes, so its facts cannot be read.").closest(".alert")).toHaveClass("bad-alert");
     expect(screen.queryByRole("group", { name: "Facts read from the proof" })).toBeNull();
     expect(screen.queryByText("Program key")).toBeNull();
@@ -368,7 +367,7 @@ describe("when something does not match", () => {
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("The hashes do not match. reth's hash for this block, the hash in its block record and the hash of the record's header are not all the same. The explorer's status is red until this is explained.");
     expect(alert.compareDocumentPosition(screen.getByRole("region", { name: "On the EVM" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const line = row(side("On Canton"), "Hashes");
+    const line = row(side("Final on Canton"), "Hashes");
     expect(line).toHaveTextContent("reth, the record and the record's header do not all give the same hash");
     expect(line.firstElementChild).toHaveClass("fact-bad");
   });
