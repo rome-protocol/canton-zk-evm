@@ -25,6 +25,7 @@ export function status(over: Partial<ApiStatus> = {}): ApiStatus {
       { number: 2, hash: hash(2), timestamp: T0, txCount: 0, updateId: update(2), recordTime: "2026-10-04T01:37:08.250Z" },
     ],
     signers: { operator: "operator::1220" + "ab".repeat(32), confirmer: "confirmer::1220" + "cd".repeat(32) }, faucet: { on: false }, publicRpc: true,
+    indexHead: 3, indexLag: 0, deriveCursor: 3, chainInstance: "instance-1",
     ...over,
   };
 }

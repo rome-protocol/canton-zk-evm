@@ -24,7 +24,7 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
     const reth = {
       code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => undefined, transaction: async () => null,
-      rpc: async (m: string) => (m === "trace_transaction" ? rethTrace : null),
+      rpc: async (m: string) => (m === "trace_transaction" ? rethTrace : m === "eth_getTransactionReceipt" ? { status: "0x1", gasUsed: "0x5208", logs: [] } : null),
     } as unknown as Reth;
     return createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), rest: createChainRest(pool) })("GET", target);
   };
@@ -105,6 +105,21 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(full?.txsHex.length).toBeGreaterThan(0);
   });
 
+  it("cuts a frame's input at 1,024 bytes with its size, serves it whole with raw=1, and gives a final transaction's receipt as reth did", async () => {
+    const input = "0x" + "ab".repeat(3000);
+    rethTrace = [{ ...frame, action: { ...frame.action, input } }];
+    try {
+      const cut = body(await get(`/api/txs/${tx(2, 0)}/trace`)).frames[0];
+      expect(cut.input).toBe("0x" + "ab".repeat(1024));
+      expect(cut.inputSize).toBe(3000);
+      expect(body(await get(`/api/txs/${tx(2, 0)}/trace?raw=1`)).frames[0].input).toBe(input);
+    } finally {
+      rethTrace = [frame, { ...frame, traceAddress: [0] }];
+    }
+    expect(body(await get(`/api/txs/${tx(2, 0)}?raw=1`))).toEqual({ status: "0x1", gasUsed: "0x5208", logs: [] });
+    expect((await get(`/api/txs/0x${"00".repeat(32)}?raw=1`)).status).toBe(404);
+  });
+
   it("never serves the builder participant's completion offset", async () => {
     await pool.query("update canton_updates set completion_offset = 4242, command_id = coalesce(command_id, 'cmd-1') where update_id = $1", [chain.blocks[1]!.record.updateId]);
     for (const target of [`/api/canton/updates/${chain.blocks[1]!.record.updateId}`, "/api/canton/updates", "/api/blocks/2", "/api/block/2"]) {
@@ -178,9 +193,11 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const rule = async (t: string) => (await get(t)).headers?.["cache-control"];
     expect(await rule("/api/blocks/2/record")).toBe(CACHE_CONTROL.immutable);
     expect(await rule(`/api/txs/${tx(2, 3)}/logs?raw=1`)).toBe(CACHE_CONTROL.immutable);
+    expect(await rule(`/api/txs/${tx(2, 0)}/trace`)).toBe(CACHE_CONTROL.immutable);
+    expect(await rule(`/api/txs/${tx(2, 0)}?raw=1`)).toBe(CACHE_CONTROL.immutable);
     expect(await rule(`/api/txs/${tx(2, 1)}/token-transfers?raw=1`)).toBe(CACHE_CONTROL.immutable);
     expect(await rule(`/api/txs/${tx(2, 1)}/token-transfers`)).toBe(CACHE_CONTROL.composite);
-    for (const t of ["/api/blocks/2", "/api/blocks/2/transactions", "/api/blocks/2/legs", `/api/txs/${tx(2, 1)}`, `/api/txs/${tx(2, 3)}/logs`, `/api/txs/${tx(2, 1)}/internal`, `/api/txs/${tx(2, 0)}/trace`,
+    for (const t of ["/api/blocks/2", "/api/blocks/2/transactions", "/api/blocks/2/legs", `/api/txs/${tx(2, 1)}`, `/api/txs/${tx(2, 3)}/logs`, `/api/txs/${tx(2, 1)}/internal`,
       `/api/canton/updates/${chain.blocks[1]!.record.updateId}`, "/api/block/2", `/api/tx/${tx(2, 1)}`]) {
       expect(await rule(t), t).toBe(CACHE_CONTROL.composite);
     }

@@ -16,7 +16,8 @@ const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS
 /** A database that is never reached: any query a route makes is an error, so a route that answers 400 has refused the request before it read anything. */
 const unreachable = new Proxy({}, { get: (_t, name) => () => { throw new Error(`the database was read (${String(name)})`); } }) as unknown as Pool;
 const reth = {} as unknown as Reth;
-const full = (): RoutedApi => createApi({ config, reth, ledger: {} as never, chain: createChainDb(unreachable), rest: createChainRest(unreachable), accounts: createAccountRest(unreachable), live: true });
+const withRpc = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt", PUBLIC_RPC: "1" }, () => settings);
+const full = (cfg = config): RoutedApi => createApi({ config: cfg, reth, ledger: {} as never, chain: createChainDb(unreachable), rest: createChainRest(unreachable), accounts: createAccountRest(unreachable), live: true });
 const plain = (): RoutedApi => createApi({ config, reth, ledger: {} as never, chain: createChainDb(unreachable) });
 const sample: Record<string, string> = {
   id: "1", hash: "0x" + "00".repeat(32), updateId: "1220" + "00".repeat(32), address: "0x" + "00".repeat(20), ticket: "t1",
@@ -27,8 +28,11 @@ const body = async (api: RoutedApi, path: string) => (await api("GET", path)).bo
 describe("the API description", () => {
   it("describes every route the API registers, and only those", () => {
     const api = full();
-    expect([...api.routes].sort()).toEqual(Object.keys(DOCS).sort());
+    // The public RPC is a route only where it is on.
+    expect([...api.routes].sort()).toEqual(Object.keys(DOCS).filter((p) => p !== "/rpc").sort());
     expect(new Set(api.routes).size).toBe(api.routes.length);
+    expect([...full(withRpc).routes].sort()).toEqual(Object.keys(DOCS).sort());
+    expect(api.routes).toContain("/healthz");
   });
 
   it("lists, without a database, only the routes that exist: no chain, account or stream routes", async () => {
@@ -51,7 +55,7 @@ describe("the API description", () => {
     expect(doc.openapi).toBe("3.1.0");
     expect(doc.info.title).toContain(config.chainName);
     expect(Object.keys(doc.paths).sort()).toEqual([...api.routes].sort());
-    expect(Object.keys(doc.paths).every((p) => p.startsWith("/api/"))).toBe(true);
+    expect(Object.keys(doc.paths).every((p) => p.startsWith("/api/") || p === "/healthz")).toBe(true);
     expect((await api("POST", "/api/openapi.json")).status).toBe(405);
   });
 
@@ -66,10 +70,14 @@ describe("the API description", () => {
     expect(Object.keys(props("/api/status")).sort()).toEqual([...FIELDS.status].sort());
     for (const [path, item] of Object.entries(doc.paths as Record<string, any>)) { // eslint-disable-line @typescript-eslint/no-explicit-any
       const named = [...path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
+      if (!item.get) continue;
       const declared = (item.get.parameters as { name: string; in: string }[]).filter((p) => p.in === "path").map((p) => p.name);
       expect(declared, path).toEqual(named);
       expect(item.get.summary, path).toBeTruthy();
     }
+    const rpc = (await body(full(withRpc), "/api/openapi.json")).paths["/rpc"];
+    expect(Object.keys(rpc)).toEqual(["post"]);
+    expect(Object.keys((await body(full(), "/api/openapi.json")).paths["/healthz"].get.responses["200"].content["application/json"].schema.properties).sort()).toEqual([...FIELDS.status].sort());
     expect(doc.paths["/api/stream"].get.responses["200"].content["text/event-stream"]).toBeDefined();
     expect(Object.keys(doc.paths["/api/faucet"]).sort()).toEqual(["get", "post"]);
   });
@@ -79,7 +87,7 @@ describe("the API description", () => {
     const wrong: Record<string, string> = { limit: "0", before: "!!", after: "!!", sort: "nonsense", verified: "nonsense" };
     let checked = 0;
     for (const [path, d] of Object.entries(DOCS)) {
-      if (path === "/api/stream" || path === "/api/search" || !d.query) continue;
+      if (path === "/api/stream" || path === "/api/search" || path === "/rpc" || !d.query) continue;
       for (const q of d.query) {
         if (!wrong[q.name]) continue;
         const a = await api("GET", `${concrete(path)}?${q.name}=${encodeURIComponent(wrong[q.name]!)}`);

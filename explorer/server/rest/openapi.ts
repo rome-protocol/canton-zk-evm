@@ -23,6 +23,8 @@ interface Doc {
   param?: string;
   /** The tag of the group in a viewer. */
   tag: string;
+  /** The method, when it is not GET. */
+  method?: "post";
 }
 
 const limit: Query = { name: "limit", about: `How many rows: 1 to ${MAX_LIMIT}, ${DEFAULT_LIMIT} when left out.` };
@@ -40,11 +42,11 @@ export const DOCS: Record<string, Doc> = {
   "/api/blocks/{id}/legs": { tag: "Blocks", summary: "The gateway legs a block recorded, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.leg, derived: false } },
   "/api/blocks/{id}/record": { tag: "Blocks", summary: "The Canton record of a block: header, transactions and proof, as hex.", param: "The block's number or its 0x hash.", object: F.record },
   "/api/txs": { tag: "Transactions", summary: "The newest final transactions.", query: paged, page: { items: F.txItem, derived: false } },
-  "/api/txs/{hash}": { tag: "Transactions", summary: "One transaction. Its stage 2 fields are null until its block is derived.", param: "The transaction's 0x hash.", object: F.txDetail },
+  "/api/txs/{hash}": { tag: "Transactions", summary: "One transaction. Its stage 2 fields are null until its block is derived. `raw=1` is the receipt of a final transaction as reth gave it, which never changes.", param: "The transaction's 0x hash.", query: [raw], object: F.txDetail },
   "/api/txs/{hash}/logs": { tag: "Transactions", summary: "The logs of a transaction, with the events that can be decoded.", param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.log, derived: false } },
   "/api/txs/{hash}/internal": { tag: "Transactions", summary: `The internal calls that moved value. ${DERIVED}`, param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.internal, derived: true } },
   "/api/txs/{hash}/token-transfers": { tag: "Transactions", summary: `The token transfers of a transaction. ${DERIVED}`, param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.transfer, derived: true } },
-  "/api/txs/{hash}/trace": { tag: "Transactions", summary: "The call tree of a transaction, as reth traced it.", param: "The transaction's 0x hash.", object: F.trace },
+  "/api/txs/{hash}/trace": { tag: "Transactions", summary: "The call tree of a transaction, as reth traced it. A frame's input is cut at 1,024 bytes (its whole size is `inputSize`); `raw=1` serves it whole. It never changes for a final transaction.", param: "The transaction's 0x hash.", query: [raw], object: F.trace },
   "/api/canton/updates": { tag: "Canton", summary: "The newest Canton updates that carry a block.", query: paged, page: { items: F.updateItem, derived: false } },
   "/api/canton/updates/{updateId}": { tag: "Canton", summary: "One Canton update.", param: "The update id (1220 and 64 hex digits).", object: F.updateDetail },
   "/api/addresses": { tag: "Accounts", summary: `Addresses by balance or by transactions. The balance is the database's copy, as of its \`balanceBlock\`. ${DERIVED}`, query: [sort(SORTS.addresses), ...paged], page: { items: F.addressItem, derived: true } },
@@ -71,6 +73,8 @@ export const DOCS: Record<string, Doc> = {
   "/api/in-flight": { tag: "Status", summary: "The attempts that are not final yet. Nothing here is a fact of the chain until its block is final.", object: FIELDS.inFlight },
   "/api/faucet": { tag: "Faucet", summary: "GET: what the faucet shows about itself. POST {\"address\": \"0x...\"}: asks for coin, and answers with a ticket.", object: FIELDS.faucetInfo },
   "/api/faucet/ticket/{ticket}": { tag: "Faucet", summary: "Where a faucet request is.", param: "The ticket a request was answered with.", object: FIELDS.faucetTicket },
+  "/healthz": { tag: "Status", summary: "The same answer as /api/status, for a load balancer: 503 when the explorer is not serving.", object: FIELDS.status },
+  "/rpc": { tag: "RPC", method: "post", summary: "The public JSON-RPC: what a wallet or a script sees of the chain, final blocks only. A body is one call or a batch (at most 20 calls, 256 KiB).", note: "JSON-RPC 2.0" },
   "/api/openapi.json": { tag: "Status", summary: "This description.", note: "An OpenAPI 3.1 document." },
   "/api/stream": {
     tag: "Live", summary: `A server-sent event stream. Events: \`block\` and \`txs\` (the first ${TXS_MAX} hashes of a new final block's transactions), whose id is the block number, \`derived\` (stage 2 has reached a block), \`inflight\` (an attempt changed step) and \`stats\` (every 5 s). A comment line every 15 s keeps proxies from closing it. A client that reconnects with the \`Last-Event-ID\` header gets the blocks it missed, up to ${BUFFER_BLOCKS}. ${PER_CLIENT} streams a client; a fifth is answered with 429.`,
@@ -103,6 +107,11 @@ export function buildOpenApi(paths: readonly string[], info: { title: string }):
       ...(d.param ? [{ name: /\{(\w+)\}/.exec(path)![1], in: "path", required: true, description: d.param, schema: { type: "string" } }] : []),
       ...(d.query ?? []).map((q) => ({ name: q.name, in: "query", required: false, description: q.about, schema: { type: "string", ...(q.values ? { enum: [...q.values] } : {}) } })),
     ];
+    if (d.method === "post") {
+      out[path] = { post: { tags: [d.tag], summary: d.summary, requestBody: { required: true, content: { "application/json": { schema: { type: ["object", "array"] } } } },
+        responses: { 200: { description: d.note ?? "The answer.", content: { "application/json": { schema: {} } } }, 413: fail("The body is too big."), 429: fail("Too many requests; Retry-After says when to try again.") } } };
+      continue;
+    }
     const type = path === "/api/stream" ? "text/event-stream" : "application/json";
     const get: Record<string, unknown> = {
       tags: [d.tag], summary: d.summary, parameters,

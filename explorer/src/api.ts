@@ -20,6 +20,11 @@ export interface ApiStatus {
   faucet: { on: boolean };
   /** True when this explorer serves the public RPC at /rpc. */
   publicRpc: boolean;
+  /** The newest block the index holds, how many blocks it is behind Canton's finalized head (null while unknown), where stage 2 is, and the chain instance. */
+  indexHead: number | null;
+  indexLag: number | null;
+  deriveCursor: number | null;
+  chainInstance: string | null;
 }
 
 /** One fact read from a proof's own bytes, with whether it matches: the two keys against the explorer's pins, the hash against the block. */

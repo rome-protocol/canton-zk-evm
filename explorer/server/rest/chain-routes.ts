@@ -91,7 +91,8 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(page(await rest.txs(before, limit), limit, (t) => keyOf(t.block, t.index), F.txItem)), "list");
   }
 
-  async function oneTx(hash: string): Promise<Answer> {
+  async function oneTx(hash: string, q: URLSearchParams): Promise<Answer> {
+    if (q.get("raw") === "1") return rawReceipt(hash);
     const a = await transaction(hash);
     if (a.status !== 200) return a;
     const body = a.body as { status: string };
@@ -100,6 +101,14 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     // Stage 2 keeps a row only for a transaction that made calls or reverted: past the derive cursor, no row means no calls and no revert reason.
     const trace = derived && here ? await rest.traceOf(here.at) : undefined;
     return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null } as Record<string, unknown>, F.txDetail)), "composite");
+  }
+
+  /** The receipt of a final transaction as reth gave it: a chain fact that never changes. */
+  async function rawReceipt(hash: string): Promise<Answer> {
+    if (!(await finalTx(hash))) return fail(404, NOT_FOUND_HERE);
+    const receipt = await reth.rpc("eth_getTransactionReceipt", [hash]);
+    if (receipt === null || typeof receipt !== "object") return fail(404, "reth holds no receipt of that transaction.");
+    return cached(ok(receipt), "immutable");
   }
 
   async function logs(hash: string, q: URLSearchParams): Promise<Answer> {
@@ -130,12 +139,18 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   }
 
   /** The full call tree, asked of reth for a transaction of a final block. */
-  async function trace(hash: string): Promise<Answer> {
-    const here = await finalTx(hash);
+  /** Frame inputs are served up to this many bytes (the selector and the first arguments); `inputSize` is the whole size, and `?raw=1` serves them whole. */
+  const INPUT_MAX_BYTES = 1024;
+  const cut = (input: string): string => (input.length > 2 + 2 * INPUT_MAX_BYTES ? input.slice(0, 2 + 2 * INPUT_MAX_BYTES) : input);
+
+  async function trace(hash: string, q: URLSearchParams): Promise<Answer> {
+    const raw = q.get("raw") === "1", here = await finalTx(hash);
     if (!here) return fail(404, NOT_FOUND_HERE);
     const t = await traceOf(reth, hash);
     if (!t) return fail(404, "reth holds no trace of that transaction.");
-    return cached(ok(pick({ frames: t.frames.map((f: CallFrame) => pick(f, F.frame)), truncated: t.truncated }, F.trace)), "composite");
+    const frames = t.frames.map((f: CallFrame) => pick({ ...f, input: raw ? f.input : cut(f.input), inputSize: (f.input.length - 2) / 2 }, F.frame));
+    // The trace of a transaction in a final block is a chain fact that never changes.
+    return cached(ok(pick({ frames, truncated: t.truncated }, F.trace)), "immutable");
   }
 
   async function updates(q: URLSearchParams): Promise<Answer> {
@@ -157,11 +172,11 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     ["/api/blocks/{id}/legs", (id, q) => blockLegs(id, q)],
     ["/api/blocks/{id}/record", (id) => record(id)],
     ["/api/txs", (_, q) => txs(q)],
-    ["/api/txs/{hash}", (hash) => oneTx(hash)],
+    ["/api/txs/{hash}", (hash, q) => oneTx(hash, q)],
     ["/api/txs/{hash}/logs", (hash, q) => logs(hash, q)],
     ["/api/txs/{hash}/internal", (hash, q) => internal(hash, q)],
     ["/api/txs/{hash}/token-transfers", (hash, q) => transfers(hash, q)],
-    ["/api/txs/{hash}/trace", (hash) => trace(hash)],
+    ["/api/txs/{hash}/trace", (hash, q) => trace(hash, q)],
     ["/api/canton/updates", (_, q) => updates(q)],
     ["/api/canton/updates/{updateId}", (id) => oneUpdate(id)],
   ]);

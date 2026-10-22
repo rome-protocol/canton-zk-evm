@@ -63,7 +63,7 @@ export const REST_FIELDS = {
   internal: ["traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
   transfer: ["logIndex", "batchIndex", "token", "from", "to", "amount", "tokenId"],
   trace: ["frames", "truncated"],
-  frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "error", "created"],
+  frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
   updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block"],
   updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "template", "contractId", "blockHash", "signatories", "producerRecord"],
   updateTemplate: ["packageId", "packageName", "module", "entity"],
