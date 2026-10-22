@@ -133,6 +133,11 @@ def database():
     return sql("select pg_database_size(current_database())"), sql("select count(*) from transactions")
 
 
+def table_sizes():
+    """The explorer's tables with their indexes, by name: where the growth is."""
+    return {row[0]: int(row[1]) for row in sql_rows("select c.relname, pg_total_relation_size(c.oid) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind = 'r' and n.nspname = 'public'")}
+
+
 class Stream(threading.Thread):
     """One live-stream client: when each block's `block` event arrived, by block number."""
     def __init__(self, base):
@@ -245,6 +250,7 @@ def run(seconds, per_block, results):
     clock = LedgerClock(os.environ.get("L3_LEDGER", "http://127.0.0.1:7577"))
     clock.start()
     size0, txs0 = database()
+    tables0 = table_sizes()
     cut = []          # (number, update id, returned at, transactions)
     seen = {}         # number -> {"served": t, "final": t}
     done = threading.Event()
@@ -293,6 +299,7 @@ def run(seconds, per_block, results):
         time.sleep(0.1)
     stream.stop = clock.stop = True
     size1, txs1 = database()
+    tables1 = table_sizes()
     offsets = reader_offsets([u for _, u, _, _ in cut])
     blocks = []
     for number, update_id, returned, count in cut:
@@ -309,6 +316,9 @@ def run(seconds, per_block, results):
     summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0)
     if blocks:
         summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
+    if txs1 > txs0:   # where the growth is: the five tables that grew most, in bytes per million transactions added
+        grown = sorted(((t, tables1.get(t, 0) - tables0.get(t, 0)) for t in tables1), key=lambda kv: -kv[1])[:5]
+        summary["growth_by_table_bytes_per_million"] = {t: round(g / (txs1 - txs0) * 1_000_000) for t, g in grown}
     summary.update(ledger_end_polls=len(clock.offsets), ledger_end_polls_unanswered=clock.misses, ledger_end_last_error=clock.last_miss)
     summary.update(seconds=seconds, flood_seconds=round(flood_s, 1), transactions_per_block_sent=per_block, database_bytes_before=size0, database_bytes_after=size1, failures=failures, per_block=blocks)
     Path(results).write_text(json.dumps(summary, indent=1))
