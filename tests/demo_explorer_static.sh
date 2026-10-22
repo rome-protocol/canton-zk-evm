@@ -203,9 +203,8 @@ tokrun=$(LEDGER_TOKEN_FILE="$WORK/ledger.token" dry start)
 has "$tokrun" "-v $WORK/ledger.token:/run/explorer/ledger.token:ro" "the Ledger API token file is mounted read-only"
 has "$tokrun" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the container reads the token from the mount"
 lacks "$tokrun" "tok.$dbsec" "the token's value is never on the command"
-tokexplorer=$(grep -- '--name cze-explorer ' <<<"$tokrun"); tokindexer=$(grep -- 'node server/indexer/cli.ts' <<<"$tokrun")
 for who in explorer indexer; do
-  line=tok$who; line=${!line}
+  if [ "$who" = explorer ]; then line=$(grep -- '--name cze-explorer ' <<<"$tokrun"); else line=$(grep -- 'node server/indexer/cli.ts' <<<"$tokrun"); fi
   [ -n "$line" ] || fail "no $who command in start's output"
   has "$line" "-v $WORK/ledger.token:/run/explorer/ledger.token:ro" "the $who gets the Ledger API token file, read-only"
   has "$line" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the $who reads the token from the mount"
