@@ -1,0 +1,38 @@
+import { useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import type { Page } from "../api.ts";
+
+/**
+ * Reads a list one page at a time. The API pages by a cursor (the `next` of the page before), so the pages are walked in order:
+ * first, back, forward. There is no last page and no count of pages, because the server gives neither.
+ */
+export function usePaged<T>(key: readonly unknown[], read: (cursor: string | null) => Promise<Page<T>>, refetchInterval: number | false = false) {
+  const [cursors, setCursors] = useState<Array<string | null>>([null]);
+  const at = cursors[cursors.length - 1] ?? null;
+  const q = useQuery({ queryKey: [...key, at], queryFn: () => read(at), placeholderData: keepPreviousData, refetchInterval });
+  const next = q.data?.next ?? null;
+  return {
+    data: q.data, error: q.error, isLoading: q.isLoading,
+    page: cursors.length,
+    hasPrev: cursors.length > 1,
+    hasNext: next !== null,
+    first: () => setCursors([null]),
+    prev: () => setCursors((c) => (c.length > 1 ? c.slice(0, -1) : c)),
+    forward: () => { if (next !== null) setCursors((c) => [...c, next]); },
+  };
+}
+
+type Paged = Pick<ReturnType<typeof usePaged>, "page" | "hasPrev" | "hasNext" | "first" | "prev" | "forward">;
+
+/** First, back, the page number and forward. Hidden when the list fits one page. */
+export function Pager({ p, label }: { p: Paged; label: string }) {
+  if (!p.hasPrev && !p.hasNext) return null;
+  return (
+    <nav className="pager" aria-label={label}>
+      <button type="button" disabled={!p.hasPrev} onClick={p.first}>First</button>
+      <button type="button" disabled={!p.hasPrev} onClick={p.prev} aria-label="Newer page">‹</button>
+      <span className="pager-n" aria-current="page">Page {p.page}</span>
+      <button type="button" disabled={!p.hasNext} onClick={p.forward} aria-label="Older page">›</button>
+    </nav>
+  );
+}

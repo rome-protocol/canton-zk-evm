@@ -1,12 +1,15 @@
 import { Link } from "react-router-dom";
-import type { ApiStatus, LatestBlock } from "../api.ts";
+import { useQuery } from "@tanstack/react-query";
+import { getTxs, type ApiStatus } from "../api.ts";
 import { AddToWallet } from "../components/AddToWallet.tsx";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
-import { Chip } from "../components/Chip.tsx";
-import { HashLink } from "../components/HashLink.tsx";
+import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { commitTime, duration, utc } from "../format.ts";
+import { commitTime, duration, short, utc } from "../format.ts";
+import { listPoll, readOf, summarize, useBlocks, useInFlight } from "../stats.ts";
+import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
+import { Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
 
 const LEGS = "Daml legs settled with a block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 
@@ -56,39 +59,6 @@ function Strip({ status: s }: { status: ApiStatus }) {
   );
 }
 
-function Row({ b }: { b: LatestBlock }) {
-  return (
-    <tr>
-      <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link></td>
-      <td><HashLink value={b.hash} to={`/block/${b.hash}`} /></td>
-      <td className="r">{b.txCount}</td>
-      <td><HashLink value={b.updateId} kind="update" /></td>
-      <td className="mono muted">{utc(b.timestamp * 1000)}</td>
-      <td className="r">{commitTime(b.timestamp, b.recordTime)}</td>
-      <td><Chip status="final" /></td>
-    </tr>
-  );
-}
-
-function Latest({ blocks }: { blocks: LatestBlock[] }) {
-  return (
-    <section className="card" aria-labelledby="latest-h">
-      <div className="sec-h"><h3 id="latest-h">Latest final blocks</h3><span className="muted small">Each block is one transaction on Canton, so this is also the list of the chain's Canton updates.</span></div>
-      {blocks.length ? (
-        <>
-          <div className="scroll">
-            <table className="tbl">
-              <thead><tr><th>Block</th><th>Hash</th><th className="r">Txs</th><th>Canton update</th><th>Made</th><th className="r">Committed after</th><th></th></tr></thead>
-              <tbody>{blocks.map((b) => <Row key={b.number} b={b} />)}</tbody>
-            </table>
-          </div>
-          <div className="tbl-foot muted small">{blocks.length >= 10 ? "Showing the newest ten final blocks." : `Showing all ${blocks.length} final block${blocks.length === 1 ? "" : "s"} so far.`}</div>
-        </>
-      ) : <p className="muted">No final blocks yet.</p>}
-    </section>
-  );
-}
-
 /** What the explorer shows and what it does not, and why: Canton shows each party only what it is a party to. */
 function CanCannot() {
   return (
@@ -109,15 +79,35 @@ function CanCannot() {
   );
 }
 
+const NO_LIST = "The explorer cannot read this list right now.";
+
 export function Home() {
   const { data, error } = useStatus();
-  if (error) return <ErrorCard message={error.message} retrying />;
-  if (!data) return <LoadingCard>Reading the chain…</LoadingCard>;
+  const stream = useLiveState(["blocks", "txs", "inflight", "stats"]);
+  const live = stream === "live";
+  const blocks = useBlocks(10, live);
+  const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live) });
+  const flight = useInFlight(live);
+  const flightRead = readOf(flight);
+  const newest = blocks.data?.items[0], first = txs.data?.items[0];
+  const tries = [
+    ...(newest ? [{ label: String(newest.number), q: String(newest.number) }] : []),
+    ...(first ? [{ label: short(first.hash, 6, 4), q: first.hash }, { label: short(first.from, 6, 4), q: first.from }] : []),
+    ...(newest ? [{ label: short(newest.updateId, 10, 4), q: newest.updateId }] : []),
+  ];
+  // The search box stays whatever the status says: a visitor can look for a block while the chain cannot be read.
+  if (error || !data) return <><Hero tries={[]} />{error ? <ErrorCard message={error.message} retrying /> : <LoadingCard>Reading the chain…</LoadingCard>}</>;
   return (
     <>
+      <Hero tries={tries} />
       <Strip status={data} />
+      <Stats summary={summarize(data, blocks.data?.items ?? [], flightRead === "ok" ? flight.data! : null)} flight={flightRead} />
+      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} />
       <AddToWallet status={data} />
-      <Latest blocks={data.latest} />
+      <div className="cols">
+        <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
+        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} />
+      </div>
       <CanCannot />
     </>
   );

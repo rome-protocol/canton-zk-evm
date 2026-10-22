@@ -4,7 +4,7 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiBlock, ApiStatus } from "../api.ts";
-import { addr, block, fakeApi, hash, NOT_FOUND, renderApp, reply, route, status, tick, update } from "../test-utils.tsx";
+import { addr, block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update } from "../test-utils.tsx";
 
 const LEGS = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 const KEY = "0x" + "cd".repeat(32);
@@ -14,8 +14,8 @@ const proving = (): ApiBlock => block({ status: "proving", number: 4, hash: hash
 const genesis = (over: Partial<ApiBlock> = {}): ApiBlock => block({ status: "genesis", number: 0, hash: hash(0xcd), parentHash: "0x" + "00".repeat(32), timestamp: 0, txCount: 0, gasUsed: 0, canton: null, transactions: [], genesisReferenced: true, ...over });
 const withProof = (proof: Partial<NonNullable<ApiBlock["canton"]>>) => block({ canton: { ...block().canton!, ...proof } });
 
-async function open(b: ApiBlock = block(), st: ApiStatus = status(), id = String(b.number)) {
-  const calls = fakeApi(route({ block: () => reply(b), status: () => reply(st) }));
+async function open(b: ApiBlock = block(), st: ApiStatus = status(), id = String(b.number), more: Parameters<typeof route>[0] = {}) {
+  const calls = fakeApi(route({ block: () => reply(b), status: () => reply(st), ...more }));
   renderApp(`/block/${id}`);
   await screen.findByRole("heading", { name: `Block ${b.number}` });
   return calls;
@@ -130,23 +130,62 @@ describe("the block page, for a final block", () => {
     for (const li of items) expect(li).toHaveClass("done");
   });
 
-  it("lists the block's transactions with what each did and how it ended", async () => {
-    await open();
-    const table = within(screen.getByRole("region", { name: "Transactions" }));
-    expect(table.getByRole("heading", { name: "Transactions" }).nextElementSibling).toHaveTextContent("1");
-    const cells = within(table.getAllByRole("row")[1]!);
+  it("lists the block's transactions a page at a time, in order, from the block's own route", async () => {
+    const calls = await open(block({ txCount: 2 }), status(), "3", {
+      blockTxs: () => reply(page([txItem(3, { hash: hash(0xf6), index: 0 }), txItem(3, { hash: hash(0xa1), index: 1, success: false, to: null, created: addr(0xc1) })])),
+    });
+    const table = within(await screen.findByRole("region", { name: "Transactions" }));
+    expect(table.getByRole("heading", { name: "Transactions" }).nextElementSibling).toHaveTextContent("2 in this block, in order");
+    expect(calls).toContain("/api/blocks/3/transactions?limit=10");
+    await table.findByRole("link", { name: "0xf6f6…f6f6" });
+    const rows = table.getAllByRole("row").slice(1);
+    const cells = within(rows[0]!);
     expect(cells.getByRole("link", { name: "0xf6f6…f6f6" })).toHaveAttribute("href", `/tx/${hash(0xf6)}`);
     expect(cells.getByRole("link", { name: "0x5b5b…5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
-    expect(cells.getByRole("link", { name: "0xcbcb…cbcb" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
-    expect(cells.getByText("TKA")).toHaveClass("tag");
-    expect(cells.getByText("Sent", { exact: false }).closest("td")).toHaveTextContent("Sent 10 TKA to 0x5a5a…5a5a");
+    expect(rows[0]).toHaveTextContent("0.25 tROME");
+    expect(rows[0]).toHaveTextContent("0.000035 tROME");
     expect(cells.getByText("Success")).toBeInTheDocument();
+    expect(rows[1]).toHaveTextContent("Failed (reverted)");
+    expect(rows[1]).toHaveTextContent("creates contract");
+    expect(table.getByText("Showing 1–2 of 2.")).toBeInTheDocument();
   });
 
-  it("says when a transaction failed, when it is not known, and when one created a contract", async () => {
+  it("walks a long block's transactions by the server's cursor", async () => {
+    const user = userEvent.setup();
+    const calls = await open(block({ txCount: 12 }), status(), "3", {
+      blockTxs: (_, path) => reply(path.includes("after=c10") ? page([txItem(3, { hash: hash(0xb1), index: 10 })]) : page([txItem(3, { index: 9 })], "c10")),
+    });
+    await screen.findByRole("link", { name: "0xa3a3…a3a3" });
+    await user.click(within(screen.getByRole("navigation", { name: "Pages of transactions" })).getByRole("button", { name: "Older page" }));
+    await screen.findByRole("link", { name: "0xb1b1…b1b1" });
+    expect(calls).toContain("/api/blocks/3/transactions?limit=10&after=c10");
+    expect(screen.getByText("Showing 11–11 of 12.")).toBeInTheDocument();
+  });
+
+  it("says so when the block holds no transactions", async () => {
+    await open(block({ txCount: 0, transactions: [] }));
+    expect(await within(screen.getByRole("region", { name: "Transactions" })).findByText("No transactions in this block.")).toBeInTheDocument();
+  });
+
+  it("lists the gateway legs the block recorded, and shows nothing when it recorded none", async () => {
+    await open(block(), status(), "3", { blockLegs: () => reply(page([{ legIndex: 0, txIndex: 0, logIndex: 1, kind: "Deposit", legId: hash(0x1e), token: addr(0xcb), account: addr(0x5b), amount: "250" }])) });
+    const legs = within(await screen.findByRole("region", { name: "Gateway legs" }));
+    const r = legs.getAllByRole("row")[1]!;
+    expect(r).toHaveTextContent("Deposit");
+    expect(within(r).getByRole("link", { name: "0xcbcb…cbcb" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
+    expect(r).toHaveTextContent("250");
+  });
+
+  it("has no legs section for a block with none", async () => {
+    await open();
+    await screen.findByRole("region", { name: "Transactions" });
+    expect(screen.queryByRole("region", { name: "Gateway legs" })).toBeNull();
+  });
+
+  it("lists the transactions a block being proven holds, as the block's own answer gives them, and says when a transaction failed, is not known, or created a contract", async () => {
     const t = block().transactions[0]!;
     await open(block({
-      txCount: 3,
+      status: "proving", canton: null, txCount: 3,
       transactions: [
         { ...t, success: false }, // the server still decodes the transfer of a reverted call
         { ...t, hash: hash(0xa1), success: null, transfer: null },
@@ -161,11 +200,20 @@ describe("the block page, for a final block", () => {
     expect(rows[2]).toHaveTextContent("Created a contract");
   });
 
-  it("says so when the block holds no transactions", async () => {
-    await open(block({ txCount: 0, transactions: [] }));
-    expect(within(screen.getByRole("region", { name: "Transactions" })).getByText("No transactions in this block.")).toBeInTheDocument();
+  it("asks the server for the block by the name in the address, a number or a hash", async () => {
+    const calls = await open(block(), status(), hash(3));
+    expect(calls).toContain(`/api/block/${hash(3)}`);
   });
 
+  it("does not look again: a final block does not change", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const calls = await open();
+    await tick(10_000);
+    expect(calls.filter((c) => c.startsWith("/api/block/"))).toHaveLength(1);
+  });
+});
+
+describe("the block page, for a final block: the record", () => {
   it("shows the sizes of the record's data, and copies each part exactly as the record holds it", async () => {
     const user = userEvent.setup();
     await open();
@@ -221,18 +269,6 @@ describe("the block page, for a final block", () => {
     renderApp("/block/3");
     await userEvent.click(await screen.findByRole("button", { name: "Verify" }));
     expect(await screen.findByText(/^Failed: /)).toBeInTheDocument();
-  });
-
-  it("asks the server for the block by the name in the address, a number or a hash", async () => {
-    const calls = await open(block(), status(), hash(3));
-    expect(calls).toContain(`/api/block/${hash(3)}`);
-  });
-
-  it("does not look again: a final block does not change", async () => {
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-    const calls = await open();
-    await tick(10_000);
-    expect(calls.filter((c) => c.startsWith("/api/block"))).toHaveLength(1);
   });
 });
 

@@ -1,63 +1,58 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { useStatus } from "../useStatus.ts";
+import type { ReactNode } from "react";
+import { Link, NavLink, useLocation } from "react-router-dom";
+import type { ApiStatus } from "../api.ts";
+import { useNow, useStatus } from "../useStatus.ts";
+import { duration } from "../format.ts";
 import { Icon } from "./Icon.tsx";
+import { SearchBox } from "./SearchBox.tsx";
 
 export const FOOTER_LINE = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton.";
 /** Shown until the server has said what the chain is called. */
 const DEFAULT_NAME = "Ostia";
-const PHONE = "(max-width: 720px)";
-const HINT = "Block number, transaction or block hash, address, or Canton update id";
-const SHORT_HINT = "Block, transaction, address or Canton update";
 
-/** True at phone width, where the search box sits under the name and has room for a shorter hint. */
-function usePhone(): boolean {
-  const query = typeof window !== "undefined" && window.matchMedia ? window.matchMedia(PHONE) : null;
-  const [phone, setPhone] = useState(query?.matches ?? false);
-  useEffect(() => {
-    if (!query) return;
-    const change = () => setPhone(query.matches);
-    query.addEventListener("change", change);
-    return () => query.removeEventListener("change", change);
-  }, []);
-  return phone;
-}
+/**
+ * The pages of the header, in the order of the approved screens. A page is linked once its route exists (`built`): the others are listed here so that
+ * the order is kept, and are drawn when their pages land. The API link is the description of the routes, which is a file and not a page.
+ */
+export const NAV: ReadonlyArray<readonly [path: string, label: string, built: boolean]> = [
+  ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", false], ["/contracts", "Contracts", false], ["/tokens", "Tokens", false],
+  ["/canton", "Canton", true], ["/stats", "Stats", false], ["/faucet", "Faucet", true], ["/api/openapi.json", "API", true],
+];
 
-/** The search box. It sends what was typed to the search page, which asks the server what it is and opens it, so that a search is also a link. */
-function SearchBox() {
-  const navigate = useNavigate();
-  const { pathname } = useLocation();
-  const [params] = useSearchParams();
-  const shown = pathname === "/search" ? params.get("q") ?? "" : "";
-  const phone = usePhone();
-  const [text, setText] = useState(shown);
-  useEffect(() => setText(shown), [shown]);
-  function submit(e: FormEvent) {
-    e.preventDefault();
-    const q = text.trim();
-    if (q) navigate(`/search?q=${encodeURIComponent(q)}`);
-  }
+/** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. */
+function TopBar({ status: s }: { status: ApiStatus }) {
+  const now = useNow();
+  const checks = s.starting && !s.problems.length ? "Starting" : s.problems.length ? "A check failed" : s.ok ? "All checks ok" : "Checks not complete";
+  const tone = s.ok ? "ok" : s.starting && !s.problems.length ? "off" : "bad";
   return (
-    <form className="search" role="search" onSubmit={submit}>
-      <Icon name="search" />
-      <input type="search" aria-label="Search" placeholder={phone ? SHORT_HINT : HINT} value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} autoComplete="off" />
-    </form>
+    <section className="topbar" aria-label="Chain at a glance">
+      <span className={`sd ${tone}`}><i />{checks}</span>
+      {s.final && <span>Final block <Link className="num" to={`/block/${s.final.number}`}>{s.final.number}</Link> · {duration(now - Date.parse(s.final.recordTime))} ago</span>}
+      {s.proving && <span>Being proven <Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></span>}
+      <span className="topbar-end">Chain {s.chainId} · coin {s.coin.symbol}</span>
+    </section>
   );
 }
 
 /** The header every page has, and the line every page ends with. */
 export function Shell({ children }: { children: ReactNode }) {
   const status = useStatus().data;
+  const home = useLocation().pathname === "/";
   return (
     <div className="page">
+      {status && <TopBar status={status} />}
       <header className="top">
         <Link className="brand" to="/">
           <span className="mark" role="img" aria-label="Rome" />
           <span className="name">{status?.chainName ?? DEFAULT_NAME}</span>
           {status && <span className="pill mono">chain {status.chainId}</span>}
         </Link>
-        <SearchBox />
-        <Link className="navlink" to="/faucet">Faucet</Link>
+        <nav className="nav" aria-label="Pages">
+          {NAV.filter(([, , built]) => built).map(([to, label]) => to.startsWith("/api/")
+            ? <a key={to} href={to} className="navlink">{label}</a>
+            : <NavLink key={to} to={to} end={to === "/"} className="navlink">{label}</NavLink>)}
+        </nav>
+        {!home && <SearchBox />}
       </header>
       <div className="thread" />
       <main className="main">{children}</main>
