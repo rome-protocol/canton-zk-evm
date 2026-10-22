@@ -108,6 +108,12 @@ async function checkTokens(pool: Pool, reads: BalanceReads, upTo: number, limit:
   const supplies = await inBatches([...newest.values()], async (s) => uint(await tryCall(reads, "0x" + s.token.toString("hex"), SELECTORS.totalSupply, s.block)));
   let switched = 0;
   await inLock(pool, async (c) => {
+    // The batch's rows are locked first, in one statement and in the order stage 2's upsert takes them ((token, holder, id)), so that the check and a block
+    // that moves the same token never wait for each other's rows in crossed orders.
+    await c.query(
+      `select 1 from token_balances where (token, holder, token_id) in (select * from unnest($1::bytea[], $2::bytea[], $3::numeric[])) order by token, holder, token_id for update`,
+      [rows.map((r) => r.token), rows.map((r) => r.holder), rows.map((r) => r.token_id)],
+    );
     const modes = new Map<string, string>();
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]!, read = answers[i]!;
