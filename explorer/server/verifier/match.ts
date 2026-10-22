@@ -40,7 +40,7 @@ export interface Matched {
 
 /** A submission that does not match: `reason` is for the person who submitted it. */
 export class MatchFailure extends Error {
-  readonly code: "runtime" | "creation" | "arguments" | "libraries" | "short";
+  readonly code: "runtime" | "creation" | "arguments" | "libraries";
   constructor(code: MatchFailure["code"], reason: string) {
     super(reason);
     this.code = code;
@@ -158,8 +158,18 @@ export function matchCode(compiled: CompiledCode, onChain: OnChain, given: Buffe
   }
   const creation = toBytes(compiled.creation, compiled.creationLinks, "creation code");
   const input = onChain.creationInput;
-  note(fill(creation, input, libPlaces(compiled.creationLinks), "library address", "libraries"));
-  if (input.length < creation.length) throw new MatchFailure("short", "the creation input is shorter than the compiled creation code");
+  // A library known from the runtime code stands at the same address in the creation code; the creation code is compared with it, so that another creation
+  // code is refused as one, not as a library. A library only the creation code names is read from the creation input.
+  const unknown = new Map<string, { start: number; length: number }[]>();
+  for (const [key, spots] of libPlaces(compiled.creationLinks)) {
+    const [file, name] = key.split("\u0000") as [string, string];
+    const known = libs[file]?.[name];
+    if (!known) { unknown.set(key, spots); continue; }
+    const address = Buffer.from(known.slice(2), "hex");
+    for (const sp of spots) address.copy(creation, sp.start, 0, Math.min(sp.length, address.length));
+  }
+  note(fill(creation, input, unknown, "library address", "libraries"));
+  if (input.length < creation.length) throw new MatchFailure("creation", "the creation code does not match the creation input on chain (the input is shorter than the compiled creation code)");
   const cbor = splitMetadata(runtime)?.cbor ?? splitMetadata(creation)?.cbor ?? null;
   const creationKind = compareCreation(creation, input, cbor);
   if (!creationKind) throw new MatchFailure("creation", "the creation code does not match the creation input on chain");

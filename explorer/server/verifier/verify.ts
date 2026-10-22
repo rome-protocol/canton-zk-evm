@@ -78,6 +78,10 @@ export class Verifier {
       throw e;
     }
 
+    // The libraries the request named (the compiler linked them) and the ones read from the chain, by file and name.
+    const libraries: Record<string, Record<string, string>> = {};
+    const named = (p.settings.libraries ?? {}) as Record<string, Record<string, string>>;
+    for (const src of [named, m.libraries]) for (const [file, names] of Object.entries(src)) libraries[file] = { ...libraries[file], ...names };
     const optimizer = (p.settings.optimizer ?? {}) as { enabled?: unknown; runs?: unknown };
     const client = await this.pool.connect();
     try {
@@ -89,7 +93,7 @@ export class Verifier {
          on conflict (address) do nothing returning id`,
         [addr, row.runtime_code_hash, compiled.compiler.version, p.format, picked.path, picked.name, typeof optimizer.enabled === "boolean" ? optimizer.enabled : null,
           typeof optimizer.runs === "number" ? optimizer.runs : null, typeof p.settings.evmVersion === "string" ? p.settings.evmVersion : null, JSON.stringify(p.settings),
-          JSON.stringify(p.sources), JSON.stringify(picked.abi), picked.metadata ? JSON.stringify(picked.metadata) : null, m.constructorArgs, Object.keys(m.libraries).length > 0 ? JSON.stringify(m.libraries) : null,
+          JSON.stringify(p.sources), JSON.stringify(picked.abi), picked.metadata ? JSON.stringify(picked.metadata) : null, m.constructorArgs, Object.keys(libraries).length > 0 ? JSON.stringify(libraries) : null,
           p.license, m.kind, m.creationKind],
       );
       if (ins.rowCount === 0) { await client.query("rollback"); return { status: "already", result: "Already Verified" }; }

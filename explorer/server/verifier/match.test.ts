@@ -155,18 +155,19 @@ describe("matching the creation code and the constructor arguments", () => {
     expect(() => matchCode(compiledOf(runtime, creation), { runtimeCode: runtime, creationInput: creation.subarray(0, 20) }, null)).toThrow(MatchFailure);
   });
 
-  it("takes a library's address from the creation input, and refuses two addresses for one library", () => {
-    const placeholder = "__$" + "cd".repeat(17) + "$__";
+  it("takes a library that only the creation code names from the creation input, and refuses a creation code that has another address for one the runtime names", () => {
+    const pl = "__$" + "cd".repeat(17) + "$__";
+    const pm = "__$" + "ef".repeat(17) + "$__";
     const lib = "5fbdb2315678afecb367f032d93f642f64180aa3";
-    const compiledRt = codeHex("73" + placeholder + "6000", 1);
-    const chainRt = code("73" + lib + "6000", 1);
+    const libM = "e7f1725e7734ce288f8367e1bb143e90bb3f0512";
     const c: CompiledCode = {
-      creation: "6080" + "73" + placeholder + "6000", creationLinks: { "L.sol": { L: [{ start: 3, length: 20 }] } },
-      runtime: compiledRt, runtimeLinks: { "L.sol": { L: [{ start: 1, length: 20 }] } }, immutables: {},
+      creation: "6080" + "73" + pl + "73" + pm + "6000", creationLinks: { "L.sol": { L: [{ start: 3, length: 20 }], M: [{ start: 24, length: 20 }] } },
+      runtime: codeHex("73" + pl + "6000", 1), runtimeLinks: { "L.sol": { L: [{ start: 1, length: 20 }] } }, immutables: {},
     };
-    const m = matchCode(c, { runtimeCode: chainRt, creationInput: Buffer.from("6080" + "73" + lib + "6000", "hex") }, null);
-    expect(m.libraries).toEqual({ "L.sol": { L: "0x" + lib } });
-    const other = Buffer.from("6080" + "73" + "11".repeat(20) + "6000", "hex");
-    expect(() => matchCode(c, { runtimeCode: chainRt, creationInput: other }, null)).toThrow(/library L/);
+    const chainRt = code("73" + lib + "6000", 1);
+    const m = matchCode(c, { runtimeCode: chainRt, creationInput: Buffer.from("6080" + "73" + lib + "73" + libM + "6000", "hex") }, null);
+    expect(m.libraries).toEqual({ "L.sol": { L: "0x" + lib, M: "0x" + libM } });
+    const other = Buffer.from("6080" + "73" + "11".repeat(20) + "73" + libM + "6000", "hex");
+    expect(() => matchCode(c, { runtimeCode: chainRt, creationInput: other }, null)).toThrow(/creation code does not match/);
   });
 });
