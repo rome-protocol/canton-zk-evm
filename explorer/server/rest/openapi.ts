@@ -40,6 +40,31 @@ const around: Query = { name: "n", about: `How many updates on each side: 1 to $
 const paged = [limit, before], pagedAfter = [limit, after];
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
+/** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
+const ETHERSCAN_QUERY: Query[] = [
+  { name: "module", about: "account, transaction, block or logs (the contract, token, stats, proxy and gastracker modules follow).", values: ["account", "transaction", "block", "logs"] },
+  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs." },
+  { name: "chainid", about: "Optional, and this chain's when given." },
+  { name: "apikey", about: "Accepted and ignored." },
+  { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs)." },
+  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx)." },
+  { name: "txhash", about: "A transaction's 0x hash (getstatus, gettxreceiptstatus, txlistinternal)." },
+  { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same)." },
+  { name: "startblock", about: "The first block of a list (txlist, txlistinternal, tokentx and the like)." },
+  { name: "endblock", about: "The last block of a list; latest is the newest final block." },
+  { name: "page", about: "The page of a list, from 1. page x offset is at most 10,000." },
+  { name: "offset", about: "Rows to a page (getLogs: at most 1,000)." },
+  { name: "sort", about: "asc or desc.", values: ["asc", "desc"] },
+  { name: "blockno", about: "A block number (getblockreward, getblockcountdown)." },
+  { name: "timestamp", about: "Unix seconds (getblocknobytime)." },
+  { name: "closest", about: "before or after (getblocknobytime).", values: ["before", "after"] },
+  { name: "fromBlock", about: "getLogs: the first block (0 when left out)." },
+  { name: "toBlock", about: "getLogs: the last block, or latest. Without an address or a topic0, the range is at most 10,000 blocks." },
+  { name: "topic0", about: "getLogs: a 0x topic of 32 bytes. topic1, topic2 and topic3 are the same." },
+  { name: "topic0_1_opr", about: "getLogs: and or or between two topics; topicX_Y_opr for any pair (and when left out).", values: ["and", "or"] },
+];
+const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. Balances are reth's at the newest final block; nothing that is not final is served. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
+
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },
   "/api/blocks/{id}": { tag: "Blocks", summary: "One block, by number or 0x hash.", param: "The block's number or its 0x hash.", object: F.blockDetail },
@@ -84,6 +109,8 @@ export const DOCS: Record<string, Doc> = {
   "/api/verify/{guid}": { tag: "Verification", summary: "Where a verification is: pending, running, or its result (Pass, Fail or Already Verified, with the reason).", param: "The GUID a submission was answered with.", object: FIELDS.verifyJob },
   "/healthz": { tag: "Status", summary: "The same answer as /api/status, for a load balancer: 503 when the explorer is not serving.", object: FIELDS.status },
   "/rpc": { tag: "RPC", method: "post", summary: "The public JSON-RPC: what a wallet or a script sees of the chain, final blocks only. A body is one call or a batch (at most 20 calls, 256 KiB).", note: "JSON-RPC 2.0" },
+  "/api": { tag: "Etherscan", summary: "The Etherscan-compatible API: GET or POST (a query or a form). Foundry, Hardhat and ethers can be pointed at it as they are at Etherscan.", query: ETHERSCAN_QUERY, note: ETHERSCAN_NOTE },
+  "/v2/api": { tag: "Etherscan", summary: "The same door at Etherscan's v2 path, with `chainid`.", query: ETHERSCAN_QUERY, note: ETHERSCAN_NOTE },
   "/api/openapi.json": { tag: "Status", summary: "This description.", note: "An OpenAPI 3.1 document." },
   "/api/stream": {
     tag: "Live", summary: `A server-sent event stream. Events: \`block\` and \`txs\` (the first ${TXS_MAX} hashes of a new final block's transactions), whose id is the block number, \`derived\` (stage 2 has reached a block), \`inflight\` (an attempt changed step) and \`stats\` (every 5 s). A comment line every 15 s keeps proxies from closing it. A client that reconnects with the \`Last-Event-ID\` header gets the blocks it missed, up to ${BUFFER_BLOCKS}. ${PER_CLIENT} streams a client; a fifth is answered with 429.`,
@@ -124,6 +151,14 @@ export function buildOpenApi(paths: readonly string[], info: { title: string }):
     if (d.method === "post") {
       out[path] = { post: { tags: [d.tag], summary: d.summary, requestBody: { required: true, content: { "application/json": { schema: { type: ["object", "array"] } } } },
         responses: { 200: { description: d.note ?? "The answer.", content: { "application/json": { schema: {} } } }, 413: fail("The body is too big."), 429: fail("Too many requests; Retry-After says when to try again.") } } };
+      continue;
+    }
+    if (path === "/api" || path === "/v2/api") {
+      const answer = { description: d.note ?? "The answer.", content: { "application/json": { schema: object(["status", "message", "result"]) } } };
+      out[path] = {
+        get: { tags: [d.tag], summary: d.summary, parameters, responses: { 200: answer } },
+        post: { tags: [d.tag], summary: d.summary, requestBody: { required: false, content: { "application/x-www-form-urlencoded": { schema: { type: "object" } } } }, parameters, responses: { 200: answer } },
+      };
       continue;
     }
     const type = path === "/api/stream" ? "text/event-stream" : "application/json";

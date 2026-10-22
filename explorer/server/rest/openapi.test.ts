@@ -7,6 +7,7 @@ import type { Reth } from "../reth.ts";
 import { PINS } from "../../test/synthetic-chain.ts";
 import { createAccountRest } from "./account-rest.ts";
 import { createChainRest } from "./chain-rest.ts";
+import { createEtherscanRest } from "./etherscan-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { REST_FIELDS as F, FIELDS } from "./fields.ts";
 import { DOCS } from "./openapi.ts";
@@ -17,7 +18,7 @@ const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS
 const unreachable = new Proxy({}, { get: (_t, name) => () => { throw new Error(`the database was read (${String(name)})`); } }) as unknown as Pool;
 const reth = {} as unknown as Reth;
 const withRpc = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt", PUBLIC_RPC: "1" }, () => settings);
-const full = (cfg = config): RoutedApi => createApi({ config: cfg, reth, ledger: {} as never, chain: createChainDb(unreachable), rest: createChainRest(unreachable), accounts: createAccountRest(unreachable), live: true, verify: { submit: async () => ({ status: 202, body: { guid: "g" } }), status: async () => ({ status: 404, body: {} }) } });
+const full = (cfg = config): RoutedApi => createApi({ config: cfg, reth, ledger: {} as never, chain: createChainDb(unreachable), rest: createChainRest(unreachable), accounts: createAccountRest(unreachable), etherscanRest: createEtherscanRest(unreachable), live: true, verify: { submit: async () => ({ status: 202, body: { guid: "g" } }), status: async () => ({ status: 404, body: {} }) } });
 const plain = (): RoutedApi => createApi({ config, reth, ledger: {} as never, chain: createChainDb(unreachable) });
 const sample: Record<string, string> = {
   id: "1", hash: "0x" + "00".repeat(32), updateId: "1220" + "00".repeat(32), address: "0x" + "00".repeat(20), ticket: "t1", guid: "00000000-0000-4000-8000-000000000000",
@@ -39,6 +40,8 @@ describe("the API description", () => {
     const api = plain();
     expect(api.routes).not.toContain("/api/blocks");
     expect(api.routes).not.toContain("/api/stream");
+    expect(api.routes).not.toContain("/api");
+    expect(api.routes).not.toContain("/v2/api");
     const doc = await body(api, "/api/openapi.json");
     expect(Object.keys(doc.paths).sort()).toEqual([...api.routes].sort());
     expect(Object.keys(doc.paths)).toContain("/api/status");
@@ -80,6 +83,14 @@ describe("the API description", () => {
     expect(Object.keys((await body(full(), "/api/openapi.json")).paths["/healthz"].get.responses["200"].content["application/json"].schema.properties).sort()).toEqual([...FIELDS.status].sort());
     expect(doc.paths["/api/stream"].get.responses["200"].content["text/event-stream"]).toBeDefined();
     expect(Object.keys(doc.paths["/api/faucet"]).sort()).toEqual(["get", "post"]);
+    // Etherscan's door is described at both of its paths, for GET and POST, with the modules this part of it answers.
+    for (const door of ["/api", "/v2/api"]) {
+      expect(Object.keys(doc.paths[door]).sort()).toEqual(["get", "post"]);
+      expect(doc.paths[door].get.tags).toEqual(["Etherscan"]);
+      const names = doc.paths[door].get.parameters.map((q: { name: string }) => q.name);
+      for (const n of ["module", "action", "address", "fromBlock", "topic0", "topic0_1_opr", "blockno", "txhash"]) expect(names).toContain(n);
+    }
+    expect(doc.paths["/api"].get.parameters.find((q: { name: string }) => q.name === "action").description).toContain("getLogs");
   });
 
   it("documents only the query parameters its routes read: each is refused when it is wrong, before any read", async () => {
@@ -87,7 +98,7 @@ describe("the API description", () => {
     const wrong: Record<string, string> = { limit: "0", before: "!!", after: "!!", sort: "nonsense", verified: "nonsense" };
     let checked = 0;
     for (const [path, d] of Object.entries(DOCS)) {
-      if (path === "/api/stream" || path === "/api/search" || path === "/rpc" || !d.query) continue;
+      if (path === "/api/stream" || path === "/api/search" || path === "/rpc" || path === "/api" || path === "/v2/api" /* answers 200 with its own NOTOK: etherscan.test.ts */ || !d.query) continue;
       for (const q of d.query) {
         if (!wrong[q.name]) continue;
         const a = await api("GET", `${concrete(path)}?${q.name}=${encodeURIComponent(wrong[q.name]!)}`);

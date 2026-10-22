@@ -304,7 +304,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/openapi.json", async () => ok(openapi)],
   ]);
   // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
-  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
   const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API` });
 
   const api: Api = async (method, target, body, ip) => {
