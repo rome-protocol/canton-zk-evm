@@ -18,6 +18,16 @@ const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockLis
 const strip = () => within(screen.getByRole("region", { name: "Chain status" }));
 
 describe("the home page's status strip", () => {
+  it("names how far the index is behind Canton, in blocks, and says nothing of it while that is not known", async () => {
+    await home({ indexLag: 2 });
+    expect(strip().getByText("Index lag 2 blocks")).toBeInTheDocument();
+  });
+
+  it("names no index lag when the status does not know it", async () => {
+    await home({ indexLag: null });
+    expect(strip().queryByText(/Index lag/)).toBeNull();
+  });
+
   it("says what is final, how long it took to commit, and what is being proven", async () => {
     await home();
     expect(strip().getByText("EVM node").closest(".sd")).toHaveClass("ok");

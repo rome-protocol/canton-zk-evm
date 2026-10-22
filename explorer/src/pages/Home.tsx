@@ -32,6 +32,7 @@ function Strip({ status: s }: { status: ApiStatus }) {
         <span className={`sd ${d.evm}`}><i />EVM node</span>
         <span className={`sd ${d.canton}`}><i />Canton</span>
         <span className={`sd ${d.checks}`}><i />{d.checksText}</span>
+        {s.indexLag !== null && <span className={`sd ${s.indexLag > 0 ? "off" : "ok"}`}><i />Index lag {s.indexLag} block{s.indexLag === 1 ? "" : "s"}</span>}
       </div>
       <div className="strip-lines">
         <div className="sl">
