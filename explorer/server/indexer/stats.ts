@@ -15,9 +15,9 @@ export const CURSOR = "stats_rollup";
 export const TABLES = { minute: "stats_minute", hour: "stats_hour", day: "stats_day" } as const;
 
 export const SCALARS = [
-  "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed",
+  "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "dropped", "replaced", "attempts_refused", "attempts_failed",
   "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates",
-  "proof_busy_ms", "test_blocks", "test_txs", "test_attempts", "test_proof_busy_ms",
+  "proof_busy_ms", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "test_blocks", "test_txs", "test_attempts", "test_proof_busy_ms",
 ] as const;
 type Scalar = (typeof SCALARS)[number];
 /** Which histogram columns there are and what kind each one is; the proof size one is five time histograms, one after the other. */
@@ -95,6 +95,9 @@ const NOT_TEST = `not exists (select 1 from attempt_transactions x join block_at
                                 where x.tx_hash = tx_lifecycle.tx_hash and coalesce(xr.settings->>'test', '') = 'true')`;
 const COUNT_BY = (col: string, where: string) =>
   `select floor(extract(epoch from ${col}) / 60)::bigint as m, count(*)::int as n from tx_lifecycle where ${col} >= $1 and ${col} < $2 ${where} and ${NOT_TEST} group by 1`;
+/** Transactions that left the way to final, by the minute they first did and by what they are now. */
+const LOST = `select floor(extract(epoch from lost_at) / 60)::bigint as m, state, count(*)::int as n from tx_lifecycle
+               where lost_at >= $1 and lost_at < $2 and state in ('dropped', 'lost', 'replaced') and ${NOT_TEST} group by 1, 2`;
 /** A proof longer than this is not looked for across the end of a chunk (it would need a read of all later attempts). */
 const PROOF_MAX = "6 hours";
 const ATTEMPTS = `
@@ -105,7 +108,7 @@ const ATTEMPTS = `
    where (a.cut_at >= $1 and a.cut_at < $2) or (a.answered_at >= $1 and a.answered_at < $2)
       or (a.proof_ended_at >= $1 and a.proof_ended_at < $2::timestamptz + interval '${PROOF_MAX}' and a.proof_started_at < $2)`;
 /** The reads, for the test that checks each one has an index to read by. Parameters are as in computeMinutes. */
-export const QUERIES = { blocks: BLOCKS, ttf: TTF, accepted: COUNT_BY("accepted_at", ""), lost: COUNT_BY("lost_at", "and state in ('dropped', 'lost')"), attempts: ATTEMPTS } as const;
+export const QUERIES = { blocks: BLOCKS, ttf: TTF, accepted: COUNT_BY("accepted_at", ""), lost: LOST, attempts: ATTEMPTS } as const;
 
 /** The minute rows of [from, to) (milliseconds, whole minutes), from the facts. Minutes with no fact have no row. */
 export async function computeMinutes(db: Pool | PoolClient, from: number, to: number): Promise<Map<number, Row>> {
@@ -131,6 +134,7 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
     const s = r.scalars;
     s.blocks++; s.txs += n; s.txs_failed += Number(x.failed); s.gas_used += Number(x.gas_used); s.gas_limit_sum += Number(x.gas_limit);
     if (n === 0) s.empty_blocks++;
+    s[`size_blocks_${sizeClass(n)}` as Scalar]++;
     s.max_txs_in_block = Math.max(s.max_txs_in_block, n);
     bump(r, "txs_per_block_hist", hist("count", n));
     if (x.arg !== null) s.argument_bytes += Number(x.arg);
@@ -151,7 +155,7 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
     else bump(r, "time_to_final_hist", k, n);
   }
   for (const x of (await db.query(COUNT_BY("accepted_at", ""), [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.accepted += Number(x.n);
-  for (const x of (await db.query(COUNT_BY("lost_at", "and state in ('dropped', 'lost')"), [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.lost += Number(x.n);
+  for (const x of (await db.query(LOST, [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars[x.state as "lost" | "dropped" | "replaced"] += Number(x.n);
 
   const L = histLength("time");
   for (const x of (await db.query(ATTEMPTS, [a, b])).rows) {

@@ -92,6 +92,10 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     await ins(pool, "attempt_transactions", { attempt_id: a5, position: 0, tx_hash: hex(203) }); // C was in the test run's attempt: left out of the accepted count
     await life(pool, 4, { state: "lost", updated_at: at(30) });
     await life(pool, 5, { accepted_at: at(86), final_at: at(85) });
+    // F and G are replaced by their sender (minutes 0 and 1), H was dropped (minute 0): each counted by what it is now, not under lost.
+    await life(pool, 6, { state: "replaced", updated_at: at(35) });
+    await life(pool, 7, { state: "replaced", updated_at: at(70) });
+    await life(pool, 8, { state: "dropped", updated_at: at(31) });
     // The day's extras: addresses a1, b2, c3 sent; two addresses first seen in blocks 1-4; one contract created in block 2; one verification that day.
     await ins(pool, "addresses", { address: hex(0xa1), first_seen_block: 1, last_active_block: 1 });
     await ins(pool, "addresses", { address: hex(0xc3), first_seen_block: 4, last_active_block: 4 });
@@ -107,7 +111,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
 
     const m0 = await minuteRow(pool, 0);
     expect(m0).toMatchObject({ blocks: 1, empty_blocks: 0, busy_blocks: 1, txs: 3, txs_failed: 1, gas_used: "300", gas_limit_sum: "1000", argument_bytes: "100", traffic_bytes: "40",
-      traffic_updates: 1, max_txs_in_block: 3, accepted: 1, lost: 1, attempts: 1, attempts_refused: 0, attempts_failed: 0, attempts_not_taken: 0, proof_busy_ms: "10000",
+      traffic_updates: 1, max_txs_in_block: 3, accepted: 1, lost: 1, dropped: 1, replaced: 1, size_blocks_0: 0, size_blocks_1: 1, size_blocks_2: 0, attempts: 1, attempts_refused: 0, attempts_failed: 0, attempts_not_taken: 0, proof_busy_ms: "10000",
       ttf_without_acceptance: 0, clock_skew: 0, test_blocks: 0, test_txs: 0 });
     expect(nz(m0.txs_per_block_hist)).toEqual({ 3: 1 }); // 3 transactions: three edges (1, 2, 3) are at or below it
     expect(nz(m0.served_hist)).toEqual({ 81: 1 }); // 0.5 s: edges 0.01 * 1.05^0..80 (the last is 0.4956 s) are below it
@@ -115,7 +119,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
 
     const m1 = await minuteRow(pool, 60);
     expect(m1).toMatchObject({ blocks: 2, empty_blocks: 1, busy_blocks: 2, txs: 2, txs_failed: 0, gas_used: "100", gas_limit_sum: "2000", argument_bytes: "50", traffic_bytes: "0", traffic_updates: 0,
-      max_txs_in_block: 2, accepted: 1, lost: 0, attempts: 5, attempts_refused: 1, attempts_failed: 1, attempts_not_taken: 1, proof_busy_ms: "20000",
+      max_txs_in_block: 2, accepted: 1, lost: 0, dropped: 0, replaced: 1, size_blocks_0: 1, size_blocks_1: 1, size_blocks_3: 0, size_blocks_4: 0, attempts: 5, attempts_refused: 1, attempts_failed: 1, attempts_not_taken: 1, proof_busy_ms: "20000",
       ttf_without_acceptance: 1, clock_skew: 2, test_blocks: 1, test_txs: 5, test_attempts: 1, test_proof_busy_ms: "10000" });
     expect(nz(m1.txs_per_block_hist)).toEqual({ 0: 1, 2: 1 });
     expect(nz(m1.busy_gap_hist)).toEqual({ 109: 1 }); // block 2 is 2.001 s after block 1: 109 edges are at or below it; block 4's gap is -8 s and counts as skew
@@ -128,7 +132,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
 
     const h = (await pool.query("select * from stats_hour")).rows;
     expect(h).toHaveLength(1);
-    expect(h[0]).toMatchObject({ bucket: at(0), blocks: 3, txs: 5, txs_failed: 1, gas_used: "400", attempts: 6, max_txs_in_block: 3, proof_busy_ms: "30000", test_blocks: 1, accepted: 2, lost: 1 });
+    expect(h[0]).toMatchObject({ bucket: at(0), blocks: 3, txs: 5, txs_failed: 1, gas_used: "400", attempts: 6, max_txs_in_block: 3, proof_busy_ms: "30000", test_blocks: 1, accepted: 2, lost: 1, dropped: 1, replaced: 2, size_blocks_0: 1, size_blocks_1: 2, size_blocks_2: 0 });
     expect(nz(h[0].txs_per_block_hist)).toEqual({ 0: 1, 2: 1, 3: 1 });
     const d = (await pool.query("select * from stats_day")).rows;
     expect(d).toHaveLength(1);
@@ -163,7 +167,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     await life(pool, 1, { accepted_at: at(2 * 60) });
     const a = await attempt(pool, r, 2, { cut_at: at(5 * 60 - 1), proof_started_at: at(5 * 60 - 1), proof_ended_at: at(5 * 60 + 1), proof_outcome: "ok", outcome: "committed" });
     await pool.query("update blocks set attempt_id = $1 where number = 2", [a]);
-    await life(pool, 2, { state: "dropped", updated_at: at(7 * 60) });
+    await life(pool, 2, { state: "lost", updated_at: at(7 * 60) });
     await rollupStats(pool, { now: () => T0 + 30 * MINUTE + 10_000 });
     expect(await pool.query("select count(*)::int as n from stats_dirty").then((x) => x.rows[0].n)).toBe(0);
     const hour = (await pool.query("select * from stats_hour")).rows[0];
@@ -187,10 +191,10 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
 
   it("a loss is counted in the minute it happened, not in the minute of its last write, and goes when the transaction turns final", () => inDb(async (pool) => {
     await block(pool, 1, 10);
-    await life(pool, 1, { state: "dropped", updated_at: at(10) });
+    await life(pool, 1, { state: "lost", updated_at: at(10) });
     await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
     expect((await minuteRow(pool, 0))?.lost).toBe(1);
-    await pool.query("update tx_lifecycle set state_reason = 'again', updated_at = $1 where state = 'dropped'", [at(150)]); // written again while still dropped
+    await pool.query("update tx_lifecycle set state_reason = 'again', updated_at = $1 where state = 'lost'", [at(150)]); // written again while still dropped
     await rollupStats(pool, { now: () => T0 + 6 * MINUTE });
     expect((await minuteRow(pool, 0))?.lost).toBe(1);
     expect((await minuteRow(pool, 120))?.lost ?? 0).toBe(0);

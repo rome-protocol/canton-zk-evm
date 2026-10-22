@@ -60,12 +60,24 @@ alter table stats_hour   add column attempts_skipped integer not null default 0,
 alter table stats_day    add column attempts_skipped integer not null default 0, add column attempts_cancelled integer not null default 0;
 -- The ten-minute windows of a day with a prover busy over 0.6 are worked out from the minute rows, which are kept 30 days.
 
+-- What the stats page draws apart: transactions replaced by their sender, transactions dropped, and transactions lost (`lost` counts only those now), and the
+-- blocks of each size class (0, 1-10, 11-100, 101-1000, over 1000 transactions): `proof_size_hist` counts proofs, not blocks.
+alter table stats_minute add column dropped integer not null default 0, add column replaced integer not null default 0,
+  add column size_blocks_0 integer not null default 0, add column size_blocks_1 integer not null default 0, add column size_blocks_2 integer not null default 0,
+  add column size_blocks_3 integer not null default 0, add column size_blocks_4 integer not null default 0;
+alter table stats_hour add column dropped integer not null default 0, add column replaced integer not null default 0,
+  add column size_blocks_0 integer not null default 0, add column size_blocks_1 integer not null default 0, add column size_blocks_2 integer not null default 0,
+  add column size_blocks_3 integer not null default 0, add column size_blocks_4 integer not null default 0;
+alter table stats_day add column dropped integer not null default 0, add column replaced integer not null default 0,
+  add column size_blocks_0 integer not null default 0, add column size_blocks_1 integer not null default 0, add column size_blocks_2 integer not null default 0,
+  add column size_blocks_3 integer not null default 0, add column size_blocks_4 integer not null default 0;
+
 alter table tx_lifecycle add column lost_at timestamptz;
-update tx_lifecycle set lost_at = updated_at where state in ('dropped', 'lost');
+update tx_lifecycle set lost_at = updated_at where state in ('dropped', 'lost', 'replaced');  -- lost_at: when it first left the way to final
 create function tx_lifecycle_lost_at() returns trigger language plpgsql as $$
 begin
-  if new.state in ('dropped', 'lost') then
-    new.lost_at := case when tg_op = 'UPDATE' and old.state in ('dropped', 'lost') and old.lost_at is not null then old.lost_at else new.updated_at end;
+  if new.state in ('dropped', 'lost', 'replaced') then
+    new.lost_at := case when tg_op = 'UPDATE' and old.state in ('dropped', 'lost', 'replaced') and old.lost_at is not null then old.lost_at else new.updated_at end;
   else
     new.lost_at := null;
   end if;
