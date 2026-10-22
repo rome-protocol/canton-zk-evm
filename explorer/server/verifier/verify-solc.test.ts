@@ -360,6 +360,80 @@ contract Vault {
     });
   });
 
+  describe("a constructor's data shaped like the compiler's metadata, at the end of the creation code", () => {
+    // The literal is a CBOR map of solc's shape (an "ipfs" hash of 32 bytes, "solc" 0.8.28, length 0x33) that the constructor reads its owner from: the first 20 bytes of
+    // the "hash". It is the last data of the creation code, after the runtime code. The runtime code holds only the getter.
+    const DEAD = "dead".repeat(10);
+    const TOKEN = `// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+contract Token {
+    address public owner;
+    constructor() {
+        bytes memory d = hex"a2646970667358221220${DEAD}${"00".repeat(12)}64736f6c634300081c0033";
+        address o;
+        assembly { o := shr(96, mload(add(d, 42))) }
+        owner = o;
+    }
+}
+`;
+    const compileToken = async (source: string) => {
+      const settings = { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 } };
+      const input = { language: "Solidity", sources: { "Token.sol": { content: source } }, settings };
+      const out = (await runner.compile(VERSION, { ...input, settings: { ...settings, outputSelection: { "*": { "*": ["evm.bytecode.object", "evm.deployedBytecode.object"] } } } })).output as {
+        contracts: Record<string, Record<string, { evm: { bytecode: { object: string }; deployedBytecode: { object: string } } }>>;
+      };
+      const evm = out.contracts["Token.sol"]!["Token"]!.evm;
+      return { input, runtime: Buffer.from(evm.deployedBytecode.object, "hex"), creation: Buffer.from(evm.bytecode.object, "hex") };
+    };
+    const submit = (input: unknown) => ({ codeFormat: "solidity-standard-json-input" as const, sourceCode: JSON.stringify(input), contractName: "Token.sol:Token" });
+
+    it("is refused when the 20 bytes the constructor reads were swapped in the creation input", async () => {
+      const c = await compileToken(TOKEN);
+      const at = c.creation.indexOf(Buffer.from(DEAD, "hex"));
+      // The literal is the end of the creation code's data: nothing but its own tail follows it.
+      expect(at).toBeGreaterThan(c.runtime.length);
+      expect(c.creation.length - at).toBeLessThan(60);
+      const forged = Buffer.from(c.creation);
+      Buffer.alloc(20, 0x77).copy(forged, at);
+      await addContract(db.pool, A, c.runtime, forged);
+      expect((await v.verify(req(A, submit(c.input)))).status).toBe("fail");
+      expect(await stored()).toHaveLength(0);
+      // The same literal as deployed, nothing swapped: verified.
+      await db.pool.query("delete from contracts");
+      await addContract(db.pool, A, c.runtime, c.creation);
+      expect(await v.verify(req(A, submit(c.input)))).toMatchObject({ status: "pass", creationMatch: expect.stringMatching(/full|partial/) });
+    });
+  });
+
+  it("verifies a deployed library, whose code holds its own address", async () => {
+    const LIBSRC = `// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+library L { function twice(uint256 x) external pure returns (uint256) { return x * 2; } }
+`;
+    const settings = { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 } };
+    const out = (await runner.compile(VERSION, { language: "Solidity", sources: { "L.sol": { content: LIBSRC } }, settings: { ...settings, outputSelection: { "*": { "*": ["evm.bytecode.object", "evm.deployedBytecode.object"] } } } })).output as {
+      contracts: Record<string, Record<string, { evm: { bytecode: { object: string }; deployedBytecode: { object: string } } }>>;
+    };
+    const evm = out.contracts["L.sol"]!["L"]!.evm;
+    const runtime = Buffer.from(evm.deployedBytecode.object, "hex");
+    expect(runtime[0]).toBe(0x73);
+    Buffer.from(A.slice(2), "hex").copy(runtime, 1);
+    await addContract(db.pool, A, runtime, Buffer.from(evm.bytecode.object, "hex"));
+    expect(await v.verify(req(A, { sourceCode: LIBSRC, contractName: "L" }))).toMatchObject({ status: "pass", match: "full" });
+  });
+
+  it("never gives the reserved gateway a similar match from a byte-identical clone that someone else verified", async () => {
+    const runtime = Buffer.from(readFileSync(join(root, "gateway/Gateway.bin-runtime"), "utf8").trim(), "hex");
+    await addContract(db.pool, GATEWAY, runtime, null);
+    await addContract(db.pool, A, runtime, null);
+    const forged = readFileSync(join(root, "gateway/Gateway.sol"), "utf8").replace("contract Gateway", "/// @notice OFFICIAL REFUND ADDRESS\ncontract Gateway");
+    const json = JSON.stringify({ language: "Solidity", sources: { "Gateway.sol": { content: forged } }, settings: { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, metadata: { appendCBOR: false } } });
+    const guarded = new Verifier(db.pool, counted, undefined, [GATEWAY]);
+    expect(await guarded.verify(req(A, { codeFormat: "solidity-standard-json-input", sourceCode: json, contractName: "Gateway.sol:Gateway" }))).toMatchObject({ status: "pass", similar: 0 });
+    const g = (await db.pool.query("select match_type, verified_source from contracts where address = $1", [Buffer.from(GATEWAY.slice(2), "hex")])).rows[0];
+    expect(g).toMatchObject({ match_type: null, verified_source: null });
+  });
+
   it("lets a full match replace a partial one, in the same row", async () => {
     const d = await deployed(SOURCE, arg(42), true);
     await addContract(db.pool, A, d.runtime, d.input);

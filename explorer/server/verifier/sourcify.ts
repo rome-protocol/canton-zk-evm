@@ -12,10 +12,12 @@
  * address in the runtime and the creation code; and a match is `full` only when everything that was compared is a full match.
  */
 import {
-  AbstractCompilation, SolidityCompilation, Verification, setLibSourcifyLoggerLevel,
+  AbstractCompilation, findContractInCompilerOutput, SolidityCompilation, Verification, setLibSourcifyLoggerLevel,
   type ISolidityCompiler, type SourcifyChain,
 } from "@ethereum-sourcify/lib-sourcify";
-import type { SolidityJsonInput, SolidityOutput } from "@ethereum-sourcify/compilers-types";
+import type { SolidityJsonInput, SolidityOutput, SolidityOutputContract } from "@ethereum-sourcify/compilers-types";
+// The library's own two functions that find the auxdata in the compiler's output and in the code (not exported by its index; the version is pinned).
+import { findAuxdatasInLegacyAssembly, findAuxdataPositions } from "@ethereum-sourcify/lib-sourcify/build/main/Compilation/auxdataUtils.js";
 import { compilerErrors } from "./request.ts";
 import type { Compile } from "./verify.ts";
 
@@ -81,6 +83,29 @@ export class SandboxSolc implements ISolidityCompiler {
   }
 }
 
+/**
+ * The library's SolidityCompilation, with one change: where the metadata sits is always found by compiling twice (the source with a space added at the end of
+ * each file has other hashes, so the bytes that differ between the two outputs are the hashes) and never from the end of the creation code. The library takes
+ * the end of the creation code when the compiler lists one auxdata, but a constructor's data (a bytes literal, written by the submitter) can end the creation
+ * code shaped like metadata, and the bytes it names would then be left out of the comparison. A literal is the same in both compiles, so it never shows as a difference.
+ * Without a compile that lists auxdata (`appendCBOR` false, or a compiler before 0.4.12) there is none: the code must be equal byte for byte, and is a partial match.
+ */
+class DiffedCompilation extends SolidityCompilation {
+  override async generateCborAuxdataPositions(forceEmscripten = false): Promise<void> {
+    const real = findAuxdatasInLegacyAssembly((this.contractCompilerOutput as SolidityOutputContract).evm.legacyAssembly);
+    if (real.length === 0) {
+      this._creationBytecodeCborAuxdata = {};
+      this._runtimeBytecodeCborAuxdata = {};
+      return;
+    }
+    const output = await this.generateEditedContract({ version: this.compilerVersion, solcJsonInput: this.jsonInput, forceEmscripten });
+    const edited = findContractInCompilerOutput(output, this.compilationTarget) as SolidityOutputContract;
+    const editedAuxdata = findAuxdatasInLegacyAssembly(edited.evm.legacyAssembly);
+    this._runtimeBytecodeCborAuxdata = findAuxdataPositions(this.runtimeBytecode, `0x${edited.evm.deployedBytecode.object}`, real, editedAuxdata);
+    this._creationBytecodeCborAuxdata = findAuxdataPositions(this.creationBytecode, `0x${edited.evm.bytecode.object}`, real, editedAuxdata);
+  }
+}
+
 /** The chain as the library reads it: one contract, from the rows the indexer stored. Nothing is fetched. */
 function chainOfRows(on: OnChain): SourcifyChain {
   const hex = (b: Buffer): string => "0x" + b.toString("hex");
@@ -102,7 +127,7 @@ const ADDRESS = "0x" + "00".repeat(20);
 export async function matchWithSourcify(
   solc: SandboxSolc, version: string, input: SolidityJsonInput, target: { path: string; name: string }, on: OnChain, given: Buffer | null,
 ): Promise<Matched> {
-  const compilation = new SolidityCompilation(solc, version, input, target);
+  const compilation = new DiffedCompilation(solc, version, input, target);
   const verification = new Verification(compilation, chainOfRows(on), ADDRESS, on.creationInput ? ZERO_TX : undefined);
   try {
     await verification.verify();
@@ -111,7 +136,7 @@ export async function matchWithSourcify(
     if (solc.reported) throw new MatchFailure("compile", solc.reported);
     if (code === "contract_not_found_in_compiler_output") throw new MatchFailure("target", `the compiler output has no contract ${target.path}:${target.name}`);
     if (code === "compiled_bytecode_is_zero") throw new MatchFailure("target", `${target.name} has no code (an interface or an abstract contract cannot be deployed)`);
-    if (code === "no_match" || code === "bytecode_length_mismatch") throw new MatchFailure("runtime", "the code does not match the code on chain");
+    if (code === "no_match" || code === "bytecode_length_mismatch") throw new MatchFailure("runtime", "the runtime code does not match the code on chain");
     if (solc.failure) throw solc.failure;
     throw new MatchFailure("runtime", `the code could not be matched with the code on chain (${code ?? (e as Error).message})`);
   }
