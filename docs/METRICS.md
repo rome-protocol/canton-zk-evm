@@ -151,16 +151,18 @@ The worst-case block is made by `explorer/test/fixtures/Stress.sol`: 15 transact
 
 Both shapes finish the block through both stages in under 100 ms, against B1's 1.0 s for stage 1 and B2's 3.0 s for both stages. So `INDEX_DERIVE` stays `inline` by default (design section 4.3's trigger). This does not set B2's final number: the block is below the cap, the machine is not the reference machine, and stage 2 here is only the call count and revert data. W1 runs again in E5b, with all of stage 2.
 
-**W1 again, in E5b, with all of stage 2** (tokens, transfers, balances and owners, the proxies, the contracts and the counters; the background check of balances runs behind its own cursor and is not in stage 2's time). Same job, same runner type, same block shape (14 of the 15 transactions in the block, 406 internal calls, 2,100 logs, 20.3 Mgas; the run's blocks differ by a transaction from the first run's). One run:
+**W1 again, in E5b, with all of stage 2** (tokens, transfers, balances and owners, the proxies, the contracts and the counters; the background check of balances runs behind its own cursor and is not in stage 2's time). Same job and runner type, with the token traffic of the Flood fixture added to the block: 14 transactions, 215 internal calls, 3,662 logs and 18.7 Mgas, which hold 4,112 transfers (2,000 of them ERC-1155 legs) to 2,101 accounts and 14 new tokens, 13 of them with their metadata read. One run:
 
 | What | `inline` | `behind` |
 |---|---|---|
-| Stage 1's reads from reth | 28 ms (block, receipts, traces) | 31 ms (block, receipts) |
-| Stage 1's write | 54 ms | 50 ms |
-| Stage 2's reads | 0 ms | 13 ms |
-| Stage 2's write | 423 ms | 429 ms |
+| Stage 1's reads from reth | 55 ms (block, receipts, traces) | 54 ms (block, receipts) |
+| Stage 1's write | 71 ms | 69 ms |
+| Stage 2's reads | 0 ms | 8 ms |
+| Stage 2's write | 595 ms | 553 ms |
 
-Both stages together take about 505 ms `inline`, inside B1's 1.0 s and B2's 3.0 s, so `INDEX_DERIVE` stays `inline` by default (design section 4.3's trigger), now on the full stage 2. Stage 2's write grew from 2 ms to over 400 ms because the block's 2,100 logs now go through token detection, the proxy look-ups and the counters; it is the part to watch if a block ever needs more than this one.
+Both stages together take about 720 ms `inline`, inside B1's 1.0 s and B2's 3.0 s, so `INDEX_DERIVE` stays `inline` by default (design section 4.3's trigger), now on the full stage 2. Stage 2's write grew from 2 ms to about 600 ms because the block's 3,662 logs now go through token detection, the proxy look-ups and the counters; it is the part to watch if a block ever needs more than this one.
+
+The worst shapes for the balances are in `tokens-load.test.ts`, on the pinned PostgreSQL: one block of 5,000 distinct-holder ERC-20 transfers, one block in which 5,000 holders empty their balance (a sweep), and one in which 1,250 ERC-1155 holders of four ids each empty one id. Stage 2 for the block took 150, 180 and 65 ms on a laptop, and the reindex's rebuild of the same keys is held to B1 as well. The time follows the number of keys: every look-up is by the primary key and no set is joined back to itself.
 
 The test asserts the budgets, so a regression fails the rehearsal job and does not stay a line in a log: stage 1's reads and write for the W1 block must come in under 1.0 s (B1), and both stages together under 3.0 s (B2, provisional for a block read over the network).
 
