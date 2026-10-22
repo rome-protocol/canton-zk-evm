@@ -87,7 +87,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
   const chainDb0: ChainDb = leak
     ? {
         head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)),
-        tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf,
+        tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf, lifecycleOf: built.lifecycleOf, inFlight: built.inFlight,
         indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced,
       }
     : built;
@@ -131,6 +131,7 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
     }
     for (const t of b.transactions) { same(t, FIELDS.blockTx); if (t.transfer) same(t.transfer, FIELDS.transfer); }
   } else if (kind === "tx") {
+    if (b.lifecycle) same(b.lifecycle, FIELDS.lifecycle);
     if (b.block) same(b.block, FIELDS.txBlock);
     if (b.transfer) same(b.transfer, FIELDS.transfer);
     for (const l of b.logs) same(l, FIELDS.log);
@@ -246,6 +247,28 @@ describe.skipIf(!TEST_URL)("status and health", () => {
       await writeChecks(pool, "1 second");
       await pool.query("insert into health_checks (check_id, status, changed_at, checked_at) values ('C1', 'ok', now() - interval '2 hours', now() - interval '2 hours')");
       expect((await get("/api/status")).status).toBe(200);
+    });
+
+    it("answers 200 for degraded rows, which it names in `problems`, and 503 only for a row that is down or no longer refreshed (design 6.5)", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      // what an indexer with no journal and no status file writes: all four are degraded, and the blocks are still indexed
+      await pool.query(
+        `insert into health_checks (check_id, status, detail, changed_at, checked_at) values
+           ('journal', 'degraded', 'no journal folder is set', now(), now()), ('producer_alive', 'degraded', 'no producer status file is set', now(), now()),
+           ('producer_state', 'degraded', 'no producer status file is set', now(), now()), ('C8', 'degraded', 'there is no producer journal loaded', now(), now())`,
+      );
+      const degraded = await get("/api/status");
+      expect(degraded.status).toBe(200);
+      expect(degraded.body).toMatchObject({ ok: false, starting: false });
+      expect((degraded.body as Obj).problems).toEqual([
+        "C8: there is no producer journal loaded", "journal: no journal folder is set", "producer_alive: no producer status file is set", "producer_state: no producer status file is set",
+      ]);
+      // /healthz is the same answer, and what the container's health check reads
+      expect((await get("/healthz")).status).toBe(200);
+      // one row down turns it 503; the others stay named
+      await pool.query("insert into health_checks (check_id, status, detail, changed_at, checked_at) values ('C7', 'down', 'stopped', now(), now())");
+      expect((await get("/api/status")).status).toBe(503);
     });
 
     it("keeps the check's own words for a check that has failed and is being refreshed", async () => {

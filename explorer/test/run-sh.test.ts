@@ -28,7 +28,40 @@ function start(env: Record<string, string> = {}): string {
   return r.stdout.split("\n").find((l) => l.startsWith("docker run -d") && l.includes("--name cze-explorer ")) ?? "";
 }
 
+/** The Docker command for the indexer, the one that reads the producer's journal. */
+function indexerCommand(env: Record<string, string> = {}): { cmd: string; stderr: string } {
+  const r = spawnSync("bash", [RUN, "start"], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, ...env },
+  });
+  expect(r.status, `${r.error ?? ""} ${r.signal ?? ""} ${r.stderr}`).toBe(0);
+  return { cmd: r.stdout.split("\n").find((l) => l.startsWith("docker run -d") && l.includes("--name cze-explorer-indexer ")) ?? "", stderr: r.stderr };
+}
+
 describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
+  it("gives the indexer the producer's work folder read-only, with its journal and status file named, when the folder is there", () => {
+    mkdirSync(join(state, "builder"));
+    const { cmd, stderr } = indexerCommand();
+    expect(cmd).toContain(` -v ${join(state, "builder")}:/run/explorer/producer:ro`);
+    expect(cmd).toContain(" -e JOURNAL_DIR=/run/explorer/producer/journal");
+    expect(cmd).toContain(" -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json");
+    expect(stderr).not.toContain("producer work folder");
+    // CZE_WORK_DIR names another folder, as it does for the builder
+    const other = mkdtempSync(join(tmpdir(), "run-sh-work-"));
+    try {
+      expect(indexerCommand({ CZE_WORK_DIR: other }).cmd).toContain(` -v ${other}:/run/explorer/producer:ro`);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it("starts the indexer without a journal, and says so, when the producer has no work folder", () => {
+    const { cmd, stderr } = indexerCommand();
+    expect(cmd).not.toContain("JOURNAL_DIR");
+    expect(cmd).not.toContain("/run/explorer/producer");
+    expect(stderr).toContain("no producer work folder");
+  });
+
   it("passes the public RPC's and the tracker's settings to the container when they are set", () => {
     const cmd = start({
       PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "120", TRUSTED_IP_HEADER: "x-real-ip", TRACKER_MAX: "500", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "8", TRACKER_MAX_PENDING_MINUTES: "30",

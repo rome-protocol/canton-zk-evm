@@ -61,6 +61,11 @@ export interface ApiBlock {
 export interface Log { address: string; topics: string[]; data: string }
 /** Where a transaction is. Pending: in reth's pool. Proving: in a block that is being proven. Final: in a block that is final on Canton. Unindexed: in a block Canton holds that the explorer has not indexed yet. Replaced and dropped: it will not be in a block. */
 export type TxState = "pending" | "proving" | "unindexed" | "final" | "replaced" | "dropped";
+/** Where a transaction has been, from the producer's journal and the API. A stage that has no time is null, and so is the whole of it when no row is kept. */
+export interface TxLifecycle {
+  state: string; reason: string | null; acceptedAt: string | null; acceptedVia: string | null; includedAt: string | null; attempts: number; leftOutReason: string | null;
+  proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; committedAt: string | null; finalAt: string | null; finalBlock: number | null; timeToFinalMs: number | null;
+}
 interface ApiTxCommon {
   hash: string;
   /** The state, with "waiting" for pending. */
@@ -68,6 +73,7 @@ interface ApiTxCommon {
   state: TxState;
   /** A plain sentence about why, when there is one. */
   reason: string | null;
+  lifecycle: TxLifecycle | null;
   block: { number: number; hash: string | null; updateId: string | null } | null;
   from: string;
   to: string | null;

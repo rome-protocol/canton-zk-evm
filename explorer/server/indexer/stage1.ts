@@ -257,6 +257,13 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
          final_block = excluded.final_block, final_at = excluded.final_at, state = 'final', state_reason = null, updated_at = excluded.updated_at`,
       [n, r.recordTime, txs.map((t) => bytea(t.hash)), txs.map((t) => bytea(t.from)), txs.map((t) => t.nonce)],
     );
+    // A transaction that never landed and has the sender and nonce of one that is final is replaced (design section 4.6), by whichever writer sees it first.
+    await c.query(
+      `update tx_lifecycle l set state = 'replaced', state_reason = 'another transaction from the same sender took nonce ' || t.nn, updated_at = now()
+         from unnest($1::bytea[], $2::bigint[], $3::bytea[]) as t(s, nn, h)
+        where l.sender = t.s and l.nonce = t.nn and l.tx_hash <> t.h and l.state <> 'final' and l.state <> 'replaced'`,
+      [txs.map((t) => bytea(t.from)), txs.map((t) => t.nonce), txs.map((t) => bytea(t.hash))],
+    );
   }
 
   // C3, the part that needs the rows: the block's counts are the rows written.
