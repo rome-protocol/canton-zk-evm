@@ -68,6 +68,15 @@ function txList(serialized: string[]): string {
   return body.length === 0 ? "" : Buffer.concat([head(0xc0, body.length), body]).toString("hex");
 }
 
+/**
+ * The signature's `r`, which is what tells the same transaction in two blocks apart. A byte repeated, taken from the block number modulo 250, as it always was
+ * (the hashes of the first 250 blocks do not change); from block 250 on, the last four bytes also carry the number divided by 250, so that no two blocks of any length of chain make the same hash.
+ */
+function signatureR(number: number): `0x${string}` {
+  const byte = (number % 250 + 1).toString(16).padStart(2, "0"), round = Math.floor(number / 250);
+  return `0x${byte.repeat(round === 0 ? 32 : 28)}${round === 0 ? "" : round.toString(16).padStart(8, "0")}`;
+}
+
 /** `instance` tells two chains from the same genesis apart: a reset of the network gives the same genesis, chain id and pins, and different blocks. */
 export function makeBlock(number: number, parentHash: string, shape: BlockShape, pins: Pins = PINS, instance = 0): SyntheticBlock {
   const txs: FinalTx[] = [], receipts: FinalReceipt[] = [], traces: TxTrace[] = [], serialized: string[] = [];
@@ -80,7 +89,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     const ser = serializeTransaction({
       type: "eip1559", chainId: CHAIN_ID, nonce: k, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, gas: 100000n, to: (to ?? undefined) as `0x${string}` | undefined,
       value: BigInt(k), data: input as `0x${string}`,
-    }, { r: ("0x" + (number % 250 + 1).toString(16).padStart(2, "0").repeat(32)) as `0x${string}`, s: ("0x" + "22".repeat(32)) as `0x${string}`, yParity: k % 2 as 0 | 1 });
+    }, { r: signatureR(number), s: ("0x" + "22".repeat(32)) as `0x${string}`, yParity: k % 2 as 0 | 1 });
     const hash = keccak256(ser);
     serialized.push(ser);
     const failed = kind === 4;
