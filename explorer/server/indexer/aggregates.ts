@@ -48,10 +48,14 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
        delete from token_balances b using tokens k where k.address = b.token
          and not exists (select 1 from live l where l.token = b.token and l.holder = b.holder and l.tid = b.token_id)`,
     );
+    // One NOT EXISTS for each column (an OR inside one would keep the planner to a nested loop that reads the fact table for each address). The zero address
+    // is no account of a token transfer: its test sits inside, on the transfer's side.
     await c.query(
-      `delete from addresses a where not exists (select 1 from transactions t where t.from_address = a.address or t.to_address = a.address or t.created_contract = a.address)
-         and not exists (select 1 from internal_calls i where i.from_address = a.address or i.to_address = a.address)
-         and not exists (select 1 from token_transfers t where a.address <> ${ZERO} and (t.from_address = a.address or t.to_address = a.address))`,
+      `delete from addresses a where not exists (select 1 from transactions t where t.from_address = a.address)
+         and not exists (select 1 from transactions t where t.to_address = a.address) and not exists (select 1 from transactions t where t.created_contract = a.address)
+         and not exists (select 1 from internal_calls i where i.from_address = a.address) and not exists (select 1 from internal_calls i where i.to_address = a.address)
+         and not exists (select 1 from token_transfers t where t.from_address = a.address and t.from_address <> ${ZERO})
+         and not exists (select 1 from token_transfers t where t.to_address = a.address and t.to_address <> ${ZERO})`,
     );
   }
 
@@ -59,23 +63,32 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
 
   // The addresses.
   await c.query(
-    `insert into addresses (address, first_seen_block, last_active_block, sent_count, received_count, internal_count, token_transfer_count, is_contract)
-     select a.a, least(f.first_tx, f.first_in, f.first_tt), greatest(f.last_tx, f.last_in, f.last_tt), f.sent, f.received, f.internal, f.transfers,
+    // The token transfers of the touched addresses are counted as sets (one grouped read of each side), not by a subquery for each address, which the
+    // planner runs as a scan of the table for each one when the table has few distinct senders.
+    `with touched as materialized (select a from (${TOUCHED}) q(a) where a is not null),
+          tt as materialized (
+            select a, sum(n) as transfers, min(first_block) as first_tt, max(last_block) as last_tt from (
+              select from_address as a, count(*) filter (where block_number <= $3) as n, min(block_number) as first_block, max(block_number) filter (where block_number <= $3) as last_block
+              from token_transfers where from_address in (select a from touched) and from_address <> ${ZERO} group by from_address
+              union all
+              select to_address, count(*) filter (where block_number <= $3 and to_address <> from_address), min(block_number), max(block_number) filter (where block_number <= $3)
+              from token_transfers where to_address in (select a from touched) and to_address <> ${ZERO} group by to_address
+            ) q group by a
+          )
+     insert into addresses (address, first_seen_block, last_active_block, sent_count, received_count, internal_count, token_transfer_count, is_contract)
+     select a.a, least(f.first_tx, f.first_in, g.first_tt), greatest(f.last_tx, f.last_in, g.last_tt), f.sent, f.received, f.internal, coalesce(g.transfers, 0),
             exists (select 1 from contracts k where k.address = a.a)
-     from (${TOUCHED}) a(a)
+     from touched a(a) left join tt g on g.a = a.a
      cross join lateral (select
          (select count(*) from transactions where from_address = a.a and block_number <= $3) as sent,
          (select count(*) from transactions where to_address = a.a and block_number <= $3) + (select count(*) from transactions where created_contract = a.a and to_address is null and block_number <= $3) as received,
          (select count(*) from internal_calls where from_address = a.a and block_number <= $3) + (select count(*) from internal_calls where to_address = a.a and to_address <> from_address and block_number <= $3) as internal,
-         (select count(*) from token_transfers where from_address = a.a and a.a <> ${ZERO} and block_number <= $3) + (select count(*) from token_transfers where to_address = a.a and a.a <> ${ZERO} and to_address <> from_address and block_number <= $3) as transfers,
          (select min(block_number) from (select min(block_number) as block_number from transactions where from_address = a.a union all select min(block_number) from transactions where to_address = a.a
             union all select min(block_number) from transactions where created_contract = a.a) q) as first_tx,
          (select max(block_number) from (select max(block_number) as block_number from transactions where from_address = a.a and block_number <= $3 union all select max(block_number) from transactions where to_address = a.a and block_number <= $3
             union all select max(block_number) from transactions where created_contract = a.a and block_number <= $3) q) as last_tx,
          (select min(block_number) from (select min(block_number) as block_number from internal_calls where from_address = a.a union all select min(block_number) from internal_calls where to_address = a.a) q) as first_in,
-         (select max(block_number) from (select max(block_number) as block_number from internal_calls where from_address = a.a and block_number <= $3 union all select max(block_number) from internal_calls where to_address = a.a and block_number <= $3) q) as last_in,
-         (select min(block_number) from (select min(block_number) as block_number from token_transfers where from_address = a.a and a.a <> ${ZERO} union all select min(block_number) from token_transfers where to_address = a.a and a.a <> ${ZERO}) q) as first_tt,
-         (select max(block_number) from (select max(block_number) as block_number from token_transfers where from_address = a.a and a.a <> ${ZERO} and block_number <= $3 union all select max(block_number) from token_transfers where to_address = a.a and a.a <> ${ZERO} and block_number <= $3) q) as last_tt
+         (select max(block_number) from (select max(block_number) as block_number from internal_calls where from_address = a.a and block_number <= $3 union all select max(block_number) from internal_calls where to_address = a.a and block_number <= $3) q) as last_in
      ) f where a.a is not null order by a.a
      on conflict (address) do update set first_seen_block = excluded.first_seen_block, last_active_block = excluded.last_active_block, sent_count = excluded.sent_count,
        received_count = excluded.received_count, internal_count = excluded.internal_count, token_transfer_count = excluded.token_transfer_count, is_contract = excluded.is_contract`,

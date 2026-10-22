@@ -223,4 +223,23 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       expect(await owners()).toEqual(before);
     });
   }, 300_000);
+
+  it("15,000 distinct-holder ERC-20 transfers in one block: the full reindex, with its address rebuild and orphan delete, inside its limit", async () => {
+    const H = 15_000;
+    const logs = [erc20(0, 0x1000, 5 * H)];
+    for (let i = 0; i < H; i++) logs.push(erc20(0x1000, 0x20000 + i, 1));
+    await load([logs], 5 * H, async (pool, indexer, chain) => {
+      await indexer.runOnce();
+      await indexer.deriveOnce();
+      const addresses = async () => (await pool.query("select (to_jsonb(x))::text as j from addresses x order by j")).rows.map((r) => r.j);
+      const before = await addresses();
+      await pool.query("analyze token_transfers");
+      const f0 = Date.now();
+      await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, null);
+      if (process.env.LOAD_HOLDERS) console.log("15k full reindex ms", Date.now() - f0);
+      expect(Date.now() - f0).toBeLessThan(REINDEX_MS);
+      expect(await addresses()).toEqual(before);
+      expect(await tok(pool, ERC20)).toEqual({ h: H + 1, t: H + 1 });
+    });
+  }, 300_000);
 });
