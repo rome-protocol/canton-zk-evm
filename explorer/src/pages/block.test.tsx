@@ -4,7 +4,7 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiBlock, ApiStatus } from "../api.ts";
-import { addr, block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update } from "../test-utils.tsx";
+import { addr, block, blockDetail, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update, updateDetail } from "../test-utils.tsx";
 
 const LEGS = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 const KEY = "0x" + "cd".repeat(32);
@@ -15,7 +15,7 @@ const genesis = (over: Partial<ApiBlock> = {}): ApiBlock => block({ status: "gen
 const withProof = (proof: Partial<NonNullable<ApiBlock["canton"]>>) => block({ canton: { ...block().canton!, ...proof } });
 
 async function open(b: ApiBlock = block(), st: ApiStatus = status(), id = String(b.number), more: Parameters<typeof route>[0] = {}) {
-  const calls = fakeApi(route({ block: () => reply(b), status: () => reply(st), ...more }));
+  const calls = fakeApi(route({ block: () => reply(b), status: () => reply(st), blockDetail: () => reply(blockDetail({ number: b.number })), update: () => reply(updateDetail(b.number)), ...more }));
   renderApp(`/block/${id}`);
   await screen.findByRole("heading", { name: `Block #${b.number}` });
   return calls;
@@ -42,10 +42,11 @@ const row = (scope: ReturnType<typeof within>, label: string) => scope.getByText
 const steps = () => within(screen.getByRole("region", { name: "How it happened" })).getAllByRole("listitem");
 
 describe("the block page, for a final block", () => {
-  it("names the block and says it is final, with its neighbours", async () => {
+  it("names the block and says it is final on Canton, with its neighbours", async () => {
     await open();
     const title = screen.getByRole("heading", { name: "Block #3" }).parentElement!;
-    expect(within(title).getByText("Final")).toHaveClass("chip-final");
+    expect(within(title).getByText("Final on Canton")).toHaveClass("chip-final");
+    expect(within(screen.getByRole("navigation", { name: "Where this is" })).getByRole("link", { name: "Blocks" })).toHaveAttribute("href", "/blocks");
     const nav = within(screen.getByRole("navigation", { name: "Neighbouring blocks" }));
     expect(nav.getByRole("link", { name: "Previous block, 2" })).toHaveAttribute("href", "/block/2");
     expect(nav.getByRole("link", { name: "Next block, 4" })).toHaveAttribute("href", "/block/4");
@@ -58,56 +59,76 @@ describe("the block page, for a final block", () => {
     expect(nav.queryByRole("link", { name: /Next block/ })).toBeNull();
   });
 
-  it("shows the EVM side from reth", async () => {
+  it("shows the EVM side from reth: the height, the stage, the time, the hashes, the gas, the fees and the record's sizes", async () => {
     await open();
     const evm = side("On the EVM");
-    expect(evm.getByText("from reth")).toBeInTheDocument();
-    expect(row(evm, "Hash")).toHaveTextContent("0x03030303…03030303");
-    expect(row(evm, "Parent")).toHaveTextContent("Block 2 · 0x0202…0202");
-    expect(within(row(evm, "Parent")).getByRole("link", { name: "Block #2" })).toHaveAttribute("href", "/block/2");
-    expect(within(row(evm, "Parent")).getByRole("link", { name: "0x0202…0202" })).toHaveAttribute("href", `/block/${hash(2)}`);
-    expect(row(evm, "Time")).toHaveTextContent("01:37:16 UTC · 2026-10-04");
-    expect(row(evm, "Transactions")).toHaveTextContent("1");
-    expect(row(evm, "Gas used")).toHaveTextContent("51,698 of 30,000,000");
+    expect(evm.getByText("from reth, at the final head")).toBeInTheDocument();
+    expect(row(evm, "Block height")).toHaveTextContent("3");
+    expect(row(evm, "Stage")).toHaveTextContent(/Final on Canton\s*final .+ ago/);
+    expect(row(evm, "Time")).toHaveTextContent("4 Oct 2026, 01:37:16 UTC · block timestamp, whole seconds");
+    expect(within(row(evm, "Transactions")).getByRole("link", { name: "1 transaction" })).toHaveAttribute("href", "#transactions");
+    expect(row(evm, "Hash")).toHaveTextContent(hash(3));
+    expect(within(row(evm, "Parent hash")).getByRole("link", { name: "0x020202…020202" })).toHaveAttribute("href", `/block/${hash(2)}`);
+    expect(row(evm, "Parent hash")).toHaveTextContent("block 2");
+    expect(row(evm, "Gas used")).toHaveTextContent("51,698 (0.17% of 30,000,000)");
     expect(row(evm, "Base fee")).toHaveTextContent("0.67 gwei");
+    expect(row(evm, "Burnt fees")).toHaveTextContent("0.0000346 tROME");
     expect(within(row(evm, "Fee recipient")).getByRole("link")).toHaveAttribute("href", `/address/${block().miner}`);
     expect(row(evm, "State root")).toHaveTextContent("0x1010…1010");
+    expect(row(evm, "Record data")).toHaveTextContent("2,137 bytes · header 612, transactions 181, proof 1,344");
   });
 
-  it("shows the Canton side: the update, the commit time, the record and who signed it", async () => {
+  it("shows the block's record on Canton: the update, the times, the reader's offset, the template, who signed it, and the hashes", async () => {
     await open();
-    const canton = side("On Canton");
-    expect(canton.getByText("the block record, read as the reader party")).toBeInTheDocument();
-    expect(row(canton, "Canton update")).toHaveTextContent("1220 0303…0303");
-    expect(row(canton, "Committed")).toHaveTextContent("01:37:23.412 UTC · 7.4 s after the block was made");
-    expect(row(canton, "Record")).toHaveTextContent("Zk.Chain:BlockRecord");
+    const canton = side("Final on Canton");
+    expect(canton.getByText("read as the reader party")).toBeInTheDocument();
+    expect(row(canton, "Update id")).toHaveTextContent(update(3));
+    expect(row(canton, "Record time")).toHaveTextContent("2026-10-04T01:37:23.412Z");
+    expect(row(canton, "Synchronizer")).toHaveTextContent("da::1220…e8e8");
+    expect(await within(row(canton, "Offset")).findByText("52")).toBeInTheDocument();
+    expect(row(canton, "Offset")).toHaveTextContent("on the reader's participant");
+    expect(row(canton, "Template")).toHaveTextContent("Zk.Chain:ZkChain · choice Advance");
+    expect(row(canton, "Created")).toHaveTextContent("Zk.Chain:BlockRecord for block 3");
     const signers = row(canton, "Signed by");
     expect(signers).toHaveTextContent("the chain's operator operator::1220…abab");
     expect(signers).toHaveTextContent("the chain's confirmer confirmer::1220…cdcd");
     expect(row(canton, "Hashes")).toHaveTextContent("reth, the record and the record's header give the same hash");
-    expect(row(canton, "Proof")).toHaveTextContent("1,344 bytes");
+    expect(canton.getByRole("link", { name: /Open the Canton record/ })).toHaveAttribute("href", `/canton/${update(3)}`);
+  });
+
+  it("shows no offset and says the template is not in the log when the update's route cannot say", async () => {
+    await open(block(), status(), "3", { update: () => reply({ error: "no" }, 404) });
+    const canton = side("Final on Canton");
+    expect(row(canton, "Offset")).toHaveTextContent("—");
+    expect(row(canton, "Synchronizer")).toHaveTextContent("—");
+    expect(row(canton, "Template")).toHaveTextContent("not in the producer's log");
+  });
+
+  it("never shows the builder's completion offset", async () => {
+    await open(block(), status(), "3", { update: () => reply({ ...updateDetail(3), completionOffset: 777, producerRecord: { ...updateDetail(3).producerRecord, completionOffset: 777 } }) });
+    await within(row(side("Final on Canton"), "Offset")).findByText("52");
+    expect(document.body.textContent).not.toContain("777");
   });
 
   it("copies the full Canton update id", async () => {
     const user = userEvent.setup();
     await open();
     const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
-    await user.click(within(row(side("On Canton"), "Canton update")).getByRole("button", { name: "Copy" }));
+    await user.click(within(row(side("Final on Canton"), "Update id")).getByRole("button", { name: "Copy" }));
     expect(write).toHaveBeenCalledWith(update(3));
   });
 
-  it("shows the proof's three facts next to what they should match, and says reading is not verifying", async () => {
+  it("shows the proof's facts next to what they should match", async () => {
     await open();
+    expect(screen.getByRole("region", { name: "The proof" })).toHaveTextContent("read from the proof's own bytes, compared with this explorer's pins, from session.txt");
     const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
     expect(row(facts, "Program key")).toHaveTextContent("0xcdcd…cdcd");
     expect(row(facts, "Program key").nextElementSibling).toHaveTextContent("ours");
     expect(row(facts, "ZisK release").nextElementSibling).toHaveTextContent("ZisK 1.3.1");
-    expect(row(facts, "Block hash")).toHaveTextContent("0x0303…0303");
-    expect(row(facts, "Block hash").nextElementSibling).toHaveTextContent("this block");
+    expect(row(facts, "Block hash committed")).toHaveTextContent("0x0303…0303");
+    expect(row(facts, "Block hash committed").nextElementSibling).toHaveTextContent("this block");
+    expect(row(facts, "Proof")).toHaveTextContent("1,344 bytes · proof 768, program key 32, release 32, public values 512");
     expect(screen.getByRole("group", { name: "Facts read from the proof" })).not.toHaveClass("facts-bad");
-    expect(screen.getByText(/Read from the proof's own bytes and compared with this explorer's pins, from/)).toHaveTextContent(
-      "Read from the proof's own bytes and compared with this explorer's pins, from session.txt. Reading a value is not verifying it: Canton's confirmers verified the proof when the block committed.",
-    );
   });
 
   it("says in full that Daml legs are not shown, and shows no count of them", async () => {

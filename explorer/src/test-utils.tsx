@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, BlockDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { ApiAddress, ApiBlock, BlockDetail, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -161,6 +161,16 @@ export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
   return {
     number: 3, legsCount: 0, derived: true,
     lifecycle: { strategy: "timer", cutReason: "interval", cutAt: at(7.9), builtAt: at(8.1), proofStartedAt: at(8.2), proofEndedAt: at(15), submittedAt: at(15.05), answeredAt: at(15.3) },
+    ...over,
+  };
+}
+
+/** The Canton update that carries block n, as its own route gives it: the reader's offset 52, the synchronizer, and what the producer submitted. */
+export function updateDetail(n = 3, over: Partial<UpdateDetail> = {}): UpdateDetail {
+  return {
+    updateId: update(n), recordTime: "2026-10-04T01:37:23.412Z", effectiveAt: null, participant: "reader::1220" + "11".repeat(32), offset: 52, synchronizer: "da::1220" + "e8".repeat(32), block: n,
+    template: { packageId: "ab".repeat(32), packageName: "zk-chain", module: "Zk.Chain", entity: "BlockRecord" }, contractId: "00" + "cc".repeat(32), blockHash: hash(n), signatories: [],
+    producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "cmd-1", argumentBytes: 13760, trafficBytes: null },
     ...over,
   };
 }
