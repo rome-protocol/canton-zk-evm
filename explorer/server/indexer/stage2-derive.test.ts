@@ -260,6 +260,36 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
     });
   });
 
+  it("looks again at every proxy behind a beacon that logs Upgraded, once each, and at no proxy behind another beacon", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }, { txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      // Two proxies behind beacon 0xbeac and one behind beacon 0xbead, all made in block 1.
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1), make([1], 0xa1, 0xb2), make([2], 0xa1, 0xb3)]);
+      for (const [proxy, beacon] of [[0xb1, 0xbeac], [0xb2, 0xbeac], [0xb3, 0xbead]] as const) chain.reads.storage[`${A(proxy)}:${EIP1967_BEACON_SLOT}`] = word(beacon);
+      chain.reads.callResults[`${A(0xbeac)}:0x5c60da1b`] = word(0x1111);
+      chain.reads.callResults[`${A(0xbead)}:0x5c60da1b`] = word(0x4444);
+      await indexer.runOnce();
+      const proxies = () => rows(pool, "select encode(proxy, 'hex') as p, encode(implementation, 'hex') as i, checked_block::text as c from proxies order by proxy");
+      expect(await proxies()).toEqual([
+        { p: A(0xb1).slice(2), i: A(0x1111).slice(2), c: "1" }, { p: A(0xb2).slice(2), i: A(0x1111).slice(2), c: "1" }, { p: A(0xb3).slice(2), i: A(0x4444).slice(2), c: "1" },
+      ]);
+      // Block 2: the beacon logs Upgraded twice (two logs, one look per proxy) and takes a new implementation; the other beacon's answer changes with no log.
+      const upgraded = Buffer.from(keccak256(toHex("Upgraded(address)")).slice(2), "hex");
+      for (const i of [9998, 9999]) await pool.query("insert into logs (block_number, log_index, tx_index, address, topic0, data) values (2, $3, 0, $1, $2, $4)", [Buffer.from(A(0xbeac).slice(2), "hex"), upgraded, i, Buffer.alloc(0)]);
+      chain.reads.callResults[`${A(0xbeac)}:0x5c60da1b`] = word(0x2222);
+      chain.reads.callResults[`${A(0xbead)}:0x5c60da1b`] = word(0x5555);
+      const before = chain.reads.calls.call ?? 0;
+      const c = await pool.connect();
+      try { expect(await writeProxies(c, 2, [], chain.reads)).toBe(2); } finally { c.release(); }
+      expect(chain.reads.calls.call! - before).toBe(2);
+      expect(await proxies()).toEqual([
+        { p: A(0xb1).slice(2), i: A(0x2222).slice(2), c: "2" }, { p: A(0xb2).slice(2), i: A(0x2222).slice(2), c: "2" }, { p: A(0xb3).slice(2), i: A(0x4444).slice(2), c: "1" },
+      ]);
+      await indexer.close();
+    });
+  });
+
   // What each address's counters must be, counted from the fact tables.
   const recount = `
     with t(a, blk, s, r, i) as (
