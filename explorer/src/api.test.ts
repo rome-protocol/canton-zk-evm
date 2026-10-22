@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
-import { ApiError, getBlocks, getInFlight, getStatus, getTxs, search } from "./api.ts";
+import { ApiError, getBlocks, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTxs, search } from "./api.ts";
 import { account, block, blockItem, inFlight, status, tokenAddress, tx, txItem } from "./test-utils.tsx";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -86,6 +86,17 @@ describe("the API client", () => {
     answer(200, inFlight());
     expect((await getInFlight()).attempts).toHaveLength(1);
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/in-flight");
+  });
+
+  it("asks the stats routes for a window, a metric and, when given, a step", async () => {
+    answer(200, { window: "7d" });
+    expect((await getStatsSummary("7d")).window).toBe("7d");
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/stats/summary?window=7d");
+    answer(200, { metric: "tps", points: [] });
+    await getStatsSeries("tps", "24h");
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/stats/series?metric=tps&window=24h");
+    await getStatsSeries("busy_ratio", "6h", "10m");
+    expect(vi.mocked(fetch).mock.calls[1]![0]).toBe("/api/stats/series?metric=busy_ratio&window=6h&step=10m");
   });
 
   it("keeps the matches of a name search", async () => {

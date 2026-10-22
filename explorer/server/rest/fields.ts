@@ -114,4 +114,37 @@ export const REST_FIELDS = {
   /** What a search found: the page to open, and, for a name, the matches (at most ten). */
   search: ["path", "matches"],
   searchMatch: ["kind", "name", "symbol", "address", "path"],
+  /** /api/stats/summary: the numbers of design section 8 over a window, and what is live now. Each nested object has the list below it. */
+  statsSummary: [
+    "window", "rows", "from", "to", "asOf", "dataSince", "tps", "blockTime", "timeToFinal", "proofTime", "commitTime", "served", "txsPerBlock", "blocks", "txs", "attempts", "fullness",
+    "canton", "prover", "quality", "test", "today", "waiting", "acceptedNotFinal", "lost", "dropped", "replaced", "cutting", "faucet",
+  ],
+  statsTps: ["now", "peak", "peakAt"],
+  /** A time as its middle and its 95th percentile, in seconds, and how many facts it is read from. */
+  statsSpread: ["median", "p95", "samples", "capped"],
+  statsProof: ["median", "p95", "samples", "capped", "bySize"],
+  statsSize: ["size", "median", "p95", "samples", "capped"],
+  statsTxsPerBlock: ["mean", "median", "max", "nonEmptyMean", "nonEmptyMedian"],
+  statsBlocks: ["count", "empty", "busy", "bySize"],
+  statsBlockSize: ["size", "count"],
+  statsTxs: ["count", "failed", "successRate", "accepted"],
+  statsAttempts: ["total", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
+  statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
+  statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],
+  statsQuality: ["withoutAcceptanceTime", "clockSkew"],
+  /** What the runs marked as tests did: counted apart, and left out of every other number. */
+  statsTest: ["blocks", "txs", "attempts", "proverBusyMs"],
+  statsToday: ["date", "activeAddresses", "newAddresses", "newContracts", "verifiedContracts", "countedAt"],
+  statsWaiting: ["open", "pool"],
+  statsPool: ["waiting", "at", "ageSeconds"],
+  statsOpen: ["normal", "slow", "stuck", "beingProven", "waiting", "noAcceptanceTime", "slowAfterSeconds", "stuckAfterSeconds", "listed"],
+  statsStuckItem: ["txHash", "state", "ageSeconds", "acceptedAt"],
+  statsLost: ["window", "total", "listed"],
+  statsLostItem: ["txHash", "state", "reason", "at"],
+  statsReplaced: ["window", "total"],
+  statsCutting: ["strategy", "since"],
+  statsFaucet: ["requests", "sent", "final", "failed", "timeToFinal", "turnedAway"],
+  /** /api/stats/series: one metric, one point for each step of the window. */
+  statsSeries: ["metric", "unit", "window", "step", "from", "to", "asOf", "points"],
+  statsPoint: ["at", "value"],
 } as const;

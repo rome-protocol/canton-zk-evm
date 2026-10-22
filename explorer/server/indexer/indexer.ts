@@ -19,6 +19,7 @@ import { createLifecycleChecks } from "./lifecycle.ts";
 import { legsSlot } from "./legs.ts";
 import { notify } from "./notify.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
+import { rollupStats, type RollupResult } from "./stats.ts";
 import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
 import { checkBalances, type BalanceCheck } from "./balances.ts";
@@ -54,6 +55,8 @@ export interface IndexerOptions {
   journalMs?: number;
   /** How often `start` runs C6's sample audit (20 random blocks against reth), in milliseconds. Default 10 minutes. The nightly audit of the previous day follows the first sample after 03:00 UTC. */
   auditMs?: number;
+  /** How often `start` runs the stats rollups (design section 8), in milliseconds. Default 10 seconds. */
+  rollupMs?: number;
   /** For C6's choice of blocks. */
   random?: () => number;
   /** After this long without reth having a block the record names, the health says so. */
@@ -379,6 +382,9 @@ export function createIndexer(o: IndexerOptions) {
     return runAudit(o.pool, o.reads, kind, o.random, undefined, kind === "day" ? await nightlyWindow(o.pool, at) : undefined);
   };
 
+  /** The stats rollups, up to the open minute (design section 8). Safe to run again. */
+  const rollupStatsOnce = (): Promise<RollupResult> => rollupStats(o.pool, { now });
+
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
     let done = 0;
@@ -528,7 +534,18 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < auditMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits()]);
+    const rollupMs = o.rollupMs ?? 10_000;
+    const statsLoop = async () => {
+      while (running) {
+        try {
+          await rollupStatsOnce();
+        } catch (e) {
+          log(`indexer (stats): ${(e as Error).message}`);
+        }
+        for (let waited = 0; running && waited < rollupMs; waited += 50) await sleep(50);
+      }
+    };
+    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop()]);
     return async () => { stopRequested = true; running = false; await finished; };
   }
 
@@ -569,7 +586,7 @@ export function createIndexer(o: IndexerOptions) {
     return written;
   }
 
-  return { open, close, runOnce, deriveOnce, balancesOnce, checkOnce, auditOnce, loadJournal, start, rebuild, stopped: () => stopped };
+  return { open, close, runOnce, deriveOnce, balancesOnce, checkOnce, auditOnce, rollupStatsOnce, loadJournal, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;

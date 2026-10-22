@@ -5,8 +5,11 @@
  */
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
+import { MAX_VERIFY_BODY, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
+import { MODULES } from "./etherscan.ts";
+import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
 
 type Fields = readonly string[];
 interface Query { name: string; about: string; values?: readonly string[] }
@@ -97,6 +100,18 @@ export const DOCS: Record<string, Doc> = {
   "/api/legs": { tag: "Gateway", summary: "The gateway's legs, newest first.", query: paged, page: { items: F.legItem, derived: false } },
   "/api/legs/{id}": { tag: "Gateway", summary: "One gateway leg, by its id.", param: "The leg's 0x id.", object: F.legItem },
   "/api/search": { tag: "Search", summary: "Where a text leads: a block number or hash, a transaction hash, an address, a Canton update id, or the start of a token's or a verified contract's name.", query: [{ name: "q", about: "The text to look for." }], object: F.search },
+  "/api/stats/summary": {
+    tag: "Stats", summary: "The numbers of the stats page over a window, and what is live now. A window is the last whole buckets of the rows it is read from (1h and 6h: minutes; 24h and 7d: hours; 30d: days), the open one included; `from` and `to` are the buckets read. Times are seconds, read from buckets 5% apart: a percentile is at most 5% above the truth. A time or a rate with nothing behind it is null. Runs marked as tests are counted in `test` and left out of everything else. `asOf` is when the rollups last ran.",
+    query: [{ name: "window", about: `The window: ${Object.keys(WINDOWS).join(", ")}; ${DEFAULT_WINDOW} when left out.`, values: Object.keys(WINDOWS) }], object: F.statsSummary,
+  },
+  "/api/stats/series": {
+    tag: "Stats", summary: `One metric over a window, one point for each step: \`points\` is a list of \`at\` (the start of the step) and \`value\`. A step with no row is 0 for a count and null for a time or a rate. The windows can be drawn in these steps (the first is the default): ${Object.entries(WINDOW_STEPS).map(([w, s]) => `${w}: ${s.join(", ")}`).join("; ")}. \`busy_ratio\` is drawn in 10m, 1h or 1d, and the daily address and contract counts in 1d.`,
+    query: [
+      { name: "metric", about: `What to draw: ${Object.keys(METRICS).join(", ")}.`, values: Object.keys(METRICS) },
+      { name: "window", about: `The window: ${Object.keys(WINDOWS).join(", ")}; ${DEFAULT_WINDOW} when left out.`, values: Object.keys(WINDOWS) },
+      { name: "step", about: "The width of a point: 1m, 10m, 1h or 1d, as the window allows.", values: Object.keys(STEPS) },
+    ], object: F.statsSeries,
+  },
   "/api/status": { tag: "Status", summary: "What the chain and the explorer are doing now.", object: FIELDS.status },
   "/api/health": { tag: "Status", summary: "Every health check with its word (ok, degraded or down), since when, and when its writer last looked; the overall word is down, and the status code 503, only when final data is stale or wrong. A check whose writer has stopped counts as failed and says so.", object: FIELDS.health },
   "/api/block/{id}": { tag: "Pages", summary: "A block as its page shows it: a final block, or one still on its way.", param: "The block's number or its 0x hash.", object: FIELDS.block },
@@ -134,7 +149,7 @@ function schemaOf(d: Doc): unknown {
 }
 
 /** The document for the paths that are registered, in the order given. A path with no description is left out, and the test of the API fails for it. */
-export function buildOpenApi(paths: readonly string[], info: { title: string }): Record<string, unknown> {
+export function buildOpenApi(paths: readonly string[], info: { title: string; limits?: { rpcPerMinute?: number } }): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const path of paths) {
     const d = DOCS[path];
@@ -156,7 +171,8 @@ export function buildOpenApi(paths: readonly string[], info: { title: string }):
     if (path === "/api" || path === "/v2/api") {
       const answer = { description: d.note ?? "The answer.", content: { "application/json": { schema: object(["status", "message", "result"]) } } };
       out[path] = {
-        get: { tags: [d.tag], summary: d.summary, parameters, responses: { 200: answer } },
+        // `x-modules` is what the API page lists for this door; it is built from the same table the door answers from, so it cannot drift. /v2/api is the same door at another path.
+        get: { tags: [d.tag], summary: d.summary, parameters, responses: { 200: answer }, ...(path === "/api" ? { "x-modules": Object.fromEntries(Object.entries(MODULES).map(([m, a]) => [m, Object.keys(a)])) } : {}) },
         post: { tags: [d.tag], summary: d.summary, requestBody: { required: false, content: { "application/x-www-form-urlencoded": { schema: { type: "object" } } } }, parameters, responses: { 200: answer } },
       };
       continue;
@@ -178,6 +194,14 @@ export function buildOpenApi(paths: readonly string[], info: { title: string }):
     openapi: "3.1.0",
     info: {
       title: info.title, version: "1",
+      // The limits the server holds, for the API page to show: the numbers come from the same constants and settings the server enforces.
+      "x-limits": {
+        pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}),
+        rest: { perSecond: RULES.rest[0].perSecond, burst: RULES.rest[0].capacity },
+        etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity },
+        verification: { perHour: RULES.verification[0].capacity, maxBodyKb: MAX_VERIFY_BODY / 1024 },
+        streams: { perClient: PER_CLIENT },
+      },
       description: "Read-only. Every list is a keyset page (`next` is the cursor for the following page). Amounts are decimal strings. Times are ISO 8601 UTC.",
     },
     paths: out,
