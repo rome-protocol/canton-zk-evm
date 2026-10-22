@@ -3,7 +3,11 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiTx } from "../api.ts";
-import { addr, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, update, waitingTx } from "../test-utils.tsx";
+import { addr, block, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
+import type { TxLifecycle } from "../api.ts";
+
+const verifierRun = vi.hoisted(() => ({ line: "" }));
+vi.mock("../verify/verifier.ts", async (orig) => ({ ...(await orig<typeof import("../verify/verifier.ts")>()), fetchVerifier: vi.fn(async () => ({ verify: () => verifierRun.line, bytes: 1 })) }));
 
 const H = hash(0xf6);
 
@@ -14,7 +18,13 @@ async function open(t: ApiTx = tx()) {
   return calls;
 }
 /** The value beside a label in a list of facts. */
-const row = (label: string) => screen.getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
+const row = (label: string) => {
+  const own = screen.getAllByText(label, { selector: "dt" }).filter((d) => d.closest("section")?.matches('[aria-label="Transaction"], [aria-label="Input and logs"]'));
+  expect(own).toHaveLength(1);
+  return own[0]!.nextElementSibling as HTMLElement;
+};
+/** The value beside a label in a side card. */
+const side = (card: string, label: string) => within(screen.getByRole("region", { name: card })).getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
 const chip = () => screen.getByRole("heading", { name: "Transaction" }).parentElement!.querySelector(".chip")!;
 
 describe("the transaction page, for a final transaction", () => {
@@ -135,9 +145,8 @@ describe("the transaction page, for a final transaction", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const calls = await open();
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.queryByRole("list", { name: "Where this transaction is" })).toBeNull();
     await tick(10_000);
-    expect(calls.filter((c) => c.startsWith("/api/tx"))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith("/api/tx/"))).toHaveLength(1);
   });
 });
 
@@ -163,23 +172,23 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(screen.queryByText("Logs", { selector: "dt" })).toBeNull();
   });
 
-  it("shows where it is on the way to Final, below the facts", async () => {
+  it("shows the way to final with its steps not reached left open, above the facts", async () => {
     await open(waitingTx());
-    const strip = screen.getByRole("list", { name: "Where this transaction is" });
-    expect(screen.getByRole("region", { name: "Transaction" }).compareDocumentPosition(strip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const steps = within(screen.getByRole("list", { name: "Where this transaction is" })).getAllByRole("listitem");
-    expect(steps.map((s) => s.textContent)).toEqual(["Waiting", "Being proven", "Final"]);
-    expect(steps[0]).toHaveAttribute("aria-current", "step");
-    expect(steps[1]).not.toHaveAttribute("aria-current");
+    const way = screen.getByRole("region", { name: "The way to final" });
+    expect(way.compareDocumentPosition(screen.getByRole("region", { name: "Transaction" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const steps = within(way).getAllByRole("listitem");
+    expect(steps.map((x) => x.querySelector(".how-n")!.textContent)).toEqual(["Accepted", "In a block", "Proof done", "Final on Canton"]);
+    expect(steps[0]).toHaveClass("got");
+    expect(steps.slice(1).every((x) => x.classList.contains("none"))).toBe(true);
   });
 
   it("says a transaction in a block that Canton holds and the indexer has not read is final but not indexed, and keeps looking", async () => {
     await open(tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }));
     expect(screen.getByRole("status")).toHaveTextContent("Final on Canton, not indexed yet.");
     expect(screen.getByRole("status")).not.toHaveTextContent("Not final yet");
-    const steps = within(screen.getByRole("list", { name: "Where this transaction is" })).getAllByRole("listitem");
-    expect(steps[2]).toHaveAttribute("aria-current", "step");
-    expect(steps[1]).not.toHaveAttribute("aria-current");
+    const steps = within(screen.getByRole("region", { name: "The way to final" })).getAllByRole("listitem");
+    expect(steps[1]).toHaveClass("got");
+    expect(steps[2]).not.toHaveClass("got");
   });
 
   it("looks again every two seconds, and follows the transaction to Final with no reload", async () => {
@@ -189,7 +198,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     renderApp(`/tx/${H}`);
     await screen.findByRole("heading", { name: "Transaction" });
     expect(chip()).toHaveTextContent("Waiting");
-    const asked = () => calls.filter((c) => c.startsWith("/api/tx")).length;
+    const asked = () => calls.filter((c) => c.startsWith("/api/tx/")).length;
     expect(asked()).toBe(1);
     await tick();
     expect(asked()).toBe(2);
@@ -232,7 +241,7 @@ describe("a transaction that cannot be shown", () => {
     expect(await screen.findByRole("heading", { name: "Not found" })).toBeInTheDocument();
     expect(screen.getByText(NOT_FOUND.replace("Not found. ", ""))).toBeInTheDocument();
     await tick(10_000);
-    expect(calls.filter((c) => c.startsWith("/api/tx"))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith("/api/tx/"))).toHaveLength(1);
   });
 
   it("says when the address is not a hash", async () => {
@@ -332,7 +341,7 @@ describe("looking again until the transaction is settled", () => {
     const calls = fakeApi(route({ tx: () => reply(first) }));
     renderApp(`/tx/${first.hash}`);
     await screen.findByRole("heading", { name: "Transaction" });
-    const asked = () => calls.filter((c) => c.startsWith("/api/tx")).length;
+    const asked = () => calls.filter((c) => c.startsWith("/api/tx/")).length;
     await tick();
     const before = asked();
     await tick(10_000);
@@ -354,5 +363,160 @@ describe("looking again until the transaction is settled", () => {
       const { before, after } = await asksAfter(t);
       expect(after).toBe(before);
     }
+  });
+});
+
+const journal = (over: Partial<TxLifecycle> = {}): TxLifecycle => ({
+  state: "final", reason: null, acceptedAt: "2026-10-04T01:37:14.500Z", acceptedVia: "rpc", includedAt: "2026-10-04T01:37:16.000Z", attempts: 1, leftOutReason: null,
+  proofStartedAt: "2026-10-04T01:37:16.400Z", proofEndedAt: "2026-10-04T01:37:23.000Z", submittedAt: "2026-10-04T01:37:23.050Z", committedAt: "2026-10-04T01:37:23.412Z", finalAt: "2026-10-04T01:37:23.412Z", finalBlock: 3, timeToFinalMs: 8912, ...over,
+});
+
+/** The final transaction with everything its page reads: its block and the block's record, the update, and the stage 2 detail. */
+async function openFinal(t: ApiTx = tx({ lifecycle: journal() }), over: Parameters<typeof route>[0] = {}) {
+  const calls = fakeApi(route({ tx: () => reply(t), block: () => reply(block()), update: () => reply(updateDetail()), txDetail: () => reply(txDetail()), ...over }));
+  renderApp(`/tx/${t.hash}`);
+  await screen.findByRole("heading", { name: "Transaction" });
+  return calls;
+}
+const way = () => within(screen.getByRole("region", { name: "The way to final" }));
+const steps = () => way().getAllByRole("listitem").map((x) => x.textContent);
+
+describe("the way to final", () => {
+  it("shows each step with its time, the seconds between them and where each time comes from", async () => {
+    await openFinal();
+    await waitFor(() => expect(way().getByText("position 0 of 1")).toBeInTheDocument());
+    expect(steps()).toEqual([
+      "Accepted01:37:14.500by Ostia's RPCproducer log",
+      "+1.50 sIn block 301:37:16.000position 0 of 1producer log",
+      "+7.00 sProof done01:37:23.000ZisK, 1,344 bytesproducer log",
+      "+0.41 sFinal on Canton01:37:23.412000Canton record time",
+    ]);
+    expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
+  });
+
+  it("says when the producer's journal has no row, shows a dash for each time it would hold, and still gives Canton's record time", async () => {
+    await openFinal(tx());
+    await waitFor(() => expect(way().getByText("Canton record time")).toBeInTheDocument());
+    expect(way().getByText(/no row for this transaction/)).toBeInTheDocument();
+    expect(way().getAllByText("—")).toHaveLength(3);
+    expect(way().queryByText(/after Ostia accepted it/)).toBeNull();
+    expect(way().queryByText(/\+\d/)).toBeNull();
+  });
+
+  it("gives no time to final unless the journal does, and shows the attempts and why it was left out only when there are some", async () => {
+    await openFinal(tx({ lifecycle: journal({ timeToFinalMs: null }) }));
+    expect(way().queryByText(/after Ostia accepted it/)).toBeNull();
+    expect(way().queryByText(/attempts/)).toBeNull();
+    cleanup();
+    await openFinal(tx({ lifecycle: journal({ attempts: 2, leftOutReason: "the block was full" }) }));
+    expect(way().getByText(/It took 2 attempts\./)).toBeInTheDocument();
+    expect(way().getByText(/Left out of an earlier block: the block was full\./)).toBeInTheDocument();
+    expect(way().queryByText(/not refused/i)).toBeNull();
+  });
+
+  it("leaves the steps a transaction has not reached open, and names no block it is not in", async () => {
+    await openFinal(tx({ status: "proving", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: journal({ state: "proving", proofEndedAt: null, finalAt: null, timeToFinalMs: null }) }), { block: () => reply(block({ status: "proving", number: 4, canton: null })) });
+    const li = way().getAllByRole("listitem");
+    expect(li.map((x) => x.className)).toEqual(["got", "got", "none", "none"]);
+    expect(li[1]).toHaveTextContent("In block 4");
+    expect(li[3]).toHaveTextContent("—");
+    expect(li[3]).toHaveTextContent("not reached yet");
+    expect(way().queryByText(/after Ostia accepted it/)).toBeNull();
+  });
+});
+
+describe("the Canton record and the proof of the transaction's block", () => {
+  it("shows the update, its time, the synchronizer, the reader's offset, the template and the command id from the producer log, and links to the record and the block", async () => {
+    await openFinal();
+    await waitFor(() => expect(side("Canton record", "Offset")).toHaveTextContent("52"));
+    expect(side("Canton record", "Update id")).toHaveTextContent("1220 0303…0303");
+    expect(side("Canton record", "Record time")).toHaveTextContent("2026-10-04T01:37:23.412Z");
+    expect(side("Canton record", "Synchronizer")).toHaveTextContent("da::1220");
+    expect(side("Canton record", "Offset")).toHaveTextContent("reader's participant");
+    expect(side("Canton record", "Template")).toHaveTextContent("Zk.Chain:ZkChain · Advance producer log");
+    expect(side("Canton record", "Command id")).toHaveTextContent("cmd-1 producer log");
+    expect(within(side("Canton record", "Block")).getByRole("link", { name: "Block 3" })).toHaveAttribute("href", "/block/3");
+    const card = within(screen.getByRole("region", { name: "Canton record" }));
+    expect(card.getByRole("link", { name: /Open the Canton record/ })).toHaveAttribute("href", `/canton/${update(3)}`);
+    expect(card.getByRole("link", { name: /Open block 3/ })).toHaveAttribute("href", "/block/3");
+  });
+
+  it("says the template and the command id are not in the producer log when the update's route has none", async () => {
+    await openFinal(undefined, { update: () => reply(updateDetail(3, { producerRecord: null })) });
+    await waitFor(() => expect(side("Canton record", "Offset")).toHaveTextContent("52"));
+    expect(side("Canton record", "Template")).toHaveTextContent("not in the producer's log");
+    expect(side("Canton record", "Command id")).toHaveTextContent("not in the producer's log");
+  });
+
+  it("shows the proof's facts, read from its bytes, with the pins", async () => {
+    await openFinal();
+    await screen.findByText("Program key");
+    const proof = within(screen.getByRole("region", { name: "The proof" }));
+    expect(proof.getAllByText(/ours|ZisK 1\.3\.1|this block/).length).toBeGreaterThanOrEqual(3);
+    expect(proof.getByText("1,344 bytes")).toBeInTheDocument();
+  });
+
+  it("says a block that is not on Canton yet has no record and no proof, and greys Verify", async () => {
+    await openFinal(tx({ status: "proving", block: { number: 4, hash: hash(4), updateId: null }, lifecycle: null }), { block: () => reply(block({ status: "proving", number: 4, canton: null })) });
+    expect(await screen.findByText("Not on Canton yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Verify block 4 in your browser/ })).toBeDisabled();
+  });
+});
+
+describe("Verify, on the transaction page", () => {
+  const record = { number: 3, hash: hash(3), contractId: "00cc", header: "22".repeat(8), txs: "33".repeat(8), proof: "11".repeat(8) };
+  const ok = (h: string) => `ok ${"cd".repeat(32)} ${"cd".repeat(32)} ${h.slice(2)} ${"0".repeat(64)} 3 ${"1".repeat(64)} 1700000000 30000000 21000 1`;
+  const recordCalls = (calls: string[]) => calls.filter((c) => c === "/api/blocks/3/record");
+
+  it("reads the block's record only when it is pressed, and once", async () => {
+    verifierRun.line = ok(hash(3));
+    const user = userEvent.setup();
+    const calls = await openFinal(undefined, { blockRecord: () => reply(record) });
+    const button = await screen.findByRole("button", { name: "Verify block 3 in your browser" });
+    await screen.findByText("Program key");
+    expect(recordCalls(calls)).toHaveLength(0);
+    await user.click(button);
+    expect(await screen.findByText(/Passed\./)).toBeInTheDocument();
+    expect(recordCalls(calls)).toHaveLength(1);
+  });
+
+  it("fails with the check's own reason", async () => {
+    verifierRun.line = "no the proof does not verify";
+    const user = userEvent.setup();
+    await openFinal(undefined, { blockRecord: () => reply(record) });
+    await user.click(await screen.findByRole("button", { name: "Verify block 3 in your browser" }));
+    expect(await screen.findByText(/Failed: the proof does not verify\./)).toBeInTheDocument();
+  });
+
+  it("fails when the proof is for another block", async () => {
+    verifierRun.line = ok(hash(9));
+    const user = userEvent.setup();
+    await openFinal(undefined, { blockRecord: () => reply(record) });
+    await user.click(await screen.findByRole("button", { name: "Verify block 3 in your browser" }));
+    expect(await screen.findByText(/not for this block/)).toBeInTheDocument();
+  });
+
+  it("says when the record cannot be read", async () => {
+    const user = userEvent.setup();
+    await openFinal(undefined, { blockRecord: () => reply({ error: "boom" }, 500) });
+    await user.click(await screen.findByRole("button", { name: "Verify block 3 in your browser" }));
+    expect(await screen.findByText(/Could not run the check here: boom/)).toBeInTheDocument();
+  });
+});
+
+describe("the internal calls row, and the stage 2 gap", () => {
+  it("shows the count of internal calls once the block is derived", async () => {
+    await openFinal(undefined, { txDetail: () => reply(txDetail({ callCount: 4 })) });
+    await waitFor(() => expect(row("Internal calls")).toHaveTextContent("4"));
+  });
+
+  it("says not derived yet for a final transaction whose block is not derived, and gives no count", async () => {
+    await openFinal(undefined, { txDetail: () => reply(txDetail({ derived: false, callCount: null })) });
+    await waitFor(() => expect(row("Internal calls")).toHaveTextContent("not derived yet"));
+  });
+
+  it("has no row for a transaction that is not final", async () => {
+    await open(waitingTx());
+    expect(screen.queryByText("Internal calls", { selector: "dt" })).toBeNull();
   });
 });

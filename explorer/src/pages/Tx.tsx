@@ -1,20 +1,23 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getTx, type ApiTx, type ApiTxSeen, type ApiTxUnseen, type Log } from "../api.ts";
+import { useQuery } from "@tanstack/react-query";
+import { getBlock, getTx, getTxDetail, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen, type Log } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
 import { unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
-import { count, gwei } from "../format.ts";
+import { count, gwei, short } from "../format.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
+import { TxFinal, type BlockRead } from "./TxFinal.tsx";
+import { CantonRecord, ProofSide } from "./TxSides.tsx";
+import "./tx.css";
 
 const TYPES: Record<number, string> = { 0: "legacy", 1: "EIP-2930", 2: "EIP-1559", 3: "EIP-4844", 4: "EIP-7702" };
 /** The first topic of an ERC-20 Transfer. */
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const CLIP = 74;
-const STEPS = ["Waiting", "Being proven", "Final"] as const;
 
 const Good = ({ children }: { children: string }) => <span className="fact-ok"><Icon name="check" size={13} />{children}</span>;
 const Bad = ({ children }: { children: string }) => <span className="fact-bad"><Icon name="cross" size={13} />{children}</span>;
@@ -41,16 +44,6 @@ function NotFinal({ t }: { t: ApiTxSeen }) {
   );
 }
 
-/** Waiting, Being proven, Final: where this transaction is on the way. It sits below the facts. */
-function Progress({ t }: { t: ApiTxSeen }) {
-  const at = t.status === "waiting" ? 0 : t.status === "unindexed" ? 2 : 1;
-  return (
-    <ol className="progress" aria-label="Where this transaction is">
-      {STEPS.map((s, i) => <li key={s} className={i === at ? "pg on" : "pg"} aria-current={i === at ? "step" : undefined}>{s}</li>)}
-    </ol>
-  );
-}
-
 /** An amount in the chain's coin. Until the server has named the coin there is no amount to show. */
 const InCoin = ({ raw, coin }: { raw: string; coin: Coin | undefined }) =>
   coin ? <Amount raw={raw} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>;
@@ -73,7 +66,19 @@ function BlockItem({ t }: { t: ApiTxSeen }) {
   return t.block.updateId ? <>{link}, final on Canton in update <HashLink value={t.block.updateId} kind="update" /></> : <>{link}, not on Canton yet</>;
 }
 
-function Facts({ t, coin }: { t: ApiTxSeen; coin: Coin | undefined }) {
+/** The internal calls that moved value. A final transaction whose block the explorer has not derived yet says so, and gives no count. */
+function CallsItem({ t, detail }: { t: ApiTxSeen; detail: { data: ApiTxDetail | undefined; failed: boolean } }) {
+  if (t.status !== "final") return null;
+  const d = detail.data;
+  return (
+    <Item label="Internal calls">
+      {d ? (d.derived && d.callCount !== null ? <span className="mono">{d.callCount}</span> : <span className="muted">not derived yet</span>)
+        : detail.failed ? <span className="muted">cannot be read right now</span> : <span className="muted">reading…</span>}
+    </Item>
+  );
+}
+
+function Facts({ t, coin, detail }: { t: ApiTxSeen; coin: Coin | undefined; detail: { data: ApiTxDetail | undefined; failed: boolean } }) {
   const waiting = t.status === "waiting";
   const to = t.to && <><HashLink value={t.to} to={`/${t.toToken ? "token" : "address"}/${t.to}`} full />{t.toToken && <span className="tag">{t.toToken}, a token</span>}</>;
   return (
@@ -93,6 +98,7 @@ function Facts({ t, coin }: { t: ApiTxSeen; coin: Coin | undefined }) {
         </Item>
         {t.gasUsed === null ? <Item label="Gas limit"><span className="mono">{count(t.gas)}</span></Item>
           : <Item label="Gas used"><span className="mono">{count(t.gasUsed)}</span> <span className="muted">of {count(t.gas)}</span></Item>}
+        <CallsItem t={t} detail={detail} />
         <Item label="Nonce"><span className="mono">{t.nonce}</span></Item>
         <Item label="Type">{t.type} {TYPES[t.type] && <span className="muted">({TYPES[t.type]})</span>}</Item>
       </Kv>
@@ -167,23 +173,39 @@ function Unseen({ t }: { t: ApiTxUnseen }) {
   );
 }
 
+const Result = ({ t }: { t: ApiTx }) =>
+  t.success === null ? null : t.success ? <Good>Success</Good> : <Bad>Failed</Bad>;
+
 export function Tx() {
   const { hash = "" } = useParams();
-  const coin = useStatus().data?.coin;
+  const st = useStatus().data;
+  const coin = st?.coin;
   const q = useFollowing(["tx", hash], () => getTx(hash), settled);
+  const t = q.data;
+  const n = t?.block?.number;
+  // The block holds the times, the proof and the record's facts; a transaction in no block has none to read.
+  const blockQ = useQuery({ queryKey: ["block", String(n)], queryFn: () => getBlock(String(n)), enabled: n !== undefined, retry: false, staleTime: 5_000, refetchInterval: t && t.status !== "final" && n !== undefined ? 2000 : false });
+  const detailQ = useQuery({ queryKey: ["tx-detail", hash], queryFn: () => getTxDetail(hash), enabled: t?.status === "final", retry: false, staleTime: 10_000 });
   const wait = unready(q, "Reading the transaction…");
-  if (wait) return wait;
-  const t = q.data!;
+  if (wait || !t) return wait;
+  const read: BlockRead = n === undefined ? "none" : blockQ.isError ? "failed" : blockQ.data ? "read" : "reading";
+  const detail = { data: detailQ.data, failed: detailQ.isError };
   return (
     <>
-      <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} /></div>
+      <nav className="crumbs" aria-label="Breadcrumb"><Link to="/txs">Transactions</Link> / <span className="mono">{short(t.hash, 8, 6)}</span></nav>
+      <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} /><Result t={t} /></div>
       <div className="bighash"><HashLink value={t.hash} full /></div>
       <Stage t={t} />
       {t.value === null && <Unseen t={t} />}
       {t.value !== null && t.status !== "final" && <NotFinal t={t} />}
-      {t.value !== null && <><Facts t={t} coin={coin} />
-      {t.status !== "final" && <Progress t={t} />}
-      {t.status !== "waiting" && <InputAndLogs t={t} />}</>}
+      {t.value !== null && <TxFinal t={t} block={blockQ.data} read={read} />}
+      {t.value !== null && (
+        <div className="tx-grid">
+          <div className="tx-main"><Facts t={t} coin={coin} detail={detail} />
+          {t.status !== "waiting" && <InputAndLogs t={t} />}</div>
+          <aside className="tx-side"><CantonRecord t={t} block={blockQ.data} read={read} /><ProofSide t={t} block={blockQ.data} st={st} read={read} /></aside>
+        </div>
+      )}
     </>
   );
 }

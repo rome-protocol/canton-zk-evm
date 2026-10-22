@@ -1,0 +1,35 @@
+.crumbs { font-size: 13px; color: var(--muted); margin: 6px 0 4px; }
+.crumbs a { color: inherit; }
+.ptitle { flex-wrap: wrap; }
+.way { margin: 14px 0 18px; }
+.way-steps { grid-template-columns: repeat(4, 1fr); }
+.way-steps li { padding-top: 40px; }
+.way-delta { position: absolute; left: 24px; top: 0; }
+.way-steps .how-dot { top: 22px; }
+.way-steps li::before { top: 28px; }
+.way-foot { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.tx-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.tx-main, .tx-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.side-foot { display: flex; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); margin-top: 8px; }
+.txv { display: flex; flex-direction: column; gap: 8px; }
+.txv-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; margin: 18px 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap; }
+.tabs [role="tab"] { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; font: inherit; color: var(--muted); cursor: pointer; }
+.tabs [aria-selected="true"] { color: var(--canton); font-weight: 600; border-bottom-color: var(--canton); }
+.tabs .count { font-size: 11.5px; background: var(--line); border-radius: 9px; padding: 0 7px; margin-left: 6px; }
+.tx-table { width: 100%; border-collapse: collapse; }
+.tx-table th, .tx-table td { text-align: left; padding: 9px 10px; border-top: 1px solid var(--line); vertical-align: top; }
+.tx-table .r { text-align: right; }
+.tx-scroll { overflow-x: auto; }
+.logrow { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; padding: 14px 0; border-top: 1px solid var(--line); }
+.logrow:first-of-type { border-top: 0; }
+.tree-row { display: flex; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.raw-json { overflow-x: auto; max-height: 520px; font-size: 12.5px; }
+@media (max-width: 860px) {
+  .tx-grid { grid-template-columns: 1fr; }
+  .way-steps { grid-template-columns: 1fr; }
+  .way-steps li { padding: 0 0 0 26px; }
+  .way-delta { position: static; }
+  .way-steps .how-dot { top: 3px; }
+  .way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
+}
