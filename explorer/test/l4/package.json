@@ -1,0 +1,11 @@
+{
+  "name": "canton-zk-evm-explorer-l4",
+  "private": true,
+  "description": "L4 of the explorer's load test: the driver that opens the pages in a browser. Installed and run inside the pinned browser image (EXPLORER_BROWSER_IMAGE in PINS), whose browsers are the ones this exact playwright-core version drives.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "dependencies": {
+    "playwright-core": "1.64.1"
+  }
+}
