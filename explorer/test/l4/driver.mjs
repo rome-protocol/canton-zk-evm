@@ -97,6 +97,8 @@ async function once(browser, path) {
       apiBeforeFcp: t.fcp === null ? api.length : api.filter((e) => e.at < t.fcp).length,
       apiBeforeLcp: t.lcp === null ? api.length : api.filter((e) => e.at < t.lcp).length,
       apiTotal: api.length,
+      // which calls they were, as the path and the start (ms), so that a miss of B5 says what to remove
+      apiCalls: api.map((e) => `${new URL(e.url).pathname}${new URL(e.url).search} @${Math.round(e.at)}`),
     };
   } finally {
     await context.close();

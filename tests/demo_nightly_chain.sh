@@ -24,8 +24,10 @@ cp "$WORK/w1.log" "$NIGHTLY_OUT/w1.log"
 
 echo "== L3: ${L3_SECONDS:-1800} s of blocks of ${L3_TXS_PER_BLOCK:-1428} plain transfers"
 l3_rc=0
-python3 "$ROOT/tests/demo_nightly_l3.py" run "${L3_SECONDS:-1800}" "${L3_TXS_PER_BLOCK:-1428}" "$NIGHTLY_OUT/l3.json" || l3_rc=$?
-[ -s "$NIGHTLY_OUT/l3.json" ] || echo '{"failures":["L3 wrote no results"]}' > "$NIGHTLY_OUT/l3.json"
+# The output goes to a file and then to the job's log, so that when L3 stops before it writes results the last lines say why (they are in the results too).
+python3 "$ROOT/tests/demo_nightly_l3.py" run "${L3_SECONDS:-1800}" "${L3_TXS_PER_BLOCK:-1428}" "$NIGHTLY_OUT/l3.json" > "$NIGHTLY_OUT/l3.log" 2>&1 || l3_rc=$?
+tail -n 40 "$NIGHTLY_OUT/l3.log"
+[ -s "$NIGHTLY_OUT/l3.json" ] || jq -n --arg why "$(tail -n 8 "$NIGHTLY_OUT/l3.log")" '{failures: ["L3 wrote no results: \($why)"]}' > "$NIGHTLY_OUT/l3.json"
 [ "$l3_rc" = 0 ] || nightly_failed+=("L3 (exit $l3_rc)")
 
 echo "== L4: the pages in a cold browser, ${L4_REPEAT:-5} runs each, 10 Mbit/s and 100 ms"
