@@ -1,12 +1,16 @@
 name: explorer-nightly
 
 # The nightly load test of the explorer (design section 9; docs/METRICS.md, "The nightly load test (E13)"). It runs on a schedule and by hand, never on a pull request:
-# a pull request runs the scaled L2 in explorer.yml, and the sizes here are the design's.
+# a pull request runs the scaled L2 in explorer.yml, and the sizes here are the design's. The one exception is a pull request that changes the nightly's own files
+# (the paths below): it runs a short version of everything, so that a change to the nightly is seen to run before it is merged. A workflow can be dispatched by
+# name only once it is on the default branch, so the first run of a new nightly is that.
 #   l1     blocks of 0 to 5,000 transactions through both stages of the indexer, held to B1 and B2
 #   l2     the API at scale: 10,000,000 transactions and 600 s of the mixed load by default (B3, B4, B6, B7)
 #   chain  the rehearsal's real chain (reth, Canton, the real builder, a stand-in prover) with W1, the worst-case block, then L3 (a flood of blocks of plain transfers),
 #          L4 (the pages in a cold browser on a slow link) and L5 (the contract tools against the Etherscan-compatible API; skipped, never passed, while that API is not there)
 on:
+  pull_request:
+    paths: [".github/workflows/explorer-nightly.yml", ".github/actions/pinned-images/**", "tests/demo_nightly_*", "tests/test_demo_nightly_*", "tests/demo_rehearsal.sh", "explorer/test/l4/**", "explorer/test/l5/**", "PINS"]
   schedule:
     - cron: "17 2 * * *"
   workflow_dispatch:
@@ -21,7 +25,7 @@ permissions:
 
 # One nightly at a time: two on one repository would fight for the runners' disk and the registry's pull limit.
 concurrency:
-  group: explorer-nightly-${{ github.ref }}
+  group: explorer-nightly-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -83,8 +87,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      L2_TRANSACTIONS: ${{ inputs.l2_transactions || '10000000' }}
-      L2_SECONDS: ${{ inputs.l2_seconds || '600' }}
+      L2_TRANSACTIONS: ${{ inputs.l2_transactions || (github.event_name == 'pull_request' && '300000' || '10000000') }}
+      L2_SECONDS: ${{ inputs.l2_seconds || (github.event_name == 'pull_request' && '30' || '600') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
@@ -141,8 +145,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     env:
-      L3_MINUTES: ${{ inputs.l3_minutes || '30' }}
-      L4_REPEAT: ${{ inputs.l4_repeat || '5' }}
+      L3_MINUTES: ${{ inputs.l3_minutes || (github.event_name == 'pull_request' && '3' || '30') }}
+      L4_REPEAT: ${{ inputs.l4_repeat || (github.event_name == 'pull_request' && '2' || '5') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
