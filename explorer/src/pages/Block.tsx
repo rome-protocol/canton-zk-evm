@@ -248,7 +248,7 @@ export function Block() {
         <>
           <div className="legs"><Icon name="lock" size={14} /><span>{LEGS_THIS_BLOCK}</span></div>
           <HowItHappened b={b} />
-          {b.status === "final" ? (st && <PagedTransactions key={b.number} id={String(b.number)} total={b.txCount} coin={st.coin} />) : <Transactions rows={b.transactions} />}
+          {b.status === "final" ? (st && <PagedTransactions key={b.number} id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}
           {b.status === "final" && <BlockLegs key={b.number} id={String(b.number)} />}
           <Verify b={b} st={st} />
           {b.canton && <RecordData c={b.canton} />}

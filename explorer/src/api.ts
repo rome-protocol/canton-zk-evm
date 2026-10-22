@@ -186,6 +186,8 @@ export const getInFlight = async () => (await call("/api/in-flight", [200])).bod
 /** What /api/blocks/:id adds to a block's page: the producer's times for the attempt that made it (null when the journal holds none) and its gateway legs. */
 export interface BlockDetail { number: number; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null }
 export const getBlockDetail = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockDetail;
+/** The faucet's own address, or null when it has none (the faucet is off). */
+export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).body as { address?: string | null }).address ?? null;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;

@@ -147,19 +147,44 @@ describe("the block page, for a final block", () => {
     expect(cells.getByText("Success")).toBeInTheDocument();
     expect(rows[1]).toHaveTextContent("Failed (reverted)");
     expect(rows[1]).toHaveTextContent("creates contract");
-    expect(table.getByText("Showing 1–2 of 2.")).toBeInTheDocument();
+    expect(table.getByText("Showing 1–2 of 2")).toBeInTheDocument();
+    expect(within(rows[0]!).getByText("Transfer")).toHaveClass("method");
+    expect(table.queryByRole("navigation", { name: "Pages of transactions" })).toBeNull();
   });
 
-  it("walks a long block's transactions by the server's cursor", async () => {
+  it("opens any page of a long block's transactions, since the block's count says how many pages there are", async () => {
     const user = userEvent.setup();
-    const calls = await open(block({ txCount: 12 }), status(), "3", {
-      blockTxs: (_, path) => reply(path.includes("after=c10") ? page([txItem(3, { hash: hash(0xb1), index: 10 })]) : page([txItem(3, { index: 9 })], "c10")),
+    const calls = await open(block({ txCount: 25 }), status(), "3", {
+      blockTxs: (_, path) => {
+        const after = /after=(\d+)/.exec(path)?.[1];
+        const first = after === undefined ? 0 : Number(after) + 1;
+        return reply(page(Array.from({ length: Math.min(10, 25 - first) }, (_, i) => txItem(3, { hash: hash(0x80 + first + i), index: first + i }))));
+      },
     });
-    await screen.findByRole("link", { name: "0xa3a3…a3a3" });
-    await user.click(within(screen.getByRole("navigation", { name: "Pages of transactions" })).getByRole("button", { name: "Older page" }));
-    await screen.findByRole("link", { name: "0xb1b1…b1b1" });
-    expect(calls).toContain("/api/blocks/3/transactions?limit=10&after=c10");
-    expect(screen.getByText("Showing 11–11 of 12.")).toBeInTheDocument();
+    const nav = () => within(screen.getByRole("navigation", { name: "Pages of transactions" }));
+    await screen.findByRole("link", { name: "0x8080…8080" });
+    expect(nav().getByText("Page 1 of 3")).toBeInTheDocument();
+    expect(nav().getByRole("button", { name: "First" })).toBeDisabled();
+    await user.click(nav().getByRole("button", { name: "Next page" }));
+    await screen.findByRole("link", { name: "0x8a8a…8a8a" });
+    expect(calls).toContain("/api/blocks/3/transactions?limit=10&after=9");
+    expect(screen.getByText("Showing 11–20 of 25")).toBeInTheDocument();
+    await user.click(nav().getByRole("button", { name: "Last" }));
+    await screen.findByRole("link", { name: "0x9494…9494" });
+    expect(calls).toContain("/api/blocks/3/transactions?limit=10&after=19");
+    expect(nav().getByText("Page 3 of 3")).toBeInTheDocument();
+    expect(screen.getByText("Showing 21–25 of 25")).toBeInTheDocument();
+    expect(nav().getByRole("button", { name: "Next page" })).toBeDisabled();
+    await user.click(nav().getByRole("button", { name: "First" }));
+    await screen.findByRole("link", { name: "0x8080…8080" });
+  });
+
+  it("names the faucet as the sender of its transactions", async () => {
+    await open(block({ txCount: 1 }), status(), "3", {
+      blockTxs: () => reply(page([txItem(3, { from: addr(0xfa) })])),
+      faucet: () => reply({ on: true, address: addr(0xfa) }),
+    });
+    expect(await screen.findByRole("link", { name: "Ostia faucet" })).toHaveAttribute("href", `/address/${addr(0xfa)}`);
   });
 
   it("says so when the block holds no transactions", async () => {
