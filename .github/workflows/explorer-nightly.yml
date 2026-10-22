@@ -68,7 +68,7 @@ jobs:
             echo "### L1: synthetic blocks within the ingestion budgets"
             echo
             echo '```'
-            grep -E '^L1 |Tests |passed|failed' "$RUNNER_TEMP/l1/l1.log" | sed 's/\x1b\[[0-9;]*m//g' | head -20 || true
+            sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/l1/l1.log" | grep -E '^L1 |Tests |passed|failed' | head -20 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the numbers
