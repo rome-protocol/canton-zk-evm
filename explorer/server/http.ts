@@ -169,7 +169,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const text = textOf(body);
         // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
         // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it, off the event loop; the gzip form has its own tag.
-        const out: Record<string, string> = { "cache-control": "no-store", ...headers, "content-type": "application/json" };
+        const out: Record<string, string> = { "cache-control": "no-store", "content-type": "application/json", ...headers };
         const zip = text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
         if (zip && out.etag) out.etag = out.etag.replace(/"$/, '-gz"');
         if (status === 200 && out.etag && (method === "GET" || method === "HEAD") && matches(req.headers["if-none-match"], out.etag)) {

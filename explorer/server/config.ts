@@ -21,6 +21,8 @@ export interface Config {
   port: number;
   chainId: number;
   chainName: string;
+  /** Which Canton network the chain runs on, as the header names it ("DevNet"); null when not set, and then no network is named. */
+  networkName: string | null;
   /** The chain's native coin, shown everywhere an amount is shown. */
   coin: { symbol: string; decimals: number };
   rethUrl: string;
@@ -180,6 +182,7 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     port: whole(env, "EXPLORER_PORT", 8088, 1),
     chainId: whole(env, "CHAIN_ID", 770101, 1),
     chainName: env.CHAIN_NAME || "Ostia",
+    networkName: env.NETWORK_NAME?.trim() || null,
     coin: { symbol: env.COIN_SYMBOL || "tROME", decimals: 18 },
     rethUrl: url(env, "RETH_RPC_URL", "http://127.0.0.1:8545"),
     rpcTimeoutMs: whole(env, "RPC_TIMEOUT_MS", 5000, 1),

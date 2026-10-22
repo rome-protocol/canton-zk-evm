@@ -53,7 +53,9 @@ export interface InFlightAttempt {
   number: number; strategy: string; cutReason: string; stage: "cut" | "built" | "proving" | "proved" | "submitted" | "committed"; txCount: number | null; poolWaiting: number | null;
   cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null; outcome: string | null;
 }
-export interface InFlight { attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null }
+/** A transaction the explorer knows and that is not final: waiting in reth's pool, or in a block that is being proven. `at` is when it was accepted. */
+export interface InFlightTx { hash: string; stage: "waiting" | "proving"; at: string }
+export interface InFlight { attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null; transactions: InFlightTx[] }
 
 export interface Signers { operator: string; confirmer: string }
 
@@ -190,6 +192,7 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
    * settled as not committed, or that is older than an hour (a run that stopped in the middle), is not in flight.
    */
   async function inFlight(max = 50): Promise<InFlight> {
+    const TXS_IN_FLIGHT = 10;
     const rows = await query(
       `select a.number, a.strategy, a.cut_reason, a.tx_count, a.pool_waiting, a.outcome, ${MS("a.cut_at")} as cut_at, ${MS("a.built_at")} as built_at,
          ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at, ${MS("a.submitted_at")} as submitted_at, ${MS("a.answered_at")} as answered_at,
@@ -209,7 +212,13 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
       };
     });
     const [p] = await query(`select waiting, ${MS("at")} as at from pool_samples order by at desc limit 1`);
-    return { attempts, poolWaiting: p ? { waiting: p.waiting, at: p.at } : null };
+    // The newest not-final transactions, by the journal's state. Replaced, dropped and lost ones will not be in a block, so they are not in flight.
+    const txs = await query(
+      `select tx_hash, state, ${MS("coalesce(accepted_at, updated_at)")} as at from tx_lifecycle where state in ('pending', 'proving') order by coalesce(accepted_at, updated_at) desc, tx_hash limit $1`,
+      [TXS_IN_FLIGHT],
+    );
+    const transactions = txs.map((r): InFlightTx => ({ hash: hex(r.tx_hash), stage: r.state === "proving" ? "proving" : "waiting", at: r.at }));
+    return { attempts, poolWaiting: p ? { waiting: p.waiting, at: p.at } : null, transactions };
   }
 
   /** Every row of health_checks, with its ages by the database's clock. */

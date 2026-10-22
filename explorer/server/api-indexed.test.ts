@@ -61,7 +61,7 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
       expect(txs.map((t) => t.success)).toEqual(b.receipts.map((r) => r.status === 1));
       expect(txs[1]!.transfer).toMatchObject({ symbol: "TKN", decimals: 6, value: "0" }); // the second one is an ERC-20 transfer
       expect((await get(`/api/block/${b.block.hash}`)).body).toEqual(body);
-      expect((await get(`/api/search?q=${b.record.updateId}`)).body).toEqual({ path: "/block/2" });
+      expect((await get(`/api/search?q=${b.record.updateId}`)).body).toEqual({ path: `/canton/${b.record.updateId}` });
     });
   });
 
@@ -229,6 +229,7 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
           proofEndedAt: null, submittedAt: null, answeredAt: null, outcome: null,
         });
         expect(f.poolWaiting).toEqual({ waiting: 4, at: iso(base + 6000) });
+        expect(Array.isArray((body as { transactions: unknown }).transactions)).toBe(true);
         expect((await get("/api/in-flight/x")).status).toBe(404);
       });
     });
@@ -236,7 +237,23 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
     it("is empty and has no pool sample when there is no journal", async () => {
       await withDatabase(async (pool) => {
         const { get } = await served(pool, [{ txs: 1 }]);
-        expect((await get("/api/in-flight")).body).toEqual({ final: false, attempts: [], poolWaiting: null });
+        expect((await get("/api/in-flight")).body).toEqual({ final: false, attempts: [], poolWaiting: null, transactions: [] });
+      });
+    });
+
+    it("lists the newest transactions that are not final in /api/in-flight, as waiting or being proven, and leaves out the final, replaced and dropped ones", async () => {
+      await withDatabase(async (pool) => {
+        const { get } = await served(pool, [{ txs: 1 }]);
+        const h = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(32);
+        const row = (n: number, state: string, at: number) => pool.query(
+          "insert into tx_lifecycle (tx_hash, state, accepted_at, updated_at) values (decode($1, 'hex'), $2, $3, $3)", [h(n).slice(2), state, new Date(at)]);
+        const t = Date.now() - 60_000;
+        await row(0xa1, "pending", t + 3000); await row(0xa2, "proving", t + 2000); await row(0xa3, "pending", t + 1000);
+        await row(0xa4, "final", t + 4000); await row(0xa5, "dropped", t + 5000); await row(0xa6, "replaced", t + 6000); await row(0xa7, "lost", t + 7000);
+        const body = (await get("/api/in-flight")).body as { transactions: Array<Record<string, unknown>> };
+        expect(body.transactions).toEqual([
+          { hash: h(0xa1), stage: "waiting", at: iso(t + 3000) }, { hash: h(0xa2), stage: "proving", at: iso(t + 2000) }, { hash: h(0xa3), stage: "waiting", at: iso(t + 1000) },
+        ]);
       });
     });
   });

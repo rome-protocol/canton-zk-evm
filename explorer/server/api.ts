@@ -103,7 +103,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return {
       status: serving ? 200 : 503,
       body: {
-        chainId: config.chainId, chainName: config.chainName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
+        chainId: config.chainId, chainName: config.chainName, networkName: config.networkName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
@@ -195,7 +195,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   /** The attempts that are not final yet. Every answer says so: nothing here is a fact of the chain until its block is final. */
   async function inFlight(): Promise<Answer> {
     const f = await chain.inFlight();
-    return ok({ final: false, attempts: f.attempts.map((a) => pick(a, FIELDS.inFlightAttempt)), poolWaiting: f.poolWaiting && pick(f.poolWaiting, FIELDS.poolSample) });
+    return ok({ final: false, attempts: f.attempts.map((a) => pick(a, FIELDS.inFlightAttempt)), poolWaiting: f.poolWaiting && pick(f.poolWaiting, FIELDS.poolSample), transactions: f.transactions.map((t) => pick(t, FIELDS.inFlightTx)) });
   }
 
   async function transaction(hash: string): Promise<Answer> {
@@ -239,14 +239,14 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return ok({ address: a, kind: token ? "token" : code === "0x" ? "account" : "contract", balance: dec(balance), nonce, token: token && pick(token, FIELDS.token), createdBy: created && pick(created, FIELDS.createdBy) });
   }
 
-  /** Works out what was typed from its shape. A block, transaction or update that nothing holds is not found. */
+  /** Works out what was typed from its shape. A block, transaction or update that nothing holds is not found. A Canton update id opens the update's own page, which links its block. */
   async function search(q: string): Promise<Answer> {
     const go = (path: string) => ok({ path });
     if (/^\d+$/.test(q) && Number.isSafeInteger(Number(q))) return (await reth.block(Number(q))) ? go(`/block/${q}`) : fail(404, NOT_FOUND);
     if (HASH.test(q)) return (await reth.transaction(q)) ? go(`/tx/${q}`) : (await reth.block(q)) ? go(`/block/${q}`) : fail(404, NOT_FOUND);
     if (ADDRESS.test(q)) return go(`/address/${q}`);
     const byUpdate = UPDATE.test(q) ? await chain.blockOfUpdate(q) : undefined;
-    return byUpdate !== undefined ? go(`/block/${byUpdate}`) : fail(404, NOT_FOUND);
+    return byUpdate !== undefined ? go(`/canton/${q}`) : fail(404, NOT_FOUND);
   }
 
   /** Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. The faucet answers every case itself. */

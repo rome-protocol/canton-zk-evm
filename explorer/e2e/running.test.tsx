@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { renderApp } from "../src/test-utils.tsx";
@@ -32,24 +32,21 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
   async function openRun1Block() {
     useExplorer();
     renderApp(`/block/${run1.get("block")}`);
-    await screen.findByRole("heading", { name: `Block ${run1.get("block")}` }, WAIT);
-    return within(await screen.findByRole("region", { name: "On Canton" }, WAIT));
+    await screen.findByRole("heading", { name: `Block #${run1.get("block")}` }, WAIT);
+    return within(await screen.findByRole("region", { name: "Final on Canton" }, WAIT));
   }
 
   it("shows run 1's block with its hash, its Canton side and the update id the demo recorded", async () => {
     expect(run1.get("block"), "the results file names a block").toMatch(/^\d+$/);
     const canton = await openRun1Block();
-    // Both are shortened on the page; the button beside each shows the whole value.
-    const update = row(canton, "Canton update");
-    await userEvent.click(update.getByRole("button", { name: "Show in full" }));
-    expect(update.getByText(run1.get("canton_update")!)).toBeInTheDocument();
+    // Both are shown in full on the block's own page.
+    expect(row(canton, "Update id").getByText(run1.get("canton_update")!)).toBeInTheDocument();
     const evm = within(screen.getByRole("region", { name: "On the EVM" }));
-    const hash = row(evm, "Hash");
-    await userEvent.click(hash.getByRole("button", { name: "Show in full" }));
-    expect(hash.getByText(run1.get("block_hash")!)).toBeInTheDocument();
+    expect(row(evm, "Hash").getByText(run1.get("block_hash")!)).toBeInTheDocument();
     expect(row(canton, "Hashes").getByText(/give the same hash/)).toBeInTheDocument();
     // The claim the demo made is one of the block's transactions, and links to its page.
-    expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toContain(`/tx/${run1.get("evm_claim_tx")}`);
+    // The transactions are read a page at a time, after the block.
+    await waitFor(() => expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toContain(`/tx/${run1.get("evm_claim_tx")}`), WAIT);
   }, 90_000);
 
   it("shows the proof's own facts against this explorer's pins, which came from the run's guest.txt", async () => {
@@ -64,10 +61,10 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
     expect(verdict("Program key")).toHaveTextContent("ours");
     expect(read("ZisK release")).toHaveTextContent("0xefef…efef");
     expect(verdict("ZisK release")).toHaveTextContent("ZisK 1.3.1");
-    expect(verdict("Block hash")).toHaveTextContent("this block");
-    expect(verdict("Block hash")).not.toHaveTextContent("not this block's hash");
+    expect(verdict("Block hash committed")).toHaveTextContent("this block");
+    expect(verdict("Block hash committed")).not.toHaveTextContent("not this block's hash");
     // The pins come with the status answer, which the page asks for beside the block: the block can be on the page before they are, so wait for them.
-    expect(await screen.findByText(/Read from the proof's own bytes and compared with this explorer's pins, from/, {}, WAIT)).toHaveTextContent(/compared with this explorer's pins, from guest\.txt\./);
+    expect(await screen.findByText(/read from the proof's own bytes, compared with this explorer's pins, from/, {}, WAIT)).toHaveTextContent(/compared with this explorer's pins, from guest\.txt/);
   }, 90_000);
 
   it("shows the claim's own page, with a link back to the block that holds it", async () => {

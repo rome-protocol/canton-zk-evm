@@ -19,6 +19,14 @@ export function duration(ms: number): string {
 /** How long a block took to commit: from its own timestamp, in whole seconds, to Canton's record time. */
 export const commitTime = (timestampSeconds: number, recordTime: string) => duration(Date.parse(recordTime) - timestampSeconds * 1000);
 
+/** A measured time in seconds: two places under a minute ("7.24 s"), then minutes and whole seconds ("1 min 28 s"). */
+export function span(totalSeconds: number): string {
+  const t = Math.max(0, totalSeconds);
+  if (t < 59.995) return `${t.toFixed(2)} s`;
+  const s = Math.round(t), m = Math.floor(s / 60);
+  return s % 60 ? `${m} min ${s % 60} s` : `${m} min`;
+}
+
 /** A whole number with its thousands grouped. */
 export const count = (n: number | string | bigint) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
@@ -51,6 +59,15 @@ export function gwei(wei: string): string {
   const hundredths = v / 10_000_000n;
   const fraction = (hundredths % 100n).toString().padStart(2, "0").replace(/0+$/, "");
   return `${hundredths / 100n}${fraction ? `.${fraction}` : ""} gwei`;
+}
+
+/** A base fee in gwei to three significant digits ("0.0673 gwei"), or in wei when it is below a millionth of a gwei. Gwei() rounds to hundredths, which would show 0.07 for a fee of 0.0673. */
+export function baseFee(wei: string): string {
+  const v = BigInt(wei);
+  if (v === 0n) return "0 gwei";
+  if (v < 1_000_000n) return `${v} wei`;
+  const g = Number(v) / 1e9;
+  return `${g >= 1000 ? count(Math.round(g)) : String(Number(g.toPrecision(3)))} gwei`;
 }
 
 /** The size of hex data, in bytes. */

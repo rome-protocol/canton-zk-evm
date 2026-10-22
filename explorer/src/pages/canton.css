@@ -1,0 +1,13 @@
+/* the Canton update: the two sides joined by the one block, the record's parts, the window of updates */
+.sides.sides-join { grid-template-columns: minmax(0, 1fr) 124px minmax(0, 1fr); align-items: start; }
+.join { display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; align-self: center; padding: 0 6px; }
+.join-ic { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--canton); }
+.btn-primary { display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 600; color: var(--surface); background: var(--canton); border: 1px solid var(--canton); }
+.btn-primary:hover { text-decoration: none; opacity: .9; }
+.btn-line .ic { flex: none; }
+.holds .bar > span { color: var(--surface); font-size: 11.5px; line-height: 20px; padding: 0 8px; white-space: nowrap; overflow: hidden; }
+.pn a { display: inline-flex; align-items: center; gap: 4px; }
+@media (max-width: 880px) {
+  .sides.sides-join { grid-template-columns: minmax(0, 1fr); }
+  .join { flex-direction: row; justify-content: center; flex-wrap: wrap; }
+}
