@@ -65,3 +65,51 @@ describe("the transactions page", () => {
     await waitFor(() => expect(calls.some((c) => c.includes("before=3%3A0"))).toBe(true));
   });
 });
+
+describe("the count of what is not final yet", () => {
+  const at = "2026-10-04T01:37:58Z";
+  /** A burst: the in-flight route lists only the newest ten, the rest are counted by the attempts and the pool. */
+  const burst = () => inFlight({
+    attempts: [{ ...inFlight().attempts[0]!, txCount: 40 }], poolWaiting: { waiting: 1000, at },
+    transactions: Array.from({ length: 10 }, (_, i) => ({ hash: hash(0xe0 + i), stage: "waiting" as const, at })),
+  });
+  const total = "1,040";
+
+  it("says the total in the title and the newest ten in the list, never the ten as the count", async () => {
+    await open({ inFlight: () => reply(burst()) });
+    expect(screen.getByRole("heading", { name: "Transactions" }).parentElement).toHaveTextContent(`${total} not final yet`);
+    expect(screen.getByRole("heading", { name: "Transactions" }).parentElement).not.toHaveTextContent(/(^|\D)10 not final yet/);
+    expect(screen.getByText(/1,030 more not final yet, older than the rows shown, are not listed/)).toBeInTheDocument();
+  });
+
+  it("in Not final yet, counts the total, labels the list as the newest ten, and says the rest are older and not listed", async () => {
+    await open({ inFlight: () => reply(burst()) });
+    await userEvent.click(screen.getByRole("button", { name: "Not final yet" }));
+    const list = await screen.findByRole("region", { name: "Transactions not final yet" });
+    expect(list).toHaveTextContent(`The newest 10 of ${total} not final yet`);
+    expect(list).toHaveTextContent("1,030 more, older than these, are not listed");
+    expect(list).not.toHaveTextContent("newer than");
+  });
+
+  it("does not say nothing is waiting when the list is empty but the pool holds some", async () => {
+    await open({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: { waiting: 7, at }, transactions: [] })) });
+    await userEvent.click(screen.getByRole("button", { name: "Not final yet" }));
+    const list = await screen.findByRole("region", { name: "Transactions not final yet" });
+    expect(list).not.toHaveTextContent("Nothing is waiting or being proven.");
+    expect(list).toHaveTextContent("7 not final yet, none listed");
+  });
+
+  it("says nothing is waiting only when the total is zero", async () => {
+    await open({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: { waiting: 0, at }, transactions: [] })) });
+    await userEvent.click(screen.getByRole("button", { name: "Not final yet" }));
+    expect(await screen.findByText("Nothing is waiting or being proven.")).toBeInTheDocument();
+  });
+
+  it("heads the fee column with the chain's coin and offers no CSV for the not-final view", async () => {
+    await open({ inFlight: () => reply(flight()), tx: byHash("") });
+    expect(screen.getByRole("columnheader", { name: "Fee (tROME)" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Not final yet" }));
+    await screen.findByRole("region", { name: "Transactions not final yet" });
+    expect(screen.queryByRole("link", { name: "CSV" })).toBeNull();
+  });
+});

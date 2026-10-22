@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { getBlocks, getFaucetAddress, getTx, getTxPage, txsCsvPath, type ApiStatus, type ApiTx, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
+import { getBlocks, getFaucetAddress, getTx, getTxPage, txsCsvPath, type ApiStatus, type ApiTx, type InFlight, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
 import { Sender } from "../components/BlockParts.tsx";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
@@ -10,7 +10,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { count, duration, exact, span, units } from "../format.ts";
 import { methodOf } from "../method.ts";
-import { listPoll, summarize, useInFlight } from "../stats.ts";
+import { listPoll, notFinalCounts, summarize, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
 
@@ -70,7 +70,16 @@ function NotFinalRow({ f, now, coin, faucet, chain }: { f: InFlightTx; now: numb
   );
 }
 
-const HEAD = <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Value</th><th className="r">Fee</th><th>Stage</th></tr></thead>;
+const head = (coin: Coin) => <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Value</th><th className="r">{`Fee (${coin.symbol})`}</th><th>Stage</th></tr></thead>;
+
+/** How many are not final yet in all, from the attempts and the pool; the in-flight list is capped by the server and is not the count. `atLeast` when the pool is not counted. */
+type Total = { total: number; atLeast: boolean };
+const totalOf = (f: InFlight | undefined): Total | null => {
+  if (!f) return null;
+  const c = notFinalCounts(f);
+  return { total: c.inBlocks + (c.waiting ?? 0), atLeast: c.waiting === null };
+};
+const more = (t: Total) => `${t.atLeast ? "at least " : ""}${count(t.total)}`;
 
 function Cards({ st, live }: { st: ApiStatus | undefined; live: boolean }) {
   const blocks = useQuery({ queryKey: ["blocks", 10], queryFn: () => getBlocks(10), refetchInterval: listPoll(live) }).data;
@@ -95,7 +104,7 @@ function Cards({ st, live }: { st: ApiStatus | undefined; live: boolean }) {
   );
 }
 
-function FinalRows({ view, st, now, live, faucet, notFinal }: { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[] }) {
+function FinalRows({ view, st, now, live, faucet, notFinal, all }: { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null }) {
   const p = usePaged(["txs", "page", view], (before) => getTxPage(before, PER, view), listPoll(live));
   const items = p.data?.items;
   if (p.error && !items) return <ErrorCard message={p.error.message} retrying />;
@@ -107,27 +116,31 @@ function FinalRows({ view, st, now, live, faucet, notFinal }: { view: TxFilter; 
       <div className="list-h"><span className="muted">{items.length || shown.length ? `Showing the newest ${count(shown.length + items.length)} on this page` : "No transactions yet."}</span><Pager p={p} label="Pages of transactions" /></div>
       <div className="scroll">
         <table className="tbl txs">
-          {HEAD}
+          {head(st.coin)}
           <tbody>
             {shown.map((f) => <NotFinalRow key={f.hash} f={f} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} />)}
             {items.map((t) => <Row key={t.hash} t={t} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} />)}
           </tbody>
         </table>
       </div>
-      {notFinal.length > shown.length && showNotFinal && <p className="muted small">{count(notFinal.length - shown.length)} more not final yet, newer than the rows shown.</p>}
+      {showNotFinal && all && all.total > shown.length && <p className="muted small">{all.atLeast ? "At least " : ""}{count(all.total - shown.length)} more not final yet, older than the rows shown, are not listed.</p>}
       <p className="muted small"><b>Waiting</b>: accepted, in the pool. <b>Being proven</b>: in a block that is not final yet; if Canton refused that block, the transaction would go back to the pool. <b>Final</b>: its block is final on Canton.</p>
     </section>
   );
 }
 
-function NotFinalOnly({ st, now, faucet, notFinal, read }: { st: ApiStatus | undefined; now: number; faucet: string | null | undefined; notFinal: InFlightTx[]; read: boolean }) {
-  if (!read || !st) return <LoadingCard>Reading what is not final yet…</LoadingCard>;
+function NotFinalOnly({ st, now, faucet, notFinal, all }: { st: ApiStatus | undefined; now: number; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null }) {
+  if (!all || !st) return <LoadingCard>Reading what is not final yet…</LoadingCard>;
   const shown = notFinal.slice(0, NOT_FINAL_SHOWN);
+  const unlisted = all.total - shown.length;
+  const label = all.total === 0 && shown.length === 0 ? "Nothing is waiting or being proven."
+    : shown.length === 0 ? `${more(all)} not final yet, none listed.`
+    : unlisted > 0 ? `The newest ${count(shown.length)} of ${more(all)} not final yet` : `${count(shown.length)} not final yet`;
   return (
     <section className="card" aria-label="Transactions not final yet">
-      <div className="list-h"><span className="muted">{notFinal.length ? `${count(notFinal.length)} not final yet` : "Nothing is waiting or being proven."}</span></div>
-      {shown.length > 0 && <div className="scroll"><table className="tbl txs">{HEAD}<tbody>{shown.map((f) => <NotFinalRow key={f.hash} f={f} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} />)}</tbody></table></div>}
-      {notFinal.length > shown.length && <p className="muted small">{count(notFinal.length - shown.length)} more.</p>}
+      <div className="list-h"><span className="muted">{label}</span></div>
+      {shown.length > 0 && <div className="scroll"><table className="tbl txs">{head(st.coin)}<tbody>{shown.map((f) => <NotFinalRow key={f.hash} f={f} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} />)}</tbody></table></div>}
+      {shown.length > 0 && unlisted > 0 && <p className="muted small">{all.atLeast ? "At least " : ""}{count(unlisted)} more, older than these, are not listed.</p>}
     </section>
   );
 }
@@ -141,22 +154,23 @@ export function Txs() {
   const flight = useInFlight(live);
   const faucet = useQuery({ queryKey: ["faucet-address"], queryFn: getFaucetAddress, staleTime: 60_000, retry: false }).data;
   const notFinal = flight.data?.transactions ?? [];
+  const all = totalOf(flight.data);
   const csv: TxFilter = view === "failed" || view === "calls" ? view : "all";
   return (
     <>
       <div className="ptitle">
         <h1>Transactions</h1>
-        {flight.data && <span className="muted">{count(notFinal.length)} not final yet</span>}
+        {all && <span className="muted">{more(all)} not final yet</span>}
         <span className="grow" />
         <div className="seg" role="group" aria-label="Show transactions">
           {VIEWS.map((v) => <button key={v.id} type="button" aria-pressed={view === v.id} onClick={() => setView(v.id)}>{v.label}</button>)}
         </div>
-        <a className="csv" href={txsCsvPath(csv)} download="transactions.csv">CSV</a>
+        {view !== "notfinal" && <a className="csv" href={txsCsvPath(csv)} download="transactions.csv">CSV</a>}
       </div>
       <Cards st={st} live={live} />
       {view === "notfinal"
-        ? <NotFinalOnly st={st} now={now} faucet={faucet} notFinal={notFinal} read={!!flight.data} />
-        : <FinalRows key={view} view={view === "all" ? "all" : view} st={st} now={now} live={live} faucet={faucet} notFinal={notFinal} />}
+        ? <NotFinalOnly st={st} now={now} faucet={faucet} notFinal={notFinal} all={all} />
+        : <FinalRows key={view} view={view === "all" ? "all" : view} st={st} now={now} live={live} faucet={faucet} notFinal={notFinal} all={all} />}
     </>
   );
 }
