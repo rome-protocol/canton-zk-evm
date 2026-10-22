@@ -7,7 +7,7 @@ import { useLiveState } from "./useLive.ts";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
-const frame = (id: number) => `id: ${id}\nevent: block\ndata: {"number":${id}}\n\n`;
+const frame = (id: number) => `id: ${id}\nevent: txs\ndata: {"number":${id}}\n\n`;
 
 /** One fetch answer per call: a body held open and closed by the test, or a status. */
 function fakeStream(steps: Array<{ status: number } | "open">) {
