@@ -71,7 +71,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     const rows = (await rest.blocks(null, limit, filter)).slice(0, limit);
     const lines = ["block,time,transactions,gas_used,gas_limit,proof_seconds,seconds_to_final,canton_update_id,stage"];
     for (const b of rows) {
-      lines.push([b.number, new Date(b.timestamp * 1000).toISOString(), b.txCount, b.gasUsed, b.gasLimit, b.proofSeconds === null ? null : b.proofSeconds.toFixed(3), b.finalSeconds === null ? null : b.finalSeconds.toFixed(3), b.updateId, b.number === 0 ? "genesis" : "final"].map(csvCell).join(","));
+      lines.push([b.number, new Date(b.timestamp * 1000).toISOString(), b.txCount, b.gasUsed, b.gasLimit, b.proofSeconds === null ? null : b.proofSeconds.toFixed(3), b.finalSeconds === null ? null : b.finalSeconds.toFixed(3), b.updateId, "final"].map(csvCell).join(","));
     }
     const answer = ok(lines.join("\r\n") + "\r\n");
     return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="blocks.csv"' } }, "list");

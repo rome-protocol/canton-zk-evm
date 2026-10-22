@@ -82,27 +82,23 @@ describe("the blocks page", () => {
     expect(cells[5]).toBe("—");
   });
 
-  it("says block 0 is the genesis, with no record", async () => {
-    await open({ blocks: () => reply(page([blockItem(0, { updateId: "", recordTime: "", timestamp: 0, proofSeconds: null, finalSeconds: null })])) });
-    const r = rows()[1]!;
-    expect(r).toHaveTextContent("genesis");
-    expect(r).toHaveTextContent("no record");
-    expect(r).toHaveTextContent("Genesis");
+  it("counts and pages only the blocks the API serves: block 1 is the first, so 25 final blocks are one page", async () => {
+    const calls = await open({ status: () => reply(status({ proving: null, final: { ...status().final!, number: 25 } })), blocks: () => reply(page([blockItem(25)])) });
+    expect(await screen.findByText("Page 1 of 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next page" })).toBeDisabled();
+    expect(calls.some((c) => c.includes("before="))).toBe(false);
   });
 
-  it("adds that block 1's record names the genesis as its parent only when the genesis page shows that to hold", async () => {
-    const genesis = (referenced: boolean | null) => block({ status: "genesis", number: 0, canton: null, genesisReferenced: referenced });
-    const list = () => reply(page([blockItem(0, { updateId: "", recordTime: "", timestamp: 0, proofSeconds: null, finalSeconds: null })]));
-    await open({ blocks: list, block: () => reply(genesis(true)) });
-    await waitFor(() => expect(rows()[1]).toHaveTextContent("no record; block 1's record names it as parent"));
-  });
-
-  it("says only 'no record' for the genesis when nothing shows the record names it", async () => {
-    const list = () => reply(page([blockItem(0, { updateId: "", recordTime: "", timestamp: 0, proofSeconds: null, finalSeconds: null })]));
-    await open({ blocks: list, block: () => reply(block({ status: "genesis", number: 0, canton: null, genesisReferenced: null })) });
-    await new Promise((r) => setTimeout(r, 20));
-    expect(rows()[1]).toHaveTextContent("no record");
-    expect(rows()[1]).not.toHaveTextContent("names it as parent");
+  it("asks the last page for the blocks below the ones before it, down to block 1", async () => {
+    const user = userEvent.setup();
+    const calls = await open({ status: () => reply(status({ proving: null, final: { ...status().final!, number: 26 } })), blocks: (path) => reply(page([blockItem(path.includes("before=") ? 1 : 26)])) });
+    await screen.findByText("Page 1 of 2");
+    await user.click(screen.getByRole("button", { name: "Last" }));
+    await screen.findByText("Page 2 of 2");
+    expect(calls.some((c) => c.includes("/api/blocks?limit=25&before=2"))).toBe(true);
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("1");
+    expect(screen.queryByText("genesis")).toBeNull();
   });
 
   it("stops counting the proof time of a block being proven once its proof has ended, and shows the time the proof took", async () => {

@@ -23,24 +23,7 @@ function Gas({ used, limit }: { used: number; limit: number }) {
   return <>{count(used)} <span className="muted small">{pct.toFixed(1)}%</span><span className="gasbar" aria-hidden="true"><i style={{ width: `${Math.min(100, pct)}%` }} /></span></>;
 }
 
-/** The genesis has no record. Block 1's record names it as parent only when the genesis page's own check shows that to hold. */
-function GenesisCell() {
-  const g = useQuery({ queryKey: ["block", "0"], queryFn: () => getBlock("0"), retry: false, staleTime: 30_000 });
-  return <td className="muted">no record{g.data?.genesisReferenced === true ? "; block 1's record names it as parent" : ""}</td>;
-}
-
 function Row({ b, now }: { b: BlockListItem; now: number }) {
-  if (b.number === 0) {
-    return (
-      <tr>
-        <td><Link className="num" to="/block/0">0</Link></td>
-        <td>genesis</td><td className="r">0</td><td className="r mono">0</td>
-        <td className="r muted">—</td><td className="r muted">—</td>
-        <GenesisCell />
-        <td><Chip status="genesis" /></td>
-      </tr>
-    );
-  }
   return (
     <tr>
       <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link></td>
@@ -101,10 +84,10 @@ function Table({ view, st, pager, now, live }: { view: View; st: ApiStatus | und
   );
 }
 
-/** Every final block: the blocks run in one count, so any page can be asked for and the last page is known. */
+/** Every final block: block 1 is the first the API serves (block 0 is the genesis, which has no record), so the blocks run in one count of `final.number`, any page can be asked for and the last page is known. */
 function AllBlocks({ st, now, live }: { st: ApiStatus | undefined; now: number; live: boolean }) {
-  const total = st?.final ? st.final.number + 1 : 0;
-  const p = useNumbered(["blocks", "page"], total, PER, (before) => getBlockPage(before, PER), (n, per) => String(total - (n - 1) * per), listPoll(live));
+  const total = st?.final ? st.final.number : 0;
+  const p = useNumbered(["blocks", "page"], total, PER, (before) => getBlockPage(before, PER), (n, per) => String(total + 1 - (n - 1) * per), listPoll(live));
   return <Table view={{ items: p.data?.items, error: p.error, first: p.page === 1 }} st={st} now={now} live={live} pager={<NumberedPager p={p} label="Pages of blocks" always />} />;
 }
 
