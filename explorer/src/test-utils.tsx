@@ -102,7 +102,7 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
-  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply;
+  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -111,6 +111,7 @@ export function route(h: {
     if (kind === "blocks" && arg && sub === "legs") return h.blockLegs ? h.blockLegs(decodeURIComponent(arg), path) : reply(page([]));
     if (kind === "blocks" && arg) return h.blockDetail ? h.blockDetail(decodeURIComponent(arg)) : gone();
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
     if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));

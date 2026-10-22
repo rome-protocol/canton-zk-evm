@@ -11,6 +11,7 @@ const PATHS = {
   up: <path d="M3.5 10l4.5-4.5L12.5 10" />,
   down: <path d="M3.5 6l4.5 4.5L12.5 6" />,
   expand: <path d="M2.5 6V2.5H6M13.5 10v3.5H10M2.5 2.5l4 4M13.5 13.5l-4-4" />,
+  link: <><path d="M6.8 9.2a2.6 2.6 0 003.7 0l2-2a2.6 2.6 0 00-3.7-3.7l-.6.6" /><path d="M9.2 6.8a2.6 2.6 0 00-3.7 0l-2 2a2.6 2.6 0 003.7 3.7l.6-.6" /></>,
 } as const;
 
 /** A small line icon in the current text colour. It is decoration: whatever it sits in carries the meaning. */
