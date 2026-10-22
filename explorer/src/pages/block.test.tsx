@@ -278,14 +278,14 @@ describe("the block page, for a final block: the record", () => {
     expect(write).toHaveBeenLastCalledWith("11".repeat(1344));
   });
 
-  it("shows the Verify panel between the transactions and the record's data, ready, with the pins from the status", async () => {
+  it("shows the Verify panel in the proof's card, above the transactions and the record's data, ready, with the pins from the status", async () => {
     await open();
     const panel = (await screen.findByRole("heading", { name: "Verify this block in your browser" })).closest("section")!;
     const verify = within(panel);
     expect(verify.getByRole("button", { name: "Verify" })).toBeEnabled();
     expect(verify.getByText("session.txt")).toBeInTheDocument();
     expect(verify.getAllByText("0xcdcd…cdcd")).toHaveLength(2);
-    expect(screen.getByRole("region", { name: "Transactions" }).compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(await screen.findByRole("region", { name: "Transactions" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(panel.compareDocumentPosition(screen.getByRole("region", { name: "The record's data" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
