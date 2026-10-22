@@ -143,7 +143,7 @@ describe("the block page, for a final block", () => {
     expect(cells.getByRole("link", { name: "0xf6f6…f6f6" })).toHaveAttribute("href", `/tx/${hash(0xf6)}`);
     expect(cells.getByRole("link", { name: "0x5b5b…5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
     expect(rows[0]).toHaveTextContent("0.25 tROME");
-    expect(rows[0]).toHaveTextContent("0.000003507 tROME");
+    expect(rows[0]).toHaveTextContent("0.0000035 tROME");
     expect(cells.getByText("Success")).toBeInTheDocument();
     expect(rows[1]).toHaveTextContent("Failed (reverted)");
     expect(rows[1]).toHaveTextContent("creates contract");
