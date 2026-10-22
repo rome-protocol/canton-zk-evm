@@ -3,7 +3,6 @@
  * A single file becomes one source with the settings the fields give; standard JSON is taken as it is, except for what must not be the submitter's to
  * choose (the output selection, and any source that names a file or an address instead of holding its text).
  */
-import type { CompiledCode } from "./match.ts";
 
 /** A request that cannot be run at all: the reason is for the person who sent it. */
 export class RequestError extends Error {}
@@ -42,7 +41,7 @@ export interface Prepared {
   license: string | null;
 }
 
-const OUTPUT = ["abi", "metadata", "evm.bytecode.object", "evm.bytecode.linkReferences", "evm.deployedBytecode.object", "evm.deployedBytecode.linkReferences", "evm.deployedBytecode.immutableReferences"];
+const OUTPUT = ["evm.deployedBytecode.object"];
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -138,13 +137,8 @@ export function prepare(req: VerifyRequest, maxBytes = MAX_SOURCE_BYTES): Prepar
   };
 }
 
-export interface Picked {
-  path: string;
-  name: string;
-  compiled: CompiledCode;
-  abi: unknown[];
-  metadata: Record<string, unknown> | null;
-}
+/** The contract a request names, found in the compiler's output. */
+export interface Picked { path: string; name: string }
 
 /** The compiler's errors (not its warnings), as one text for the person who submitted, or null when there are none. */
 export function compilerErrors(output: Record<string, unknown>): string | null {
@@ -154,7 +148,7 @@ export function compilerErrors(output: Record<string, unknown>): string | null {
   return bad.slice(0, 3).map((e) => (e.formattedMessage ?? e.message ?? "an error").trim()).join("\n").slice(0, 1500);
 }
 
-/** The contract the request names, from the compiler's output. Throws RequestError when it is not there, is ambiguous, or has no code. */
+/** The contract the request names, from the compiler's output (the path when the request gave only the name). Throws RequestError when it is not there, is ambiguous, or has no code. */
 export function pickContract(output: Record<string, unknown>, p: Pick<Prepared, "path" | "name">): Picked {
   const contracts = isObject(output.contracts) ? output.contracts : {};
   const found: { path: string; c: Record<string, unknown> }[] = [];
@@ -167,19 +161,7 @@ export function pickContract(output: Record<string, unknown>, p: Pick<Prepared, 
   if (found.length > 1) throw new RequestError(`there is more than one contract named ${p.name} (${found.map((f) => f.path).join(", ")}): give the contract name as path:Name`);
   const { path, c } = found[0]!;
   const evm = isObject(c.evm) ? c.evm : {};
-  const bc = isObject(evm.bytecode) ? evm.bytecode : {};
   const dc = isObject(evm.deployedBytecode) ? evm.deployedBytecode : {};
-  const creation = typeof bc.object === "string" ? bc.object : "";
-  const runtime = typeof dc.object === "string" ? dc.object : "";
-  if (runtime === "") throw new RequestError(`${p.name} has no code (an interface or an abstract contract cannot be deployed)`);
-  let metadata: Record<string, unknown> | null = null;
-  if (typeof c.metadata === "string") { try { const m = JSON.parse(c.metadata); if (isObject(m)) metadata = m; } catch { /* kept null */ } }
-  return {
-    path, name: p.name, abi: Array.isArray(c.abi) ? c.abi : [], metadata,
-    compiled: {
-      creation, creationLinks: (isObject(bc.linkReferences) ? bc.linkReferences : {}) as CompiledCode["creationLinks"],
-      runtime, runtimeLinks: (isObject(dc.linkReferences) ? dc.linkReferences : {}) as CompiledCode["runtimeLinks"],
-      immutables: (isObject(dc.immutableReferences) ? dc.immutableReferences : {}) as CompiledCode["immutables"],
-    },
-  };
+  if (typeof dc.object !== "string" || dc.object === "") throw new RequestError(`${p.name} has no code (an interface or an abstract contract cannot be deployed)`);
+  return { path, name: p.name };
 }

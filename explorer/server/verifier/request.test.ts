@@ -65,9 +65,7 @@ describe("the compiler's output", () => {
   });
   it("gives the contract the request names", () => {
     const p = pickContract(out(), { path: "a.sol", name: "A" });
-    expect(p.compiled.runtime).toBe("6001");
-    expect(p.compiled.immutables).toEqual({ "3": [{ start: 1, length: 32 }] });
-    expect(p.metadata).toEqual({ language: "Solidity" });
+    expect(p).toEqual({ path: "a.sol", name: "A" });
   });
   it("refuses a name that is in two files, a missing contract, and one with no code", () => {
     expect(() => pickContract(out(), { path: null, name: "A" })).toThrow(/more than one/);
