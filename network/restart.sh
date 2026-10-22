@@ -64,6 +64,7 @@ done
 shopt -u nullglob
 # shellcheck disable=SC1091
 . "$ROOT/prover/common.sh"   # ZisK's paths
+STATE=$CZE_STATE_DIR   # prover/common.sh sets STATE to the prover's folder; from here on it is the chain's again
 command -v cargo-zisk >/dev/null || fail "ZisK is not installed (prover/install.sh)"
 
 if [ "$CANTON_MODE" != external ]; then
