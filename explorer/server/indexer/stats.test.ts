@@ -283,6 +283,18 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     expect((await pool.query("select count(*)::int as n from stats_dirty")).rows[0].n).toBe(1);
   }));
 
+  it("each row keeps its busiest minute's transactions: the minute's own, the largest of an hour's minutes, the largest of a day's hours", () => inDb(async (pool) => {
+    await block(pool, 1, 10, { txs: 2 });
+    await block(pool, 2, 20, { txs: 3 });
+    await block(pool, 3, 70, { txs: 4 });
+    await block(pool, 4, 3600 + 5, { txs: 1 });
+    await rollupStats(pool, { now: () => T0 + 2 * HOUR });
+    const m = (await pool.query("select bucket, max_minute_txs from stats_minute order by bucket")).rows.map((r) => r.max_minute_txs);
+    expect(m).toEqual([5, 4, 1]);
+    expect((await pool.query("select max_minute_txs from stats_hour order by bucket")).rows.map((r) => r.max_minute_txs)).toEqual([5, 1]);
+    expect((await pool.query("select max_minute_txs from stats_day")).rows[0].max_minute_txs).toBe(5);
+  }));
+
   it("a clock that goes back does not lose or double anything", () => inDb(async (pool) => {
     await block(pool, 1, 10);
     await rollupStats(pool, { now: () => T0 + 5 * MINUTE });

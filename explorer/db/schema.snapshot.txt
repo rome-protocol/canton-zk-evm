@@ -448,6 +448,7 @@ table stats_day
   column ttf_without_acceptance integer not null default 0
   column clock_skew integer not null default 0
   column max_txs_in_block integer not null default 0
+  column max_minute_txs integer not null default 0
   column gas_limit_sum bigint not null default 0
   column traffic_bytes bigint not null default 0
   column traffic_updates integer not null default 0
@@ -499,6 +500,7 @@ table stats_hour
   column ttf_without_acceptance integer not null default 0
   column clock_skew integer not null default 0
   column max_txs_in_block integer not null default 0
+  column max_minute_txs integer not null default 0
   column gas_limit_sum bigint not null default 0
   column traffic_bytes bigint not null default 0
   column traffic_updates integer not null default 0
@@ -544,6 +546,7 @@ table stats_minute
   column ttf_without_acceptance integer not null default 0
   column clock_skew integer not null default 0
   column max_txs_in_block integer not null default 0
+  column max_minute_txs integer not null default 0
   column gas_limit_sum bigint not null default 0
   column traffic_bytes bigint not null default 0
   column traffic_updates integer not null default 0

@@ -41,7 +41,7 @@ const count = (set: Record<number, number>) => hist(CL, set);
 
 const ZERO = {
   blocks: 0, empty_blocks: 0, busy_blocks: 0, txs: 0, txs_failed: 0, gas_used: 0, argument_bytes: 0, accepted: 0, lost: 0, attempts_refused: 0, attempts_failed: 0, attempts: 0,
-  attempts_not_taken: 0, ttf_without_acceptance: 0, clock_skew: 0, max_txs_in_block: 0, gas_limit_sum: 0, traffic_bytes: 0, traffic_updates: 0, proof_busy_ms: 0, test_blocks: 0,
+  attempts_not_taken: 0, ttf_without_acceptance: 0, clock_skew: 0, max_txs_in_block: 0, max_minute_txs: 0, gas_limit_sum: 0, traffic_bytes: 0, traffic_updates: 0, proof_busy_ms: 0, test_blocks: 0,
   test_txs: 0, test_attempts: 0, test_proof_busy_ms: 0,
   busy_gap_hist: [], time_to_final_hist: [], proof_hist: [], commit_hist: [], served_hist: [], txs_per_block_hist: [], proof_size_hist: [],
 };
@@ -134,30 +134,30 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     await base(pool);
     get = apiFor(pool, () => NOW);
     // Minute rows. 11:30 is outside the 1 h window (11:31 to 12:30 inclusive), and has the most transactions of all.
-    await seed(pool, "stats_minute", t(11, 30), { blocks: 1, txs: 1000, max_txs_in_block: 1000, busy_gap_hist: time({ [A]: 1 }), proof_busy_ms: 999999 });
+    await seed(pool, "stats_minute", t(11, 30), { blocks: 1, txs: 1000, max_minute_txs: 1000, max_txs_in_block: 1000, busy_gap_hist: time({ [A]: 1 }), proof_busy_ms: 999999 });
     await seed(pool, "stats_minute", t(11, 31), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 4, gas_used: 100, gas_limit_sum: 2000, argument_bytes: 400, accepted: 4, attempts: 1, max_txs_in_block: 4, proof_busy_ms: 30000,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 4, max_minute_txs: 4, gas_used: 100, gas_limit_sum: 2000, argument_bytes: 400, accepted: 4, attempts: 1, max_txs_in_block: 4, proof_busy_ms: 30000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 4 }), proof_hist: time({ [B]: 1 }), commit_hist: time({ [B]: 1 }), served_hist: time({ [B]: 1 }),
       txs_per_block_hist: count({ 0: 1, 4: 1 }), proof_size_hist: hist(5 * TL, { [B]: 1 }, 1 * TL),
     });
     await seed(pool, "stats_minute", t(12, 28), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, lost: 1, dropped: 1, replaced: 2, attempts: 3, attempts_refused: 1,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, lost: 1, dropped: 1, replaced: 2, attempts: 3, attempts_refused: 1,
       attempts_failed: 1, ttf_without_acceptance: 1, clock_skew: 1, max_txs_in_block: 6, traffic_bytes: 1000, traffic_updates: 2, proof_busy_ms: 60000,
       test_blocks: 1, test_txs: 9, test_attempts: 1, test_proof_busy_ms: 5000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 1, [C]: 1 }), proof_hist: time({ [A]: 1 }), served_hist: time({ [C]: 1 }),
       txs_per_block_hist: count({ 0: 1, 6: 1 }), proof_size_hist: hist(5 * TL, { [A]: 1 }, 2 * TL),
     });
     await seed(pool, "stats_minute", t(12, 29), {
-      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, lost: 2, replaced: 1, attempts: 4, attempts_refused: 1,
+      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, max_minute_txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, lost: 2, replaced: 1, attempts: 4, attempts_refused: 1,
       attempts_not_taken: 1, max_txs_in_block: 12, traffic_bytes: 2000, traffic_updates: 3, proof_busy_ms: 10000, txs_per_block_hist: count({ 6: 1, 12: 2 }),
     });
-    await seed(pool, "stats_minute", t(12, 30), { blocks: 1, size_blocks_1: 1, txs: 2, gas_used: 50, gas_limit_sum: 1000, attempts: 1, max_txs_in_block: 2, txs_per_block_hist: count({ 2: 1 }) });
+    await seed(pool, "stats_minute", t(12, 30), { blocks: 1, size_blocks_1: 1, txs: 2, max_minute_txs: 2, gas_used: 50, gas_limit_sum: 1000, attempts: 1, max_txs_in_block: 2, txs_per_block_hist: count({ 2: 1 }) });
     // Hour and day rows: 11:00 holds the 11:30 and 11:31 minutes and 12:00 the others, as the rollup would have summed them, so that a 24 h or 7 d series has data.
-    await seed(pool, "stats_hour", t(11, 0), { blocks: 3, txs: 1004, proof_busy_ms: 1029999, time_to_final_hist: time({ [B]: 4 }) });
-    await seed(pool, "stats_hour", t(12, 0), { blocks: 8, txs: 42, txs_failed: 4, time_to_final_hist: time({ [B]: 5, [C]: 1 }), proof_busy_ms: 100000 });
-    await seed(pool, "stats_day", Date.UTC(2026, 9, 19), { txs: 500, active_addresses: null });
-    await seed(pool, "stats_day", Date.UTC(2026, 9, 17), { txs: 70, active_addresses: 5, new_addresses: 2, new_contracts: 1, verified_contracts: 0 });
-    await seed(pool, "stats_day", Date.UTC(2026, 9, 20), { txs: 1046, active_addresses: 11, new_addresses: 4, new_contracts: 2, verified_contracts: 1 });
+    await seed(pool, "stats_hour", t(11, 0), { blocks: 3, txs: 1004, max_minute_txs: 1000, proof_busy_ms: 1029999, time_to_final_hist: time({ [B]: 4 }) });
+    await seed(pool, "stats_hour", t(12, 0), { blocks: 8, txs: 42, max_minute_txs: 30, txs_failed: 4, time_to_final_hist: time({ [B]: 5, [C]: 1 }), proof_busy_ms: 100000 });
+    await seed(pool, "stats_day", Date.UTC(2026, 9, 19), { txs: 500, max_minute_txs: 400, active_addresses: null });
+    await seed(pool, "stats_day", Date.UTC(2026, 9, 17), { txs: 70, max_minute_txs: 50, active_addresses: 5, new_addresses: 2, new_contracts: 1, verified_contracts: 0 });
+    await seed(pool, "stats_day", Date.UTC(2026, 9, 20), { txs: 1046, max_minute_txs: 1000, active_addresses: 11, new_addresses: 4, new_contracts: 2, verified_contracts: 1 });
     await pool.query("insert into cursors (stream, position, detail, updated_at) values ('stats_rollup', $1, $2, $3)", [t(12, 30), JSON.stringify({ extrasAt: NOW - 60_000 }), at(NOW - 5000)]);
 
     // Live facts. The blocks: 6 transactions 30 s ago count; 60 s ago exactly, 5 s from now, a test run's and one more minute back do not.
@@ -316,6 +316,19 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(values(ten)).toEqual([0, 0, 0, 0, 36, 2]);
     expect(values(await sum("/api/stats/series?metric=tps&window=1h&step=10m"))).toEqual([0, 0, 0, 0, 36 / 600, 2 / 600]);
     expect(body(await get("/api/stats/series?metric=tps&window=1h")).points.find((p: { at: string }) => p.at.endsWith("12:29:00.000Z")).value).toBe(0.5);
+  });
+
+  it("draws the busiest minute of each step as a rate: the largest minute's transactions over 60 s, from minutes for a short window and from the hour and day rows for a long one", async () => {
+    const one = await sum("/api/stats/series?metric=busiest_minute_tps&window=1h");
+    expect(one).toMatchObject({ metric: "busiest_minute_tps", unit: "per second", step: "1m" });
+    expect(one.points.find((p: { at: string }) => p.at.endsWith("12:29:00.000Z")).value).toBe(0.5);
+    // 10 m steps: the 12:20 step holds the 12:28 (6) and 12:29 (30) minutes: its busiest is 30, not their sum.
+    expect(values(await sum("/api/stats/series?metric=busiest_minute_tps&window=1h&step=10m"))).toEqual([0, 0, 0, 0, 30 / 60, 2 / 60]);
+    const day = await sum("/api/stats/series?metric=busiest_minute_tps&window=24h&step=1h");
+    expect(day.points.find((p: { at: string }) => p.at.endsWith("11:00:00.000Z")).value).toBe(1000 / 60);
+    expect(day.points.find((p: { at: string }) => p.at.endsWith("12:00:00.000Z")).value).toBe(30 / 60);
+    const days = await sum("/api/stats/series?metric=busiest_minute_tps&window=7d&step=1d");
+    expect(days.points.find((p: { at: string }) => p.at.startsWith("2026-10-19")).value).toBe(400 / 60);
   });
 
   it("draws rates, shares and times: null where there is nothing to divide or to rank", async () => {

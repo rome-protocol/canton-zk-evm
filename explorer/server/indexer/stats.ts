@@ -16,7 +16,7 @@ export const TABLES = { minute: "stats_minute", hour: "stats_hour", day: "stats_
 
 export const SCALARS = [
   "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "dropped", "replaced", "attempts_refused", "attempts_failed",
-  "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates",
+  "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "max_minute_txs", "gas_limit_sum", "traffic_bytes", "traffic_updates",
   "proof_busy_ms", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "test_blocks", "test_txs", "test_attempts", "test_proof_busy_ms",
 ] as const;
 type Scalar = (typeof SCALARS)[number];
@@ -37,13 +37,13 @@ function bump(r: Row, c: Hist, i: number, by = 1): void {
 }
 const hist = (kind: Kind, seconds: number): number => bucketOf(kind, seconds);
 
-/** Sum rows of a finer table into one row of the next (max for the largest block, sums for the rest, histograms added). */
+/** Sum rows of a finer table into one row of the next (max for the largest block and the busiest minute, sums for the rest, histograms added). */
 function aggregate(rows: readonly Record<string, unknown>[]): Row {
   const out = newRow();
   for (const r of rows) {
     for (const s of SCALARS) {
       const v = Number(r[s] ?? 0);
-      out.scalars[s] = s === "max_txs_in_block" ? Math.max(out.scalars[s], v) : out.scalars[s] + v;
+      out.scalars[s] = s === "max_txs_in_block" || s === "max_minute_txs" ? Math.max(out.scalars[s], v) : out.scalars[s] + v;
     }
   }
   for (const c of Object.keys(HISTS) as Hist[]) {
@@ -189,6 +189,7 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
     const r2 = at(x.outcome === "committed" ? ans : null);
     if (r2 && sub !== null && ans !== null) { const d = seconds(r2, sub, ans); if (d !== null) bump(r2, "commit_hist", hist("time", d)); }
   }
+  for (const r of rows.values()) r.scalars.max_minute_txs = r.scalars.txs;
   return rows;
 }
 

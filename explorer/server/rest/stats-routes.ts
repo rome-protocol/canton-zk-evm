@@ -85,6 +85,7 @@ const extra = (c: Column): Metric => ({ unit: "count", columns: [c], steps: ["1d
 export const METRICS: Record<string, Metric> = {
   txs: count("txs"),
   tps: { unit: "per second", columns: ["txs"], none: 0, value: (rows, step) => sum(rows, "txs") / (step / 1000) },
+  busiest_minute_tps: { unit: "per second", columns: ["max_minute_txs"], none: 0, value: (rows) => max(rows, "max_minute_txs") / 60 },
   blocks: count("blocks"),
   empty_blocks: count("empty_blocks"),
   txs_per_block: { unit: "transactions", columns: ["txs", "blocks"], none: null, value: (rows) => ratio(sum(rows, "txs"), sum(rows, "blocks")) },

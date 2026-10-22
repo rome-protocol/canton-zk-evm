@@ -7,6 +7,7 @@ alter table stats_minute
   add column ttf_without_acceptance integer  not null default 0,  -- final transactions with no acceptance time: counted apart from the time to final
   add column clock_skew             integer  not null default 0,  -- negative durations left out of the histograms
   add column max_txs_in_block       integer  not null default 0,
+  add column max_minute_txs         integer  not null default 0,  -- the most transactions in any one minute of the row (a minute's own count in a minute row)
   add column gas_limit_sum          bigint   not null default 0,
   add column traffic_bytes          bigint   not null default 0,
   add column traffic_updates        integer  not null default 0,  -- updates that reported traffic
@@ -24,6 +25,7 @@ alter table stats_hour
   add column ttf_without_acceptance integer  not null default 0,
   add column clock_skew             integer  not null default 0,
   add column max_txs_in_block       integer  not null default 0,
+  add column max_minute_txs         integer  not null default 0,  -- the most transactions in any one minute of the row (a minute's own count in a minute row)
   add column gas_limit_sum          bigint   not null default 0,
   add column traffic_bytes          bigint   not null default 0,
   add column traffic_updates        integer  not null default 0,
@@ -41,6 +43,7 @@ alter table stats_day
   add column ttf_without_acceptance integer  not null default 0,
   add column clock_skew             integer  not null default 0,
   add column max_txs_in_block       integer  not null default 0,
+  add column max_minute_txs         integer  not null default 0,  -- the most transactions in any one minute of the row (a minute's own count in a minute row)
   add column gas_limit_sum          bigint   not null default 0,
   add column traffic_bytes          bigint   not null default 0,
   add column traffic_updates        integer  not null default 0,
