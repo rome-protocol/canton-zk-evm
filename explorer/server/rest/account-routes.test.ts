@@ -10,6 +10,7 @@ import type { Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
 import { createAccountRest } from "./account-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
+import { PARTIAL_MATCH_NOTE } from "./account-rest.ts";
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { NO_ADDRESS, NO_CONTRACT, NO_LEG, NO_TOKEN } from "./account-routes.ts";
 
@@ -255,6 +256,21 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(empty).toMatchObject({ verified: false, files: [], abi: null, settings: null, language: null, matchType: null });
     expect(await get(`/api/contracts/${h(0x01)}`)).toEqual({ status: 404, body: { error: NO_CONTRACT } });
     expect(await get(`/api/contracts/${h(0x01)}/source`)).toEqual({ status: 404, body: { error: NO_CONTRACT } });
+  });
+
+  it("warns about a partial match, on the contract and on its source, and about nothing else", async () => {
+    expect(body(await get(`/api/contracts/${K}/source`)).matchNote).toBeNull();
+    expect(body(await get(`/api/contracts/${K}`)).verification.matchNote).toBeNull();
+    expect(body(await get(`/api/contracts/${C}/source`)).matchNote).toBeNull();
+    await pool.query("update verified_sources set match_type = 'partial' where address = $1", [Buffer.from(K.slice(2), "hex")]);
+    try {
+      const source = body(await get(`/api/contracts/${K}/source`));
+      expect(source).toMatchObject({ matchType: "partial", matchNote: PARTIAL_MATCH_NOTE });
+      expect(body(await get(`/api/contracts/${K}`)).verification.matchNote).toBe(PARTIAL_MATCH_NOTE);
+      expect(PARTIAL_MATCH_NOTE).toBe("Partial match: the metadata differs from this compile. Code that reads its own or another contract's code (type(X).creationCode/runtimeCode, codecopy, extcodecopy, address(this).code) may act differently from this source's compile; only a full match is byte-for-byte.");
+    } finally {
+      await pool.query("update verified_sources set match_type = 'full' where address = $1", [Buffer.from(K.slice(2), "hex")]);
+    }
   });
 
   it("answers a token with its numbers, and names the ones it does not hold", async () => {

@@ -89,11 +89,11 @@ export const REST_FIELDS = {
     "creationTxHash", "lastInteractionBlock", "codeHash", "code", "proxy", "verification", "derived",
   ],
   proxy: ["kind", "implementation", "beacon", "checkedBlock"],
-  verification: ["language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion", "license", "verifiedAt"],
+  verification: ["language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion", "license", "verifiedAt", "matchNote"],
   /** The verified source and ABI; every field after `verified` is empty (null, or an empty list) while nothing is verified. */
   source: [
     "address", "verified", "matchType", "language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion",
-    "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt",
+    "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt", "matchNote",
   ],
   sourceFile: ["path", "content"],
   tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus"],
