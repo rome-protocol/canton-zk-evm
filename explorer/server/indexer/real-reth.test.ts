@@ -18,6 +18,7 @@
  */
 import { keccak256, toHex } from "viem";
 import { describe, expect, it } from "vitest";
+import { B1_MS, B2_MS } from "../../test/budgets.ts";
 import type { Pool } from "pg";
 import { createLedger } from "../ledger.ts";
 import { readProofFacts } from "../proof.ts";
@@ -173,7 +174,8 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
     expect(Number.isInteger(W1_BLOCK) && W1_BLOCK > 0, "set EXPLORER_TEST_W1_BLOCK to the block that Stress.sol filled").toBe(true);
     const gateway = (process.env.GATEWAY_ADDRESS ?? "").toLowerCase();
     expect(gateway).toMatch(/^0x[0-9a-f]{40}$/);
-    // Stage 2 inline is the default; the measurements below are for both shapes of the design's section 4.3, so the second is run as `behind`.
+    // Stage 2 `behind` is the default (W1's worst-case block takes more than B1 for both stages together inline, see docs/METRICS.md); the measurements below are for both
+    // shapes of the design's section 4.3, and the budgets are asserted for the default, `behind`.
     for (const shape of ["inline", "behind"] as const) {
       await withDatabase(async (pool: Pool) => {
         const { migrate } = await import("../db/migrate.ts");
@@ -221,6 +223,16 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
           console.log(`W1 ${shape} block's shape: ${shape1.ok} transactions succeeded, ${shape1.failed} failed, ${shape1.calls} internal calls, ${shape1.logs} logs`);
           expect(Number(shape1.ok), "the Stress calls must succeed, or the block is not the costly one").toBeGreaterThan(0);
           expect(Number(shape1.logs)).toBeGreaterThan(0);
+          // The token traffic of the block (test/fixtures/Flood.sol): ERC-20 transfers to new holders, ERC-1155 batches, and tokens made in the block. Without it
+          // stage 2's token path would not be in the time that sets INDEX_DERIVE.
+          const tok = (await pool.query(
+            `select (select count(*) from token_transfers where block_number = $1) as transfers,
+                    (select count(*) from token_transfers where block_number = $1 and token_id is not null) as nft_legs,
+                    (select count(*) from tokens where first_transfer_block = $1) as tokens,
+                    (select count(*) from tokens where first_transfer_block = $1 and metadata_status = 'read') as read,
+                    (select count(*) from tokens where first_transfer_block = $1 and metadata_status = 'failed') as failed,
+                    (select count(distinct to_address) from token_transfers where block_number = $1) as holders`, [W1_BLOCK])).rows[0];
+          console.log(`W1 ${shape} block's token traffic: ${tok.transfers} transfers (${tok.nft_legs} ERC-1155 legs) to ${tok.holders} accounts, ${tok.tokens} new tokens, ${tok.read} with their metadata read, ${tok.failed} failed (the Burners and the FatReturn)`);
           const t0 = Date.now();
           const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
           const readMs = Date.now() - t0;
@@ -232,9 +244,17 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
             + `reads in stage 1 ${s1.readMs} ms (block, receipts${shape === "inline" ? ", traces" : ""}), stage 1 write ${s1.writeMs} ms, `
             + `stage 2 reads ${s2.readMs} ms, stage 2 write ${s2.writeMs} ms; all three reads again ${readMs} ms, the trace read alone ${traceMs} ms; `
             + `${timings.filter((t) => t.stage === 1).length} blocks in all`);
+          // After the timings are said, so that a run that falls short of the shape still prints them.
+          expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(70_000);
+          expect(Number(tok.nft_legs), "the shared-array batches must succeed").toBeGreaterThanOrEqual(70_000);
+          expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(6);
+          expect(Number(tok.failed), "the Burners' reads spend all the gas they get and the FatReturn's answer is over 4 KB: all four are read as failed, and stage 2 goes on").toBeGreaterThanOrEqual(4);
           // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
-          expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(1000);
-          expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(3000);
+          // They are asserted for `behind`, the default. `inline` is measured and said above; section 4.3 makes it the default only if both its stages fit B1, and they do not.
+          if (shape === "behind") {
+            expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(B1_MS);
+            expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(B2_MS);
+          }
         } finally {
           await indexer.close();
         }

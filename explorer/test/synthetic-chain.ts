@@ -8,7 +8,7 @@ import type { Pins } from "../server/config.ts";
 import type { BlockRecord, Ledger } from "../server/ledger.ts";
 import { LEG_TOPIC } from "../server/indexer/legs.ts";
 import { RethError } from "../server/reth.ts";
-import type { FinalBlock, FinalReads, FinalReceipt, FinalTx, TraceFrame, TxTrace } from "../server/indexer/reads.ts";
+import { answerOfCall, type FinalBlock, type FinalReads, type FinalReceipt, type FinalTx, type TraceFrame, type TxTrace } from "../server/indexer/reads.ts";
 
 export const GATEWAY = "0x" + "9a".repeat(20);
 export const PINS: Pins = { programVK: "0x" + "a1".repeat(32), rootC: "0x" + "b2".repeat(32), file: "test-pins.txt" };
@@ -121,7 +121,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
 export interface SyntheticChain {
   blocks: SyntheticBlock[];
   /** reth, serving blocks 0 to `rethHead`. */
-  reads: FinalReads & { calls: Record<string, number>; rethHead: number; rethFinalized: number | null; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string>; storage: Record<string, string>; liveCode: Record<string, string>; callResults: Record<string, string> };
+  reads: FinalReads & { calls: Record<string, number>; rethHead: number; rethFinalized: number | null; /** The code at block 0, by lowercase address; an account not named has none. */ codes: Record<string, string>; storage: Record<string, string>; liveCode: Record<string, string>; callResults: Record<string, string>; /** The coin balance of an account at a block, by "address:block"; else by the address alone, else 0. */ balances: Record<string, bigint> };
   /** The Ledger API, serving the records of blocks 1 to `ledgerHead`. */
   ledger: Ledger & { ledgerHead: number; pageSize: number; failAfterPages: number | null };
   genesisHash: string;
@@ -145,7 +145,7 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS, instance = 0)
   const reads = {
     calls, rethHead: shapes.length, rethFinalized: null as number | null, codes: {} as Record<string, string>,
     /** Storage words by "address:slot" (the gateway's legs are served for it), the code an account holds after block 0, and eth_call answers by "address:input". */
-    storage: {} as Record<string, string>, liveCode: {} as Record<string, string>, callResults: {} as Record<string, string>,
+    storage: {} as Record<string, string>, liveCode: {} as Record<string, string>, callResults: {} as Record<string, string>, balances: {} as Record<string, bigint>,
     block: async (n: number) => { count("block"); return n === 0 ? genesis : n <= reads.rethHead ? (blocks[n - 1]!.block) : null; },
     hashAt: async (n: number) => { count("hashAt"); return n === 0 ? genesis.hash : n <= reads.rethHead ? blocks[n - 1]!.block.hash : null; },
     /** reth's finalized number: `rethFinalized` when a test sets it, else its head. */
@@ -161,8 +161,9 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS, instance = 0)
       count("call");
       const r = reads.callResults[`${to}:${input}`];
       if (r === undefined) throw new RethError("eth_call: reth answered \"execution reverted\"", true);
-      return r;
+      return answerOfCall(r); // the bound on an answer is the real one
     },
+    balance: async (a: string, n: number) => { count("balance"); return reads.balances[`${a}:${n}`] ?? reads.balances[a] ?? 0n; },
     rpc: async () => { throw new Error("not used"); },
   } as unknown as SyntheticChain["reads"];
   const ledger = {

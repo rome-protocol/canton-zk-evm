@@ -2,8 +2,9 @@
  * Proxy detection for the contracts a block made (design sections 4.3 and 5.2): the EIP-1967 implementation and beacon slots, the EIP-1822 slot (all
  * read with `eth_getStorageAt` at the block) and the EIP-1167 minimal proxy, which is recognised from its code. A proxy is looked at once, in the
  * block that made it, and again in each later block that has an `Upgraded(address)` or `BeaconUpgraded(address)` log from it (the way a proxy is pointed at
- * a new implementation, or at its first one after it was made); `checked_block` says when, so the API serves the implementation as of that block.
- * A proxy that changes its slot without one of those logs is not seen again.
+ * a new implementation, or at its first one after it was made), or an `Upgraded(address)` log from its beacon (`UpgradeableBeacon.upgradeTo` logs from the
+ * beacon, so the proxies behind it are looked at again, and each takes the beacon's new implementation); `checked_block` says when, so the API serves the
+ * implementation as of that block. A proxy that changes its slot or its beacon's answer without one of those logs is not seen again.
  */
 import { hexToBigInt, keccak256, toHex } from "viem";
 import type { PoolClient } from "pg";
@@ -77,9 +78,17 @@ export async function writeProxies(c: Pick<PoolClient, "query">, n: number, crea
      where l.block_number = $1 and l.topic0 = any($2::bytea[]) and (k.origin = 'genesis' or k.creation_block <= $1)`,
     [n, UPGRADE_TOPICS.map(bytea)],
   );
-  for (const r of again.rows) {
+  // A beacon that says it was upgraded: every proxy behind it.
+  const behind = await c.query(
+    `select distinct encode(p.proxy, 'hex') as a from logs l join proxies p on p.beacon = l.address where l.block_number = $1 and l.topic0 = $2::bytea`,
+    [n, bytea(UPGRADE_TOPICS[0]!)],
+  );
+  const queued = new Set(last.keys());
+  for (const r of [...again.rows, ...behind.rows]) {
     const address = "0x" + (r.a as string);
-    if (!last.has(address)) todo.push({ address, creator: address, txIndex: 0, traceAddress: [], runtimeCode: "0x", initCode: "0x" });
+    if (queued.has(address)) continue;
+    queued.add(address);
+    todo.push({ address, creator: address, txIndex: 0, traceAddress: [], runtimeCode: "0x", initCode: "0x" });
   }
   const found: ProxyRow[] = [];
   for (let i = 0; i < todo.length; i += WIDTH) {

@@ -20,6 +20,7 @@ import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
+import { checkBalances, type BalanceCheck } from "./balances.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
 import { checkLegs, legsOf, stage1, type Stage1Input } from "./stage1.ts";
@@ -395,6 +396,9 @@ export function createIndexer(o: IndexerOptions) {
     }
   }
 
+  /** One turn of the background check of balances (balances.ts), behind the derive cursor. */
+  const balancesOnce = (opts?: { blocks?: number; tokenBatch?: number }): Promise<BalanceCheck> => checkBalances(o.pool, o.reads, opts);
+
   /** Stage 2 alone, for the `behind` shape. */
   async function deriveOnce(): Promise<RunResult> {
     if (stopped) return { state: "stopped", indexed: 0, stop: stopped };
@@ -473,6 +477,25 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < checkMs; waited += 50) await sleep(50);
       }
     };
+    // The check of balances reads from reth at older blocks and is never on the way of a block, so a failure is logged and said as the other reads are.
+    const balancesLoop = async () => {
+      let errors = 0;
+      while (running) {
+        let again = false;
+        try {
+          const r = await balancesOnce();
+          errors = 0;
+          await report("balances", null);
+          again = r.blocks + r.checked + r.retried > 0;
+        } catch (e) {
+          if (!(e instanceof Paused)) {
+            log(`indexer (balances): ${(e as Error).message}`);
+            if (e instanceof RethError && ++errors >= errorLimit) await report("balances", e.message);
+          }
+        }
+        if (!again) for (let waited = 0; running && waited < checkMs; waited += 50) await sleep(50);
+      }
+    };
     const journalMs = o.journalMs ?? 1000;
     const journalLoop = async () => {
       while (running && lifecycleOn) {
@@ -499,7 +522,7 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < auditMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks(), journalLoop(), audits()]);
+    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits()]);
     return async () => { stopRequested = true; running = false; await finished; };
   }
 
@@ -540,7 +563,7 @@ export function createIndexer(o: IndexerOptions) {
     return written;
   }
 
-  return { open, close, runOnce, deriveOnce, checkOnce, auditOnce, loadJournal, start, rebuild, stopped: () => stopped };
+  return { open, close, runOnce, deriveOnce, balancesOnce, checkOnce, auditOnce, loadJournal, start, rebuild, stopped: () => stopped };
 }
 
 export type Indexer = ReturnType<typeof createIndexer>;

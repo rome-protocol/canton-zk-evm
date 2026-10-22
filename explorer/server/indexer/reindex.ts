@@ -15,7 +15,8 @@
  *
  * It takes the reindex lock exclusively. The live indexer takes it shared inside each of its transactions and, while a reindex holds it,
  * does nothing and tries again: its lag shows in the health. The aggregates (address counters, contract and token counts, balances) are
- * rebuilt here from the fact tables as the slices that add them land; this slice has none.
+ * rebuilt here from the fact tables once the range is written (aggregates.ts), in one transaction: a range recomputes every aggregate row it touches from
+ * all of that row's facts, and marks the balances read from reth as unchecked, for the background check to read again.
  */
 import type { Pool, PoolClient } from "pg";
 import { IndexerStop } from "./errors.ts";
@@ -24,6 +25,7 @@ import type { FinalReads, TxTrace } from "./reads.ts";
 import { transactionHashes } from "./rlp.ts";
 import { checkLegs, legsOf, writeBlockRow, writeFacts } from "./stage1.ts";
 import { deriveCursor, rederive } from "./stage2.ts";
+import { rebuildAggregates } from "./aggregates.ts";
 
 /** Any fixed number, the same for every process of this schema; not the indexer's own lock key. */
 export const REINDEX_KEY = 7_207_371_004;
@@ -105,6 +107,19 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
         c.release();
       }
       if (n % 1000 === 0) log(`reindex: block ${n} of ${last}`);
+    }
+    if (from <= derived) {
+      const c = await o.pool.connect();
+      try {
+        await c.query("begin");
+        await rebuildAggregates(c, from, last, derived, from === 1 && last === head);
+        await c.query("commit");
+      } catch (e) {
+        await c.query("rollback").catch(() => undefined);
+        throw e;
+      } finally {
+        c.release();
+      }
     }
     return { from, to: last, blocks: last - from + 1 };
   } finally {

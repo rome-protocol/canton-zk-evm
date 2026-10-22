@@ -7,6 +7,10 @@
   demo_w1.py reverts <address>             three transactions that fail, in this order: Reverts.reason() (Error(string)), overflow() (Panic(uint256))
                                            and custom() (a custom error); print their hashes, one a line
   demo_w1.py stress <address> <count>      <count> calls of Stress.run(depth, logs, creates), each as heavy as the gas below allows; print the hashes
+  demo_w1.py flood <address> <kind> <count>  <count> calls of explorer/test/fixtures/Flood.sol, each as heavy as the gas below allows; print the hashes.
+                                           kind: transfers (Flood: ERC-20 transfers to new holders), mint (Multi: 4,096 ERC-1155 ids to the Multi contract, once, in an earlier block),
+                                           batches (Multi: 18 ERC-1155 batches of 4,096 ids that share one array, from the holder of the ids to new holders)
+                                           or spawn (Flood: new tokens that need their metadata read, a third of them Burners whose reads spend all their gas, and one a FatReturn whose reads answer 680 KB)
 
 The transactions wait in reth's pool until the builder cuts a block. The failed calls carry a gas limit of their own, so that reth takes them.
 """
@@ -24,6 +28,11 @@ STRESS_GAS = 2_000_000
 LAB_GAS = 4_000_000
 LAB_FUNCTIONS = ("build()", "undone()", "kill()")
 DEPTH, LOGS, CREATES = 14, 10, 1
+# Per call: the count in the call and its gas limit. With STRESS_GAS, a Transfer log costs about 2.4k gas with the holder worked out, and a token made with
+# its mint about 120k. A batch of 4,096 ids that shares one array for ids and values is a 131,168-byte log, 1.07M gas each (measured on anvil, Prague), so 18 of
+# them use 19.26M, in one call of 19.6M: that is what is left of the 30 Mgas cap beside the other calls of the W1 block (the calls' gas limits add up to 27.6M).
+FLOOD = {"transfers": ("transfers(uint256,uint256)", 700, STRESS_GAS), "batches": ("batches(uint256,uint256)", 18, 19_600_000), "spawn": ("spawn(uint256)", 10, STRESS_GAS),
+         "mint": ("mint()", None, 10_000_000)}
 
 
 def selector(signature: str) -> str:
@@ -47,6 +56,14 @@ def main(argv: list) -> int:
         data = selector("run(uint256,uint256,uint256)") + encode(["uint256", "uint256", "uint256"], [DEPTH, LOGS, CREATES]).hex()
         for _ in range(int(argv[2])):
             print(evm.send(folder, "v", argv[1], data, STRESS_GAS))
+        return 0
+    if cmd == ["flood"] and len(argv) == 4 and argv[2] in FLOOD and argv[3].isdigit():
+        signature, n, gas = FLOOD[argv[2]]
+        for seed in range(int(argv[3])):
+            # Every call has a seed of its own, so its holders are new.
+            args = [] if n is None else [n] if argv[2] == "spawn" else [n, seed + 1]
+            data = selector(signature) + encode(["uint256"] * len(args), args).hex()
+            print(evm.send(folder, "v", argv[1], data, gas))
         return 0
     print(__doc__, file=sys.stderr)
     return 2

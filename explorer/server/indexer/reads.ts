@@ -6,7 +6,7 @@
 import { RethError } from "../reth.ts";
 
 export const FINAL_READ_METHODS: ReadonlySet<string> = new Set([
-  "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode", "eth_call",
+  "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode", "eth_call", "eth_getBalance",
 ]);
 
 type Json = Record<string, unknown>;
@@ -148,8 +148,23 @@ function trace(v: unknown): TxTrace {
   return { transactionHash: hash(t.transactionHash), output: data(t.output ?? "0x"), calls: list(t.trace).length, error: top?.error ?? null, frames };
 }
 
+/** The default gas limit of a read, and the most data an answer to one may carry (4 KB). Honest name, symbol, decimals, total supply and balance reads cost a few thousand gas (tens of thousands behind a proxy) and answer a few hundred bytes; memory expansion bounds what reth builds for a call with a lower limit. */
+export const DEFAULT_READ_CALL_GAS = 100_000;
+export const MAX_READ_ANSWER_BYTES = 4096;
+
+/** What an `eth_call` answered, as data. An answer longer than the bound is no answer (the same answered path as a call that ran out of gas), before any decoding. */
+export function answerOfCall(result: unknown): string {
+  if (typeof result === "string" && result.length > 2 + 2 * MAX_READ_ANSWER_BYTES) throw new RethError(`eth_call: the answer is longer than ${MAX_READ_ANSWER_BYTES} bytes`, true);
+  try {
+    return data(result);
+  } catch (e) {
+    throw new RethError(`eth_call: ${(e as Error).message}`);
+  }
+}
+
 /** `traceTimeoutMs` is for the trace replay of a block, which can take much longer than the other reads (a heavy block is replayed whole). */
-export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs: number = timeoutMs) {
+/** `callGas` is the gas limit of every `eth_call` (a contract's own reads of itself must stop at it, whatever the contract does; a call that runs out of gas is reth's error answer, so it counts as no answer). */
+export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs: number = timeoutMs, callGas: number = DEFAULT_READ_CALL_GAS) {
   let id = 0;
 
   async function rpc(method: string, params: unknown[], limitMs: number = timeoutMs): Promise<unknown> {
@@ -194,7 +209,9 @@ export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs:
     /** One storage slot of an account at block n, as 32 bytes. */
     storageAt: (account: string, slot: string, n: number) => read("eth_getStorageAt", [account, slot, tag(n)], re(/^0x[0-9a-f]{64}$/, "a storage word")),
     /** An `eth_call` at block n (a read of a contract, with no sender). */
-    call: (to: string, input: string, n: number) => read("eth_call", [{ to, data: input }, tag(n)], data),
+    call: async (to: string, input: string, n: number) => answerOfCall(await rpc("eth_call", [{ to, data: input, gas: tag(callGas) }, tag(n)])),
+    /** An account's coin balance at block n (the background check of `addresses.coin_balance`). */
+    balance: (account: string, n: number) => read("eth_getBalance", [account, tag(n)], big),
     /** An account's code at block n (`0x` for none): the genesis contracts are checked at block 0. */
     code: (account: string, n: number) => read("eth_getCode", [account, tag(n)], data),
     rpc,
