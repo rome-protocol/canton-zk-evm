@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import { createHttpServer } from "../http.ts";
 import { createStreamHub, type BlockEvent, type StreamHub } from "./stream.ts";
 
@@ -89,6 +89,25 @@ describe("GET /api/stream", () => {
     const c = await fetch(url("/api/stream"));
     expect(c.status).toBe(200);
     await c.body?.cancel();
+  });
+
+  it("closes the socket of a client that never reads, and keeps it counted until it is closed", async () => {
+    const sock = connect((server.address() as AddressInfo).port, "127.0.0.1");
+    await new Promise((ok) => sock.once("connect", ok));
+    sock.write("GET /api/stream?topics=txs HTTP/1.1\r\nhost: x\r\n\r\n");
+    sock.pause();
+    for (let i = 0; i < 50 && hub.count() < 1; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(hub.count()).toBe(1);
+    const hashes = Array.from({ length: 50 }, (_, i) => "0x" + i.toString(16).padStart(64, "0"));
+    const open = () => new Promise<number>((ok) => server.getConnections((_, n) => ok(n)));
+    let n = 0;
+    while (n < 20000 && (await open()) > 0) {
+      for (let i = 0; i < 100; i++) hub.publishBlock(block(++n), hashes);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(await open()).toBe(0);
+    expect(hub.count()).toBe(0);
+    sock.destroy();
   });
 
   it("refuses a topic that is not one, and any method but GET", async () => {

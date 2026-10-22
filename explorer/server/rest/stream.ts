@@ -15,12 +15,14 @@ export const PER_CLIENT = 4, PER_INSTANCE = 5000;
 /** Transaction hashes in a `txs` event. */
 export const TXS_MAX = 50;
 /** A client that has this many bytes waiting is too slow to keep, and is dropped (its page reconnects and resumes). */
-export const BACKLOG_MAX = 1 << 20;
+/** An event is about 4 KB, so this is some sixteen events behind. A resume's replay is not held to it: only what is still waiting when the next live event comes. */
+export const BACKLOG_MAX = 1 << 16;
 
 export interface BlockEvent { number: number; hash: string; txCount: number; recordTime: string | null; updateId: string | null }
 
 /** Where a client's bytes go. */
-export interface Sink { write(chunk: string): void; backlog(): number; end(): void }
+/** `destroy` closes the socket itself, and the client stays counted until `detach` (the socket's close): a socket that is merely ended can stay open. */
+export interface Sink { write(chunk: string): void; backlog(): number; end(): void; destroy?(): void }
 
 interface Event { id: number | null; event: string; topic: Topic; data: unknown }
 
@@ -44,7 +46,7 @@ export type Attached = { ok: true; detach(): void } | { ok: false; error: string
 export function createStreamHub(o: HubOptions = {}) {
   const keep = o.buffer ?? BUFFER_BLOCKS, perClient = o.perClient ?? PER_CLIENT, perInstance = o.perInstance ?? PER_INSTANCE, now = o.now ?? Date.now;
   const buffer: { number: number; events: Event[] }[] = [];
-  interface Client { key: string; topics: ReadonlySet<Topic>; sink: Sink }
+  interface Client { key: string; topics: ReadonlySet<Topic>; sink: Sink; cut: boolean }
   const clients = new Set<Client>();
   const perKey = new Map<string, number>();
 
@@ -67,12 +69,17 @@ export function createStreamHub(o: HubOptions = {}) {
     if (left > 0) perKey.set(c.key, left); else perKey.delete(c.key);
   }
 
-  function send(c: Client, chunk: string): void {
+  function send(c: Client, chunk: string, replay = false): void {
+    if (c.cut) return;
     try {
       c.sink.write(chunk);
-      if (c.sink.backlog() > BACKLOG_MAX) { drop(c); c.sink.end(); }
+      if (!replay && c.sink.backlog() > BACKLOG_MAX) {
+        if (c.sink.destroy) { c.cut = true; c.sink.destroy(); } else { drop(c); c.sink.end(); }
+      }
     } catch {
+      c.cut = true;
       drop(c);
+      try { c.sink.destroy?.(); } catch { /* the client is gone already */ }
     }
   }
 
@@ -110,11 +117,11 @@ export function createStreamHub(o: HubOptions = {}) {
       const key = clientKey(ip);
       if ((perKey.get(key) ?? 0) >= perClient) return { ok: false, error: `This client already has ${perClient} streams open. Close one and try again.` };
       if (clients.size >= perInstance) return { ok: false, error: "This explorer has all the streams it holds open. Try again in a moment." };
-      const c: Client = { key, topics, sink };
+      const c: Client = { key, topics, sink, cut: false };
       clients.add(c);
       perKey.set(key, (perKey.get(key) ?? 0) + 1);
       if (lastId !== null) {
-        for (const b of buffer) if (b.number > lastId) for (const e of b.events) if (topics.has(e.topic) && clients.has(c)) send(c, frame(e));
+        for (const b of buffer) if (b.number > lastId) for (const e of b.events) if (topics.has(e.topic) && clients.has(c)) send(c, frame(e), true);
       }
       return { ok: true, detach: () => drop(c) };
     },

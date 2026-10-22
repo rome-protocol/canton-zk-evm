@@ -123,6 +123,20 @@ describe("the stream hub", () => {
     expect(fine.ended).toBe(true);
     expect(hub.count()).toBe(0);
   });
+
+  it("destroys a slow client that can be destroyed, and counts it until it detaches", () => {
+    const hub = createStreamHub();
+    let destroyed = 0;
+    const slow = { ...client(10 * (1 << 20)), destroy: () => { destroyed++; } };
+    const got = hub.attach("s", all, null, slow);
+    hub.publishBlock(block(1), []);
+    hub.publishBlock(block(2), []);
+    expect(destroyed).toBe(1);
+    expect(slow.ended).toBe(false);
+    expect(hub.count()).toBe(1);
+    if (got.ok) got.detach();
+    expect(hub.count()).toBe(0);
+  });
 });
 
 describe("the request's parts", () => {

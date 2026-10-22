@@ -41,8 +41,17 @@ describe("the api's cache headers", () => {
   it("gzips a big answer for a client that accepts it, and sends a small one as it is", async () => {
     const big = await get("/api/big", { "accept-encoding": "gzip" });
     expect(big.headers.get("content-encoding")).toBe("gzip");
-    expect(big.headers.get("etag")).toBe('"big1"');
+    expect(big.headers.get("etag")).toBe('"big1-gz"');
     expect(((await big.json()) as { hex: string }).hex.length).toBe(4000);
     expect((await get("/api/cached", { "accept-encoding": "gzip" })).headers.get("content-encoding")).toBeNull();
+  });
+  it("gives the gzip form its own tag, and says Vary on a 304", async () => {
+    const plain = await get("/api/big", { "accept-encoding": "identity" });
+    expect(plain.headers.get("etag")).toBe('"big1"');
+    const hit = await get("/api/big", { "accept-encoding": "gzip", "if-none-match": '"big1-gz"' });
+    expect(hit.status).toBe(304);
+    expect(hit.headers.get("vary")).toBe("accept-encoding");
+    expect((await get("/api/big", { "accept-encoding": "gzip", "if-none-match": '"big1"' })).status).toBe(200);
+    expect((await get("/api/big", { "accept-encoding": "identity", "if-none-match": '"big1"' })).status).toBe(304);
   });
 });

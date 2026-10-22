@@ -1,6 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { gzipSync } from "node:zlib";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
+import { textOf } from "./rest/cache.ts";
+
+const gzipAsync = promisify(gzip);
 import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
@@ -112,7 +116,7 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
           res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform", "x-accel-buffering": "no", "x-content-type-options": "nosniff" });
           res.write("retry: 3000\n\n");
         };
-        const sink = { write: (c: string) => { open(); res.write(c); }, backlog: () => res.writableLength, end: () => void res.end() };
+        const sink = { write: (c: string) => { open(); res.write(c); }, backlog: () => res.writableLength, end: () => void res.end(), destroy: () => void res.destroy() };
         const attached = stream.attach(clientIp(req, ipHeader), topics, lastIdOf(req.headers["last-event-id"]), sink);
         if (!attached.ok) return fail(429, attached.error, { "retry-after": "5" });
         req.socket.setNoDelay(true);
@@ -124,15 +128,17 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const sent = method === "POST" ? await readBody(req) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
         const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
-        const text = JSON.stringify(body);
+        const text = textOf(body);
         // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
+        // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it, off the event loop; the gzip form has its own tag.
         const out: Record<string, string> = { "cache-control": "no-store", ...headers, "content-type": "application/json" };
+        const zip = text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
+        if (zip && out.etag) out.etag = out.etag.replace(/"$/, '-gz"');
         if (status === 200 && out.etag && (method === "GET" || method === "HEAD") && matches(req.headers["if-none-match"], out.etag)) {
-          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] as string }).end();
+          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] as string, vary: "accept-encoding" }).end();
         }
-        // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it; the validator stays that of the text.
-        if (text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
-          const zipped = gzipSync(text);
+        if (zip) {
+          const zipped = await gzipAsync(text);
           return void res.writeHead(status, { ...out, "content-encoding": "gzip", vary: "accept-encoding", "content-length": zipped.length }).end(method === "HEAD" ? undefined : zipped);
         }
         res.writeHead(status, { ...out, vary: "accept-encoding" }).end(text);

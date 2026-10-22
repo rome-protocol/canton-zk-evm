@@ -13,11 +13,20 @@ export const CACHE_CONTROL: Record<Rule, string> = {
   list: "public, max-age=1",
 };
 
+const texts = new WeakMap<object, string>();
+/** A body as text, serialised once: the tag is made from the same text that is sent. */
+export function textOf(body: unknown): string {
+  if (typeof body !== "object" || body === null) return JSON.stringify(body);
+  let text = texts.get(body);
+  if (text === undefined) { text = JSON.stringify(body); texts.set(body, text); }
+  return text;
+}
+
 /** A strong validator for a body: the same text always has the same tag. */
 export const etagOf = (text: string): string => `"${createHash("sha256").update(text).digest("hex").slice(0, 32)}"`;
 
 /** The answer with its cache rule's headers. Only a 200 is cached; everything else stays `no-store` (the server's default). */
 export function cached(answer: Answer, rule: Rule): Answer {
   if (answer.status !== 200) return answer;
-  return { ...answer, headers: { ...answer.headers, "cache-control": CACHE_CONTROL[rule], etag: etagOf(JSON.stringify(answer.body)) } };
+  return { ...answer, headers: { ...answer.headers, "cache-control": CACHE_CONTROL[rule], etag: etagOf(textOf(answer.body)) } };
 }
