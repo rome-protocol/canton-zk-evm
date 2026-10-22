@@ -149,18 +149,38 @@ export async function getStatus(): Promise<ApiStatus> {
   return body as ApiStatus;
 }
 
-export type SearchResult = { found: true; path: string } | { found: false; message: string };
+/** A token or verified contract whose name starts with what was typed. */
+export interface SearchMatch { kind: "token" | "contract"; name: string; symbol: string | null; address: string; path: string }
+/** What the search found: the page to open (the first match, for a name), and every match when a name matched more than one. */
+export type SearchResult = { found: true; path: string; matches: SearchMatch[] } | { found: false; message: string };
 
 /** What the search box typed is: the page to open, or the server's own "not found" message. */
 export async function search(q: string): Promise<SearchResult> {
   try {
     const { body } = await call(`/api/search?q=${encodeURIComponent(q)}`, [200]);
-    return { found: true, path: (body as { path: string }).path };
+    const found = body as { path: string; matches?: SearchMatch[] };
+    return { found: true, path: found.path, matches: found.matches ?? [] };
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) return { found: false, message: e.message };
     throw e;
   }
 }
+
+/** A page of a list, newest first. `next` is the cursor of the following page, null on the last. */
+export interface Page<T> { items: T[]; next: string | null }
+export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string }
+export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null }
+/** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */
+export interface InFlightAttempt {
+  number: number; strategy: string; cutReason: string; stage: "cut" | "built" | "proving" | "proved" | "submitted" | "committed";
+  txCount: number | null; poolWaiting: number | null;
+  cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null; outcome: string | null;
+}
+export interface InFlight { final: false; attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null }
+
+export const getBlocks = async (limit: number) => (await call(`/api/blocks?limit=${limit}`, [200])).body as Page<BlockListItem>;
+export const getTxs = async (limit: number) => (await call(`/api/txs?limit=${limit}`, [200])).body as Page<TxListItem>;
+export const getInFlight = async () => (await call("/api/in-flight", [200])).body as InFlight;
 
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
