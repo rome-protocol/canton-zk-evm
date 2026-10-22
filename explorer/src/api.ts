@@ -228,6 +228,12 @@ export interface StatsSummary {
 }
 export type StatsMetric = "txs" | "tps" | "blocks" | "empty_blocks" | "txs_per_block" | "success_rate" | "time_to_final_p50" | "time_to_final_p95" | "proof_time_p50" | "proof_time_p95" | "busy_ratio";
 export interface StatsSeries { metric: string; unit: string; window: StatsWindow; step: "1m" | "10m" | "1h" | "1d"; from: string; to: string; asOf: string | null; points: { at: string; value: number | null }[] }
+/** The API's own description (OpenAPI), which the API page lists its routes from. */
+export interface OpenApiDoc {
+  info?: { "x-limits"?: { pageSize?: number; rpcPerMinute?: number } };
+  paths?: Record<string, Partial<Record<"get" | "post", { summary?: string }>>>;
+}
+export const getOpenApi = async () => (await call("/api/openapi.json", [200])).body as OpenApiDoc;
 export const getStatsSummary = async (window: StatsWindow) => (await call(`/api/stats/summary?window=${window}`, [200])).body as StatsSummary;
 export const getStatsSeries = async (metric: StatsMetric, window: StatsWindow, step?: StatsSeries["step"]) =>
   (await call(`/api/stats/series?metric=${metric}&window=${window}${step ? `&step=${step}` : ""}`, [200])).body as StatsSeries;

@@ -1,0 +1,35 @@
+/* the API page: three ways in, the Etherscan modules, the setup blocks, the routes, the wallet and the limits */
+.api-intro { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 18px 0; }
+.api-intro h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.api-intro p { margin: 0; }
+.api-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.api-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.api-head .api-copy { margin-left: auto; }
+.api-copy { display: inline-flex; align-items: center; gap: 6px; align-self: center; border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
+.api-copy:hover { background: var(--surface-2); text-decoration: none; }
+.api-eth { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 0 22px; margin-bottom: 18px; }
+.api-eth-side p { margin: 10px 0 6px; }
+.api-eth-side p:last-child { margin-top: 12px; }
+.api-pre { margin: 0; padding: 14px 16px; border-radius: 10px; background: #1B1220; color: #F2ECF4; font-size: 12.5px; line-height: 1.55; overflow-x: auto; white-space: pre; }
+.api-table { width: 100%; border-collapse: collapse; }
+.api-table td { padding: 9px 8px; border-top: 1px solid var(--line-2); vertical-align: baseline; }
+.api-table tr:first-child td { border-top: 0; }
+.api-table .mod { color: var(--canton); font-weight: 500; white-space: nowrap; }
+.api-table .soon { text-align: right; white-space: nowrap; }
+.mchip { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 8px; border-radius: 6px; background: var(--surface-2); font-size: 12px; color: var(--muted); }
+.api-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; margin-bottom: 18px; }
+.api-lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); align-items: start; }
+.api-side { display: grid; gap: 18px; }
+.api-rest .api-table td:first-child { width: 64px; }
+.api-rest .api-table td:nth-child(2) { white-space: nowrap; font-size: 13px; }
+.verb { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px; background: var(--canton-tint); color: var(--canton); }
+.verb-post { background: var(--amber-tint); color: var(--amber); }
+.api-kv { margin: 0; }
+.api-kv > div { display: flex; justify-content: space-between; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line-2); }
+.api-kv > div:first-child { border-top: 0; }
+.api-kv dt { margin: 0; } .api-kv dd { margin: 0; text-align: right; }
+.pad { margin: 8px 0 0; }
+@media (max-width: 880px) {
+  .api-eth, .api-lower { grid-template-columns: minmax(0, 1fr); }
+  .api-table .soon { display: none; }
+}

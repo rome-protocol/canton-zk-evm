@@ -13,11 +13,11 @@ const DEFAULT_NAME = "Ostia";
 
 /**
  * The pages of the header, in the order of the approved screens. A page is linked once its route exists (`built`): the others are listed here so that
- * the order is kept, and are drawn when their pages land. The API link is the description of the routes, which is a file and not a page.
+ * the order is kept, and are drawn when their pages land. The API link is the page that describes the routes.
  */
 export const NAV: ReadonlyArray<readonly [path: string, label: string, built: boolean]> = [
   ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", true], ["/contracts", "Contracts", false], ["/tokens", "Tokens", false],
-  ["/canton", "Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/api/openapi.json", "API", true],
+  ["/canton", "Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/docs/api", "API", true],
 ];
 
 /** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. */
@@ -54,9 +54,7 @@ export function Shell({ children }: { children: ReactNode }) {
           {status?.networkName && <span className="pill">{status.networkName}</span>}
         </Link>
         <nav className="nav" aria-label="Pages">
-          {NAV.filter(([, , built]) => built).map(([to, label]) => to.startsWith("/api/")
-            ? <a key={to} href={to} className="navlink">{label}</a>
-            : <NavLink key={to} to={to} end={to === "/"} className="navlink">{label}</NavLink>)}
+          {NAV.filter(([, , built]) => built).map(([to, label]) => <NavLink key={to} to={to} end={to === "/"} className="navlink">{label}</NavLink>)}
         </nav>
         {!home && <SearchBox />}
       </header>
