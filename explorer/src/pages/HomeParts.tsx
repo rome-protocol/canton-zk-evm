@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { BlockListItem, TxListItem } from "../api.ts";
+import type { ApiTx, BlockListItem, InFlightTx, TxListItem } from "../api.ts";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { SearchBox } from "../components/SearchBox.tsx";
@@ -106,25 +106,51 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
   );
 }
 
-/** The newest final transactions. The list route holds final transactions only: those still waiting or being proven are in the panel above. */
-export function LatestTxs({ txs, coin, error }: { txs: TxListItem[] | undefined; coin: { symbol: string; decimals: number }; error?: string }) {
+/** What is known of a transaction that is not final yet: its details from the transaction route, or that they are being read or cannot be. */
+export type Details = ApiTx | "reading" | "error";
+
+function Who({ from, to, created, label }: { from: string; to: string | null; created: string | null; label?: string }) {
+  return (
+    <>
+      <Link className="who" to={`/address/${from}`}>{short(from, 8, 5)}</Link>
+      {to ? <span className="who muted">to <Link to={`/address/${to}`}>{short(to, 8, 5)}</Link></span> : created ? <span className="who muted">creates <Link to={`/address/${created}`}>{short(created, 8, 5)}</Link></span> : label ? <span className="who muted">{label}</span> : null}
+    </>
+  );
+}
+
+/**
+ * The newest transactions: those that are not final yet come first, each with the stage the journal gives it, then the final ones. A transaction
+ * that is not final can still change, so what is shown of it is what reth holds; where that cannot be read, the row says so and keeps its stage.
+ */
+export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", details = {} }: {
+  txs: TxListItem[] | undefined; coin: { symbol: string; decimals: number }; error?: string; pending?: InFlightTx[]; pendingRead?: Read; details?: Record<string, Details>;
+}) {
   const now = useNow();
   return (
     <section className="card" aria-labelledby="txs-h">
-      <div className="sec-h"><h3 id="txs-h">Latest transactions</h3><span className="muted small">Final ones only</span></div>
+      <div className="sec-h"><h3 id="txs-h">Latest transactions</h3><span className="muted small">Including those not final yet</span></div>
+      {pendingRead === "error" && <p className="muted small">Transactions not final yet cannot be read right now.</p>}
       {error ? <p className="muted">{error}</p> : !txs ? <p className="muted">Reading the transactions…</p> : txs.length ? (
         <>
           <div className="scroll">
             <table className="tbl">
               <thead><tr><th>Transaction</th><th>From / to</th><th className="r">Value</th><th>Stage</th></tr></thead>
               <tbody>
+                {pending.filter((p) => !txs.some((t) => t.hash === p.hash)).map((p) => {
+                  const d = details[p.hash] ?? "reading";
+                  return (
+                    <tr key={p.hash}>
+                      <td><Link className="mono" to={`/tx/${p.hash}`}>{short(p.hash, 8, 4)}</Link><span className="ago">{duration(now - Date.parse(p.at))} ago</span></td>
+                      <td className="mono small">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Who from={d.from} to={d.to} created={d.created} />}</td>
+                      <td className="r">{typeof d === "object" && d.value !== null ? <span title={`${exact(d.value, coin.decimals)} ${coin.symbol}`}>{units(d.value, coin.decimals)} {coin.symbol}</span> : <span className="muted">—</span>}</td>
+                      <td><Chip status={p.stage} /></td>
+                    </tr>
+                  );
+                })}
                 {txs.map((t) => (
                   <tr key={t.hash}>
                     <td><Link className="mono" to={`/tx/${t.hash}`}>{short(t.hash, 8, 4)}</Link><span className="ago">{duration(now - t.timestamp * 1000)} ago</span></td>
-                    <td className="mono small">
-                      <Link className="who" to={`/address/${t.from}`}>{short(t.from, 8, 5)}</Link>
-                      {t.to ? <span className="who muted">to <Link to={`/address/${t.to}`}>{short(t.to, 8, 5)}</Link></span> : t.created ? <span className="who muted">creates <Link to={`/address/${t.created}`}>{short(t.created, 8, 5)}</Link></span> : null}
-                    </td>
+                    <td className="mono small"><Who from={t.from} to={t.to} created={t.created} /></td>
                     <td className="r" title={`${exact(t.value, coin.decimals)} ${coin.symbol}`}>{units(t.value, coin.decimals)} {coin.symbol}</td>
                     <td><Chip status="final" /></td>
                   </tr>

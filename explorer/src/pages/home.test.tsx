@@ -2,7 +2,7 @@
 import { act, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem } from "../api.ts";
-import { blockItem, fakeApi, hash, page, renderApp, reply, route, status, txItem, update } from "../test-utils.tsx";
+import { addr, blockItem, fakeApi, hash, inFlight, page, renderApp, reply, route, status, tx, txItem, update } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:37:27Z");
 const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockListItem[]) => {
@@ -175,6 +175,58 @@ describe("the list of latest transactions", () => {
     expect(within(rows[0]!).getByRole("link", { name: "0x5b5b5b…b5b5b" })).toHaveAttribute("href", `/address/${txItem(3).from}`);
     expect(within(rows[0]!).getByText("Final")).toHaveClass("chip-final");
     expect(region.getByRole("link", { name: "View all transactions →" })).toHaveAttribute("href", "/txs");
+  });
+});
+
+describe("the list of latest transactions, with those not final yet", () => {
+  const at = new Date(NOW - 4000).toISOString();
+  const open = async (over: { inFlight?: () => ReturnType<typeof reply>; tx?: (h: string) => ReturnType<typeof reply> } = {}) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    fakeApi(route({
+      inFlight: over.inFlight ?? (() => reply(inFlight({ transactions: [{ hash: hash(0xb1), stage: "waiting", at }, { hash: hash(0xb2), stage: "proving", at }] }))),
+      tx: over.tx ?? ((h) => reply(tx({ hash: h, status: h === hash(0xb1) ? "waiting" : "proving", state: h === hash(0xb1) ? "pending" : "proving", block: null, value: h === hash(0xb1) ? "250000000000000000" : "1000000000000000000", from: addr(0x71), to: addr(0x9b) }))),
+    }));
+    renderApp("/");
+    await screen.findByText("Latest transactions");
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    return within(screen.getByRole("region", { name: "Latest transactions" }));
+  };
+
+  it("lists the transactions that are not final first, each with its stage, who sent it to whom and its value, and the final ones after them", async () => {
+    const region = await open();
+    const rows = region.getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(4);
+    expect(within(rows[0]!).getByRole("link", { name: "0xb1b1b1…b1b1" })).toHaveAttribute("href", `/tx/${hash(0xb1)}`);
+    expect(within(rows[0]!).getByText("Waiting")).toHaveClass("chip-waiting");
+    expect(rows[0]).toHaveTextContent("4 s ago");
+    expect(rows[0]).toHaveTextContent("0.25 tROME");
+    expect(within(rows[0]!).getByRole("link", { name: "0x717171…17171" })).toHaveAttribute("href", `/address/${addr(0x71)}`);
+    expect(within(rows[1]!).getByText("Being proven")).toHaveClass("chip-proving");
+    expect(rows[1]).toHaveTextContent("1 tROME");
+    expect(within(rows[2]!).getByText("Final")).toHaveClass("chip-final");
+    expect(within(rows[3]!).getByText("Final")).toHaveClass("chip-final");
+    expect(region.getByText("Including those not final yet")).toBeInTheDocument();
+  });
+
+  it("keeps the stage of a transaction whose details cannot be read, and says so in place of who and how much", async () => {
+    const region = await open({ tx: () => reply({ error: "no" }, 500) });
+    const row = region.getAllByRole("row").slice(1)[0]!;
+    expect(within(row).getByText("Waiting")).toBeInTheDocument();
+    expect(row).toHaveTextContent("cannot be read right now");
+    expect(row).not.toHaveTextContent("tROME");
+  });
+
+  it("says that those not final yet cannot be read, and still lists the final ones, when the in-flight route fails", async () => {
+    const region = await open({ inFlight: () => reply({ error: "no" }, 500) });
+    expect(region.getByText("Transactions not final yet cannot be read right now.")).toBeInTheDocument();
+    expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+  });
+
+  it("lists only the final ones, with no note, when none is waiting or being proven", async () => {
+    const region = await open({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null })) });
+    expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+    expect(region.queryByText(/cannot be read/)).toBeNull();
   });
 });
 

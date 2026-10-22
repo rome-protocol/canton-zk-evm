@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { getTxs, type ApiStatus } from "../api.ts";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { getTx, getTxs, type ApiStatus } from "../api.ts";
 import { AddToWallet } from "../components/AddToWallet.tsx";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { InFlightPanel } from "../components/InFlight.tsx";
@@ -9,7 +9,7 @@ import { commitTime, duration, short, utc } from "../format.ts";
 import { listPoll, readOf, summarize, useBlocks, useInFlight } from "../stats.ts";
 import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
-import { Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
+import { type Details, Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
 
 const LEGS = "Daml legs settled with a block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 
@@ -89,6 +89,10 @@ export function Home() {
   const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live) });
   const flight = useInFlight(live);
   const flightRead = readOf(flight);
+  // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once.
+  const pending = flight.data?.transactions ?? [];
+  const detail = useQueries({ queries: pending.map((p) => ({ queryKey: ["tx", p.hash], queryFn: () => getTx(p.hash), staleTime: Infinity, retry: false })) });
+  const details: Record<string, Details> = Object.fromEntries(pending.map((p, i) => [p.hash, detail[i]!.data ?? (detail[i]!.isError ? "error" : "reading")]));
   const newest = blocks.data?.items[0], first = txs.data?.items[0];
   const tries = [
     ...(newest ? [{ label: String(newest.number), q: String(newest.number) }] : []),
@@ -106,7 +110,7 @@ export function Home() {
       <AddToWallet status={data} />
       <div className="cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
-        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} />
+        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} />
       </div>
       <CanCannot />
     </>
