@@ -59,7 +59,8 @@ export const REST_FIELDS = {
   txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason", "index", "maxFeePerGas", "maxPriorityFeePerGas"],
   leg: ["legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount"],
   record: ["number", "hash", "contractId", "header", "txs", "proof"],
-  log: ["logIndex", "address", "topics", "data", "decoded"],
+  /** `logIndex` is the log's place in its block, as Ethereum counts it; `position` is its place among this transaction's logs. Both are 0-based. */
+  log: ["logIndex", "position", "address", "topics", "data", "decoded"],
   rawLog: ["logIndex", "address", "topics", "data"],
   internal: ["traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
   transfer: ["logIndex", "batchIndex", "token", "from", "to", "amount", "tokenId"],

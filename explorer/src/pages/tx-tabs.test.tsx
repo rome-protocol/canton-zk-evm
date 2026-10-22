@@ -9,7 +9,7 @@ vi.mock("../verify/verifier.ts", async (orig) => ({ ...(await orig<typeof import
 
 const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 const H = hash(0xf6);
-const log = (i: number, over: Partial<TxLog> = {}): TxLog => ({ logIndex: i, address: addr(0xcb), topics: [TRANSFER, "0x" + "0".repeat(24) + "5b".repeat(20)], data: "0x" + "0".repeat(63) + "1", decoded: null, ...over });
+const log = (i: number, over: Partial<TxLog> = {}): TxLog => ({ logIndex: i, position: i, address: addr(0xcb), topics: [TRANSFER, "0x" + "0".repeat(24) + "5b".repeat(20)], data: "0x" + "0".repeat(63) + "1", decoded: null, ...over });
 const call = (over: Partial<InternalCall> = {}): InternalCall => ({ traceAddress: [], callType: "call", from: addr(0x5b), to: addr(0xcb), value: "0", gas: 90000, gasUsed: 51000, selector: "0xa9059cbb", inputSize: 68, error: null, ...over });
 const frame = (over: Partial<TraceFrame> = {}): TraceFrame => ({ traceAddress: [], type: "call", callType: "call", from: addr(0x5b), to: addr(0xcb), value: "0", gas: 90000, gasUsed: 51000, input: "0xa9059cbb", inputSize: 4, error: null, created: null, ...over });
 const transfer = (over: Partial<TokenTransfer> = {}): TokenTransfer => ({ logIndex: 0, batchIndex: 0, token: addr(0xcb), from: addr(0x5b), to: addr(0x5a), amount: "10000000000000000000", tokenId: null, ...over });
@@ -33,7 +33,7 @@ describe("the tabs of the transaction page", () => {
     expect(tab("Overview")).toHaveAttribute("aria-selected", "true");
     await user.click(tab(/^Logs/));
     expect(tab(/^Logs/)).toHaveAttribute("aria-selected", "true");
-    expect(await screen.findByRole("group", { name: "Log 1" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Log 0" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Canton record" })).toBeNull();
   });
 
@@ -62,35 +62,58 @@ describe("the tabs of the transaction page", () => {
 describe("the Logs tab", () => {
   it("shows each log raw with its address, its topics and its data, names a Transfer by its first topic, and says decoding needs a verified interface", async () => {
     await open({ txLogs: () => reply(page([log(0), log(1, { topics: ["0x" + "12".repeat(32)] })])) }, tx(), "?tab=logs");
-    const one = within(await screen.findByRole("group", { name: "Log 1" }));
+    const one = within(await screen.findByRole("group", { name: "Log 0" }));
     expect(one.getByText("Address", { selector: "dt" }).nextElementSibling).toHaveTextContent("0xcbcb…cbcb");
     expect(one.getByText("Address", { selector: "dt" }).nextElementSibling).toHaveTextContent("TKA");
     expect(one.getByText("Name", { selector: "dt" }).nextElementSibling).toHaveTextContent("Transfer");
     expect(one.getByText("Topics", { selector: "dt" }).nextElementSibling).toHaveTextContent("0 " + TRANSFER);
     expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent("0x" + "0".repeat(63) + "1");
-    const two = within(screen.getByRole("group", { name: "Log 2" }));
+    const two = within(screen.getByRole("group", { name: "Log 1" }));
     expect(two.getByText("Name", { selector: "dt" }).nextElementSibling).toHaveTextContent("not decoded");
     expect(two.queryByText("Transfer")).toBeNull();
     expect(screen.getByText(/needs a verified interface/)).toBeInTheDocument();
   });
 
-  it("uses the server's decoded name when there is one", async () => {
-    await open({ txLogs: () => reply(page([log(0, { topics: ["0x" + "12".repeat(32)], decoded: { name: "Swap", signature: "Swap()", args: [] } })])) }, tx(), "?tab=logs");
-    expect(within(await screen.findByRole("group", { name: "Log 1" })).getByText("Swap")).toBeInTheDocument();
+  it("uses the server's decoded name and arguments when there are some, and then does not say that nothing is decoded", async () => {
+    const decoded = { name: "Swap", signature: "Swap(uint256)", args: [{ name: "amount", type: "uint256", value: "42" }] };
+    await open({ txLogs: () => reply(page([log(0, { topics: ["0x" + "12".repeat(32)], decoded })])) }, tx(), "?tab=logs");
+    const one = within(await screen.findByRole("group", { name: "Log 0" }));
+    expect(one.getByText("Swap")).toBeInTheDocument();
+    expect(one.getByText("Arguments", { selector: "dt" }).nextElementSibling).toHaveTextContent("uint256 amount = 42");
+    expect(screen.queryByText(/needs a verified interface/)).toBeNull();
+  });
+
+  it("says nothing is decoded only when a log on the page is not", async () => {
+    const decoded = { name: "Swap", signature: "Swap()", args: [] };
+    await open({ txLogs: () => reply(page([log(0, { decoded }), log(1)])) }, tx(), "?tab=logs");
+    await screen.findByRole("group", { name: "Log 1" });
+    expect(screen.getByText(/needs a verified interface/)).toBeInTheDocument();
+  });
+
+  it("numbers the logs from 0 by their place among the transaction's own, not by the block's log index, and the same way before the transaction is final", async () => {
+    await open({ txLogs: () => reply(page([log(5, { position: 0 }), log(6, { position: 1 })])) }, tx(), "?tab=logs");
+    expect(await screen.findByRole("group", { name: "Log 0" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Log 1" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Log 5" })).toBeNull();
+    cleanup();
+    const seen = tx({ status: "proving", state: "proving", logs: [{ address: addr(0xcb), topics: [], data: "0x" }, { address: addr(0xcb), topics: [], data: "0x" }] });
+    await open({}, seen, "?tab=logs");
+    expect(await screen.findByRole("group", { name: "Log 0" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Log 1" })).toBeInTheDocument();
   });
 
   it("pages by the cursor of the page before", async () => {
     const user = userEvent.setup();
     const calls = await open({ txLogs: (_h, p) => reply(p.includes("after=c1") ? page([log(1)]) : page([log(0)], "c1")) }, tx(), "?tab=logs");
-    await screen.findByRole("group", { name: "Log 1" });
+    await screen.findByRole("group", { name: "Log 0" });
     await user.click(screen.getByRole("button", { name: "Older page" }));
-    expect(await screen.findByRole("group", { name: "Log 2" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Log 1" })).toBeInTheDocument();
     expect(used(calls, "/logs?").some((c) => c.includes("after=c1"))).toBe(true);
   });
 
   it("shows the logs /api/tx gave for a transaction that is not final, and does not ask the logs route", async () => {
     const calls = await open({}, tx({ status: "proving", state: "proving" }), "?tab=logs");
-    expect(await screen.findByRole("group", { name: "Log 1" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Log 0" })).toBeInTheDocument();
     expect(used(calls, "/logs")).toHaveLength(0);
   });
 

@@ -289,6 +289,17 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(missing.headers?.["cache-control"]).toBeUndefined();
   });
 
+  it("numbers a transaction's logs by their place among its own logs, 0-based, as well as by their place in the block, and keeps counting across pages", async () => {
+    const all = body(await get(`/api/txs/${tx(2, 3)}/logs`)).items as { logIndex: number; position: number }[];
+    expect(all.length).toBeGreaterThan(1);
+    expect(all.map((l) => l.position)).toEqual(all.map((_, i) => i));
+    const first = body(await get(`/api/txs/${tx(2, 3)}/logs?limit=1`));
+    const second = body(await get(`/api/txs/${tx(2, 3)}/logs?limit=1&after=${first.next}`));
+    expect(first.items[0].position).toBe(0);
+    expect(second.items[0]).toMatchObject({ position: 1, logIndex: all[1]!.logIndex });
+    expect(body(await get(`/api/txs/${tx(2, 3)}/logs?raw=1`)).items[0]).not.toHaveProperty("position");
+  });
+
   it("gives a final transaction its place in its block and the fee caps the sender signed", async () => {
     expect(body(await get(`/api/txs/${tx(2, 1)}`))).toMatchObject({ index: 1, maxFeePerGas: "9", maxPriorityFeePerGas: "1" });
     expect(body(await get(`/api/txs/${tx(3, 4)}`))).toMatchObject({ index: 4 });

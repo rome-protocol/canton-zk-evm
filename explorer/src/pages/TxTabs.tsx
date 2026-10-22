@@ -28,7 +28,8 @@ export const Panel = ({ id, children }: { id: TabId; children: ReactNode }) => (
   <div role="tabpanel" id={`panel-${id}`} aria-labelledby={`tab-${id}`}>{children}</div>
 );
 
-type Shown = { n: number; address: string; topics: string[]; data: string; name: string | null };
+/** `n` is the log's place among the transaction's own logs, counted from 0. */
+type Shown = { n: number; address: string; topics: string[]; data: string; name: string | null; decoded: TxLog["decoded"] };
 
 function LogRow({ log, t }: { log: Shown; t: ApiTxSeen }) {
   return (
@@ -39,6 +40,10 @@ function LogRow({ log, t }: { log: Shown; t: ApiTxSeen }) {
         <dd><HashLink value={log.address} to={`/address/${log.address}`} />{log.address === t.to && t.toToken && <span className="tag">{t.toToken}</span>}</dd>
         <dt className="log-k">Name</dt>
         <dd>{log.name ?? <span className="muted">not decoded</span>}</dd>
+        {log.decoded && log.decoded.args.length > 0 && <>
+          <dt className="log-k">Arguments</dt>
+          <dd>{log.decoded.args.map((a, i) => <div key={i}><span className="muted">{a.type}</span> {a.name} <span className="muted">=</span> <span className="mono wrap">{a.value}</span></div>)}</dd>
+        </>}
         <dt className="log-k">Topics</dt>
         <dd>{log.topics.map((topic, i) => <div key={i}><span className="muted">{i}</span> <span className="mono wrap">{topic}</span></div>)}</dd>
         <dt className="log-k">Data</dt>
@@ -51,7 +56,8 @@ function LogRow({ log, t }: { log: Shown; t: ApiTxSeen }) {
 /** The name of a log: the decoded event when the server has one, a Transfer by its first topic, and none otherwise. */
 const nameOf = (topics: string[], decoded: TxLog["decoded"]) => (decoded ? decoded.name : topics[0] === TRANSFER_TOPIC ? "Transfer" : null);
 
-const NoDecode = () => <p className="small muted">Events are shown raw. Decoding them needs a verified interface for the contract that emitted them, and none is held.</p>;
+/** Said only when some log on the page is not decoded: a decoded one has its name and arguments shown. */
+const NoDecode = ({ shown }: { shown: boolean }) => !shown ? null : <p className="small muted">Events are shown raw. Decoding them needs a verified interface for the contract that emitted them, and none is held.</p>;
 
 /** The logs of a final transaction, a page at a time. */
 function FinalLogs({ t }: { t: ApiTxSeen }) {
@@ -61,9 +67,9 @@ function FinalLogs({ t }: { t: ApiTxSeen }) {
   const items = p.data.items;
   return (
     <section className="card" aria-label="Logs">
-      <NoDecode />
+      <NoDecode shown={items.some((l) => l.decoded === null)} />
       {items.length === 0 && <p className="muted">This transaction emitted no logs.</p>}
-      {items.map((l) => <LogRow key={l.logIndex} t={t} log={{ n: l.logIndex + 1, address: l.address, topics: l.topics, data: l.data, name: nameOf(l.topics, l.decoded) }} />)}
+      {items.map((l) => <LogRow key={l.logIndex} t={t} log={{ n: l.position, address: l.address, topics: l.topics, data: l.data, name: nameOf(l.topics, l.decoded), decoded: l.decoded }} />)}
       <Pager p={p} label="Pages of logs" />
     </section>
   );
@@ -74,9 +80,9 @@ function SeenLogs({ t }: { t: ApiTxSeen }) {
   const logs: Log[] = t.logs;
   return (
     <section className="card" aria-label="Logs">
-      <NoDecode />
+      <NoDecode shown={logs.length > 0} />
       {logs.length === 0 && <p className="muted">This transaction has emitted no logs so far.</p>}
-      {logs.map((l, i) => <LogRow key={i} t={t} log={{ n: i + 1, address: l.address, topics: l.topics, data: l.data, name: nameOf(l.topics, null) }} />)}
+      {logs.map((l, i) => <LogRow key={i} t={t} log={{ n: i, address: l.address, topics: l.topics, data: l.data, name: nameOf(l.topics, null), decoded: null }} />)}
     </section>
   );
 }

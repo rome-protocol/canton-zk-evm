@@ -34,7 +34,7 @@ export interface BlockExtras {
   lifecycle: { strategy: string; cutReason: string; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null } | null;
 }
 export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
-export interface LogItem { logIndex: number; address: string; topics: string[]; data: string }
+export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
 export interface TransferItem { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface TxPlace { block: number; index: number }
@@ -169,11 +169,12 @@ export function createChainRest(pool: Pool) {
 
   async function txLogs(at: TxPlace, after: number | null, limit: number): Promise<LogItem[]> {
     const rows = await query(
-      `select log_index, address, topic0, topic1, topic2, topic3, data from logs where block_number = $1 and tx_index = $2 and ($3::int is null or log_index > $3) order by log_index limit $4`,
+      `select * from (select log_index, address, topic0, topic1, topic2, topic3, data, row_number() over (order by log_index) - 1 as position from logs where block_number = $1 and tx_index = $2) l
+       where ($3::int is null or log_index > $3) order by log_index limit $4`,
       [at.block, at.index, after, limit + 1],
     );
     return rows.map((l) => ({
-      logIndex: l.log_index, address: hex(l.address),
+      logIndex: l.log_index, position: Number(l.position), address: hex(l.address),
       topics: [l.topic0, l.topic1, l.topic2, l.topic3].flatMap((t, i, all) => (t !== null && all.slice(0, i).every((x) => x !== null) ? [hex(t)] : [])), data: hex(l.data),
     }));
   }
