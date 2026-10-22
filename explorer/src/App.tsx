@@ -10,6 +10,7 @@ import { Faucet } from "./pages/Faucet.tsx";
 import { Home } from "./pages/Home.tsx";
 import { Search } from "./pages/Search.tsx";
 import { Tx } from "./pages/Tx.tsx";
+import { Txs } from "./pages/Txs.tsx";
 
 /** Every route the pages have. A page that does not exist gets its own plain answer, and a page that fails is forgotten as soon as the visitor goes somewhere else. */
 export function App() {
@@ -26,6 +27,7 @@ export function App() {
           <Route path="/faucet" element={<Faucet />} />
           <Route path="/address/:addr" element={<Address />} />
           <Route path="/token/:addr" element={<Address />} />
+          <Route path="/txs" element={<Txs />} />
           <Route path="/tx/:hash" element={<Tx />} />
           <Route path="/search" element={<Search />} />
           <Route path="*" element={<NoPage />} />

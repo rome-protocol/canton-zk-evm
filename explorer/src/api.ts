@@ -221,6 +221,13 @@ const cursor = (name: string, c: string | null) => (c ? `&${name}=${encodeURICom
 export const getBlockPage = async (before: string | null, limit = PAGE, filter: BlockFilter = "all") => (await call(`/api/blocks?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as Page<BlockListItem>;
 /** The address of the blocks as a file: the newest blocks of the filter, with the list's columns. */
 export const blocksCsvPath = (filter: BlockFilter) => `/api/blocks?format=csv&filter=${filter}`;
+export type TxFilter = "all" | "failed" | "calls";
+/** The final transactions, newest first, a page at a time; `filter` keeps the reverted ones or the calls into contracts (a transaction with input). */
+export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as Page<TxListItem>;
+/** The newest final transactions of the filter as a file, with the list's columns. */
+export const txsCsvPath = (filter: TxFilter) => `/api/txs?format=csv&filter=${filter}`;
+/** A block's record as Canton holds it, read only when Verify is pressed. */
+export const getBlockRecord = async (id: string | number) => (await call(`/api/blocks/${encodeURIComponent(String(id))}/record`, [200])).body as { number: number; hash: string; contractId: string; header: string; txs: string; proof: string | null };
 export const getBlockTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
 export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem>;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
