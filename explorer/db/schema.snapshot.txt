@@ -438,6 +438,22 @@ table stats_day
   column new_addresses integer
   column new_contracts integer
   column verified_contracts integer
+  column attempts integer not null default 0
+  column attempts_not_taken integer not null default 0
+  column ttf_without_acceptance integer not null default 0
+  column clock_skew integer not null default 0
+  column max_txs_in_block integer not null default 0
+  column gas_limit_sum bigint not null default 0
+  column traffic_bytes bigint not null default 0
+  column traffic_updates integer not null default 0
+  column proof_busy_ms bigint not null default 0
+  column test_blocks integer not null default 0
+  column test_txs integer not null default 0
+  column test_attempts integer not null default 0
+  column test_proof_busy_ms bigint not null default 0
+  column txs_per_block_hist integer[] not null default '{}'::integer[]
+  column served_hist integer[] not null default '{}'::integer[]
+  column proof_size_hist integer[] not null default '{}'::integer[]
   constraint stats_day_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_day_pkey ON public.stats_day USING btree (bucket)
 
@@ -458,6 +474,22 @@ table stats_hour
   column time_to_final_hist integer[] not null
   column proof_hist integer[] not null
   column commit_hist integer[] not null
+  column attempts integer not null default 0
+  column attempts_not_taken integer not null default 0
+  column ttf_without_acceptance integer not null default 0
+  column clock_skew integer not null default 0
+  column max_txs_in_block integer not null default 0
+  column gas_limit_sum bigint not null default 0
+  column traffic_bytes bigint not null default 0
+  column traffic_updates integer not null default 0
+  column proof_busy_ms bigint not null default 0
+  column test_blocks integer not null default 0
+  column test_txs integer not null default 0
+  column test_attempts integer not null default 0
+  column test_proof_busy_ms bigint not null default 0
+  column txs_per_block_hist integer[] not null default '{}'::integer[]
+  column served_hist integer[] not null default '{}'::integer[]
+  column proof_size_hist integer[] not null default '{}'::integer[]
   constraint stats_hour_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_hour_pkey ON public.stats_hour USING btree (bucket)
 
@@ -478,6 +510,22 @@ table stats_minute
   column time_to_final_hist integer[] not null
   column proof_hist integer[] not null
   column commit_hist integer[] not null
+  column attempts integer not null default 0
+  column attempts_not_taken integer not null default 0
+  column ttf_without_acceptance integer not null default 0
+  column clock_skew integer not null default 0
+  column max_txs_in_block integer not null default 0
+  column gas_limit_sum bigint not null default 0
+  column traffic_bytes bigint not null default 0
+  column traffic_updates integer not null default 0
+  column proof_busy_ms bigint not null default 0
+  column test_blocks integer not null default 0
+  column test_txs integer not null default 0
+  column test_attempts integer not null default 0
+  column test_proof_busy_ms bigint not null default 0
+  column txs_per_block_hist integer[] not null default '{}'::integer[]
+  column served_hist integer[] not null default '{}'::integer[]
+  column proof_size_hist integer[] not null default '{}'::integer[]
   constraint stats_minute_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_minute_pkey ON public.stats_minute USING btree (bucket)
 
