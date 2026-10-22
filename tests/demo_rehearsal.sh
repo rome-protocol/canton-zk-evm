@@ -234,7 +234,7 @@ w1py flood "$MULTI" mint 1 >/dev/null
 cut_block
 # The W1 block: the log-heavy call chains, and the token traffic as costly as the cap allows: ERC-1155 batches whose ids and values share one array (18 of 4,096 ids,
 # 73,728 transfers, 19.6 Mgas of gas limit), one call of ERC-20 transfers to new holders and one of new tokens that need their metadata read (a third of them Burners,
-# whose reads spend all their gas). The calls' gas limits add up to 27.6 Mgas of the 30 Mgas cap (the builder keeps a margin): 2 Stress calls and the two small Flood
+# whose reads spend all their gas, and one a FatReturn whose reads answer 680 KB). The calls' gas limits add up to 27.6 Mgas of the 30 Mgas cap (the builder keeps a margin): 2 Stress calls and the two small Flood
 # calls at 2 Mgas, and the batches at 19.6 Mgas.
 first_stress=$(w1py stress "$STRESS" 2 | head -n 1)
 w1py flood "$FLOOD" transfers 1 >/dev/null

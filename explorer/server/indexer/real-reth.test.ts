@@ -232,7 +232,7 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
                     (select count(*) from tokens where first_transfer_block = $1 and metadata_status = 'read') as read,
                     (select count(*) from tokens where first_transfer_block = $1 and metadata_status = 'failed') as failed,
                     (select count(distinct to_address) from token_transfers where block_number = $1) as holders`, [W1_BLOCK])).rows[0];
-          console.log(`W1 ${shape} block's token traffic: ${tok.transfers} transfers (${tok.nft_legs} ERC-1155 legs) to ${tok.holders} accounts, ${tok.tokens} new tokens, ${tok.read} with their metadata read, ${tok.failed} failed (the Burners)`);
+          console.log(`W1 ${shape} block's token traffic: ${tok.transfers} transfers (${tok.nft_legs} ERC-1155 legs) to ${tok.holders} accounts, ${tok.tokens} new tokens, ${tok.read} with their metadata read, ${tok.failed} failed (the Burners and the FatReturn)`);
           const t0 = Date.now();
           const [b, r, tr] = [await reads.block(W1_BLOCK), await reads.receipts(W1_BLOCK), await reads.traces(W1_BLOCK)];
           const readMs = Date.now() - t0;
@@ -248,7 +248,7 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
           expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(70_000);
           expect(Number(tok.nft_legs), "the shared-array batches must succeed").toBeGreaterThanOrEqual(70_000);
           expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(6);
-          expect(Number(tok.failed), "the Burners' reads spend all the gas they get, are read as failed, and stage 2 goes on").toBeGreaterThanOrEqual(3);
+          expect(Number(tok.failed), "the Burners' reads spend all the gas they get and the FatReturn's answer is over 4 KB: all four are read as failed, and stage 2 goes on").toBeGreaterThanOrEqual(4);
           // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
           // They are asserted for `behind`, the default. `inline` is measured and said above; section 4.3 makes it the default only if both its stages fit B1, and they do not.
           if (shape === "behind") {

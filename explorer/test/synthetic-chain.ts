@@ -8,7 +8,7 @@ import type { Pins } from "../server/config.ts";
 import type { BlockRecord, Ledger } from "../server/ledger.ts";
 import { LEG_TOPIC } from "../server/indexer/legs.ts";
 import { RethError } from "../server/reth.ts";
-import type { FinalBlock, FinalReads, FinalReceipt, FinalTx, TraceFrame, TxTrace } from "../server/indexer/reads.ts";
+import { answerOfCall, type FinalBlock, type FinalReads, type FinalReceipt, type FinalTx, type TraceFrame, type TxTrace } from "../server/indexer/reads.ts";
 
 export const GATEWAY = "0x" + "9a".repeat(20);
 export const PINS: Pins = { programVK: "0x" + "a1".repeat(32), rootC: "0x" + "b2".repeat(32), file: "test-pins.txt" };
@@ -161,7 +161,7 @@ export function makeChain(shapes: BlockShape[], pins: Pins = PINS, instance = 0)
       count("call");
       const r = reads.callResults[`${to}:${input}`];
       if (r === undefined) throw new RethError("eth_call: reth answered \"execution reverted\"", true);
-      return r;
+      return answerOfCall(r); // the bound on an answer is the real one
     },
     balance: async (a: string, n: number) => { count("balance"); return reads.balances[`${a}:${n}`] ?? reads.balances[a] ?? 0n; },
     rpc: async () => { throw new Error("not used"); },

@@ -23,7 +23,9 @@ const REINDEX_MS = 10_000; // the reindex is no block's budget; the time must fo
 const A = (n: number) => "0x" + n.toString(16).padStart(40, "0");
 const W = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
 const T = (n: number) => "0x" + W(n);
-const ERC20 = 0xa1, ERC721 = 0xa2, ERC1155 = 0xa3;
+const ERC20 = 0xa1, ERC721 = 0xa2, ERC1155 = 0xa3, FAT = 0xa4;
+/** What the fat-return token (test/fixtures/Flood.sol, FatReturn) answers to every read: 680 KB, far over the 4 KB an answer may carry. */
+const FAT_ANSWER = "0x" + "ab".repeat(340_000);
 const create = (path: number[], address: number): TraceFrame => ({
   traceAddress: path, type: "create", callType: "create", from: A(1), to: A(address), value: 0n, gas: 1000, gasUsed: 10, input: "0x6080", error: null, created: { address: A(address), code: "0x6001" },
 });
@@ -92,9 +94,12 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       await migrate(pool);
       const chain: SyntheticChain = makeChain([{ txs: 1 }, ...blocks.map(() => ({ txs: 1 }))]);
       const t = chain.blocks[0]!.traces[0]!;
-      t.frames = [{ ...t.frames[0]!, traceAddress: [], type: "call", callType: "call", created: null }, create([0], ERC20), create([1], ERC1155), create([2], ERC721)];
+      t.frames = [{ ...t.frames[0]!, traceAddress: [], type: "call", callType: "call", created: null }, create([0], ERC20), create([1], ERC1155), create([2], ERC721), create([3], FAT)];
       t.calls = t.frames.length;
       blocks.forEach((logs, i) => chain.blocks[i + 1]!.receipts[0]!.logs.push(...logs));
+      // The fat-return token makes one Transfer in the first block; its every read answers 680 KB, which is read as no answer: its metadata is `failed`.
+      chain.blocks[1]!.receipts[0]!.logs.push({ address: A(FAT), topics: [TRANSFER_TOPIC, T(0), T(0x7000)], data: "0x" + W(1) });
+      for (const sel of [SELECTORS.name, SELECTORS.symbol, SELECTORS.decimals, SELECTORS.totalSupply]) chain.reads.callResults[`${A(FAT)}:${sel}`] = FAT_ANSWER;
       const call = (sel: string, out: string) => { chain.reads.callResults[`${A(ERC20)}:${sel}`] = out; };
       call(SELECTORS.name, str("Load")); call(SELECTORS.symbol, str("LD")); call(SELECTORS.decimals, "0x" + W(6)); call(SELECTORS.totalSupply, "0x" + W(erc20Supply));
       const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "behind", onTiming: (t) => { if (t.stage === 2) last = t.writeMs; } });
@@ -104,6 +109,7 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
     });
   }
   const tok = (pool: Pool, a: number) => pool.query("select holder_count::int as h, transfer_count::int as t from tokens where address = $1", [Buffer.from(A(a).slice(2), "hex")]).then((r) => r.rows[0]);
+  const fatFailed = async (pool: Pool) => expect((await pool.query("select metadata_status from tokens where address = $1", [Buffer.from(A(FAT).slice(2), "hex")])).rows).toEqual([{ metadata_status: "failed" }]);
   const snapshot = async (pool: Pool) => (await pool.query("select (to_jsonb(x) - 'checked_block')::text as j from token_balances x order by j")).rows.map((r) => r.j);
   /** The reindex's rebuild of the tokens and balances over every block, against B1, then the whole reindex (every aggregate) against the reindex's own limit; the rows come out the same. */
   async function reindexAgainstBudget(pool: Pool, chain: SyntheticChain): Promise<void> {
@@ -133,6 +139,7 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       if (process.env.LOAD_HOLDERS) console.log("stage 2 ms", took);
       expect(took).toBeLessThan(B1_MS);
       expect(await tok(pool, ERC20)).toEqual({ h: N + 1, t: N + 1 });
+      await fatFailed(pool); // the fat-return token's reads are bounded, read as failed, and stage 2 went on
       await reindexAgainstBudget(pool, chain);
       expect(await tok(pool, ERC20)).toEqual({ h: N + 1, t: N + 1 });
     });
