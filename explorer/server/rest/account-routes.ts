@@ -48,6 +48,15 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     const { head, cursor } = await accounts.derivedThrough();
     return head === null || cursor >= head;
   };
+  /**
+   * Nothing is held at an address: a final 404 when stage 2 has caught up. While it is behind, the contract or the token may be in a block that it has not
+   * reached, so the answer is the same 404 with `derived: false` and where stage 2 is, not a final no.
+   */
+  const missing = async (none: string): Promise<Answer> => {
+    const { head, cursor } = await accounts.derivedThrough();
+    if (head === null || cursor >= head) return fail(404, none);
+    return { status: 404, body: { derived: false, error: `${none} It may be in a block that is not counted yet: stage 2 is at block ${cursor} of ${head}.` } };
+  };
   const addressOf = (a: string): string => {
     if (!ADDRESS.test(a)) throw new BadRequest(NO_ADDRESS);
     return a;
@@ -129,14 +138,14 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   async function oneContract(a: string): Promise<Answer> {
     addressOf(a);
     const c = await accounts.contract(a);
-    if (!c) return fail(404, NO_CONTRACT);
+    if (!c) return missing(NO_CONTRACT);
     return cached(ok(pick({ ...c, proxy: c.proxy && pick(c.proxy, F.proxy), verification: c.verification && pick(c.verification, F.verification), derived: await isDerived() }, F.contractDetail)), "composite");
   }
 
   async function contractSource(a: string): Promise<Answer> {
     addressOf(a);
     const { held, source } = await accounts.source(a);
-    if (!held) return fail(404, NO_CONTRACT);
+    if (!held) return missing(NO_CONTRACT);
     const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, libraries: null, verifiedAt: null };
     const body = source ? { ...source, address: a, verified: true, files: source.files.map((f) => pick(f, F.sourceFile)) } : empty;
     return cached(ok(pick(body, F.source)), "composite");
@@ -152,14 +161,14 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   async function oneToken(a: string): Promise<Answer> {
     addressOf(a);
     const t = await accounts.token(a);
-    if (!t) return fail(404, NO_TOKEN);
+    if (!t) return missing(NO_TOKEN);
     return cached(ok(pick({ ...t, derived: await isDerived() }, F.tokenDetail)), "composite");
   }
 
   async function tokenHolders(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["text", "text", "text"]);
-    if (!(await accounts.token(a))) return fail(404, NO_TOKEN);
+    if (!(await accounts.token(a))) return missing(NO_TOKEN);
     const rows = await accounts.holders(a, before, limit);
     return cached(ok(page(rows, limit, (h) => keyOf(h.value, h.holder, h.tokenId), F.holder, await isDerived())), "list");
   }
@@ -167,7 +176,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   async function tokenTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int", "int"]);
-    if (!(await accounts.token(a))) return fail(404, NO_TOKEN);
+    if (!(await accounts.token(a))) return missing(NO_TOKEN);
     const rows = await accounts.tokenTransfers(a, before, limit);
     return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
   }

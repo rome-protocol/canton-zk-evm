@@ -315,6 +315,28 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     for (const p of ["/api/addresses", `/api/addresses/${A}`, "/api/contracts", `/api/tokens/${T1}`]) expect(body(await get(p)).derived, p).toBe(true);
   });
 
+  it("does not say a contract or a token is absent while stage 2 has not reached its block", async () => {
+    const X = "0x" + "e7".repeat(20);
+    const calls = [`/api/contracts/${X}`, `/api/contracts/${X}/source`, `/api/tokens/${X}`, `/api/tokens/${X}/holders`, `/api/tokens/${X}/transfers`];
+    for (const p of calls) {
+      const a = await get(p);
+      expect(a.status, p).toBe(404);
+      expect(body(a).derived, p).toBeUndefined();
+    }
+    await setCursor(1);
+    try {
+      for (const p of calls) {
+        const a = await get(p);
+        expect(a.status, p).toBe(404);
+        expect(body(a).derived, p).toBe(false);
+        expect(body(a).error, p).toContain("stage 2 is at block 1");
+        expect(a.headers?.["cache-control"]).toBeUndefined();
+      }
+    } finally {
+      await setCursor(3);
+    }
+  });
+
   it("searches the start of a token's name or symbol, or a verified contract's name, as text, and leaves the other shapes as they were", async () => {
     const path = async (q: string) => body(await get(`/api/search?q=${encodeURIComponent(q)}`));
     expect(await path("  Test T ")).toMatchObject({ path: `/token/${T1}`, matches: [{ kind: "token", name: "Test Token", symbol: "TT", address: T1, path: `/token/${T1}` }] });
