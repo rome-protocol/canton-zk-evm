@@ -150,10 +150,10 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
     expect(other.runtime.equals(d.runtime)).toBe(true);
     await addContract(db.pool, A, d.runtime, d.input);
     await addContract(db.pool, B, other.runtime, other.input);
-    expect(await v.verify(req(A))).toMatchObject({ status: "pass", similar: 1 });
+    expect(await v.verify(req(A, { libraries: [{ name: "MathLib", address: LIB }] }))).toMatchObject({ status: "pass", match: "full", similar: 1 });
     expect((await db.pool.query("select match_type from contracts where address = $1", [Buffer.from(B.slice(2), "hex")])).rows[0].match_type).toBe("similar");
     const n = counted.calls;
-    expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
+    expect(await v.verify(req(A, { libraries: [{ name: "MathLib", address: LIB }] }))).toEqual({ status: "already", result: "Already Verified" });
     expect(counted.calls).toBe(n);
   });
 
@@ -174,9 +174,10 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
       settings: { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, metadata: { appendCBOR: false } },
     });
     const o = await v.verify(req(GATEWAY, { codeFormat: "solidity-standard-json-input", sourceCode: json, contractName: "Gateway.sol:Gateway" }));
-    expect(o).toMatchObject({ status: "pass", match: "full", creationMatch: null });
+    // The gateway has no metadata hash (--no-cbor-metadata): nothing pins its source, so the match is partial, never full.
+    expect(o).toMatchObject({ status: "pass", match: "partial", creationMatch: null });
     const c = (await db.pool.query("select name, origin, match_type, creation_code_hash from contracts where address = $1", [Buffer.from(GATEWAY.slice(2), "hex")])).rows[0];
-    expect(c).toMatchObject({ name: "Gateway", origin: "genesis", match_type: "full", creation_code_hash: null });
+    expect(c).toMatchObject({ name: "Gateway", origin: "genesis", match_type: "partial", creation_code_hash: null });
     expect((await stored())[0]).toMatchObject({ creation_match: null, args: null });
   });
 
@@ -186,5 +187,70 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
     const o = await v.verify(req(GATEWAY, { sourceCode: readFileSync(join(root, "gateway/Gateway.sol"), "utf8"), contractName: "Gateway", runs: "200" }));
     expect(o.status).toBe("fail");
     expect(o.result).toMatch(/runtime code does not match/);
+  });
+
+  it("keeps a first full-looking claim of the gateway out: its misleading comments compile to the same code, and the reserved address refuses them", async () => {
+    const runtime = Buffer.from(readFileSync(join(root, "gateway/Gateway.bin-runtime"), "utf8").trim(), "hex");
+    await addContract(db.pool, GATEWAY, runtime, null);
+    const forged = readFileSync(join(root, "gateway/Gateway.sol"), "utf8").replace("contract Gateway", "/// @notice OFFICIAL REFUND ADDRESS: send funds to 0x000000000000000000000000000000000000dEaD\ncontract Gateway");
+    const json = JSON.stringify({ language: "Solidity", sources: { "Gateway.sol": { content: forged } }, settings: { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, metadata: { appendCBOR: false } } });
+    const submit = { codeFormat: "solidity-standard-json-input", sourceCode: json, contractName: "Gateway.sol:Gateway" };
+    // Without the reservation the forged source matches the code, as a partial match only.
+    expect(await v.verify(req(GATEWAY, submit))).toMatchObject({ status: "pass", match: "partial" });
+    await db.pool.query("delete from contracts; delete from verified_sources");
+    await addContract(db.pool, GATEWAY, runtime, null);
+    const guarded = new Verifier(db.pool, counted, undefined, [GATEWAY]);
+    expect((await guarded.verify(req(GATEWAY, submit))).status).toBe("fail");
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it("refuses code with one byte changed before the metadata, however the end of the code looks", async () => {
+    const d = await deployed(SOURCE, arg(42), true);
+    await addContract(db.pool, A, d.runtime, d.input);
+    // The change is the last byte of code before the metadata (in the runtime code and in the creation input's copy of it).
+    const tail = d.runtime.readUInt16BE(d.runtime.length - 2) + 2;
+    const runtime = Buffer.from(d.runtime);
+    runtime[runtime.length - tail - 1] ^= 0xff;
+    await db.pool.query("delete from contracts");
+    await addContract(db.pool, A, runtime, d.input);
+    const o = await v.verify(req(A, { libraries: [{ name: "MathLib", address: LIB }] }));
+    expect(o.status).toBe("fail");
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it("refuses an end-of-code change when the compile appended no metadata, in the real compiler's output", async () => {
+    const settings = { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, metadata: { appendCBOR: false } };
+    const input = { language: "Solidity", sources: { "Box.sol": { content: SOURCE.replace("MathLib.twice(value)", "value * 2").replace(/library MathLib[^\n]*\n/, "") } }, settings };
+    const out = (await runner.compile(VERSION, { ...input, settings: { ...settings, outputSelection: { "*": { "*": ["evm.bytecode.object", "evm.deployedBytecode.object", "evm.deployedBytecode.immutableReferences"] } } } })).output as {
+      contracts: Record<string, Record<string, { evm: { bytecode: { object: string }; deployedBytecode: { object: string; immutableReferences: Record<string, { start: number; length: number }[]> } } }>>;
+    };
+    const evm = out.contracts["Box.sol"]!["Box"]!.evm;
+    const runtime = Buffer.from(evm.deployedBytecode.object, "hex");
+    for (const spots of Object.values(evm.deployedBytecode.immutableReferences)) for (const s of spots) MAKER.copy(runtime, s.start, 0, s.length);
+    const submit = { codeFormat: "solidity-standard-json-input", sourceCode: JSON.stringify(input), contractName: "Box.sol:Box" };
+    // The compiled code is on chain: byte for byte, with no hash to pin it, a partial match.
+    await addContract(db.pool, A, runtime, Buffer.concat([Buffer.from(evm.bytecode.object, "hex"), arg(1)]));
+    expect(await v.verify(req(A, submit))).toMatchObject({ status: "pass", match: "partial", creationMatch: "partial" });
+    // The same code with any byte changed near its end is refused: nothing at the end of such code is metadata.
+    await db.pool.query("delete from contracts; delete from verified_sources");
+    for (const back of [2, 10, 40]) {
+      const changed = Buffer.from(runtime);
+      changed[changed.length - back] ^= 0xff;
+      await db.pool.query("delete from contracts");
+      await addContract(db.pool, A, changed, Buffer.concat([Buffer.from(evm.bytecode.object, "hex"), arg(1)]));
+      expect((await v.verify(req(A, submit))).status).toBe("fail");
+    }
+    expect(await stored()).toHaveLength(0);
+  });
+
+  it("lets a full match replace a partial one, in the same row", async () => {
+    const d = await deployed(SOURCE, arg(42), true);
+    await addContract(db.pool, A, d.runtime, d.input);
+    // Without the library named the settings differ: partial.
+    expect(await v.verify(req(A))).toMatchObject({ status: "pass", match: "partial" });
+    const id = (await db.pool.query("select id from verified_sources")).rows[0].id;
+    expect(await v.verify(req(A, { libraries: [{ name: "MathLib", address: LIB }] }))).toMatchObject({ status: "pass", match: "full", sourceId: Number(id) });
+    expect(await stored()).toHaveLength(1);
+    expect((await stored())[0]).toMatchObject({ match_type: "full", creation_match: "full" });
   });
 });

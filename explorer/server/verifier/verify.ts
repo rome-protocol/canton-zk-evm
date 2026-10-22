@@ -1,6 +1,8 @@
 /**
  * One verification (design section 6.3): the request is checked, the contract is looked up, the source is compiled in the sandbox, the compiled code is matched
- * with the code on chain, and what verified is stored with its match kind. A contract that is already verified answers so before anything is compiled.
+ * with the code on chain, and what verified is stored with its match kind. A contract that is already verified with a full match answers so before anything is compiled.
+ * One that is verified with a partial match can still be verified again: a full match replaces it (the first submission is not final), and anything else answers
+ * "already".
  */
 import type { Pool, PoolClient } from "pg";
 import { CompilerError } from "./compilers.ts";
@@ -21,29 +23,46 @@ export type Outcome =
   /** The compiler or the sandbox could not be had (not the submitter's fault): the job is tried again. */
   | { status: "retry"; result: string };
 
+/** Whether these settings make the compiler append its metadata (the CBOR at the end of the code): it does unless `metadata.appendCBOR` is false. */
+function appendsCbor(settings: Record<string, unknown>): boolean {
+  const md = settings.metadata;
+  const flag = md && typeof md === "object" ? (md as Record<string, unknown>).appendCBOR : undefined;
+  return flag === undefined || flag === true;
+}
+
 export class Verifier {
   private readonly pool: Pool;
   private readonly runner: Compile;
   private readonly maxSourceBytes: number | undefined;
-  constructor(pool: Pool, runner: Compile, maxSourceBytes?: number) {
+  private readonly reserved: Set<string>;
+  /**
+   * `reserved` are addresses whose source only the operator publishes (the bridge gateway, a genesis contract compiled without a metadata hash, so that no
+   * match of it is ever `full`): a submission for one is refused, and `verify(req, { operator: true })` is how the deployment seeds it.
+   */
+  constructor(pool: Pool, runner: Compile, maxSourceBytes?: number, reserved: string[] = []) {
     this.pool = pool;
     this.runner = runner;
     this.maxSourceBytes = maxSourceBytes;
+    this.reserved = new Set(reserved.map((a) => a.toLowerCase()));
   }
 
   /** Verifies a request. A request that cannot be run at all (a bad address, nonsense JSON) throws RequestError; every other answer is an Outcome. */
-  async verify(req: VerifyRequest): Promise<Outcome> {
+  async verify(req: VerifyRequest, opts: { operator?: boolean } = {}): Promise<Outcome> {
     const p = prepare(req, this.maxSourceBytes);
+    if (!opts.operator && this.reserved.has(p.address.toLowerCase())) {
+      return { status: "fail", result: "Fail - Unable to verify. The source of this contract is published by the operator of the network, and cannot be submitted." };
+    }
     const addr = Buffer.from(p.address.slice(2), "hex");
-    const found = await this.pool.query<{ runtime_code_hash: Buffer; runtime: Buffer; creation: Buffer | null; verified: number | null }>(
-      `select c.runtime_code_hash, rb.code as runtime, cb.code as creation, (select v.id from verified_sources v where v.address = c.address) as verified
+    const found = await this.pool.query<{ runtime_code_hash: Buffer; runtime: Buffer; creation: Buffer | null; verified: number | null; verified_match: string | null }>(
+      `select c.runtime_code_hash, rb.code as runtime, cb.code as creation, (select v.id from verified_sources v where v.address = c.address) as verified,
+         (select v.match_type from verified_sources v where v.address = c.address) as verified_match
        from contracts c join bytecodes rb on rb.code_hash = c.runtime_code_hash left join bytecodes cb on cb.code_hash = c.creation_code_hash
        where c.address = $1`,
       [addr],
     );
     const row = found.rows[0];
     if (!row) return { status: "unknown", result: `Unable to locate ContractCode at ${p.address}` };
-    if (row.verified !== null) return { status: "already", result: "Already Verified" };
+    if (row.verified !== null && row.verified_match === "full") return { status: "already", result: "Already Verified" };
 
     let compiled: Compiled;
     try {
@@ -72,7 +91,7 @@ export class Verifier {
     }
     let m;
     try {
-      m = matchCode(picked.compiled, { runtimeCode: row.runtime, creationInput: row.creation }, p.given);
+      m = matchCode(picked.compiled, { runtimeCode: row.runtime, creationInput: row.creation }, p.given, { appendCbor: appendsCbor(p.settings), version: compiled.compiler.version });
     } catch (e) {
       if (e instanceof MatchFailure) return { status: "fail", result: `Fail - Unable to verify. ${e.message}` };
       throw e;
@@ -90,7 +109,13 @@ export class Verifier {
         `insert into verified_sources (address, runtime_code_hash, language, compiler_version, code_format, contract_path, contract_name, optimizer_enabled, optimizer_runs,
            evm_version, settings, sources, abi, compiler_metadata, constructor_args, libraries, license, match_type, creation_match, verified_at)
          values ($1, $2, 'solidity', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
-         on conflict (address) do nothing returning id`,
+         on conflict (address) do update set runtime_code_hash = excluded.runtime_code_hash, language = excluded.language, compiler_version = excluded.compiler_version,
+           code_format = excluded.code_format, contract_path = excluded.contract_path, contract_name = excluded.contract_name, optimizer_enabled = excluded.optimizer_enabled,
+           optimizer_runs = excluded.optimizer_runs, evm_version = excluded.evm_version, settings = excluded.settings, sources = excluded.sources, abi = excluded.abi,
+           compiler_metadata = excluded.compiler_metadata, constructor_args = excluded.constructor_args, libraries = excluded.libraries, license = excluded.license,
+           match_type = excluded.match_type, creation_match = excluded.creation_match, verified_at = excluded.verified_at
+           where verified_sources.match_type <> 'full' and excluded.match_type = 'full'
+         returning id`,
         [addr, row.runtime_code_hash, compiled.compiler.version, p.format, picked.path, picked.name, typeof optimizer.enabled === "boolean" ? optimizer.enabled : null,
           typeof optimizer.runs === "number" ? optimizer.runs : null, typeof p.settings.evmVersion === "string" ? p.settings.evmVersion : null, JSON.stringify(p.settings),
           JSON.stringify(p.sources), JSON.stringify(picked.abi), picked.metadata ? JSON.stringify(picked.metadata) : null, m.constructorArgs, Object.keys(libraries).length > 0 ? JSON.stringify(libraries) : null,

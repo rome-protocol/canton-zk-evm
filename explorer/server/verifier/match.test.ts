@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { matchCode, MatchFailure, splitMetadata, type CompiledCode } from "./match.ts";
+import { findMetadata, matchCode as matchWith, MatchFailure, type CompiledCode, type MatchContext, type OnChain } from "./match.ts";
+
+const VERSION = "0.8.28+commit.7893614a";
+const WITH_CBOR: MatchContext = { appendCbor: true, version: VERSION };
+const NO_CBOR: MatchContext = { appendCbor: false, version: VERSION };
+const matchCode = (c: CompiledCode, o: OnChain, g: Buffer | null, ctx: MatchContext = WITH_CBOR) => matchWith(c, o, g, ctx);
 
 // Matching, on made-up codes: no compiler needed. A "metadata" here is the shape solc appends: a CBOR map, then its length in two bytes.
 const meta = (tag: number): Buffer => {
@@ -23,17 +28,32 @@ function compiledOf(runtime: Buffer, creation: Buffer, extra: Partial<CompiledCo
 /** Creation code = head + the runtime code, as solc lays it out, then its own metadata. */
 const creationOf = (runtime: Buffer, tag: number): Buffer => Buffer.concat([Buffer.from(CREATION_HEAD, "hex"), runtime, meta(tag)]);
 
-describe("splitMetadata", () => {
-  it("splits a trailing CBOR map and its length", () => {
+describe("findMetadata", () => {
+  it("finds a CBOR map of the shape solc writes, with the places of its hash", () => {
     const c = code("6001", 7);
-    const s = splitMetadata(c)!;
-    expect(hex(s.body)).toBe("6001");
-    expect(s.cbor.length).toBe(c.length - 2);
+    const m = findMetadata(c, VERSION)!;
+    expect(m.start).toBe(2);
+    expect(m.hashes).toEqual([{ start: 2 + 8, length: 34 }]);
   });
-  it("refuses code that does not end that way", () => {
-    expect(splitMetadata(Buffer.from("6080604052", "hex"))).toBeNull();
-    expect(splitMetadata(Buffer.from("00", "hex"))).toBeNull();
-    expect(splitMetadata(Buffer.concat([Buffer.alloc(40, 1), Buffer.from([0xff, 0xff])]))).toBeNull();
+  it("refuses an end that is not that shape", () => {
+    expect(findMetadata(Buffer.from("6080604052", "hex"), VERSION)).toBeNull();
+    expect(findMetadata(Buffer.from("00", "hex"), VERSION)).toBeNull();
+    expect(findMetadata(Buffer.concat([Buffer.alloc(40, 1), Buffer.from([0xff, 0xff])]), VERSION)).toBeNull();
+    // A map start byte and a plausible length with anything inside is not the compiler's metadata.
+    const junk = Buffer.concat([Buffer.from([0xa1]), Buffer.alloc(20, 0x5b)]);
+    expect(findMetadata(Buffer.concat([Buffer.from("6001", "hex"), junk, Buffer.from([0, junk.length])]), VERSION)).toBeNull();
+  });
+  it("refuses metadata of another compiler version, with a hash of the wrong size, or with a key twice", () => {
+    expect(findMetadata(code("6001", 7), "0.8.27+commit.40a35a09")).toBeNull();
+    const short = Buffer.concat([Buffer.from("a164697066735820", "hex"), Buffer.alloc(32, 1)]);
+    expect(findMetadata(Buffer.concat([Buffer.from("6001", "hex"), short, Buffer.from([0, short.length])]), VERSION)).toBeNull();
+    const twice = Buffer.concat([Buffer.from("a264736f6c6343", "hex"), Buffer.from("00081c", "hex"), Buffer.from("64736f6c6343", "hex"), Buffer.from("00081c", "hex")]);
+    expect(findMetadata(Buffer.concat([Buffer.from("6001", "hex"), twice, Buffer.from([0, twice.length])]), VERSION)).toBeNull();
+  });
+  it("finds a map with only the compiler's version (no hash)", () => {
+    const m = Buffer.concat([Buffer.from("a164736f6c6343", "hex"), Buffer.from("00081c", "hex")]);
+    const c = Buffer.concat([Buffer.from("6001", "hex"), m, Buffer.from([0, m.length])]);
+    expect(findMetadata(c, VERSION)).toEqual({ start: 2, hashes: [] });
   });
 });
 
@@ -44,6 +64,11 @@ describe("matching the runtime code", () => {
     const m = matchCode(compiledOf(onRuntime, creationOf(onRuntime, 1)), { runtimeCode: onRuntime, creationInput: null }, null);
     expect(m.kind).toBe("full");
     expect(m.creationKind).toBeNull();
+    expect(m.constructorArgs).toBeNull();
+  });
+
+  it("keeps no constructor arguments for a contract with no creation input, whatever the submission sent", () => {
+    const m = matchCode(compiledOf(onRuntime, creationOf(onRuntime, 1)), { runtimeCode: onRuntime, creationInput: null }, Buffer.from("00".repeat(32), "hex"));
     expect(m.constructorArgs).toBeNull();
   });
 
@@ -60,18 +85,50 @@ describe("matching the runtime code", () => {
     expect(e?.code).toBe("runtime");
   });
 
-  it("is partial when only one of the two has metadata", () => {
+  it("refuses code that has metadata when the other has none, or the other way round: the end of the code is part of the code", () => {
     const body = Buffer.from(RUNTIME_BODY, "hex");
-    expect(matchCode(compiledOf(code(RUNTIME_BODY, 1), body), { runtimeCode: body, creationInput: null }, null).kind).toBe("partial");
-    expect(matchCode(compiledOf(body, body), { runtimeCode: code(RUNTIME_BODY, 1), creationInput: null }, null).kind).toBe("partial");
-    expect(() => matchCode(compiledOf(code(RUNTIME_BODY, 1), body), { runtimeCode: Buffer.from(RUNTIME_BODY.replace("5b5b5b", "5b5b00"), "hex"), creationInput: null }, null)).toThrow(MatchFailure);
+    expect(() => matchCode(compiledOf(code(RUNTIME_BODY, 1), body), { runtimeCode: body, creationInput: null }, null)).toThrow(/runtime code does not match/);
+    expect(() => matchCode(compiledOf(body, body), { runtimeCode: code(RUNTIME_BODY, 1), creationInput: null }, null)).toThrow(/runtime code does not match/);
   });
 
-  it("refuses code with no metadata that differs", () => {
+  it("refuses code with no metadata that differs, and calls code with no metadata hash that is equal partial: nothing pins its source", () => {
     const a = Buffer.from("6001600255", "hex");
     const b = Buffer.from("6001600355", "hex");
     expect(() => matchCode(compiledOf(a, a), { runtimeCode: b, creationInput: null }, null)).toThrow(/runtime code does not match/);
-    expect(matchCode(compiledOf(a, a), { runtimeCode: a, creationInput: null }, null).kind).toBe("full");
+    expect(matchCode(compiledOf(a, a), { runtimeCode: a, creationInput: null }, null, NO_CBOR).kind).toBe("partial");
+    expect(matchCode(compiledOf(a, a), { runtimeCode: a, creationInput: null }, null).kind).toBe("partial");
+    // A map with the compiler's version and no hash is metadata, but it pins nothing either.
+    const m = Buffer.concat([Buffer.from("a164736f6c6343", "hex"), Buffer.from("00081c", "hex")]);
+    const c = Buffer.concat([a, m, Buffer.from([0, m.length])]);
+    expect(matchCode(compiledOf(c, c), { runtimeCode: c, creationInput: null }, null).kind).toBe("partial");
+  });
+
+  it("does not take the end of code the compiler did not append metadata to for metadata: a forged tail cannot hide code", () => {
+    // The code ends with data that looks like metadata (the settings said none was appended); a byte of real code inside it is changed.
+    const tail = Buffer.concat([meta(9).subarray(0, meta(9).length - 2), Buffer.from([0, meta(9).length - 2])]);
+    const honest = Buffer.concat([Buffer.from("6001600255", "hex"), tail]);
+    const forged = Buffer.from(honest);
+    forged[7] = 0xff; // inside the part that a reader of the last two bytes would call metadata
+    expect(() => matchCode(compiledOf(honest, honest), { runtimeCode: forged, creationInput: null }, null, NO_CBOR)).toThrow(/runtime code does not match/);
+    expect(() => matchCode(compiledOf(honest, honest), { runtimeCode: forged, creationInput: null }, null, WITH_CBOR)).toThrow(/runtime code does not match/);
+    // The same, with a creation input that carries the same change.
+    const creation = Buffer.concat([Buffer.from(CREATION_HEAD, "hex"), honest]);
+    const creationForged = Buffer.concat([Buffer.from(CREATION_HEAD, "hex"), forged]);
+    expect(() => matchCode(compiledOf(honest, creation), { runtimeCode: forged, creationInput: creationForged }, null, NO_CBOR)).toThrow(MatchFailure);
+  });
+
+  it("refuses on-chain code with a trailer that the compiled code does not have", () => {
+    const a = Buffer.from("6001600255", "hex");
+    expect(() => matchCode(compiledOf(a, a), { runtimeCode: Buffer.concat([a, meta(1)]), creationInput: null }, null)).toThrow(/runtime code does not match/);
+  });
+
+  it("changes nothing but the hash values in a partial match: a changed version is code", () => {
+    const base = code(RUNTIME_BODY, 2);
+    const onChain = Buffer.from(code(RUNTIME_BODY, 1));
+    expect(matchCode(compiledOf(base, creationOf(base, 2)), { runtimeCode: onChain, creationInput: null }, null).kind).toBe("partial");
+    const version = Buffer.from(onChain);
+    version[version.length - 3] = 0x1d;
+    expect(() => matchCode(compiledOf(base, creationOf(base, 2)), { runtimeCode: version, creationInput: null }, null)).toThrow(/runtime code does not match/);
   });
 
   it("fills the immutables from the chain, and refuses when the rest differs", () => {

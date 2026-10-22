@@ -174,4 +174,53 @@ suite("verifying a contract", () => {
     expect(Object.keys(r.sources)).toEqual(["contracts/Box.sol"]);
     expect((stub.inputs[0] as { settings: { outputSelection: unknown } }).settings.outputSelection).toBeTruthy();
   });
+
+  it("keeps no constructor arguments for a genesis contract, whatever the request sent", async () => {
+    await addContract(db.pool, A, runtime, null);
+    expect((await v.verify(req(A, { constructorArguments: "00".repeat(32) }))).status).toBe("pass");
+    expect((await sources())[0]).toMatchObject({ creation_match: null, args: null });
+  });
+
+  it("lets a full match replace an earlier partial one, and answers 'already' to anything after a full one", async () => {
+    const other = Buffer.concat([Buffer.from(BODY, "hex"), meta(9)]);
+    await addContract(db.pool, A, other, Buffer.concat([HEAD, other, meta(9)]));
+    await addContract(db.pool, B, other, Buffer.concat([HEAD, other, meta(9)]));
+    expect(await v.verify(req(A))).toMatchObject({ status: "pass", match: "partial" });
+    const first = (await db.pool.query("select id from verified_sources")).rows[0].id;
+    // Another partial one adds nothing: already.
+    expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
+    expect(await sources()).toHaveLength(1);
+    // The exact code replaces it, in the same row, and the similar contract keeps pointing at that row.
+    stub.output = outputFor("Box.sol", "Box", { creation: Buffer.concat([HEAD, other, meta(9)]).toString("hex"), runtime: other.toString("hex") });
+    expect(await v.verify(req(A, { sourceCode: "// SPDX-License-Identifier: MIT\ncontract Box { /* the real one */ }" }))).toMatchObject({ status: "pass", match: "full", sourceId: Number(first) });
+    const rows = await sources();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ match_type: "full", creation_match: "full" });
+    expect((await db.pool.query("select match_type, verified_source from contracts where address = $1", [Buffer.from(A.slice(2), "hex")])).rows[0]).toMatchObject({ match_type: "full" });
+    expect((await db.pool.query("select verified_source from contracts where address = $1", [Buffer.from(B.slice(2), "hex")])).rows[0].verified_source).toBe(first);
+    const n = stub.calls;
+    expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
+    expect(stub.calls).toBe(n);
+  });
+
+  it("matches the end of the code byte for byte when the settings say no metadata was appended", async () => {
+    // The compiled code differs from the chain only in what would be a metadata hash; with appendCBOR false nothing is metadata.
+    const other = Buffer.concat([Buffer.from(BODY, "hex"), meta(9)]);
+    await addContract(db.pool, A, other, Buffer.concat([HEAD, other, meta(9)]));
+    const json = JSON.stringify({ language: "Solidity", sources: { "Box.sol": { content: "contract Box {}" } }, settings: { metadata: { appendCBOR: false } } });
+    const o = await v.verify(req(A, { codeFormat: "solidity-standard-json-input", sourceCode: json, contractName: "Box.sol:Box" }));
+    expect(o.status).toBe("fail");
+    expect(o.result).toMatch(/runtime code does not match/);
+    expect(await sources()).toHaveLength(0);
+  });
+
+  it("refuses a submission for a reserved address, and takes the operator's", async () => {
+    await addContract(db.pool, A, runtime, null);
+    const guarded = new Verifier(db.pool, stub, undefined, [A.toUpperCase().replace("0X", "0x")]);
+    const refused = await guarded.verify(req(A));
+    expect(refused.status).toBe("fail");
+    expect(refused.result).toMatch(/published by the operator/);
+    expect(stub.calls).toBe(0);
+    expect(await guarded.verify(req(A), { operator: true })).toMatchObject({ status: "pass" });
+  });
 });
