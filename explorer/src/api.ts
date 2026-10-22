@@ -185,3 +185,25 @@ export const getInFlight = async () => (await call("/api/in-flight", [200])).bod
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;
+
+/** A gateway leg a block recorded, as the legs route gives it. */
+export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
+/** A Canton update that carries a block. `offset` is on the reader party's participant, never the builder's completion offset. */
+export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null }
+export interface UpdateDetail extends UpdateItem {
+  template: { packageId: string; packageName: string | null; module: string; entity: string };
+  contractId: string | null;
+  blockHash: string | null;
+  signatories: { role: string; party: string }[];
+  /** What the producer's journal says it submitted for the update; null when the journal does not hold it. */
+  producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
+}
+
+const PAGE = 25;
+const cursor = (name: string, c: string | null) => (c ? `&${name}=${encodeURIComponent(c)}` : "");
+/** The paged lists. `before` is the cursor of a list that runs newest first, `after` of one that runs in order; null asks for the first page. */
+export const getBlockPage = async (before: string | null, limit = PAGE) => (await call(`/api/blocks?limit=${limit}${cursor("before", before)}`, [200])).body as Page<BlockListItem>;
+export const getBlockTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
+export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem>;
+export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
+export const getUpdate = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}`, [200])).body as UpdateDetail;
