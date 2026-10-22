@@ -476,7 +476,7 @@ describe("block 0", () => {
     await open(genesis());
     const title = screen.getByRole("heading", { name: "Block #0" }).parentElement!;
     expect(within(title).getByText("Genesis")).toHaveClass("chip-genesis");
-    expect(row(side("On the EVM"), "Parent")).toHaveTextContent("none");
+    expect(row(side("On the EVM"), "Parent hash")).toHaveTextContent("none");
     expect(screen.queryByRole("region", { name: "How this block became final" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Transactions" })).toBeNull();
     expect(screen.queryByText(LEGS)).toBeNull();
@@ -498,7 +498,7 @@ describe("block 0", () => {
     let st = status({ final: null, latest: [], proving: null });
     fakeApi(route({ block: () => reply(b), status: () => reply(st) }));
     renderApp("/block/0");
-    await screen.findByText("Genesis", { selector: ".chip" });
+    await screen.findAllByText("Genesis", { selector: ".chip" });
     expect(screen.getByText("Nothing on Canton refers to it yet.")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Next block/ })).toBeNull();
     b = genesis({ genesisReferenced: true });
