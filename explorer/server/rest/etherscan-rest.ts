@@ -25,6 +25,18 @@ export interface TokenMoveRow extends Omit<TxRow, "created" | "value" | "input" 
 }
 export interface MinedRow { block: number; timestamp: number; reward: string }
 export type TokenStandard = "ERC-20" | "ERC-721" | "ERC-1155";
+export interface BlockRewardRow { block: number; timestamp: number; miner: string; reward: string }
+/** How the producer cuts blocks now: the strategy of the newest run, and its interval when it has one (`fixed_rhythm`). */
+export interface Rhythm { strategy: string; intervalMs: number | null }
+export type Closest = "before" | "after";
+/** One log, with the fields of its transaction and block that Etherscan's `getLogs` carries. */
+export interface LogRow {
+  block: number; blockHash: string; timestamp: number; logIndex: number; txIndex: number; txHash: string; gasPrice: string; gasUsed: string; address: string; topics: string[]; data: string;
+}
+/** A `getLogs` filter: an address and/or topics, in a block range, with the topics combined left to right by `and` or `or`. */
+export interface LogFilter {
+  from: number; to: number; address: string | null; topics: (string | null)[]; ops: ("and" | "or")[]; skip: number; limit: number;
+}
 
 export type EtherscanRest = ReturnType<typeof createEtherscanRest>;
 
@@ -151,5 +163,69 @@ export function createEtherscanRest(pool: Pool) {
     return rows.map((r) => ({ block: Number(r.number), timestamp: Number(r.ts), reward: r.reward }));
   }
 
-  return { heads, txlist, internalOf, internalOfTx, internalInBlocks, tokenMoves, mined };
+  /** Whether a transaction succeeded, by its hash; null for a hash the index does not hold (only final blocks are indexed). */
+  async function txSuccess(hash: string): Promise<boolean | null> {
+    const [r] = await query(
+      "select t.status from tx_hashes h join transactions t on t.block_number = h.block_number and t.tx_index = h.tx_index where h.hash = $1",
+      [bytes(hash)],
+    );
+    return r ? r.status === 1 : null;
+  }
+
+  /** A block's miner and what it earned: its priority fees (there is no block reward on Ostia, and the base fee is burnt). Null for a block that is not final. */
+  async function blockReward(n: number): Promise<BlockRewardRow | null> {
+    const [r] = await query("select number, extract(epoch from timestamp)::bigint as ts, fee_recipient, priority_fees::text as reward from blocks where number = $1", [n]);
+    return r ? { block: Number(r.number), timestamp: Number(r.ts), miner: hex(r.fee_recipient), reward: r.reward } : null;
+  }
+
+  /** The number of the last block at or before a time (`before`), or of the first at or after it (`after`); null when there is none. */
+  async function blockAtTime(ts: number, closest: Closest): Promise<number | null> {
+    const [r] = await query(
+      closest === "before"
+        ? "select number from blocks where timestamp <= to_timestamp($1) order by timestamp desc, number desc limit 1"
+        : "select number from blocks where timestamp >= to_timestamp($1) order by timestamp asc, number asc limit 1",
+      [ts],
+    );
+    return r ? Number(r.number) : null;
+  }
+
+  /** The strategy of the newest producer run; null when no run is recorded. */
+  async function rhythm(): Promise<Rhythm | null> {
+    const [r] = await query("select strategy, settings->>'interval_ms' as interval_ms from producer_runs order by started_at desc limit 1");
+    if (!r) return null;
+    const ms = r.interval_ms === null ? NaN : Number(r.interval_ms);
+    return { strategy: r.strategy, intervalMs: Number.isFinite(ms) && ms > 0 ? ms : null };
+  }
+
+  /** The logs of a filter, oldest first, as Etherscan's `getLogs` lists them. Every part of the filter is a bound on an index: the caller has checked that an address, a topic0 or a short range is there. */
+  async function logs(f: LogFilter): Promise<LogRow[]> {
+    const values: unknown[] = [f.from, f.to];
+    const at = (b: string) => (values.push(bytes(b)), `$${values.length}`);
+    const where = ["l.block_number between $1 and $2"];
+    if (f.address !== null) where.push(`l.address = ${at(f.address)}`);
+    let expr = "";
+    let previous = -1, op = 0;
+    f.topics.forEach((t, i) => {
+      if (t === null) return;
+      const term = `l.topic${i} = ${at(t)}`;
+      expr = previous < 0 ? term : `(${expr} ${f.ops[op++]} ${term})`;
+      previous = i;
+    });
+    if (expr !== "") where.push(expr);
+    values.push(f.limit, f.skip);
+    const rows = await query(
+      `with k as (select l.block_number, l.log_index, l.tx_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data from logs l where ${where.join(" and ")}
+                  order by l.block_number, l.log_index limit $${values.length - 1} offset $${values.length})
+       select k.*, t.hash, t.effective_gas_price::text as price, t.gas_used::text as gas_used, b.hash as block_hash, extract(epoch from b.timestamp)::bigint as ts
+       from k join transactions t on t.block_number = k.block_number and t.tx_index = k.tx_index join blocks b on b.number = k.block_number
+       order by k.block_number, k.log_index`,
+      values,
+    );
+    return rows.map((r) => ({
+      block: Number(r.block_number), blockHash: hex(r.block_hash), timestamp: Number(r.ts), logIndex: r.log_index, txIndex: r.tx_index, txHash: hex(r.hash), gasPrice: r.price, gasUsed: r.gas_used,
+      address: hex(r.address), topics: [r.topic0, r.topic1, r.topic2, r.topic3].filter((x) => x !== null).map(hex), data: hex(r.data),
+    }));
+  }
+
+  return { heads, txlist, internalOf, internalOfTx, internalInBlocks, tokenMoves, mined, txSuccess, blockReward, blockAtTime, rhythm, logs };
 }
