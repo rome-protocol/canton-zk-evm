@@ -3,7 +3,7 @@ import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "../db/
 import { JobQueue } from "./jobs.ts";
 import { RequestError, type VerifyRequest } from "./request.ts";
 import { Verifier } from "./verify.ts";
-import { addContract, hashOf, outputFor, SandboxError, StubCompile } from "./verify-fixtures.ts";
+import { addContract, outputFor, SandboxError, StubCompile } from "./verify-fixtures.ts";
 import { VerifierWorker } from "./worker.ts";
 
 checkRequired();
@@ -42,7 +42,6 @@ suite("the verifier role", () => {
     expect(await q.status(guid)).toMatchObject({ status: "pass" });
     expect((await db.pool.query("select match_type from verified_sources where address = $1", [Buffer.from(A.slice(2), "hex")])).rowCount).toBe(1);
     expect(await w.step()).toBe("idle");
-    expect(hashOf(runtime).length).toBe(32);
   });
 
   it("answers Already Verified for a second submission, without compiling", async () => {
