@@ -25,6 +25,8 @@ export interface BlockShape {
   txs: number;
   /** The gateway records a Leg of this kind (1 to 3) in the first transaction. */
   leg?: number;
+  /** The sender of every tenth transaction (an address with a long history: the load test's one address with a million). */
+  hot?: string;
 }
 
 /** The leg hash of README.md's formula, written out here on its own so that a mistake in the indexer's copy shows up as a failing test. */
@@ -68,6 +70,7 @@ function txList(serialized: string[]): string {
 export function makeBlock(number: number, parentHash: string, shape: BlockShape, pins: Pins = PINS, instance = 0): SyntheticBlock {
   const txs: FinalTx[] = [], receipts: FinalReceipt[] = [], traces: TxTrace[] = [], serialized: string[] = [];
   let cumulative = 0;
+  const senderOf = (k: number) => (shape.hot && k % 10 === 0 ? shape.hot : hex(0xf000 + (k % 53)));
   for (let k = 0; k < shape.txs; k++) {
     const kind = k % 5;
     const to = kind === 2 ? null : hex(0xc000 + (k % 97));
@@ -89,10 +92,10 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     }
     const gasUsed = failed ? 30000 : kind === 3 ? 90000 : 21000 + (kind === 2 ? 50000 : 0);
     cumulative += gasUsed;
-    txs.push({ hash, type: 2, from: hex(0xf000 + (k % 53)), to, nonce: k, value: BigInt(k), gas: 100000, gasPrice: null, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, input, accessList: [], authorizationList: null });
+    txs.push({ hash, type: 2, from: senderOf(k), to, nonce: k, value: BigInt(k), gas: 100000, gasPrice: null, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, input, accessList: [], authorizationList: null });
     receipts.push({ transactionHash: hash, status: failed ? 0 : 1, gasUsed, cumulativeGasUsed: cumulative, effectiveGasPrice: 8n, contractAddress: kind === 2 && !failed ? hex(0xcafe00 + k) : null, logs });
     const reason = "0x08c379a0" + encodeAbiParameters([{ type: "string" }], ["not allowed"]).slice(2);
-    const sender = hex(0xf000 + (k % 53));
+    const sender = senderOf(k);
     const top: TraceFrame = kind === 2
       ? { traceAddress: [], type: "create", callType: "create", from: sender, to: failed ? null : hex(0xcafe00 + k), value: BigInt(k), gas: 100000, gasUsed, input, error: null,
           created: failed ? null : { address: hex(0xcafe00 + k), code: "0x6001600055" } }
