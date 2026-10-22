@@ -197,6 +197,9 @@ export const getBlockDetail = async (id: string) => (await call(`/api/blocks/${e
 export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).body as { address?: string | null }).address ?? null;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
+/** What /api/txs/:hash adds to a transaction: the stage 2 fields, null until its block is derived. `derived` is false while the explorer has not read the block's calls. */
+export type ApiTxDetail = Omit<ApiTxSeen, "logs"> & { derived: boolean; callCount: number | null; revertReason: string | null };
+export const getTxDetail = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}`, [200])).body as ApiTxDetail;
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;
 
 /** A gateway leg a block recorded, as the legs route gives it. */
@@ -234,3 +237,19 @@ export const getUpdates = async (before: string | null, limit = PAGE) => (await 
 export const getUpdate = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}`, [200])).body as UpdateDetail;
 /** The updates just newer and just older than one, by the list's key, newest first, the update itself among them. */
 export const getUpdatesAround = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/around`, [200])).body as { items: UpdateAroundItem[] };
+
+/** A log of a transaction. `decoded` is null while the emitting contract has no verified interface. */
+export interface TxLog { logIndex: number; address: string; topics: string[]; data: string; decoded: { name: string; signature: string; args: { name: string; type: string; value: string }[] } | null }
+/** A call that moved value, from the transaction's trace. `traceAddress` places it in the call tree ("t0-1" is the second call of the first call). */
+export interface InternalCall { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number; error: string | null }
+export interface TokenTransfer { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string; tokenId: string | null }
+/** A page of a list read from the derived stage: `derived` is false while the explorer has not read the transaction's block, and the page is empty. */
+export type DerivedPage<T> = Page<T> & { derived?: boolean };
+const afterTx = (hash: string, sub: string, after: string | null, limit: number) => `/api/txs/${encodeURIComponent(hash)}/${sub}?limit=${limit}${cursor("after", after)}`;
+export const getTxLogs = async (hash: string, after: string | null, limit = PAGE) => (await call(afterTx(hash, "logs", after, limit), [200])).body as Page<TxLog>;
+export const getTxInternal = async (hash: string, after: string | null, limit = PAGE) => (await call(afterTx(hash, "internal", after, limit), [200])).body as DerivedPage<InternalCall>;
+export const getTxTransfers = async (hash: string, after: string | null, limit = PAGE) => (await call(afterTx(hash, "token-transfers", after, limit), [200])).body as DerivedPage<TokenTransfer>;
+export interface TraceFrame { traceAddress: number[]; type: "call" | "create" | "suicide"; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; input: string; inputSize: number; error: string | null; created: string | null }
+export const getTxTrace = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}/trace`, [200])).body as { frames: TraceFrame[]; truncated: boolean };
+/** The receipt of a final transaction as reth gave it. */
+export const getTxReceipt = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}?raw=1`, [200])).body as Record<string, unknown>;

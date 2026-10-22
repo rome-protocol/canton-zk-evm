@@ -4,7 +4,7 @@ export interface Lifecycle {
 }
 
 /** A time in milliseconds, with the microseconds that Canton's record time carries (Date.parse keeps only whole milliseconds). */
-function at(iso: string): number {
+export function at(iso: string): number {
   const m = /^(.*?)(?:\.(\d+))?Z$/.exec(iso);
   const whole = Date.parse(`${m?.[1] ?? iso}Z`);
   return m?.[2] ? whole + Number(`0.${m[2]}`) * 1000 : whole;
@@ -34,7 +34,7 @@ export interface Became {
   bar: BarPart[] | null;
 }
 
-const clock = (iso: string, digits: 3 | 6) => {
+export const clock = (iso: string, digits: 3 | 6) => {
   const m = /T(\d\d:\d\d:\d\d)(?:\.(\d+))?Z$/.exec(iso);
   return m ? `${m[1]}.${(m[2] ?? "").padEnd(digits, "0").slice(0, digits)}` : iso;
 };
