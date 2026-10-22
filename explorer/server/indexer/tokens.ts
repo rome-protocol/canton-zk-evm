@@ -138,7 +138,9 @@ export async function writeTokens(c: Pick<PoolClient, "query">, n: number, reads
     [n],
   );
   // Derived tokens: add the block's changes, and move the holder count by the holders that crossed zero. A holder is counted once, whatever number of
-  // ids (an ERC-1155's) it holds. The statement reads the balances as they were before its own insert (one snapshot), by the primary key.
+  // ids (an ERC-1155's) it holds: `before` is the number of ids it held before the block (its rows by the primary key's prefix), and the block moves it by
+  // `change` ids. Every look-up is by the primary key and no set is joined back to itself, so the time follows the keys. The statement reads the balances as they
+  // were before its own insert (one snapshot).
   const moved = await c.query(
     `with d as (select token, holder, tid, sum(delta) as delta from (${legsSql("t.block_number = $1", "derived")}) l group by token, holder, tid),
           up as (
@@ -148,15 +150,12 @@ export async function writeTokens(c: Pick<PoolClient, "query">, n: number, reads
             returning 1
           ),
           dn as (
-            select d.token, d.holder, d.tid, coalesce(o.value, 0) as before, coalesce(o.value, 0) + d.delta as after
+            select d.token, d.holder, (coalesce(o.value, 0) > 0)::int as pos_before, (coalesce(o.value, 0) + d.delta > 0)::int as pos_after
             from d left join token_balances o on o.token = d.token and o.holder = d.holder and o.token_id = d.tid
           ),
-          h as (select token, holder, bool_or(before > 0) as was, bool_or(after > 0) as is from dn group by token, holder)
-     select h.token, sum((h.is or u.any)::int - (h.was or u.any)::int)::int as holders
-     from h cross join lateral (
-       select exists (select 1 from token_balances x where x.token = h.token and x.holder = h.holder and x.value > 0
-                      and not exists (select 1 from dn where dn.token = h.token and dn.holder = h.holder and dn.tid = x.token_id)) as any
-     ) u group by h.token`,
+          h as (select token, holder, sum(pos_after - pos_before) as change from dn group by token, holder),
+          b as (select h.token, h.change, (select count(*) from token_balances x where x.token = h.token and x.holder = h.holder and x.value > 0) as before from h)
+     select token, sum(((before + change) > 0)::int - (before > 0)::int)::int as holders from b group by token`,
     [n],
   );
   await c.query(

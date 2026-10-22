@@ -10,6 +10,7 @@ import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
+import { rebuildTokens } from "./aggregates.ts";
 import { reindexRange } from "./reindex.ts";
 import type { TraceFrame } from "./reads.ts";
 import { BATCH_TOPIC, SELECTORS, TRANSFER_TOPIC } from "./tokens.ts";
@@ -72,6 +73,94 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       if (process.env.LOAD_HOLDERS) console.log("reindex ms", Date.now() - r0);
       expect(Date.now() - r0).toBeLessThan(REINDEX_MS);
       expect((await pool.query("select (to_jsonb(x) - 'checked_block')::text as j from token_balances x order by j")).rows.length).toBe(before.length);
+    });
+  }, 120_000);
+
+  // The shapes below run stage 2 alone (the `behind` shape) so its time is measured on its own, against B1; the reindex of the same keys against the same budget.
+  const B1_MS = 1000;
+  const N = 5000;
+  async function load(blocks: Log[][], erc20Supply: number, fn: (pool: Pool, indexer: Indexer, chain: SyntheticChain, stage2Ms: () => number) => Promise<void>): Promise<void> {
+    await inDb(async (pool) => {
+      let last = -1; // stage 2's write time of the newest block derived
+      await migrate(pool);
+      const chain: SyntheticChain = makeChain([{ txs: 1 }, ...blocks.map(() => ({ txs: 1 }))]);
+      const t = chain.blocks[0]!.traces[0]!;
+      t.frames = [{ ...t.frames[0]!, traceAddress: [], type: "call", callType: "call", created: null }, create([0], ERC20), create([1], ERC1155)];
+      t.calls = t.frames.length;
+      blocks.forEach((logs, i) => chain.blocks[i + 1]!.receipts[0]!.logs.push(...logs));
+      const call = (sel: string, out: string) => { chain.reads.callResults[`${A(ERC20)}:${sel}`] = out; };
+      call(SELECTORS.name, str("Load")); call(SELECTORS.symbol, str("LD")); call(SELECTORS.decimals, "0x" + W(6)); call(SELECTORS.totalSupply, "0x" + W(erc20Supply));
+      const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "behind", onTiming: (t) => { if (t.stage === 2) last = t.writeMs; } });
+      opened.push(indexer);
+      await indexer.open();
+      await fn(pool, indexer, chain, () => last);
+    });
+  }
+  const tok = (pool: Pool, a: number) => pool.query("select holder_count::int as h, transfer_count::int as t from tokens where address = $1", [Buffer.from(A(a).slice(2), "hex")]).then((r) => r.rows[0]);
+  const snapshot = async (pool: Pool) => (await pool.query("select (to_jsonb(x) - 'checked_block')::text as j from token_balances x order by j")).rows.map((r) => r.j);
+  /** The reindex's rebuild of the tokens and balances over every block, against B1, then the whole reindex (every aggregate) against the reindex's own limit; the rows come out the same. */
+  async function reindexAgainstBudget(pool: Pool, chain: SyntheticChain): Promise<void> {
+    const before = await snapshot(pool);
+    const head = chain.blocks.length;
+    await pool.query("analyze token_transfers");
+    const r0 = Date.now();
+    await rebuildTokens(pool, 1, head, head, false);
+    const took = Date.now() - r0;
+    if (process.env.LOAD_HOLDERS) console.log("rebuildTokens ms", took);
+    expect(took).toBeLessThan(B1_MS);
+    expect(await snapshot(pool)).toEqual(before);
+    const r1 = Date.now();
+    await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, null);
+    if (process.env.LOAD_HOLDERS) console.log("reindex ms", Date.now() - r1);
+    expect(Date.now() - r1).toBeLessThan(REINDEX_MS);
+    expect(await snapshot(pool)).toEqual(before);
+  }
+
+  it("5,000 distinct-holder ERC-20 transfers in one block: stage 2 and the reindex's rebuild each inside B1", async () => {
+    const logs = [erc20(0, 0x1000, 5 * N)];
+    for (let i = 0; i < N; i++) logs.push(erc20(0x1000, 0x2000 + i, 1));
+    await load([logs], 5 * N, async (pool, indexer, chain, stage2Ms) => {
+      await indexer.runOnce();
+      await indexer.deriveOnce();
+      const took = stage2Ms();
+      if (process.env.LOAD_HOLDERS) console.log("stage 2 ms", took);
+      expect(took).toBeLessThan(B1_MS);
+      expect(await tok(pool, ERC20)).toEqual({ h: N + 1, t: N + 1 });
+      await reindexAgainstBudget(pool, chain);
+      expect(await tok(pool, ERC20)).toEqual({ h: N + 1, t: N + 1 });
+    });
+  }, 120_000);
+
+  it("5,000 holders that empty their balance in one block (a sweep), the shape that evaluates the holder count's second look", async () => {
+    const fund = [erc20(0, 0x1000, 5 * N)];
+    for (let i = 0; i < N; i++) fund.push(erc20(0x1000, 0x2000 + i, 1));
+    const sweep: Log[] = [];
+    for (let i = 0; i < N; i++) sweep.push(erc20(0x2000 + i, 0x9000, 1));
+    await load([fund, sweep], 5 * N, async (pool, indexer, chain, stage2Ms) => {
+      await indexer.runOnce();
+      await indexer.deriveOnce(); // derives the block that makes the tokens and then the one with the sweep, which is the one timed
+      if (process.env.LOAD_HOLDERS) console.log("stage 2 ms", stage2Ms());
+      expect(stage2Ms()).toBeLessThan(B1_MS);
+      expect(await tok(pool, ERC20)).toEqual({ h: 2, t: 2 * N + 1 }); // the sink and the first holder, which keeps what is left of the supply
+      await reindexAgainstBudget(pool, chain);
+      expect(await tok(pool, ERC20)).toEqual({ h: 2, t: 2 * N + 1 });
+    });
+  }, 120_000);
+
+  it("1,250 ERC-1155 holders of four ids that each empty one id in one block: counted once each, inside B1", async () => {
+    const H = N / 4;
+    const fund: Log[] = [];
+    for (let i = 0; i < H; i++) fund.push(batch(0, 0x4000 + i, [1, 2, 3, 4], [1, 1, 1, 1]));
+    const empty: Log[] = [];
+    for (let i = 0; i < H; i++) empty.push(batch(0x4000 + i, 0x7000, [1], [1]));
+    await load([fund, empty], 1, async (pool, indexer, chain, stage2Ms) => {
+      await indexer.runOnce();
+      await indexer.deriveOnce();
+      if (process.env.LOAD_HOLDERS) console.log("stage 2 ms", stage2Ms());
+      expect(stage2Ms()).toBeLessThan(B1_MS);
+      expect((await tok(pool, ERC1155)).h).toBe(H + 1); // every holder still holds three ids; the sink holds one
+      await reindexAgainstBudget(pool, chain);
+      expect((await tok(pool, ERC1155)).h).toBe(H + 1);
     });
   }, 120_000);
 });
