@@ -375,7 +375,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
   describe("block: getblockreward, getblocknobytime and getblockcountdown", () => {
     it("getblockreward: the fees are the reward, the miner is the fee recipient, no uncles (recorded answer)", async () => {
       const a = shape(await get("/api?module=block&action=getblockreward&blockno=2"));
-      expect(a).toEqual({ status: "1", message: "OK", result: { blockNumber: "2", timeStamp: await stamp(2), blockMiner: A, blockReward: "2000", uncles: null, uncleInclusionReward: "0" } });
+      expect(a).toEqual({ status: "1", message: "OK", result: { blockNumber: "2", timeStamp: await stamp(2), blockMiner: A, blockReward: "2000", uncles: [], uncleInclusionReward: "0" } });
       expect(Object.keys(a.result)).toEqual(["blockNumber", "timeStamp", "blockMiner", "blockReward", "uncles", "uncleInclusionReward"]);
       expect(shape(await get("/api?module=block&action=getblockreward&blockno=999"))).toEqual(NOTOK(TEXTS.noBlock));
       expect(shape(await get("/api?module=block&action=getblockreward&blockno=x"))).toEqual(NOTOK(TEXTS.blockno));
@@ -392,6 +392,9 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
       expect(await at(1, "before")).toEqual(NOTOK(TEXTS.noClosest));
       expect((await at(1, "after")).result).toBe("1");
       expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=abc&closest=before"))).toEqual(NOTOK(TEXTS.timestamp));
+      // A time the database cannot make is a wrong timestamp, not a failed read.
+      for (const big of ["253402300800", "100000000000000", "999999999999999"]) expect(shape(await get(`/api?module=block&action=getblocknobytime&timestamp=${big}&closest=before`))).toEqual(NOTOK(TEXTS.timestamp));
+      expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=253402300799&closest=before")).status).toBe("1");
       expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=5&closest=near"))).toEqual(NOTOK(TEXTS.closest));
       expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=5"))).toEqual(NOTOK(TEXTS.closest));
     });

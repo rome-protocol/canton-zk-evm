@@ -254,11 +254,12 @@ const block: Record<string, Handler> = {
     const n = blockNo(c.p.get("blockno"));
     const b = await c.rest.blockReward(n);
     if (b === null) throw new NotOk(TEXTS.noBlock);
-    return { blockNumber: String(b.block), timeStamp: String(b.timestamp), blockMiner: b.miner, blockReward: b.reward, uncles: null, uncleInclusionReward: "0" };
+    return { blockNumber: String(b.block), timeStamp: String(b.timestamp), blockMiner: b.miner, blockReward: b.reward, uncles: [], uncleInclusionReward: "0" };
   },
   async getblocknobytime(c) {
     const ts = c.p.get("timestamp");
-    if (ts === null || !WHOLE.test(ts)) throw new NotOk(TEXTS.timestamp);
+    // PostgreSQL cannot make a time of year 10000 or later, so a larger number is refused here, as a wrong timestamp, and not read.
+    if (ts === null || !WHOLE.test(ts) || Number(ts) > MAX_TIMESTAMP) throw new NotOk(TEXTS.timestamp);
     const closest = c.p.get("closest");
     if (closest !== "before" && closest !== "after") throw new NotOk(TEXTS.closest);
     const n = await c.rest.blockAtTime(Number(ts), closest as Closest);
@@ -334,6 +335,9 @@ const logs: Record<string, Handler> = {
 };
 
 /** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
+/** The last second of year 9999. */
+const MAX_TIMESTAMP = 253_402_300_799;
+
 export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
