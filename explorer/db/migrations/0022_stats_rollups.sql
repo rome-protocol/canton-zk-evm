@@ -83,7 +83,7 @@ create index addresses_first_seen_block_idx on addresses (first_seen_block);
 -- Late facts. The rollup cursor moves with the clock, and a fact can be written long after its own time (a block caught up after an outage, a journal
 -- loaded late). Every write of a fact table therefore leaves the earliest fact time it touched here, and the next rollup run starts from the earliest one,
 -- whatever its age. The table is append only, so writers never wait for each other, and a run takes what it finds by deleting it.
-create table stats_dirty (id bigint generated always as identity primary key, at timestamptz not null);
+create table stats_dirty (id bigint generated always as identity primary key, at timestamptz);  -- null when the touched rows carry no time (the claim ignores it)
 
 create function stats_dirty_blocks() returns trigger language plpgsql as $$
 begin

@@ -247,7 +247,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
   it("minute rows older than 30 days are pruned, and the hour and day rows stay", () => inDb(async (pool) => {
     await block(pool, 1, -40 * 86400);
     await block(pool, 2, 10);
-    await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
+    await rollupStats(pool, { now: () => T0 + 5 * MINUTE, chunkMs: 3 * DAY });
     expect((await pool.query("select count(*)::int as n from stats_minute")).rows[0].n).toBe(1);
     expect((await pool.query("select count(*)::int as n from stats_hour")).rows[0].n).toBe(2);
     expect((await pool.query("select count(*)::int as n from stats_day")).rows[0].n).toBe(2);

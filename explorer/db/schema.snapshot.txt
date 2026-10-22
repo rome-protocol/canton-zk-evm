@@ -464,7 +464,7 @@ table stats_day
 
 table stats_dirty
   column id bigint not null identity always
-  column at timestamp with time zone not null
+  column at timestamp with time zone
   constraint stats_dirty_pkey PRIMARY KEY (id)
   CREATE UNIQUE INDEX stats_dirty_pkey ON public.stats_dirty USING btree (id)
 
