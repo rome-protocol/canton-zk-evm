@@ -43,6 +43,14 @@
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).
+# The verifier (contract verification, design section 6.3) is OFF unless EXPLORER_VERIFIER=1: `start` then runs `node server/verifier/cli.ts` as its own container,
+# EXPLORER_VERIFIER_CONTAINER (default cze-explorer-verifier), and the API answers 503 to a submission until that role is running. Without the switch `start` stops any verifier
+# container left from an earlier run, and starts none. The verifier compiles each contract in a throwaway container with no network, so it needs the Docker program and
+# the Docker socket: the program is the pinned static build (PINS' DOCKER_CLI_VERSION and DOCKER_CLI_SHA256), downloaded once into <state>/explorer-verifier/bin and checked,
+# and mounted read-only; the socket is mounted with its group added (DOCKER_SOCKET, default /var/run/docker.sock). The compilers are kept in <state>/explorer-verifier/solc, mounted at
+# the same path (the Docker daemon must see it there). The sandbox image is PINS' BUSYBOX_IMAGE, which must be on the machine already (docker pull it once). SOLC_LIST_URL (the compiler
+# release list; no default) is required, OUTSIDE_USER_AGENT (default "Rome Protocol rome@romeprotocol.com") is what the compiler download says it is, and SOLC_TIMEOUT_MS, SOLC_MEMORY_MB,
+# SOLC_MAX_OUTPUT_MB, SOLC_MAX_INPUT_KB and SOLC_CACHE_MAX_MB are passed on when set.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
@@ -51,6 +59,7 @@ STATE=${CZE_STATE_DIR:-$ROOT/state}
 case $STATE in /*) ;; *) STATE=$PWD/$STATE ;; esac   # Docker mounts need absolute paths
 NAME=${EXPLORER_CONTAINER:-cze-explorer}
 INDEXER_NAME=${EXPLORER_INDEXER_CONTAINER:-cze-explorer-indexer}
+VERIFIER_NAME=${EXPLORER_VERIFIER_CONTAINER:-cze-explorer-verifier}
 IMAGE=${EXPLORER_IMAGE:-cze-explorer}
 fail() { echo "explorer/run.sh: $*" >&2; exit 1; }
 # A persistent network's database container and port are the ones it was made with, not whatever this shell has set (as down.sh and restart.sh do).
@@ -181,17 +190,58 @@ indexer_args() {
   done
 }
 
+# The pinned Docker program, in <state>/explorer-verifier/bin/docker: downloaded once, and checked against PINS' SHA-256 before it is used.
+verifier_docker_cli() {
+  local dir=$STATE/explorer-verifier/bin mark="$DOCKER_CLI_VERSION $DOCKER_CLI_SHA256"
+  [ "${EXPLORER_DRY_RUN:-0}" != 1 ] || return 0
+  if [ -x "$dir/docker" ] && [ "$(cat "$dir/docker.pin" 2> /dev/null)" = "$mark" ]; then return 0; fi
+  (umask 077; mkdir -p "$dir")
+  local tgz=$dir/docker.tgz sum
+  curl -fsSL -A 'Rome Protocol rome@romeprotocol.com' -o "$tgz" "https://download.docker.com/linux/static/stable/x86_64/docker-$DOCKER_CLI_VERSION.tgz" || { rm -f "$tgz"; fail "the Docker program could not be downloaded"; }
+  sum=$( (sha256sum "$tgz" 2> /dev/null || shasum -a 256 "$tgz") | cut -d' ' -f1)
+  [ "$sum" = "$DOCKER_CLI_SHA256" ] || { rm -f "$tgz"; fail "the Docker program's SHA-256 is $sum, not the pinned $DOCKER_CLI_SHA256"; }
+  tar -xzf "$tgz" -C "$dir" --strip-components=1 docker/docker
+  rm -f "$tgz"
+  echo "$mark" > "$dir/docker.pin"
+}
+
+# The verifier's container, in ARGS (also without the database's settings).
+verifier_args() {
+  [ -n "${SOLC_LIST_URL:-}" ] || fail "EXPLORER_VERIFIER=1 needs SOLC_LIST_URL, the address of the compiler release list"
+  local sock=${DOCKER_SOCKET:-/var/run/docker.sock} gid cache=$STATE/explorer-verifier/solc bin=$STATE/explorer-verifier/bin/docker
+  if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then
+    gid=$(stat -c %g "$sock" 2> /dev/null || stat -f %g "$sock" 2> /dev/null || echo 0)
+  else
+    [ -S "$sock" ] || fail "the Docker socket is not at $sock (DOCKER_SOCKET)"
+    gid=$(stat -c %g "$sock" 2> /dev/null || stat -f %g "$sock")
+    docker image inspect "$BUSYBOX_IMAGE" > /dev/null 2>&1 || fail "the sandbox image is not on this machine: docker pull $BUSYBOX_IMAGE"
+    verifier_docker_cli
+    (umask 077; mkdir -p "$cache")
+  fi
+  ARGS=(run -d --name "$VERIFIER_NAME" "${HARDEN[@]}" --network host -e HOME=/tmp --group-add "$gid"
+    -v "$sock:/var/run/docker.sock" -v "$bin:/usr/local/bin/docker:ro" -v "$cache:$cache"
+    -e "SOLC_CACHE_DIR=$cache" -e "SANDBOX_IMAGE=$BUSYBOX_IMAGE" -e "SOLC_LIST_URL=$SOLC_LIST_URL" -e "OUTSIDE_USER_AGENT=${OUTSIDE_USER_AGENT:-Rome Protocol rome@romeprotocol.com}")
+  for v in SOLC_TIMEOUT_MS SOLC_MEMORY_MB SOLC_MAX_OUTPUT_MB SOLC_MAX_INPUT_KB SOLC_CACHE_MAX_MB; do
+    [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
+  done
+}
+
 # Everything that names a file is checked while the three containers' arguments are made, and nothing runs before that is done.
 start() {
   explorer_args; local explorer=("${ARGS[@]}")
   indexer_args; local indexer=("${ARGS[@]}")
+  local verifier=()
+  if [ "${EXPLORER_VERIFIER:-0}" = 1 ]; then verifier_args; verifier=("${ARGS[@]}"); fi
   database   # may start the database, which makes the password file the next lines mount
   ARGS=("${explorer[@]}"); database_args; explorer=("${ARGS[@]}")
   ARGS=("${indexer[@]}"); database_args; indexer=("${ARGS[@]}")
+  if [ "${EXPLORER_VERIFIER:-0}" = 1 ]; then ARGS=("${verifier[@]}"); database_args; verifier=("${ARGS[@]}"); fi
   ARGS=(run --rm "${HARDEN[@]}" --network host); database_args; local migrate=("${ARGS[@]}")
   quietly "${migrate[@]}" "$IMAGE" node server/db/cli.ts migrate
   stop_indexer
   quietly "${indexer[@]}" "$IMAGE" node server/indexer/cli.ts
+  stop_verifier
+  if [ "${EXPLORER_VERIFIER:-0}" = 1 ]; then quietly "${verifier[@]}" "$IMAGE" node server/verifier/cli.ts; fi
   stop_container
   quietly "${explorer[@]}" "$IMAGE"
 }
@@ -207,6 +257,12 @@ stop_container() {
 stop_indexer() {
   quietly stop -t 30 "$INDEXER_NAME" 2> /dev/null || true
   quietly rm "$INDEXER_NAME" 2> /dev/null || true
+}
+
+# The verifier stops on SIGTERM after the job in hand (a compile is at most a minute).
+stop_verifier() {
+  quietly stop -t 30 "$VERIFIER_NAME" 2> /dev/null || true
+  quietly rm "$VERIFIER_NAME" 2> /dev/null || true
 }
 
 # The default database follows the network's life: for a network that is not persistent, `stop` removes the database that `start` made, so the next
@@ -225,6 +281,6 @@ case ${1:-} in
   build) build ;;
   setup) build; setup ;;
   start) build; start ;;
-  stop) stop_container; stop_indexer; forget_database ;;
+  stop) stop_container; stop_indexer; stop_verifier; forget_database ;;
   *) echo "usage: explorer/run.sh setup | start | stop | build" >&2; exit 2 ;;
 esac

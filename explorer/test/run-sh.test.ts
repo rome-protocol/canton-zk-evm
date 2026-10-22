@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -91,6 +91,46 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(start({ TRACKER_FILE: "/var/lib/explorer/list.json" })).toContain(" -e TRACKER_FILE=/var/lib/explorer/list.json");
   });
 
+  it("starts no verifier unless EXPLORER_VERIFIER=1, and stops one that an earlier run left", () => {
+    const r = spawnSync("bash", [RUN, "start"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, SOLC_LIST_URL: "https://lists.example/list.json" } });
+    expect(r.status, r.stderr).toBe(0);
+    const lines = r.stdout.split("\n");
+    expect(lines.some((l) => l.includes("server/verifier/cli.ts"))).toBe(false);
+    expect(lines).toContain("docker stop -t 30 cze-explorer-verifier");
+  });
+
+  it("starts the verifier with the pinned image, its own cache folder, the Docker program and socket, and the project's contact, when EXPLORER_VERIFIER=1", () => {
+    const r = spawnSync("bash", [RUN, "start"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, EXPLORER_VERIFIER: "1", SOLC_LIST_URL: "https://lists.example/list.json", SOLC_TIMEOUT_MS: "30000", EXPLORER_DB_HOST: "10.1.2.3" },
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const cmd = r.stdout.split("\n").find((l) => l.includes("--name cze-explorer-verifier ")) ?? "";
+    const pins = Object.fromEntries(readFileSync(resolve(import.meta.dirname, "../../PINS"), "utf8").split("\n").filter((l) => /^[A-Z_0-9]+=/.test(l)).map((l) => [l.split("=")[0], l.slice(l.indexOf("=") + 1)]));
+    expect(cmd).toContain("--read-only");
+    expect(cmd).toContain("--cap-drop ALL");
+    expect(cmd).toContain(" --group-add ");
+    expect(cmd).toContain(" -v /var/run/docker.sock:/var/run/docker.sock");
+    expect(cmd).toContain(` -v ${join(state, "explorer-verifier", "bin", "docker")}:/usr/local/bin/docker:ro`);
+    expect(cmd).toContain(` -v ${join(state, "explorer-verifier", "solc")}:${join(state, "explorer-verifier", "solc")}`);
+    expect(cmd).toContain(` -e SOLC_CACHE_DIR=${join(state, "explorer-verifier", "solc")}`);
+    expect(cmd).toContain(` -e SANDBOX_IMAGE=${pins.BUSYBOX_IMAGE}`);
+    expect(cmd).toContain(" -e SOLC_LIST_URL=https://lists.example/list.json");
+    expect(cmd).toContain(" -e OUTSIDE_USER_AGENT=Rome Protocol rome@romeprotocol.com");
+    expect(cmd).toContain(" -e SOLC_TIMEOUT_MS=30000");
+    expect(cmd).toContain(" -e EXPLORER_DB_HOST=10.1.2.3");
+    expect(cmd.trim().endsWith("node server/verifier/cli.ts")).toBe(true);
+    // the old verifier is stopped before the new one starts
+    const lines = r.stdout.split("\n");
+    expect(lines.indexOf("docker stop -t 30 cze-explorer-verifier")).toBeLessThan(lines.indexOf(cmd));
+  });
+
+  it("refuses to start the verifier without the compiler list's address", () => {
+    const r = spawnSync("bash", [RUN, "start"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", EXPLORER_DRY_RUN: "1", CZE_STATE_DIR: state, EXPLORER_VERIFIER: "1" } });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("SOLC_LIST_URL");
+  });
+
   it("stops the old container gracefully before it starts the new one, never with rm -f (SIGKILL)", () => {
     const r = spawnSync("bash", [RUN, "start"], {
       encoding: "utf8",
@@ -118,7 +158,7 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh stop", () => {
     const r = stop();
     expect(r.status, r.stderr).toBe(0);
     const lines = r.stdout.split("\n").filter((l) => l.startsWith("docker "));
-    expect(lines).toEqual(["docker stop -t 30 cze-explorer", "docker rm cze-explorer", "docker stop -t 30 cze-explorer-indexer", "docker rm cze-explorer-indexer"]);
+    expect(lines).toEqual(["docker stop -t 30 cze-explorer", "docker rm cze-explorer", "docker stop -t 30 cze-explorer-indexer", "docker rm cze-explorer-indexer", "docker stop -t 30 cze-explorer-verifier", "docker rm cze-explorer-verifier"]);
   });
 
   it("removes the database it started when the network is not persistent, and keeps it when the network is", () => {
