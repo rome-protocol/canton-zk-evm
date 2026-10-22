@@ -1,5 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { gzipSync } from "node:zlib";
 import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
@@ -26,6 +27,15 @@ function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null
     req.on("end", () => ok(tooBig ? null : Buffer.concat(chunks).toString("utf8")));
     req.on("error", fail);
   });
+}
+
+/** An answer of at least this many characters is gzipped for a client that accepts it. */
+const GZIP_FROM = 1024;
+
+/** True when an `If-None-Match` header names the tag (a weak mark on either side does not matter for a GET). */
+function matches(header: string | string[] | undefined, etag: string): boolean {
+  const sent = (Array.isArray(header) ? header.join(",") : header)?.split(",").map((t) => t.trim().replace(/^W\//, ""));
+  return !!sent && (sent.includes("*") || sent.includes(etag.replace(/^W\//, "")));
 }
 
 /** The public RPC's door: its handler, and the header that names the client's address when a trusted proxy sets one. */
@@ -90,7 +100,18 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         const sent = method === "POST" ? await readBody(req) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
         const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
-        res.writeHead(status, { ...headers, "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+        const text = JSON.stringify(body);
+        // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
+        const out = { "cache-control": "no-store", ...headers, "content-type": "application/json" };
+        if (status === 200 && out.etag && (method === "GET" || method === "HEAD") && matches(req.headers["if-none-match"], out.etag)) {
+          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] }).end();
+        }
+        // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it; the validator stays that of the text.
+        if (text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
+          const zipped = gzipSync(text);
+          return void res.writeHead(status, { ...out, "content-encoding": "gzip", vary: "accept-encoding", "content-length": zipped.length }).end(method === "HEAD" ? undefined : zipped);
+        }
+        res.writeHead(status, { ...out, vary: "accept-encoding" }).end(text);
       } else if (method !== "GET" && method !== "HEAD") {
         res.writeHead(405, { allow: "GET, HEAD" }).end();
       } else {
