@@ -31,7 +31,7 @@
 # FAUCET_CLIENT_KEY_FILE (the faucet's hash key) is made as <state>/faucet/client-key (mode 0600) when there is a faucet key and none is named.
 # `start` applies the migrations (node server/db/cli.ts migrate), then runs the indexer (node server/indexer/cli.ts) as its own container, EXPLORER_INDEXER_CONTAINER
 # (default cze-explorer-indexer), beside the explorer. It reads the same chain, and also takes GATEWAY_ADDRESS (from PINS), GENESIS_FILE (default <state>/genesis.json, the genesis reth runs), INDEX_DERIVE, INDEX_POLL_MS,
-# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
+# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads the producer's journal and status.json from the builder's work folder (CZE_WORK_DIR, default <state>/builder), mounted read-only when it exists. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
 # explorer's (the indexer asks reth for trace_ methods too, so a log of the explorer's own calls is not put in front of it). It never restarts by itself:
 # a check that stops it leaves it stopped, and the explorer says so (503) until a person has looked.
 # The default database lives and dies with its network. For a persistent network (<state>/persist.env, CZE_PERSIST=1) it is kept across `stop`, and
@@ -164,6 +164,15 @@ indexer_args() {
   [ -n "$genesis" ] || genesis=$STATE/genesis.json
   [ -f "$genesis" ] || fail "GENESIS_FILE is not set, and $STATE/genesis.json (the genesis reth runs) is not there: the indexer seeds the chain's contracts from it"
   mount_file GENESIS_FILE "$genesis"
+  # The producer's work folder (the builder's CZE_WORK_DIR, default <state>/builder), read-only: the indexer reads its journal/ folder and status.json and never writes
+  # there. The folder is mounted, not the status file, because the producer replaces that file by a rename. Without the folder the lifecycle stays blank and the health says so.
+  local work=${CZE_WORK_DIR:-$STATE/builder}
+  case $work in /*) ;; *) work=$PWD/$work ;; esac
+  if [ -d "$work" ]; then
+    ARGS+=(-v "$work:/run/explorer/producer:ro" -e JOURNAL_DIR=/run/explorer/producer/journal -e PRODUCER_STATUS_FILE=/run/explorer/producer/status.json)
+  else
+    echo "run.sh: no producer work folder at $work: the lifecycle stays blank, and the health says so, until the explorer is started again" >&2
+  fi
   local reth=${INDEXER_RETH_RPC_URL:-${RETH_RPC_URL:-}} ledger=${INDEXER_LEDGER_URL:-${LEDGER_URL:-}}
   [ -z "$reth" ] || ARGS+=(-e "RETH_RPC_URL=$reth")
   [ -z "$ledger" ] || ARGS+=(-e "LEDGER_URL=$ledger")
