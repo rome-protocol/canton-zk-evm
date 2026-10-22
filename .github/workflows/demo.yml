@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - run: shellcheck demo/*.sh tests/demo_*.sh
+      - run: shellcheck demo/*.sh tests/demo_*.sh explorer/test/l5/l5.sh
       - run: tests/demo_static.sh
       - run: tests/demo_explorer_static.sh
       - name: Install the demo's packages, by hash
@@ -28,6 +28,7 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -W error::ResourceWarning -m unittest discover -s demo/tests -v
           python3 -m unittest discover -s tests -p 'test_demo_sidecar.py' -v
           python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_demo_call_log.py' -v
+          python3 -m unittest discover -s tests -p 'test_demo_nightly_l3.py' -v
 
   # demo/TKA.bin is what the pinned solc makes of demo/TKA.sol.
   token:
