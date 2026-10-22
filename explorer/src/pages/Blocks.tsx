@@ -23,6 +23,12 @@ function Gas({ used, limit }: { used: number; limit: number }) {
   return <>{count(used)} <span className="muted small">{pct.toFixed(1)}%</span><span className="gasbar" aria-hidden="true"><i style={{ width: `${Math.min(100, pct)}%` }} /></span></>;
 }
 
+/** The genesis has no record. Block 1's record names it as parent only when the genesis page's own check shows that to hold. */
+function GenesisCell() {
+  const g = useQuery({ queryKey: ["block", "0"], queryFn: () => getBlock("0"), retry: false, staleTime: 30_000 });
+  return <td className="muted">no record{g.data?.genesisReferenced === true ? "; block 1's record names it as parent" : ""}</td>;
+}
+
 function Row({ b, now }: { b: BlockListItem; now: number }) {
   if (b.number === 0) {
     return (
@@ -30,7 +36,7 @@ function Row({ b, now }: { b: BlockListItem; now: number }) {
         <td><Link className="num" to="/block/0">0</Link></td>
         <td>genesis</td><td className="r">0</td><td className="r mono">0</td>
         <td className="r muted">—</td><td className="r muted">—</td>
-        <td className="muted">no record</td>
+        <GenesisCell />
         <td><Chip status="genesis" /></td>
       </tr>
     );
@@ -54,6 +60,7 @@ function ProvingRow({ proving, now, live }: { proving: NonNullable<ApiStatus["pr
   const block = useQuery({ queryKey: ["block", String(proving.number)], queryFn: () => getBlock(String(proving.number)), refetchInterval: POLL_MS });
   const attempt = useInFlight(live).data?.attempts.find((a) => a.number === proving.number);
   const started = attempt?.proofStartedAt ? Date.parse(attempt.proofStartedAt) : null;
+  const ended = attempt?.proofEndedAt ? Date.parse(attempt.proofEndedAt) : null;
   const b = block.data;
   return (
     <tr className="row-proving">
@@ -61,7 +68,7 @@ function ProvingRow({ proving, now, live }: { proving: NonNullable<ApiStatus["pr
       <td>cut {duration(now - proving.timestamp * 1000)} ago</td>
       <td className="r">{b ? b.txCount : attempt?.txCount ?? "—"}</td>
       <td className="r mono">{b ? <Gas used={b.gasUsed} limit={b.gasLimit} /> : "—"}</td>
-      <td className="r amber">{started === null ? "—" : `${(Math.max(0, now - started) / 1000).toFixed(1)} s so far`}</td>
+      <td className="r amber">{started === null ? "—" : ended !== null ? span(Math.max(0, ended - started) / 1000) : `${(Math.max(0, now - started) / 1000).toFixed(1)} s so far`}</td>
       <td className="r muted">—</td>
       <td className="muted">not on Canton yet</td>
       <td><Chip status="proving" /></td>
@@ -131,7 +138,7 @@ export function Blocks() {
         <a className="csv" href={blocksCsvPath(filter)} download="blocks.csv">CSV</a>
       </div>
       <div className="note">
-        Blocks are cut on demand: when transactions wait and the last block is final. No empty blocks are made; block 1 is the only empty one.{" "}
+        Blocks are cut on demand: when transactions wait and the last block is final. The producer's setting decides whether empty blocks are also made.{" "}
         <strong>Proof time</strong> is ZisK's time for the block. <strong>Time to final</strong>, for a block, runs from the producer cutting it to Canton's record time.
       </div>
       {filter === "all" ? <AllBlocks st={st} now={now} live={live} /> : <FilteredBlocks key={filter} filter={filter} st={st} now={now} live={live} />}

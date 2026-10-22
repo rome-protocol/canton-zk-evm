@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { block, blockItem, fakeApi, inFlight, page, renderApp, reply, route, status, update } from "../test-utils.tsx";
@@ -88,6 +88,36 @@ describe("the blocks page", () => {
     expect(r).toHaveTextContent("genesis");
     expect(r).toHaveTextContent("no record");
     expect(r).toHaveTextContent("Genesis");
+  });
+
+  it("adds that block 1's record names the genesis as its parent only when the genesis page shows that to hold", async () => {
+    const genesis = (referenced: boolean | null) => block({ status: "genesis", number: 0, canton: null, genesisReferenced: referenced });
+    const list = () => reply(page([blockItem(0, { updateId: "", recordTime: "", timestamp: 0, proofSeconds: null, finalSeconds: null })]));
+    await open({ blocks: list, block: () => reply(genesis(true)) });
+    await waitFor(() => expect(rows()[1]).toHaveTextContent("no record; block 1's record names it as parent"));
+  });
+
+  it("says only 'no record' for the genesis when nothing shows the record names it", async () => {
+    const list = () => reply(page([blockItem(0, { updateId: "", recordTime: "", timestamp: 0, proofSeconds: null, finalSeconds: null })]));
+    await open({ blocks: list, block: () => reply(block({ status: "genesis", number: 0, canton: null, genesisReferenced: null })) });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(rows()[1]).toHaveTextContent("no record");
+    expect(rows()[1]).not.toHaveTextContent("names it as parent");
+  });
+
+  it("stops counting the proof time of a block being proven once its proof has ended, and shows the time the proof took", async () => {
+    const f = inFlight();
+    const a = f.attempts[0]!;
+    await open({ inFlight: () => reply(inFlight({ attempts: [{ ...a, stage: "proved", proofEndedAt: new Date(Date.parse(a.proofStartedAt!) + 6800).toISOString() }] })) });
+    const r = rows()[0]!;
+    await waitFor(() => expect(r).toHaveTextContent("6.80 s"));
+    expect(r).not.toHaveTextContent("so far");
+  });
+
+  it("does not say which blocks are empty: the producer's setting decides that", async () => {
+    await open();
+    expect(screen.queryByText(/only empty one/)).toBeNull();
+    expect(screen.getByText(/whether empty blocks are also made/)).toBeInTheDocument();
   });
 
   it("pages by number, to any page and to the last, from the count of blocks", async () => {
