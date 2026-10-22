@@ -47,6 +47,8 @@ export interface CantonSide {
   txsHex: string;
   proofHex: string;
 }
+/** The Canton side as the REST block route gives it: every fact, and none of the record's hex (that is /record, fetched when Verify is pressed). */
+export type CantonSummary = Omit<CantonSide, "headerHex" | "txsHex" | "proofHex">;
 export interface ApiBlock {
   /** "unindexed": final on Canton, and the explorer's indexer has not written the block yet (the status says when the indexer is behind or stopped). */
   status: "final" | "proving" | "unindexed" | "genesis";
@@ -195,10 +197,19 @@ export interface BlockDetail { number: number; legsCount: number | null; derived
 export const getBlockDetail = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockDetail;
 /** The faucet's own address, or null when it has none (the faucet is off). */
 export const getFaucetAddress = async () => ((await call("/api/faucet", [200])).body as { address?: string | null }).address ?? null;
+/** A block as /api/blocks/:id gives it: the block's own facts, the Canton summary with no record hex, and no list of transactions. */
+export type BlockSummary = Omit<ApiBlock, "transactions" | "canton"> & { canton: CantonSummary | null; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null };
+export const getBlockSummary = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockSummary;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
 /** What /api/txs/:hash adds to a transaction: the stage 2 fields, null until its block is derived. `derived` is false while the explorer has not read the block's calls. */
-export type ApiTxDetail = Omit<ApiTxSeen, "logs"> & { derived: boolean; callCount: number | null; revertReason: string | null };
+export type ApiTxDetail = Omit<ApiTxSeen, "logs"> & {
+  derived: boolean; callCount: number | null; revertReason: string | null;
+  /** Its place in its block, 0-based; null until a block holds it. */
+  index: number | null;
+  /** In wei, as the sender signed them; null for a legacy transaction, which has one gas price. */
+  maxFeePerGas: string | null; maxPriorityFeePerGas: string | null;
+};
 export const getTxDetail = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}`, [200])).body as ApiTxDetail;
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;
 
@@ -242,7 +253,7 @@ export const getUpdatesAround = async (id: string) => (await call(`/api/canton/u
 export interface TxLog { logIndex: number; address: string; topics: string[]; data: string; decoded: { name: string; signature: string; args: { name: string; type: string; value: string }[] } | null }
 /** A call that moved value, from the transaction's trace. `traceAddress` places it in the call tree ("t0-1" is the second call of the first call). */
 export interface InternalCall { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number; error: string | null }
-export interface TokenTransfer { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string; tokenId: string | null }
+export interface TokenTransfer { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
 /** A page of a list read from the derived stage: `derived` is false while the explorer has not read the transaction's block, and the page is empty. */
 export type DerivedPage<T> = Page<T> & { derived?: boolean };
 const afterTx = (hash: string, sub: string, after: string | null, limit: number) => `/api/txs/${encodeURIComponent(hash)}/${sub}?limit=${limit}${cursor("after", after)}`;

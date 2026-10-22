@@ -289,6 +289,11 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(missing.headers?.["cache-control"]).toBeUndefined();
   });
 
+  it("gives a final transaction its place in its block and the fee caps the sender signed", async () => {
+    expect(body(await get(`/api/txs/${tx(2, 1)}`))).toMatchObject({ index: 1, maxFeePerGas: "9", maxPriorityFeePerGas: "1" });
+    expect(body(await get(`/api/txs/${tx(3, 4)}`))).toMatchObject({ index: 4 });
+  });
+
   it("says 'not derived yet' for what stage 2 has not reached, and caches it as nothing final", async () => {
     await setCursor(2);
     try {

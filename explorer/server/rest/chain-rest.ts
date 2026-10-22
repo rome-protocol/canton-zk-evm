@@ -155,6 +155,12 @@ export function createChainRest(pool: Pool) {
     return r && { block: Number(r.block_number), index: r.tx_index };
   }
 
+  /** The fee caps the sender signed (null for a legacy or EIP-2930 transaction, which has one gas price). */
+  async function feeCapsOf(at: TxPlace): Promise<{ maxFeePerGas: string | null; maxPriorityFeePerGas: string | null }> {
+    const [r] = await query("select max_fee_per_gas::text as max_fee, max_priority_fee_per_gas::text as max_priority from transactions where block_number = $1 and tx_index = $2", [at.block, at.index]);
+    return { maxFeePerGas: r?.max_fee ?? null, maxPriorityFeePerGas: r?.max_priority ?? null };
+  }
+
   /** Stage 2's row for a transaction: undefined until the block is derived. */
   async function traceOf(at: TxPlace): Promise<TxTrace | undefined> {
     const [r] = await query("select call_count, revert_reason, revert_data from tx_traces where block_number = $1 and tx_index = $2", [at.block, at.index]);
@@ -256,5 +262,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
 }

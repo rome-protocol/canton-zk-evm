@@ -55,8 +55,8 @@ export const REST_FIELDS = {
   cantonSummary: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch"],
   blockLifecycle: ["strategy", "cutReason", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt"],
   txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId"],
-  /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived). */
-  txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason"],
+  /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived), its place in its block, and the fee caps the sender signed. */
+  txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason", "index", "maxFeePerGas", "maxPriorityFeePerGas"],
   leg: ["legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount"],
   record: ["number", "hash", "contractId", "header", "txs", "proof"],
   log: ["logIndex", "address", "topics", "data", "decoded"],

@@ -141,7 +141,8 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     const derived = !!here?.derived;
     // Stage 2 keeps a row only for a transaction that made calls or reverted: past the derive cursor, no row means no calls and no revert reason.
     const trace = derived && here ? await rest.traceOf(here.at) : undefined;
-    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null } as Record<string, unknown>, F.txDetail)), "composite");
+    const caps = here ? await rest.feeCapsOf(here.at) : { maxFeePerGas: null, maxPriorityFeePerGas: null };
+    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null, index: here?.at.index ?? null, ...caps } as Record<string, unknown>, F.txDetail)), "composite");
   }
 
   /** The receipt of a final transaction as reth gave it: a chain fact that never changes. */
