@@ -29,6 +29,14 @@ describe("the blocks page", () => {
     expect(r[2]).toHaveTextContent("2");
   });
 
+  it("does not draw a block twice when the list already holds the block the status still says is being proven", async () => {
+    await open({ blocks: () => reply(page([blockItem(4), blockItem(3)])) });
+    const r = rows();
+    expect(r).toHaveLength(2);
+    expect(r[0]).toHaveTextContent("Final");
+    expect(r[0]).not.toHaveTextContent("Being proven");
+  });
+
   it("shows transactions, gas with its share of the limit, legs, time to final and the update, which opens its Canton page", async () => {
     await open({ blocks: () => reply(page([blockItem(3, { txCount: 5, gasUsed: 3_000_000, gasLimit: 30_000_000, legsCount: 2 })])) });
     const r = rows()[1]!;

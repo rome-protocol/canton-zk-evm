@@ -61,7 +61,7 @@ export function Blocks() {
             <table className="tbl">
               <thead><tr><th>Block</th><th>Age</th><th className="r">Transactions</th><th className="r">Gas used</th><th className="r">Legs</th><th className="r">Time to final</th><th>Canton update</th><th>Stage</th></tr></thead>
               <tbody>
-                {!p.hasPrev && st?.proving && <ProvingRow number={st.proving.number} timestamp={st.proving.timestamp} now={now} />}
+                {!p.hasPrev && st?.proving && st.proving.number > (items[0]?.number ?? -1) && <ProvingRow number={st.proving.number} timestamp={st.proving.timestamp} now={now} />}
                 {items.map((b) => <Row key={b.number} b={b} now={now} />)}
               </tbody>
             </table>
