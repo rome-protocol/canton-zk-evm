@@ -14,6 +14,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
 import { createApi } from "../../server/api.ts";
+import { createApiHealth } from "../../server/api-health.ts";
 import { createChainDb } from "../../server/chain-db.ts";
 import { loadConfig } from "../../server/config.ts";
 import { migrate } from "../../server/db/migrate.ts";
@@ -30,6 +31,8 @@ import { CHAIN_ID, GATEWAY, PINS, makeBlock, makeChain } from "../synthetic-chai
 
 const int = (name: string, fallback: number) => Number(process.env[name] ?? fallback);
 const TXS = int("L2_TRANSACTIONS", 300_000), SECONDS = int("L2_SECONDS", 60), RATE = int("L2_RATE", 200), SSE = int("L2_SSE", 2000);
+/** The design's one address holds 1,000,000 transactions, whatever the size of the run: a smaller database gives it a larger share (up to a half) so that B3's address-page budget is measured against that history. */
+const HOT_TXS = Math.min(int("L2_HOT", 1_000_000), TXS / 2), HOT_EVERY = Math.max(2, Math.floor(TXS / HOT_TXS));
 const BLOCK_TXS = 1428, BLOCK_EVERY_MS = 3000;
 /** The budgets of section 9. B3 and B7 are p95; the load tool reports p97.5, which is the stricter, so that is what is held to them. */
 export const BUDGET = { singleMs: 100, searchMs: 100, listMs: 200, addressPageMs: 300, getLogsMs: 500, sseMs: 500, gigabytesPerMillion: 2.5, healthMs: 50 };
@@ -61,7 +64,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       let head = 0, parent = chain.genesisHash, written = 0;
       async function append(count: number): Promise<void> {
         for (let i = 0; i < count; i++) {
-          const b = makeBlock(++head, parent, { txs: BLOCK_TXS, hot: HOT, at: new Date().toISOString() });
+          const b = makeBlock(++head, parent, { txs: BLOCK_TXS, hot: HOT, hotEvery: HOT_EVERY, at: new Date().toISOString() });
           parent = b.block.hash;
           chain.blocks.push(b);
           written += BLOCK_TXS;
@@ -82,12 +85,19 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const seedSeconds = (Date.now() - seedStart) / 1000;
       const bytes = Number((await pool.query("select pg_database_size(current_database()) as n")).rows[0].n);
       const hotTxs = Number((await pool.query("select count(*) as n from transactions where from_address = $1", [bytea(HOT)])).rows[0].n);
+      expect(hotTxs, "the one address's history").toBeGreaterThanOrEqual(HOT_TXS * 0.9);
 
       // ---- The server: the pages' routes, the live stream, and the health route, over the database.
       const reth = { code: async () => "0x6080", token: async () => ({ name: "Token", symbol: "TKN", decimals: 6 }), block: async () => ({ number: 1 }), transaction: async () => ({ hash: "0x" }), balance: async () => 0n, balanceAt: async () => 0n, nonce: async () => 0 } as unknown as Reth;
       // reth answers at once here: it is not what L2 measures. The routes under test are the database's.
       const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`);
-      const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), rest: createChainRest(pool), accounts: createAccountRest(pool), live: true });
+      // The health route as the deployed server has it: this instance's checks run on a timer in the background and are written through a pool of the route's own, which reads them.
+      const healthPool = new pg.Pool({ connectionString: db.url, max: 2 });
+      healthPool.on("error", () => undefined);
+      stops.push(() => healthPool.end());
+      const ledger = { ledgerEnd: async () => 1 } as never;
+      const health = createApiHealth({ pool: healthPool, instance: "l2", reth, ledger });
+      const api = createApi({ config, reth, ledger, chain: createChainDb(pool, healthPool), health, rest: createChainRest(pool), accounts: createAccountRest(pool), live: true });
       const hub = createStreamHub();
       const source = createStreamSource({ pool, connection: { connectionString: db.url }, hub, log: () => undefined });
       const server = createHttpServer(api, folder, undefined, "x-client-ip", hub);
@@ -105,6 +115,9 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const checker = setInterval(() => void indexer.checkOnce().catch(() => undefined), 2000);
       stops.push(() => clearInterval(checker));
       await indexer.checkOnce();
+      await health.refresh();
+      health.start();
+      stops.push(() => health.stop());
       stops.push(() => source.stop());
       stops.push(startStreamTimers(hub));
       stops.push(() => hub.close());
@@ -168,16 +181,25 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         }
         return times;
       })();
+      // getLogs: PROVISIONAL, until E8a writes /api?module=logs&action=getLogs. Until then this is the query that route will run, sent straight to the database on the API's pool,
+      // open-loop at its 5% share (a request every 1000 / (5% of RATE) ms whether or not the last has finished, timed from when it was due, so that a slow query cannot lower its own rate).
       const logsMs: number[] = [];
+      let logsEmpty = 0;
       const logsLoop = (async () => {
-        const last = head, first = Math.max(1, last - 9999);
+        const last = head, first = Math.max(1, last - 9999), gap = 1000 / Math.max(1, Math.round(RATE * 0.05));
+        const inflight = new Set<Promise<void>>();
+        let due = performance.now();
         while (running) {
-          const t = performance.now();
-          const rows = await pool.query("select block_number, log_index, tx_index, topic0, data from logs where address = $1 and block_number between $2 and $3 order by block_number, log_index limit 1000", [bytea(HOT_LOGS), first, last]);
-          logsMs.push(performance.now() - t);
-          expect(rows.rowCount).toBeGreaterThan(0);
-          await sleep(Math.round(1000 / Math.max(1, Math.round(RATE * 0.05))));
+          const wait = due - performance.now();
+          if (wait > 0) await sleep(wait);
+          const at = due;
+          due += gap;
+          const p: Promise<void> = pool.query("select block_number, log_index, tx_index, topic0, data from logs where address = $1 and block_number between $2 and $3 order by block_number, log_index limit 1000", [bytea(HOT_LOGS), first, last])
+            .then((rows) => { logsMs.push(performance.now() - at); if (rows.rowCount === 0) logsEmpty++; }, () => { logsMs.push(Infinity); })
+            .finally(() => { inflight.delete(p); });
+          inflight.add(p);
         }
+        await Promise.all(inflight);
       })();
       await finished;
       loop.disable(); clearInterval(watch);
@@ -193,7 +215,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const summary = {
         transactions: written, blocks: head, seedSeconds, hotAddressTransactions: hotTxs, seconds: SECONDS, rate: RATE, streams: report.streams,
         databaseBytes: bytes, gigabytesPerMillionTransactions: bytes / 1e9 / (written / 1e6),
-        classes: report.results, getLogs: { requests: logsMs.length, p95: q95(logsMs), max: Math.max(...logsMs) },
+        classes: report.results, getLogs: { provisional: "a SQL stand-in until E8a's route", requests: logsMs.length, empty: logsEmpty, p95: q95(logsMs), max: Math.max(...logsMs) },
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
         server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5), slowest },
         ingestion: { timesMs: ingestTimes, blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
@@ -207,7 +229,8 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       expect(by.search!.latency.p97_5, "B3, search").toBeLessThanOrEqual(BUDGET.searchMs);
       expect(by.list!.latency.p97_5, "B3, a list page").toBeLessThanOrEqual(BUDGET.listMs);
       expect(by["address page"]!.latency.p97_5, "B3, an address's page of transactions").toBeLessThanOrEqual(BUDGET.addressPageMs);
-      expect(summary.getLogs.p95, "B3, getLogs over 10,000 blocks with an address").toBeLessThanOrEqual(BUDGET.getLogsMs);
+      expect(logsEmpty, "getLogs found logs every time").toBe(0);
+      expect(summary.getLogs.p95, "B3, getLogs over 10,000 blocks with an address (provisional, until E8a)").toBeLessThanOrEqual(BUDGET.getLogsMs);
       expect(lag.length, "blocks were written during the load").toBeGreaterThanOrEqual(Math.floor(SECONDS / 3) - 4);
       expect(summary.sse.minClients, "every client got every block").toBe(SSE);
       expect(summary.sse.p95, "B4").toBeLessThanOrEqual(BUDGET.sseMs);

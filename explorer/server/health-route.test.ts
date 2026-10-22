@@ -188,6 +188,15 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
   });
 
   describe("answers from the table alone", () => {
+    it("reads the table through a pool of its own, so that pages' queries that hold every connection of the main pool cannot hold it", async () => {
+      const { db, health } = await boot();
+      const busy = { query: () => new Promise(() => {}) } as never; // a main pool whose every connection is taken: a query on it never starts
+      const config = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
+      const api = createApi({ config, reth: { block: async () => ({ number: 5 }) } as never, ledger: { ledgerEnd: async () => 9 } as never, chain: createChainDb(busy, db.pool), health });
+      await health.refresh();
+      expect(await api("GET", "/api/health")).toMatchObject({ status: 200, body: { status: "ok" } });
+    });
+
     it("answers at once, down for reth, while a reth that hangs is still being probed, and never waits for it", async () => {
       const db = await makeDatabase(true);
       databases.push(db);

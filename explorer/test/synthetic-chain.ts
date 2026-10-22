@@ -25,8 +25,10 @@ export interface BlockShape {
   txs: number;
   /** The gateway records a Leg of this kind (1 to 3) in the first transaction. */
   leg?: number;
-  /** The sender of every tenth transaction (an address with a long history: the load test's one address with a million). */
+  /** The sender of every `hotEvery`th transaction (an address with a long history: the load test's one address with a million). */
   hot?: string;
+  /** Every how many transactions the hot address sends one: 10 when absent. */
+  hotEvery?: number;
   /** When the block's record became readable, as an ISO time. Fixed by the block's number when absent; a load test gives the time of the writing. */
   at?: string;
 }
@@ -81,7 +83,7 @@ function signatureR(number: number): `0x${string}` {
 export function makeBlock(number: number, parentHash: string, shape: BlockShape, pins: Pins = PINS, instance = 0): SyntheticBlock {
   const txs: FinalTx[] = [], receipts: FinalReceipt[] = [], traces: TxTrace[] = [], serialized: string[] = [];
   let cumulative = 0;
-  const senderOf = (k: number) => (shape.hot && k % 10 === 0 ? shape.hot : hex(0xf000 + (k % 53)));
+  const senderOf = (k: number) => (shape.hot && k % (shape.hotEvery ?? 10) === 0 ? shape.hot : hex(0xf000 + (k % 53)));
   for (let k = 0; k < shape.txs; k++) {
     const kind = k % 5;
     const to = kind === 2 ? null : hex(0xc000 + (k % 97));

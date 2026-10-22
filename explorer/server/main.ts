@@ -32,7 +32,7 @@ try {
     : undefined;
   const dist = process.env.EXPLORER_DIST || resolve(fileURLToPath(new URL(".", import.meta.url)), "../dist");
   // Each API instance writes its own health rows (design 6.5). The name is EXPLORER_INSTANCE, or the host's name.
-  const health = storage.pool ? createApiHealth({ pool: storage.pool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker }) : undefined;
+  const health = storage.healthPool ? createApiHealth({ pool: storage.healthPool, instance: (process.env.EXPLORER_INSTANCE || hostname()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 60), reth, ledger, faucet, tracker }) : undefined;
   const api = createApi({ config, reth, ledger, chain, faucet, tracker, ...(health ? { health } : {}), ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), live: Boolean(storage.pool && config.database) });
   // Live updates (design 6.4): the indexer's NOTIFY, heard on a connection of its own, told to the clients of GET /api/stream.
   const hub = createStreamHub();

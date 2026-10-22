@@ -76,14 +76,17 @@ type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-exp
 const summary = (r: Row): FinalSummary => ({ number: Number(r.number), hash: hex(r.hash), timestamp: Number(r.ts), txCount: r.tx_count, updateId: r.update_id, recordTime: isoTime(r.record_time) });
 
 /** The final blocks and their transactions, read from the tables the indexer fills (design section 4). Nothing here writes. */
-export function createChainDb(pool: Pool) {
-  async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
+export function createChainDb(pool: Pool, healthPool: Pool = pool) {
+  const reader = (from: Pool) => async (sql: string, values: unknown[] = []): Promise<Row[]> => {
     try {
-      return (await pool.query(sql, values)).rows;
+      return (await from.query(sql, values)).rows;
     } catch (e) {
       throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`);
     }
-  }
+  };
+  const query = reader(pool);
+  /** The health route's own reads, on a pool of its own when there is one: a route that says whether the explorer works must not queue behind the pages' queries. */
+  const healthQuery = reader(healthPool);
 
   /** The newest final block, or undefined while none is indexed. */
   async function head(): Promise<FinalSummary | undefined> {
@@ -211,7 +214,7 @@ export function createChainDb(pool: Pool) {
 
   /** Every row of health_checks, with its ages by the database's clock. */
   async function healthRows(): Promise<RawRow[]> {
-    const rows = await query(
+    const rows = await healthQuery(
       `select check_id, status, value, threshold, detail, extract(epoch from now() - changed_at)::float8 as since, extract(epoch from now() - checked_at)::float8 as age,
          ${MS("changed_at")} as changed_at, ${MS("checked_at")} as checked_at from health_checks order by check_id`,
     );
@@ -222,7 +225,7 @@ export function createChainDb(pool: Pool) {
 
   /** Whether the indexer has written a record: its cursor exists once it has. */
   async function started(): Promise<boolean> {
-    return (await query("select 1 from cursors where stream = 'reader_updates'")).length > 0;
+    return (await healthQuery("select 1 from cursors where stream = 'reader_updates'")).length > 0;
   }
 
   /** The whole of /api/health: every row through the health model. `instance` is the API instance that is answering. */
