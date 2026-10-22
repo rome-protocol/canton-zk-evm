@@ -131,7 +131,8 @@ jobs:
           PGPW=$(openssl rand -hex 16)
           echo "::add-mask::$PGPW"
           echo "PGPW=$PGPW" >> "$GITHUB_ENV"
-          docker run -d --name explorer-l2-db --security-opt no-new-privileges -p 127.0.0.1:5432:5432 \
+          # --shm-size: the container's default 64 MB of shared memory is too small for the vacuum of a table of millions of rows.
+          docker run -d --name explorer-l2-db --security-opt no-new-privileges --shm-size=1g -p 127.0.0.1:5432:5432 \
             -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE" -c max_connections=200
           ok=0
           for _ in $(seq 1 60); do
