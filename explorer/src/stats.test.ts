@@ -15,7 +15,12 @@ describe("the home page's numbers", () => {
 
   it("has no times with no blocks, and no height with no final block", () => {
     const s = summarize(status({ final: null, proving: null }), [], inFlight({ attempts: [], poolWaiting: null }));
-    expect(s).toEqual({ height: null, proving: null, timeToFinal: null, transactions: { count: 0, blocks: 0 }, notFinal: { inBlocks: 0, waiting: 0 } });
+    expect(s).toEqual({ height: null, proving: null, timeToFinal: null, transactions: { count: 0, blocks: 0 }, notFinal: { inBlocks: 0, waiting: null } });
+  });
+
+  it("does not know what is not final when the in-flight route has not answered, and does not know the pool when it has no sample", () => {
+    expect(summarize(status(), [], null).notFinal).toBeNull();
+    expect(summarize(status(), [], inFlight({ poolWaiting: null })).notFinal).toEqual({ inBlocks: 3, waiting: null });
   });
 
   it("never reads a negative time when two clocks differ", () => {

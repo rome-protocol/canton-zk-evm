@@ -5,7 +5,7 @@ import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { SearchBox } from "../components/SearchBox.tsx";
 import { commitTime, count, duration, exact, seconds, short, units } from "../format.ts";
-import type { Summary } from "../stats.ts";
+import type { Read, Summary } from "../stats.ts";
 import { useNow } from "../useStatus.ts";
 
 /** What the home page says it is, with a search box of its own and a few things to try, which are the newest the explorer holds. */
@@ -32,10 +32,16 @@ function Stat({ label, note, children, foot }: { label: string; note?: string; c
   );
 }
 
+/** What is not final yet. Unknown is shown as unknown: a dash while the route is read or cannot be, and no waiting count with no sample of the pool. */
+function NotFinal({ n, read }: { n: Summary["notFinal"]; read: Read }) {
+  if (!n) return <Stat label="Not final yet" foot={read === "loading" ? "Reading…" : "what is in flight cannot be read right now"}>—</Stat>;
+  return <Stat label="Not final yet" foot={`${n.inBlocks} in blocks being made or proven · ${n.waiting === null ? "pool count not known" : `${n.waiting} waiting`}`}>{n.waiting === null ? n.inBlocks : n.inBlocks + n.waiting}</Stat>;
+}
+
 const s1 = (ms: number) => (ms < 120_000 ? `${(ms / 1000).toFixed(1)}` : duration(ms));
 
 /** The cards the API can fill today (see `summarize`): height, time to final, the transactions of the newest blocks, and what is not final yet. */
-export function Stats({ summary: s }: { summary: Summary }) {
+export function Stats({ summary: s, flight = "ok" }: { summary: Summary; flight?: Read }) {
   const t = s.timeToFinal;
   return (
     <section className="stats" aria-label="Numbers">
@@ -44,7 +50,7 @@ export function Stats({ summary: s }: { summary: Summary }) {
         {t ? <>{s1(t.medianMs)} <small>{t.medianMs < 120_000 ? "s " : ""}p95 {s1(t.p95Ms)}{t.p95Ms < 120_000 ? " s" : ""}</small></> : "—"}
       </Stat>
       <Stat label="Transactions" note={`latest ${s.transactions.blocks} blocks`} foot={`in ${s.transactions.blocks} final block${s.transactions.blocks === 1 ? "" : "s"}, each one Canton transaction`}>{count(s.transactions.count)}</Stat>
-      <Stat label="Not final yet" foot={`${s.notFinal.inBlocks} in blocks being made or proven · ${s.notFinal.waiting} waiting`}>{s.notFinal.inBlocks + s.notFinal.waiting}</Stat>
+      <NotFinal n={s.notFinal} read={flight} />
     </section>
   );
 }

@@ -6,8 +6,8 @@ import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, short, utc } from "../format.ts";
-import { listPoll, summarize, useBlocks, useInFlight } from "../stats.ts";
-import { useLive } from "../useLive.ts";
+import { listPoll, readOf, summarize, useBlocks, useInFlight } from "../stats.ts";
+import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
 
@@ -83,10 +83,12 @@ const NO_LIST = "The explorer cannot read this list right now.";
 
 export function Home() {
   const { data, error } = useStatus();
-  const live = useLive(["blocks", "txs", "inflight", "stats"]);
+  const stream = useLiveState(["blocks", "txs", "inflight", "stats"]);
+  const live = stream === "live";
   const blocks = useBlocks(10, live);
   const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live) });
   const flight = useInFlight(live);
+  const flightRead = readOf(flight);
   const newest = blocks.data?.items[0], first = txs.data?.items[0];
   const tries = [
     ...(newest ? [{ label: String(newest.number), q: String(newest.number) }] : []),
@@ -99,8 +101,8 @@ export function Home() {
     <>
       <Hero tries={tries} />
       <Strip status={data} />
-      <Stats summary={summarize(data, blocks.data?.items ?? [], flight.data ?? { final: false, attempts: [], poolWaiting: null })} />
-      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} live={live} />
+      <Stats summary={summarize(data, blocks.data?.items ?? [], flightRead === "ok" ? flight.data! : null)} flight={flightRead} />
+      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} />
       <AddToWallet status={data} />
       <div className="cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
