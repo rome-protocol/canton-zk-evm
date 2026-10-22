@@ -36,6 +36,8 @@ COPY explorer/server ./server
 COPY explorer/db ./db
 COPY --from=pages /repo/explorer/dist ./dist
 COPY prover/fixtures/session.txt /repo/prover/fixtures/session.txt
+# The gateway's source, which the verifier role publishes as the gateway's verified source.
+COPY gateway/Gateway.sol /repo/gateway/Gateway.sol
 COPY LICENSE NOTICE /repo/
 # The server listens on 127.0.0.1:8088 and reads reth and Canton on the machine's own ports, so it runs on the host's network
 # (explorer/run.sh). It runs as an unprivileged user; run.sh gives it the caller's id, so that it can read the faucet's key.

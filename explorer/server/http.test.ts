@@ -54,6 +54,17 @@ describe("the http server", () => {
     expect((await get("/healthz")).status).toBe(503);
   });
 
+  it("takes a body of up to 600 KB for the verification route only, and answers 413 above that without calling the api", async () => {
+    const source = "x".repeat(550 * 1024);
+    const taken = await get("/api/verify", { method: "POST", body: source });
+    expect(taken.status).toBe(200);
+    expect(((await taken.json()) as { received: string }).received.length).toBe(source.length);
+    const big = await get("/api/verify", { method: "POST", body: "x".repeat(601 * 1024) });
+    expect(big.status).toBe(413);
+    expect(await big.json()).toEqual({ error: "That request is too big." });
+    expect((await get("/api/faucet", { method: "POST", body: "x".repeat(20000) })).status).toBe(413);
+  });
+
   it("serves the pages, with the home page for any route the pages own", async () => {
     expect(await (await get("/")).text()).toBe("<html>home</html>");
     expect(await (await get("/block/12")).text()).toBe("<html>home</html>");

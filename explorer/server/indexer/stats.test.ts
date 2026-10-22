@@ -98,7 +98,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     await ins(pool, "addresses", { address: hex(0xd4), first_seen_block: 99, last_active_block: 99 });
     await ins(pool, "bytecodes", { code_hash: hex(1), code: "\\x00", size: 1 });
     await ins(pool, "contracts", { address: hex(0xe5), origin: "create", runtime_code_hash: hex(1), creation_block: 2 });
-    await ins(pool, "verified_sources", { address: hex(0xe5), runtime_code_hash: hex(1), language: "solidity", compiler_version: "0.8.0", code_format: "single", contract_path: "a.sol", contract_name: "A",
+    await ins(pool, "verified_sources", { address: hex(0xe5), runtime_code_hash: hex(1), language: "solidity", compiler_version: "0.8.0", code_format: "solidity-single-file", contract_path: "a.sol", contract_name: "A",
       settings: "{}", sources: "{}", abi: "[]", match_type: "full", verified_at: at(120) });
 
     const now = () => T0 + 3 * MINUTE + 10_000;

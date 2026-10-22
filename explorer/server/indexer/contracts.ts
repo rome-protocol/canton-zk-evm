@@ -35,11 +35,32 @@ export async function writeContracts(c: Pick<PoolClient, "query">, n: number, cr
        select t.a, 'create', t.cr, $1::bigint, t.tx, t.path::int[], t.rh, t.ch, null
        from unnest($2::bytea[], $3::bytea[], $4::int[], $5::text[], $6::bytea[], $7::bytea[]) as t(a, cr, tx, path, rh, ch)
        on conflict (address) do update set origin = 'create', creator = excluded.creator, creation_block = excluded.creation_block, creation_tx_index = excluded.creation_tx_index,
-         creation_trace_address = excluded.creation_trace_address, runtime_code_hash = excluded.runtime_code_hash, creation_code_hash = excluded.creation_code_hash,
+         creation_trace_address = excluded.creation_trace_address, creation_code_hash = excluded.creation_code_hash,
+         -- The verified state follows the code at the address: other code there is unverified (and loses a name that came from the source) until it is verified.
+         verified_source = case when contracts.runtime_code_hash = excluded.runtime_code_hash then contracts.verified_source end,
+         match_type = case when contracts.runtime_code_hash = excluded.runtime_code_hash then contracts.match_type end,
+         name = case when contracts.runtime_code_hash = excluded.runtime_code_hash or contracts.verified_source is null then contracts.name end,
+         runtime_code_hash = excluded.runtime_code_hash,
          destroyed_block = case when excluded.creation_block > contracts.creation_block then null else contracts.destroyed_block end
          where contracts.origin = 'create' and contracts.creation_block <= excluded.creation_block`,
       [n, made.map((k) => bytea(k.address)), made.map((k) => bytea(k.creator)), made.map((k) => k.txIndex), made.map((k) => `{${k.traceAddress.join(",")}}`),
         made.map((k) => bytea(codeHash(k.runtimeCode))), made.map((k) => bytea(codeHash(k.initCode)))],
+    );
+    // A contract made again with code that has its own source at this address (H1, then H2, then H1) gets that source back, with the match type it had.
+    await c.query(
+      `update contracts c set verified_source = v.id, match_type = v.match_type, name = coalesce(c.name, v.contract_name)
+       from verified_sources v
+       where c.address = any($1::bytea[]) and v.address = c.address and v.runtime_code_hash = c.runtime_code_hash and c.verified_source is null`,
+      [made.map((k) => bytea(k.address))],
+    );
+    // A clone of code that is already verified shows a similar match from the start (design 6.3, point 6): the verifier marks the clones that exist when it
+    // verifies, and this marks the ones made after. A contract with a source of its own, or one already marked, is left as it is.
+    await c.query(
+      `update contracts c set verified_source = v.id, match_type = 'similar', name = coalesce(c.name, v.contract_name)
+       from (select distinct on (runtime_code_hash) id, runtime_code_hash, contract_name from verified_sources order by runtime_code_hash, (match_type = 'full') desc, id) v
+       where c.address = any($1::bytea[]) and c.runtime_code_hash = v.runtime_code_hash and c.verified_source is null
+         and not exists (select 1 from verified_sources o where o.address = c.address and o.runtime_code_hash = c.runtime_code_hash)`,
+      [made.map((k) => bytea(k.address))],
     );
   }
   const targets = [...new Set(destroyed.map((d) => d.address))].sort();

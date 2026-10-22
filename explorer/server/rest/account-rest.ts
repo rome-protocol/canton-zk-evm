@@ -29,6 +29,10 @@ export interface AddressInternalItem {
 export interface TokenTransferItem { txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
+/** Shown with a partial match: the library lets the metadata (the CBOR at the end of the code, and of any contract embedded in it) differ from the compile. */
+export const PARTIAL_MATCH_NOTE = "Partial match: the metadata differs from this compile. Code that reads its own or another contract's code (type(X).creationCode/runtimeCode, codecopy, extcodecopy, address(this).code) may act differently from this source's compile; only a full match is byte-for-byte.";
+export const matchNote = (matchType: string | null): string | null => (matchType === "partial" ? PARTIAL_MATCH_NOTE : null);
+
 export interface ContractItem {
   address: string; name: string | null; origin: string; creator: string | null; creationBlock: number | null; creationTxIndex: number | null; interactionCount: number; verified: boolean; matchType: string | null; codeSize: number;
   destroyedBlock: number | null;
@@ -38,12 +42,12 @@ export interface ContractDetail extends ContractItem {
   proxy: { kind: string; implementation: string | null; beacon: string | null; checkedBlock: number } | null;
   verification: {
     language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null;
-    license: string | null; verifiedAt: string;
+    license: string | null; verifiedAt: string; matchNote: string | null;
   } | null;
 }
 export interface SourceDetail {
   matchType: string; language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null;
-  evmVersion: string | null; license: string | null; settings: unknown; files: { path: string; content: string }[]; abi: unknown; constructorArgs: string | null; libraries: unknown; verifiedAt: string;
+  evmVersion: string | null; license: string | null; settings: unknown; files: { path: string; content: string }[]; abi: unknown; constructorArgs: string | null; libraries: unknown; verifiedAt: string; matchNote: string | null;
 }
 export interface TokenItem {
   address: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; holderCount: number; transferCount: number; firstTransferBlock: number;
@@ -223,7 +227,7 @@ export function createAccountRest(pool: Pool) {
   async function contract(a: string): Promise<ContractDetail | undefined> {
     const [r] = await query(
       `select ${contractSelect}, encode(bc.code, 'hex') as code, (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx,
-         p.kind as proxy_kind, p.implementation, p.beacon, p.checked_block, v.language, v.compiler_version, v.code_format, v.contract_path, v.contract_name, v.optimizer_enabled, v.optimizer_runs,
+         p.kind as proxy_kind, p.implementation, p.beacon, p.checked_block, v.match_type as source_match_type, v.language, v.compiler_version, v.code_format, v.contract_path, v.contract_name, v.optimizer_enabled, v.optimizer_runs,
          v.evm_version, v.license, ${MS("v.verified_at")} as verified_at
        from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash left join proxies p on p.proxy = c.address left join verified_sources v on v.id = c.verified_source where c.address = $1`,
       [bytes(a)],
@@ -234,7 +238,7 @@ export function createAccountRest(pool: Pool) {
       proxy: r.proxy_kind === null ? null : { kind: r.proxy_kind, implementation: hexOrNull(r.implementation), beacon: hexOrNull(r.beacon), checkedBlock: Number(r.checked_block) },
       verification: r.language === null ? null : {
         language: r.language, compilerVersion: r.compiler_version, codeFormat: r.code_format, contractPath: r.contract_path, contractName: r.contract_name, optimizerEnabled: r.optimizer_enabled,
-        optimizerRuns: num(r.optimizer_runs), evmVersion: r.evm_version, license: r.license, verifiedAt: r.verified_at,
+        optimizerRuns: num(r.optimizer_runs), evmVersion: r.evm_version, license: r.license, verifiedAt: r.verified_at, matchNote: matchNote(r.source_match_type),
       },
     };
   }
@@ -255,7 +259,7 @@ export function createAccountRest(pool: Pool) {
       source: {
         matchType: r.match_type, language: r.language, compilerVersion: r.compiler_version, codeFormat: r.code_format, contractPath: r.contract_path, contractName: r.contract_name,
         optimizerEnabled: r.optimizer_enabled, optimizerRuns: num(r.optimizer_runs), evmVersion: r.evm_version, license: r.license, settings: r.settings, files, abi: r.abi,
-        constructorArgs: hexOrNull(r.constructor_args), libraries: r.libraries, verifiedAt: r.verified_at,
+        constructorArgs: hexOrNull(r.constructor_args), libraries: r.libraries, verifiedAt: r.verified_at, matchNote: matchNote(r.match_type),
       },
     };
   }

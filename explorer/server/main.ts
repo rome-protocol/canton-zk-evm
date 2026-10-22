@@ -3,7 +3,11 @@ import { fileURLToPath } from "node:url";
 import { createApi } from "./api.ts";
 import { createFinalBlocks } from "./chain-db.ts";
 import { ConfigError, loadConfig } from "./config.ts";
+import { randomBytes } from "node:crypto";
 import { createFaucet, loadFaucetKey } from "./faucet.ts";
+import { clientHasher, loadClientKey } from "./faucet-store.ts";
+import { createVerifyApi } from "./verifier/api.ts";
+import { JobQueue } from "./verifier/jobs.ts";
 import { createHttpServer } from "./http.ts";
 import { ledgerFromConfig } from "./ledger-config.ts";
 import { createPublicRpc } from "./public-rpc.ts";
@@ -29,7 +33,10 @@ try {
     ? { handler: createPublicRpc({ rethUrl: config.rethUrl, timeoutMs: config.rpcTimeoutMs, chainId: config.chainId, ratePerMinute: config.publicRpc.ratePerMinute, tracker }), ipHeader: config.publicRpc.trustedIpHeader }
     : undefined;
   const dist = process.env.EXPLORER_DIST || resolve(fileURLToPath(new URL(".", import.meta.url)), "../dist");
-  const api = createApi({ config, reth, ledger, chain, faucet, tracker, ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), ...(storage.statsRest ? { stats: storage.statsRest } : {}), live: Boolean(storage.pool && config.database) });
+  // Verification (design 6.3): the routes are always registered with a database, and answer 503 until a verifier role is running. A client's address is kept only as a keyed hash,
+  // with the faucet's key when there is one and otherwise a key made for this run.
+  const verify = storage.pool ? createVerifyApi({ pool: storage.pool, queue: new JobQueue(storage.pool), clientHash: clientHasher(config.faucet.clientKeyFile ? loadClientKey(config.faucet.clientKeyFile) : randomBytes(32)) }) : undefined;
+  const api = createApi({ config, ...(verify ? { verify } : {}), reth, ledger, chain, faucet, tracker, ...(storage.chainRest ? { rest: storage.chainRest } : {}), ...(storage.accountRest ? { accounts: storage.accountRest } : {}), ...(storage.statsRest ? { stats: storage.statsRest } : {}), live: Boolean(storage.pool && config.database) });
   // Live updates (design 6.4): the indexer's NOTIFY, heard on a connection of its own, told to the clients of GET /api/stream.
   const hub = createStreamHub();
   const source = storage.pool && config.database
