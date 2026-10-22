@@ -67,14 +67,14 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
         <>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Block</th><th className="r">Txs</th><th className="r">Time to final</th><th>Canton update</th><th></th></tr></thead>
+              <thead><tr><th>Block</th><th className="r">Txs</th><th className="r">Time to final</th><th>Canton update</th><th>Stage</th></tr></thead>
               <tbody>
                 {blocks.map((b) => (
                   <tr key={b.number}>
                     <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></td>
                     <td className="r">{b.txCount}</td>
                     <td className="r" title={`made to recorded: ${commitTime(b.timestamp, b.recordTime)}`}>{seconds(b.timestamp, b.recordTime)}</td>
-                    <td><HashLink value={b.updateId} kind="update" /></td>
+                    <td>{b.updateId ? <HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /> : <span className="muted">no record</span>}</td>
                     <td><Chip status="final" /></td>
                   </tr>
                 ))}

@@ -123,8 +123,7 @@ describe("the list of latest final blocks", () => {
     expect(rows).toHaveLength(2);
     const first = within(rows[0]!);
     expect(first.getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
-    expect(first.getByText("1220 0303…0303")).toBeInTheDocument();
-    expect(first.queryByRole("link", { name: /1220/ })).toBeNull();
+    expect(first.getByRole("link", { name: "1220 0303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(rows[0]).toHaveTextContent("7.4 s");
     expect(rows[0]).toHaveTextContent("11 s ago");
     expect(first.getByText("Final")).toHaveClass("chip-final");
@@ -133,7 +132,7 @@ describe("the list of latest final blocks", () => {
 
   it("reads the columns in a plain order, says each block is one Canton transaction, and leads to all of them", async () => {
     await home();
-    expect(within(screen.getByRole("region", { name: "Latest final blocks" })).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Block", "Txs", "Time to final", "Canton update", ""]);
+    expect(within(screen.getByRole("region", { name: "Latest final blocks" })).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Block", "Txs", "Time to final", "Canton update", "Stage"]);
     expect(screen.getByText("One Canton transaction each")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "View all blocks →" })).toHaveAttribute("href", "/blocks");
   });
