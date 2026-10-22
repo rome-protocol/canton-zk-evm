@@ -283,4 +283,12 @@ docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
 grep -q 'W1 inline:' "$WORK/w1.log" || fail "the W1 test did not run"
 grep -E '^W1 ' "$WORK/w1.log" || true
 
+# The nightly load test (.github/workflows/explorer-nightly.yml) runs L3 to L5 on this chain, with this script's functions and variables, before it is taken down.
+# REHEARSAL_NIGHTLY names a script of this repository; without it the rehearsal is what every demo change runs.
+if [ -n "${REHEARSAL_NIGHTLY:-}" ]; then
+  echo "== the nightly load test: $REHEARSAL_NIGHTLY"
+  # shellcheck disable=SC1090
+  . "$ROOT/$REHEARSAL_NIGHTLY"
+fi
+
 echo "demo rehearsal passed"
