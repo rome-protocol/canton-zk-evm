@@ -2,7 +2,7 @@
 """L3 of the explorer's design (section 9), the nightly flood on the rehearsal chain: the real reth, Canton, builder and the explorer's indexer, with the
 stand-in proof. It floods the producer with blocks of plain transfers (1,428 fit under the 30 Mgas cap), cut one after another as the builder takes them,
 and measures, for each block, from the moment the update can be read on the reader's participant (the ledger end, polled every 20 ms, reaches the offset the
-builder's commit answered with; the clock starts at the last poll that could not read it, so a lag is an upper bound, at most one poll too long):
+update has on that participant, which the indexer stored (canton_updates.reader_offset; offsets are local to a participant, so the builder's own is no use); the clock starts at the last poll that could not read it, so a lag is an upper bound, at most one poll too long):
   served   the first time the explorer's API answers for the block from its database (status final, with the Canton record): B1's index lag, polled every 60 ms
            (the REST routes allow 20 requests a second to a client). An answer from reth alone ("unindexed", "proving") does not count: reth has the block the
            moment the builder commits, so it would say nothing of the indexer.
@@ -111,9 +111,21 @@ def rpc(method, params):
         return json.load(r)["result"]
 
 
+def sql_rows(query):
+    out = subprocess.run(["docker", "exec", os.environ["L3_DB"], "psql", "-U", "explorer", "-d", "explorer", "-tAF", " ", "-c", query], check=True, capture_output=True, text=True)
+    return [line.split(" ") for line in out.stdout.strip().splitlines()]
+
+
 def sql(query):
-    out = subprocess.run(["docker", "exec", os.environ["L3_DB"], "psql", "-U", "explorer", "-d", "explorer", "-tAc", query], check=True, capture_output=True, text=True)
-    return int(out.stdout.strip())
+    return int(sql_rows(query)[0][0])
+
+
+def reader_offsets(update_ids):
+    """Where each update is on the reader's participant, as the indexer stored it (canton_updates.reader_offset): update id -> offset."""
+    ids = [u for u in update_ids if u]
+    if not ids or not all(u.isalnum() for u in ids):   # an update id is hex; anything else does not go into a query
+        return {}
+    return {row[0]: int(row[1]) for row in sql_rows("select update_id, reader_offset from canton_updates where update_id in (" + ",".join(f"'{u}'" for u in ids) + ")")}
 
 
 def database():
@@ -181,14 +193,14 @@ class LedgerClock(threading.Thread):
 
 
 def committed(output):
-    """The `completionOffset` of the commit that `cut_block` printed (the last JSON line of its output); None when it says none."""
+    """The `updateId` of the commit that `cut_block` printed (the last JSON line of its output); None when it says none."""
     for line in reversed(output.strip().splitlines()):
         try:
             answer = json.loads(line)
         except ValueError:
             continue
         if isinstance(answer, dict):
-            return answer.get("completionOffset") if type(answer.get("completionOffset")) is int else None
+            return answer.get("updateId") if isinstance(answer.get("updateId"), str) and answer.get("updateId") else None
     return None
 
 
@@ -233,7 +245,7 @@ def run(seconds, per_block, results):
     clock = LedgerClock(os.environ.get("L3_LEDGER", "http://127.0.0.1:7577"))
     clock.start()
     size0, txs0 = database()
-    cut = []          # (number, offset, returned at, transactions)
+    cut = []          # (number, update id, returned at, transactions)
     seen = {}         # number -> {"served": t, "final": t}
     done = threading.Event()
 
@@ -281,14 +293,16 @@ def run(seconds, per_block, results):
         time.sleep(0.1)
     stream.stop = clock.stop = True
     size1, txs1 = database()
+    offsets = reader_offsets([u for _, u, _, _ in cut])
     blocks = []
-    for number, offset, returned, count in cut:
+    for number, update_id, returned, count in cut:
         mark, got = seen.get(number, {}), stream.arrived.get(number)
         served = mark.get("served")
+        offset = offsets.get(update_id)
         t0 = clock.reached(offset)
         t0_from = "ledger" if t0 is not None else "fallback"
         t0 = returned if t0 is None else t0
-        blocks.append({"number": number, "txs": count, "completion_offset": offset, "t0_from": t0_from,
+        blocks.append({"number": number, "txs": count, "update_id": update_id, "reader_offset": offset, "t0_from": t0_from,
                        "served_s": None if served is None else max(0.0, served - t0),
                        "final_s": None if "final" not in mark else max(0.0, mark["final"] - t0),
                        "sse_after_served_s": None if served is None or got is None else max(0.0, got - served)})

@@ -71,12 +71,16 @@ class Clock(unittest.TestCase):
     def test_an_unknown_offset_has_no_time(self):
         self.assertIsNone(self.clock().reached(None))
 
-    def test_the_offset_is_read_from_the_last_json_line(self):
-        self.assertEqual(l3.committed('noise\n{"committed": true, "completionOffset": 77, "updateId": "u"}\n'), 77)
+    def test_the_update_id_is_read_from_the_last_json_line(self):
+        self.assertEqual(l3.committed('noise\n{"committed": true, "completionOffset": 77, "updateId": "1220ab"}\n'), "1220ab")
 
-    def test_no_offset_in_the_output(self):
+    def test_no_update_id_in_the_output(self):
         self.assertIsNone(l3.committed("nothing here"))
-        self.assertIsNone(l3.committed('{"committed": true, "completionOffset": null}'))
+        self.assertIsNone(l3.committed('{"committed": true, "updateId": null}'))
+
+    def test_an_update_id_that_is_not_hex_never_reaches_a_query(self):
+        self.assertEqual(l3.reader_offsets(["12'; drop table blocks; --"]), {})
+        self.assertEqual(l3.reader_offsets([None, ""]), {})
 
 
 class Poller(unittest.TestCase):
