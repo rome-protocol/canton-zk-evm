@@ -210,7 +210,7 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
     // The change is the last byte of code before the metadata (in the runtime code and in the creation input's copy of it).
     const tail = d.runtime.readUInt16BE(d.runtime.length - 2) + 2;
     const runtime = Buffer.from(d.runtime);
-    runtime[runtime.length - tail - 1] ^= 0xff;
+    runtime[runtime.length - tail - 1] = ~runtime[runtime.length - tail - 1]! & 0xff;
     await db.pool.query("delete from contracts");
     await addContract(db.pool, A, runtime, d.input);
     const o = await v.verify(req(A, { libraries: [{ name: "MathLib", address: LIB }] }));
@@ -235,7 +235,7 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
     await db.pool.query("delete from contracts; delete from verified_sources");
     for (const back of [2, 10, 40]) {
       const changed = Buffer.from(runtime);
-      changed[changed.length - back] ^= 0xff;
+      changed[changed.length - back] = ~changed[changed.length - back]! & 0xff;
       await db.pool.query("delete from contracts");
       await addContract(db.pool, A, changed, Buffer.concat([Buffer.from(evm.bytecode.object, "hex"), arg(1)]));
       expect((await v.verify(req(A, submit))).status).toBe("fail");

@@ -41,6 +41,15 @@ export async function writeContracts(c: Pick<PoolClient, "query">, n: number, cr
       [n, made.map((k) => bytea(k.address)), made.map((k) => bytea(k.creator)), made.map((k) => k.txIndex), made.map((k) => `{${k.traceAddress.join(",")}}`),
         made.map((k) => bytea(codeHash(k.runtimeCode))), made.map((k) => bytea(codeHash(k.initCode)))],
     );
+    // A clone of code that is already verified shows a similar match from the start (design 6.3, point 6): the verifier marks the clones that exist when it
+    // verifies, and this marks the ones made after. A contract with a source of its own, or one already marked, is left as it is.
+    await c.query(
+      `update contracts c set verified_source = v.id, match_type = 'similar', name = coalesce(c.name, v.contract_name)
+       from (select distinct on (runtime_code_hash) id, runtime_code_hash, contract_name from verified_sources order by runtime_code_hash, (match_type = 'full') desc, id) v
+       where c.address = any($1::bytea[]) and c.runtime_code_hash = v.runtime_code_hash and c.verified_source is null
+         and not exists (select 1 from verified_sources o where o.address = c.address)`,
+      [made.map((k) => bytea(k.address))],
+    );
   }
   const targets = [...new Set(destroyed.map((d) => d.address))].sort();
   if (targets.length === 0) return;
