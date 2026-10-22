@@ -28,7 +28,7 @@ async function boot(w: World = {}) {
   const health = createApiHealth({
     pool: db.pool, instance: "a", now: () => clock.now,
     reth: { block: async () => { if (!state.reth) throw new Error("connect ECONNREFUSED 127.0.0.1:8545"); return { number: 5 } as never; } },
-    ledger: { ledgerEnd: async () => { if (!state.canton) throw new Error("http://10.0.0.7:7575 refused"); return 9; } },
+    ledger: { ledgerEnd: async () => { if (!state.canton) throw new Error("http://ledger.invalid:7575 refused"); return 9; } },
     faucet: { on: true, isLeading: () => state.faucet !== undefined, info: async () => ({ balance: state.faucet!.balance, amount: state.faucet!.amount ?? "100", queue: state.faucet!.queue ?? 0 }) as never },
     tracker: { isLeading: () => state.tracker !== undefined, stats: () => state.tracker! },
   });
@@ -105,7 +105,7 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
     const { status, body } = await get();
     expect(status).toBe(503);
     expect(check(body, "api/a/canton")).toMatchObject({ status: "down" });
-    expect(JSON.stringify(body)).not.toMatch(/10\.0\.0\.7/);
+    expect(JSON.stringify(body)).not.toMatch(/ledger\.invalid/);
   });
 
   it("is down, said by the API itself, when it cannot read the database, and never names it", async () => {
