@@ -30,6 +30,12 @@
   .way-steps { grid-template-columns: 1fr; }
   .way-steps li { padding: 0 0 0 26px; }
   .way-delta { position: static; }
+  .way-steps li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 2px; }
+  .way-steps .how-n { grid-column: 1; }
+  .way-steps .how-t { grid-column: 2; grid-row: 1; align-self: baseline; }
+  .way-steps .how-d, .way-steps .how-src { grid-column: 1; }
+  .way-steps .way-delta { grid-column: 2; grid-row: 2; text-align: right; }
+  .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; }
   .way-steps .how-dot { top: 3px; }
   .way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
 }
