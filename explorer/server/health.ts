@@ -113,8 +113,9 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
     const spec = specOf(r.id);
     const stale = spec.intervalSeconds !== undefined && r.ageSeconds > spec.intervalSeconds * STALE_AFTER_INTERVALS;
     const written = asStatus(r.status);
-    const word = stale ? worse(written, spec.stale ?? spec.worst) : written;
-    const capped = RANK[word] > RANK[spec.worst] ? spec.worst : word;
+    // What a check writes is held to its worst word; a writer that has stopped counts for what the stop means, which can be more (a stopped indexer: final data is stale).
+    const held = RANK[written] > RANK[spec.worst] ? spec.worst : written;
+    const capped = stale ? worse(held, spec.stale ?? spec.worst) : held;
     const owner = instanceOf(r.id);
     const elsewhere = spec.role === "api" && (owner === null || owner !== instance) && capped === "down";
     const status: Status = elsewhere ? "degraded" : capped;
