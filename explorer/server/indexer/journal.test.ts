@@ -337,7 +337,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       // the gap is shown for an hour
       now += 3_700_000;
       await j.load();
-      expect((await health(pool, "journal")).detail).not.toMatch(/were lost/);
+      expect(String((await health(pool, "journal")).detail ?? "")).not.toMatch(/were lost/);
     });
   });
 
