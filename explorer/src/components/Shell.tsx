@@ -10,11 +10,14 @@ export const FOOTER_LINE = "This explorer reads Canton as the chain's reader par
 /** Shown until the server has said what the chain is called. */
 const DEFAULT_NAME = "Ostia";
 
-/** The pages of the header, in the order of the approved screens. */
-export const NAV = [
-  ["/", "Home"], ["/blocks", "Blocks"], ["/txs", "Transactions"], ["/contracts", "Contracts"], ["/tokens", "Tokens"],
-  ["/canton", "Canton"], ["/stats", "Stats"], ["/faucet", "Faucet"], ["/docs/api", "API"],
-] as const;
+/**
+ * The pages of the header, in the order of the approved screens. A page is linked once its route exists (`built`): the others are listed here so that
+ * the order is kept, and are drawn when their pages land. The API link is the description of the routes, which is a file and not a page.
+ */
+export const NAV: ReadonlyArray<readonly [path: string, label: string, built: boolean]> = [
+  ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", false], ["/contracts", "Contracts", false], ["/tokens", "Tokens", false],
+  ["/canton", "Canton", true], ["/stats", "Stats", false], ["/faucet", "Faucet", true], ["/api/openapi.json", "API", true],
+];
 
 /** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. */
 function TopBar({ status: s }: { status: ApiStatus }) {
@@ -22,12 +25,12 @@ function TopBar({ status: s }: { status: ApiStatus }) {
   const checks = s.starting && !s.problems.length ? "Starting" : s.problems.length ? "A check failed" : s.ok ? "All checks ok" : "Checks not complete";
   const tone = s.ok ? "ok" : s.starting && !s.problems.length ? "off" : "bad";
   return (
-    <div className="topbar" aria-label="Chain at a glance">
+    <section className="topbar" aria-label="Chain at a glance">
       <span className={`sd ${tone}`}><i />{checks}</span>
       {s.final && <span>Final block <Link className="num" to={`/block/${s.final.number}`}>{s.final.number}</Link> · {duration(now - Date.parse(s.final.recordTime))} ago</span>}
       {s.proving && <span>Being proven <Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></span>}
       <span className="topbar-end">Chain {s.chainId} · coin {s.coin.symbol}</span>
-    </div>
+    </section>
   );
 }
 
@@ -45,7 +48,9 @@ export function Shell({ children }: { children: ReactNode }) {
           {status && <span className="pill mono">chain {status.chainId}</span>}
         </Link>
         <nav className="nav" aria-label="Pages">
-          {NAV.map(([to, label]) => <NavLink key={to} to={to} end={to === "/"} className="navlink">{label}</NavLink>)}
+          {NAV.filter(([, , built]) => built).map(([to, label]) => to.startsWith("/api/")
+            ? <a key={to} href={to} className="navlink">{label}</a>
+            : <NavLink key={to} to={to} end={to === "/"} className="navlink">{label}</NavLink>)}
         </nav>
         {!home && <SearchBox />}
       </header>
