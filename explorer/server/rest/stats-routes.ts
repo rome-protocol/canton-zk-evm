@@ -29,7 +29,7 @@ export const DEFAULT_WINDOW: WindowName = "24h";
 export const STEPS = { "1m": { ms: MINUTE, rows: "minute" }, "10m": { ms: 10 * MINUTE, rows: "minute" }, "1h": { ms: HOUR, rows: "hour" }, "1d": { ms: DAY, rows: "day" } } as const satisfies Record<string, { ms: number; rows: Span }>;
 export type StepName = keyof typeof STEPS;
 /** The steps each window can be drawn in (the first is its default): never a step finer than the rows a window is read from, and at most 360 points. */
-export const WINDOW_STEPS: Record<WindowName, readonly StepName[]> = { "1h": ["1m", "10m"], "6h": ["10m", "1m", "1h"], "24h": ["1h"], "7d": ["1h", "1d"], "30d": ["1d"] };
+export const WINDOW_STEPS: Record<WindowName, readonly StepName[]> = { "1h": ["1m", "10m"], "6h": ["10m", "1m", "1h"], "24h": ["1h", "10m"], "7d": ["1h", "1d"], "30d": ["1d"] };
 
 // ---- the numbers of a set of rows ----
 
@@ -45,6 +45,25 @@ export function spread(h: readonly number[]): { median: number; p95: number; sam
 }
 const timeHist = (rows: readonly StatsRow[], c: Column): number[] => addHists("time", hists(rows, c));
 const spreadOf = (rows: readonly StatsRow[], c: Column) => { const s = spread(timeHist(rows, c)); return s && pick(s, F.statsSpread); };
+
+/** The ten-minute windows of design 2.7 and 8: a prover busy for more than this share of one counts as loaded. */
+export const BUSY_WINDOW_MS = 10 * MINUTE, BUSY_LOADED = 0.6;
+
+/**
+ * The prover's busy time over the ten-minute windows of [from, to) that have ended by `t`: the largest ratio, and how many windows are above 0.6, from minute rows
+ * (test runs apart). A day that was busy for two hours has about a dozen such windows, though its mean is 0.083.
+ */
+export function busyWindows(minutes: readonly StatsRow[], from: number, t: number) {
+  const W = BUSY_WINDOW_MS, first = Math.ceil(from / W) * W, last = Math.floor(t / W) * W;
+  const counted = Math.max(0, Math.round((last - first) / W)), by = new Map<number, number>();
+  for (const r of minutes) {
+    const k = Math.floor(r.bucket / W) * W;
+    if (k >= first && k < last) by.set(k, (by.get(k) ?? 0) + ((r.proof_busy_ms as number | null) ?? 0));
+  }
+  let top = 0, over = 0;
+  for (const ms of by.values()) { top = Math.max(top, ms / W); if (ms / W > BUSY_LOADED) over++; }
+  return { counted, maxRatio: counted > 0 ? top : null, over: counted > 0 ? over : null };
+}
 
 /** The five size classes of a block, as `proof_size_hist` holds them one after the other (design section 8). */
 export const SIZE_LABELS = ["0", "1-10", "11-100", "101-1000", "over 1000"] as const;
@@ -97,7 +116,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const name = windowOf(q.get("window"));
     const t = now(), w = WINDOWS[name], span = { minute: MINUTE, hour: HOUR, day: DAY }[w.rows];
     const to = Math.floor(t / span) * span + span, from = to - w.ms;
-    const [state, rows, peak, lastMinute, pool, today, lost] = await Promise.all([
+    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
         "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed", "attempts",
@@ -107,6 +126,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       stats.peak(from, to), stats.lastMinuteTxs(t), stats.pool(),
       stats.rows("day", Math.floor(t / DAY) * DAY, Math.floor(t / DAY) * DAY + DAY, ["active_addresses", "new_addresses", "new_contracts", "verified_contracts"]),
       stats.lost(),
+      stats.rows("minute", from, Math.floor(t / MINUTE) * MINUTE + MINUTE, ["proof_busy_ms"]),
     ]);
 
     const blocks = sum(rows, "blocks"), txs = sum(rows, "txs"), empty = sum(rows, "empty_blocks"), attempts = sum(rows, "attempts");
@@ -124,6 +144,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const open = await stats.open(t, timeToFinal ? 2 * timeToFinal.p95 : null);
     const stuck = open.stuck > 0 ? await stats.stuck(t) : [];
     const day = today[0];
+    const busy = busyWindows(busyMinutes, from, t);
     const body = {
       window: name, rows: w.rows, from: iso(from), to: iso(to), asOf: iso(state.asOf), dataSince: iso(state.since),
       tps: pick({ now: lastMinute / 60, peak: peak ? peak.txs / 60 : null, peakAt: iso(peak?.at ?? null) }, F.statsTps),
@@ -147,7 +168,11 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
         argumentBytesPerBlock: ratio(sum(rows, "argument_bytes"), blocks), argumentBytesPerTx: ratio(sum(rows, "argument_bytes"), txs),
         trafficBytesPerBlock: ratio(sum(rows, "traffic_bytes"), traffic), trafficReported: traffic,
       }, F.statsCanton),
-      prover: pick({ busyRatio: sum(rows, "proof_busy_ms") / w.ms, busyMs: sum(rows, "proof_busy_ms") }, F.statsProver),
+      prover: pick({
+        maxBusyRatio10m: busy.maxRatio, windowsOver: busy.over, windowsCounted: busy.counted, windowSeconds: BUSY_WINDOW_MS / 1000, loadedAbove: BUSY_LOADED,
+        // The mean over the part of the window that has happened; the 10-minute figures above are what the switching rule reads.
+        meanBusyRatio: sum(rows, "proof_busy_ms") / Math.max(1, Math.min(w.ms, t - from)), busyMs: sum(rows, "proof_busy_ms"),
+      }, F.statsProver),
       quality: pick({ withoutAcceptanceTime: sum(rows, "ttf_without_acceptance"), clockSkew: sum(rows, "clock_skew") }, F.statsQuality),
       test: pick({ blocks: sum(rows, "test_blocks"), txs: sum(rows, "test_txs"), attempts: sum(rows, "test_attempts"), proverBusyMs: sum(rows, "test_proof_busy_ms") }, F.statsTest),
       today: day ? pick({

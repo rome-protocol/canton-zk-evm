@@ -122,7 +122,7 @@ export const REST_FIELDS = {
   statsTxs: ["count", "failed", "successRate", "accepted"],
   statsAttempts: ["total", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
   statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
-  statsProver: ["busyRatio", "busyMs"],
+  statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],
   statsQuality: ["withoutAcceptanceTime", "clockSkew"],
   /** What the runs marked as tests did: counted apart, and left out of every other number. */
   statsTest: ["blocks", "txs", "attempts", "proverBusyMs"],

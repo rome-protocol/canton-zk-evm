@@ -99,7 +99,7 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.txs).toEqual({ count: 0, failed: 0, successRate: null, accepted: 0 });
     expect(s.attempts).toMatchObject({ total: 0, refusedShare: null, failedShare: null, notTakenShare: null });
     expect(s.canton).toEqual({ argumentBytesPerBlock: null, argumentBytesPerTx: null, trafficBytesPerBlock: null, trafficReported: 0 });
-    expect(s.prover).toEqual({ busyRatio: 0, busyMs: 0 });
+    expect(s.prover).toEqual({ maxBusyRatio10m: 0, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0, busyMs: 0 });
     expect(s.waiting).toEqual({ open: 0, pool: null });
     expect(s.acceptedNotFinal).toMatchObject({ normal: null, slow: null, stuck: 0, noAcceptanceTime: 0, slowAfterSeconds: null, stuckAfterSeconds: 120, listed: [] });
     expect(s.lost).toEqual({ window: 0, total: 0, listed: [] });
@@ -205,8 +205,9 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.fullness).toBe(950 / 8000);
     // argument bytes 400+600+3000 = 4000 over 8 blocks and 42 transactions; traffic 3000 over the 5 updates that reported it
     expect(s.canton).toEqual({ argumentBytesPerBlock: 500, argumentBytesPerTx: 4000 / 42, trafficBytesPerBlock: 600, trafficReported: 5 });
-    // busy 30 + 60 + 10 s = 100 s of an hour (the 11:30 minute's is outside), and the test run's 5 s and block are apart
-    expect(s.prover).toEqual({ busyRatio: 100000 / 3600000, busyMs: 100000 });
+    // busy 30 + 60 + 10 s = 100 s (the 11:30 minute's is outside), and the test run's 5 s and block are apart. The five ten-minute windows 11:40 to 12:30 hold 70 s in
+    // the 12:20 one; the 30 s of 11:31 is before the first whole window. The mean is over the 59 min 20 s that have happened of the window, not the whole hour.
+    expect(s.prover).toEqual({ maxBusyRatio10m: 70000 / 600000, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 100000 / 3560000, busyMs: 100000 });
     expect(s.test).toEqual({ blocks: 1, txs: 9, attempts: 1, proverBusyMs: 5000 });
     expect(s.quality).toEqual({ withoutAcceptanceTime: 1, clockSkew: 1 });
     same(s.today, F.statsToday);
@@ -430,5 +431,32 @@ describe.skipIf(!TEST_URL)("the stats routes over the real rollup", () => {
       expect(s.commitTime.samples).toBe(1);
       expect(s.served.samples).toBe(1);
     } finally { await db.drop(); }
+  });
+});
+
+
+describe.skipIf(!TEST_URL)("the stats routes: a day with two busy hours", () => {
+  let db: TestDatabase, get: ReturnType<typeof apiFor>;
+  beforeAll(async () => {
+    db = await makeDatabase(); await base(db.pool); get = apiFor(db.pool, () => NOW);
+    // The prover is busy for every second of 10:00 to 11:59 (a minute row of 60 s each), and for 30 s of 06:15: a loaded stretch, and one that is not.
+    for (let m = 0; m < 120; m++) await seed(db.pool, "stats_minute", t(10, 0) + m * MINUTE, { proof_busy_ms: 60000 });
+    await seed(db.pool, "stats_minute", t(6, 15), { proof_busy_ms: 30000 });
+    for (const [h, ms] of [[10, 3600000], [11, 3600000], [6, 30000]] as const) await seed(db.pool, "stats_hour", t(h, 0), { proof_busy_ms: ms });
+  });
+  afterAll(async () => { await db?.drop(); });
+
+  it("gives the largest ten-minute ratio and the windows above 0.6, and the mean only as a mean", async () => {
+    const s = body(await get("/api/stats/summary?window=24h"));
+    // 24 h window: from 13:00 the day before (the hour's end is 13:00) to 12:30:20; whole ten-minute windows 13:00 .. 12:30 = 141; twelve are fully busy
+    expect(s.prover).toEqual({ maxBusyRatio10m: 1, windowsOver: 12, windowsCounted: 141, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 7230000 / 84620000, busyMs: 7230000 });
+    expect(s.prover.meanBusyRatio).toBeLessThan(0.09);
+  });
+
+  it("draws the ten-minute ratios across a whole day", async () => {
+    const r = body(await get("/api/stats/series?metric=busy_ratio&window=24h&step=10m"));
+    expect(r.points).toHaveLength(144);
+    expect(r.points.filter((p: { value: number }) => p.value === 1)).toHaveLength(12);
+    expect((await get("/api/stats/series?metric=busy_ratio&window=24h&step=1m")).status).toBe(400);
   });
 });
