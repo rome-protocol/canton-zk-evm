@@ -1,50 +1,14 @@
-import { createHash } from "node:crypto";
-import { createServer, type IncomingMessage, type Server } from "node:http";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { keccak256 } from "viem";
 import { CompilerError, CompilerStore } from "./compilers.ts";
+import { FakeMirror, sha } from "./fake-mirror.ts";
 
 const UA = "Test Agent test@example.invalid";
-const sha = (b: Buffer): string => createHash("sha256").update(b).digest("hex");
 
 /** A compiler made of the given text, long enough to pass the size check. */
 const binary = (tag: string): Buffer => Buffer.from(`#!/bin/sh\n# ${tag}\n${"# padding\n".repeat(200)}echo ${tag}\n`);
-
-interface Entry { longVersion: string; body: Buffer; sha256?: string; keccak256?: string; path?: string }
-
-/** A release list and its binaries, served on this machine's loopback, counting the requests and the user agents it sees. */
-class FakeMirror {
-  server!: Server;
-  hits: { url: string; ua: string | undefined }[] = [];
-  entries: Entry[] = [];
-  listStatus = 200;
-  url = "";
-  async start(): Promise<void> {
-    this.server = createServer((req: IncomingMessage, res) => {
-      this.hits.push({ url: req.url ?? "", ua: req.headers["user-agent"] });
-      if (req.url === "/bin/list.json") {
-        if (this.listStatus !== 200) { res.statusCode = this.listStatus; res.end("no"); return; }
-        const builds = this.entries.map((e) => ({
-          path: e.path ?? `solc-${e.longVersion}`, version: e.longVersion.split("+")[0] as string, longVersion: e.longVersion, build: e.longVersion.split("+")[1],
-          sha256: `0x${e.sha256 ?? sha(e.body)}`, keccak256: e.keccak256 ?? keccak256(e.body),
-        }));
-        res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ builds, releases: Object.fromEntries(builds.filter((b) => !b.version.includes("-")).map((b) => [b.version, b.path])), latestRelease: "0.8.28" }));
-        return;
-      }
-      const e = this.entries.find((x) => `/bin/${x.path ?? `solc-${x.longVersion}`}` === req.url);
-      if (!e) { res.statusCode = 404; res.end(); return; }
-      res.end(e.body);
-    });
-    await new Promise<void>((ok) => this.server.listen(0, "127.0.0.1", ok));
-    this.url = `http://127.0.0.1:${(this.server.address() as { port: number }).port}/bin/list.json`;
-  }
-  stop(): Promise<void> { return new Promise((ok) => this.server.close(() => ok())); }
-  downloads(): number { return this.hits.filter((h) => h.url !== "/bin/list.json").length; }
-}
 
 const V1 = "0.8.28+commit.7893614a";
 const V2 = "0.8.27+commit.40a35a09";

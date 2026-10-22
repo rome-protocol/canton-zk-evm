@@ -25,6 +25,33 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npm run typecheck && npm test && npm run build"
 
+  # The verifier's sandbox, for real: a compile runs in a container of the pinned image (BUSYBOX_IMAGE) with no network, a read-only filesystem,
+  # a memory limit and a time limit, and the tests check each of them. The tests run in the pinned Node image, which talks to the runner's own
+  # Docker through its socket (the Docker program is the runner's, mounted in). The compilers the tests make sit in a folder that the container
+  # and the daemon see at the same path. EXPLORER_TEST_REQUIRE_SANDBOX makes a missing Docker a failure instead of a skip.
+  verifier-sandbox:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE BUSYBOX_IMAGE
+      - name: Run the verifier's tests with the sandbox
+        run: |
+          set -a; . ./PINS; set +a
+          # The sandbox image is on the runner under the pinned name, and the tests read the same name from PINS.
+          docker image inspect --format '{{.Id}}' "$BUSYBOX_IMAGE"
+          SHARED="$RUNNER_TEMP/verifier-tmp"
+          mkdir -p "$SHARED"
+          docker run --rm --user "$(id -u):$(id -g)" --group-add "$(stat -c %g /var/run/docker.sock)" -e HOME=/tmp \
+            -e EXPLORER_TEST_REQUIRE_SANDBOX=1 -e TMPDIR="$SHARED" -v "$SHARED:$SHARED" \
+            -v /var/run/docker.sock:/var/run/docker.sock -v "$(command -v docker):/usr/local/bin/docker:ro" \
+            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run server/verifier"
+      - name: Remove what the run made
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/verifier-tmp"
+
   # The Ledger API calls, against the OpenAPI document that the pinned Canton writes itself: the requests the explorer sends must be
   # fields that document names, and the fake Ledger API's answers must have its shape. Starts Canton's participants; no bootstrap, no GPU.
   ledger-api:
