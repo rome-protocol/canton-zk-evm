@@ -94,6 +94,15 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     for (const s of u.signatories) same(s, F.signatory);
   });
 
+  it("never serves the builder participant's completion offset", async () => {
+    await pool.query("update canton_updates set completion_offset = 4242, command_id = coalesce(command_id, 'cmd-1') where update_id = $1", [chain.blocks[1]!.record.updateId]);
+    for (const target of [`/api/canton/updates/${chain.blocks[1]!.record.updateId}`, "/api/canton/updates", "/api/blocks/2", "/api/block/2"]) {
+      const text = JSON.stringify((await get(target)).body);
+      expect(text, target).not.toMatch(/completion_?offset/i);
+      expect(text, target).not.toContain("4242");
+    }
+  });
+
   it("pages every list by keyset, in a stable order, without a repeat or a gap", async () => {
     const seen: number[] = [];
     let next: string | null = null;

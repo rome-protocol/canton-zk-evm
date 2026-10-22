@@ -68,7 +68,7 @@ export const REST_FIELDS = {
   updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "template", "contractId", "blockHash", "signatories", "producerRecord"],
   updateTemplate: ["packageId", "packageName", "module", "entity"],
   signatory: ["role", "party"],
-  producerRecord: ["template", "choice", "commandId", "argumentBytes", "trafficBytes", "completionOffset"],
+  producerRecord: ["template", "choice", "commandId", "argumentBytes", "trafficBytes"],
   /** The addresses list: the database's copy of the balance, as of `balanceBlock`. */
   addressItem: ["address", "kind", "balance", "balanceBlock", "txCount"],
   /** One address: the balance is reth's at the final head (`balanceBlock`); the counters and the kind are the database's. */

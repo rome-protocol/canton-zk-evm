@@ -37,7 +37,7 @@ export interface UpdateItem { updateId: string; recordTime: string; effectiveAt:
 export interface UpdateDetail extends UpdateItem {
   template: { packageId: string; packageName: string | null; module: string; entity: string }; contractId: string | null; blockHash: string | null; signatories: { role: string; party: string }[];
   /** What the producer's journal says it submitted for the update; null for an update the journal does not hold. */
-  producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null; completionOffset: number | null } | null;
+  producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
 }
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
 
@@ -202,7 +202,7 @@ export function createChainRest(pool: Pool) {
 
   async function update(updateId: string): Promise<UpdateDetail | undefined> {
     const [r] = await query(
-      `select ${updateSelect}, t.package_id, t.package_name, t.module, t.entity, u.signatories, u.command_id, u.submitted_template, u.submitted_choice, u.argument_bytes, u.traffic_bytes, u.completion_offset,
+      `select ${updateSelect}, t.package_id, t.package_name, t.module, t.entity, u.signatories, u.command_id, u.submitted_template, u.submitted_choice, u.argument_bytes, u.traffic_bytes,
          (select r.contract_id from block_records r join blocks b on b.number = r.number where b.update_id = u.update_id order by b.number limit 1) as contract_id,
          (select b.hash from blocks b where b.update_id = u.update_id order by b.number limit 1) as block_hash
        from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer join canton_templates t on t.id = u.reader_template
@@ -211,11 +211,11 @@ export function createChainRest(pool: Pool) {
     );
     if (!r) return undefined;
     const signatories = await query("select role, party from canton_parties where id = any($1::smallint[]) order by role, id", [r.signatories]);
-    const journal = r.command_id !== null || r.submitted_template !== null || r.completion_offset !== null;
+    const journal = r.command_id !== null || r.submitted_template !== null;
     return {
       ...updateItem(r), template: { packageId: r.package_id, packageName: r.package_name, module: r.module, entity: r.entity }, contractId: r.contract_id, blockHash: hexOrNull(r.block_hash),
       signatories: signatories.map((s) => ({ role: s.role, party: s.party })),
-      producerRecord: journal ? { template: r.submitted_template, choice: r.submitted_choice, commandId: r.command_id, argumentBytes: r.argument_bytes, trafficBytes: r.traffic_bytes, completionOffset: r.completion_offset === null ? null : Number(r.completion_offset) } : null,
+      producerRecord: journal ? { template: r.submitted_template, choice: r.submitted_choice, commandId: r.command_id, argumentBytes: r.argument_bytes, trafficBytes: r.traffic_bytes } : null,
     };
   }
 
