@@ -188,6 +188,24 @@ describe("the list of latest transactions", () => {
   });
 });
 
+describe("the list of latest transactions, with the faucet", () => {
+  it("names the faucet as the sender of its transactions", async () => {
+    fakeApi(route({ faucet: () => reply({ on: true, address: txItem(3).from }) }));
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    expect((await region.findAllByRole("link", { name: "Ostia faucet" }))[0]).toHaveAttribute("href", `/address/${txItem(3).from}`);
+  });
+
+  it("leaves a sender that is not the faucet as an address", async () => {
+    fakeApi(route({ faucet: () => reply({ on: true, address: addr(0xfa) }) }));
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    await region.findAllByRole("row");
+    expect(region.queryByRole("link", { name: "Ostia faucet" })).toBeNull();
+    expect(region.getAllByRole("link", { name: "0x5b5b5b…b5b5b" }).length).toBeGreaterThan(0);
+  });
+});
+
 describe("the list of latest transactions, with those not final yet", () => {
   const at = new Date(NOW - 4000).toISOString();
   const open = async (over: { txs?: () => ReturnType<typeof reply>; inFlight?: () => ReturnType<typeof reply>; tx?: (h: string) => ReturnType<typeof reply> } = {}) => {

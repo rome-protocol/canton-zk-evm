@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getBlocks, getInFlight, type ApiStatus, type BlockListItem, type InFlight } from "./api.ts";
+import { getBlocks, getFaucetAddress, getInFlight, type ApiStatus, type BlockListItem, type InFlight } from "./api.ts";
 
 /** The middle and the 95th percentile of some times, and how many blocks they come from. */
 export interface Spread { medianMs: number; p95Ms: number; blocks: number }
@@ -59,3 +59,6 @@ export const listPoll = (live: boolean) => (live ? false : 5000);
 
 export const useBlocks = (limit: number, live: boolean) => useQuery({ queryKey: ["blocks", limit], queryFn: () => getBlocks(limit), refetchInterval: listPoll(live) });
 export const useInFlight = (live: boolean, enabled = true) => useQuery({ queryKey: ["in-flight"], queryFn: getInFlight, refetchInterval: listPoll(live), enabled });
+
+/** The faucet's address, the one address the explorer knows by name; null when it has none or cannot be asked. */
+export const useFaucetAddress = () => useQuery({ queryKey: ["faucet-address"], queryFn: getFaucetAddress, staleTime: 60_000, retry: false }).data ?? null;

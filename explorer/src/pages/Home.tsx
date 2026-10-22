@@ -6,7 +6,7 @@ import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, short, utc } from "../format.ts";
-import { listPoll, readOf, summarize, usualProof, useBlocks, useInFlight } from "../stats.ts";
+import { listPoll, readOf, summarize, useBlocks, useFaucetAddress, useInFlight, usualProof } from "../stats.ts";
 import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { type Details, Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
@@ -91,6 +91,7 @@ export function Home() {
   const flight = useInFlight(live);
   const flightRead = readOf(flight);
   // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once.
+  const faucet = useFaucetAddress();
   const pending = flight.data?.transactions ?? [];
   const detail = useQueries({ queries: pending.map((p) => ({ queryKey: ["tx", p.hash], queryFn: () => getTx(p.hash), staleTime: Infinity, retry: false })) });
   const details: Record<string, Details> = Object.fromEntries(pending.map((p, i) => [p.hash, detail[i]!.data ?? (detail[i]!.isError ? "error" : "reading")]));
@@ -111,7 +112,7 @@ export function Home() {
       <AddToWallet status={data} />
       <div className="cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
-        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} />
+        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} faucet={faucet} chain={data.chainName} />
       </div>
       <CanCannot />
     </>
