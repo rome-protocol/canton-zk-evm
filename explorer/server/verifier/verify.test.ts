@@ -62,9 +62,10 @@ suite("verifying a contract", () => {
   it("answers 'already' for a second submission, with no new work", async () => {
     await addContract(db.pool, A, runtime, creation);
     await v.verify(req(A));
-    expect(stub.calls).toBe(1);
+    const first = stub.calls; // the compile, and the one that finds the metadata's places
+    expect(first).toBeGreaterThan(0);
     expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
-    expect(stub.calls).toBe(1);
+    expect(stub.calls).toBe(first);
     expect(await sources()).toHaveLength(1);
   });
 
@@ -231,6 +232,7 @@ suite("verifying a contract", () => {
     // The compiled code differs from the chain only in what would be a metadata hash; with appendCBOR false nothing is metadata.
     const other = Buffer.concat([Buffer.from(BODY, "hex"), meta(9)]);
     await addContract(db.pool, A, other, Buffer.concat([HEAD, other, meta(9)]));
+    stub.output = outputFor("Box.sol", "Box", { creation: creation.toString("hex"), runtime: runtime.toString("hex"), auxdata: false });
     const json = JSON.stringify({ language: "Solidity", sources: { "Box.sol": { content: "contract Box {}" } }, settings: { metadata: { appendCBOR: false } } });
     const o = await v.verify(req(A, { codeFormat: "solidity-standard-json-input", sourceCode: json, contractName: "Box.sol:Box" }));
     expect(o.status).toBe("fail");

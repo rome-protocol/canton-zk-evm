@@ -34,17 +34,51 @@ export class StubCompile implements Compile {
     this.calls++;
     this.inputs.push(input);
     if (this.fail) throw this.fail;
-    return { output: this.output, compiler: { version, sha256: "00".repeat(32) }, ms: 1 };
+    // The library finds where the metadata is by compiling the source again with a space added at the end of each file: the output of that compile has other hashes.
+    const sources = ((typeof input === "string" ? JSON.parse(input) : input) as { sources?: Record<string, { content: string }> }).sources ?? {};
+    const edited = Object.values(sources).some((s) => s.content.endsWith(" "));
+    return { output: edited ? editedOutput(this.output) : this.output, compiler: { version, sha256: "00".repeat(32) }, ms: 1 };
   }
 }
 export { CompilerError, SandboxError };
 
-/** Standard JSON output for one contract, as the compiler gives it. */
-export function outputFor(path: string, name: string, c: { creation: string; runtime: string; immutables?: object; runtimeLinks?: object; creationLinks?: object }): Record<string, unknown> {
+/** The auxdata (the CBOR map and its two length bytes) at the end of a made-up runtime code, as hex; null when it does not end in one that solc would write. */
+function auxdataOf(runtime: string): string | null {
+  const b = Buffer.from(runtime, "hex");
+  if (b.length < 2) return null;
+  const n = b.readUInt16BE(b.length - 2) + 2;
+  if (n > b.length) return null;
+  const tail = b.subarray(b.length - n).toString("hex");
+  return tail.startsWith("a2") && tail.includes("64736f6c63") ? tail : null;
+}
+
+/** Standard JSON output for one contract, as the compiler gives it, with the auxdata that solc lists in `legacyAssembly` (the end of the runtime code, when it has a CBOR there). */
+export function outputFor(path: string, name: string, c: { creation: string; runtime: string; immutables?: object; runtimeLinks?: object; creationLinks?: object; /** false: the compile appended no metadata (the output lists no auxdata) */ auxdata?: boolean }): Record<string, unknown> {
+  const aux = c.auxdata === false ? null : auxdataOf(c.runtime);
   return {
     contracts: { [path]: { [name]: {
-      abi: [{ type: "function", name: "get", inputs: [], outputs: [], stateMutability: "view" }], metadata: JSON.stringify({ language: "Solidity", version: 1 }),
-      evm: { bytecode: { object: c.creation, linkReferences: c.creationLinks ?? {} }, deployedBytecode: { object: c.runtime, linkReferences: c.runtimeLinks ?? {}, immutableReferences: c.immutables ?? {} } },
+      abi: [{ type: "constructor", inputs: [{ type: "uint256", name: "v" }], stateMutability: "nonpayable" }, { type: "function", name: "get", inputs: [], outputs: [], stateMutability: "view" }],
+      metadata: JSON.stringify({ language: "Solidity", version: 1 }),
+      evm: {
+        legacyAssembly: aux ? { ".code": [], ".data": { "0": { ".auxdata": aux } } } : { ".code": [] },
+        bytecode: { object: c.creation, linkReferences: c.creationLinks ?? {} }, deployedBytecode: { object: c.runtime, linkReferences: c.runtimeLinks ?? {}, immutableReferences: c.immutables ?? {} },
+      },
     } } },
   };
+}
+
+/** What the compiler gives for the same source with a space added at the end: the same code, with other hashes in the auxdata. */
+export function editedOutput(output: Record<string, unknown>): Record<string, unknown> {
+  const out = JSON.parse(JSON.stringify(output)) as { contracts: Record<string, Record<string, { evm: { legacyAssembly: { ".data"?: Record<string, { ".auxdata": string }> }; bytecode: { object: string }; deployedBytecode: { object: string } } }>> };
+  for (const byName of Object.values(out.contracts ?? {})) {
+    for (const c of Object.values(byName)) {
+      const aux = c.evm.legacyAssembly[".data"]?.["0"]?.[".auxdata"];
+      if (!aux) continue;
+      const other = aux.slice(0, 24) + (aux.slice(24, 26) === "ee" ? "dd" : "ee") + aux.slice(26);
+      c.evm.legacyAssembly[".data"]!["0"]![".auxdata"] = other;
+      c.evm.bytecode.object = c.evm.bytecode.object.split(aux).join(other);
+      c.evm.deployedBytecode.object = c.evm.deployedBytecode.object.split(aux).join(other);
+    }
+  }
+  return out;
 }

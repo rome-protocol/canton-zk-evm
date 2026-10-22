@@ -138,6 +138,7 @@ export async function matchWithSourcify(
     if (code === "compiled_bytecode_is_zero") throw new MatchFailure("target", `${target.name} has no code (an interface or an abstract contract cannot be deployed)`);
     if (code === "no_match" || code === "bytecode_length_mismatch") throw new MatchFailure("runtime", "the runtime code does not match the code on chain");
     if (solc.failure) throw solc.failure;
+    if (code === "extra_file_input_bug") throw new MatchFailure("runtime", "the runtime code does not match the code on chain, though the metadata hash does: the input holds files that the contract does not use, and they change the code (remove them)");
     throw new MatchFailure("runtime", `the code could not be matched with the code on chain (${code ?? (e as Error).message})`);
   }
   // A compile that the library gave up on (the edited source) is not a mismatch of the submitter's: the caller tries again.
