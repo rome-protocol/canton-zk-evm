@@ -228,12 +228,18 @@ first_failed=$(w1py reverts "$REVERTS" | head -n 1)
 cut_block
 REVERT_BLOCK=$(receipt_of "$first_failed" | jq -r .block)
 [ "$(receipt_of "$first_failed" | jq -r .status)" = 0 ] || fail "the first call to Reverts did not fail: $(receipt_of "$first_failed")"
-# The W1 block: the log-heavy call chains, and the token traffic as costly as the cap allows (ERC-20 transfers to new holders, ERC-1155 batches, new
-# tokens that need their metadata read). The calls' gas limits add up to 27.8 Mgas of the 30 Mgas cap (the builder keeps a margin): 2 Stress calls, 2 of ERC-20 transfers and 2 of new tokens at 2 Mgas, and one call of five 4,096-id ERC-1155 batches at 15.7 Mgas, the costliest token traffic for stage 2 (about 20k legs). The block is the one the first call lands in.
+# The ERC-1155 holder of the W1 block: 4,096 ids minted to the Multi contract in a block of their own, so the W1 block's batches send from a holder that already
+# holds the ids (two legs for each id).
+w1py flood "$MULTI" mint 1 >/dev/null
+cut_block
+# The W1 block: the log-heavy call chains, and the token traffic as costly as the cap allows: ERC-1155 batches whose ids and values share one array (18 of 4,096 ids,
+# 73,728 transfers, 19.6 Mgas of gas limit), one call of ERC-20 transfers to new holders and one of new tokens that need their metadata read (a third of them Burners,
+# whose reads spend all their gas). The calls' gas limits add up to 27.6 Mgas of the 30 Mgas cap (the builder keeps a margin): 2 Stress calls and the two small Flood
+# calls at 2 Mgas, and the batches at 19.6 Mgas.
 first_stress=$(w1py stress "$STRESS" 2 | head -n 1)
-w1py flood "$FLOOD" transfers 2 >/dev/null
+w1py flood "$FLOOD" transfers 1 >/dev/null
 w1py flood "$MULTI" batches 1 >/dev/null
-w1py flood "$FLOOD" spawn 2 >/dev/null
+w1py flood "$FLOOD" spawn 1 >/dev/null
 cut_block
 W1_BLOCK=$(receipt_of "$first_stress" | jq -r .block)
 echo "the first Stress call: $(receipt_of "$first_stress" | jq -c .)"

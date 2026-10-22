@@ -14,7 +14,10 @@ import { rebuildTokens } from "./aggregates.ts";
 import { reindexRange } from "./reindex.ts";
 import type { TraceFrame } from "./reads.ts";
 import { BATCH_TOPIC, SELECTORS, TRANSFER_TOPIC } from "./tokens.ts";
+import { B1_MS as W1_B1_MS, B2_MS as W1_B2_MS } from "../../test/budgets.ts";
 
+// The ordinary shapes below are held to the design's first 1.0 s and 3.0 s, far inside them, so that a regression in them still fails; W1's shape has the re-set budgets.
+const B1_MS = 1000;
 const B2_MS = 3000;
 const REINDEX_MS = 10_000; // the reindex is no block's budget; the time must follow the size of the range (it was 4.5 s for 2,000 holders and over 2 minutes for 15,000)
 const A = (n: number) => "0x" + n.toString(16).padStart(40, "0");
@@ -28,6 +31,10 @@ type Log = { address: string; topics: string[]; data: string };
 const erc20 = (from: number, to: number, v: bigint | number): Log => ({ address: A(ERC20), topics: [TRANSFER_TOPIC, T(from), T(to)], data: "0x" + W(v) });
 const batch = (from: number, to: number, ids: number[], vs: number[]): Log => ({
   address: A(ERC1155), topics: [BATCH_TOPIC, T(0xee), T(from), T(to)], data: encodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], [ids.map(BigInt), vs.map(BigInt)]),
+});
+/** A TransferBatch whose `ids` and `values` offsets both point at one array (0x40 and 0x40), the costliest log under the gas cap: half the bytes of a two-array log. */
+const sharedBatch = (from: number, to: number, ids: number[]): Log => ({
+  address: A(ERC1155), topics: [BATCH_TOPIC, T(0xee), T(from), T(to)], data: "0x" + W(0x40) + W(0x40) + W(ids.length) + ids.map((i) => W(i)).join(""),
 });
 const nft = (from: number, to: number, id: number): Log => ({ address: A(ERC721), topics: [TRANSFER_TOPIC, T(from), T(to), T(id)], data: "0x" });
 const str = (s: string) => encodeAbiParameters([{ type: "string" }], [s]);
@@ -78,7 +85,6 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
   }, 120_000);
 
   // The shapes below run stage 2 alone (the `behind` shape) so its time is measured on its own, against B1; the reindex of the same keys against the same budget.
-  const B1_MS = 1000;
   const N = 5000;
   async function load(blocks: Log[][], erc20Supply: number, fn: (pool: Pool, indexer: Indexer, chain: SyntheticChain, stage2Ms: () => number) => Promise<void>): Promise<void> {
     await inDb(async (pool) => {
@@ -200,17 +206,21 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
     });
   }, 300_000);
 
-  /** W1's ERC-1155 traffic (test/fixtures/Flood.sol, Multi): `n` TransferBatch logs of 4,096 ids, each to a holder no block has seen. Both stages, through the indexer's own timings. */
+  /**
+   * W1's ERC-1155 traffic (test/fixtures/Flood.sol, Multi): an earlier block mints 4,096 ids to one holder, then one block holds `n` TransferBatch logs of 4,096 ids
+   * that share one array, each sent from that holder to a holder no block has seen (two legs for each id). Both stages of that block, through the indexer's own timings.
+   */
   async function bigBatches(n: number, derive: "inline" | "behind"): Promise<{ stage1: number; stage2: number; legs: number }> {
     let out = { stage1: 0, stage2: 0, legs: 0 };
     await inDb(async (pool) => {
       await migrate(pool);
-      const chain: SyntheticChain = makeChain([{ txs: 1 }, { txs: 1 }]);
+      const chain: SyntheticChain = makeChain([{ txs: 1 }, { txs: 1 }, { txs: 1 }]);
       const t = chain.blocks[0]!.traces[0]!;
       t.frames = [{ ...t.frames[0]!, traceAddress: [], type: "call", callType: "call", created: null }, create([0], ERC1155)];
       t.calls = t.frames.length;
-      const ids = Array.from({ length: 4096 }, (_, i) => i + 1), ones = ids.map(() => 1);
-      for (let b = 0; b < n; b++) chain.blocks[1]!.receipts[0]!.logs.push(batch(0, 0x4000 + b, ids, ones));
+      const ids = Array.from({ length: 4096 }, (_, i) => i + 1);
+      chain.blocks[0]!.receipts[0]!.logs.push(batch(0, 0x5000, ids, ids.map(() => 1_000_000_000)));
+      for (let b = 0; b < n; b++) chain.blocks[1]!.receipts[0]!.logs.push(sharedBatch(0x5000, 0x4000 + b, ids));
       let s1 = 0, s2 = 0;
       const indexer = createIndexer({
         pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive,
@@ -220,22 +230,22 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       await indexer.open();
       await indexer.runOnce();
       if (derive === "behind") await indexer.deriveOnce();
-      expect((await tok(pool, ERC1155)).h).toBe(n);
-      out = { stage1: s1, stage2: s2, legs: n * 4096 };
+      expect((await tok(pool, ERC1155)).h).toBe(n + 1);
+      out = { stage1: s1, stage2: s2, legs: n * 4096 * 2 };
     });
     return out;
   }
-  // W1 holds five such logs (20,480 legs) and the cap holds about twelve (49,152 legs). `behind` is the default, so its budgets apply: B1 for stage 1 and B2 for both stages.
-  // The CI runner is about four times slower than a laptop, so the asserted shape is three logs (12,288 legs); the rehearsal's W1 runs the real five. LOAD_HOLDERS prints
-  // the rest: both modes at five and at twelve logs (on a laptop: inline 5 = 0.8 s for both stages, 12 = 1.8 s, against inline's B1 of 1.0 s).
-  it("three 4,096-id TransferBatch logs to three new holders, behind: stage 1 inside B1 and both stages inside B2", async () => {
-    const r = await bigBatches(3, "behind");
-    if (process.env.LOAD_HOLDERS) console.log(`big batches 3 behind: ${r.legs} legs, stage 1 ${r.stage1} ms, stage 2 ${r.stage2} ms`);
-    expect(r.stage1).toBeLessThan(B1_MS);
-    expect(r.stage1 + r.stage2).toBeLessThan(B2_MS);
+  // W1 is the costliest token block the cap allows (docs/METRICS.md): 18 such logs beside its other calls, 25 or so with the cap to themselves. `behind` is the default, so
+  // its budgets apply: B1 for stage 1 and B2 for both stages (test/budgets.ts, re-set from W1). The CI runner is slower than the rehearsal's machine would suggest for a
+  // block this size, so this asserts six logs (49,152 legs), the same shape smaller; the rehearsal's W1 runs the real 18. LOAD_HOLDERS prints the rest.
+  it("six 4,096-id shared-array TransferBatch logs from a holder of the ids to six new holders, behind: stage 1 inside B1 and both stages inside B2", async () => {
+    const r = await bigBatches(6, "behind");
+    if (process.env.LOAD_HOLDERS) console.log(`big batches 6 behind: ${r.legs} legs, stage 1 ${r.stage1} ms, stage 2 ${r.stage2} ms`);
+    expect(r.stage1).toBeLessThan(W1_B1_MS);
+    expect(r.stage1 + r.stage2).toBeLessThan(W1_B2_MS);
   }, 300_000);
-  for (const [n, derive] of [[5, "inline"], [5, "behind"], [12, "inline"], [12, "behind"]] as const) {
-    it.skipIf(!process.env.LOAD_HOLDERS)(`${n} 4,096-id TransferBatch logs to ${n} new holders, ${derive}: measured, not asserted`, async () => {
+  for (const [n, derive] of [[18, "inline"], [18, "behind"], [25, "inline"], [25, "behind"]] as const) {
+    it.skipIf(!process.env.LOAD_HOLDERS)(`${n} 4,096-id shared-array TransferBatch logs to ${n} new holders, ${derive}: measured, not asserted`, async () => {
       const r = await bigBatches(n, derive);
       console.log(`big batches ${n} ${derive}: ${r.legs} legs, stage 1 ${r.stage1} ms, stage 2 ${r.stage2} ms`);
     }, 300_000);
