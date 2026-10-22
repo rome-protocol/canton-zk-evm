@@ -50,6 +50,12 @@ export const TEXTS = {
   tooLarge: "Result too large; ask for a smaller offset",
   timeout: "Query Timeout occured. Please select a smaller result dataset",
   noRecords: "No records found",
+  noData: "No data found",
+  noPrice: "Error! A test coin has no price, so Ostia gives none",
+  noGenesis: "Error! The explorer does not hold the genesis allocation yet",
+  gasprice: "Error! Invalid gasprice",
+  noFinalTx: "Error! No transaction has reached final yet, so there is no time to estimate by",
+  contract: "Error! Invalid contractaddress format",
 } as const;
 
 /** A refusal: `status` "0", `message` "NOTOK" and the reason as the result, unless a text is given for the message instead (Etherscan words some refusals that way). */
@@ -81,7 +87,7 @@ export class Params {
   }
 }
 
-interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt">; heads: () => Promise<{ head: number | null; cursor: number }> }
+interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; heads: () => Promise<{ head: number | null; cursor: number }> }
 type Handler = (c: Ctx) => Promise<Result>;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/, HASH = /^0x[0-9a-fA-F]{64}$/, WHOLE = /^[0-9]{1,15}$/;
@@ -336,17 +342,106 @@ const logs: Record<string, Handler> = {
   },
 };
 
+/** `contractaddress` of the token and stats modules: required, and an address. */
+const contractOf = (v: string | null): string => {
+  if (v === null || !ADDRESS.test(v)) throw new NotOk(TEXTS.contract);
+  return v.toLowerCase();
+};
+
+const TOKEN_TYPE: Record<TokenStandard, string> = { "ERC-20": "ERC20", "ERC-721": "ERC721", "ERC-1155": "ERC1155" };
+const NO_LINKS = ["description", "website", "email", "blog", "reddit", "slack", "facebook", "twitter", "bitcointalk", "github", "telegram", "wechat", "linkedin", "discord", "whitepaper"];
+
+/** The token module. The indexer's token rows answer it, so a token's holders are as far on as stage 2 is; an address that is no token has no data. */
+const token: Record<string, Handler> = {
+  async tokeninfo(c) {
+    const t = await c.rest.tokenInfo(contractOf(c.p.get("contractaddress")));
+    if (t === null) throw new Empty(TEXTS.noData);
+    // Etherscan's `divisor` is the token's decimals; a token's links are not known to Ostia, so they are empty, as Etherscan's are for a token it knows nothing about.
+    return [{
+      contractAddress: t.address, tokenName: dec(t.name), symbol: dec(t.symbol), divisor: t.decimals === null ? "" : String(t.decimals), tokenType: TOKEN_TYPE[t.standard], totalSupply: dec(t.totalSupply),
+      blueCheckmark: "false", ...Object.fromEntries(NO_LINKS.map((k) => [k, ""])), tokenPriceUSD: "",
+    }];
+  },
+  async tokenholdercount(c) {
+    const t = await c.rest.tokenInfo(contractOf(c.p.get("contractaddress")));
+    if (t === null) throw new Empty(TEXTS.noData);
+    return String(t.holders);
+  },
+  async tokenholderlist(c) {
+    const a = contractOf(c.p.get("contractaddress"));
+    const w = windowOf(c.p, null);
+    const t = await c.rest.tokenInfo(a);
+    if (t === null) throw new Empty(TEXTS.noData);
+    // An ERC-1155 balance is by token id, and has no single holder quantity.
+    if (t.standard === "ERC-1155") throw new NotOk(TEXTS.unsupported);
+    return (await c.rest.holders(a, w)).map((h) => ({ TokenHolderAddress: h.holder, TokenHolderQuantity: h.value }));
+  },
+};
+
+/** The stats module's free actions. A test coin has no price, and the paid daily statistics are not served (UNSUPPORTED). */
+const stats: Record<string, Handler> = {
+  /** The genesis allocation minus the fees burnt in the final blocks (nothing mints coins later). */
+  async ethsupply(c) {
+    const head = await finalHead(c);
+    const genesis = await c.rest.genesisSupply();
+    if (genesis === null) throw new NotOk(TEXTS.noGenesis);
+    return (BigInt(genesis) - BigInt(await c.rest.burntFees(head))).toString();
+  },
+  async tokensupply(c) {
+    const t = contractOf(c.p.get("contractaddress"));
+    return (await c.reth.tokenSupplyAt(t, await finalHead(c))).toString();
+  },
+  async ethprice() {
+    throw new NotOk(TEXTS.noPrice);
+  },
+};
+
+/** Wei as Etherscan writes a price: in gwei, with the digits it needs and no more. */
+export function gwei(wei: bigint | string): string {
+  const v = BigInt(wei);
+  const whole = v / 1_000_000_000n, frac = (v % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return frac === "" ? String(whole) : `${whole}.${frac}`;
+}
+const ratio = (n: number): string => n.toFixed(15).replace(/\.?0+$/, "");
+
+const gastracker: Record<string, Handler> = {
+  /** Three prices over the base fee of the newest final block: it plus the 25th, the 50th and the 75th percentile of the priority fees paid in the last 20 blocks. */
+  async gasoracle(c) {
+    const f = await c.rest.feeSample();
+    if (f === null) throw new NotOk(TEXTS.noFinal);
+    const base = BigInt(f.baseFee), tips = f.tips ?? ["0", "0", "0"];
+    return {
+      LastBlock: String(f.block), SafeGasPrice: gwei(base + BigInt(tips[0])), ProposeGasPrice: gwei(base + BigInt(tips[1])), FastGasPrice: gwei(base + BigInt(tips[2])),
+      suggestBaseFee: gwei(base), gasUsedRatio: f.usedRatios.map(ratio).join(","),
+    };
+  },
+  /** The median time to final, in whole seconds, whatever the price offered: a block is cut for a waiting transaction, and every transaction waits for the proof. */
+  async gasestimate(c) {
+    const price = c.p.get("gasprice");
+    if (price !== null && !/^[0-9]{1,78}$/.test(price)) throw new NotOk(TEXTS.gasprice);
+    const seconds = await c.rest.medianSecondsToFinal();
+    if (seconds === null) throw new NotOk(TEXTS.noFinalTx);
+    return String(Math.max(1, Math.ceil(seconds)));
+  },
+};
+
 /** The last second of year 9999. */
 const MAX_TIMESTAMP = 253_402_300_799;
 
 /** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
-export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs };
+export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs, token, stats, gastracker };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
   account: ["balancehistory", "addresstokenbalance", "addresstokennftbalance", "addresstokennftinventory", "fundedby", "txnbridge"],
+  token: ["toptokenholders", "tokensupplyhistory", "tokenbalancehistory", "tokenholderlisthistory"],
+  stats: [
+    "ethsupply2", "ethdailyprice", "chainsize", "nodecount", "dailyblkcount", "dailyblockrewards", "dailyavgblocktime", "dailyuncleblkcount", "dailyavgblocksize", "dailytxnfee", "dailynewaddress",
+    "dailynetutilization", "dailyavghashrate", "dailytx", "dailyavggasprice", "dailygasused", "dailyavggaslimit", "dailynetdifficulty", "tokencsupply", "tokensupplyhistory",
+  ],
+  gastracker: ["dailyavggaslimit", "dailygasused", "dailyavggasprice"],
 };
 
-export interface EtherscanDeps { rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt">; chainId: number }
+export interface EtherscanDeps { rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; chainId: number }
 
 /** The door: a request's parameters in, Etherscan's answer out. */
 export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
