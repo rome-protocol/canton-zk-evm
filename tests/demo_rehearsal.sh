@@ -34,7 +34,7 @@ cleanup() {
   fi
   "$ROOT/explorer/run.sh" stop || true
   "$ROOT/network/explorer-db.sh" wipe || true
-  docker rm -f cze-w1-db >/dev/null 2>&1 || true
+  docker rm -f -v cze-w1-db >/dev/null 2>&1 || true
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
   "$ROOT/network/reth/stop.sh" || true
   rm -rf "$WORK"
@@ -251,7 +251,7 @@ echo "Lab $LAB: build in block $LAB_BUILD_BLOCK, the undone call in $LAB_UNDONE_
 echo "revert block $REVERT_BLOCK, W1 block $W1_BLOCK: $(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$W1_BLOCK")\",false" | jq -c '{transactions: (.result.transactions | length), gasUsed: .result.gasUsed}')"
 
 PGPW=$(openssl rand -hex 16)
-docker run -d --name cze-w1-db --security-opt no-new-privileges -p 127.0.0.1:55433:5432 -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE" >/dev/null
+docker run -d --rm --name cze-w1-db --security-opt no-new-privileges -p 127.0.0.1:55433:5432 -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE" >/dev/null
 ok=0
 for _ in $(seq 1 60); do
   if docker exec cze-w1-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
