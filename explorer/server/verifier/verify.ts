@@ -128,8 +128,10 @@ export class Verifier {
       if (ins.rowCount === 0) { await client.query("rollback"); return { status: "already", result: "Already Verified" }; }
       const id = Number(ins.rows[0]!.id);
       await client.query("update contracts set name = $2, verified_source = $3, match_type = $4 where address = $1", [addr, picked.name, id, m.kind]);
-      const similar = await markSimilar(client, row.runtime_code_hash, id, picked.name);
+      let similar = await markSimilar(client, row.runtime_code_hash, id, picked.name);
       await client.query("commit");
+      // Under READ COMMITTED a clone the indexer committed while this transaction ran was seen by neither side: once more, now that the source is committed.
+      similar += await markSimilar(this.pool, row.runtime_code_hash, id, picked.name);
       return { status: "pass", result: "Pass - Verified", match: m.kind, creationMatch: m.creationKind, sourceId: id, similar };
     } catch (e) {
       await client.query("rollback").catch(() => undefined);

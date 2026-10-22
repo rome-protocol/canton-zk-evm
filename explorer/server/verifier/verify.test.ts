@@ -85,6 +85,30 @@ suite("verifying a contract", () => {
     expect((await v.verify(req(A, { constructorArguments: "00".repeat(31) + "2a" }))).status).toBe("pass");
   });
 
+  it("marks a clone the indexer wrote while the verification was committing", async () => {
+    await addContract(db.pool, A, runtime, creation);
+    // A pool whose clients add the clone just after the commit: neither the transaction's update nor the indexer's can have seen the other.
+    const racing = {
+      query: db.pool.query.bind(db.pool),
+      connect: async () => {
+        const c = await db.pool.connect();
+        const original = c.query;
+        const query = original.bind(c) as (...a: unknown[]) => Promise<unknown>;
+        c.query = (async (...a: unknown[]) => {
+          const r = await query(...a);
+          if (a[0] === "commit") {
+            c.query = original; // the client goes back to the pool, so it must be as it was
+            await addContract(db.pool, B, runtime, Buffer.concat([creation, args]));
+          }
+          return r;
+        }) as typeof c.query;
+        return c;
+      },
+    } as unknown as typeof db.pool;
+    expect(await new Verifier(racing, stub).verify(req(A))).toMatchObject({ status: "pass", similar: 1 });
+    expect((await db.pool.query("select match_type from contracts where address = $1", [Buffer.from(B.slice(2), "hex")])).rows[0].match_type).toBe("similar");
+  });
+
   it("is partial when only the metadata differs", async () => {
     const other = Buffer.concat([Buffer.from(BODY, "hex"), meta(9)]);
     await addContract(db.pool, A, other, Buffer.concat([HEAD, other, meta(9)]));
