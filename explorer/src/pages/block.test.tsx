@@ -84,8 +84,8 @@ describe("the block page, for a final block", () => {
     expect(canton.getByText("read as the reader party")).toBeInTheDocument();
     expect(row(canton, "Update id")).toHaveTextContent(update(3));
     expect(row(canton, "Record time")).toHaveTextContent("2026-10-04T01:37:23.412Z");
-    expect(row(canton, "Synchronizer")).toHaveTextContent("da::1220…e8e8");
     expect(await within(row(canton, "Offset")).findByText("52")).toBeInTheDocument();
+    expect(row(canton, "Synchronizer")).toHaveTextContent("da::1220…e8e8");
     expect(row(canton, "Offset")).toHaveTextContent("on the reader's participant");
     expect(row(canton, "Template")).toHaveTextContent("Zk.Chain:ZkChain · choice Advance");
     expect(row(canton, "Created")).toHaveTextContent("Zk.Chain:BlockRecord for block 3");
