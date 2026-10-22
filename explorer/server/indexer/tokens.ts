@@ -161,6 +161,8 @@ export async function writeTokens(c: Pick<PoolClient, "query">, n: number, reads
      select token, sum(((before + change) > 0)::int - (before > 0)::int)::int as holders from b group by token`,
     [n],
   );
+  // The block's tokens are locked in address order, as the check locks its batch's (balances.ts), before any of them is updated.
+  await c.query("select 1 from tokens where address in (select token from token_transfers where block_number = $1) order by address for update", [n]);
   await c.query(
     `update tokens k set transfer_count = k.transfer_count + t.n, holder_count = k.holder_count + coalesce(h.holders, 0)
      from (select token, count(*) as n from token_transfers where block_number = $1 group by token) t

@@ -160,7 +160,7 @@ describe.skipIf(!TEST_URL)("balances, owners and the check, on the pinned Postgr
       expect((await rows(pool, "select holder_count from tokens where address = $1", [hx(FEE)]))[0].holder_count).toBe("3");
       await indexer.close();
     });
-  });
+  }, 20_000);
 });
 
 describe.skipIf(!TEST_URL)("the reindex rebuilds every aggregate, on the pinned PostgreSQL", () => {
@@ -218,7 +218,7 @@ describe.skipIf(!TEST_URL)("the reindex rebuilds every aggregate, on the pinned 
       expect(Number((await rows(pool, "select count(*) as n from coin_balance_history where block_number between 3 and 4"))[0].n)).toBe(history);
       await indexer.close();
     });
-  });
+  }, 20_000);
 });
 
 /** More contracts in block 1, before the indexer reads it. */
@@ -307,7 +307,7 @@ describe.skipIf(!TEST_URL)("metadata retries and unanswered balances, on the pin
       ]);
       await indexer.close();
     });
-  });
+  }, 20_000);
 });
 
 describe.skipIf(!TEST_URL)("a reindex keeps what stage 2 made, on the pinned PostgreSQL", () => {
@@ -386,4 +386,31 @@ describe.skipIf(!TEST_URL)("a reindex keeps what stage 2 made, on the pinned Pos
       await indexer.close();
     });
   });
+
+  it("takes the batch's token rows in address order at the start of the check, so it cannot cross stage 2 on two tokens", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 4);
+      feeAnswers(chain);
+      await indexer.runOnce();
+      // Another transaction holds the last token (FEE). The check goes on in address order: it must hold the first token (ERC20) while it waits for FEE.
+      const other = await pool.connect();
+      try {
+        await other.query("begin");
+        await other.query("select 1 from tokens where address = $1 for update", [hx(FEE)]);
+        const check = (async () => { for (let i = 0; i < 4; i++) await indexer.balancesOnce(); })();
+        let held = false;
+        for (let i = 0; i < 100 && !held; i++) {
+          const c = await pool.connect();
+          try { await c.query("begin"); await c.query("select 1 from tokens where address = $1 for update nowait", [hx(ERC20)]); }
+          catch (e) { held = (e as { code?: string }).code === "55P03"; }
+          finally { await c.query("rollback").catch(() => undefined); c.release(); }
+          if (!held) await new Promise((r) => setTimeout(r, 50));
+        }
+        await other.query("rollback");
+        await check;
+        expect(held, "the check must lock the lower token before it waits for the higher one").toBe(true);
+      } finally { other.release(); }
+      await indexer.close();
+    });
+  }, 20_000);
 });

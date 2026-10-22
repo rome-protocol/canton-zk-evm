@@ -114,6 +114,9 @@ async function checkTokens(pool: Pool, reads: BalanceReads, upTo: number, limit:
       `select 1 from token_balances where (token, holder, token_id) in (select * from unnest($1::bytea[], $2::bytea[], $3::numeric[])) order by token, holder, token_id for update`,
       [rows.map((r) => r.token), rows.map((r) => r.holder), rows.map((r) => r.token_id)],
     );
+    // Then the batch's tokens, in address order, which is the order stage 2 takes them in (tokens.ts), so that a check and a block that share two tokens
+    // never hold one each and wait for the other.
+    await c.query("select 1 from tokens where address = any($1::bytea[]) order by address for update", [[...new Set(rows.map((r) => r.token.toString("hex")))].map((h) => Buffer.from(h, "hex"))]);
     const modes = new Map<string, string>();
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i]!, read = answers[i]!;
