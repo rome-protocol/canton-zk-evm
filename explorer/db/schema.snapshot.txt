@@ -505,6 +505,7 @@ table token_transfers partition by RANGE (block_number)
   CREATE INDEX token_transfers_from_address_block_number_idx ON ONLY public.token_transfers USING btree (from_address, block_number DESC)
   CREATE INDEX token_transfers_to_address_block_number_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC)
   CREATE INDEX token_transfers_token_block_number_idx ON ONLY public.token_transfers USING btree (token, block_number DESC)
+  CREATE INDEX token_transfers_token_token_id_block_number_log_index_idx ON ONLY public.token_transfers USING btree (token, token_id, block_number DESC, log_index DESC)
   CREATE UNIQUE INDEX token_transfers_pkey ON ONLY public.token_transfers USING btree (block_number, log_index, batch_index)
 
 table tokens

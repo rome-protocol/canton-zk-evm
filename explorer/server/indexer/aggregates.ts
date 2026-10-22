@@ -9,6 +9,8 @@
 import type { PoolClient } from "pg";
 import { legsSql } from "./tokens.ts";
 
+/** The id a token's balance row is kept under: an ERC-1155's own, 0 for the other standards. */
+const ID = "(case when s.standard = 'ERC-1155' then t.token_id else 0 end)";
 const ZERO = "'\\x0000000000000000000000000000000000000000'::bytea";
 
 /** The addresses the facts of blocks `$1` to `$2` name. */
@@ -36,10 +38,15 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
   if (full) {
     await c.query(`delete from nft_owners o where not exists (select 1 from token_transfers t where t.token = o.token and t.token_id = o.token_id)`);
     // A row stands while a transfer names its holder for its token, and for its id when the token is an ERC-1155 (the other tokens' rows have id 0).
+    // The (token, holder, id) the transfers name are worked out once, so the anti-join hashes on all three.
     await c.query(
-      `delete from token_balances b using tokens k where k.address = b.token
-         and not exists (select 1 from token_transfers t where t.token = b.token and t.from_address = b.holder and (k.standard <> 'ERC-1155' or t.token_id = b.token_id))
-         and not exists (select 1 from token_transfers t where t.token = b.token and t.to_address = b.holder and (k.standard <> 'ERC-1155' or t.token_id = b.token_id))`,
+      `with live as materialized (
+         select token, holder, tid from (
+           select t.token, t.from_address as holder, ${ID} as tid from token_transfers t join tokens s on s.address = t.token
+           union all select t.token, t.to_address, ${ID} from token_transfers t join tokens s on s.address = t.token
+         ) q group by token, holder, tid)
+       delete from token_balances b using tokens k where k.address = b.token
+         and not exists (select 1 from live l where l.token = b.token and l.holder = b.holder and l.tid = b.token_id)`,
     );
     await c.query(
       `delete from addresses a where not exists (select 1 from transactions t where t.from_address = a.address or t.to_address = a.address or t.created_contract = a.address)
@@ -118,17 +125,21 @@ export async function rebuildTokens(c: Pick<PoolClient, "query">, from: number, 
   // indexes, so the time follows the range and not the token's whole history.
   const keysOf = (mode: string) => `
     with keys as materialized (select token, holder, tid from (${legsSql("t.block_number between $1 and $2", mode as "derived" | "read")}) l group by token, holder, tid),
-         tot as (
-           select q.token, q.holder, q.tid, sum(q.delta) as value, max(q.block) as updated from (
-             select k.token, k.holder, k.tid, (case when s.standard = 'ERC-721' then 1 else t.amount end) as delta, t.block_number as block
-             from keys k join tokens s on s.address = k.token
-             join token_transfers t on t.token = k.token and t.to_address = k.holder and t.block_number <= $3 and (s.standard <> 'ERC-1155' or t.token_id = k.tid)
+         pairs as materialized (select distinct token, holder from keys),
+         -- Each (token, holder)'s legs are read once through the holder's indexes and grouped by id; the keys then pick their rows. (Joining the keys to the
+         -- legs on token and holder only and checking the id after would read the holder's legs once for each of its ids.)
+         sums as materialized (
+           select token, holder, tid, sum(delta) as value, max(block) as updated from (
+             select p.token, p.holder, ${ID} as tid, (case when s.standard = 'ERC-721' then 1 else t.amount end) as delta, t.block_number as block
+             from pairs p join tokens s on s.address = p.token
+             join token_transfers t on t.token = p.token and t.to_address = p.holder and t.block_number <= $3
              union all
-             select k.token, k.holder, k.tid, -(case when s.standard = 'ERC-721' then 1 else t.amount end), t.block_number
-             from keys k join tokens s on s.address = k.token
-             join token_transfers t on t.token = k.token and t.from_address = k.holder and t.block_number <= $3 and (s.standard <> 'ERC-1155' or t.token_id = k.tid)
-           ) q group by q.token, q.holder, q.tid
-         )`;
+             select p.token, p.holder, ${ID}, -(case when s.standard = 'ERC-721' then 1 else t.amount end), t.block_number
+             from pairs p join tokens s on s.address = p.token
+             join token_transfers t on t.token = p.token and t.from_address = p.holder and t.block_number <= $3
+           ) q group by token, holder, tid
+         ),
+         tot as (select m.token, m.holder, m.tid, m.value, m.updated from sums m join keys k on k.token = m.token and k.holder = m.holder and k.tid = m.tid)`;
   await c.query(
     `${keysOf("derived")}
      insert into token_balances (token, holder, token_id, value, updated_block, checked_block, unanswered)
