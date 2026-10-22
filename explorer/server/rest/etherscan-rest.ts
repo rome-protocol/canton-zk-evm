@@ -38,6 +38,12 @@ export interface LogFilter {
   from: number; to: number; address: string | null; topics: (string | null)[]; ops: ("and" | "or")[]; skip: number; limit: number;
 }
 
+/** A token as the `token` module lists it: its standard, its name, symbol and decimals as read, and how many addresses hold it. */
+export interface TokenInfoRow { address: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; holders: number }
+export interface HolderRow { holder: string; value: string }
+/** What `gasoracle` is made of: the newest final block's base fee and number, the used share of the last blocks (oldest first), and the 25th, 50th and 75th percentile of the priority fees paid in them (wei; null when no transaction was in them). */
+export interface FeeSample { block: number; baseFee: string; usedRatios: number[]; tips: [string, string, string] | null }
+
 export type EtherscanRest = ReturnType<typeof createEtherscanRest>;
 
 const txColumns = `t.block_number, t.tx_index, t.hash, b.hash as block_hash, extract(epoch from b.timestamp)::bigint as ts, t.nonce, t.gas_limit::text as gas_limit,
@@ -236,6 +242,57 @@ export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS, m
     return { strategy: r.strategy, intervalMs: Number.isFinite(ms) && ms > 0 ? ms : null };
   }
 
+  /** The coins the genesis allocates (`meta.genesis_supply`, kept by the indexer), in wei; null when the database does not hold it yet. */
+  async function genesisSupply(): Promise<string | null> {
+    const [r] = await query("select value from meta where key = 'genesis_supply'");
+    return r ? (r.value as string) : null;
+  }
+
+  /** The fees burnt in all final blocks up to `head`, in wei. */
+  async function burntFees(head: number): Promise<string> {
+    const [r] = await query("select coalesce(sum(burnt_fees), 0)::text as burnt from blocks where number <= $1", [head]);
+    return r?.burnt ?? "0";
+  }
+
+  /** A token by its address, with what the indexer holds of it; null for an address that is no token. */
+  async function tokenInfo(token: string): Promise<TokenInfoRow | null> {
+    const [r] = await query("select standard, name, symbol, decimals, total_supply::text as supply, holder_count from tokens where address = $1", [bytes(token)]);
+    return r ? { address: token, standard: r.standard, name: r.name, symbol: r.symbol, decimals: r.decimals === null ? null : Number(r.decimals), totalSupply: r.supply, holders: Number(r.holder_count) } : null;
+  }
+
+  /** The holders of an ERC-20 or ERC-721 token with a balance above 0, the largest first (ties by address); the window's page and offset are used, its blocks and order are not. */
+  async function holders(token: string, w: Window): Promise<HolderRow[]> {
+    const rows = await query(
+      "select holder, value::text as value from token_balances where token = $1 and token_id = 0 and value > 0 order by value desc, holder asc limit $2 offset $3",
+      [bytes(token), w.limit, w.skip],
+    );
+    return rows.map((r) => ({ holder: hex(r.holder), value: r.value }));
+  }
+
+  /** The newest final block's base fee, the used share of the last `recent` blocks, and the priority-fee percentiles of the transactions in them; null before the first block. */
+  async function feeSample(recent = 20): Promise<FeeSample | null> {
+    const blocks = await query("select number, base_fee_per_gas::text as base_fee, gas_used, gas_limit from blocks order by number desc limit $1", [recent]);
+    const newest = blocks[0];
+    if (!newest) return null;
+    const lowest = Number(blocks[blocks.length - 1]?.number);
+    const [t] = await query(
+      `select percentile_disc(array[0.25, 0.5, 0.75]) within group (order by t.effective_gas_price - b.base_fee_per_gas)::text[] as tips
+       from transactions t join blocks b on b.number = t.block_number where t.block_number between $1 and $2`,
+      [lowest, Number(newest.number)],
+    );
+    const ratio = (r: Row) => (Number(r.gas_limit) === 0 ? 0 : Number(r.gas_used) / Number(r.gas_limit));
+    return { block: Number(newest.number), baseFee: newest.base_fee, usedRatios: blocks.slice(0, 5).reverse().map(ratio), tips: t?.tips ? (t.tips as [string, string, string]) : null };
+  }
+
+  /** The median of the seconds that the last 200 transactions took from the node's acceptance to their final block; null when there is no such transaction. */
+  async function medianSecondsToFinal(): Promise<number | null> {
+    const [r] = await query(
+      `select percentile_disc(0.5) within group (order by extract(epoch from final_at - accepted_at)) as seconds
+       from (select final_at, accepted_at from tx_lifecycle where state = 'final' and accepted_at is not null and final_at >= accepted_at order by final_at desc limit 200) s`,
+    );
+    return r?.seconds === null || r?.seconds === undefined ? null : Number(r.seconds);
+  }
+
   /** The logs of a filter, oldest first, as Etherscan's `getLogs` lists them. Every part of the filter is a bound on an index: the caller has checked that an address, a topic0 or a short range is there. */
   async function logs(f: LogFilter): Promise<LogRow[]> {
     const values: unknown[] = [f.from, f.to];
@@ -269,5 +326,8 @@ export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS, m
     }));
   }
 
-  return { heads, txlist, internalOf, internalOfTx, internalInBlocks, tokenMoves, mined, txSuccess, blockReward, blockAtTime, rhythm, logs };
+  return {
+    heads, txlist, internalOf, internalOfTx, internalInBlocks, tokenMoves, mined, txSuccess, blockReward, blockAtTime, rhythm, logs, genesisSupply, burntFees, tokenInfo, holders, feeSample,
+    medianSecondsToFinal,
+  };
 }
