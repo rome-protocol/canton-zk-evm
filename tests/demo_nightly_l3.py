@@ -27,6 +27,7 @@ import threading
 import bisect
 import http.client
 import queue
+import re
 import time
 import urllib.error
 import urllib.request
@@ -38,6 +39,7 @@ B6_BYTES = 2.5e9
 MIN_TXS_FOR_B6 = 5_000
 POLL_S = 0.06
 GIVE_UP_S = 180
+HASH_LISTS = re.compile(r'\[(?:\s*"0x[0-9a-fA-F]+"\s*,?)*\s*\]')   # a list of transaction hashes, which the builder report holds by the thousand
 LEDGER_POLL_S = 0.02
 
 
@@ -280,8 +282,10 @@ def run(seconds, per_block, results):
         while time.monotonic() < end:
             sender.next_batch()
             cutting = subprocess.run(["bash", "-c", "cut_block"], capture_output=True, text=True, env={**os.environ, "CUT_BLOCK_JSON": "1"})
-            if cutting.returncode != 0:   # the reason is in what cut_block printed
-                raise RuntimeError(f"cut_block exited {cutting.returncode}: {(cutting.stderr + cutting.stdout).strip()[-1500:]}")
+            if cutting.returncode != 0:   # the reason is in what cut_block printed: all of it is kept beside the results, and the lists of hashes are left out of the message
+                said = cutting.stderr + cutting.stdout
+                Path(results).with_name("l3-cut-failure.txt").write_text(said)
+                raise RuntimeError(f"cut_block exited {cutting.returncode}: {HASH_LISTS.sub('[...]', said).strip()[:2500]}")
             out = cutting.stdout
             returned = time.monotonic()
             number = int(rpc("eth_blockNumber", []), 16)
