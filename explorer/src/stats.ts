@@ -40,4 +40,4 @@ export const readOf = (q: { isError: boolean; data: unknown }): Read => (q.isErr
 export const listPoll = (live: boolean) => (live ? false : 5000);
 
 export const useBlocks = (limit: number, live: boolean) => useQuery({ queryKey: ["blocks", limit], queryFn: () => getBlocks(limit), refetchInterval: listPoll(live) });
-export const useInFlight = (live: boolean) => useQuery({ queryKey: ["in-flight"], queryFn: getInFlight, refetchInterval: listPoll(live) });
+export const useInFlight = (live: boolean, enabled = true) => useQuery({ queryKey: ["in-flight"], queryFn: getInFlight, refetchInterval: listPoll(live), enabled });

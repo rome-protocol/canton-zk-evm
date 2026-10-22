@@ -2,11 +2,19 @@ import { howItBecameFinal, secs, type Became, type Lifecycle } from "../block-ti
 import { count } from "../format.ts";
 import "./block.css";
 
-/** What the producer's times can say, or why they say nothing: still being read, no row in the journal, or a row that misses a time. */
-export type Times = { state: "reading" } | { state: "read"; became: Became; lifecycle: Lifecycle | null };
+/** What the producer's times can say, or why they say nothing: still being read, could not be read, or read (from the journal for a final block, from the in-flight attempt for one still being proven). */
+export type Times =
+  | { state: "reading" }
+  | { state: "unreadable"; became: Became }
+  | { state: "read"; became: Became; lifecycle: Lifecycle | null; final: boolean };
 
-export function timesOf(lifecycle: Lifecycle | null | undefined, recordTime: string | null, reading: boolean): Times {
-  return reading ? { state: "reading" } : { state: "read", became: howItBecameFinal(lifecycle ?? null, recordTime), lifecycle: lifecycle ?? null };
+export interface TimesSource { lifecycle: Lifecycle | null | undefined; recordTime: string | null; reading: boolean; failed: boolean; final: boolean }
+
+export function timesOf({ lifecycle, recordTime, reading, failed, final }: TimesSource): Times {
+  const became = howItBecameFinal(lifecycle ?? null, recordTime);
+  if (reading) return { state: "reading" };
+  if (failed) return { state: "unreadable", became: howItBecameFinal(null, recordTime) };
+  return { state: "read", became, lifecycle: lifecycle ?? null, final };
 }
 
 const NONE = "—";
@@ -16,8 +24,9 @@ const tile = (k: string, v: string, s: string) => (
 
 /** The four numbers at the top of the block page. A time the producer's journal does not hold is shown as a dash, with the reason under it. */
 export function Tiles({ txCount, gasUsed, times }: { txCount: number; gasUsed: number; times: Times }) {
-  const t = times.state === "read" ? times.became : null;
-  const why = times.state === "reading" ? "reading the producer's log" : times.lifecycle === null ? "no row in the producer's log" : "not in the producer's log";
+  const t = times.state === "reading" ? null : times.became;
+  const why = times.state === "reading" ? "reading the producer's log" : times.state === "unreadable" ? "cannot be read right now"
+    : !times.final ? "not final yet" : times.lifecycle === null ? "no row in the producer's log" : "not in the producer's log";
   return (
     <div className="tiles" role="group" aria-label="This block in numbers">
       {tile("Transactions", count(txCount), `${count(gasUsed)} gas`)}
@@ -32,9 +41,10 @@ const PART_LABEL = { prepare: "", proof: "Proof", send: "", canton: "" } as cons
 
 /** "How this block became final": the whole way as a bar, and the six steps under it with their times and where each time comes from. */
 export function HowFinal({ times, final }: { times: Times; final: boolean }) {
-  const t = times.state === "read" ? times.became : null;
+  const t = times.state === "reading" ? null : times.became;
   const caption = !final ? "This block is not final yet, so its way is not finished."
     : times.state === "reading" ? "Reading the producer's times…"
+    : times.state === "unreadable" ? "The producer's times cannot be read right now, so only Canton's record time is shown."
     : t?.totalMs != null ? `Cut to final in ${secs(t.totalMs, 3)}. Times are from the producer's log, and the last one is Canton's record time.`
     : times.lifecycle === null ? "The producer's log has no row for this block, so only Canton's record time is known."
     : "The producer's log misses some of this block's times, so the steps and the numbers that need them are left out.";

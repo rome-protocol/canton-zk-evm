@@ -8,6 +8,7 @@ import { CopyButton, HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { LEGS_THIS_BLOCK } from "../copy.ts";
 import { bytesOf, units } from "../format.ts";
+import { useInFlight } from "../stats.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { VERIFY_MODULE_URL, useModuleSize } from "../verify/module-size.ts";
 import { VerifyPanel } from "../verify/VerifyPanel.tsx";
@@ -89,13 +90,17 @@ export function Block() {
   const { id = "" } = useParams();
   const st = useStatus().data;
   const q = useFollowing(["block", id], () => getBlock(id), (b) => b.status === "final" || (b.status === "genesis" && b.genesisReferenced === true));
-  const timed = q.data?.status === "final" || q.data?.status === "proving";
-  const detail = useQuery({ queryKey: ["block-detail", id, q.data?.status], queryFn: () => getBlockDetail(id), enabled: timed, retry: false, staleTime: 30_000 });
+  const final = q.data?.status === "final";
+  const detail = useQuery({ queryKey: ["block-detail", id, q.data?.status], queryFn: () => getBlockDetail(id), enabled: final, retry: false, staleTime: 30_000 });
+  // A block still being proven has no journal row to read: the producer's times are those of its in-flight attempt.
+  const flight = useInFlight(false, q.data?.status === "proving");
   const wait = unready(q, "Reading the block…");
   if (wait) return wait;
   const b = q.data!;
-  const final = b.status === "final";
-  const times = timesOf(detail.data?.lifecycle, b.canton?.recordTime ?? null, timed && detail.isPending && !detail.isError);
+  const proving = b.status === "proving";
+  const src = proving ? flight : detail;
+  const lifecycle = proving ? flight.data?.attempts.find((a) => a.number === b.number) : detail.data?.lifecycle;
+  const times = timesOf({ lifecycle, recordTime: b.canton?.recordTime ?? null, reading: (final || proving) && src.isPending && !src.isError, failed: (final || proving) && src.isError, final });
   return (
     <>
       <nav className="crumbs" aria-label="Where this is"><Link to="/blocks">Blocks</Link> / Block {b.number}</nav>

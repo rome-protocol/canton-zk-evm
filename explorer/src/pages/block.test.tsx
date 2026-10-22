@@ -4,7 +4,7 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiBlock, ApiStatus } from "../api.ts";
-import { addr, block, blockDetail, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update, updateDetail } from "../test-utils.tsx";
+import { addr, block, blockDetail, fakeApi, hash, inFlight, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update, updateDetail } from "../test-utils.tsx";
 
 const LEGS = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 const KEY = "0x" + "cd".repeat(32);
@@ -41,7 +41,8 @@ const side = (name: string) => within(screen.getByRole("region", { name }));
 const row = (scope: ReturnType<typeof within>, label: string) => scope.getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
 /** The status word in the page's title, which the EVM side repeats as its Stage. */
 const titleWord = (n: number, text: string) => within(screen.getByRole("heading", { name: `Block #${n}` }).parentElement!).getByText(text);
-const midway = () => blockDetail({ number: 4, lifecycle: { ...blockDetail().lifecycle!, proofEndedAt: null, submittedAt: null, answeredAt: null } });
+/** What the block route really sends for a block still being proven: no lifecycle, since the journal is read only for a final block. The producer's times come from the in-flight route. */
+const notFinalDetail = () => blockDetail({ number: 4, lifecycle: null });
 const steps = () => within(screen.getByRole("region", { name: "How this block became final" })).getAllByRole("listitem");
 
 describe("the block page, for a final block", () => {
@@ -53,6 +54,20 @@ describe("the block page, for a final block", () => {
     const nav = within(screen.getByRole("navigation", { name: "Neighbouring blocks" }));
     expect(nav.getByRole("link", { name: "Previous block, 2" })).toHaveAttribute("href", "/block/2");
     expect(nav.getByRole("link", { name: "Next block, 4" })).toHaveAttribute("href", "/block/4");
+  });
+
+  it("says the producer's times cannot be read right now when the detail request fails, never that the log has no row", async () => {
+    await open(block(), status(), "3", { blockDetail: () => reply({ error: "Too many requests." }, 429) });
+    const tiles = within(screen.getByRole("group", { name: "This block in numbers" }));
+    expect((await tiles.findAllByText("cannot be read right now")).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/no row in the producer's log/)).toBeNull();
+    expect(screen.queryByText(/has no row for this block/)).toBeNull();
+    expect(within(screen.getByRole("region", { name: "How this block became final" })).getByText(/cannot be read right now/)).toBeInTheDocument();
+  });
+
+  it("says the log has no row for a final block whose detail came back without one", async () => {
+    await open(block(), status(), "3", { blockDetail: () => reply(blockDetail({ lifecycle: null })) });
+    expect(await screen.findByText(/The producer's log has no row for this block/)).toBeInTheDocument();
   });
 
   it("has no next block when it is the newest", async () => {
@@ -412,15 +427,23 @@ describe("a block that is still being proven", () => {
   });
 
   it("shows the steps it has the producer's times for, and a dash for the rest, which Canton does not have yet", async () => {
-    await open(proving(), status(), "4", { blockDetail: () => reply(midway()) });
+    await open(proving(), status(), "4", { blockDetail: () => reply(notFinalDetail()), inFlight: () => reply(inFlight()) });
     await screen.findByText(/This block is not final yet/);
-    await screen.findByText("01:37:16.200");
+    await screen.findByText("01:37:24.200");
     const items = steps();
     expect(items.map((li) => li.className)).toEqual(["got", "got", "got", "none", "none", "none"]);
-    expect(items[1]).toHaveTextContent("Built01:37:16.100");
+    expect(items[1]).toHaveTextContent("Built01:37:24.200");
     expect(items[3]).toHaveTextContent("Proof done—");
     expect(items[5]).toHaveTextContent("Final on Canton—");
     expect(within(screen.getByRole("region", { name: "How this block became final" })).queryByRole("img")).toBeNull();
+  });
+
+  it("says 'not final yet' under the tiles that have no time, never that the producer's log has no row", async () => {
+    await open(proving(), status(), "4", { blockDetail: () => reply(notFinalDetail()), inFlight: () => reply(inFlight()) });
+    await screen.findByText("01:37:24.200");
+    const tiles = within(screen.getByRole("group", { name: "This block in numbers" }));
+    expect(tiles.getAllByText("not final yet").length).toBeGreaterThan(0);
+    expect(tiles.queryByText(/no row in the producer's log/)).toBeNull();
   });
 
   it("still says that Daml legs are not shown, and still lists the transactions", async () => {
