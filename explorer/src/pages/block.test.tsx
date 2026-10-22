@@ -39,7 +39,7 @@ function serving(h: Parameters<typeof route>[0], file: { size?: number; get?: nu
 const side = (name: string) => within(screen.getByRole("region", { name }));
 /** The value beside a label in one of the page's lists of facts. */
 const row = (scope: ReturnType<typeof within>, label: string) => scope.getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
-const steps = () => within(screen.getByRole("region", { name: "How it happened" })).getAllByRole("listitem");
+const steps = () => within(screen.getByRole("region", { name: "How this block became final" })).getAllByRole("listitem");
 
 describe("the block page, for a final block", () => {
   it("names the block and says it is final on Canton, with its neighbours", async () => {
@@ -137,18 +137,20 @@ describe("the block page, for a final block", () => {
     expect(screen.queryByText(/\b\d+ (Daml )?legs?\b/i)).toBeNull();
   });
 
-  it("tells the same five steps, with exactly the two times it measures", async () => {
+  it("tells the six steps of the way to final, each with its clock, its time since the one before and where it comes from", async () => {
     await open();
+    await screen.findByText(/Cut to final in/);
     const items = steps();
     expect(items.map((li) => li.textContent)).toEqual([
-      "01:37:16 UTC1reth made the block.",
-      "2ZisK proved it.",
-      "3It went to Canton as one transaction, ZkChain.Advance.",
-      "4The sidecars of both confirming participants checked the proof (the check the Verify button runs below).",
-      "01:37:23.412 UTC5The commit created this block record, and any Daml legs settled in the same transaction.",
+      "Cut01:37:15.900startproducer log",
+      "Built01:37:16.100+0.200 s · reth made the blockproducer log",
+      "Proof started01:37:16.200+0.100 sproducer log",
+      "Proof done01:37:23.000+6.800 s · ZisKproducer log",
+      "Sent to Canton01:37:23.050+0.050 s · ZkChain · Advanceproducer log",
+      "Final on Canton01:37:23.412000+0.362 sCanton record time",
     ]);
-    expect(within(screen.getByRole("region", { name: "How it happened" })).getAllByText(/UTC$/)).toHaveLength(2);
-    for (const li of items) expect(li).toHaveClass("done");
+    expect(items[5]).toHaveClass("last");
+    expect(screen.getByText(/Cut to final in 7\.512 s\./)).toBeInTheDocument();
   });
 
   it("lists the block's transactions a page at a time, in order, from the block's own route", async () => {
@@ -418,7 +420,7 @@ describe("a block that is still being proven", () => {
     // step 4 does not point at the Verify button, which is greyed out until the block is final
     expect(items[3]).toHaveTextContent("4The sidecars of both confirming participants checked the proof.Not on Canton yet");
     expect(items[3]).not.toHaveTextContent("Verify");
-    expect(within(screen.getByRole("region", { name: "How it happened" })).getAllByText(/UTC$/)).toHaveLength(1);
+    expect(within(screen.getByRole("region", { name: "How this block became final" })).getAllByText(/UTC$/)).toHaveLength(1);
   });
 
   it("still says that Daml legs are not shown, and still lists the transactions", async () => {
@@ -474,7 +476,7 @@ describe("block 0", () => {
     const title = screen.getByRole("heading", { name: "Block #0" }).parentElement!;
     expect(within(title).getByText("Genesis")).toHaveClass("chip-genesis");
     expect(row(side("On the EVM"), "Parent")).toHaveTextContent("none");
-    expect(screen.queryByRole("region", { name: "How it happened" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "How this block became final" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Transactions" })).toBeNull();
     expect(screen.queryByText(LEGS)).toBeNull();
     expect(screen.queryByRole("link", { name: /Previous block/ })).toBeNull();
