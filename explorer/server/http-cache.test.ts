@@ -13,6 +13,7 @@ beforeEach(async () => {
   writeFileSync(join(dir, "dist", "index.html"), "home");
   const api = async (_m: string, target: string): Promise<Answer> =>
     target === "/api/big" ? { status: 200, body: { hex: "ab".repeat(2000) }, headers: { "cache-control": "public, max-age=3", etag: '"big1"' } }
+    : target.startsWith("/api?module=big") || target.startsWith("/v2/api?module=big") ? { status: 200, body: { status: "1", message: "OK", result: "ab".repeat(2000) } }
     : target === "/api/cached" ? { status: 200, body: { n: 1 }, headers: { "cache-control": "public, max-age=3", etag: '"v1"' } }
     : target === "/api/file" ? { status: 200, body: "a,b\r\n1,2\r\n", headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="x.csv"' } }
     : target === "/api/missing" ? { status: 404, body: { error: "no" }, headers: { "cache-control": "public, max-age=3", etag: '"v1"' } }
@@ -52,6 +53,18 @@ describe("the api's cache headers", () => {
     expect(big.headers.get("etag")).toBe('"big1-gz"');
     expect(((await big.json()) as { hex: string }).hex.length).toBe(4000);
     expect((await get("/api/cached", { "accept-encoding": "gzip" })).headers.get("content-encoding")).toBeNull();
+  });
+  it("gzips the Etherscan door's big answer for a client that accepts it, as the REST routes' are, and leaves a small one", async () => {
+    for (const path of ["/api?module=big", "/v2/api?module=big"]) {
+      const big = await get(path, { "accept-encoding": "gzip" });
+      expect(big.headers.get("content-encoding"), path).toBe("gzip");
+      expect(big.headers.get("vary")).toBe("accept-encoding");
+      expect(big.headers.get("cache-control")).toBe("no-store");
+      expect(big.headers.get("access-control-allow-origin")).toBe("*");
+      expect(((await big.json()) as { result: string }).result.length).toBe(4000);
+      expect((await get(path, { "accept-encoding": "identity" })).headers.get("content-encoding")).toBeNull();
+    }
+    expect((await get("/api?module=small", { "accept-encoding": "gzip" })).headers.get("content-encoding")).toBeNull();
   });
   it("gives the gzip form its own tag, and says Vary on a 304", async () => {
     const plain = await get("/api/big", { "accept-encoding": "identity" });

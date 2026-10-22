@@ -108,6 +108,35 @@ describe("the Etherscan door's limit: 10 a second, 600 a minute", () => {
     expect((await (await at("/api?module=stats&action=ethsupply")).json()).status).toBe("0");
   });
 
+  it("limits /v2/api in the same bucket as /api", async () => {
+    await start();
+    for (let i = 0; i < 10; i++) expect((await at(i % 2 ? "/v2/api?module=stats&chainid=1" : "/api?module=stats")).status).toBe(200);
+    expect(calls).toHaveLength(10);
+    const over = await at("/v2/api?module=stats&chainid=1");
+    expect(over.status).toBe(200);
+    expect(over.headers.get("retry-after")).toBe("1");
+    expect(await over.json()).toEqual({ status: "0", message: "NOTOK", result: "Max rate limit reached" });
+    expect(calls).toHaveLength(10); // the refused request never reached the API
+    expect((await (await at("/api?module=stats")).json()).status).toBe("0"); // and the other path is over too
+  });
+
+  it("answers a browser: any origin may read it, and a preflight is answered, outside the rate", async () => {
+    await start();
+    const ok = await at("/api?module=stats");
+    expect(ok.headers.get("access-control-allow-origin")).toBe("*");
+    for (let i = 0; i < 20; i++) await at("/v2/api?module=stats"); // over the rate
+    const over = await at("/api?module=stats");
+    expect((await over.json()).status).toBe("0");
+    expect(over.headers.get("access-control-allow-origin")).toBe("*"); // a browser reads a refusal too
+    for (const path of ["/api", "/v2/api"]) {
+      const pre = await at(path, { method: "OPTIONS" });
+      expect(pre.status).toBe(204);
+      expect(pre.headers.get("access-control-allow-origin")).toBe("*");
+      expect(pre.headers.get("access-control-allow-methods")).toBe("GET, POST, OPTIONS");
+      expect(pre.headers.get("access-control-allow-headers")).toBe("content-type");
+    }
+  });
+
   it("holds a client to 600 in a minute", async () => {
     await start();
     let served = 0;
