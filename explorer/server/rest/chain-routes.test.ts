@@ -94,6 +94,17 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     for (const s of u.signatories) same(s, F.signatory);
   });
 
+  it("keeps a block's and a transaction's page small: the transactions and the logs are their own pages", async () => {
+    const b = body(await get("/api/blocks/2")), t = body(await get(`/api/txs/${tx(2, 1)}`));
+    expect(b).not.toHaveProperty("transactions");
+    expect(t).not.toHaveProperty("logs");
+    expect(JSON.stringify(b).length).toBeLessThan(4000);
+    // The page's query leaves out the record's transactions, which are most of its bytes.
+    const light = await createChainDb(pool).block(2, false), full = await createChainDb(pool).block(2);
+    expect(light?.txsHex).toBe("");
+    expect(full?.txsHex.length).toBeGreaterThan(0);
+  });
+
   it("never serves the builder participant's completion offset", async () => {
     await pool.query("update canton_updates set completion_offset = 4242, command_id = coalesce(command_id, 'cmd-1') where update_id = $1", [chain.blocks[1]!.record.updateId]);
     for (const target of [`/api/canton/updates/${chain.blocks[1]!.record.updateId}`, "/api/canton/updates", "/api/blocks/2", "/api/block/2"]) {

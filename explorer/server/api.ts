@@ -105,14 +105,15 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     };
   }
 
-  async function block(id: string, retried = false): Promise<Answer> {
+  /** `light` is for the REST routes, whose pages leave out the transactions and the record's transactions bytes. */
+  async function block(id: string, retried = false, light = false): Promise<Answer> {
     const key = HASH.test(id) ? id : /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) ? Number(id) : null;
     if (key === null) return fail(400, "A block is named by its number or its 0x hash.");
-    const final = await chain.block(key);
+    const final = await chain.block(key, !light);
     if (final) {
       const hashesMatch = keccak256(`0x${final.headerHex}`) === final.hash;
       const facts = final.proofHex && readProofFacts(final.proofHex);
-      const transactions = await Promise.all((await chain.blockTxs(final.number)).map(async (t) => ({
+      const transactions = light ? [] : await Promise.all((await chain.blockTxs(final.number)).map(async (t) => ({
         hash: t.hash, from: t.from, to: t.to, success: t.success, transfer: await transferOf(t.transferInput, t.to),
       })));
       return ok({
@@ -132,7 +133,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const genesis = b.number === 0;
     // At or below the newest indexed block, reth's block with this hash is not the final one of its number.
     // The indexer may have written it while reth was being asked: look in the database once more before saying no, so a page that was watching the block go final gets it.
-    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return retried ? fail(404, NOT_FOUND) : block(id, true);
+    if (!genesis && b.number <= ((await chain.head())?.number ?? 0)) return retried ? fail(404, NOT_FOUND) : block(id, true, light);
     // At or below reth's finalized block, Canton holds the block: it is final, and the indexer is behind (or has stopped), which the status says. It is not being proven.
     const finalizedAt = genesis ? undefined : await finalizedNumber();
     const unindexed = finalizedAt !== undefined && b.number <= finalizedAt;
@@ -240,7 +241,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return t ? ok(pick(t, FIELDS.faucetTicket)) : fail(404, "No such ticket. A ticket is kept for a while after its coin is final, and is lost if the explorer is rebuilt.");
   }
 
-  const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id), transaction });
+  const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
   const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list", "openapi.json": "composite" };
