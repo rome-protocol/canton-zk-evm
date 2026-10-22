@@ -60,6 +60,13 @@ describe("matching the runtime code", () => {
     expect(e?.code).toBe("runtime");
   });
 
+  it("is partial when only one of the two has metadata", () => {
+    const body = Buffer.from(RUNTIME_BODY, "hex");
+    expect(matchCode(compiledOf(code(RUNTIME_BODY, 1), body), { runtimeCode: body, creationInput: null }, null).kind).toBe("partial");
+    expect(matchCode(compiledOf(body, body), { runtimeCode: code(RUNTIME_BODY, 1), creationInput: null }, null).kind).toBe("partial");
+    expect(() => matchCode(compiledOf(code(RUNTIME_BODY, 1), body), { runtimeCode: Buffer.from(RUNTIME_BODY.replace("5b5b5b", "5b5b00"), "hex"), creationInput: null }, null)).toThrow(MatchFailure);
+  });
+
   it("refuses code with no metadata that differs", () => {
     const a = Buffer.from("6001600255", "hex");
     const b = Buffer.from("6001600355", "hex");

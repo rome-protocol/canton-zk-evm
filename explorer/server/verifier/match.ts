@@ -96,10 +96,11 @@ const hex = (b: Buffer): string => "0x" + b.toString("hex");
 /** Compares two codes that have the same length except for the metadata: full when equal, partial when equal without it, else null. */
 function compare(compiled: Buffer, onChain: Buffer): MatchKind | null {
   if (compiled.equals(onChain)) return "full";
+  // The metadata is the only thing left out: code that has none (compiled with the metadata off) matches the same code that has it.
   const a = splitMetadata(compiled);
   const b = splitMetadata(onChain);
-  if (a && b && a.body.equals(b.body)) return "partial";
-  return null;
+  if (!a && !b) return null;
+  return (a?.body ?? compiled).equals(b?.body ?? onChain) ? "partial" : null;
 }
 
 /**
