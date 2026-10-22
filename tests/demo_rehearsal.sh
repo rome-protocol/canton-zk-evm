@@ -111,9 +111,14 @@ background ledger-calls python3 "$ROOT/tests/demo_call_log.py" 7597 http://127.0
 background reth-calls python3 "$ROOT/tests/demo_call_log.py" 8595 "http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$WORK/reth-calls"
 # The indexer asks reth for trace_ methods as well, so it reads reth directly; the explorer's own calls to reth are logged. Both read Canton through the log.
 LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 INDEXER_RETH_RPC_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$ROOT/explorer/run.sh" start
-# Healthy means the indexer has started and its checks are fresh; the blocks follow as it writes them.
-for _ in $(seq 1 120); do curl -sf "$EXPLORER/healthz" >/dev/null 2>&1 && break; sleep 1; done
-curl -sf "$EXPLORER/healthz" >/dev/null || fail "the explorer is not healthy: $(curl -s "$EXPLORER/healthz" | cut -c1-600)"
+# Healthy means the indexer has started and its checks are fresh; the blocks follow as it writes them. This rehearsal drives the builder with `once`, which
+# keeps no journal and no status file, so the explorer says so in the rows about the producer (C8, journal, producer_alive, producer_state): they are the one
+# thing it may report, and everything else must be ok.
+healthy() {
+  curl -s "$EXPLORER/healthz" | jq -e '.starting == false and .evm == true and .canton == true and ([.problems[] | select(test("^(C8|journal|producer_alive|producer_state): ") | not)] | length) == 0' >/dev/null 2>&1
+}
+for _ in $(seq 1 120); do healthy && break; sleep 1; done
+healthy || fail "the explorer is not healthy: $(curl -s "$EXPLORER/healthz" | cut -c1-600)"
 
 # The explorer took its pins from this run's own guest.txt, not from the recorded session's that the image carries.
 status=$(curl -sf "$EXPLORER/api/status")
