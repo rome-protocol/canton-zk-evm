@@ -6,7 +6,7 @@
 import { RethError } from "../reth.ts";
 
 export const FINAL_READ_METHODS: ReadonlySet<string> = new Set([
-  "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode", "eth_call",
+  "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode", "eth_call", "eth_getBalance",
 ]);
 
 type Json = Record<string, unknown>;
@@ -195,6 +195,8 @@ export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs:
     storageAt: (account: string, slot: string, n: number) => read("eth_getStorageAt", [account, slot, tag(n)], re(/^0x[0-9a-f]{64}$/, "a storage word")),
     /** An `eth_call` at block n (a read of a contract, with no sender). */
     call: (to: string, input: string, n: number) => read("eth_call", [{ to, data: input }, tag(n)], data),
+    /** An account's coin balance at block n (the background check of `addresses.coin_balance`). */
+    balance: (account: string, n: number) => read("eth_getBalance", [account, tag(n)], big),
     /** An account's code at block n (`0x` for none): the genesis contracts are checked at block 0. */
     code: (account: string, n: number) => read("eth_getCode", [account, tag(n)], data),
     rpc,

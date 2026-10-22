@@ -3,7 +3,7 @@
  *
  * It writes `tx_traces` (each transaction's call count and the revert data of a failed one, with `Error(string)` and `Panic(uint256)` decoded;
  * a transaction with no sub-call that did not fail has no row) and `internal_calls` (calls that move value, creations and self-destructs).
- * `contracts` and `bytecodes` get the contracts the block made, and a contract the block destroyed is marked; `proxies` gets the proxies among the new contracts; `addresses` and the contracts' interaction counts are counted up. Tokens and balances are added behind this same function by the slice that follows.
+ * `contracts` and `bytecodes` get the contracts the block made, and a contract the block destroyed is marked; `proxies` gets the proxies among the new contracts and the proxies behind a beacon or proxy that logged an upgrade; `addresses` and the contracts' interaction counts are counted up. `tokens.ts` adds the tokens, their transfers and the balances worked out from them.
  */
 import { decodeAbiParameters } from "viem";
 import type { PoolClient } from "pg";
@@ -13,6 +13,7 @@ import { deriveFrames, type FrameRows } from "./calls.ts";
 import { countAddresses } from "./addresses.ts";
 import { countInteractions, writeContracts } from "./contracts.ts";
 import { writeProxies } from "./proxies.ts";
+import { writeTokens, writeTransfers } from "./tokens.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 
 /** What stage 2 reads from reth besides the block's traces. */
@@ -110,10 +111,12 @@ export async function rederive(c: Pick<PoolClient, "query">, n: number, traces: 
   const d = await deriveRows(c, n, traces);
   await c.query("delete from tx_traces where block_number = $1", [n]);
   await c.query("delete from internal_calls where block_number = $1", [n]);
+  await c.query("delete from token_transfers where block_number = $1", [n]);
   await insertRows(c, n, d);
   await writeContracts(c, n, d.frames.created, d.frames.destroyed, reads);
   await writeProxies(c, n, d.frames.created, reads);
-  return d.traceRows.length + d.frames.calls.length;
+  // The counters, balances and counts that these facts feed are rebuilt from the fact tables once the range is done (aggregates.ts).
+  return d.traceRows.length + d.frames.calls.length + (await writeTransfers(c, n, reads));
 }
 
 /** Stage 2 for block `n`, in the caller's database transaction. `traces` are reth's replay of the block's transactions, in order. */
@@ -131,6 +134,7 @@ export async function stage2(c: PoolClient, n: number, traces: TxTrace[], reads:
   await writeProxies(c, n, d.frames.created, reads);
   await countInteractions(c, n);
   await countAddresses(c, n);
+  const transfers = await writeTokens(c, n, reads);
   await c.query(
     `insert into cursors (stream, position, updated_at) values ('derive', $1, now())
      on conflict (stream) do update set position = excluded.position, updated_at = excluded.updated_at`,
@@ -138,5 +142,5 @@ export async function stage2(c: PoolClient, n: number, traces: TxTrace[], reads:
   );
   await clearStops(c, ["derive"]);
   await c.query("select pg_notify('derived_block', $1)", [String(n)]);
-  return { derived: true, rows: d.traceRows.length + d.frames.calls.length };
+  return { derived: true, rows: d.traceRows.length + d.frames.calls.length + transfers };
 }
