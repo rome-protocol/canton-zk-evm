@@ -3,6 +3,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { NoPage } from "./components/Cards.tsx";
 import { Shell } from "./components/Shell.tsx";
 import { Address } from "./pages/Address.tsx";
+import { Blocks } from "./pages/Blocks.tsx";
 import { Block } from "./pages/Block.tsx";
 import { Faucet } from "./pages/Faucet.tsx";
 import { Home } from "./pages/Home.tsx";
@@ -17,6 +18,7 @@ export function App() {
       <ErrorBoundary key={key}>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/blocks" element={<Blocks />} />
           <Route path="/block/:id" element={<Block />} />
           <Route path="/faucet" element={<Faucet />} />
           <Route path="/address/:addr" element={<Address />} />

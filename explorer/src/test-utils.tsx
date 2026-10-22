@@ -101,12 +101,16 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 /** What the fake chain answers to each path of the API. The status is always well; anything not given is not found. */
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
-  blocks?: () => Reply; txs?: () => Reply; inFlight?: () => Reply;
+  blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
+  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
-    const [, , kind, arg = ""] = path.split("?")[0]!.split("/");
+    const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
     if (kind === "status") return h.status ? h.status() : reply(status());
-    if (kind === "blocks") return h.blocks ? h.blocks() : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "blocks" && arg && sub === "transactions") return h.blockTxs ? h.blockTxs(decodeURIComponent(arg), path) : reply(page([]));
+    if (kind === "blocks" && arg && sub === "legs") return h.blockLegs ? h.blockLegs(decodeURIComponent(arg), path) : reply(page([]));
+    if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));
     if (kind === "in-flight") return h.inFlight ? h.inFlight() : reply(inFlight({ attempts: [], poolWaiting: null }));
     const q = path.split("q=")[1];
