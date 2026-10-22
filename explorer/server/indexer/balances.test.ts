@@ -220,3 +220,92 @@ describe.skipIf(!TEST_URL)("the reindex rebuilds every aggregate, on the pinned 
     });
   });
 });
+
+/** More contracts in block 1, before the indexer reads it. */
+function addTokens(chain: SyntheticChain, addresses: number[], from = A(1)): void {
+  const t = chain.blocks[0]!.traces[0]!;
+  addresses.forEach((a, i) => t.frames.push({ ...create([10 + i], a), from }));
+  t.calls = t.frames.length;
+}
+const inBlock = (chain: SyntheticChain, n: number, ...logs: Log[]) => chain.blocks[n - 1]!.receipts[0]!.logs.push(...logs);
+
+describe.skipIf(!TEST_URL)("metadata retries and unanswered balances, on the pinned PostgreSQL", () => {
+  checkRequired();
+  const PLAIN = 0xa6, SILENT = 0xa7, MUTE = 0xa8;
+
+  it("reads a plain ERC-721 (no totalSupply) as read, and a token that never answers does not keep the check awake", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool);
+      addTokens(chain, [PLAIN, SILENT]);
+      inBlock(chain, 2, erc721(PLAIN, 0, ALICE, 1), erc20(SILENT, 0, ALICE, 5));
+      chain.reads.callResults[`${A(PLAIN)}:${SELECTORS.name}`] = str("Plain Art"); chain.reads.callResults[`${A(PLAIN)}:${SELECTORS.symbol}`] = str("PLN");
+      honest(chain); answer(chain, FEE, ALICE, 900); answer(chain, FEE, BOB, 100); answer(chain, PLAIN, ALICE, 1); answer(chain, SILENT, ALICE, 5);
+      await indexer.runOnce();
+      const st = async (t: number) => (await rows(pool, "select metadata_status as s, name, metadata_attempts as n, metadata_attempt_block as b from tokens where address = $1", [hx(t)]))[0];
+      expect(await st(PLAIN)).toMatchObject({ s: "read", name: "Plain Art" });
+      expect(await st(SILENT)).toMatchObject({ s: "failed", n: 0, b: null });
+      let last = await indexer.balancesOnce();
+      for (let i = 0; i < 5 && last.blocks + last.checked > 0; i++) last = await indexer.balancesOnce();
+      // The settled turn does nothing, so the loop sleeps: a token that failed is tried again only when its wait is over.
+      expect(last).toEqual({ blocks: 0, coin: 0, checked: 0, switched: 0, retried: 0 });
+      expect(await st(SILENT)).toMatchObject({ s: "failed", n: 1, b: "3" });
+      for (let i = 0; i < 3; i++) expect(await indexer.balancesOnce()).toEqual(last);
+      expect((await st(SILENT))!.n).toBe(1);
+      // Its wait is over and it answers now.
+      chain.reads.callResults[`${A(SILENT)}:${SELECTORS.totalSupply}`] = "0x" + W(5);
+      await pool.query("update tokens set metadata_attempt_block = 1 - 1000 where address = $1", [hx(SILENT)]);
+      expect((await indexer.balancesOnce()).retried).toBe(1);
+      expect(await st(SILENT)).toMatchObject({ s: "read", n: 2 });
+      await indexer.close();
+    });
+  });
+
+  it("tries every token whose metadata failed, not only the first 50 by address", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool);
+      const many = Array.from({ length: 60 }, (_, i) => 0xc000 + i);
+      addTokens(chain, many);
+      inBlock(chain, 2, ...many.map((t) => erc20(t, 0, ALICE, 1)));
+      honest(chain); answer(chain, FEE, ALICE, 900); answer(chain, FEE, BOB, 100);
+      await indexer.runOnce();
+      const tried = async () => Number((await rows(pool, "select count(*) as n from tokens where metadata_attempts >= 1"))[0].n);
+      await indexer.balancesOnce();
+      expect(await tried()).toBe(50);
+      await indexer.balancesOnce();
+      expect(await tried()).toBe(60);
+      await indexer.close();
+    });
+  });
+
+  it("marks a balance the token does not answer as unanswered, leaves checked_block null, and offers it again only after a block moves it", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool);
+      addTokens(chain, [MUTE]);
+      inBlock(chain, 2, erc20(MUTE, 0, ALICE, 7));
+      inBlock(chain, 3, erc20(MUTE, ALICE, BOB, 2));
+      chain.reads.callResults[`${A(MUTE)}:${SELECTORS.totalSupply}`] = "0x" + W(7);
+      honest(chain); answer(chain, FEE, ALICE, 900); answer(chain, FEE, BOB, 100);
+      await indexer.runOnce();
+      await indexer.balancesOnce(); await indexer.balancesOnce();
+      const mine = async () => (await rows(pool, "select encode(holder, 'hex') as h, value::text as v, checked_block as c, unanswered as u from token_balances where token = $1 order by holder", [hx(MUTE)]));
+      expect(await mine()).toEqual([{ h: hex(hx(ALICE)), v: "5", c: null, u: true }, { h: hex(hx(BOB)), v: "2", c: null, u: true }]);
+      const last = await indexer.balancesOnce();
+      expect(last.checked).toBe(0);
+      await indexer.close();
+    });
+  });
+
+  it("makes a token the gateway created gateway_wrapped, and no other", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool);
+      addTokens(chain, [PLAIN], GATEWAY);
+      inBlock(chain, 2, erc20(PLAIN, 0, ALICE, 1));
+      honest(chain); answer(chain, FEE, ALICE, 900); answer(chain, FEE, BOB, 100);
+      await indexer.runOnce();
+      expect((await rows(pool, "select encode(address, 'hex') as a, gateway_wrapped as g from tokens order by address")).map((x) => [x.a, x.g])).toEqual([
+        [hex(hx(ERC20)), false], [hex(hx(ERC721)), false], [hex(hx(ERC1155)), false], [hex(hx(FEE)), false], [hex(hx(PLAIN)), true],
+      ]);
+      await indexer.close();
+    });
+  });
+});
