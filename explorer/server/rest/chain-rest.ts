@@ -22,6 +22,7 @@ export interface BlockListItem { number: number; hash: string; timestamp: number
   /** ZisK's time for the block, the way from the producer's cut to Canton's record time, and Canton's own commit (the producer's submit to the record time), in seconds; null for a block the journal did not write. */
   proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";
+export type TxFilter = "all" | "failed" | "calls";
 export interface TxListItem {
   hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null;
   /** The input's first 4 bytes as 0x hex; null for a transaction with no input (a plain transfer or a creation with no arguments). */
@@ -33,7 +34,7 @@ export interface BlockExtras {
   lifecycle: { strategy: string; cutReason: string; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null } | null;
 }
 export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
-export interface LogItem { logIndex: number; address: string; topics: string[]; data: string }
+export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
 export interface TransferItem { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface TxPlace { block: number; index: number }
@@ -110,12 +111,13 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  /** All transactions, newest first, after the key (block, index) when one is given. */
-  async function txs(before: (number | string)[] | null, limit: number): Promise<TxListItem[]> {
+  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. */
+  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all"): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
+    const where = { all: "", failed: "and t.status = 0", calls: "and t.method_id is not null and t.to_address is not null" }[filter];
     const rows = await query(
       `select ${txSelect} from transactions t join blocks b on b.number = t.block_number
-       where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) order by t.block_number desc, t.tx_index desc limit $3`,
+       where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) ${where} order by t.block_number desc, t.tx_index desc limit $3`,
       [bn, ix, limit + 1],
     );
     return rows.map(txItem);
@@ -153,6 +155,12 @@ export function createChainRest(pool: Pool) {
     return r && { block: Number(r.block_number), index: r.tx_index };
   }
 
+  /** The fee caps the sender signed (null for a legacy or EIP-2930 transaction, which has one gas price). */
+  async function feeCapsOf(at: TxPlace): Promise<{ maxFeePerGas: string | null; maxPriorityFeePerGas: string | null }> {
+    const [r] = await query("select max_fee_per_gas::text as max_fee, max_priority_fee_per_gas::text as max_priority from transactions where block_number = $1 and tx_index = $2", [at.block, at.index]);
+    return { maxFeePerGas: r?.max_fee ?? null, maxPriorityFeePerGas: r?.max_priority ?? null };
+  }
+
   /** Stage 2's row for a transaction: undefined until the block is derived. */
   async function traceOf(at: TxPlace): Promise<TxTrace | undefined> {
     const [r] = await query("select call_count, revert_reason, revert_data from tx_traces where block_number = $1 and tx_index = $2", [at.block, at.index]);
@@ -161,11 +169,12 @@ export function createChainRest(pool: Pool) {
 
   async function txLogs(at: TxPlace, after: number | null, limit: number): Promise<LogItem[]> {
     const rows = await query(
-      `select log_index, address, topic0, topic1, topic2, topic3, data from logs where block_number = $1 and tx_index = $2 and ($3::int is null or log_index > $3) order by log_index limit $4`,
+      `select * from (select log_index, address, topic0, topic1, topic2, topic3, data, row_number() over (order by log_index) - 1 as position from logs where block_number = $1 and tx_index = $2) l
+       where ($3::int is null or log_index > $3) order by log_index limit $4`,
       [at.block, at.index, after, limit + 1],
     );
     return rows.map((l) => ({
-      logIndex: l.log_index, address: hex(l.address),
+      logIndex: l.log_index, position: Number(l.position), address: hex(l.address),
       topics: [l.topic0, l.topic1, l.topic2, l.topic3].flatMap((t, i, all) => (t !== null && all.slice(0, i).every((x) => x !== null) ? [hex(t)] : [])), data: hex(l.data),
     }));
   }
@@ -254,5 +263,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
 }

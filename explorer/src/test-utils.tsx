@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, BlockDetail, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { ApiAddress, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -47,6 +47,13 @@ export function block(over: Partial<ApiBlock> = {}): ApiBlock {
     transactions: [{ hash: hash(0xf6), from: addr(0x5a + 1), to: addr(0xcb), success: true, transfer: { symbol: "TKA", decimals: 18, to: TRANSFER_TO, value: "10000000000000000000" } }],
     ...over,
   };
+}
+
+/** The block as /api/blocks/:id gives it: its facts and the Canton summary, with no record hex and no list of transactions. */
+export function blockSummary(over: Partial<BlockSummary> = {}): BlockSummary {
+  const { transactions: _t, canton, ...rest } = block();
+  const { headerHex: _h, txsHex: _x, proofHex: _p, ...summary } = canton!;
+  return { ...rest, canton: summary, legsCount: null, derived: true, lifecycle: null, ...over };
 }
 
 /** The same transaction, final in block 3. */
@@ -103,6 +110,7 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
+  txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
@@ -110,11 +118,18 @@ export function route(h: {
     if (kind === "status") return h.status ? h.status() : reply(status());
     if (kind === "blocks" && arg && sub === "transactions") return h.blockTxs ? h.blockTxs(decodeURIComponent(arg), path) : reply(page([]));
     if (kind === "blocks" && arg && sub === "legs") return h.blockLegs ? h.blockLegs(decodeURIComponent(arg), path) : reply(page([]));
+    if (kind === "blocks" && arg && sub === "record") return h.blockRecord ? h.blockRecord(decodeURIComponent(arg)) : gone();
     if (kind === "blocks" && arg) return h.blockDetail ? h.blockDetail(decodeURIComponent(arg)) : gone();
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
+    if (kind === "txs" && arg) {
+      const [x, p] = [decodeURIComponent(arg), path];
+      if (p.includes("raw=1")) return h.txRaw ? h.txRaw(x) : gone();
+      const pick = { "": h.txDetail && (() => h.txDetail!(x)), logs: h.txLogs && (() => h.txLogs!(x, p)), internal: h.txInternal && (() => h.txInternal!(x, p)), "token-transfers": h.txTransfers && (() => h.txTransfers!(x, p)), trace: h.txTrace && (() => h.txTrace!(x, p)) }[sub];
+      return pick ? pick() : gone();
+    }
     if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));
     if (kind === "in-flight") return h.inFlight ? h.inFlight() : reply(inFlight({ attempts: [], poolWaiting: null }));
     const q = path.split("q=")[1];
@@ -175,4 +190,10 @@ export function updateDetail(n = 3, over: Partial<UpdateDetail> = {}): UpdateDet
     producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "cmd-1", argumentBytes: 13760, trafficBytes: null },
     ...over,
   };
+}
+
+/** What /api/txs/:hash adds to a final transaction: the stage 2 fields. `derived: false` is a block the explorer has not derived yet. */
+export function txDetail(over: Partial<ApiTxDetail> = {}): ApiTxDetail {
+  const { logs: _logs, ...rest } = tx();
+  return { ...rest, derived: true, callCount: 2, revertReason: null, index: 0, maxFeePerGas: "2000000000", maxPriorityFeePerGas: "1000000000", ...over };
 }

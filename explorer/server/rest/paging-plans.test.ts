@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { ensurePartitions } from "../db/partitions.ts";
 import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/testing.ts";
 import { createAccountRest } from "./account-rest.ts";
+import { ensurePartitions } from "../db/partitions.ts";
 import { createChainRest } from "./chain-rest.ts";
 
 /**
@@ -41,6 +41,17 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(newer).not.toMatch(/Seq Scan on canton_updates/);
     const older = await plan(/\(u\.record_time, u\.update_id\) < /);
     expect(older).toMatch(/Index Cond: \(ROW\(record_time, update_id\) </);
+  });
+
+  it("the transactions list pages through the index of its filter", async () => {
+    const chain = createChainRest(recording());
+    await ensurePartitions(pool, { head: 100 });
+    // The filters' indexes are partial, so the predicate is not a Filter line: a scan with no Filter on the filter's column and not on the primary key is a scan of the filter's own index.
+    const own = (p: string) => { expect(p).toMatch(/Index Scan using transactions_p\d+_block_number_tx_index_idx/); expect(p).not.toMatch(/transactions_p\d+_pkey|Filter: \(?(status|method_id)/); };
+    await chain.txs([50, 3], 10, "failed");
+    own(await plan(/t\.status = 0/));
+    await chain.txs([50, 3], 10, "calls");
+    own(await plan(/t\.method_id is not null/));
   });
 
   it("the blocks list pages through the index of its filter", async () => {
