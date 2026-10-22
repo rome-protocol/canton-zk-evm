@@ -85,7 +85,7 @@ function Record({ b, c, st }: { b: ApiBlock; c: CantonSide; st: ApiStatus | unde
   return (
     <>
       <Kv>
-        <Item label="Canton update"><HashLink value={c.updateId} kind="update" /></Item>
+        <Item label="Canton update"><HashLink value={c.updateId} kind="update" to={`/canton/${c.updateId}`} /></Item>
         <Item label="Committed"><span className="mono">{utcMs(c.recordTime)}</span> <span className="muted">· {seconds(b.timestamp, c.recordTime)} after the block was made</span></Item>
         <Item label="Record"><span className="mono">{c.template}</span></Item>
         {signers && (
