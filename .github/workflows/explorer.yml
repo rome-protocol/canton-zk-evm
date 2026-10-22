@@ -27,7 +27,7 @@ jobs:
 
   # The verifier's sandbox, for real: a compile runs in a container of the pinned image (BUSYBOX_IMAGE) with no network, a read-only filesystem,
   # a memory limit and a time limit, and the tests check each of them. The tests run in the pinned Node image, which talks to the runner's own
-  # Docker through its socket (the Docker program is the runner's, mounted in). The compilers the tests make sit in a folder that the container
+  # Docker through its socket (the Docker program is the static build that PINS pins, checked against its SHA-256 and mounted in). The compilers the tests make sit in a folder that the container
   # and the daemon see at the same path. EXPLORER_TEST_REQUIRE_SANDBOX makes a missing Docker a failure instead of a skip.
   verifier-sandbox:
     runs-on: ubuntu-latest
@@ -42,10 +42,13 @@ jobs:
           # The sandbox image is on the runner under the pinned name, and the tests read the same name from PINS.
           docker image inspect --format '{{.Id}}' "$BUSYBOX_IMAGE"
           SHARED="$RUNNER_TEMP/verifier-tmp"
-          mkdir -p "$SHARED"
+          mkdir -p "$SHARED/bin"
+          curl -fsSL -A "Rome Protocol rome@romeprotocol.com" -o "$SHARED/docker.tgz" "https://download.docker.com/linux/static/stable/x86_64/docker-$DOCKER_CLI_VERSION.tgz"
+          echo "$DOCKER_CLI_SHA256  $SHARED/docker.tgz" | sha256sum -c -
+          tar -xzf "$SHARED/docker.tgz" -C "$SHARED/bin" --strip-components=1 docker/docker
           docker run --rm --user "$(id -u):$(id -g)" --group-add "$(stat -c %g /var/run/docker.sock)" -e HOME=/tmp \
             -e EXPLORER_TEST_REQUIRE_SANDBOX=1 -e TMPDIR="$SHARED" -v "$SHARED:$SHARED" \
-            -v /var/run/docker.sock:/var/run/docker.sock -v "$(command -v docker):/usr/local/bin/docker:ro" \
+            -v /var/run/docker.sock:/var/run/docker.sock -v "$SHARED/bin/docker:/usr/local/bin/docker:ro" \
             -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npx vitest run server/verifier"
       - name: Remove what the run made
