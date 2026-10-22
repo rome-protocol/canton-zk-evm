@@ -61,7 +61,7 @@ explorer/
     (MIT, https://github.com/argotorg/sourcify), pinned to 3.7.4, which matches compiled code with the
     code on chain, and the packages it depends on: @ethereum-sourcify/bytecode-utils and
     @ethereum-sourcify/compilers-types, ethers, bs58, jszip (used under its MIT option), pako
-    (MIT and Zlib), semver, cbor-x and cbor-extract, with their small helpers (licences MIT, ISC, 0BSD).
+    (MIT and Zlib), semver, cbor-x and cbor-extract, with their small helpers (licences MIT, ISC, 0BSD, and Apache-2.0 for detect-libc).
     They are installed from npm and not copied into this repository.
 
     Build and test tools: the packages under devDependencies in explorer/package.json (Vite,
