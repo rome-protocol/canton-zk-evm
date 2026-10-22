@@ -6,17 +6,17 @@ import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
-const hex = (b: Buffer): string => "0x" + b.toString("hex");
-const hexOrNull = (b: Buffer | null): string | null => (b === null ? null : hex(b));
-const bytes = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "hex");
-const MS = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
-const US = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.replace(/(\.\d{3})000Z/, "$1Z");
-const isoTime = (s: string): string => s.replace(/(\.\d{3})000Z$/, "$1Z");
+export const hex = (b: Buffer): string => "0x" + b.toString("hex");
+export const hexOrNull = (b: Buffer | null): string | null => (b === null ? null : hex(b));
+export const bytes = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "hex");
+export const MS = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+export const US = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.replace(/(\.\d{3})000Z/, "$1Z");
+export const isoTime = (s: string): string => s.replace(/(\.\d{3})000Z$/, "$1Z");
 const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
 
 /** A trace address as a page key: "t", then the indexes joined by "-" (the top call, which has none, is just "t"). */
 export const traceKey = (a: number[]): string => "t" + a.join("-");
-const addressOfKey = (key: string): number[] => (key === "t" ? [] : key.slice(1).split("-").map(Number));
+export const addressOfKey = (key: string): number[] => (key === "t" ? [] : key.slice(1).split("-").map(Number));
 
 export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string }
 export interface TxListItem {
@@ -40,6 +40,13 @@ export interface UpdateDetail extends UpdateItem {
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null; completionOffset: number | null } | null;
 }
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
+
+export const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from b.timestamp)::bigint as ts, t.from_address, t.to_address, t.value::text as value, t.nonce, t.type, t.gas_used,
+  t.effective_gas_price::text as price, t.status, t.created_contract`;
+export const txItem = (r: Row): TxListItem => ({
+  hash: hex(r.hash), block: Number(r.block_number), index: r.tx_index, timestamp: Number(r.ts), from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value, nonce: Number(r.nonce),
+  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract),
+});
 
 export type ChainRest = ReturnType<typeof createChainRest>;
 
@@ -91,13 +98,6 @@ export function createChainRest(pool: Pool) {
       },
     };
   }
-
-  const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from b.timestamp)::bigint as ts, t.from_address, t.to_address, t.value::text as value, t.nonce, t.type, t.gas_used,
-    t.effective_gas_price::text as price, t.status, t.created_contract`;
-  const txItem = (r: Row): TxListItem => ({
-    hash: hex(r.hash), block: Number(r.block_number), index: r.tx_index, timestamp: Number(r.ts), from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value, nonce: Number(r.nonce),
-    type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract),
-  });
 
   /** All transactions, newest first, after the key (block, index) when one is given. */
   async function txs(before: (number | string)[] | null, limit: number): Promise<TxListItem[]> {

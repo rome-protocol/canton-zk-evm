@@ -9,9 +9,13 @@ export class BadRequest extends Error {}
 export const DEFAULT_LIMIT = 25;
 export const MAX_LIMIT = 100;
 
-/** The part kinds a key can have: a non-negative integer (in a JavaScript safe range), or a token of lowercase letters, digits and `x`. */
-export type Part = "int" | "text";
-const INT = /^(0|[1-9][0-9]{0,15})$/, TEXT = /^[0-9a-z]{1,128}$/;
+/**
+ * The part kinds a key can have: a non-negative integer (in a JavaScript safe range), a token of lowercase letters and digits (a 0x address, or a decimal
+ * number too large for an integer), or a trace address, "t" and its indexes joined by "-" (t0-1).
+ */
+export type Part = "int" | "text" | "trace";
+const INT = /^(0|[1-9][0-9]{0,15})$/, TEXT = /^[0-9a-z]{1,128}$/, TRACE = /^t([0-9]{1,10}(-[0-9]{1,10})*)?$/;
+const FITS: Record<Part, (p: string) => boolean> = { int: (p) => INT.test(p) && Number.isSafeInteger(Number(p)), text: (p) => TEXT.test(p), trace: (p) => TRACE.test(p) };
 
 /** `limit` from the query: absent means the default; more than the cap is the cap; anything that is not a positive whole number is refused. */
 export function limitOf(raw: string | null): number {
@@ -24,8 +28,8 @@ export function limitOf(raw: string | null): number {
 export function cursorOf(raw: string | null, shape: readonly Part[]): (number | string)[] | null {
   if (raw === null || raw === "") return null;
   const parts = raw.split(":");
-  const ok = parts.length === shape.length && parts.every((p, i) => (shape[i] === "int" ? INT.test(p) && Number.isSafeInteger(Number(p)) : TEXT.test(p)));
-  if (!ok) throw new BadRequest(`before is ${shape.map((s) => (s === "int" ? "a number" : "a key")).join(" then ")}, joined by ":".`);
+  const ok = parts.length === shape.length && parts.every((p, i) => FITS[shape[i] as Part](p));
+  if (!ok) throw new BadRequest(`before is ${shape.map((s) => (s === "int" ? "a number" : s === "trace" ? "a trace address" : "a key")).join(" then ")}, joined by ":".`);
   return parts.map((p, i) => (shape[i] === "int" ? Number(p) : p));
 }
 

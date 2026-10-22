@@ -25,6 +25,14 @@ describe("before", () => {
   });
 });
 
+describe("a trace address part", () => {
+  it("is t and the indexes, and nothing else", () => {
+    expect(cursorOf("5:2:t", ["int", "int", "trace"])).toEqual([5, 2, "t"]);
+    expect(cursorOf("5:2:t0-1", ["int", "int", "trace"])).toEqual([5, 2, "t0-1"]);
+    for (const bad of ["5:2:0-1", "5:2:t-1", "5:2:t0-", "5:2:t0--1", "5:2:t1x", "5:2:T0"]) expect(() => cursorOf(bad, ["int", "int", "trace"])).toThrow(BadRequest);
+  });
+});
+
 describe("a page", () => {
   const rows = [5, 4, 3, 2, 1].map((n) => ({ n }));
   it("has a next key only when a further row exists, and that key is the last row shown", () => {
