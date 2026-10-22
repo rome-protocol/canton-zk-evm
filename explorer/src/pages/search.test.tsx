@@ -31,7 +31,7 @@ describe("the search page", () => {
     const a = match("token", "Test USD", "tUSD", 0xcb), b = match("token", "Test USD Two", "tUSD2", 0xcc);
     fakeApi(route({ search: () => reply({ path: a.path, matches: [a, b] }) }));
     renderApp("/");
-    await userEvent.type(screen.getByRole("searchbox", { name: "Search" }), "test usd{Enter}");
+    await userEvent.setup().type(screen.getByRole("searchbox", { name: "Search" }), "test usd{Enter}");
     expect(await screen.findByRole("heading", { name: "Several match" })).toBeInTheDocument();
     expect(screen.getByRole("searchbox", { name: "Search" })).toHaveValue("test usd");
   });

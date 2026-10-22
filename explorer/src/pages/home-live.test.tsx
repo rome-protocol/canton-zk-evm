@@ -41,10 +41,11 @@ describe("the home page, live", () => {
     expect(blockRows()).toHaveLength(2);
     state.blocks = [blockItem(4), ...state.blocks];
     state.attempts = [];
+    state.waiting = 0;
     await send(`id: 4\nevent: block\ndata: ${JSON.stringify({ number: 4 })}\n\n`);
     await vi.waitFor(() => expect(blockRows()).toHaveLength(3));
     expect(within(blockRows()[0]!).getByRole("link", { name: "4" })).toHaveAttribute("href", "/block/4");
-    expect(screen.getByText("Nothing is in flight: every block made so far is final.")).toBeInTheDocument();
+    expect(await screen.findByText("Nothing is in flight: every block made so far is final.")).toBeInTheDocument();
   });
 
   it("moves the in-flight panel on an inflight event, and labels it not final", async () => {
