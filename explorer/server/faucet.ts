@@ -103,6 +103,10 @@ export interface Faucet {
   served(): number;
   /** How many requests wait for a batch. */
   queued(): number;
+  /** When the oldest request still waiting for a batch was made (milliseconds since the epoch), or null when none waits. A queue that is long but moving has a young oldest request. */
+  oldestQueued(): number | null;
+  /** True while this instance runs the worker (it holds the faucet's lock, or there is no database and so one instance). */
+  isLeading(): boolean;
 }
 
 /**
@@ -689,6 +693,8 @@ export function createFaucet(o: FaucetOptions): Faucet {
     address,
     served: () => addresses.size,
     queued: () => queue.length,
+    oldestQueued: () => queue[0]?.at ?? null,
+    isLeading: () => leading,
     process,
     ready: () => loaded,
     async find(id) {

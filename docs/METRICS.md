@@ -185,6 +185,35 @@ Alerts and the overall status read these ids by name, so they are fixed here. A 
 
 The same run answers the design's main open question about revert data: `trace_replayBlockTransactions` does carry the `output` of a failed transaction, for `Error(string)`, `Panic(uint256)` and a custom error (`Reverts.sol`, one failing call to each, in one block). The `debug_traceBlockByNumber` fallback is not needed.
 
+## The API at scale (L2)
+
+L2 is the acceptance test of the health, limits and load slice (design section 9, budgets B3, B4, B6 and B7). It seeds a database through the indexer's own write path, then sends the mixed load of the design (60% single objects, 20% address pages, 10% lists, 5% search, and 5% `getLogs`) at 200 requests a second while the indexer keeps writing blocks of 1,428 transactions every 3 s, 2,000 live-stream clients stay open, and `/api/health` is asked throughout. The server is the deployed one: the pages' routes, the live stream, and the health route read from a pool of its own, with the instance's checks running on a timer in the background. The load runs in a process of its own and is open loop (a request's time runs from when it was due). The test is `explorer/test/l2/l2.test.ts`; the numbers below are the `l2-results` file of the CI job.
+
+**`getLogs` is provisional.** The route that will serve it (`/api?module=logs&action=getLogs`, E8a) does not exist yet. Until it does, L2 sends the query that route will run (10,000 blocks, one address, 1,000 rows) straight to the database, on the API's pool, open loop at its 5% share. A pass says the query is fast; it says nothing about the route. When E8a lands, the load points at the route.
+
+Measured in CI on a GitHub-hosted `ubuntu-latest` runner, with the pinned PostgreSQL (`shared_buffers` 1 GB), on the same machine as the server and the load. It is not the reference machine: the design's run on the reference machine (the explorer's testnet host) is still to be made, with `L2_TRANSACTIONS=10000000 L2_SECONDS=600` (and `L2_KEEP_DATABASE=1` to keep the seeded database for a look at plans). The 10,000,000-transaction column was run once in CI, on this branch, by setting those two values in the job; the seed took 33 minutes, the database is 12.5 GB, and the runner had 85 GB free. Every pull request runs the 3,000,000 column, which takes about a quarter of an hour.
+
+| | Budget | 3,000,000 transactions, 120 s (every pull request) | 10,000,000 transactions, 600 s (the design's size, run once) |
+|---|---|---|---|
+| Database | | 3,058,776 transactions, 2,142 blocks; the one address sends 1,000,076 of them | 10,287,312 transactions, 7,204 blocks; the one address sends 1,001,429 of them |
+| B3 one block, transaction or address (p97.5) | p95 ≤ 100 ms | 22 ms | 40 ms |
+| B3 an address's page of transactions, the one with a million (p97.5) | ≤ 300 ms | 18 ms | 34 ms |
+| B3 a list page (p97.5) | ≤ 200 ms | 14 ms | 30 ms |
+| B3 search (p97.5) | ≤ 100 ms | 7 ms | 18 ms |
+| B3 `getLogs` (provisional, p95) | ≤ 500 ms | 12 ms | 19 ms |
+| B4 a new final block to 2,000 stream clients (p95) | ≤ 500 ms | 63 ms | 100 ms |
+| B6 size per million transactions | ≤ 2.5 GB | 1.24 GB | 1.22 GB |
+| B7 `/api/health` (p97.5), answers other than 200 | ≤ 50 ms | 5 ms, none | 22 ms, none |
+| Ingestion of a 1,428-transaction block, while the load runs | | 239 to 378 ms | 319 to 481 ms |
+
+The load tool reports p97.5, which is stricter than the p95 the budgets name, so p97.5 is what is held to them.
+
+**Which runs the columns are.** The 3,000,000 column is run 39805018389 on commit `40259a9`, and the 10,000,000 column is run 39806988358 on commit `723b131` (the job there was set to the design's size; the commit differs from the one that set it, `3138350`, by documentation only). Both are `l2` jobs of the `explorer` workflow, and their logs hold every number above. The same 3,000,000 job has since been green on four more commits, run 39817239570 on `ad4f74d`, run 39817459040 on `cd97c23`, run 39823085438 on `074456a` and run 39825656578 on `b1c1dda`, and it moves with the runner it lands on: across the five, one block, transaction or address (p97.5) took 22 to 44 ms, an address's page 18 to 34 ms, a list page 14 to 38 ms, search 7 to 32 ms, `getLogs` 12 to 24 ms (p95), a block to the 2,000 stream clients 53 to 99 ms (p95), `/api/health` 3 to 41 ms with no answer other than 200, size 1.24 to 1.27 GB per million transactions, and ingestion of a block 239 to 471 ms. Every figure of every run is inside its budget.
+
+### What was wrong at 3,000,000 transactions
+
+An earlier run at this size failed every budget: an address's page took seconds, the load backed up behind it, and ingestion took 26 s a block. The cause was one query. An address's page reads three keys, the transactions it sent, received and created, each newest first. The index on `created_contract` held the address alone, with no order, so the planner walked the primary key backwards and filtered on the address: for an address that created nothing, it read all 3,000,000 rows, 5 to 8 s on a database that is warm. Migration `0026_address_page_created_contract_index.sql` (the index is `transactions_created_contract_place_idx`) replaces it with an index in the page's own order, as the other two keys have, and the page costs 0.3 ms. `explorer/server/rest/paging-plans.test.ts` fails without it. `/api/health` used to refresh this instance's checks inside the request (5 s for a reth that hangs); it now only reads the table.
+
 ## What CI runs
 
 CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof is made or timed in CI. The WebAssembly tests print verification timings. The jobs are:

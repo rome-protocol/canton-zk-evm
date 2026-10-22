@@ -7,6 +7,12 @@ on:
     branches: [main]
     paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
 
+  # L2 at another size, by hand: the design's size is 10000000 and 600, which takes about 50 minutes and 13 GB of disk (docs/METRICS.md has the run).
+  workflow_dispatch:
+    inputs:
+      l2_transactions: { description: "L2: transactions in the seeded database", default: "3000000" }
+      l2_seconds: { description: "L2: seconds of load", default: "120" }
+
 permissions:
   contents: read
 
@@ -165,3 +171,55 @@ jobs:
       - name: Remove the PostgreSQL and its volume
         if: always()
         run: docker rm -f -v explorer-db
+
+  # L2 (design section 9): the API at scale. A database seeded through the indexer's own write path, then two minutes of the mixed load of the design while ingestion
+  # keeps writing blocks and live-stream clients stay open, held to B3, B4, B6 and B7. The design's size (10,000,000 transactions, 600 s) is for the reference machine;
+  # this is the scaled run (3,000,000 transactions, with the one address at its million), and docs/METRICS.md says what it measured. The numbers are in the l2-results artifact.
+  l2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      L2_TRANSACTIONS: ${{ inputs.l2_transactions || '3000000' }}
+      L2_SECONDS: ${{ inputs.l2_seconds || '120' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE POSTGRES_IMAGE
+      - name: Start the pinned PostgreSQL, on this machine's loopback only
+        run: |
+          set -a; . ./PINS; set +a
+          PGPW=$(openssl rand -hex 16)
+          echo "::add-mask::$PGPW"
+          echo "PGPW=$PGPW" >> "$GITHUB_ENV"
+          # --shm-size: the container's default 64 MB of shared memory is too small for the vacuum of a table of millions of rows, and for shared_buffers.
+          # shared_buffers and effective_cache_size are set as a database of this size would have them (the image's defaults are for a toy), and the runner has 16 GB.
+          docker run -d --name explorer-l2-db --security-opt no-new-privileges --shm-size=2g -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE" \
+            -c max_connections=200 -c shared_buffers=1GB -c effective_cache_size=6GB
+          ok=0
+          for _ in $(seq 1 60); do
+            if docker exec explorer-l2-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
+            sleep 1
+          done
+          [ "$ok" -ge 3 ] || { docker logs explorer-l2-db; exit 1; }
+      - name: Disk before L2
+        run: df -h / /var/lib/docker /mnt 2>/dev/null || true
+      - name: Run L2
+        run: |
+          set -a; . ./PINS; set +a
+          docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
+            -e L2=1 -e L2_TRANSACTIONS -e L2_SECONDS -e L2_SSE=2000 -e L2_RESULTS=/repo/explorer/l2-results.json \
+            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run test/l2 --maxWorkers=2"
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: l2-results
+          path: explorer/l2-results.json
+          if-no-files-found: warn
+      - name: Remove the PostgreSQL and its volume
+        if: always()
+        run: docker rm -f -v explorer-l2-db

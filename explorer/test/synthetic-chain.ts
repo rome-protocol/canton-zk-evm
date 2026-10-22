@@ -25,6 +25,12 @@ export interface BlockShape {
   txs: number;
   /** The gateway records a Leg of this kind (1 to 3) in the first transaction. */
   leg?: number;
+  /** The sender of every `hotEvery`th transaction (an address with a long history: the load test's one address with a million). */
+  hot?: string;
+  /** Every how many transactions the hot address sends one: 10 when absent. */
+  hotEvery?: number;
+  /** When the block's record became readable, as an ISO time. Fixed by the block's number when absent; a load test gives the time of the writing. */
+  at?: string;
 }
 
 /** The leg hash of README.md's formula, written out here on its own so that a mistake in the indexer's copy shows up as a failing test. */
@@ -64,10 +70,20 @@ function txList(serialized: string[]): string {
   return body.length === 0 ? "" : Buffer.concat([head(0xc0, body.length), body]).toString("hex");
 }
 
+/**
+ * The signature's `r`, which is what tells the same transaction in two blocks apart. A byte repeated, taken from the block number modulo 250, as it always was
+ * (the hashes of the first 250 blocks do not change); from block 250 on, the last four bytes also carry the number divided by 250, so that no two blocks of any length of chain make the same hash.
+ */
+function signatureR(number: number): `0x${string}` {
+  const byte = (number % 250 + 1).toString(16).padStart(2, "0"), round = Math.floor(number / 250);
+  return `0x${byte.repeat(round === 0 ? 32 : 28)}${round === 0 ? "" : round.toString(16).padStart(8, "0")}`;
+}
+
 /** `instance` tells two chains from the same genesis apart: a reset of the network gives the same genesis, chain id and pins, and different blocks. */
 export function makeBlock(number: number, parentHash: string, shape: BlockShape, pins: Pins = PINS, instance = 0): SyntheticBlock {
   const txs: FinalTx[] = [], receipts: FinalReceipt[] = [], traces: TxTrace[] = [], serialized: string[] = [];
   let cumulative = 0;
+  const senderOf = (k: number) => (shape.hot && k % (shape.hotEvery ?? 10) === 0 ? shape.hot : hex(0xf000 + (k % 53)));
   for (let k = 0; k < shape.txs; k++) {
     const kind = k % 5;
     const to = kind === 2 ? null : hex(0xc000 + (k % 97));
@@ -75,7 +91,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     const ser = serializeTransaction({
       type: "eip1559", chainId: CHAIN_ID, nonce: k, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, gas: 100000n, to: (to ?? undefined) as `0x${string}` | undefined,
       value: BigInt(k), data: input as `0x${string}`,
-    }, { r: ("0x" + (number % 250 + 1).toString(16).padStart(2, "0").repeat(32)) as `0x${string}`, s: ("0x" + "22".repeat(32)) as `0x${string}`, yParity: k % 2 as 0 | 1 });
+    }, { r: signatureR(number), s: ("0x" + "22".repeat(32)) as `0x${string}`, yParity: k % 2 as 0 | 1 });
     const hash = keccak256(ser);
     serialized.push(ser);
     const failed = kind === 4;
@@ -89,10 +105,10 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     }
     const gasUsed = failed ? 30000 : kind === 3 ? 90000 : 21000 + (kind === 2 ? 50000 : 0);
     cumulative += gasUsed;
-    txs.push({ hash, type: 2, from: hex(0xf000 + (k % 53)), to, nonce: k, value: BigInt(k), gas: 100000, gasPrice: null, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, input, accessList: [], authorizationList: null });
+    txs.push({ hash, type: 2, from: senderOf(k), to, nonce: k, value: BigInt(k), gas: 100000, gasPrice: null, maxFeePerGas: 9n, maxPriorityFeePerGas: 1n, input, accessList: [], authorizationList: null });
     receipts.push({ transactionHash: hash, status: failed ? 0 : 1, gasUsed, cumulativeGasUsed: cumulative, effectiveGasPrice: 8n, contractAddress: kind === 2 && !failed ? hex(0xcafe00 + k) : null, logs });
     const reason = "0x08c379a0" + encodeAbiParameters([{ type: "string" }], ["not allowed"]).slice(2);
-    const sender = hex(0xf000 + (k % 53));
+    const sender = senderOf(k);
     const top: TraceFrame = kind === 2
       ? { traceAddress: [], type: "create", callType: "create", from: sender, to: failed ? null : hex(0xcafe00 + k), value: BigInt(k), gas: 100000, gasUsed, input, error: null,
           created: failed ? null : { address: hex(0xcafe00 + k), code: "0x6001600055" } }
@@ -108,7 +124,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     number, hash, parentHash, timestamp: 1_790_000_000 + number * 3, gasLimit: 30_000_000, gasUsed: cumulative, baseFeePerGas: 7n, miner: hex(0xbeef),
     stateRoot: "0x" + "01".repeat(32), transactionsRoot: "0x" + "02".repeat(32), receiptsRoot: "0x" + "03".repeat(32), extraData: "0x", size: 1000 + shape.txs * 150, transactions: txs,
   };
-  const at = new Date(Date.UTC(2026, 9, 21, 0, 0, 0) + number * 3000).toISOString();
+  const at = shape.at ?? new Date(Date.UTC(2026, 9, 21, 0, 0, 0) + number * 3000).toISOString();
   const record: BlockRecord = {
     updateId: `1220${number.toString(16).padStart(8, "0")}${instance.toString(16).padStart(2, "0")}${"ee".repeat(27)}`, offset: number * 10, recordTime: at, chainId: CHAIN_ID, number, blockHash: hash, parentHash,
     headerHex, txsHex: txList(serialized), proofHex: proofHex(hash, pins), operator: OPERATOR, confirmer: CONFIRMER, synchronizerId: "sync::1220" + "99".repeat(32),

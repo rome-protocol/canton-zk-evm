@@ -85,6 +85,10 @@ export interface Tracker {
   /** Stops, writes what changed, and gives up the lead, so another instance takes the loop at once. */
   close(): Promise<void>;
   size(): number;
+  /** True while this instance runs the loop (it holds the tracker's lock, or there is no database and so one instance). */
+  isLeading(): boolean;
+  /** What the health row says: the transactions being followed, and those given up on in the last hour. */
+  stats(): { open: number; droppedLastHour: number };
 }
 
 const SETTLED: ReadonlySet<TxState> = new Set(["final", "replaced", "dropped"]);
@@ -282,9 +286,12 @@ export function createTracker(o: TrackerOptions): Tracker {
     }
   }
 
+  /** Whether the last look found this instance the leader; with no database there is one instance, and it leads. */
+  let leadingNow = leader === alwaysLeader;
   async function run(): Promise<void> {
     await loaded;
     const leading = await leader.isLeader();
+    leadingNow = leading;
     await adopt(leading);
     if (!leading) return;
     if (store?.purge && now() - purged >= 3600_000) {
@@ -356,5 +363,14 @@ export function createTracker(o: TrackerOptions): Tracker {
       await leader.release();
     },
     size: () => entries.size,
+    isLeading: () => leadingNow,
+    stats() {
+      let open = 0, dropped = 0;
+      for (const e of entries.values()) {
+        if (!SETTLED.has(e.state)) open++;
+        else if (e.state === "dropped" && e.settledAt !== null && now() - e.settledAt < 3600_000) dropped++;
+      }
+      return { open, droppedLastHour: dropped };
+    },
   };
 }

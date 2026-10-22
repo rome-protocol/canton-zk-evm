@@ -73,6 +73,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/legs/{id}": { tag: "Gateway", summary: "One gateway leg, by its id.", param: "The leg's 0x id.", object: F.legItem },
   "/api/search": { tag: "Search", summary: "Where a text leads: a block number or hash, a transaction hash, an address, a Canton update id, or the start of a token's or a verified contract's name.", query: [{ name: "q", about: "The text to look for." }], object: F.search },
   "/api/status": { tag: "Status", summary: "What the chain and the explorer are doing now.", object: FIELDS.status },
+  "/api/health": { tag: "Status", summary: "Every health check with its word (ok, degraded or down), since when, and when its writer last looked; the overall word is down, and the status code 503, only when final data is stale or wrong. A check whose writer has stopped counts as failed and says so.", object: FIELDS.health },
   "/api/block/{id}": { tag: "Pages", summary: "A block as its page shows it: a final block, or one still on its way.", param: "The block's number or its 0x hash.", object: FIELDS.block },
   "/api/tx/{hash}": { tag: "Pages", summary: "A transaction as its page shows it, with where it is in its life.", param: "The transaction's 0x hash.", object: FIELDS.tx },
   "/api/address/{address}": { tag: "Pages", summary: "An address as its page shows it.", param: "A 0x address.", object: FIELDS.address },
