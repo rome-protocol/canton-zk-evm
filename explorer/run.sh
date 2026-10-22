@@ -2,8 +2,8 @@
 # Runs the explorer as a container, beside the chain it shows.
 #
 #   explorer/run.sh setup    make the faucet's key for this run and a genesis that funds it (before the network starts, see below)
-#   explorer/run.sh start    build the image if it needs building, and start the explorer
-#   explorer/run.sh stop     stop it
+#   explorer/run.sh start    build the image if it needs building, make the database ready, and start the indexer and the explorer
+#   explorer/run.sh stop     stop both (and, on a network that is not persistent, remove the database `start` made: see below)
 #   explorer/run.sh build    only build the image
 #
 # The faucet's key and funded genesis come first, because reth starts from the genesis:
@@ -24,8 +24,20 @@
 # RPC_RATE_PER_MINUTE, TRUSTED_IP_HEADER, TRACKER_MAX, TRACKER_MAX_BYTES, TRACKER_PER_SENDER, TRACKER_MAX_PENDING_MINUTES. For setup: FAUCET_FUND and CZE_GENESIS_FILE.
 # The filesystem is read-only, so the transaction tracker keeps its list in <state>/explorer, which is mounted at /var/lib/explorer, and
 # TRACKER_FILE is /var/lib/explorer/tracker.json unless the caller names another path under that folder. The list survives a restart of the container.
-# The database: EXPLORER_DB_PASSWORD_FILE and FAUCET_CLIENT_KEY_FILE are mounted read-only like the faucet's key; EXPLORER_DB_HOST, EXPLORER_DB_PORT, EXPLORER_DB_USER and
-# EXPLORER_DB_NAME are passed on; EXPLORER_DATABASE_URL is taken from the environment and never put on the command. With none of them set, the files work as they always have.
+# The database: the explorer shows the chain the indexer wrote there, and does not start without one. With none named, `start` takes the one
+# network/explorer-db.sh makes (it starts it if it is not running; password in <state>/explorer-db.env, port CZE_EXPLORER_DB_PORT, default 5433).
+# To name another: EXPLORER_DB_PASSWORD_FILE and FAUCET_CLIENT_KEY_FILE are mounted read-only like the faucet's key; EXPLORER_DB_HOST, EXPLORER_DB_PORT,
+# EXPLORER_DB_USER and EXPLORER_DB_NAME are passed on; EXPLORER_DATABASE_URL is taken from the environment and never put on the command.
+# FAUCET_CLIENT_KEY_FILE (the faucet's hash key) is made as <state>/faucet/client-key (mode 0600) when there is a faucet key and none is named.
+# `start` applies the migrations (node server/db/cli.ts migrate), then runs the indexer (node server/indexer/cli.ts) as its own container, EXPLORER_INDEXER_CONTAINER
+# (default cze-explorer-indexer), beside the explorer. It reads the same chain, and also takes GATEWAY_ADDRESS (from PINS), GENESIS_FILE (default <state>/genesis.json, the genesis reth runs), INDEX_DERIVE, INDEX_POLL_MS,
+# INDEX_RETH_BEHIND_MS and INDEX_TRACE_TIMEOUT_MS. It reads reth and Canton at INDEXER_RETH_RPC_URL and INDEXER_LEDGER_URL when they are set, else at the
+# explorer's (the indexer asks reth for trace_ methods too, so a log of the explorer's own calls is not put in front of it). It never restarts by itself:
+# a check that stops it leaves it stopped, and the explorer says so (503) until a person has looked.
+# The default database lives and dies with its network. For a persistent network (<state>/persist.env, CZE_PERSIST=1) it is kept across `stop`, and
+# the container and port it was made with are read back from persist.env. For a network that is not persistent, `stop` wipes it (network/explorer-db.sh
+# wipe), and so does network/down.sh: a new chain made from the same genesis would otherwise meet the old chain's rows and the indexer would stop on them.
+# A database the caller named (EXPLORER_DATABASE_URL, EXPLORER_DB_PASSWORD_FILE) is never wiped here.
 # TRUSTED_IP_HEADER is for an explorer whose port can be reached only through a proxy that sets the header. Otherwise any client could write it.
 # Other settings of the script: EXPLORER_CONTAINER (default cze-explorer), EXPLORER_IMAGE (default cze-explorer),
 # EXPLORER_DRY_RUN=1 (print the Docker commands and stop).
@@ -36,8 +48,15 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 STATE=${CZE_STATE_DIR:-$ROOT/state}
 case $STATE in /*) ;; *) STATE=$PWD/$STATE ;; esac   # Docker mounts need absolute paths
 NAME=${EXPLORER_CONTAINER:-cze-explorer}
+INDEXER_NAME=${EXPLORER_INDEXER_CONTAINER:-cze-explorer-indexer}
 IMAGE=${EXPLORER_IMAGE:-cze-explorer}
 fail() { echo "explorer/run.sh: $*" >&2; exit 1; }
+# A persistent network's database container and port are the ones it was made with, not whatever this shell has set (as down.sh and restart.sh do).
+if [ -e "$STATE/persist.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/network/persist-settings.sh"
+  load_persist_settings "$STATE" || exit 1
+fi
 
 # Runs Docker, or prints the command when EXPLORER_DRY_RUN=1.
 docker_() { if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "docker $*"; else docker "$@"; fi; }
@@ -73,11 +92,26 @@ setup() {
   docker_ "${args[@]}" "$IMAGE" node server/faucet-setup.ts
 }
 
-start() {
-  ARGS=(run -d --name "$NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID")
-  # The one place the explorer may write. The caller owns it, as the container runs as the caller.
-  [ "${EXPLORER_DRY_RUN:-0}" = 1 ] || (umask 077; mkdir -p "$STATE/explorer")
-  ARGS+=(-v "$STATE/explorer:/var/lib/explorer" -e "TRACKER_FILE=${TRACKER_FILE:-/var/lib/explorer/tracker.json}" -e "FAUCET_STATE_FILE=${FAUCET_STATE_FILE:-/var/lib/explorer/faucet.json}")
+# Makes the database named: the caller's, or the one network/explorer-db.sh runs for this state folder (started here if it is not up).
+database() {
+  [ -z "${EXPLORER_DATABASE_URL:-}" ] || return 0
+  [ -z "${EXPLORER_DB_PASSWORD_FILE:-}" ] || return 0
+  [ "${EXPLORER_DRY_RUN:-0}" = 1 ] || CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" start
+  EXPLORER_DB_PASSWORD_FILE=$STATE/explorer-db.env
+  [ -n "${EXPLORER_DB_PORT:-}" ] || [ -z "${CZE_EXPLORER_DB_PORT:-}" ] || EXPLORER_DB_PORT=$CZE_EXPLORER_DB_PORT
+}
+
+# The database's settings for the container being built in ARGS.
+database_args() {
+  [ -z "${EXPLORER_DB_PASSWORD_FILE:-}" ] || mount_file EXPLORER_DB_PASSWORD_FILE "$EXPLORER_DB_PASSWORD_FILE"
+  for v in EXPLORER_DB_HOST EXPLORER_DB_PORT EXPLORER_DB_USER EXPLORER_DB_NAME; do
+    [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
+  done
+  [ -z "${EXPLORER_DATABASE_URL:-}" ] || ARGS+=(-e EXPLORER_DATABASE_URL)   # a URL may hold the password, so it is named without its value, as the captcha's secret is
+}
+
+# The reader party and the run's pins, for the container being built in ARGS (the explorer and the indexer read the same chain).
+chain_args() {
   local party=${READER_PARTY:-}
   [ -n "$party" ] || party=$(sed -n 's/^READER_PARTY=//p' "$STATE/canton/parties.env" 2>/dev/null || true)
   [ -n "$party" ] || fail "READER_PARTY is not set, and $STATE/canton/parties.env has none: the explorer reads Canton as the reader party only"
@@ -85,23 +119,65 @@ start() {
   local pins=${PINS_FILE:-}
   [ -n "$pins" ] || { [ ! -f "$STATE/net/guest.txt" ] || pins=$STATE/net/guest.txt; }
   [ -z "$pins" ] || mount_file PINS_FILE "$pins"
+}
+
+# The explorer's container, in ARGS (without the database's settings: the files named here are checked first, before anything runs).
+explorer_args() {
+  ARGS=(run -d --name "$NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID")
+  # The one place the explorer may write. The caller owns it, as the container runs as the caller.
+  [ "${EXPLORER_DRY_RUN:-0}" = 1 ] || (umask 077; mkdir -p "$STATE/explorer")
+  ARGS+=(-v "$STATE/explorer:/var/lib/explorer" -e "TRACKER_FILE=${TRACKER_FILE:-/var/lib/explorer/tracker.json}" -e "FAUCET_STATE_FILE=${FAUCET_STATE_FILE:-/var/lib/explorer/faucet.json}")
+  chain_args
   local key=${FAUCET_KEY_FILE:-}
   [ -n "$key" ] || { [ ! -f "$STATE/faucet/key" ] || key=$STATE/faucet/key; }
   [ -z "$key" ] || mount_file FAUCET_KEY_FILE "$key"
-  # The database (see the README): the password file and the faucet's hash key are read-only files, like the faucet's key.
-  [ -z "${EXPLORER_DB_PASSWORD_FILE:-}" ] || mount_file EXPLORER_DB_PASSWORD_FILE "$EXPLORER_DB_PASSWORD_FILE"
-  [ -z "${FAUCET_CLIENT_KEY_FILE:-}" ] || mount_file FAUCET_CLIENT_KEY_FILE "$FAUCET_CLIENT_KEY_FILE"
+  # The faucet's hash key: the caller's, else one made once for this state folder (the faucet keeps its state in the database, with client addresses as keyed hashes).
+  local ckey=${FAUCET_CLIENT_KEY_FILE:-}
+  if [ -z "$ckey" ] && [ -n "$key" ]; then
+    ckey=$STATE/faucet/client-key
+    [ -f "$ckey" ] || [ "${EXPLORER_DRY_RUN:-0}" = 1 ] || (umask 077; mkdir -p "$STATE/faucet"; openssl rand -hex 32 > "$ckey")
+    [ -f "$ckey" ] || ckey=
+  fi
+  [ -z "$ckey" ] || mount_file FAUCET_CLIENT_KEY_FILE "$ckey"
   for v in EXPLORER_HOST EXPLORER_PORT RETH_RPC_URL LEDGER_URL CHAIN_NAME COIN_SYMBOL RPC_TIMEOUT_MS POLL_MS FAUCET_AMOUNT FAUCET_PER_ADDRESS_SECONDS FAUCET_PER_IP_SECONDS FAUCET_MAX_PER_HOUR FAUCET_BATCH FAUCET_QUEUE_MAX \
     CAPTCHA_VERIFY_URL CAPTCHA_SCRIPT_URL CAPTCHA_SITE_KEY CAPTCHA_WIDGET_CLASS \
-    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES \
-    EXPLORER_DB_HOST EXPLORER_DB_PORT EXPLORER_DB_USER EXPLORER_DB_NAME; do
+    PUBLIC_RPC RPC_RATE_PER_MINUTE TRUSTED_IP_HEADER TRACKER_MAX TRACKER_MAX_BYTES TRACKER_PER_SENDER TRACKER_MAX_PENDING_MINUTES; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
   # The secret is named without a value, so Docker takes it from this shell's environment and it is never in the command line.
   [ -z "${CAPTCHA_SECRET:-}" ] || ARGS+=(-e CAPTCHA_SECRET)
-  [ -z "${EXPLORER_DATABASE_URL:-}" ] || ARGS+=(-e EXPLORER_DATABASE_URL)   # a URL may hold the password, so it is named the same way
+}
+
+# The indexer's container, in ARGS (also without the database's settings).
+indexer_args() {
+  ARGS=(run -d --name "$INDEXER_NAME" "${HARDEN[@]}" --network host -e "CHAIN_ID=$CHAIN_ID" -e "GATEWAY_ADDRESS=$GATEWAY_ADDRESS")
+  chain_args
+  # The genesis reth runs (network/make-state.sh's), whose contracts the indexer seeds at its first start; GENESIS_FILE names another.
+  local genesis=${GENESIS_FILE:-}
+  [ -n "$genesis" ] || genesis=$STATE/genesis.json
+  [ -f "$genesis" ] || fail "GENESIS_FILE is not set, and $STATE/genesis.json (the genesis reth runs) is not there: the indexer seeds the chain's contracts from it"
+  mount_file GENESIS_FILE "$genesis"
+  local reth=${INDEXER_RETH_RPC_URL:-${RETH_RPC_URL:-}} ledger=${INDEXER_LEDGER_URL:-${LEDGER_URL:-}}
+  [ -z "$reth" ] || ARGS+=(-e "RETH_RPC_URL=$reth")
+  [ -z "$ledger" ] || ARGS+=(-e "LEDGER_URL=$ledger")
+  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS; do
+    [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
+  done
+}
+
+# Everything that names a file is checked while the three containers' arguments are made, and nothing runs before that is done.
+start() {
+  explorer_args; local explorer=("${ARGS[@]}")
+  indexer_args; local indexer=("${ARGS[@]}")
+  database   # may start the database, which makes the password file the next lines mount
+  ARGS=("${explorer[@]}"); database_args; explorer=("${ARGS[@]}")
+  ARGS=("${indexer[@]}"); database_args; indexer=("${ARGS[@]}")
+  ARGS=(run --rm "${HARDEN[@]}" --network host); database_args; local migrate=("${ARGS[@]}")
+  quietly "${migrate[@]}" "$IMAGE" node server/db/cli.ts migrate
+  stop_indexer
+  quietly "${indexer[@]}" "$IMAGE" node server/indexer/cli.ts
   stop_container
-  quietly "${ARGS[@]}" "$IMAGE"
+  quietly "${explorer[@]}" "$IMAGE"
 }
 
 # Stops the container gracefully: SIGTERM, then up to 30 seconds for the explorer to write the tracker's list and let the faucet
@@ -111,10 +187,28 @@ stop_container() {
   quietly rm "$NAME" 2> /dev/null || true
 }
 
+# The indexer stops on SIGTERM and lets the write in hand finish.
+stop_indexer() {
+  quietly stop -t 30 "$INDEXER_NAME" 2> /dev/null || true
+  quietly rm "$INDEXER_NAME" 2> /dev/null || true
+}
+
+# The default database follows the network's life: for a network that is not persistent, `stop` removes the database that `start` made, so the next
+# chain starts with an empty one. A persistent network keeps it, and a database the caller named is not ours to remove.
+forget_database() {
+  [ -z "${EXPLORER_DATABASE_URL:-}" ] || return 0
+  [ -z "${EXPLORER_DB_PASSWORD_FILE:-}" ] || return 0
+  [ ! -e "$STATE/persist.env" ] || return 0
+  [ -f "$STATE/explorer-db.env" ] || return 0   # start made none, so there is nothing to remove
+  if [ "${EXPLORER_DRY_RUN:-0}" = 1 ]; then echo "network/explorer-db.sh wipe"; return 0; fi
+  CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || fail "the explorer's database could not be removed (see above): run network/explorer-db.sh wipe again before the next network"
+  echo "explorer/run.sh: this network is not persistent, so the explorer's database is removed with it"
+}
+
 case ${1:-} in
   build) build ;;
   setup) build; setup ;;
   start) build; start ;;
-  stop) stop_container ;;
+  stop) stop_container; stop_indexer; forget_database ;;
   *) echo "usage: explorer/run.sh setup | start | stop | build" >&2; exit 2 ;;
 esac

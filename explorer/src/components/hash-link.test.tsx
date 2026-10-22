@@ -62,7 +62,7 @@ describe("a hash", () => {
 });
 
 describe("the status words", () => {
-  it.each([["final", "Final"], ["proving", "Being proven"], ["waiting", "Waiting"], ["genesis", "Genesis"]] as const)("%s reads %s", (kind, word) => {
+  it.each([["final", "Final"], ["proving", "Being proven"], ["unindexed", "Not indexed yet"], ["waiting", "Waiting"], ["genesis", "Genesis"]] as const)("%s reads %s", (kind, word) => {
     render(<Chip status={kind} />);
     expect(screen.getByText(word)).toHaveClass(`chip-${kind}`);
   });

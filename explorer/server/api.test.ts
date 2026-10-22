@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { keccak256, type Hex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { createApi, FIELDS, NOT_FOUND } from "./api.ts";
-import { createChainIndex } from "./chain-index.ts";
+import { createChainDb, type ChainDb } from "./chain-db.ts";
+import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "./db/testing.ts";
 import { loadConfig } from "./config.ts";
 import { createLedger } from "./ledger.ts";
 import { createFaucet } from "./faucet.ts";
@@ -12,6 +13,7 @@ import type { Tracked } from "./tracker.ts";
 import { ALLOWED_METHODS, createReth, RethError } from "./reth.ts";
 import { FakeChain, hashOf, txHash, updateIdOf } from "../test/fake-chain.ts";
 import { FAKE_CONFIRMER, FAKE_OPERATOR, FAKE_READER, startFakeLedger, type FakeLedger } from "../test/fake-ledger.ts";
+import { seedBlocks } from "../test/seed-chain.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
 
 const TOKEN = "0x" + "ca".repeat(20), ALICE = "0x" + "9a".repeat(20), BOB = "0x" + "5b".repeat(20), POOL_TX = "0x" + "ab".repeat(32);
@@ -20,10 +22,14 @@ const FAUCET_KEY = generatePrivateKey(), FAUCET_ADDRESS = privateKeyToAccount(FA
 const settings = "programVK=0x" + "cd".repeat(32) + "\nrootC=0x" + "ef".repeat(32) + "\n";
 
 let reth: FakeReth | undefined, ledger: FakeLedger | undefined;
-afterEach(async () => { await reth?.close(); await ledger?.close(); });
+const databases: TestDatabase[] = [];
+afterEach(async () => { await reth?.close(); await ledger?.close(); for (const d of databases.splice(0)) await d.drop(); });
+
+/** What reth says about transaction `i` of block `n`, and what the indexer stored of it. */
+const txOf = (_n: number, _i: number) => ({ from: ALICE, to: TOKEN, value: 0n, nonce: 1, type: 2, gas: 0x186a0, input: TRANSFER });
 
 /** reth's methods for the pages: the chain's own handlers, `latest`, full transactions, and the lookups by hash. */
-function handlers(chain: FakeChain) {
+function handlers(chain: FakeChain, finalized: () => number) {
   const tx = (n: number, i: number) => ({
     hash: txHash(n, i), blockNumber: "0x" + n.toString(16), blockHash: hashOf(n), transactionIndex: "0x" + i.toString(16), from: ALICE, to: TOKEN,
     value: "0x0", nonce: "0x1", type: "0x2", gas: "0x186a0", input: TRANSFER,
@@ -34,7 +40,7 @@ function handlers(chain: FakeChain) {
   const read = (b: { number: string; transactions: string[] } | undefined, full: unknown) => (!b ? null : full ? { ...b, transactions: b.transactions.map((_, i) => tx(Number(b.number), i)) } : b);
   return {
     ...base,
-    eth_getBlockByNumber: (p: unknown[]) => read(chain.blocks[p[0] === "latest" ? chain.blocks.length - 1 : Number(p[0])] as never, p[1]),
+    eth_getBlockByNumber: (p: unknown[]) => read(chain.blocks[p[0] === "latest" ? chain.blocks.length - 1 : p[0] === "finalized" ? finalized() : Number(p[0])] as never, p[1]),
     eth_getBlockByHash: (p: unknown[]) => read(chain.blocks.find((b) => b.hash === p[0]) as never, p[1]),
     eth_getTransactionByHash: (p: unknown[]) => { const f = find(p[0] as string); return f ? tx(...f) : p[0] === POOL_TX ? pool : null; },
     eth_getTransactionReceipt: (p: unknown[]) => { const f = find(p[0] as string); return f ? chain.receipts[f[0]]![f[1]] : null; },
@@ -50,35 +56,49 @@ function handlers(chain: FakeChain) {
 /** Adds a `leaked` field to every object it holds, as a careless pass-through of the index's or the config's own objects would send it on. */
 const leaky = <T>(x: T): T => (Array.isArray(x) ? (x.map(leaky) as T) : x && typeof x === "object" ? ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, leaky(v)])), leaked: "x" } as T) : x);
 
-interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; run?: { value: number }; faucet?: boolean; store?: FaucetStore; gate?: (method: string) => Promise<void> | void; firstLook?: "wait" | "go" }
+interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean; finalized?: number | "unreadable"; missFirstBlockRead?: boolean; checksWritten?: boolean }
 
-/** With `firstLook: "go"` the index's first look is started and not waited for, and `look` is it: the answers are then those of a look in progress. */
-async function boot(chain: FakeChain, { tracker, leak = false, run, faucet = false, store, gate, firstLook = "wait" }: Options = {}) {
-  reth = await startFakeReth(handlers(chain), { gate });
+/**
+ * `indexed` is the newest block the database holds, for an indexer that is behind Canton; `empty` is a database the indexer has not written to at all.
+ * `finalized` is what reth's finalized tag says: the newest block Canton holds unless given, or "unreadable" for a reth that cannot answer for the tag.
+ */
+const REFRESHED = ["C4", "C5", "derive_lag", "C10"];
+/** The refreshed checks, ok, looked at `age` ago; a row that is there is replaced. */
+const writeFreshChecks = (pool: import("pg").Pool, age = "0 seconds") =>
+  pool.query(`insert into health_checks (check_id, status, changed_at, checked_at) select c, 'ok', now() - interval '${age}', now() - interval '${age}' from unnest($1::text[]) as c
+    on conflict (check_id) do update set status = 'ok', checked_at = excluded.checked_at, changed_at = excluded.changed_at`, [REFRESHED]);
+
+async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false, finalized, missFirstBlockRead = false, checksWritten = true }: Options = {}) {
+  let finalizedAt = 0;
+  const base = handlers(chain, () => finalizedAt);
+  reth = await startFakeReth(finalized === "unreadable" ? { ...base, eth_getBlockByNumber: (p: unknown[]) => { if (p[0] === "finalized") throw new Error("finalized is not served"); return base.eth_getBlockByNumber(p); } } : base);
   ledger = await startFakeLedger(chain.items);
   const real = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
   const config = leak ? leaky(real) : real;
   const r = createReth(reth.url, 2000), l = createLedger(ledger.url, 2000, FAKE_READER);
-  const built = createChainIndex(r, l, real.pins, 100);
-  const look = built.sync();
-  if (firstLook === "wait") await look;
-  const index: typeof built = {
-    ...built,
-    status: () => ({ ...(leak ? leaky(built.status()) : built.status()), ...(run ? { run: run.value } : {}) }),
-    head: () => (leak ? leaky(built.head()) : built.head()),
-    byNumber: (n) => (leak ? leaky(built.byNumber(n)) : built.byNumber(n)),
-    byHash: (h) => (leak ? leaky(built.byHash(h)) : built.byHash(h)),
-    byUpdate: (u) => (leak ? leaky(built.byUpdate(u)) : built.byUpdate(u)),
-    latest: (n) => (leak ? leaky(built.latest(n)) : built.latest(n)),
-    token: (a) => (leak ? leaky(built.token(a)) : built.token(a)),
-    tx: (h) => (leak ? leaky(built.tx(h)) : built.tx(h)),
-    contract: (a) => (leak ? leaky(built.contract(a)) : built.contract(a)),
-  };
+  const db = await makeDatabase(true);
+  databases.push(db);
+  const records = await l.records(0, await l.ledgerEnd());
+  finalizedAt = typeof finalized === "number" ? finalized : Math.max(0, ...records.map((x) => x.number));
+  if (!empty) await seedBlocks(db.pool, records.filter((x) => x.number <= indexed).map((record) => ({ record, raw: chain.blocks[record.number]!, receipts: chain.receipts[record.number]! })), txOf, real.pins);
+  // A running indexer has written its four refreshed checks (checkOnce, every 2 s) as well as its records: without them the status is red.
+  if (!empty && checksWritten) await writeFreshChecks(db.pool);
+  const built = createChainDb(db.pool);
+  const chainDb0: ChainDb = leak
+    ? {
+        head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)),
+        tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf,
+        indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced,
+      }
+    : built;
+  // The indexer commits a block between the route's first look in the database and its second: the first read of a block by number misses, the rest are true.
+  let missed = !missFirstBlockRead;
+  const chainDb: ChainDb = { ...chainDb0, block: async (k) => { if (!missed) { missed = true; return undefined; } return chainDb0.block(k); } };
   const key = faucet ? FAUCET_KEY : null;
   const faucetTracker = { track: (_raw: string, _hash: string, _from: string, _nonce: number, _via?: string) => {}, state: (_hash: string): Tracked | undefined => undefined };
   const faucetOf = createFaucet({ key, chainId: real.chainId, ...real.faucet, captcha: null, reth: r, ...(store ? { store } : {}), tracker: { track: (...a) => faucetTracker.track(...a), state: (h) => faucetTracker.state(h) } });
-  const api = createApi({ config, reth: r, ledger: l, index, tracker, faucet: faucetOf });
-  return { api, look, get: (target: string) => api("GET", target), faucet: faucetOf, tracker: faucetTracker };
+  const api = createApi({ config, reth: r, ledger: l, chain: chainDb, tracker, faucet: faucetOf });
+  return { api, pool: db.pool, get: (target: string) => api("GET", target), faucet: faucetOf, tracker: faucetTracker };
 }
 
 const chain = () => {
@@ -120,6 +140,8 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
   }
 }
 
+checkRequired();
+
 /** One of each answer, with a log on the transaction in block 2. */
 const answers = (chain: FakeChain): ["status" | "block" | "tx" | "address", string][] => {
   chain.receipts[2]![0]!.logs = [{ address: TOKEN, topics: ["0x" + "dd".repeat(32)], data: "0x01" }];
@@ -130,27 +152,120 @@ const answers = (chain: FakeChain): ["status" | "block" | "tx" | "address", stri
   ];
 };
 
-describe("status and health", () => {
-  it("says it is starting, not failed, while the first look is still reading the blocks", async () => {
-    let release!: () => void, entered!: () => void;
-    const open = new Promise<void>((ok) => (release = ok)), arrived = new Promise<void>((ok) => (entered = ok));
-    const gate = async (method: string) => { if (method === "eth_getBlockReceipts") { entered(); await open; } };
-    const { get, look } = await boot(chain(), { gate, firstLook: "go" });
-    await arrived;
-    const { status, body } = await get("/api/status");
+describe.skipIf(!TEST_URL)("status and health", () => {
+  it("says it is starting, not failed, while the indexer has written nothing", async () => {
+    const { status, body } = await (await boot(chain(), { empty: true })).get("/api/status");
     checkFields("status", body);
     expect(status).toBe(503);
-    expect(body).toMatchObject({ ok: false, starting: true, problems: [], evm: true, canton: true, final: { number: 1 }, latest: [{ number: 1 }] });
-    release();
-    await look;
-    expect(await get("/api/status")).toMatchObject({ status: 200, body: { ok: true, starting: false } });
+    expect(body).toMatchObject({ ok: false, starting: true, problems: [], evm: true, canton: true, final: null, proving: { number: 3 }, latest: [], signers: null });
   });
 
-  it("says it has failed, not that it is starting, when the first look could not finish", async () => {
-    const c = chain();
-    c.blocks[2] = null as never;
-    const { body } = await (await boot(c)).get("/api/status");
-    expect(body).toMatchObject({ ok: false, starting: false, problems: [] });
+  it("says what the indexer's failed checks say, and that it has not merely started", async () => {
+    const { get, pool } = await boot(chain());
+    await pool.query("insert into health_checks (check_id, status, detail, changed_at, checked_at) values ('C3', 'down', 'block 3: the record does not hash to reth''s transactions', now(), now()), ('C9', 'ok', null, now(), now())");
+    const { status, body } = await get("/api/status");
+    expect(status).toBe(503);
+    expect(body).toMatchObject({ ok: false, starting: false, problems: ["C3: block 3: the record does not hash to reth's transactions"], final: { number: 2 } });
+  });
+
+  it("says a block that is final on Canton but not in the database yet is final and not indexed yet, and a block that is not on Canton as being proven", async () => {
+    const { get } = await boot(chain(), { indexed: 1 });
+    expect((await get("/api/status")).body).toMatchObject({ final: { number: 1 }, proving: { number: 3 }, latest: [{ number: 1 }] });
+    const behind = await get("/api/block/2");
+    checkFields("block", behind.body);
+    expect(behind.body).toMatchObject({ status: "unindexed", number: 2, hash: hashOf(2), canton: null, txCount: 1, transactions: [{ hash: txHash(2, 0) }] });
+    expect((await get(`/api/tx/${txHash(2, 0)}`)).body).toMatchObject({ status: "unindexed", state: "unindexed", block: { number: 2, hash: hashOf(2), updateId: null }, success: true });
+    expect((await get("/api/block/3")).body).toMatchObject({ status: "proving", number: 3, canton: null });
+    expect((await get(`/api/tx/${txHash(3, 0)}`)).body).toMatchObject({ status: "proving", state: "proving", block: { number: 3, updateId: null } });
+    expect((await get(`/api/block/${hashOf(2)}`)).body).toMatchObject({ status: "unindexed", number: 2 });
+  });
+
+  it("does not name a block as being proven when Canton already holds it: the indexer is behind, and the status says so by its problems", async () => {
+    const { get } = await boot(chain(), { indexed: 1, finalized: 3 });
+    const { body } = await get("/api/status");
+    expect(body).toMatchObject({ final: { number: 1 }, proving: null });
+    checkFields("status", body);
+  });
+
+  it("serves a block as final when the indexer wrote it while the route was asking reth, and not as 404", async () => {
+    const { get } = await boot(chain(), { missFirstBlockRead: true });
+    const r = await get("/api/block/2");
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ status: "final", number: 2, hash: hashOf(2) });
+    // A block that is nowhere is still 404 after the second look.
+    expect((await get("/api/block/99")).status).toBe(404);
+  });
+
+  it("does not call a block final when reth's finalized block cannot be read: it only says it is being proven", async () => {
+    const { get } = await boot(chain(), { indexed: 1, finalized: "unreadable" });
+    expect((await get("/api/block/2")).body).toMatchObject({ status: "proving", number: 2 });
+    expect((await get(`/api/tx/${txHash(2, 0)}`)).body).toMatchObject({ status: "proving" });
+  });
+
+  describe("an indexer that has stopped", () => {
+    const writeChecks = writeFreshChecks;
+
+    it("is fine while its checks are fresh", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      const { status, body } = await get("/api/status");
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ ok: true, problems: [] });
+    });
+
+    it("answers 503 and names the checks that have not been refreshed, even when every row says ok", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "2 hours");
+      const { status, body } = await get("/api/status");
+      expect(status).toBe(503);
+      const { ok: isOk, starting, problems } = body as { ok: boolean; starting: boolean; problems: string[] };
+      expect(isOk).toBe(false);
+      expect(starting).toBe(false);
+      expect(problems).toHaveLength(4);
+      expect(problems[0]).toMatch(/^C10: the indexer has not checked in 7\d{3} s$/);
+      expect(problems.some((p) => /^C5: the indexer has not checked in 7\d{3} s$/.test(p))).toBe(true);
+    });
+
+    it("answers 503 and names each refreshed check that has no row, when the indexer has written a record but has not checked yet (a rebuild from an export leaves it so)", async () => {
+      const { get } = await boot(chain(), { checksWritten: false });
+      const { status, body } = await get("/api/status");
+      expect(status).toBe(503);
+      expect(body).toMatchObject({ ok: false, starting: false, problems: ["C4: the indexer has not checked yet", "C5: the indexer has not checked yet", "derive_lag: the indexer has not checked yet", "C10: the indexer has not checked yet"] });
+    });
+
+    it("counts a row as stale after about three of the indexer's two-second intervals, and no sooner", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "4 seconds");
+      expect((await get("/api/status")).status).toBe(200);
+      await pool.query("update health_checks set checked_at = now() - interval '8 seconds'");
+      expect((await get("/api/status")).status).toBe(503);
+    });
+
+    it("does not count a check that is only written when it fails as stale: an old ok row of C1 is an indexer that never failed", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      await pool.query("insert into health_checks (check_id, status, changed_at, checked_at) values ('C1', 'ok', now() - interval '2 hours', now() - interval '2 hours')");
+      expect((await get("/api/status")).status).toBe(200);
+    });
+
+    it("keeps the check's own words for a check that has failed and is being refreshed", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      await pool.query("update health_checks set status = 'degraded', detail = 'the index is 3 blocks behind' where check_id = 'C5'");
+      expect(((await get("/api/status")).body as Obj).problems).toEqual(["C5: the index is 3 blocks behind"]);
+    });
+  });
+
+  it("goes red and names the database when it cannot be read", async () => {
+    const { get, pool } = await boot(chain());
+    await pool.query("alter table blocks rename to blocks_moved");
+    const { status, body } = await get("/api/status");
+    expect(status).toBe(503);
+    expect(body).toMatchObject({ ok: false, evm: true, final: null, latest: [] });
+    expect(JSON.stringify((body as Obj).problems)).toMatch(/database/);
+    const block = await get("/api/block/2");
+    expect(block.status).toBe(502);
+    expect(JSON.stringify(block.body)).not.toMatch(/127\.0\.0\.1|postgres|relation/);
   });
 
   it("says what is final and what is being proven, with the settings the pages need", async () => {
@@ -192,7 +307,7 @@ describe("status and health", () => {
   });
 });
 
-describe("blocks", () => {
+describe.skipIf(!TEST_URL)("blocks", () => {
   it("gives a final block's two sides, and the record's three fields as hex, by number, hash or update", async () => {
     const { get } = await boot(chain());
     const { status, body } = await get("/api/block/2");
@@ -220,7 +335,7 @@ describe("blocks", () => {
   });
 });
 
-describe("transactions and addresses", () => {
+describe.skipIf(!TEST_URL)("transactions and addresses", () => {
   it("gives a transaction as Final, Being proven or Waiting, with the decoded token transfer and the fee", async () => {
     const { get } = await boot(chain());
     const final = await get(`/api/tx/${txHash(2, 0)}`);
@@ -285,7 +400,7 @@ describe("transactions and addresses", () => {
   });
 });
 
-describe("search", () => {
+describe.skipIf(!TEST_URL)("search", () => {
   it("works out what was typed from its shape, and says what it takes when nothing is found", async () => {
     const { get } = await boot(chain());
     const path = async (q: string) => (await get(`/api/search?q=${encodeURIComponent(q)}`)).body;
@@ -299,15 +414,15 @@ describe("search", () => {
   });
 });
 
-describe("fields", () => {
+describe.skipIf(!TEST_URL)("fields", () => {
   it("gives every object of every answer exactly its listed fields", async () => {
-    const c = chain(), { get } = await boot(c);
-    for (const [kind, target] of answers(c)) checkFields(kind, (await get(target)).body);
+    const c = chain(), targets = answers(c), { get } = await boot(c);
+    for (const [kind, target] of targets) checkFields(kind, (await get(target)).body);
   });
 
   it("builds each object field by field, so nothing an inner object carries is passed on", async () => {
-    const c = chain(), { get } = await boot(c, { leak: true });
-    for (const [kind, target] of answers(c)) {
+    const c = chain(), targets = answers(c), { get } = await boot(c, { leak: true });
+    for (const [kind, target] of targets) {
       const { body } = await get(target);
       expect(JSON.stringify(body)).not.toContain("leaked");
       checkFields(kind, body);
@@ -315,7 +430,7 @@ describe("fields", () => {
   });
 });
 
-describe("the faucet routes", () => {
+describe.skipIf(!TEST_URL)("the faucet routes", () => {
   const ask = (api: Awaited<ReturnType<typeof boot>>["api"], address: unknown, ip?: string, extra: object = {}) => api("POST", "/api/faucet", JSON.stringify({ address, ...extra }), ip);
 
   it("takes a request with 202 and answers with a ticket, its place in line, the address and the amount, and nothing else", async () => {
@@ -421,7 +536,7 @@ describe("the faucet routes", () => {
   });
 });
 
-describe("the rest of the routes", () => {
+describe.skipIf(!TEST_URL)("the rest of the routes", () => {
   it("answers 404 or 405 elsewhere", async () => {
     const { api } = await boot(chain());
     expect((await api("POST", "/api/status")).status).toBe(405);
@@ -450,7 +565,7 @@ describe("the rest of the routes", () => {
   });
 });
 
-describe("tokens the index does not hold", () => {
+describe.skipIf(!TEST_URL)("tokens that no block created", () => {
   const unheld = () => {
     const c = new FakeChain();
     c.tokens.set(TOKEN, ["Token A", "TKA", 18]);
@@ -469,33 +584,26 @@ describe("tokens the index does not hold", () => {
     expect(tokenCalls()).toBe(3);
   });
 
-  it("forgets them when the index starts a new run", async () => {
-    const run = { value: 1 }, c = unheld();
-    const { get } = await boot(c, { run });
+  it("keeps a token's details for as long as the process runs, and asks again after a failed read", async () => {
+    const c = unheld();
+    const { get } = await boot(c);
     const symbol = async () => ((await get("/api/block/1")).body as Obj).transactions[0].transfer.symbol;
     expect(await symbol()).toBe("TKA");
     c.tokens.set(TOKEN, ["Token B", "TKB", 18]);
-    expect(await symbol()).toBe("TKA"); // same run: kept
-    run.value = 2;
-    expect(await symbol()).toBe("TKB");
+    expect(await symbol()).toBe("TKA");
   });
 });
 
-describe("what the server touches", () => {
-  it("calls only listed methods on reth and only the two reads on Canton, naming only the reader party and the block record", async () => {
+describe.skipIf(!TEST_URL)("what the server touches", () => {
+  it("calls only listed methods on reth and only the ledger end on Canton: the block records are the indexer's to read", async () => {
     const { get, api } = await boot(chain(), { faucet: true });
+    ledger!.requests.length = 0; // what the test's own fixture read is not the server's
     await api("POST", "/api/faucet", JSON.stringify({ address: BOB }));
     for (const t of ["/api/faucet", "/api/status", "/api/block/2", "/api/block/3", "/api/block/0", `/api/tx/${txHash(2, 0)}`, `/api/address/${TOKEN}`, `/api/search?q=${hashOf(1)}`]) await get(t);
     expect(reth!.calls.length).toBeGreaterThan(5);
     for (const m of reth!.calls) expect(ALLOWED_METHODS.has(m)).toBe(true);
     const seen = ledger!.requests.map((r) => `${r.method} ${r.path}`);
-    expect(new Set(seen)).toEqual(new Set(["GET /v2/state/ledger-end", "POST /v2/updates"]));
-    for (const r of ledger!.requests.filter((x) => x.body)) {
-      const text = JSON.stringify(r.body);
-      expect(text).toContain(FAKE_READER);
-      expect(text.match(/::1220/g)).toHaveLength(1); // one party, and no other
-      expect(text).toContain("Zk.Chain:BlockRecord");
-    }
+    expect(new Set(seen)).toEqual(new Set(["GET /v2/state/ledger-end"]));
   });
 
   it("never lets a party id other than the two signers into any answer", async () => {
