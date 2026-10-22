@@ -33,3 +33,4 @@
   .way-steps .how-dot { top: 3px; }
   .way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
 }
+.tx-h { margin: 0 0 8px; }
