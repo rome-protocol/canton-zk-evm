@@ -83,7 +83,7 @@ export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockLi
 }
 /** A final transaction as the list route gives it: the nth, in block n. */
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
-  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, ...over };
+  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, ...over };
 }
 export const page = <T,>(items: T[], next: string | null = null): Page<T> => ({ items, next });
 

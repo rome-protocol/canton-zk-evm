@@ -60,6 +60,7 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(b.legsCount).toBe(1);
     expect(b.derived).toBe(true);
     for (const t of body(await get("/api/blocks/2/transactions")).items) same(t, F.txItem);
+    for (const t of body(await get("/api/blocks/2/transactions")).items) expect(t.methodId === null || /^0x[0-9a-f]{8}$/.test(t.methodId)).toBe(true);
     const legs = body(await get(`/api/blocks/${chain.blocks[1]!.block.hash}/legs`));
     expect(legs.items.length).toBe(1);
     same(legs.items[0], F.leg);

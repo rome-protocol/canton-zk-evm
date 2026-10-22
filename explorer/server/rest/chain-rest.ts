@@ -21,6 +21,8 @@ export const addressOfKey = (key: string): number[] => (key === "t" ? [] : key.s
 export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string }
 export interface TxListItem {
   hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null;
+  /** The input's first 4 bytes as 0x hex; null for a transaction with no input (a plain transfer or a creation with no arguments). */
+  methodId: string | null;
 }
 export interface BlockExtras {
   legsCount: number;
@@ -42,10 +44,10 @@ export interface UpdateDetail extends UpdateItem {
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
 
 export const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from b.timestamp)::bigint as ts, t.from_address, t.to_address, t.value::text as value, t.nonce, t.type, t.gas_used,
-  t.effective_gas_price::text as price, t.status, t.created_contract`;
+  t.effective_gas_price::text as price, t.status, t.created_contract, t.method_id`;
 export const txItem = (r: Row): TxListItem => ({
   hash: hex(r.hash), block: Number(r.block_number), index: r.tx_index, timestamp: Number(r.ts), from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value, nonce: Number(r.nonce),
-  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract),
+  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract), methodId: hexOrNull(r.method_id),
 });
 
 export type ChainRest = ReturnType<typeof createChainRest>;
