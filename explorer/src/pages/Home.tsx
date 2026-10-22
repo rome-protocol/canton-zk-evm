@@ -6,7 +6,7 @@ import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, short, utc } from "../format.ts";
-import { listPoll, readOf, summarize, useBlocks, useFaucetAddress, useInFlight, usualProof } from "../stats.ts";
+import { listPoll, readOf, summarize, useBlocks, useFaucetAddress, useHomeStats, useInFlight, usualProof } from "../stats.ts";
 import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { type Details, Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
@@ -89,6 +89,7 @@ export function Home() {
   const blocks = useBlocks(10, live);
   const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live) });
   const flight = useInFlight(live);
+  const homeStats = useHomeStats();
   const flightRead = readOf(flight);
   // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once.
   const faucet = useFaucetAddress();
@@ -107,7 +108,7 @@ export function Home() {
     <>
       <Hero tries={tries} />
       <Strip status={data} />
-      <Stats summary={summarize(data, blocks.data?.items ?? [], flightRead === "ok" ? flight.data! : null)} flight={flightRead} />
+      <Stats summary={summarize(data, flightRead === "ok" ? flight.data! : null)} flight={flightRead} {...homeStats} />
       <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} usual={usualProof(blocks.data?.items ?? [])} later={pending} />
       <AddToWallet status={data} />
       <div className="cols">

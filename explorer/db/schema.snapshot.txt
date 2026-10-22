@@ -23,6 +23,7 @@ table addresses
   column coin_balance_block bigint
   constraint addresses_pkey PRIMARY KEY (address)
   CREATE INDEX addresses_coin_balance_address_idx ON public.addresses USING btree (coin_balance DESC, address DESC) WHERE (coin_balance > (0)::numeric)
+  CREATE INDEX addresses_first_seen_block_idx ON public.addresses USING btree (first_seen_block)
   CREATE INDEX addresses_tx_count_address_idx ON public.addresses USING btree (((sent_count + received_count)) DESC, address DESC)
   CREATE UNIQUE INDEX addresses_pkey ON public.addresses USING btree (address)
 
@@ -75,11 +76,13 @@ table block_attempts
   constraint block_attempts_pkey PRIMARY KEY (attempt_id)
   constraint block_attempts_run_id_attempt_seq_key UNIQUE (run_id, attempt_seq)
   constraint block_attempts_run_id_fkey FOREIGN KEY (run_id) REFERENCES producer_runs(run_id)
+  CREATE INDEX block_attempts_answered_at_idx ON public.block_attempts USING btree (answered_at)
   CREATE INDEX block_attempts_block_hash_idx ON public.block_attempts USING btree (block_hash)
   CREATE INDEX block_attempts_cut_at_idx ON public.block_attempts USING btree (cut_at)
   CREATE INDEX block_attempts_no_update_idx ON public.block_attempts USING btree (block_hash) WHERE ((update_id IS NULL) AND ((outcome = 'committed'::text) OR (resolved_outcome = 'committed'::text)))
   CREATE INDEX block_attempts_number_idx ON public.block_attempts USING btree (number)
   CREATE INDEX block_attempts_open_idx ON public.block_attempts USING btree (block_hash) WHERE (((outcome IS NULL) OR (outcome = 'unknown'::text)) AND (resolved_outcome IS DISTINCT FROM 'committed'::text))
+  CREATE INDEX block_attempts_proof_ended_at_idx ON public.block_attempts USING btree (proof_ended_at)
   CREATE INDEX block_attempts_resolved_idx ON public.block_attempts USING btree (block_hash) WHERE ((resolved_outcome = 'committed'::text) AND (outcome IS DISTINCT FROM 'committed'::text))
   CREATE INDEX block_attempts_update_id_idx ON public.block_attempts USING btree (update_id)
   CREATE UNIQUE INDEX block_attempts_pkey ON public.block_attempts USING btree (attempt_id)
@@ -440,8 +443,40 @@ table stats_day
   column new_addresses integer
   column new_contracts integer
   column verified_contracts integer
+  column attempts integer not null default 0
+  column attempts_not_taken integer not null default 0
+  column ttf_without_acceptance integer not null default 0
+  column clock_skew integer not null default 0
+  column max_txs_in_block integer not null default 0
+  column max_minute_txs integer not null default 0
+  column gas_limit_sum bigint not null default 0
+  column traffic_bytes bigint not null default 0
+  column traffic_updates integer not null default 0
+  column proof_busy_ms bigint not null default 0
+  column test_blocks integer not null default 0
+  column test_txs integer not null default 0
+  column test_attempts integer not null default 0
+  column test_proof_busy_ms bigint not null default 0
+  column txs_per_block_hist integer[] not null default '{}'::integer[]
+  column served_hist integer[] not null default '{}'::integer[]
+  column proof_size_hist integer[] not null default '{}'::integer[]
+  column attempts_skipped integer not null default 0
+  column attempts_cancelled integer not null default 0
+  column dropped integer not null default 0
+  column replaced integer not null default 0
+  column size_blocks_0 integer not null default 0
+  column size_blocks_1 integer not null default 0
+  column size_blocks_2 integer not null default 0
+  column size_blocks_3 integer not null default 0
+  column size_blocks_4 integer not null default 0
   constraint stats_day_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_day_pkey ON public.stats_day USING btree (bucket)
+
+table stats_dirty
+  column id bigint not null identity always
+  column at timestamp with time zone
+  constraint stats_dirty_pkey PRIMARY KEY (id)
+  CREATE UNIQUE INDEX stats_dirty_pkey ON public.stats_dirty USING btree (id)
 
 table stats_hour
   column bucket timestamp with time zone not null
@@ -460,6 +495,32 @@ table stats_hour
   column time_to_final_hist integer[] not null
   column proof_hist integer[] not null
   column commit_hist integer[] not null
+  column attempts integer not null default 0
+  column attempts_not_taken integer not null default 0
+  column ttf_without_acceptance integer not null default 0
+  column clock_skew integer not null default 0
+  column max_txs_in_block integer not null default 0
+  column max_minute_txs integer not null default 0
+  column gas_limit_sum bigint not null default 0
+  column traffic_bytes bigint not null default 0
+  column traffic_updates integer not null default 0
+  column proof_busy_ms bigint not null default 0
+  column test_blocks integer not null default 0
+  column test_txs integer not null default 0
+  column test_attempts integer not null default 0
+  column test_proof_busy_ms bigint not null default 0
+  column txs_per_block_hist integer[] not null default '{}'::integer[]
+  column served_hist integer[] not null default '{}'::integer[]
+  column proof_size_hist integer[] not null default '{}'::integer[]
+  column attempts_skipped integer not null default 0
+  column attempts_cancelled integer not null default 0
+  column dropped integer not null default 0
+  column replaced integer not null default 0
+  column size_blocks_0 integer not null default 0
+  column size_blocks_1 integer not null default 0
+  column size_blocks_2 integer not null default 0
+  column size_blocks_3 integer not null default 0
+  column size_blocks_4 integer not null default 0
   constraint stats_hour_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_hour_pkey ON public.stats_hour USING btree (bucket)
 
@@ -480,6 +541,32 @@ table stats_minute
   column time_to_final_hist integer[] not null
   column proof_hist integer[] not null
   column commit_hist integer[] not null
+  column attempts integer not null default 0
+  column attempts_not_taken integer not null default 0
+  column ttf_without_acceptance integer not null default 0
+  column clock_skew integer not null default 0
+  column max_txs_in_block integer not null default 0
+  column max_minute_txs integer not null default 0
+  column gas_limit_sum bigint not null default 0
+  column traffic_bytes bigint not null default 0
+  column traffic_updates integer not null default 0
+  column proof_busy_ms bigint not null default 0
+  column test_blocks integer not null default 0
+  column test_txs integer not null default 0
+  column test_attempts integer not null default 0
+  column test_proof_busy_ms bigint not null default 0
+  column txs_per_block_hist integer[] not null default '{}'::integer[]
+  column served_hist integer[] not null default '{}'::integer[]
+  column proof_size_hist integer[] not null default '{}'::integer[]
+  column attempts_skipped integer not null default 0
+  column attempts_cancelled integer not null default 0
+  column dropped integer not null default 0
+  column replaced integer not null default 0
+  column size_blocks_0 integer not null default 0
+  column size_blocks_1 integer not null default 0
+  column size_blocks_2 integer not null default 0
+  column size_blocks_3 integer not null default 0
+  column size_blocks_4 integer not null default 0
   constraint stats_minute_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_minute_pkey ON public.stats_minute USING btree (bucket)
 
@@ -619,8 +706,11 @@ table tx_lifecycle
   column state_reason text
   column resends smallint not null default 0
   column updated_at timestamp with time zone not null
+  column lost_at timestamp with time zone
   constraint tx_lifecycle_pkey PRIMARY KEY (tx_hash)
+  CREATE INDEX tx_lifecycle_accepted_at_idx ON public.tx_lifecycle USING btree (accepted_at)
   CREATE INDEX tx_lifecycle_final_at_idx ON public.tx_lifecycle USING btree (final_at)
+  CREATE INDEX tx_lifecycle_lost_at_idx ON public.tx_lifecycle USING btree (lost_at) WHERE (lost_at IS NOT NULL)
   CREATE INDEX tx_lifecycle_sender_nonce_idx ON public.tx_lifecycle USING btree (sender, nonce) WHERE (state <> 'final'::text)
   CREATE INDEX tx_lifecycle_state_accepted_at_idx ON public.tx_lifecycle USING btree (state, accepted_at) WHERE (state <> ALL (ARRAY['final'::text, 'replaced'::text]))
   CREATE UNIQUE INDEX tx_lifecycle_pkey ON public.tx_lifecycle USING btree (tx_hash)

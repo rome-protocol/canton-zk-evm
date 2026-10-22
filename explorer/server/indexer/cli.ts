@@ -1,5 +1,5 @@
 /**
- * node server/indexer/cli.ts [run | reindex <from> [<to>] | reindex --records <file> | export-records <file> | reset --yes | reader-moved <participant id> | clear-check C10]
+ * node server/indexer/cli.ts [run | reindex <from> [<to>] | reindex --records <file> | export-records <file> | stats-rebuild | reset --yes | reader-moved <participant id> | clear-check C10]
  * `run` (the default) runs the indexer's write path until a check stops it or it is told to stop. Needs the database up and migrated (node server/db/cli.ts migrate).
  * Reads RETH_RPC_URL, LEDGER_URL, LEDGER_TOKEN_FILE, READER_PARTY, CHAIN_ID and PINS_FILE as the explorer does, EXPLORER_DATABASE_URL (or the password-file
  * settings) for the database, and GATEWAY_ADDRESS, GENESIS_FILE, INDEX_DERIVE (inline or behind) and INDEX_TRACE_TIMEOUT_MS for itself. It exits 0 when told to stop, and 2 when a
@@ -12,6 +12,7 @@
  * also refuses while an API instance holds the tracker or faucet lock. `clear-check C10` sets the leg hash row back to ok once a person has looked, and
  * keeps the name of who cleared it (the login user). Through npm the arguments follow `--`: `npm run explorer -- reset --yes`.
  */
+import { rebuildStats } from "./stats.ts";
 import { userInfo } from "node:os";
 import { Pool } from "pg";
 import { loadConfig } from "../config.ts";
@@ -41,6 +42,9 @@ async function admin(command: Command): Promise<number> {
     if (command.kind === "reset") {
       const r = await resetChain(pool);
       console.log(`reset: emptied ${r.tables} tables; the next start writes the pins again`);
+    } else if (command.kind === "stats-rebuild") {
+      const r = await rebuildStats(pool);
+      console.log(`stats-rebuild: ${r.minutes} minutes recomputed from the facts`);
     } else if (command.kind === "clear-check") {
       const by = whoIsClearing();
       await clearCheck(pool, command.check, by);
@@ -56,7 +60,7 @@ async function admin(command: Command): Promise<number> {
 }
 
 async function main(command: Command): Promise<number> {
-  if (command.kind === "reset" || command.kind === "reader-moved" || command.kind === "clear-check") return admin(command);
+  if (command.kind === "reset" || command.kind === "stats-rebuild" || command.kind === "reader-moved" || command.kind === "clear-check") return admin(command);
   const config = loadConfig();
   const settings = loadIndexerSettings();
   const pool = new Pool(connectionConfig());

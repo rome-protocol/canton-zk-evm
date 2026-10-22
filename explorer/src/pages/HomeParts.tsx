@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { ApiTx, BlockListItem, InFlightTx, TxListItem } from "../api.ts";
+import type { ApiTx, BlockListItem, InFlightTx, StatsSeries, StatsSpread, StatsSummary, TxListItem } from "../api.ts";
 import { Chip } from "../components/Chip.tsx";
+import { Spark } from "../components/Spark.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { SearchBox } from "../components/SearchBox.tsx";
-import { count, duration, exact, short, span, units } from "../format.ts";
-import type { Read, Summary } from "../stats.ts";
+import { count, duration, exact, pct, plural, sec, short, span, trim, units } from "../format.ts";
+import type { Fetched, Read, Summary } from "../stats.ts";
 import { useNow } from "../useStatus.ts";
 
 /** What the home page says it is, with a search box of its own and a few things to try, which are the newest the explorer holds. */
@@ -38,37 +39,52 @@ function NotFinal({ n, read }: { n: Summary["notFinal"]; read: Read }) {
   return <Stat label="Not final yet" foot={`${n.inBlocks} in blocks being made or proven · ${n.waiting === null ? "pool count not known" : `${n.waiting} waiting`}`}>{n.waiting === null ? n.inBlocks : n.inBlocks + n.waiting}</Stat>;
 }
 
-const s1 = (ms: number) => (ms < 120_000 ? `${(ms / 1000).toFixed(1)}` : duration(ms));
-const unit = (ms: number) => (ms < 120_000 ? "s" : "");
-const NO_TIMES = "the producer's log has no times for these blocks";
-/** The stat whose numbers need a stats route, which the API does not have yet: a dash, and the reason. Nothing is made up. */
-const SEAM = "not served yet: the API has no stats route for it";
+const DASH_WHY = (read: Read) => (read === "loading" ? "Reading…" : "the stats cannot be read right now");
+const ago = (iso: string) => `${iso.slice(11, 16)} UTC`;
 
-/** A median and a 95th percentile in one card: "8.5 s p95 8.7 s". */
-function Spread({ v }: { v: Summary["timeToFinal"] }) {
-  return v ? <>{s1(v.medianMs)} <small>{unit(v.medianMs)} p95 {s1(v.p95Ms)} {unit(v.p95Ms)}</small></> : <>—</>;
+/** A time from a summary: the middle and the 95th percentile, "8.5 s p95 8.7 s", or a dash and why. */
+function Time({ label, note, s, read, foot, none }: { label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string }) {
+  if (s === undefined) return <Stat label={label} note={note} foot={DASH_WHY(read)}>—</Stat>;
+  return <Stat label={label} note={note} foot={s ? foot : none}>{s ? <>{sec(s.median)} <small>p95 {sec(s.p95)}</small></> : "—"}</Stat>;
 }
 
 /**
- * The cards of screen 01 in its order. Those the API can fill today are filled from the latest blocks, and say how many (the stats rollups will
- * make them an hour and a day): height, time to final and proof time (the producer's log), transactions, and what is not final yet. The others
- * need the rollups, so they show a dash and why: rate, lost transactions, success and the 72 h chart.
+ * The cards of screen 01 in its order. The height and what is not final come from the status and the in-flight route; every other number from the
+ * stats routes: the times of the last hour, the rate, transactions, lost ones and success of the last 24 hours, and the median time to final by the
+ * hour over 72. A number the stats cannot give is a dash and says so; none is made up.
  */
-export function Stats({ summary: s, flight = "ok" }: { summary: Summary; flight?: Read }) {
-  const t = s.timeToFinal, p = s.proofTime, c = s.commitTime;
-  const window = (v: { blocks: number } | null) => (v ? `latest ${v.blocks} blocks` : undefined);
+export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary: Summary; flight?: Read; hour: Fetched<StatsSummary>; day: Fetched<StatsSummary>; spark: Fetched<StatsSeries> }) {
+  const h = hour.data, d = day.data;
+  const hr = (v: StatsSpread | null | undefined) => (h ? v ?? null : undefined);
+  const points = spark.data ? spark.data.points.filter((p) => Date.parse(p.at) >= Date.parse(spark.data!.to) - 72 * 3_600_000) : null;
+  const noDay = DASH_WHY(day.read);
+  const peak = d && d.tps.peak !== null && d.txs.count > 0 ? d.tps : null;
   return (
     <section className="stats" aria-label="Numbers">
       <Stat label="Block height" foot={s.height === null ? "No final block yet." : `final on Canton${s.proving !== null ? ` · block ${s.proving} is being proven` : ""}`}>{s.height ?? "—"}</Stat>
-      <Stat label="Time to final" note={window(t)} foot={t ? "from the producer's cut to Canton's record time" : NO_TIMES}><Spread v={t} /></Stat>
-      <Stat label="Proof time" note={window(p)} foot={p ? `ZisK, one proof per block, ${p.blocks} block${p.blocks === 1 ? "" : "s"} · producer log` : NO_TIMES}><Spread v={p} /></Stat>
-      <Stat label="Canton commit time" note={window(c)} foot={c ? `the producer's submit to Canton's record time, ${c.blocks} block${c.blocks === 1 ? "" : "s"} · producer log` : NO_TIMES}><Spread v={c} /></Stat>
-      <Stat label="Transactions per second" foot={SEAM}>—</Stat>
-      <Stat label="Transactions" note={`latest ${s.transactions.blocks} blocks`} foot={`in ${s.transactions.blocks} final block${s.transactions.blocks === 1 ? "" : "s"}, each one Canton transaction`}>{count(s.transactions.count)}</Stat>
+      <Time label="Time to final" note="last hour" s={hr(h?.timeToFinal)} read={hour.read} foot={`accepted to final on Canton, ${plural(h?.timeToFinal?.samples ?? 0, "transaction")}`} none="no transaction in the last hour" />
+      <Time label="Proof time" note="last hour" s={hr(h?.proofTime)} read={hour.read} foot={`ZisK, one proof per block, ${plural(h?.proofTime?.samples ?? 0, "block")}`} none="no block in the last hour" />
+      <Time label="Canton commit time" note="last hour" s={hr(h?.commitTime)} read={hour.read} foot="sent to Canton's record time" none="no block in the last hour" />
+      {d ? (
+        <Stat label="Transactions per second" foot={peak ? `peak: the busiest minute in 24 h, ${ago(peak.peakAt!)}` : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now{peak && <> <b>peak {trim(peak.peak!, 1)}</b></>}</small></Stat>
+      ) : <Stat label="Transactions per second" foot={noDay}>—</Stat>}
+      {d ? (
+        <Stat label="Transactions" note="24 h" foot={`in ${plural(d.blocks.count, "block")}, each one Canton transaction`}>{count(d.txs.count)}</Stat>
+      ) : <Stat label="Transactions" note="24 h" foot={noDay}>—</Stat>}
       <NotFinal n={s.notFinal} read={flight} />
-      <Stat label="Lost transactions" foot={SEAM}>—</Stat>
-      <Stat label="Success rate" foot={SEAM}>—</Stat>
-      <Stat label="Time to final" note="72 h" foot={SEAM}>—</Stat>
+      {d ? (
+        <div className="card stat">
+          <span className="stat-k">Lost transactions</span>
+          <span className={`stat-v num ${d.lost.total ? "bad" : "ok"}`}>{count(d.lost.total)}</span>
+          <span className="muted small">{d.lost.total ? <>Accepted by Ostia and never made final. <Link to="/stats">Stats</Link> lists each with its reason.</> : "Accepted by Ostia and never made final. Any such transaction would be listed here with its reason."}</span>
+        </div>
+      ) : <Stat label="Lost transactions" foot={noDay}>—</Stat>}
+      {d ? (
+        <Stat label="Success rate" note="24 h" foot={d.txs.successRate === null ? "no transaction in 24 h" : `${count(d.txs.count - d.txs.failed)} of ${count(d.txs.count)} final transactions; ${count(d.txs.failed)} reverted`}>{d.txs.successRate === null ? "—" : pct(d.txs.successRate)}</Stat>
+      ) : <Stat label="Success rate" note="24 h" foot={noDay}>—</Stat>}
+      <Stat label="Time to final" note="72 h" foot={points ? "median per hour; gaps are hours with no blocks" : DASH_WHY(spark.read)}>
+        {points ? <Spark points={points} label="Median time to final for each hour of the last 72 hours" /> : "—"}
+      </Stat>
     </section>
   );
 }
