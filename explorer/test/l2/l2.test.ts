@@ -76,7 +76,9 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       while (written < TXS) await append(Math.min(10, Math.ceil((TXS - written) / BLOCK_TXS)));
       const seeded = (await pool.query("select (select count(*) from transactions)::int as txs, (select count(*) from blocks)::int as blocks")).rows[0] as { txs: number; blocks: number };
       expect(seeded.txs).toBe(written);
+      // A database that has been up a while is not in the middle of the seed's checkpoint, and its statistics are current: finish both before the load.
       await pool.query("vacuum (analyze)");
+      await pool.query("checkpoint");
       const seedSeconds = (Date.now() - seedStart) / 1000;
       const bytes = Number((await pool.query("select pg_database_size(current_database()) as n")).rows[0].n);
       const hotTxs = Number((await pool.query("select count(*) as n from transactions where from_address = $1", [bytea(HOT)])).rows[0].n);
@@ -189,7 +191,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         classes: report.results, getLogs: { requests: logsMs.length, p95: q95(logsMs), max: Math.max(...logsMs) },
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
         server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5) },
-        ingestion: { blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
+        ingestion: { timesMs: ingestTimes, blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
       };
       console.log("L2 " + JSON.stringify(summary, null, 1));
       if (process.env.L2_RESULTS) writeFileSync(process.env.L2_RESULTS, JSON.stringify(summary, null, 1));
@@ -212,5 +214,5 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       rmSync(folder, { recursive: true, force: true });
       await db.drop().catch(() => undefined);
     }
-  }, (SECONDS + 3600) * 1000);
+  }, (SECONDS + 600 + TXS / 2000) * 1000); // the seed, then the load; a hang ends the run in minutes, not in an hour
 });

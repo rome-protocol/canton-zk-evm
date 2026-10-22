@@ -90,5 +90,5 @@ const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
 const results = await Promise.all(runs);
 loop.disable(); process.stderr.write(`load process event loop delay ms: p50 ${loop.percentile(50) / 1e6} p99 ${loop.percentile(99) / 1e6} max ${loop.max / 1e6}\n`);
 await new Promise((ok) => setTimeout(ok, 1500)); // the last block's event
-console.log(JSON.stringify({ streams, results, received: [...received].map(([number, times]) => ({ number, times })) }));
-process.exit(0);
+// A pipe's write is not done when write() returns: leave only when the whole document has been handed over, or a large one is cut short.
+process.stdout.write(JSON.stringify({ streams, results, received: [...received].map(([number, times]) => ({ number, times })) }) + "\n", () => process.exit(0));
