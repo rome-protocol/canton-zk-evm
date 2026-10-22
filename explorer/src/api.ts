@@ -40,7 +40,8 @@ export interface CantonSide {
   proofHex: string;
 }
 export interface ApiBlock {
-  status: "final" | "proving" | "genesis";
+  /** "unindexed": final on Canton, and the explorer's indexer has not written the block yet (the status says when the indexer is behind or stopped). */
+  status: "final" | "proving" | "unindexed" | "genesis";
   number: number;
   hash: string;
   parentHash: string;
@@ -58,12 +59,12 @@ export interface ApiBlock {
   transactions: BlockRow[];
 }
 export interface Log { address: string; topics: string[]; data: string }
-/** Where a transaction is. Pending: in reth's pool. Proving: in a block that is being proven. Final: in a block that is final on Canton. Replaced and dropped: it will not be in a block. */
-export type TxState = "pending" | "proving" | "final" | "replaced" | "dropped";
+/** Where a transaction is. Pending: in reth's pool. Proving: in a block that is being proven. Final: in a block that is final on Canton. Unindexed: in a block Canton holds that the explorer has not indexed yet. Replaced and dropped: it will not be in a block. */
+export type TxState = "pending" | "proving" | "unindexed" | "final" | "replaced" | "dropped";
 interface ApiTxCommon {
   hash: string;
   /** The state, with "waiting" for pending. */
-  status: "final" | "proving" | "waiting" | "replaced" | "dropped";
+  status: "final" | "proving" | "unindexed" | "waiting" | "replaced" | "dropped";
   state: TxState;
   /** A plain sentence about why, when there is one. */
   reason: string | null;

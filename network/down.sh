@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Stops what network/up.sh (or network/restart.sh) started: Canton, the sidecars, the prover and reth. Safe to run twice.
 #   down.sh          a network made without CZE_PERSIST also loses its data, as always. A persistent network keeps everything: its
-#                    databases, reth's data and the secrets, so network/restart.sh brings the same chain back.
+#                    databases, reth's data and the secrets, so network/restart.sh brings the same chain back. The explorer's database that
+#                    explorer/run.sh made for a network that is not persistent goes with the chain.
 #   down.sh --wipe   removes a persistent network's data as well: the databases (the explorer's too), reth's data, the passwords and the party list. The chain is gone.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -68,5 +69,11 @@ if [ "$PERSISTENT" = 1 ]; then
 else
   [ "$WIPE" = 0 ] || echo "this network is not persistent: its data goes with it"
   "$ROOT/network/reth/stop.sh"
-  echo "stopped"
+  # The explorer's default database (started by explorer/run.sh) belongs to this chain: a new chain from the same genesis must not meet its rows.
+  if [ -f "$STATE/explorer-db.env" ]; then
+    CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || { echo "NOT wiped: the explorer's database could not be removed and is still there (see above): run network/explorer-db.sh wipe before the next network." >&2; exit 1; }
+    echo "stopped; the explorer's database is removed with the chain"
+  else
+    echo "stopped"
+  fi
 fi

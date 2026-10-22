@@ -82,6 +82,7 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: block; }
 .chip-final { color: var(--ok); background: var(--ok-tint); border-color: var(--ok-line); }
 .chip-proving { color: var(--amber); background: var(--amber-tint); border-color: var(--amber-line); }
+.chip-unindexed { color: var(--amber); background: transparent; border-color: var(--amber-line); }
 .chip-waiting { color: var(--amber); background: transparent; border-color: var(--amber-line); }
 .chip-waiting .dot { background: transparent; border: 1.5px solid currentColor; width: 8px; height: 8px; }
 .chip-replaced { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
@@ -267,7 +268,7 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 
 .stage { font-size: 16px; font-weight: 500; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
 .stage.s-final { color: var(--ok); }
-.stage.s-pending, .stage.s-proving { color: var(--amber); }
+.stage.s-pending, .stage.s-proving, .stage.s-unindexed { color: var(--amber); }
 .stage.s-dropped { color: var(--bad); }
 .stage.s-replaced { color: var(--muted); }
 .rpc-card h3 { margin: 0 0 6px; }

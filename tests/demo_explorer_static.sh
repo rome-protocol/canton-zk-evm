@@ -30,6 +30,8 @@ mkdir -p "$S/canton" "$S/net" "$S/faucet"
 printf 'OPERATOR_PARTY=operator::1220aa\nREADER_PARTY=reader::1220bb\n' > "$S/canton/parties.env"
 printf 'programVK=0x%s\nrootC=0x%s\n' "$(printf 'cd%.0s' $(seq 32))" "$(printf 'ef%.0s' $(seq 32))" > "$S/net/guest.txt"
 printf 'SECRET-KEY-TEXT\n' > "$S/faucet/key"
+printf '{"alloc":{}}\n' > "$S/genesis.json"   # what network/make-state.sh writes: the genesis reth runs
+printf 'POSTGRES_PASSWORD=statepw\n' > "$S/explorer-db.env"   # what network/explorer-db.sh makes: the default database of a run
 dry() { EXPLORER_DRY_RUN=1 CZE_STATE_DIR="$S" "$ROOT/explorer/run.sh" "$@"; }
 has() { grep -qF -- "$2" <<<"$1" || fail "$3: no \"$2\" in: $1"; }
 lacks() { ! grep -qF -- "$2" <<<"$1" || fail "$3: \"$2\" is in: $1"; }
@@ -107,7 +109,93 @@ has "$dbrun" "-e EXPLORER_DB_NAME=explorer" "the database's name is passed on"
 urlrun=$(EXPLORER_DATABASE_URL="postgres://explorer:$dbsec@127.0.0.1:5433/explorer" dry start)
 has "$urlrun" "-e EXPLORER_DATABASE_URL" "the database's URL is named"
 lacks "$urlrun" "$dbsec" "the URL's password is never on the command"
-lacks "$(dry start)" "EXPLORER_DB" "no database settings, none passed on"
+
+# With no database named, start takes the run's own (network/explorer-db.sh's): its password file from the state folder and its port from CZE_EXPLORER_DB_PORT.
+def=$(CZE_EXPLORER_DB_PORT=5999 dry start)
+has "$def" "-v $S/explorer-db.env:/run/explorer/explorer-db.env:ro" "the run's own database password file is mounted"
+has "$def" "-e EXPLORER_DB_PASSWORD_FILE=/run/explorer/explorer-db.env" "the container reads the run's own database password"
+has "$def" "-e EXPLORER_DB_PORT=5999" "the run's own database port"
+lacks "$def" "statepw" "the password's value"
+# The faucet's hash key is made once per state folder when there is a faucet key: here it exists, so it is mounted read-only.
+printf 'SECRET-KEY-TEXT\n' > "$S/faucet/key"
+printf '%s\n' "$(printf 'ab%.0s' $(seq 32))" > "$S/faucet/client-key"
+withck=$(dry start)
+has "$withck" "-v $S/faucet/client-key:/run/explorer/client-key:ro" "the faucet's hash key of this state folder is mounted read-only"
+has "$withck" "-e FAUCET_CLIENT_KEY_FILE=/run/explorer/client-key" "the container reads it from the mount"
+# No database at all (no file of the run's, none named): start stops before any container runs, and names the setting.
+mv "$S/explorer-db.env" "$WORK/explorer-db.env.kept"
+if out=$(dry start 2>&1); then fail "start ran with no database"; fi
+has "$out" "EXPLORER_DB_PASSWORD_FILE" "the refusal names the database setting"
+lacks "$out" "docker run" "a start with no database"
+mv "$WORK/explorer-db.env.kept" "$S/explorer-db.env"
+
+# start makes the database ready, then runs the indexer beside the explorer: three Docker runs, in that order, each its own container.
+[ "$(grep -c '^docker run' <<<"$withck")" = 3 ] || fail "start does not run migrate, the indexer and the explorer: $withck"
+migrate=$(grep -- 'node server/db/cli.ts migrate' <<<"$withck")
+indexer=$(grep -- 'node server/indexer/cli.ts' <<<"$withck")
+{ [ -n "$migrate" ] && [ -n "$indexer" ]; } || fail "start has no migrate or no indexer step: $withck"
+[ "$(grep -n -- 'node server/db/cli.ts migrate' <<<"$withck" | cut -d: -f1)" -lt "$(grep -n -- 'node server/indexer/cli.ts' <<<"$withck" | cut -d: -f1)" ] || fail "the indexer starts before the migrations"
+has "$migrate" "--rm" "the migration container is removed when done"
+has "$migrate" "-e EXPLORER_DB_PASSWORD_FILE=/run/explorer/explorer-db.env" "the migration reads the run's database"
+has "$indexer" "--name cze-explorer-indexer" "the indexer is its own container"
+has "$indexer" "-e GATEWAY_ADDRESS=$GATEWAY_ADDRESS" "the indexer is told the gateway's address (from PINS)"
+has "$indexer" "-e CHAIN_ID=$CHAIN_ID" "the indexer is told the chain id"
+has "$indexer" "-e READER_PARTY=reader::1220bb" "the indexer reads Canton as the reader party"
+has "$indexer" "-e PINS_FILE=/run/explorer/guest.txt" "the indexer reads the run's own pins"
+has "$indexer" "-e EXPLORER_DB_PASSWORD_FILE=/run/explorer/explorer-db.env" "the indexer reads the run's database"
+has "$indexer" "-v $S/genesis.json:/run/explorer/genesis.json:ro" "the indexer gets the genesis reth runs, read-only"
+has "$indexer" "-e GENESIS_FILE=/run/explorer/genesis.json" "the indexer reads its genesis from the mount"
+lacks "$(grep -- '--name cze-explorer ' <<<"$withck")" "GENESIS_FILE" "the explorer is not given the genesis"
+has "$indexer" "--read-only" "the indexer's filesystem"
+has "$indexer" "--cap-drop ALL" "the indexer's capabilities"
+has "$indexer" "--network host" "the indexer reads the chain's local ports"
+lacks "$indexer" "FAUCET_KEY_FILE" "the indexer has no faucet key"
+lacks "$indexer" "FAUCET_CLIENT_KEY_FILE" "the indexer has no hash key"
+lacks "$indexer" "--restart" "a check that stops the indexer must leave it stopped"
+# The indexer reads reth and Canton where INDEXER_* say, else where the explorer does; its own settings are passed on.
+same=$(RETH_RPC_URL=http://127.0.0.1:8595 LEDGER_URL=http://127.0.0.1:7597 dry start | grep -- 'node server/indexer/cli.ts')
+has "$same" "-e RETH_RPC_URL=http://127.0.0.1:8595" "the indexer follows the explorer's reth by default"
+split=$(RETH_RPC_URL=http://127.0.0.1:8595 LEDGER_URL=http://127.0.0.1:7597 INDEXER_RETH_RPC_URL=http://127.0.0.1:8545 INDEXER_LEDGER_URL=http://127.0.0.1:7577 INDEX_DERIVE=behind INDEX_POLL_MS=500 dry start)
+split_indexer=$(grep -- 'node server/indexer/cli.ts' <<<"$split")
+has "$split_indexer" "-e RETH_RPC_URL=http://127.0.0.1:8545" "the indexer's own reth address wins"
+has "$split_indexer" "-e LEDGER_URL=http://127.0.0.1:7577" "the indexer's own Canton address wins"
+lacks "$split_indexer" "8595" "the explorer's logged address is not the indexer's"
+has "$split_indexer" "-e INDEX_DERIVE=behind" "INDEX_DERIVE is passed on"
+has "$split_indexer" "-e INDEX_POLL_MS=500" "INDEX_POLL_MS is passed on"
+explorer_run=$(grep -- '--name cze-explorer ' <<<"$split")
+has "$explorer_run" "-e RETH_RPC_URL=http://127.0.0.1:8595" "the explorer keeps its own reth address"
+lacks "$explorer_run" "GATEWAY_ADDRESS" "the explorer is not given the indexer's settings"
+# Another genesis can be named; without one anywhere, start stops before any container runs and names the setting.
+gen=$(GENESIS_FILE="$WORK/other-genesis.json" dry start 2>&1 || true)
+has "$gen" "GENESIS_FILE" "a named genesis that is missing is refused, by name"
+mv "$S/genesis.json" "$WORK/genesis.json.kept"
+if out=$(dry start 2>&1); then fail "start ran with no genesis"; fi
+has "$out" "GENESIS_FILE" "the refusal names the genesis setting"
+lacks "$out" "docker run" "a start with no genesis"
+mv "$WORK/genesis.json.kept" "$S/genesis.json"
+# stop stops both.
+stopped=$(dry stop)
+grep -qx 'docker stop -t 30 cze-explorer' <<<"$stopped" || fail "stop does not stop the explorer: $stopped"
+grep -qx 'docker stop -t 30 cze-explorer-indexer' <<<"$stopped" || fail "stop does not stop the indexer: $stopped"
+
+# The default database follows the network's life: a stop of a network that is not persistent removes the database start made; a persistent one keeps it;
+# a database the caller named is never removed; with none made there is nothing to remove.
+has "$stopped" "network/explorer-db.sh wipe" "stop of a network that is not persistent wipes the explorer's database"
+touch "$S/persist.env"
+keep=$(dry stop); lacks "$keep" "explorer-db.sh wipe" "stop of a persistent network keeps the database"
+rm "$S/persist.env"
+named_stop=$(EXPLORER_DB_PASSWORD_FILE="$WORK/db.env" dry stop); lacks "$named_stop" "explorer-db.sh wipe" "stop never wipes a database the caller named"
+mv "$S/explorer-db.env" "$WORK/explorer-db.env.kept"
+none=$(dry stop); lacks "$none" "explorer-db.sh wipe" "stop with no database made"
+mv "$WORK/explorer-db.env.kept" "$S/explorer-db.env"
+# A persistent network's database container and port are read back from persist.env, whatever this shell has set; an environment that disagrees is refused.
+printf 'CZE_PERSIST=1\nCZE_EXPLORER_DB_CONTAINER=myexp\nCZE_EXPLORER_DB_PORT=5998\n' > "$S/persist.env"
+pers=$(dry start); has "$pers" "-e EXPLORER_DB_PORT=5998" "a persistent run's database port comes from persist.env"
+if out=$(CZE_EXPLORER_DB_PORT=5999 dry start 2>&1); then fail "start ran with a database port that is not the chain's"; fi
+has "$out" "CZE_EXPLORER_DB_PORT" "the refusal names the port"
+rm "$S/persist.env"
+# down.sh's non-persistent branch wipes it too (tests/persist_scripts.sh runs that).
+grep -q 'explorer-db.sh" wipe' "$ROOT/network/down.sh" || fail "down.sh does not wipe the explorer's database of a network that is not persistent"
 
 # The Ledger API token: the file is mounted read-only and named, its value is never on the command, and with none set nothing is passed.
 printf '%s\n' "tok.$dbsec" > "$WORK/ledger.token"; chmod 600 "$WORK/ledger.token"
@@ -115,6 +203,13 @@ tokrun=$(LEDGER_TOKEN_FILE="$WORK/ledger.token" dry start)
 has "$tokrun" "-v $WORK/ledger.token:/run/explorer/ledger.token:ro" "the Ledger API token file is mounted read-only"
 has "$tokrun" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the container reads the token from the mount"
 lacks "$tokrun" "tok.$dbsec" "the token's value is never on the command"
+tokexplorer=$(grep -- '--name cze-explorer ' <<<"$tokrun"); tokindexer=$(grep -- 'node server/indexer/cli.ts' <<<"$tokrun")
+for who in explorer indexer; do
+  line=tok$who; line=${!line}
+  [ -n "$line" ] || fail "no $who command in start's output"
+  has "$line" "-v $WORK/ledger.token:/run/explorer/ledger.token:ro" "the $who gets the Ledger API token file, read-only"
+  has "$line" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the $who reads the token from the mount"
+done
 readerrun=$(CZE_TOKEN_FILE_READER="$WORK/ledger.token" dry start)
 has "$readerrun" "-e LEDGER_TOKEN_FILE=/run/explorer/ledger.token" "the reader user's token file of an existing participant is used"
 lacks "$(dry start)" "LEDGER_TOKEN_FILE" "no token file, none passed on"
@@ -146,6 +241,6 @@ has "$stopped" "docker rm cze-explorer" "stop removes the container after it has
 lacks "$stopped" " -f" "stop never kills"
 lacks "$start" "rm -f" "start never kills the old container"
 order=$(grep -n "^docker stop -t 30 \|^docker run -d" <<<"$start" | cut -d: -f2 | cut -d' ' -f1-2 | tr '\n' ',')
-[ "$order" = "docker stop,docker run," ] || fail "start must stop the old container before it runs the new one: $order"
+[ "$order" = "docker stop,docker run,docker stop,docker run," ] || fail "start must stop each old container (the indexer, then the explorer) before it runs the new one: $order"
 if dry nonsense >/dev/null 2>&1; then fail "run.sh accepted a command it does not have"; fi
 echo "explorer run checks passed"

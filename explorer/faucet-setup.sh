@@ -3,8 +3,8 @@
 #
 #   explorer/faucet-setup.sh
 #   CZE_GENESIS_FILE=<state>/faucet/genesis.json network/up.sh
-#   READER_PARTY=<reader party id, from <state>/canton/parties.env> FAUCET_KEY_FILE=<state>/faucet/key npm start
-#       (in explorer/, after npm run build; the key path is absolute, or relative to explorer/; see explorer/README.md)
+#   explorer/run.sh start      # the database, the indexer and the explorer, with this key
+#       (to run the server directly instead, it also needs the database, its migrations and the indexer: see "To run the server directly" in explorer/README.md)
 #
 # The genesis it copies is the one CZE_GENESIS_FILE names when that is set (as the demo sets it), and network/genesis.json otherwise.
 # The key is made fresh each run in <state>/faucet/key, readable by its owner only, and is never printed and never committed. Nothing

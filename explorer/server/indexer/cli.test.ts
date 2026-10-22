@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
@@ -53,6 +54,23 @@ describe("the indexer's command", () => {
     const other = await run(env, null, ["clear-check", "C4"]);
     expect(other.code).toBe(1);
     expect(other.out).toContain("only C10");
+  });
+
+  it("refuses to start when LEDGER_TOKEN_FILE is open to others, and the message names the variable and not the token", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "explorer-cli-token-"));
+    const file = join(dir, "token");
+    const secret = "tok." + randomBytes(24).toString("hex");
+    try {
+      writeFileSync(file, secret, { mode: 0o640 });
+      chmodSync(file, 0o640);
+      const r = await run({ READER_PARTY: FAKE_READER, GATEWAY_ADDRESS: "0x" + "9a".repeat(20), LEDGER_TOKEN_FILE: file, EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" }, null);
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("LEDGER_TOKEN_FILE");
+      expect(r.out).not.toContain(secret);
+    } finally {
+      rmSync(file, { force: true });
+      rmdirSync(dir);
+    }
   });
 
   describe.skipIf(!TEST_URL)("against the database", () => {
@@ -105,10 +123,14 @@ describe("the indexer's command", () => {
         }
       });
     });
-    it("runs on an empty chain, writes the pins to meta, and stops cleanly when told to", async () => {
+    for (const withToken of [true, false]) it(`runs on an empty chain, writes the pins to meta, and stops cleanly when told to, ${withToken ? "sending LEDGER_TOKEN_FILE's token on every Ledger API call" : "sending no token when none is set"}`, async () => {
+      const secret = "tok." + randomBytes(24).toString("hex");   // made for each run
+      const seen: (string | undefined)[] = [];
       const zero = "0x" + "00".repeat(32);
       const dir = mkdtempSync(join(tmpdir(), "explorer-cli-"));
       const genesis = join(dir, "genesis.json");
+      const tokenFile = join(dir, "token");
+      writeFileSync(tokenFile, secret, { mode: 0o600 });
       writeFileSync(genesis, JSON.stringify({ alloc: { ["9a".repeat(20)]: { code: "0x6001", balance: "0x0" } } }));
       const reth = await startFakeReth({
         eth_getCode: "0x6001",
@@ -116,6 +138,7 @@ describe("the indexer's command", () => {
           miner: "0x" + "00".repeat(20), stateRoot: zero, transactionsRoot: zero, receiptsRoot: zero, extraData: "0x", transactions: [] }),
       });
       const ledger = createServer((req, res) => {
+        seen.push(req.headers.authorization);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(req.url?.includes("participant-id") ? { participantId: FAKE_PARTICIPANT } : { offset: 0 }));
       });
@@ -126,9 +149,12 @@ describe("the indexer's command", () => {
           const r = await run({
             READER_PARTY: FAKE_READER, RETH_RPC_URL: reth.url, LEDGER_URL: `http://127.0.0.1:${(ledger.address() as AddressInfo).port}`, EXPLORER_DATABASE_URL: dbUrl,
             GATEWAY_ADDRESS: "0x" + "9a".repeat(20), GENESIS_FILE: genesis, INDEX_DERIVE: "behind", INDEX_POLL_MS: "50",
+            ...(withToken ? { LEDGER_TOKEN_FILE: tokenFile } : {}),
           }, 2500);
           expect(r.out).toContain("indexer: running, stage 2 behind");
           expect(r.code).toBe(0);
+          expect(seen.length).toBeGreaterThan(0);
+          for (const header of seen) expect(header).toBe(withToken ? `Bearer ${secret}` : undefined);
           const meta = await pool.query("select key from meta where key in ('chain_id', 'genesis_hash', 'program_vk', 'root_c', 'gateway_address') order by key");
           expect(meta.rows.map((x) => x.key)).toEqual(["chain_id", "gateway_address", "genesis_hash", "program_vk", "root_c"]);
           const seeded = await pool.query("select '0x' || encode(address, 'hex') as address, origin from contracts");
@@ -136,6 +162,7 @@ describe("the indexer's command", () => {
         });
       } finally {
         rmSync(genesis, { force: true });
+        rmSync(tokenFile, { force: true });
         rmdirSync(dir);
         await reth.close();
         await new Promise<void>((ok) => ledger.close(() => ok()));

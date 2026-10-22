@@ -16,7 +16,7 @@ import { userInfo } from "node:os";
 import { Pool } from "pg";
 import { loadConfig } from "../config.ts";
 import { connectionConfig } from "../db/connect.ts";
-import { createLedger } from "../ledger.ts";
+import { ledgerFromConfig } from "../ledger-config.ts";
 import { parseCommand, UsageError, type Command } from "./commands.ts";
 import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { IndexerStop } from "./errors.ts";
@@ -81,7 +81,7 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
     return 0;
   }
   const indexer = createIndexer({
-    pool, reads, ledger: createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty, undefined, config.ledgerTokenFile),
+    pool, reads, ledger: ledgerFromConfig(config),
     pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
     log,
   });
