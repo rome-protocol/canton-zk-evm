@@ -157,6 +157,16 @@ def read_traffic(url: str, headers, timeout: float = TRAFFIC_TIMEOUT) -> dict | 
         return None
 
 
+def paid_traffic_cost(items: object, command_id: str) -> int | None:
+    """The `paidTrafficCost` (bytes, a number or the digits of an int64) of the completion of this command in a completions read, or None
+    where the read shows no completion of it or it carries no cost."""
+    for item in items if isinstance(items, list) else []:
+        done = item.get("completionResponse", {}).get("Completion", {}).get("value") if isinstance(item, dict) else None
+        if isinstance(done, dict) and done.get("commandId") == command_id:
+            return _count(done.get("paidTrafficCost"))
+    return None
+
+
 def check_settings(strategy: str, gather_ms: float, heartbeat_seconds: float, max_in_flight: int = 1, provers: int = 1) -> None:
     """Refuses a setting that cannot keep up or that this producer cannot do: raises ValueError that says why."""
     if strategy not in STRATEGIES:

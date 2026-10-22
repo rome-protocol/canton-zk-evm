@@ -282,6 +282,9 @@ class FakeLedger:
         self.queries: list = []
         self.bad_auth = 0
         self.traffic: list = []   # the traffic states GET /traffic answers with, one for each read; when none is left it reports none (404)
+        self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
+        self.completion_queries: list = []   # (query string, body) of each completions read
+        self.completions_fail = False   # the completions read is answered with HTTP 500
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.http.server_address[1]}"
@@ -389,6 +392,15 @@ class FakeLedger:
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
                     return self._reply(200, ledger._active(tmpl))
+                if self.path.split("?")[0] == "/v2/commands/completions":
+                    ledger.completion_queries.append((self.path, body))
+                    if ledger.completions_fail:
+                        return self._reply(500, {"cause": "the participant is down"})
+                    shown = [{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 40}}}},
+                             {"completionResponse": {"Completion": {"value": {"commandId": "someone-elses", "offset": 42, "paidTrafficCost": 1}}}}]
+                    if ledger.paid is not None and ledger.submitted:
+                        shown.append({"completionResponse": {"Completion": {"value": {"commandId": ledger.submitted[-1]["commandId"], "offset": 43, "paidTrafficCost": ledger.paid}}}})
+                    return self._reply(200, shown)
                 if self.path == "/v2/commands/submit-and-wait":
                     ledger.submitted.append(body)
                     if ledger.refuse and not ledger.fail_but_commit:

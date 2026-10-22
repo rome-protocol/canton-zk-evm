@@ -20,7 +20,7 @@ from pathlib import Path
 
 from websockets.sync.client import connect
 
-from journal import Attempt, Journal, STRATEGIES, check_settings, iso, parse_traffic, read_traffic as journal_read_traffic, traffic_used
+from journal import Attempt, Journal, STRATEGIES, check_settings, iso, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -105,9 +105,9 @@ def jwt_token(secret: bytes, now: int | None = None) -> str:
     return (signing + b"." + enc(hmac.new(secret, signing, hashlib.sha256).digest())).decode()
 
 
-def post_json(url: str, body: dict, headers: dict) -> object:
+def post_json(url: str, body: dict, headers: dict, timeout: float = 120) -> object:
     request = urllib.request.Request(url, json.dumps(body).encode(), {"content-type": "application/json", **headers})
-    with urllib.request.urlopen(request, timeout=120) as r:
+    with urllib.request.urlopen(request, timeout=timeout) as r:
         return json.load(r)
 
 
@@ -263,6 +263,10 @@ def split_block(raw: bytes) -> tuple:
 
 # ---- Canton ----------------------------------------------------------------------------------------------------
 
+COMPLETION_IDLE_MS = 1000   # how long the completions stream waits for another completion before it ends
+COMPLETION_TIMEOUT = 5.0    # seconds a completions read waits in all
+
+
 class Ledger:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -329,6 +333,21 @@ class Ledger:
         answer = answer if isinstance(answer, dict) else {}
         update_id, offset = answer.get("updateId"), answer.get("completionOffset")
         return {"updateId": update_id if isinstance(update_id, str) else None, "completionOffset": offset if type(offset) is int else None}
+
+    def paid_traffic(self, command_id: str, offset: int) -> int | None:
+        """The traffic the participant paid for the command's confirmation request (`paidTrafficCost` of its completion, in bytes), or None.
+        Reads the one completion at `offset` (the answer of submit-and-wait) and waits for it only a few seconds. This never raises: a block
+        Canton committed stays committed whatever this read does."""
+        body = {"userId": self.cfg.ledger_user, "parties": [self.cfg.party], "beginExclusive": max(0, offset - 1)}
+        try:
+            items = post_json(f"{self.cfg.ledger_url}/v2/commands/completions?limit=5&stream_idle_timeout_ms={COMPLETION_IDLE_MS}", body, self.auth,
+                              timeout=COMPLETION_TIMEOUT)
+            return paid_traffic_cost(items, command_id)
+        except urllib.error.HTTPError as e:
+            e.close()
+            return None
+        except Exception:   # no answer, an error answer, nonsense, or a token file that cannot be read
+            return None
 
 
 # ---- the legs a block records ----------------------------------------------------------------------------------
@@ -784,6 +803,10 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
             return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))
+    if traffic is None and command_id and type(report["completionOffset"]) is int:   # no traffic state to measure from (a participant on the Canton Network has none): what the completion says it paid
+        traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
+    if traffic is not None:
+        report["trafficBytes"] = traffic
     answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(block_hash, block_hash, block_hash)
