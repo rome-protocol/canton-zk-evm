@@ -346,6 +346,152 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
     });
   });
 
+  describe("transaction: getstatus and gettxreceiptstatus", () => {
+    const failedAndOk = async () => {
+      const bad = (await sql("select block_number, tx_index from transactions where status = 0 order by block_number, tx_index limit 1")).rows[0];
+      const good = (await sql("select block_number, tx_index from transactions where status = 1 order by block_number, tx_index limit 1")).rows[0];
+      return { bad: await txHash(bad.block_number, bad.tx_index), good: await txHash(good.block_number, good.tx_index) };
+    };
+
+    it("answers a transaction's success or revert from its stored row (recorded answers)", async () => {
+      const { bad, good } = await failedAndOk();
+      expect(shape(await get(`/api?module=transaction&action=getstatus&txhash=${good}`))).toEqual({ status: "1", message: "OK", result: { isError: "0", errDescription: "" } });
+      expect(shape(await get(`/api?module=transaction&action=getstatus&txhash=${bad}`))).toEqual({ status: "1", message: "OK", result: { isError: "1", errDescription: "Reverted" } });
+      expect(shape(await get(`/api?module=transaction&action=gettxreceiptstatus&txhash=${good}`))).toEqual({ status: "1", message: "OK", result: { status: "1" } });
+      expect(shape(await get(`/api?module=transaction&action=gettxreceiptstatus&txhash=${bad.toUpperCase().replace("0X", "0x")}`))).toEqual({ status: "1", message: "OK", result: { status: "0" } });
+    });
+
+    it("answers no error and an empty receipt status for a hash that is not in a final block, and refuses a malformed hash", async () => {
+      const unknown = "0x" + "ee".repeat(32);
+      expect(shape(await get(`/api?module=transaction&action=getstatus&txhash=${unknown}`))).toEqual({ status: "1", message: "OK", result: { isError: "0", errDescription: "" } });
+      expect(shape(await get(`/api?module=transaction&action=gettxreceiptstatus&txhash=${unknown}`))).toEqual({ status: "1", message: "OK", result: { status: "" } });
+      for (const action of ["getstatus", "gettxreceiptstatus"]) {
+        expect(shape(await get(`/api?module=transaction&action=${action}&txhash=0x12`))).toEqual(NOTOK(TEXTS.txhash));
+        expect(shape(await get(`/api?module=transaction&action=${action}`))).toEqual(NOTOK(TEXTS.txhash));
+      }
+    });
+  });
+
+  describe("block: getblockreward, getblocknobytime and getblockcountdown", () => {
+    it("getblockreward: the fees are the reward, the miner is the fee recipient, no uncles (recorded answer)", async () => {
+      const a = shape(await get("/api?module=block&action=getblockreward&blockno=2"));
+      expect(a).toEqual({ status: "1", message: "OK", result: { blockNumber: "2", timeStamp: await stamp(2), blockMiner: A, blockReward: "2000", uncles: null, uncleInclusionReward: "0" } });
+      expect(Object.keys(a.result)).toEqual(["blockNumber", "timeStamp", "blockMiner", "blockReward", "uncles", "uncleInclusionReward"]);
+      expect(shape(await get("/api?module=block&action=getblockreward&blockno=999"))).toEqual(NOTOK(TEXTS.noBlock));
+      expect(shape(await get("/api?module=block&action=getblockreward&blockno=x"))).toEqual(NOTOK(TEXTS.blockno));
+      expect(shape(await get("/api?module=block&action=getblockreward"))).toEqual(NOTOK(TEXTS.blockno));
+    });
+
+    it("getblocknobytime: the closest block before or after a time, as a string", async () => {
+      const t2 = Number(await stamp(2)), t3 = Number(await stamp(3));
+      const at = async (ts: number, closest: string) => shape(await get(`/api?module=block&action=getblocknobytime&timestamp=${ts}&closest=${closest}`));
+      expect(await at(t2, "before")).toEqual({ status: "1", message: "OK", result: "2" });
+      expect(await at(t2, "after")).toEqual({ status: "1", message: "OK", result: "2" });
+      expect(await at(t3 + 1000, "before")).toEqual({ status: "1", message: "OK", result: "3" });
+      expect(await at(t3 + 1000, "after")).toEqual(NOTOK(TEXTS.noClosest));
+      expect(await at(1, "before")).toEqual(NOTOK(TEXTS.noClosest));
+      expect((await at(1, "after")).result).toBe("1");
+      expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=abc&closest=before"))).toEqual(NOTOK(TEXTS.timestamp));
+      expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=5&closest=near"))).toEqual(NOTOK(TEXTS.closest));
+      expect(shape(await get("/api?module=block&action=getblocknobytime&timestamp=5"))).toEqual(NOTOK(TEXTS.closest));
+    });
+
+    it("getblockcountdown: NOTOK with no run or under on_demand; counted by the interval of a fixed rhythm", async () => {
+      const runs: string[] = [];
+      const run = async (id: string, strategy: string, at: string, settings: object) => {
+        await sql("insert into producer_runs (run_id, started_at, strategy, settings, source_commit) values ($1, $2, $3, $4, 'abc1234')", [id, at, strategy, JSON.stringify(settings)]);
+        runs.push(id);
+      };
+      try {
+        expect(shape(await get("/api?module=block&action=getblockcountdown&blockno=10"))).toEqual(NOTOK(TEXTS.noRhythm));
+        await run("00000000-0000-4000-8000-0000000000a1", "on_demand", "2030-01-01T00:00:00Z", { gather_ms: 0 });
+        expect(shape(await get("/api?module=block&action=getblockcountdown&blockno=10"))).toEqual(NOTOK(TEXTS.noRhythm));
+        await run("00000000-0000-4000-8000-0000000000a2", "fixed_rhythm", "2030-01-02T00:00:00Z", { interval_ms: 2000 });
+        expect(shape(await get("/api?module=block&action=getblockcountdown&blockno=10"))).toEqual({
+          status: "1", message: "OK", result: { CurrentBlock: "3", CountdownBlock: "10", RemainingBlock: "7", EstimateTimeInSec: "14" },
+        });
+        expect(shape(await get("/api?module=block&action=getblockcountdown&blockno=3"))).toEqual(NOTOK(TEXTS.passed));
+        expect(shape(await get("/api?module=block&action=getblockcountdown&blockno=x"))).toEqual(NOTOK(TEXTS.blockno));
+      } finally {
+        for (const id of runs) await sql("delete from producer_runs where run_id = $1", [id]);
+      }
+    });
+  });
+
+  describe("logs: getLogs", () => {
+    const Z = h(0xc1);
+    const t = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(32);
+    const T11 = t(0x11), T12 = t(0x12), T21 = t(0x21), T22 = t(0x22);
+    const logsUrl = (q: string) => `/api?module=logs&action=getLogs&${q}`;
+    const keys = async (q: string) => (shape(await get(logsUrl(q))).result as { blockNumber: string; logIndex: string }[]).map((l) => `${Number(l.blockNumber)}:${l.logIndex === "0x" ? 0 : Number(l.logIndex)}`);
+
+    beforeAll(async () => {
+      await sql(
+        `insert into logs (block_number, log_index, tx_index, address, topic0, topic1, data) values
+          (3, 900, 0, $1, $2, $4, '\\x0102'), (3, 901, 1, $1, $2, $5, '\\x'), (2, 900, 0, $1, $3, $4, '\\x03')`,
+        [who(0xc1), Buffer.from(T11.slice(2), "hex"), Buffer.from(T12.slice(2), "hex"), Buffer.from(T21.slice(2), "hex"), Buffer.from(T22.slice(2), "hex")],
+      );
+    });
+    afterAll(async () => { await sql("delete from logs where address = $1", [who(0xc1)]); });
+
+    it("answers a log in Etherscan's shape, hex quantities and all, oldest first (recorded answer)", async () => {
+      const a = shape(await get(logsUrl(`address=${Z}&fromBlock=0&toBlock=latest`)));
+      expect(a.status).toBe("1");
+      expect(a.message).toBe("OK");
+      expect(a.result).toHaveLength(3);
+      const row = (await sql("select t.hash, t.effective_gas_price::text as price, t.gas_used::text as used, b.hash as bh, extract(epoch from b.timestamp)::bigint as ts from transactions t join blocks b on b.number = t.block_number where t.block_number = 3 and t.tx_index = 0")).rows[0];
+      const q = (n: bigint | string | number) => (BigInt(n) === 0n ? "0x" : "0x" + BigInt(n).toString(16));
+      expect(a.result[1]).toEqual({
+        address: Z, topics: [T11, T21], data: "0x0102", blockNumber: "0x3", blockHash: "0x" + row.bh.toString("hex"), timeStamp: q(row.ts), gasPrice: q(row.price), gasUsed: q(row.used),
+        logIndex: "0x384", transactionHash: "0x" + row.hash.toString("hex"), transactionIndex: "0x",
+      });
+      expect(Object.keys(a.result[1])).toEqual(["address", "topics", "data", "blockNumber", "blockHash", "timeStamp", "gasPrice", "gasUsed", "logIndex", "transactionHash", "transactionIndex"]);
+      expect(await keys(`address=${Z}`)).toEqual(["2:900", "3:900", "3:901"]);
+    });
+
+    it("filters by block range, by topics and by the topic operators", async () => {
+      expect(await keys(`address=${Z}&fromBlock=3&toBlock=3`)).toEqual(["3:900", "3:901"]);
+      expect(await keys(`address=${Z}&fromBlock=0&toBlock=2`)).toEqual(["2:900"]);
+      expect(await keys(`address=${Z}&topic0=${T11}`)).toEqual(["3:900", "3:901"]);
+      expect(await keys(`address=${Z}&topic0=${T11.toUpperCase().replace("0X", "0x")}&topic1=${T21}&topic0_1_opr=and`)).toEqual(["3:900"]);
+      expect(await keys(`address=${Z}&topic0=${T11}&topic1=${T21}`)).toEqual(["3:900"]); // and, when no operator is given
+      expect(await keys(`address=${Z}&topic0=${T11}&topic1=${T21}&topic0_1_opr=or`)).toEqual(["2:900", "3:900", "3:901"]);
+      expect(await keys(`address=${Z}&topic1=${T22}`)).toEqual(["3:901"]);
+      expect(await keys(`address=${Z}&topic0=${T12}&topic2=${T21}&topic0_2_opr=or`)).toEqual(["2:900"]);
+      // A topic0 alone is bound enough (no address), and a range of the first blocks is bound enough with no address or topic0.
+      expect(await keys(`topic0=${T11}`)).toEqual(["3:900", "3:901"]);
+      expect(await keys(`topic1=${T22}&fromBlock=0&toBlock=latest`)).toEqual(["3:901"]);
+      expect(shape(await get(logsUrl(`address=${Z}&topic0=${t(0x99)}`)))).toEqual({ status: "0", message: "No records found", result: [] });
+    });
+
+    it("pages with page and offset, and holds a page to 1,000 logs and page x offset to 10,000", async () => {
+      expect(await keys(`address=${Z}&page=1&offset=2`)).toEqual(["2:900", "3:900"]);
+      expect(await keys(`address=${Z}&page=2&offset=2`)).toEqual(["3:901"]);
+      expect(shape(await get(logsUrl(`address=${Z}&page=3&offset=2`)))).toEqual({ status: "0", message: "No records found", result: [] });
+      expect(await keys(`address=${Z}&offset=5000`)).toHaveLength(3); // a page is cut at 1,000
+      expect(shape(await get(logsUrl(`address=${Z}&page=11&offset=1000`)))).toEqual({ status: "0", message: TEXTS.window, result: null });
+      expect(shape(await get(logsUrl(`address=${Z}&page=0`)))).toEqual(NOTOK(TEXTS.paging));
+      expect(shape(await get(logsUrl(`address=${Z}&offset=0`)))).toEqual(NOTOK(TEXTS.paging));
+    });
+
+    it("refuses a bad address, topic, operator or block, and a search with no address or topic0 over more than 10,000 blocks", async () => {
+      expect(shape(await get(logsUrl("address=0x12")))).toEqual(NOTOK(TEXTS.address));
+      expect(shape(await get(logsUrl(`address=${Z}&topic0=0x12`)))).toEqual(NOTOK(TEXTS.topic));
+      expect(shape(await get(logsUrl(`address=${Z}&topic0=${T11}&topic1=${T21}&topic0_1_opr=xor`)))).toEqual(NOTOK(TEXTS.topicOp));
+      expect(shape(await get(logsUrl(`address=${Z}&fromBlock=x`)))).toEqual(NOTOK(TEXTS.blocks));
+      expect(shape(await get(logsUrl(`address=${Z}&fromBlock=9&toBlock=5`)))).toEqual({ status: "0", message: "No records found", result: [] });
+      // Make the chain 20,000 blocks long (a copy of block 3; removed again below), so that the range is wide.
+      await sql("insert into blocks select 20000, $1::bytea, parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, burnt_fees, priority_fees, 0, 0, size_bytes, state_root, transactions_root, receipts_root, extra_data, 0, null, update_id, record_time, attempt_id, indexed_at from blocks where number = 3", [Buffer.alloc(32, 0x5a)]);
+      try {
+        expect(shape(await get(logsUrl(`topic1=${T21}`)))).toEqual(NOTOK(TEXTS.logsWide));
+        expect(shape(await get(logsUrl(`topic0=${T11}&topic1=${T21}&topic0_1_opr=or`)))).toEqual(NOTOK(TEXTS.logsWide)); // or-ed, so topic0 no longer narrows
+        expect(await keys(`topic0=${T11}`)).toEqual(["3:900", "3:901"]);
+        expect(await keys(`address=${Z}`)).toEqual(["2:900", "3:900", "3:901"]);
+        expect(shape(await get(logsUrl(`topic1=${T21}&fromBlock=10001`)))).toEqual({ status: "0", message: "No records found", result: [] });
+      } finally { await sql("delete from blocks where number = 20000"); }
+    });
+  });
+
   it("answers a read it cannot make with its own NOTOK, and a limit with Etherscan's word, both at HTTP 200", async () => {
     const broken = { balanceAt: async () => { const { RethError } = await import("../reth.ts"); throw new RethError("down"); } } as unknown as Reth;
     const a = await createApi({ config: config(), reth: broken, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest(pool) })("GET", `/api?module=account&action=balance&address=${A}`);
