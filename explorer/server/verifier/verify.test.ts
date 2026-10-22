@@ -276,4 +276,41 @@ suite("verifying a contract", () => {
     expect(await sources()).toHaveLength(2);
     expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
   });
+
+  it("leaves the contracts row alone when the code at the address moved on while the compile ran, and keeps the source for the code that was matched", async () => {
+    const BODY2 = "6080604052348015600e575f80fd5b50600436106030575f3560e01c8063".padEnd(130, "5b");
+    const runtime2 = Buffer.concat([Buffer.from(BODY2, "hex"), meta(1)]);
+    const creation2 = Buffer.concat([HEAD, runtime2, meta(1)]);
+    const hex = (b: Buffer) => "0x" + b.toString("hex");
+    await addContract(db.pool, A, runtime, creation);
+    const compile = stub.compile.bind(stub);
+    stub.compile = async (...a: Parameters<typeof compile>) => {
+      await writeContracts(db.pool, 9, [{ address: A, creator: "0x" + "01".repeat(20), txIndex: 0, traceAddress: [], runtimeCode: hex(runtime2), initCode: hex(creation2) }], [], { code: async () => "0x" });
+      return compile(...a);
+    };
+    try {
+      expect(await v.verify(req(A))).toMatchObject({ status: "pass" });
+    } finally {
+      delete (stub as { compile?: unknown }).compile;
+    }
+    const c = (await db.pool.query("select name, match_type, verified_source, encode(runtime_code_hash, 'hex') h from contracts where address = $1", [Buffer.from(A.slice(2), "hex")])).rows[0];
+    expect(c).toMatchObject({ name: null, match_type: null, verified_source: null, h: hashOf(runtime2).toString("hex") });
+    expect(await sources()).toHaveLength(1);
+  });
+
+  it("answers 'already' after the address went back to its verified code, with the contracts row verified again", async () => {
+    const BODY2 = "6080604052348015600e575f80fd5b50600436106030575f3560e01c8063".padEnd(130, "5b");
+    const runtime2 = Buffer.concat([Buffer.from(BODY2, "hex"), meta(1)]);
+    const creation2 = Buffer.concat([HEAD, runtime2, meta(1)]);
+    const make = (r: Buffer, c: Buffer, block: number) => writeContracts(db.pool, block, [{ address: A, creator: "0x" + "01".repeat(20), txIndex: 0, traceAddress: [], runtimeCode: "0x" + r.toString("hex"), initCode: "0x" + c.toString("hex") }], [], { code: async () => "0x" });
+    const state = async () => (await db.pool.query("select name, match_type, verified_source from contracts where address = $1", [Buffer.from(A.slice(2), "hex")])).rows[0];
+    await addContract(db.pool, A, runtime, creation);
+    expect(await v.verify(req(A))).toMatchObject({ status: "pass" });
+    const id = (await state()).verified_source;
+    await make(runtime2, creation2, 9);
+    expect(await state()).toMatchObject({ match_type: null, verified_source: null });
+    await make(runtime, creation, 12);
+    expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
+    expect(await state()).toMatchObject({ name: "Box", match_type: "full", verified_source: id });
+  });
 });

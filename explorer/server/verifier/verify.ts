@@ -114,7 +114,8 @@ export class Verifier {
       );
       if (ins.rowCount === 0) { await client.query("rollback"); return { status: "already", result: "Already Verified" }; }
       const id = Number(ins.rows[0]!.id);
-      await client.query("update contracts set name = $2, verified_source = $3, match_type = $4 where address = $1", [addr, target.name, id, m.kind]);
+      // Keyed on the code that was matched: if the address was made again with other code while the compile ran, the contracts row is left alone (the source stays with its code).
+      await client.query("update contracts set name = $2, verified_source = $3, match_type = $4 where address = $1 and runtime_code_hash = $5", [addr, target.name, id, m.kind, row.runtime_code_hash]);
       let similar = await markSimilar(client, row.runtime_code_hash, id, target.name, this.reserved);
       await client.query("commit");
       // Under READ COMMITTED a clone the indexer committed while this transaction ran was seen by neither side: once more, now that the source is committed.

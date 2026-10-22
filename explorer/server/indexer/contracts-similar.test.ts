@@ -72,4 +72,27 @@ suite("contracts made after their code was verified", () => {
       }
     });
   });
+  it("gives an address its own source back when it is made again with its first code", async () => {
+    await withDatabase(async (pool) => {
+      await migrate(pool);
+      const c = await pool.connect();
+      try {
+        const row = async () => (await c.query("select name, match_type, verified_source from contracts where address = $1", [bytea(A(30))])).rows[0];
+        await writeContracts(c, 5, [made(A(30), RUNTIME)], [], noReads);
+        const id = (await c.query(
+          `insert into verified_sources (address, runtime_code_hash, language, compiler_version, code_format, contract_path, contract_name, settings, sources, abi, match_type, creation_match, verified_at)
+           values ($1, $2, 'solidity', '0.8.28+commit.7893614a', 'solidity-single-file', 'X.sol', 'Old', '{}', '{}', '[]', 'partial', 'full', now()) returning id`,
+          [bytea(A(30)), bytea(codeHash(RUNTIME))],
+        )).rows[0].id;
+        await c.query("update contracts set verified_source = $2, match_type = 'partial', name = 'Old' where address = $1", [bytea(A(30)), id]);
+        // H1 -> H2: unverified. H2 -> H1: the source of H1 at this address, with the match type it had.
+        await writeContracts(c, 9, [made(A(30), OTHER)], [], noReads);
+        expect(await row()).toMatchObject({ name: null, match_type: null, verified_source: null });
+        await writeContracts(c, 12, [made(A(30), RUNTIME)], [], noReads);
+        expect(await row()).toMatchObject({ name: "Old", match_type: "partial", verified_source: id });
+      } finally {
+        c.release();
+      }
+    });
+  });
 });

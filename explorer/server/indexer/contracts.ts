@@ -46,6 +46,13 @@ export async function writeContracts(c: Pick<PoolClient, "query">, n: number, cr
       [n, made.map((k) => bytea(k.address)), made.map((k) => bytea(k.creator)), made.map((k) => k.txIndex), made.map((k) => `{${k.traceAddress.join(",")}}`),
         made.map((k) => bytea(codeHash(k.runtimeCode))), made.map((k) => bytea(codeHash(k.initCode)))],
     );
+    // A contract made again with code that has its own source at this address (H1, then H2, then H1) gets that source back, with the match type it had.
+    await c.query(
+      `update contracts c set verified_source = v.id, match_type = v.match_type, name = coalesce(c.name, v.contract_name)
+       from verified_sources v
+       where c.address = any($1::bytea[]) and v.address = c.address and v.runtime_code_hash = c.runtime_code_hash and c.verified_source is null`,
+      [made.map((k) => bytea(k.address))],
+    );
     // A clone of code that is already verified shows a similar match from the start (design 6.3, point 6): the verifier marks the clones that exist when it
     // verifies, and this marks the ones made after. A contract with a source of its own, or one already marked, is left as it is.
     await c.query(
