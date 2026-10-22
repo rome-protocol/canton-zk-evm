@@ -123,8 +123,8 @@ export function createStatsRest(pool: Pool): StatsRest {
   async function lostOf(state: string) {
     const [t] = await query("select count(*)::int as n from tx_lifecycle where state = $1", [state]);
     const out = await query(
-      `select tx_hash, state, state_reason, extract(epoch from updated_at)::float8 * 1000 as at from tx_lifecycle
-        where state = $1 order by updated_at desc, tx_hash limit $2`, [state, LIST_MAX]);
+      `select tx_hash, state, state_reason, extract(epoch from lost_at)::float8 * 1000 as at from tx_lifecycle
+        where state = $1 order by lost_at desc, tx_hash limit $2`, [state, LIST_MAX]);
     return { total: Number(t?.n ?? 0), items: out.map((r): LostItem => ({ txHash: hex(r.tx_hash), state: r.state, reason: r.state_reason, at: iso(Number(r.at)) })) };
   }
   async function lost() {

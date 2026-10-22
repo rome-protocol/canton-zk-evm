@@ -9,6 +9,7 @@ import { DAY, HOUR, MINUTE, QUERIES, rebuildStats, rollupStats } from "./stats.t
 import { histLength } from "./stats-hist.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
 import { createIndexer } from "./indexer.ts";
+import { createStatsRest } from "../rest/stats-rest.ts";
 
 const T0 = Date.UTC(2026, 9, 20, 12, 0, 0); // 12:00:00 UTC on a day with nothing else in it
 const at = (sec: number) => new Date(T0 + Math.round(sec * 1000));
@@ -293,6 +294,15 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     expect(m).toEqual([5, 4, 1]);
     expect((await pool.query("select max_minute_txs from stats_hour order by bucket")).rows.map((r) => r.max_minute_txs)).toEqual([5, 1]);
     expect((await pool.query("select max_minute_txs from stats_day")).rows[0].max_minute_txs).toBe(5);
+  }));
+
+  it("the lost list gives each item the minute it was lost in, and orders by it, whatever was written to the row later", () => inDb(async (pool) => {
+    await life(pool, 1, { state: "lost", updated_at: at(-600) });
+    await life(pool, 2, { state: "lost", updated_at: at(-300) });
+    // The first one is written again later (its reason is filled in): updated_at moves, the minute it was lost in does not.
+    await pool.query("update tx_lifecycle set state_reason = 'late note', updated_at = $1 where tx_hash = $2", [at(-10), hex(201)]);
+    const got = (await createStatsRest(pool).lost()).lost.items;
+    expect(got.map((i) => i.at)).toEqual([at(-300).toISOString(), at(-600).toISOString()]);
   }));
 
   it("a clock that goes back does not lose or double anything", () => inDb(async (pool) => {
