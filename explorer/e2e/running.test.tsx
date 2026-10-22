@@ -32,21 +32,17 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
   async function openRun1Block() {
     useExplorer();
     renderApp(`/block/${run1.get("block")}`);
-    await screen.findByRole("heading", { name: `Block ${run1.get("block")}` }, WAIT);
-    return within(await screen.findByRole("region", { name: "On Canton" }, WAIT));
+    await screen.findByRole("heading", { name: `Block #${run1.get("block")}` }, WAIT);
+    return within(await screen.findByRole("region", { name: "Final on Canton" }, WAIT));
   }
 
   it("shows run 1's block with its hash, its Canton side and the update id the demo recorded", async () => {
     expect(run1.get("block"), "the results file names a block").toMatch(/^\d+$/);
     const canton = await openRun1Block();
-    // Both are shortened on the page; the button beside each shows the whole value.
-    const update = row(canton, "Canton update");
-    await userEvent.click(update.getByRole("button", { name: "Show in full" }));
-    expect(update.getByText(run1.get("canton_update")!)).toBeInTheDocument();
+    // Both are shown in full on the block's own page.
+    expect(row(canton, "Update id").getByText(run1.get("canton_update")!)).toBeInTheDocument();
     const evm = within(screen.getByRole("region", { name: "On the EVM" }));
-    const hash = row(evm, "Hash");
-    await userEvent.click(hash.getByRole("button", { name: "Show in full" }));
-    expect(hash.getByText(run1.get("block_hash")!)).toBeInTheDocument();
+    expect(row(evm, "Hash").getByText(run1.get("block_hash")!)).toBeInTheDocument();
     expect(row(canton, "Hashes").getByText(/give the same hash/)).toBeInTheDocument();
     // The claim the demo made is one of the block's transactions, and links to its page.
     expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toContain(`/tx/${run1.get("evm_claim_tx")}`);
