@@ -126,6 +126,7 @@ function CantonPanel({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
       <div className="side-h"><span className="side-l" id="canton-h">On Canton</span>{b.canton && <span className="muted small">the block record, read as the reader party</span>}</div>
       {b.canton ? <Record b={b} c={b.canton} st={st} />
         : b.status === "genesis" ? <GenesisSide b={b} st={st} />
+        : b.status === "unindexed" ? <div className="empty-side"><b>Final on Canton, not indexed yet.</b><p>Canton holds this block. The explorer has not read its record yet, so the record and the proof are not shown. This page looks again.</p></div>
         : <div className="empty-side"><b>Not on Canton yet.</b><p>reth has made this block and it is being proven. It becomes final when Canton commits it. It can still disappear if Canton refuses it.</p></div>}
     </section>
   );

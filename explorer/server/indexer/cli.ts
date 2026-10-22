@@ -1,7 +1,7 @@
 /**
  * node server/indexer/cli.ts [run | reindex <from> [<to>] | reindex --records <file> | export-records <file> | reset --yes | reader-moved <participant id> | clear-check C10]
  * `run` (the default) runs the indexer's write path until a check stops it or it is told to stop. Needs the database up and migrated (node server/db/cli.ts migrate).
- * Reads RETH_RPC_URL, LEDGER_URL, READER_PARTY, CHAIN_ID and PINS_FILE as the explorer does, EXPLORER_DATABASE_URL (or the password-file
+ * Reads RETH_RPC_URL, LEDGER_URL, LEDGER_TOKEN_FILE, READER_PARTY, CHAIN_ID and PINS_FILE as the explorer does, EXPLORER_DATABASE_URL (or the password-file
  * settings) for the database, and GATEWAY_ADDRESS, GENESIS_FILE, INDEX_DERIVE (inline or behind) and INDEX_TRACE_TIMEOUT_MS for itself. It exits 0 when told to stop, and 2 when a
  * check stops it, with the check's row written to health_checks as down.
  * `reindex <from> [<to>]` works the stage 1 tables out again for a range from the stored records and reth (it can run beside the indexer, which waits while it does);
@@ -16,7 +16,7 @@ import { userInfo } from "node:os";
 import { Pool } from "pg";
 import { loadConfig } from "../config.ts";
 import { connectionConfig } from "../db/connect.ts";
-import { createLedger } from "../ledger.ts";
+import { ledgerFromConfig } from "../ledger-config.ts";
 import { parseCommand, UsageError, type Command } from "./commands.ts";
 import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { IndexerStop } from "./errors.ts";
@@ -81,7 +81,7 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
     return 0;
   }
   const indexer = createIndexer({
-    pool, reads, ledger: createLedger(config.ledgerUrl, config.rpcTimeoutMs, config.readerParty),
+    pool, reads, ledger: ledgerFromConfig(config),
     pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
     log,
   });

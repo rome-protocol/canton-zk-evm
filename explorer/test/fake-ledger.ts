@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 
 type Json = Record<string, unknown>;
 
-export interface FakeRequest { method: string; path: string; query: URLSearchParams; body: Json | null }
+export interface FakeRequest { method: string; path: string; query: URLSearchParams; body: Json | null; authorization: string | null }
 
 export interface FakeLedger {
   url: string;
@@ -59,7 +59,7 @@ export async function startFakeLedger(items: Json[], opts: { httpStatus?: number
     req.on("end", () => {
       const u = new URL(req.url ?? "/", "http://fake");
       const body = raw ? (JSON.parse(raw) as Json) : null;
-      requests.push({ method: req.method ?? "", path: u.pathname, query: u.searchParams, body });
+      requests.push({ method: req.method ?? "", path: u.pathname, query: u.searchParams, body, authorization: req.headers.authorization ?? null });
       const send = (status: number, o: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(o));
       if (opts.httpStatus) return send(opts.httpStatus, { code: "FAILED" });
       if (req.method === "GET" && u.pathname === "/v2/state/ledger-end") {

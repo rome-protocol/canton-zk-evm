@@ -173,6 +173,15 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(steps[1]).not.toHaveAttribute("aria-current");
   });
 
+  it("says a transaction in a block that Canton holds and the indexer has not read is final but not indexed, and keeps looking", async () => {
+    await open(tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }));
+    expect(screen.getByRole("status")).toHaveTextContent("Final on Canton, not indexed yet.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Not final yet");
+    const steps = within(screen.getByRole("list", { name: "Where this transaction is" })).getAllByRole("listitem");
+    expect(steps[2]).toHaveAttribute("aria-current", "step");
+    expect(steps[1]).not.toHaveAttribute("aria-current");
+  });
+
   it("looks again every two seconds, and follows the transaction to Final with no reload", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let answer: ApiTx = waitingTx();
@@ -275,6 +284,7 @@ describe("the stage, in plain words", () => {
     const cases: Array<[ApiTx, string, string]> = [
       [waitingTx({ state: "pending" }), "pending", "Waiting to go into a block"],
       [tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } }), "proving", "In a block that is being proven"],
+      [tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }), "unindexed", "Final on Canton in block 4, which the explorer has not indexed yet"],
       [tx({ state: "final" }), "final", "Final on Canton in block 3"],
       [goneTx({ status: "replaced", state: "replaced", reason: "Another transaction from the same sender took nonce 7." }), "replaced", "Replaced by another transaction with the same nonce"],
       [goneTx({ status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: insufficient funds." }), "dropped", "Dropped: The chain refused it 5 times in a row: insufficient funds."],
@@ -332,8 +342,8 @@ describe("looking again until the transaction is settled", () => {
     return { before, after };
   }
 
-  it("keeps looking while it is pending or proving", async () => {
-    for (const t of [waitingTx(), goneTx({ status: "waiting", state: "pending", reason: null }), tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } })]) {
+  it("keeps looking while it is pending, proving or not indexed yet", async () => {
+    for (const t of [tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }), waitingTx(), goneTx({ status: "waiting", state: "pending", reason: null }), tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } })]) {
       const { before, after } = await asksAfter(t);
       expect(after).toBeGreaterThan(before);
     }

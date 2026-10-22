@@ -52,18 +52,18 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
     expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toContain(`/tx/${run1.get("evm_claim_tx")}`);
   }, 90_000);
 
-  it("shows the proof's own facts against this explorer's pins, which came from the run's guest.txt, with each mismatch said", async () => {
+  it("shows the proof's own facts against this explorer's pins, which came from the run's guest.txt", async () => {
     await openRun1Block();
-    // The rehearsal's proof is a stand-in: its program key and release are one repeated byte and its pins are 0xcd... and 0xef..., so those two facts are red.
-    // Its public values do commit to the block's own hash (the builder checks that before it submits), so that fact is the one that matches. If the explorer
-    // had fallen back to the pins it carries, the pins named here and the file they came from would be different.
+    // The rehearsal's proof is a stand-in, but it carries the run's own program key (0xcd...) and release root (0xef...), because the indexer checks both against its pins
+    // (C7) before it writes a block, so a block with other keys is never on a page. Both facts match, and so does the block hash the public values commit to (the builder
+    // checks that before it submits). The pins named here and the file they came from are the run's: if the explorer had fallen back to the pins it carries, they would differ.
     const group = screen.getByRole("group", { name: "Facts read from the proof" });
     const read = (label: string) => within(group).getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
     const verdict = (label: string) => read(label).nextElementSibling as HTMLElement;
-    expect(read("Program key")).toHaveTextContent("0xeeee…eeee");
-    expect(verdict("Program key")).toHaveTextContent("does not match this explorer's pin 0xcdcd…cdcd");
-    expect(read("ZisK release")).toHaveTextContent("0xeeee…eeee");
-    expect(verdict("ZisK release")).toHaveTextContent("does not match this explorer's pin 0xefef…efef");
+    expect(read("Program key")).toHaveTextContent("0xcdcd…cdcd");
+    expect(verdict("Program key")).toHaveTextContent("ours");
+    expect(read("ZisK release")).toHaveTextContent("0xefef…efef");
+    expect(verdict("ZisK release")).toHaveTextContent("ZisK 1.3.1");
     expect(verdict("Block hash")).toHaveTextContent("this block");
     expect(verdict("Block hash")).not.toHaveTextContent("not this block's hash");
     expect(screen.getByText(/Read from the proof's own bytes and compared with this explorer's pins, from/)).toHaveTextContent(/compared with this explorer's pins, from guest\.txt\./);
