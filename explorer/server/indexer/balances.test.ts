@@ -413,4 +413,24 @@ describe.skipIf(!TEST_URL)("a reindex keeps what stage 2 made, on the pinned Pos
       await indexer.close();
     });
   }, 20_000);
+  it("does not wait for a row of the token that a block's stage 2 holds when it switches the token to read mode", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 4);
+      feeAnswers(chain);
+      await indexer.runOnce();
+      // A holder of the fee token that was checked earlier and is not in the batch, whose row another transaction (a stage 2 that waits for the token's row) holds.
+      const DAVE = 0x44;
+      await pool.query("insert into token_balances (token, holder, token_id, value, updated_block, checked_block, unanswered) values ($1, $2, 0, 0, 1, 1, false)", [hx(FEE), hx(DAVE)]);
+      const other = await pool.connect();
+      try {
+        await other.query("begin");
+        await other.query("select 1 from token_balances where token = $1 and holder = $2 for update", [hx(FEE), hx(DAVE)]);
+        // Before the change this waited for the row for ever (and in a real block, deadlocked with stage 2): now it goes on.
+        const done = (async () => { for (let i = 0; i < 4; i++) await indexer.balancesOnce(); return true; })();
+        expect(await Promise.race([done, new Promise((ok) => setTimeout(() => ok(false), 8000))]), "the check must not wait for the held row").toBe(true);
+        expect((await rows(pool, "select balance_mode from tokens where address = $1", [hx(FEE)]))[0].balance_mode).toBe("read");
+      } finally { await other.query("rollback"); other.release(); }
+      await indexer.close();
+    });
+  }, 30_000);
 });

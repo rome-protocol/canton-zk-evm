@@ -42,7 +42,6 @@ export interface LogRow { log_index: number; tx_index: number; address: Buffer; 
 const hex = (b: Buffer): string => "0x" + b.toString("hex");
 const word = (b: Buffer): bigint => BigInt(hex(b));
 const who = (topic: Buffer): string => "0x" + topic.subarray(12).toString("hex");
-const MAX_BATCH = 4096;
 
 /** The transfers a log states, none for a log that is not shaped as the standards say (the same event signature is ERC-20's and ERC-721's: the topics tell them apart). */
 export function decodeTransfers(r: LogRow): Transfer[] {
@@ -60,7 +59,7 @@ export function decodeTransfers(r: LogRow): Transfer[] {
   if (t === BATCH_TOPIC && r.topic1 && r.topic2 && r.topic3 && r.data.length >= 128) {
     try {
       const [ids, values] = decodeAbiParameters([{ type: "uint256[]" }, { type: "uint256[]" }], hex(r.data) as `0x${string}`);
-      if (ids.length !== values.length || ids.length > MAX_BATCH) return [];
+      if (ids.length !== values.length) return [];
       return ids.map((id, i) => ({ ...base, batchIndex: i, from: who(r.topic2!), to: who(r.topic3!), standard: "ERC-1155" as const, tokenId: id, amount: values[i]! }));
     } catch {
       return []; // data that does not decode as two arrays is not a TransferBatch

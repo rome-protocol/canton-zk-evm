@@ -70,6 +70,9 @@ describe("decodeTransfers", () => {
     expect(decodeTransfers(row(erc721(ERC721, ALICE, BOB, 9)))).toMatchObject([{ standard: "ERC-721", amount: null, tokenId: 9n }]);
     expect(decodeTransfers(row(single(ERC1155, ALICE, BOB, 5, 2)))).toMatchObject([{ standard: "ERC-1155", tokenId: 5n, amount: 2n, from: A(ALICE), to: A(BOB) }]);
     expect(decodeTransfers(row(batch(ERC1155, ALICE, BOB, [1, 2], [10, 20])))).toMatchObject([{ batchIndex: 0, tokenId: 1n, amount: 10n }, { batchIndex: 1, tokenId: 2n, amount: 20n }]);
+    // A batch of any size is decoded: the block's gas bounds it, and a dropped log would leave its holders out of the balances for good.
+    const many = Array.from({ length: 5000 }, (_, i) => i + 1);
+    expect(decodeTransfers(row(batch(ERC1155, ALICE, BOB, many, many)))).toHaveLength(5000);
   });
   it("gives nothing for a log that is not shaped as a standard says", () => {
     expect(decodeTransfers(row({ address: A(ERC20), topics: [TRANSFER_TOPIC, T(1), T(2)], data: "0x00" }))).toEqual([]);

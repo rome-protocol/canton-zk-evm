@@ -139,7 +139,11 @@ async function checkTokens(pool: Pool, reads: BalanceReads, upTo: number, limit:
       if (mode === "derived") {
         // The derived balance disagrees with the token's own answer: this token's balances are read from now on, every holder's.
         await c.query("update tokens set balance_mode = 'read' where address = $1", [r.token]);
-        await c.query("update token_balances set checked_block = null, unanswered = false where token = $1 and not (holder = $2 and token_id = $3) and (checked_block is not null or unanswered)", [r.token, r.holder, r.token_id]);
+        // A row that a block's stage 2 holds (it has the row and is waiting for this token's row, which the check holds) is skipped, not waited for: stage 2 is setting its checked_block to null itself.
+        await c.query(
+          `update token_balances set checked_block = null, unanswered = false where (token, holder, token_id) in
+             (select token, holder, token_id from token_balances where token = $1 and not (holder = $2 and token_id = $3) and (checked_block is not null or unanswered)
+              order by holder, token_id for update skip locked)`, [r.token, r.holder, r.token_id]);
         modes.set(key, "read");
         switched++;
       }
