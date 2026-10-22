@@ -32,6 +32,9 @@ const percentile = (sorted: number[], p: number) => sorted[Math.min(sorted.lengt
  * stats routes (`/api/stats/summary`) arrive: they will replace the window of ten blocks with the last hour and the last day, and add the cards
  * for proof time, commit time, rate, lost transactions and success. Nothing else on the page reads a number that is not made here.
  */
+/** The transactions that are not final yet, counted: those in blocks being proven (the attempts' counts) and those waiting in the pool (null when the pool is not counted). The in-flight route's list is capped, so its length is not a count. */
+export const notFinalCounts = (flight: InFlight) => ({ inBlocks: flight.attempts.reduce((n, a) => n + (a.txCount ?? 0), 0), waiting: flight.poolWaiting?.waiting ?? null });
+
 export function summarize(status: ApiStatus, blocks: BlockListItem[], flight: InFlight | null): Summary {
   return {
     height: status.final?.number ?? null,
@@ -40,7 +43,7 @@ export function summarize(status: ApiStatus, blocks: BlockListItem[], flight: In
     proofTime: spread(blocks.map((b) => b.proofSeconds)),
     commitTime: spread(blocks.map((b) => b.commitSeconds)),
     transactions: { count: blocks.reduce((n, b) => n + b.txCount, 0), blocks: blocks.length },
-    notFinal: flight ? { inBlocks: flight.attempts.reduce((n, a) => n + (a.txCount ?? 0), 0), waiting: flight.poolWaiting?.waiting ?? null } : null,
+    notFinal: flight ? notFinalCounts(flight) : null,
   };
 }
 

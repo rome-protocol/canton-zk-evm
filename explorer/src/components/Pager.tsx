@@ -6,7 +6,7 @@ import type { Page } from "../api.ts";
  * Reads a list one page at a time. The API pages by a cursor (the `next` of the page before), so the pages are walked in order:
  * first, back, forward. There is no last page and no count of pages, because the server gives neither.
  */
-export function usePaged<T>(key: readonly unknown[], read: (cursor: string | null) => Promise<Page<T>>, refetchInterval: number | false = false) {
+export function usePaged<P extends Page<unknown>>(key: readonly unknown[], read: (cursor: string | null) => Promise<P>, refetchInterval: number | false = false) {
   const [cursors, setCursors] = useState<Array<string | null>>([null]);
   const at = cursors[cursors.length - 1] ?? null;
   const q = useQuery({ queryKey: [...key, at], queryFn: () => read(at), placeholderData: keepPreviousData, refetchInterval });
