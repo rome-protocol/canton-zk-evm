@@ -1,11 +1,11 @@
 /** The axes of the stats charts. Pure, so that the scale a chart draws can be tested without drawing it. */
 
-const STEPS = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
-/** The least of 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 and 10 times a power of ten that is not below `x` (x above 0). */
+const UNITS = [1, 2, 2.5, 5, 10];
+/** The least top of an axis, in 1, 2, 2.5, 5 or 10 times a power of ten for each of its four intervals, that is not below `x` (x above 0): 4, 8, 10, 20, 40, 100 ... so that every tick is a round number. */
 export function niceCeil(x: number): number {
-  const p = Math.pow(10, Math.floor(Math.log10(x)));
-  const m = STEPS.find((s) => s * p >= x * (1 - 1e-9)) ?? 10;
-  return Math.round(m * p * 1e9) / 1e9;
+  const q = x / 4, p = Math.pow(10, Math.floor(Math.log10(q)));
+  const m = UNITS.find((u) => u * p >= q * (1 - 1e-9)) ?? 10;
+  return Math.round(4 * m * p * 1e9) / 1e9;
 }
 
 const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;

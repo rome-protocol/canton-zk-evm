@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { axisTicks, niceCeil, scaleOf, timeTicks } from "./chart-scale.ts";
 
 describe("niceCeil", () => {
-  it("rounds up to 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 or 10 times a power of ten", () => {
-    expect([0.07, 1, 1.2, 17, 20.8, 88.6, 0.3].map(niceCeil)).toEqual([0.08, 1, 1.5, 20, 25, 100, 0.3]);
+  it("rounds up to four intervals of 1, 2, 2.5, 5 or 10 times a power of ten, so that every tick is a round number", () => {
+    expect([0.07, 1, 1.2, 17, 20.8, 88.6, 0.3].map(niceCeil)).toEqual([0.08, 1, 2, 20, 40, 100, 0.4]);
   });
 });
 
@@ -23,7 +23,7 @@ describe("scaleOf", () => {
     expect(scaleOf([null, 0, 0])).toEqual({ top: 1, off: [] });
   });
   it("leaves out the places with no fact", () => {
-    expect(scaleOf([null, 3, null]).top).toBe(3);
+    expect(scaleOf([null, 3, null]).top).toBe(4);
   });
 });
 
