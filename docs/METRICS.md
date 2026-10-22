@@ -189,7 +189,7 @@ The same run answers the design's main open question about revert data: `trace_r
 
 L2 is the acceptance test of the health, limits and load slice (design section 9, budgets B3, B4, B6 and B7). It seeds a database through the indexer's own write path, then sends the mixed load of the design (60% single objects, 20% address pages, 10% lists, 5% search, and 5% `getLogs`) at 200 requests a second while the indexer keeps writing blocks of 1,428 transactions every 3 s, 2,000 live-stream clients stay open, and `/api/health` is asked throughout. The server is the deployed one: the pages' routes, the live stream, and the health route read from a pool of its own, with the instance's checks running on a timer in the background. The load runs in a process of its own and is open loop (a request's time runs from when it was due). The test is `explorer/test/l2/l2.test.ts`; the numbers below are the `l2-results` file of the CI job.
 
-**`getLogs` is provisional.** The route that will serve it (`/api?module=logs&action=getLogs`, E8a) does not exist yet. Until it does, L2 sends the query that route will run (10,000 blocks, one address, 1,000 rows) straight to the database, on the API's pool, open loop at its 5% share. A pass says the query is fast; it says nothing about the route. When E8a lands, the load points at the route.
+**`getLogs` now goes through its route.** L2 sends its 5% share to `/api?module=logs&action=getLogs` (E8a): the last 10,000 blocks, one address, 1,000 logs a page, through the server in front of the API, so its limits are in the path, and each request comes from a client of its own so that the per-client limit of Etherscan's `/api` is not what is measured. Its answers are counted in the `getLogs` line and no longer in the server's p97.5 line (the stream is left out of that line in the same way). The figures in the columns below for `getLogs` are of the earlier version of this test, which sent the same query straight to the database, so they say how fast the query was; the first runs of the route replace them, and the p95 of the route is in the `getLogs` object of the `l2-results` file of each job.
 
 Measured in CI on a GitHub-hosted `ubuntu-latest` runner, with the pinned PostgreSQL (`shared_buffers` 1 GB), on the same machine as the server and the load. It is not the reference machine: the design's run on the reference machine (the explorer's testnet host) is still to be made, with `L2_TRANSACTIONS=10000000 L2_SECONDS=600` (and `L2_KEEP_DATABASE=1` to keep the seeded database for a look at plans). The 10,000,000-transaction column was run once in CI, on this branch, by setting those two values in the job; the seed took 33 minutes, the database is 12.5 GB, and the runner had 85 GB free. Every pull request runs the 3,000,000 column, which takes about a quarter of an hour.
 
@@ -200,7 +200,7 @@ Measured in CI on a GitHub-hosted `ubuntu-latest` runner, with the pinned Postgr
 | B3 an address's page of transactions, the one with a million (p97.5) | ≤ 300 ms | 18 ms | 34 ms |
 | B3 a list page (p97.5) | ≤ 200 ms | 14 ms | 30 ms |
 | B3 search (p97.5) | ≤ 100 ms | 7 ms | 18 ms |
-| B3 `getLogs` (provisional, p95) | ≤ 500 ms | 12 ms | 19 ms |
+| B3 `getLogs` (p95; the figures are of the query alone, before the route) | ≤ 500 ms | 12 ms | 19 ms |
 | B4 a new final block to 2,000 stream clients (p95) | ≤ 500 ms | 63 ms | 100 ms |
 | B6 size per million transactions | ≤ 2.5 GB | 1.24 GB | 1.22 GB |
 | B7 `/api/health` (p97.5), answers other than 200 | ≤ 50 ms | 5 ms, none | 22 ms, none |
