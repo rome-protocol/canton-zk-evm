@@ -5,6 +5,7 @@ import { Shell } from "./components/Shell.tsx";
 import { Address } from "./pages/Address.tsx";
 import { Blocks } from "./pages/Blocks.tsx";
 import { Block } from "./pages/Block.tsx";
+import { CantonUpdate, CantonUpdates } from "./pages/Canton.tsx";
 import { Faucet } from "./pages/Faucet.tsx";
 import { Home } from "./pages/Home.tsx";
 import { Search } from "./pages/Search.tsx";
@@ -20,6 +21,8 @@ export function App() {
           <Route path="/" element={<Home />} />
           <Route path="/blocks" element={<Blocks />} />
           <Route path="/block/:id" element={<Block />} />
+          <Route path="/canton" element={<CantonUpdates />} />
+          <Route path="/canton/:updateId" element={<CantonUpdate />} />
           <Route path="/faucet" element={<Faucet />} />
           <Route path="/address/:addr" element={<Address />} />
           <Route path="/token/:addr" element={<Address />} />

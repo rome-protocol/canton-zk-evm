@@ -4,7 +4,7 @@ import { openStream, type Topic } from "./stream.ts";
 
 /** What each live event makes a page read again. The lists and the status are read through these keys. */
 const REFRESH: Record<string, readonly string[]> = {
-  block: ["blocks", "txs", "status", "in-flight"],
+  block: ["blocks", "txs", "canton", "status", "in-flight"],
   txs: ["txs"],
   inflight: ["in-flight", "status"],
   stats: ["status", "stats"],
