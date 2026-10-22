@@ -5,7 +5,7 @@ const GW = "0x" + "9A".repeat(20);
 
 describe("the indexer's settings", () => {
   it("defaults to stage 2 behind (W1 measured inline over B1), and lowercases the gateway", () => {
-    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW })).toEqual({ gateway: "0x" + "9a".repeat(20), derive: "behind", pollMs: 250, rethBehindMs: 10_000, traceTimeoutMs: 60_000, readCallGas: 1_000_000, genesisFile: null, journalDir: null, producerStatusFile: null, journalMs: 1000 });
+    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW })).toEqual({ gateway: "0x" + "9a".repeat(20), derive: "behind", pollMs: 250, rethBehindMs: 10_000, traceTimeoutMs: 60_000, readCallGas: 100_000, genesisFile: null, journalDir: null, producerStatusFile: null, journalMs: 1000 });
   });
   it("takes inline and the timers", () => {
     expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, INDEX_DERIVE: "inline", INDEX_POLL_MS: "500", INDEX_TRACE_TIMEOUT_MS: "90000", READ_CALL_GAS: "500000" })).toMatchObject({ derive: "inline", pollMs: 500, traceTimeoutMs: 90_000, readCallGas: 500_000 });

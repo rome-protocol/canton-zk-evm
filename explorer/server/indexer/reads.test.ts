@@ -101,9 +101,30 @@ describe("the indexer's reads from reth", () => {
     expect(Date.now() - started).toBeLessThan(1500);
     expect(seen).toHaveLength(4);
     for (const call of seen) expect(call).toMatchObject({ to: A("d1"), gas: "0x" + (777_000).toString(16) });
-    // The default is 1,000,000.
+    // The default is 100,000.
     seen.length = 0;
     await readMetadata(createFinalReads(reth.url, 2000), A("d1"), "ERC-20", 5);
-    expect(seen[0]).toMatchObject({ gas: "0xf4240" });
+    expect(seen[0]).toMatchObject({ gas: "0x" + (100_000).toString(16) });
+  });
+
+  it("treats an answer longer than 4 KB of data as no answer, quickly and without decoding it", async () => {
+    const fat = "0x" + "ab".repeat(340_000); // 680 KB
+    const edge = "0x" + "00".repeat(4096);
+    const over = "0x" + "00".repeat(4097);
+    let answer = fat;
+    reth = await startFakeReth({ eth_call: () => answer });
+    const r = createFinalReads(reth.url, 2000);
+    const started = Date.now();
+    const meta = await readMetadata(r, A("d1"), "ERC-20", 5);
+    expect(meta).toEqual({ name: null, symbol: null, decimals: null, totalSupply: null, status: "failed" });
+    expect(Date.now() - started).toBeLessThan(1500);
+    // It is the answered path of an out-of-gas call (not a failure to reach reth), and the bound is exactly 4 KB of data.
+    const e = await r.call(A("d1"), "0x06fdde03", 5).catch((x) => x);
+    expect(e).toBeInstanceOf(RethError);
+    expect((e as RethError).answered).toBe(true);
+    answer = over;
+    await expect(r.call(A("d1"), "0x06fdde03", 5)).rejects.toThrow(/longer than 4096 bytes/);
+    answer = edge;
+    expect(await r.call(A("d1"), "0x06fdde03", 5)).toBe(edge);
   });
 });

@@ -22,6 +22,6 @@ export function loadIndexerSettings(env: Env = process.env): IndexerSettings {
   if (!/^0x[0-9a-f]{40}$/.test(gateway)) throw new IndexerSettingsError("GATEWAY_ADDRESS must be the gateway contract's address, 0x and 40 hex digits");
   const derive = env.INDEX_DERIVE || "behind";
   if (derive !== "inline" && derive !== "behind") throw new IndexerSettingsError(`INDEX_DERIVE must be inline or behind, not "${derive}"`);
-  return { gateway, derive, pollMs: whole(env, "INDEX_POLL_MS", 250, 20), rethBehindMs: whole(env, "INDEX_RETH_BEHIND_MS", 10_000, 1), traceTimeoutMs: whole(env, "INDEX_TRACE_TIMEOUT_MS", 60_000, 1000), readCallGas: whole(env, "READ_CALL_GAS", 1_000_000, 21_000), genesisFile: env.GENESIS_FILE || null,
+  return { gateway, derive, pollMs: whole(env, "INDEX_POLL_MS", 250, 20), rethBehindMs: whole(env, "INDEX_RETH_BEHIND_MS", 10_000, 1), traceTimeoutMs: whole(env, "INDEX_TRACE_TIMEOUT_MS", 60_000, 1000), readCallGas: whole(env, "READ_CALL_GAS", 100_000, 21_000), genesisFile: env.GENESIS_FILE || null,
     journalDir: env.JOURNAL_DIR || null, producerStatusFile: env.PRODUCER_STATUS_FILE || null, journalMs: whole(env, "INDEX_JOURNAL_MS", 1000, 100) };
 }
