@@ -98,6 +98,8 @@ describe("addresses", () => {
     });
     expect(await r.balance(A("5"))).toBe(500000000000000000n);
     expect(seen[0]).toEqual([A("5"), "latest"]);
+    expect(await r.balanceAt(A("5"), 255)).toBe(500000000000000000n);
+    expect(seen[1]).toEqual([A("5"), "0xff"]);
     expect(await r.nonce(A("5"))).toBe(3);
     expect(await r.code(A("5"))).toBe("0x6080");
   });

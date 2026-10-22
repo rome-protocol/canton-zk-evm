@@ -174,6 +174,8 @@ export function createReth(url: string, timeoutMs: number) {
     receipt: (h: string) => read("eth_getTransactionReceipt", [h], (v) => (v === null ? null : receipt(v))),
     // The balance and the count of sent transactions come from the newest block, which may still be being proven.
     balance: (a: string) => read("eth_getBalance", [a, "latest"], big),
+    /** The balance as of one block: the explorer's address pages show the final head's, which the database's copy is not (it is for lists and sorting only). */
+    balanceAt: (a: string, block: number) => read("eth_getBalance", [a, tag(block)], big),
     /** The count of transactions an address has sent: by default as of the newest block, or with "pending" including those waiting in the pool. */
     nonce: (a: string, at: "latest" | "pending" = "latest") => read("eth_getTransactionCount", [a, at], num),
     // For the faucet.

@@ -69,4 +69,39 @@ export const REST_FIELDS = {
   updateTemplate: ["packageId", "packageName", "module", "entity"],
   signatory: ["role", "party"],
   producerRecord: ["template", "choice", "commandId", "argumentBytes", "trafficBytes", "completionOffset"],
+  /** The addresses list: the database's copy of the balance, as of `balanceBlock`. */
+  addressItem: ["address", "kind", "balance", "balanceBlock", "txCount"],
+  /** One address: the balance is reth's at the final head (`balanceBlock`); the counters and the kind are the database's. */
+  addressDetail: ["address", "kind", "balance", "balanceBlock", "sentCount", "receivedCount", "internalCount", "tokenTransferCount", "firstSeenBlock", "lastActiveBlock", "token", "createdBy", "derived"],
+  /** An address's internal calls: the call, and the transaction it is in. */
+  addressInternal: ["txHash", "block", "txIndex", "traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
+  /** A token transfer of an address or of a token, with the transaction it is in. */
+  tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "token", "from", "to", "amount", "tokenId"],
+  /** What an address holds of one token (or of one id of an ERC-1155), as of the block it last moved. */
+  holding: ["token", "standard", "name", "symbol", "decimals", "tokenId", "value", "updatedBlock"],
+  coinPoint: ["block", "balance"],
+  contractItem: ["address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock"],
+  contractDetail: [
+    "address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock",
+    "creationTxHash", "lastInteractionBlock", "codeHash", "code", "proxy", "verification", "derived",
+  ],
+  proxy: ["kind", "implementation", "beacon", "checkedBlock"],
+  verification: ["language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion", "license", "verifiedAt"],
+  /** The verified source and ABI; every field after `verified` is empty (null, or an empty list) while nothing is verified. */
+  source: [
+    "address", "verified", "matchType", "language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion",
+    "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt",
+  ],
+  sourceFile: ["path", "content"],
+  tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus"],
+  tokenDetail: [
+    "address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus",
+    "totalSupplyBlock", "balanceMode", "derived",
+  ],
+  holder: ["holder", "tokenId", "value", "updatedBlock"],
+  /** A gateway leg in a list: where it is, and what the EVM recorded of it. */
+  legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount"],
+  /** What a search found: the page to open, and, for a name, the matches (at most ten). */
+  search: ["path", "matches"],
+  searchMatch: ["kind", "name", "symbol", "address", "path"],
 } as const;
