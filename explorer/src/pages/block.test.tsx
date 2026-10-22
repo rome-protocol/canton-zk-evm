@@ -116,12 +116,32 @@ describe("the block page, for a final block", () => {
     expect(canton.getByRole("link", { name: /Open the Canton record/ })).toHaveAttribute("href", `/canton/${update(3)}`);
   });
 
-  it("shows no offset and says the template is not in the log when the update's route cannot say", async () => {
-    await open(block(), status(), "3", { update: () => reply({ error: "no" }, 404) });
+  it("shows no offset and says the template cannot be read right now when the update's route fails", async () => {
+    await open(block(), status(), "3", { update: () => reply({ error: "no" }, 429) });
     const canton = side("Final on Canton");
+    await within(row(canton, "Template")).findByText("cannot be read right now");
     expect(row(canton, "Offset")).toHaveTextContent("—");
     expect(row(canton, "Synchronizer")).toHaveTextContent("—");
+    expect(row(canton, "Template")).not.toHaveTextContent("not in the producer's log");
+  });
+
+  it("says the template is being read, not that it is missing, while the update's route has not answered", async () => {
+    fakeApi(route({ block: () => reply(block()), status: () => reply(status()), blockDetail: () => reply(blockDetail({ number: 3 })), update: () => reply(updateDetail(3)) }));
+    const answer = globalThis.fetch as unknown as (i: string) => Promise<Response>;
+    vi.stubGlobal("fetch", vi.fn((input: string) => (input.startsWith("/api/canton/updates/") ? new Promise<Response>(() => {}) : answer(input))));
+    renderApp("/block/3");
+    await screen.findByRole("heading", { name: "Block #3" });
+    const canton = side("Final on Canton");
+    expect(row(canton, "Template")).toHaveTextContent("reading…");
+    expect(row(canton, "Template")).not.toHaveTextContent("not in the producer's log");
+  });
+
+  it("says the template is not in the producer's log only when the update's route answers that it is not", async () => {
+    await open(block(), status(), "3", { update: () => reply({ ...updateDetail(3), producerRecord: null }) });
+    const canton = side("Final on Canton");
+    await within(row(canton, "Offset")).findByText("52");
     expect(row(canton, "Template")).toHaveTextContent("not in the producer's log");
+    expect(within(row(canton, "Template")).queryByText("producer log")).toBeNull();
   });
 
   it("never shows the builder's completion offset", async () => {

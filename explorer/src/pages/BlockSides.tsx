@@ -59,7 +59,7 @@ export function EvmSide({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
 }
 
 /** What the update's own route adds to the block's record: the synchronizer, the offset on the reader's participant and what was submitted. Never the builder's offset. */
-function Record({ b, c, st, update }: { b: ApiBlock; c: CantonSide; st: ApiStatus | undefined; update: UpdateDetail | undefined }) {
+function Record({ b, c, st, update, reading, failed }: { b: ApiBlock; c: CantonSide; st: ApiStatus | undefined; update: UpdateDetail | undefined; reading: boolean; failed: boolean }) {
   const signers = st?.signers;
   const sent = update?.producerRecord;
   const [created, choice] = [c.template, sent?.choice ?? null];
@@ -70,7 +70,8 @@ function Record({ b, c, st, update }: { b: ApiBlock; c: CantonSide; st: ApiStatu
       <Item label="Synchronizer">{update ? <HashLink value={update.synchronizer} kind="party" /> : <span className="muted">—</span>}</Item>
       <Item label="Offset">{update ? <><span className="mono">{update.offset}</span> <span className="tag">on the reader's participant</span></> : <span className="muted">—</span>}</Item>
       <Item label="Template">
-        {sent?.template ? <><span className="mono">{sent.template}</span>{choice && <> <span className="muted">· choice</span> <span className="mono">{choice}</span></>} <span className="tag">producer log</span></> : <span className="muted">not in the producer's log</span>}
+        {update ? (sent?.template ? <><span className="mono">{sent.template}</span>{choice && <> <span className="muted">· choice</span> <span className="mono">{choice}</span></>} <span className="tag">producer log</span></> : <span className="muted">not in the producer's log</span>)
+          : failed ? <span className="muted">cannot be read right now</span> : reading ? <span className="muted">reading…</span> : <span className="muted">—</span>}
       </Item>
       <Item label="Created"><span className="mono">{created}</span> <span className="muted">for block {b.number}</span></Item>
       {signers && (
@@ -113,7 +114,7 @@ export function CantonPanel({ b, st }: { b: ApiBlock; st: ApiStatus | undefined 
         {b.canton && <span className="muted small">read as the reader party</span>}
         {b.canton && <><span className="grow" /><Link className="btn-line" to={`/canton/${b.canton.updateId}`}>Open the Canton record <Icon name="next" size={13} /></Link></>}
       </div>
-      {b.canton ? <Record b={b} c={b.canton} st={st} update={update.data} />
+      {b.canton ? <Record b={b} c={b.canton} st={st} update={update.data} reading={update.isPending} failed={update.isError} />
         : b.status === "genesis" ? <GenesisSide b={b} st={st} />
         : b.status === "unindexed" ? <div className="empty-side"><b>Final on Canton, not indexed yet.</b><p>Canton holds this block. The explorer has not read its record yet, so the record and the proof are not shown. This page looks again.</p></div>
         : <div className="empty-side"><b>Not on Canton yet.</b><p>reth has made this block and it is being proven. It becomes final when Canton commits it. It can still disappear if Canton refuses it.</p></div>}
