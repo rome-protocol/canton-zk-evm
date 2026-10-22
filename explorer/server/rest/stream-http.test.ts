@@ -68,6 +68,42 @@ describe("GET /api/stream", () => {
     expect(ids(t)).toEqual(["3:block", "4:block", "5:block"]);
   });
 
+  it("a client that reads normally resumes 100 blocks of 50 hashes from Last-Event-ID 0 and gets every event once across its reconnects", async () => {
+    const big = createStreamHub();
+    const srv = createHttpServer(api, "/nonexistent", undefined, null, big);
+    await new Promise<void>((ok) => srv.listen(0, "127.0.0.1", ok));
+    try {
+      const hashes = Array.from({ length: 50 }, (_, i) => "0x" + i.toString(16).padStart(64, "0"));
+      for (let n = 1; n <= 100; n++) big.publishBlock(block(n), hashes);
+      const base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}/api/stream?topics=blocks,txs`;
+      const got: string[] = [];
+      let last = 0, connects = 0;
+      // An EventSource: it reconnects with the last id it received, and stops here when it has the newest block.
+      while (last < 100 && connects < 50) {
+        connects++;
+        const abort = new AbortController();
+        const res = await fetch(base, { headers: { "last-event-id": String(last) }, signal: abort.signal });
+        expect(res.status).toBe(200);
+        const reader = res.body!.getReader(), decoder = new TextDecoder();
+        let text = "";
+        for (;;) {
+          const r = await reader.read();
+          if (r.done) break;
+          text += decoder.decode(r.value);
+          if (/id: 100\nevent: txs/.test(text) && text.endsWith("\n\n")) break;
+        }
+        abort.abort();
+        for (const id of ids(text)) { got.push(id); last = Number(id.split(":")[0]); }
+      }
+      expect(connects).toBeGreaterThan(1);
+      expect(got).toEqual(Array.from({ length: 100 }, (_, i) => [`${i + 1}:block`, `${i + 1}:txs`]).flat());
+    } finally {
+      big.close();
+      srv.closeAllConnections();
+      await new Promise((ok) => srv.close(ok));
+    }
+  });
+
   it("sends a keep-alive comment and the stats event", async () => {
     const s = await open("/api/stream?topics=stats");
     hub.heartbeat();

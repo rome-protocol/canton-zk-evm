@@ -14,8 +14,8 @@ export const BUFFER_BLOCKS = 100;
 export const PER_CLIENT = 4, PER_INSTANCE = 5000;
 /** Transaction hashes in a `txs` event. */
 export const TXS_MAX = 50;
-/** A client that has this many bytes waiting is too slow to keep, and is dropped (its page reconnects and resumes). */
-/** An event is about 4 KB, so this is some sixteen events behind. A resume's replay is not held to it: only what is still waiting when the next live event comes. */
+/** A client that has this many bytes waiting when a live event comes is too slow to keep, and is cut (its page reconnects and resumes). */
+/** An event is about 4 KB, so this is some sixteen events behind. A resume's replay is the other rule: it is written block by block and stops, at a block boundary, once it has written this many bytes, and the stream is then ended (flushed, not destroyed) so the page reconnects with the last id it got and goes on. */
 export const BACKLOG_MAX = 1 << 16;
 
 export interface BlockEvent { number: number; hash: string; txCount: number; recordTime: string | null; updateId: string | null }
@@ -46,7 +46,7 @@ export type Attached = { ok: true; detach(): void } | { ok: false; error: string
 export function createStreamHub(o: HubOptions = {}) {
   const keep = o.buffer ?? BUFFER_BLOCKS, perClient = o.perClient ?? PER_CLIENT, perInstance = o.perInstance ?? PER_INSTANCE, now = o.now ?? Date.now;
   const buffer: { number: number; events: Event[] }[] = [];
-  interface Client { key: string; topics: ReadonlySet<Topic>; sink: Sink; cut: boolean }
+  interface Client { key: string; topics: ReadonlySet<Topic>; sink: Sink; cut: boolean; ended: boolean }
   const clients = new Set<Client>();
   const perKey = new Map<string, number>();
 
@@ -70,7 +70,7 @@ export function createStreamHub(o: HubOptions = {}) {
   }
 
   function send(c: Client, chunk: string, replay = false): void {
-    if (c.cut) return;
+    if (c.cut || c.ended) return;
     try {
       c.sink.write(chunk);
       if (!replay && c.sink.backlog() > BACKLOG_MAX) {
@@ -117,14 +117,25 @@ export function createStreamHub(o: HubOptions = {}) {
       const key = clientKey(ip);
       if ((perKey.get(key) ?? 0) >= perClient) return { ok: false, error: `This client already has ${perClient} streams open. Close one and try again.` };
       if (clients.size >= perInstance) return { ok: false, error: "This explorer has all the streams it holds open. Try again in a moment." };
-      const c: Client = { key, topics, sink, cut: false };
+      const c: Client = { key, topics, sink, cut: false, ended: false };
       clients.add(c);
       perKey.set(key, (perKey.get(key) ?? 0) + 1);
       if (lastId !== null) {
-        for (const b of buffer) if (b.number > lastId) for (const e of b.events) if (topics.has(e.topic) && clients.has(c)) send(c, frame(e), true);
-        // The replay is sent whole, so the bound that the live events keep is applied once after it.
-        if (clients.has(c) && !c.cut && c.sink.backlog() > BACKLOG_MAX) {
-          if (c.sink.destroy) { c.cut = true; c.sink.destroy(); } else { drop(c); c.sink.end(); }
+        let written = 0;
+        for (const b of buffer) {
+          if (b.number <= lastId) continue;
+          for (const e of b.events) {
+            if (!topics.has(e.topic)) continue;
+            const text = frame(e);
+            send(c, text, true);
+            written += text.length;
+          }
+          // Stop at a block boundary (both events of a block carry its id), so the id the page holds is a block it has all of.
+          if (written > BACKLOG_MAX && !c.cut && clients.has(c)) {
+            c.ended = true;
+            try { sink.end(); } catch { /* the client is gone already */ }
+            break;
+          }
         }
       }
       return { ok: true, detach: () => drop(c) };

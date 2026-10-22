@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUFFER_BLOCKS, TXS_MAX, clientKey, createStreamHub, lastIdOf, topicsOf, type BlockEvent, type Sink, type Topic } from "./stream.ts";
+import { BACKLOG_MAX, BUFFER_BLOCKS, TXS_MAX, clientKey, createStreamHub, lastIdOf, topicsOf, type BlockEvent, type Sink, type Topic } from "./stream.ts";
 
 const block = (n: number): BlockEvent => ({ number: n, hash: "0x" + n.toString(16).padStart(64, "0"), txCount: n, recordTime: "2026-10-22T10:00:00Z", updateId: "1220" + "ab".repeat(32) });
 const hashes = (n: number) => Array.from({ length: n }, (_, i) => "0x" + (i + 1).toString(16).padStart(64, "0"));
@@ -58,12 +58,25 @@ describe("the stream hub", () => {
     expect(ahead.text).toBe("");
   });
 
-  it("cuts a client whose backlog is over the bound after a resume replay, and frees its slot", () => {
+  it("stops a long resume replay at a block boundary once it has written the bound, ends the stream (no destroy), and keeps the client counted until it closes", () => {
     const hub = createStreamHub();
-    for (let n = 1; n <= 5; n++) hub.publishBlock(block(n), hashes(1));
-    const slow = client(10 * (1 << 20));
-    expect(hub.attach("s", all, 0, slow).ok).toBe(true);
-    expect(slow.ended).toBe(true);
+    for (let n = 1; n <= 100; n++) hub.publishBlock(block(n), hashes(50));
+    let destroyed = false;
+    const c = client(10 * (1 << 20));
+    c.destroy = () => { destroyed = true; };
+    const attached = hub.attach("s", all, 0, c);
+    expect(attached.ok).toBe(true);
+    expect(c.ended).toBe(true);
+    expect(destroyed).toBe(false);
+    expect(hub.count()).toBe(1);
+    const ev = events(c.text);
+    expect(ev.length).toBeGreaterThan(2);
+    expect(ev.length).toBeLessThan(200);
+    expect(ev.length % 2).toBe(0); // whole blocks only: the last id the browser has is a block it has all of
+    expect(c.text.length).toBeGreaterThan(BACKLOG_MAX);
+    hub.publishBlock(block(101), []); // an ended client is told nothing more
+    expect(c.text).not.toContain("id: 101");
+    if (attached.ok) attached.detach();
     expect(hub.count()).toBe(0);
   });
 
