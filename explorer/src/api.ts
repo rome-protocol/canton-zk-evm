@@ -1,3 +1,4 @@
+import type { Lifecycle } from "./block-times.ts";
 /** What the server's API answers, as the pages read it. The server's field test holds each answer to exactly these fields. */
 export interface LatestBlock { number: number; hash: string; timestamp: number; txCount: number; updateId: string; recordTime: string }
 export interface ApiStatus {
@@ -182,6 +183,9 @@ export const getBlocks = async (limit: number) => (await call(`/api/blocks?limit
 export const getTxs = async (limit: number) => (await call(`/api/txs?limit=${limit}`, [200])).body as Page<TxListItem>;
 export const getInFlight = async () => (await call("/api/in-flight", [200])).body as InFlight;
 
+/** What /api/blocks/:id adds to a block's page: the producer's times for the attempt that made it (null when the journal holds none) and its gateway legs. */
+export interface BlockDetail { number: number; legsCount: number | null; derived: boolean; lifecycle: Lifecycle | null }
+export const getBlockDetail = async (id: string) => (await call(`/api/blocks/${encodeURIComponent(id)}`, [200])).body as BlockDetail;
 export const getBlock = async (id: string) => (await call(`/api/block/${encodeURIComponent(id)}`, [200])).body as ApiBlock;
 export const getTx = async (hash: string) => (await call(`/api/tx/${encodeURIComponent(hash)}`, [200])).body as ApiTx;
 export const getAddress = async (address: string) => (await call(`/api/address/${encodeURIComponent(address)}`, [200])).body as ApiAddress;

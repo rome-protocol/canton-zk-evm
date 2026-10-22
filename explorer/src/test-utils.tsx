@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { ApiAddress, ApiBlock, BlockDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -102,13 +102,14 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
-  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply;
+  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
     if (kind === "status") return h.status ? h.status() : reply(status());
     if (kind === "blocks" && arg && sub === "transactions") return h.blockTxs ? h.blockTxs(decodeURIComponent(arg), path) : reply(page([]));
     if (kind === "blocks" && arg && sub === "legs") return h.blockLegs ? h.blockLegs(decodeURIComponent(arg), path) : reply(page([]));
+    if (kind === "blocks" && arg) return h.blockDetail ? h.blockDetail(decodeURIComponent(arg)) : gone();
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));
@@ -149,6 +150,16 @@ export function goneTx(over: Partial<ApiTxUnseen> = {}): ApiTxUnseen {
   return {
     hash: hash(0xf7), status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: nonce too low.", lifecycle: null, block: null, from: addr(0x5b), to: null, value: null, nonce: 7, type: null, gas: null,
     gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null,
+    ...over,
+  };
+}
+
+/** What /api/blocks/:id adds for block 3: the producer cut it 0.1 s before its timestamp, proved it in 6.8 s, and Canton recorded it 0.362 s after it was sent. */
+export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
+  const at = (s: number) => new Date((T0 + s) * 1000).toISOString();
+  return {
+    number: 3, legsCount: 0, derived: true,
+    lifecycle: { strategy: "timer", cutReason: "interval", cutAt: at(7.9), builtAt: at(8.1), proofStartedAt: at(8.2), proofEndedAt: at(15), submittedAt: at(15.05), answeredAt: at(15.3) },
     ...over,
   };
 }
