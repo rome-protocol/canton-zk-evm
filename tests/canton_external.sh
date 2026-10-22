@@ -91,6 +91,13 @@ cat "$WORK/setup1.log"
 jq -e '.created == true and .headNumber == "0" and .headHash == "'"$H0"'"' <<<"$first" >/dev/null || fail "the chain was not created at head 0: $first"
 sleep 3   # late topology events of the first run settle before the snapshot
 snapshot > "$WORK/after1.json"
+# What the Ledger API answers for one party by id, which setup.py relies on: a party this participant hosts is listed with isLocal true; a party it has never heard of is
+# a 404 (an empty list or isLocal false would do as well).
+mint
+operator_party=$(sed -n 's/^OPERATOR_PARTY=//p' "$CZE_STATE_DIR/canton/parties.env"); [ -n "$operator_party" ] || fail "no operator party in parties.env"
+lookup() { curl -s -w '\n%{http_code}' -H "Authorization: Bearer $(tr -d '[:space:]' < "$WORK/token-admin")" "$CZE_LEDGER_URL/v2/parties/$(jq -rn --arg p "$1" '$p|@uri')"; }
+local_answer=$(lookup "$operator_party"); echo "GET /v2/parties/<local party> -> $(tr '\n' ' ' <<<"$local_answer")"
+unknown_answer=$(lookup "nobody::${operator_party##*::}"); echo "GET /v2/parties/<unknown party> -> $(tr '\n' ' ' <<<"$unknown_answer")"
 second=$(setup 2> "$WORK/setup2.log") || { cat "$WORK/setup2.log" >&2; fail "the second setup failed"; }
 cat "$WORK/setup2.log"
 jq -e '.created == false and .contractId == "'"$(jq -r .contractId <<<"$first")"'"' <<<"$second" >/dev/null || fail "the second setup did not find the same chain: $second"

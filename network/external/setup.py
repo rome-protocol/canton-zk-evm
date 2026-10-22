@@ -85,7 +85,7 @@ def http(url: str, token, data=None, content_type="application/json", method=Non
 
 class Participant:
     def __init__(self, url: str):
-        self.url, self.admin = url.rstrip("/"), propose.role_token("admin")
+        self.url, self.admin, self._namespace = url.rstrip("/"), propose.role_token("admin"), None
 
     def call(self, path, data=None, **kw):
         return http(self.url + path, self.admin, data, **kw)
@@ -118,22 +118,23 @@ class Participant:
         return any(v.get("synchronizerId") in synchronizers and v.get("participantId", me) == me and any(p.get("packageId") == package_id for p in v.get("packages", []))
                    for v in answer.get("vettedPackages", []))
 
-    def local_parties(self) -> list:
-        """The ids of the parties this participant hosts. The Ledger API lists every party it knows, those hosted elsewhere too (isLocal false), a page
-        at a time: this reads every page and keeps the local ones."""
-        found, token = [], ""
-        while True:
-            answer = self.call("/v2/parties?pageSize=1000" + (f"&pageToken={urllib.parse.quote(token)}" if token else ""))[1]
-            found += [p["party"] for p in answer.get("partyDetails", []) if p.get("isLocal") is True]
-            token = answer.get("nextPageToken") or ""
-            if not token:
-                return found
+    def namespace(self) -> str:
+        """The namespace of this participant, the fingerprint after the last "::" of its id: every party it allocates has an id that ends with it."""
+        if not self._namespace:
+            me = self.own_id()
+            if not me or "::" not in me:
+                raise SystemExit("the participant does not say its id (GET /v2/parties/participant-id), so the setup cannot tell which parties are its own")
+            self._namespace = me.rsplit("::", 1)[1]
+        return self._namespace
 
     def party(self, hint: str):
-        found = [p for p in self.local_parties() if p.startswith(hint + "::")]
-        if len(found) > 1:
-            raise SystemExit(f"more than one local party starts with {hint}:: ({found}): remove the extra ones or choose another CZE_PARTY_PREFIX")
-        return found[0] if found else None
+        """The id of the party this participant hosts under the hint, or None. One lookup by id (a party allocated with the hint H has the id H::<namespace>):
+        listing every party would read all the parties the participant knows, which on a busy network are hundreds of thousands."""
+        expected = f"{hint}::{self.namespace()}"
+        status, answer = self.call("/v2/parties/" + urllib.parse.quote(expected, safe=""))
+        if status == 404:
+            return None
+        return expected if any(p.get("party") == expected and p.get("isLocal") is True for p in answer.get("partyDetails", [])) else None
 
     def allocate(self, hint: str) -> str:
         return self.call("/v2/parties", {"partyIdHint": hint, "identityProviderId": ""})[1]["partyDetails"]["party"]
@@ -193,6 +194,8 @@ def ensure_parties(node: Participant, hints: tuple, prefix: str) -> dict:
         if found is None:
             found = node.allocate(prefix + name)
             log(f"allocated the party {prefix}{name}")
+            if found != f"{prefix}{name}::{node.namespace()}":
+                log(f"the participant gave the party {prefix}{name} the id {found}, not the one expected; using it")
         parties[name] = found
     return parties
 
