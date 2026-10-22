@@ -2,7 +2,7 @@
 """L3 of the explorer's design (section 9), the nightly flood on the rehearsal chain: the real reth, Canton, builder and the explorer's indexer, with the
 stand-in proof. It floods the producer with blocks of plain transfers (1,428 fit under the 30 Mgas cap), cut one after another as the builder takes them,
 and measures, for each block, from the moment the update can be read on the reader's participant (the ledger end, polled every 20 ms, reaches the offset the
-builder's commit answered with):
+builder's commit answered with; the clock starts at the last poll that could not read it, so a lag is an upper bound, at most one poll too long):
   served   the first time the explorer's API answers for the block from its database (status final, with the Canton record): B1's index lag, polled every 60 ms
            (the REST routes allow 20 requests a second to a client). An answer from reth alone ("unindexed", "proving") does not count: reth has the block the
            moment the builder commits, so it would say nothing of the indexer.
@@ -25,6 +25,7 @@ import subprocess
 import sys
 import threading
 import bisect
+import http.client
 import queue
 import time
 import urllib.error
@@ -99,7 +100,7 @@ def get(url, timeout=10):
             return r.status, json.load(r)
     except urllib.error.HTTPError as e:
         return e.code, None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, OSError, ValueError, http.client.HTTPException):
         return 0, None
 
 
@@ -148,27 +149,35 @@ class Stream(threading.Thread):
 
 
 class LedgerClock(threading.Thread):
-    """The reader's participant's ledger end, polled every 20 ms: when it first reached each offset. That is when an update can be read there (section 9's t0)."""
+    """The reader's participant's ledger end, polled every 20 ms (section 9's t0: the update can be read there). Every poll is kept, as (sent at, offset read)."""
     def __init__(self, base):
         super().__init__(daemon=True)
-        self.base, self.stop, self.times, self.offsets = base, False, [], []
+        self.base, self.stop, self.sent, self.offsets, self.misses, self.last_miss = base, False, [], [], 0, None
 
     def run(self):
         while not self.stop:
-            status, body = get(f"{self.base}/v2/state/ledger-end", timeout=5)
-            now = time.monotonic()
-            offset = body.get("offset") if status == 200 and isinstance(body, dict) else None
-            if type(offset) is int and (not self.offsets or offset > self.offsets[-1]):
-                self.times.append(now)
+            sent = time.monotonic()
+            try:
+                # The participant is on this machine, not an outside service, and its HTTP server logs a warning for every request whose User-Agent holds an address.
+                with urllib.request.urlopen(f"{self.base}/v2/state/ledger-end", timeout=5) as r:
+                    offset = json.load(r).get("offset")
+            except Exception as e:  # the clock must outlive any one bad answer: a dead clock is a block that cannot be timed
+                offset, self.last_miss = None, f"{type(e).__name__}: {str(e)[:200]}"
+            if type(offset) is int:
+                self.sent.append(sent)
                 self.offsets.append(offset)
+            else:
+                self.misses += 1
             time.sleep(LEDGER_POLL_S)
 
     def reached(self, offset):
-        """When the ledger end first read `offset` or more; None when it never did (or the offset is not known)."""
+        """When the update at `offset` became readable, as an upper bound: the moment the last poll that could not read it was sent. The true time is between that and
+        the answer of the first poll that could, so the lag measured from here is at most this much, and the error is a poll's length (20 ms and the round trip).
+        None when no poll read it (or the offset is not known); the first poll's own time when that poll could already read it."""
         if type(offset) is not int:
             return None
-        i = bisect.bisect_left(self.offsets, offset)
-        return self.times[i] if i < len(self.times) else None
+        i = bisect.bisect_left(self.offsets, offset)   # the ledger end only grows, so the polls are in order
+        return self.sent[max(0, i - 1)] if i < len(self.offsets) else None
 
 
 def committed(output):
@@ -286,6 +295,7 @@ def run(seconds, per_block, results):
     summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0)
     if blocks:
         summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
+    summary.update(ledger_end_polls=len(clock.offsets), ledger_end_polls_unanswered=clock.misses, ledger_end_last_error=clock.last_miss)
     summary.update(seconds=seconds, flood_seconds=round(flood_s, 1), transactions_per_block_sent=per_block, database_bytes_before=size0, database_bytes_after=size1, failures=failures, per_block=blocks)
     Path(results).write_text(json.dumps(summary, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k != "per_block"}, indent=1))

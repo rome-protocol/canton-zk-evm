@@ -1,5 +1,8 @@
 """The judging half of the nightly L3 (tests/demo_nightly_l3.py): the percentile, the growth per million, and each budget's verdict. No chain needed."""
+import http.server
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -49,12 +52,17 @@ class Served(unittest.TestCase):
 class Clock(unittest.TestCase):
     def clock(self):
         c = l3.LedgerClock("http://unused")
-        c.times, c.offsets = [10.0, 11.0, 12.5], [100, 140, 200]
+        c.sent, c.offsets = [10.0, 10.02, 10.04, 10.06], [100, 100, 140, 200]
         return c
 
-    def test_the_first_poll_that_reached_the_offset(self):
-        self.assertEqual(self.clock().reached(140), 11.0)
-        self.assertEqual(self.clock().reached(141), 12.5)
+    def test_the_time_is_the_last_poll_that_could_not_read_the_offset(self):
+        # 140 was first read by the poll sent at 10.04; the one before it, sent at 10.02, could not: the lag is counted from there
+        self.assertEqual(self.clock().reached(140), 10.02)
+        self.assertEqual(self.clock().reached(200), 10.04)
+        self.assertEqual(self.clock().reached(101), 10.02)
+
+    def test_an_offset_already_read_by_the_first_poll_counts_from_that_poll(self):
+        self.assertEqual(self.clock().reached(100), 10.0)
         self.assertEqual(self.clock().reached(1), 10.0)
 
     def test_an_offset_not_reached_has_no_time(self):
@@ -69,6 +77,39 @@ class Clock(unittest.TestCase):
     def test_no_offset_in_the_output(self):
         self.assertIsNone(l3.committed("nothing here"))
         self.assertIsNone(l3.committed('{"committed": true, "completionOffset": null}'))
+
+
+class Poller(unittest.TestCase):
+    def test_the_clock_survives_bad_answers_and_keeps_polling(self):
+        answers = iter([(200, b'{"offset": 5}'), (500, b"boom"), (200, b"not json"), (200, b'{"offset": 9}')])
+        last = [(200, b'{"offset": 9}')]
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                status, body = next(answers, last[0])
+                self.send_response(status)
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        clock = l3.LedgerClock(f"http://127.0.0.1:{server.server_port}")
+        clock.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and (not clock.offsets or clock.offsets[-1] < 9):
+            time.sleep(0.01)
+        clock.stop = True
+        server.shutdown()
+        server.server_close()
+        self.assertEqual(clock.offsets[0], 5)
+        self.assertEqual(clock.offsets[-1], 9)
+        self.assertEqual(clock.misses, 2)
+        self.assertIsNotNone(clock.last_miss)
+        self.assertIsNotNone(clock.reached(9))
 
 
 class Judge(unittest.TestCase):
