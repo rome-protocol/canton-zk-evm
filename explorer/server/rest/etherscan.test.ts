@@ -215,7 +215,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
       expect(shape(await get(`/api?module=account&action=txlist&address=${h(0xee)}`))).toEqual(NO_ROWS);
       // The window: page x offset up to 10,000 is served, one more is Etherscan's refusal, which words it in the message.
       expect(shape(await q("page=1&offset=10000")).status).toBe("1");
-      expect(shape(await q("page=2&offset=5000")).status).toBe("1");
+      expect(shape(await q("page=2&offset=5000"))).toEqual(NO_ROWS); // inside the window, past the fixture's few rows
       const window = { status: "0", message: "Result window is too large, PageNo x Offset size must be less than or equal to 10000", result: null };
       expect(shape(await q("page=2&offset=5001"))).toEqual(window);
       expect(shape(await q("page=10001&offset=1"))).toEqual(window);
