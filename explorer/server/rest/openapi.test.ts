@@ -94,7 +94,10 @@ describe("the API description", () => {
     }
     // The API page reads the module table from `x-modules` of /api's GET; it is the table the door answers from.
     expect(doc.paths["/api"].get["x-modules"]).toEqual(Object.fromEntries(Object.entries(MODULES).map(([m, a]) => [m, Object.keys(a)])));
-    expect(Object.keys(doc.paths["/api"].get["x-modules"])).toEqual(["account", "transaction", "block", "logs"]);
+    expect(Object.keys(doc.paths["/api"].get["x-modules"])).toEqual(["account", "transaction", "block", "logs", "token", "stats", "gastracker"]);
+    expect(doc.paths["/api"].get["x-modules"]).toMatchObject({
+      token: ["tokeninfo", "tokenholdercount", "tokenholderlist"], stats: ["ethsupply", "tokensupply", "ethprice"], gastracker: ["gasoracle", "gasestimate"],
+    });
     expect(doc.paths["/v2/api"].get["x-modules"]).toBeUndefined();
     expect(doc.paths["/api"].get.parameters.find((q: { name: string }) => q.name === "action").description).toContain("getLogs");
   });
