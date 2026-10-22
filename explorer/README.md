@@ -41,6 +41,7 @@ The server takes its settings from environment variables. A wrong value stops it
 | `PINS_FILE` | `prover/fixtures/session.txt` | A file of `key=value` lines with `programVK` and `rootC`: the proving program and ZisK release this explorer expects. A run's `state/net/guest.txt` has the same form |
 | `CHAIN_ID`, `CHAIN_NAME`, `COIN_SYMBOL` | `770101`, `Ostia`, `tROME` | How the chain and its native coin are named on every page |
 | `RPC_TIMEOUT_MS`, `POLL_MS` | `5000`, `2000` | How long one call to reth may take, and how often the transaction tracker looks at the transactions it holds |
+| `READ_CALL_GAS` | `1000000` | The gas limit of every `eth_call` the indexer makes (a token's name, symbol, decimals, total supply and balances, and the proxy reads), so a contract that spends all the gas it gets costs a short read and not a long one. A call that runs out of gas counts as not answered: the token's metadata is `failed`, a balance is `unanswered`, and the block goes on |
 | `PUBLIC_RPC` | `0` | Set to `1` to serve the public RPC at `POST /rpc`. See [The public RPC](#the-public-rpc) |
 | `RPC_RATE_PER_MINUTE` | `300` | Calls per client address per minute on `/rpc`. A batch counts each of its calls |
 | `TRUSTED_IP_HEADER` | none | The request header that holds the client's address, such as `X-Real-IP`, for a server that sits behind a proxy that writes it. With none, the address of the connection is used |

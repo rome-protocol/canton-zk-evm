@@ -69,7 +69,7 @@ async function main(command: Command): Promise<number> {
 }
 
 async function dispatch(command: Command, config: ReturnType<typeof loadConfig>, settings: ReturnType<typeof loadIndexerSettings>, pool: Pool): Promise<number> {
-  const reads = createFinalReads(config.rethUrl, config.rpcTimeoutMs, settings.traceTimeoutMs);
+  const reads = createFinalReads(config.rethUrl, config.rpcTimeoutMs, settings.traceTimeoutMs, settings.readCallGas);
   const log = (line: string) => console.log(line);
   if (command.kind === "export-records") {
     console.log(`export-records: wrote ${await exportRecordsToFile(pool, command.file)} records to ${command.file}`);

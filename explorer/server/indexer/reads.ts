@@ -149,7 +149,8 @@ function trace(v: unknown): TxTrace {
 }
 
 /** `traceTimeoutMs` is for the trace replay of a block, which can take much longer than the other reads (a heavy block is replayed whole). */
-export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs: number = timeoutMs) {
+/** `callGas` is the gas limit of every `eth_call` (a contract's own reads of itself must stop at it, whatever the contract does; a call that runs out of gas is reth's error answer, so it counts as no answer). */
+export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs: number = timeoutMs, callGas: number = 1_000_000) {
   let id = 0;
 
   async function rpc(method: string, params: unknown[], limitMs: number = timeoutMs): Promise<unknown> {
@@ -194,7 +195,7 @@ export function createFinalReads(url: string, timeoutMs: number, traceTimeoutMs:
     /** One storage slot of an account at block n, as 32 bytes. */
     storageAt: (account: string, slot: string, n: number) => read("eth_getStorageAt", [account, slot, tag(n)], re(/^0x[0-9a-f]{64}$/, "a storage word")),
     /** An `eth_call` at block n (a read of a contract, with no sender). */
-    call: (to: string, input: string, n: number) => read("eth_call", [{ to, data: input }, tag(n)], data),
+    call: (to: string, input: string, n: number) => read("eth_call", [{ to, data: input, gas: tag(callGas) }, tag(n)], data),
     /** An account's coin balance at block n (the background check of `addresses.coin_balance`). */
     balance: (account: string, n: number) => read("eth_getBalance", [account, tag(n)], big),
     /** An account's code at block n (`0x` for none): the genesis contracts are checked at block 0. */
