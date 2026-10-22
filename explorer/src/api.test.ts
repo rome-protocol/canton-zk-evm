@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
-import { ApiError, getStatus, search } from "./api.ts";
-import { account, block, status, tokenAddress, tx } from "./test-utils.tsx";
+import { REST_FIELDS } from "../server/rest/fields.ts";
+import { ApiError, getBlocks, getInFlight, getStatus, getTxs, search } from "./api.ts";
+import { account, block, blockItem, inFlight, status, tokenAddress, tx, txItem } from "./test-utils.tsx";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -57,12 +58,39 @@ describe("the API client", () => {
 
   it("searches: the page to open, or the server's own message when nothing is found", async () => {
     answer(200, { path: "/block/3" });
-    expect(await search("3")).toEqual({ found: true, path: "/block/3" });
+    expect(await search("3")).toEqual({ found: true, path: "/block/3", matches: [] });
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/search?q=3");
     answer(404, { error: "Not found. Search takes a block number." });
     expect(await search("0xabc&x=1")).toEqual({ found: false, message: "Not found. Search takes a block number." });
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/search?q=0xabc%26x%3D1");
     answer(502, { error: "The explorer cannot read the chain right now." });
     await expect(search("3")).rejects.toMatchObject({ status: 502 });
+  });
+
+  it("holds the list and in-flight fixtures to the fields the server serves", () => {
+    const keys = (o: object) => Object.keys(o).sort();
+    expect(keys(blockItem(1))).toEqual([...REST_FIELDS.blockItem].sort());
+    expect(keys(txItem(1))).toEqual([...REST_FIELDS.txItem].sort());
+    const f = inFlight();
+    expect(keys(f)).toEqual([...FIELDS.inFlight].sort());
+    expect(keys(f.attempts[0]!)).toEqual([...FIELDS.inFlightAttempt].sort());
+  });
+
+  it("reads the newest blocks and transactions with the limit it was given, and the in-flight attempts", async () => {
+    answer(200, { items: [blockItem(2)], next: null });
+    expect((await getBlocks(10)).items[0]!.number).toBe(2);
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/blocks?limit=10");
+    answer(200, { items: [txItem(2)], next: "x" });
+    expect((await getTxs(10)).next).toBe("x");
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/txs?limit=10");
+    answer(200, inFlight());
+    expect((await getInFlight()).attempts).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/in-flight");
+  });
+
+  it("keeps the matches of a name search", async () => {
+    const m = { kind: "token", name: "Test USD", symbol: "tUSD", address: "0x" + "ab".repeat(20), path: "/token/0x" + "ab".repeat(20) };
+    answer(200, { path: m.path, matches: [m] });
+    expect(await search("tusd")).toEqual({ found: true, path: m.path, matches: [m] });
   });
 });

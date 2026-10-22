@@ -1,6 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { getBlock, type ApiBlock, type ApiStatus, type BlockRow, type CantonSide, type Fact } from "../api.ts";
 import { unready } from "../components/Cards.tsx";
+import { BlockLegs, PagedTransactions } from "../components/BlockParts.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { CopyButton, HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -84,7 +85,7 @@ function Record({ b, c, st }: { b: ApiBlock; c: CantonSide; st: ApiStatus | unde
   return (
     <>
       <Kv>
-        <Item label="Canton update"><HashLink value={c.updateId} kind="update" /></Item>
+        <Item label="Canton update"><HashLink value={c.updateId} kind="update" to={`/canton/${c.updateId}`} /></Item>
         <Item label="Committed"><span className="mono">{utcMs(c.recordTime)}</span> <span className="muted">· {seconds(b.timestamp, c.recordTime)} after the block was made</span></Item>
         <Item label="Record"><span className="mono">{c.template}</span></Item>
         {signers && (
@@ -247,7 +248,8 @@ export function Block() {
         <>
           <div className="legs"><Icon name="lock" size={14} /><span>{LEGS_THIS_BLOCK}</span></div>
           <HowItHappened b={b} />
-          <Transactions rows={b.transactions} />
+          {b.status === "final" ? (st && <PagedTransactions key={b.number} id={String(b.number)} total={b.txCount} coin={st.coin} />) : <Transactions rows={b.transactions} />}
+          {b.status === "final" && <BlockLegs key={b.number} id={String(b.number)} />}
           <Verify b={b} st={st} />
           {b.canton && <RecordData c={b.canton} />}
         </>

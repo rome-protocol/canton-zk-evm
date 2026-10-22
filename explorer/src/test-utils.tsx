@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, ApiStatus, ApiTxSeen, ApiTxUnseen } from "./api.ts";
+import type { ApiAddress, ApiBlock, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -76,23 +76,57 @@ export type Reply = { status: number; body: unknown };
 export const reply = (body: unknown, status = 200): Reply => ({ status, body });
 const gone = (): Reply => reply({ error: NOT_FOUND }, 404);
 
+/** A block as the list route gives it: the number n was made 8 seconds after n - 1, and committed 7.4 seconds after it was made. */
+export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockListItem {
+  const timestamp = T0 + (n - 2) * 8;
+  return { number: n, hash: hash(n), timestamp, txCount: n % 3, gasUsed: 21000 * (n % 3), gasLimit: 30000000, miner: "0x" + "00".repeat(18) + "0fee", legsCount: 0, updateId: update(n), recordTime: new Date(timestamp * 1000 + 7400).toISOString(), ...over };
+}
+/** A final transaction as the list route gives it: the nth, in block n. */
+export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
+  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, ...over };
+}
+export const page = <T,>(items: T[], next: string | null = null): Page<T> => ({ items, next });
+
+/** What the in-flight route answers while block 4 is being proven (the producer cut it at T0 + 16, built it in 0.2 s and began its proof 0.4 s after that), with one more transaction in reth's pool. */
+export function inFlight(over: Partial<InFlight> = {}): InFlight {
+  const at = (s: number) => new Date((T0 + 16 + s) * 1000).toISOString();
+  return {
+    final: false,
+    attempts: [{ number: 4, strategy: "timer", cutReason: "interval", stage: "proving", txCount: 3, poolWaiting: 1, cutAt: at(0), builtAt: at(0.2), proofStartedAt: at(0.6), proofEndedAt: null, submittedAt: null, answeredAt: null, outcome: null }],
+    poolWaiting: { waiting: 1, at: at(0.5) },
+    ...over,
+  };
+}
+
 /** What the fake chain answers to each path of the API. The status is always well; anything not given is not found. */
-export function route(h: { status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply }) {
-  return (path: string): Reply => {
-    const [, , kind, arg = ""] = path.split("?")[0]!.split("/");
+export function route(h: {
+  status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
+  blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply;
+  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply;
+}) {
+  const answer = (path: string): Reply => {
+    const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
     if (kind === "status") return h.status ? h.status() : reply(status());
+    if (kind === "blocks" && arg && sub === "transactions") return h.blockTxs ? h.blockTxs(decodeURIComponent(arg), path) : reply(page([]));
+    if (kind === "blocks" && arg && sub === "legs") return h.blockLegs ? h.blockLegs(decodeURIComponent(arg), path) : reply(page([]));
+    if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
+    if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));
+    if (kind === "in-flight") return h.inFlight ? h.inFlight() : reply(inFlight({ attempts: [], poolWaiting: null }));
     const q = path.split("q=")[1];
     const pick = { block: h.block, tx: h.tx, address: h.address, search: h.search && (() => h.search!(decodeURIComponent(q ?? ""))) }[kind ?? ""];
     return pick ? (pick as (a: string) => Reply)(decodeURIComponent(arg)) : gone();
   };
+  return Object.assign(answer, { routed: true });
 }
 
 /** The pages' own fetch calls, answered by the given function. The last call's target is kept in `calls`. */
-export function fakeApi(answer: (path: string) => { status: number; body: unknown }) {
+export function fakeApi(answer: ((path: string) => { status: number; body: unknown }) & { routed?: boolean }) {
   const calls: string[] = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
     calls.push(input);
-    const a = answer(input);
+    // A test that answers every path with one body (the status) still gets the plain lists, which it does not care about.
+    const a = !answer.routed && /^\/api\/(blocks|txs|in-flight)\b/.test(input) ? route({})(input) : answer(input);
     return new Response(JSON.stringify(a.body), { status: a.status, headers: { "content-type": "application/json" } });
   }));
   return calls;

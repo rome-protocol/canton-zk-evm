@@ -219,14 +219,14 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return ok({ address: a, kind: token ? "token" : code === "0x" ? "account" : "contract", balance: dec(balance), nonce, token: token && pick(token, FIELDS.token), createdBy: created && pick(created, FIELDS.createdBy) });
   }
 
-  /** Works out what was typed from its shape. A block, transaction or update that nothing holds is not found. */
+  /** Works out what was typed from its shape. A block, transaction or update that nothing holds is not found. A Canton update id opens the update's own page, which links its block. */
   async function search(q: string): Promise<Answer> {
     const go = (path: string) => ok({ path });
     if (/^\d+$/.test(q) && Number.isSafeInteger(Number(q))) return (await reth.block(Number(q))) ? go(`/block/${q}`) : fail(404, NOT_FOUND);
     if (HASH.test(q)) return (await reth.transaction(q)) ? go(`/tx/${q}`) : (await reth.block(q)) ? go(`/block/${q}`) : fail(404, NOT_FOUND);
     if (ADDRESS.test(q)) return go(`/address/${q}`);
     const byUpdate = UPDATE.test(q) ? await chain.blockOfUpdate(q) : undefined;
-    return byUpdate !== undefined ? go(`/block/${byUpdate}`) : fail(404, NOT_FOUND);
+    return byUpdate !== undefined ? go(`/canton/${q}`) : fail(404, NOT_FOUND);
   }
 
   /** Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. The faucet answers every case itself. */
