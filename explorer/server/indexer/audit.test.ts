@@ -5,7 +5,7 @@ import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { RethError } from "../reth.ts";
-import { markNightly, nightlyDue, sampleNumbers } from "./audit.ts";
+import { markNightly, nightlyDue, nightlyWindow, sampleNumbers } from "./audit.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 
 describe("which blocks the audit looks at", () => {
@@ -41,10 +41,11 @@ async function setup(pool: Pool, blocks: number) {
   opened.push(indexer);
   await indexer.open();
   await indexer.runOnce();
-  // The synthetic blocks carry fixed times; the nightly audit goes by the clock.
-  await pool.query("update blocks set timestamp = now()");
+  // The synthetic blocks carry fixed times; the nightly audit goes by the clock, and looks at the previous UTC day: put the blocks at noon of it.
+  await pool.query("update blocks set timestamp = $1", [yesterdayNoon()]);
   return { chain, indexer };
 }
+const yesterdayNoon = () => new Date(Math.floor(Date.now() / 86_400_000) * 86_400_000 - 12 * 3_600_000);
 const row = async (pool: Pool) => (await pool.query("select status, detail, value from health_checks where check_id = 'C6'")).rows[0];
 
 describe.skipIf(!TEST_URL)("C6, the audit, on the pinned PostgreSQL", () => {
@@ -88,10 +89,10 @@ describe.skipIf(!TEST_URL)("C6, the audit, on the pinned PostgreSQL", () => {
     });
   });
 
-  it("looks at the last 24 hours when it is the nightly run, and names a block reth no longer has", async () => {
+  it("looks at the previous UTC day when it is the nightly run, and names a block reth no longer has", async () => {
     await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, 30);
-      await pool.query("update blocks set timestamp = now() - interval '3 days' where number <= 10");
+      await pool.query("update blocks set timestamp = $1 where number <= 10", [new Date(yesterdayNoon().getTime() - 3 * 86_400_000)]);
       chain.blocks[4]!.block.gasUsed += 1; // block 5, outside the window
       expect((await indexer.auditOnce("day")).status).toBe("ok");
       expect((await row(pool)).value.checked).toBe(20);
@@ -140,6 +141,50 @@ describe.skipIf(!TEST_URL)("C6, the audit, on the pinned PostgreSQL", () => {
         for (let i = 0; i < 100 && !(await pool.query("select 1 from meta where key = 'c6_nightly'")).rowCount; i++) await new Promise((ok) => setTimeout(ok, 50));
         expect((await pool.query("select value from meta where key = 'c6_nightly'")).rows).toEqual([{ value: "2026-10-22" }]);
         expect((await row(pool)).status).toBe("ok");
+      } finally {
+        await halt();
+      }
+    });
+  });
+
+  it("looks at the whole previous UTC day, and at every day since the last nightly run when nights were missed", async () => {
+    await inDb(async (pool) => {
+      await migrate(pool);
+      const w = async (at: string) => { const x = await nightlyWindow(pool, new Date(at)); return [x.from.toISOString(), x.to.toISOString()]; };
+      expect(await w("2026-10-22T03:20:00Z")).toEqual(["2026-10-21T00:00:00.000Z", "2026-10-22T00:00:00.000Z"]);
+      expect(await w("2026-10-22T23:59:00Z")).toEqual(["2026-10-21T00:00:00.000Z", "2026-10-22T00:00:00.000Z"]);
+      await markNightly(pool, new Date("2026-10-19T03:00:10Z"));
+      expect(await w("2026-10-22T09:00:00Z")).toEqual(["2026-10-19T00:00:00.000Z", "2026-10-22T00:00:00.000Z"]);
+      await markNightly(pool, new Date("2026-10-01T03:00:10Z"));
+      expect(await w("2026-10-22T09:00:00Z")).toEqual(["2026-10-15T00:00:00.000Z", "2026-10-22T00:00:00.000Z"]);
+      await markNightly(pool, new Date("2026-10-21T03:00:10Z"));
+      expect(await w("2026-10-22T03:00:00Z")).toEqual(["2026-10-21T00:00:00.000Z", "2026-10-22T00:00:00.000Z"]);
+    });
+  });
+
+  it("does not count a night as audited when reth could not be read for it, and tries again", async () => {
+    await inDb(async (pool) => {
+      await migrate(pool);
+      const chain = makeChain([{ txs: 2 }, { txs: 2 }, { txs: 2 }]);
+      const at = Date.parse("2026-10-22T03:30:00Z");
+      const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline", pollMs: 20, checkMs: 50, auditMs: 50, now: () => at });
+      opened.push(indexer);
+      await indexer.open();
+      await indexer.runOnce();
+      await indexer.runOnce();
+      await indexer.runOnce();
+      await pool.query("update blocks set timestamp = '2026-10-21T12:00:00Z'");
+      const receipts = chain.reads.receipts;
+      chain.reads.receipts = async () => { throw new RethError("eth_getBlockReceipts: cannot reach reth (timeout)"); };
+      const halt = indexer.start();
+      try {
+        for (let i = 0; i < 100 && !(await row(pool))?.detail; i++) await new Promise((ok) => setTimeout(ok, 50));
+        await new Promise((ok) => setTimeout(ok, 300));
+        expect((await row(pool)).detail).toMatch(/could not read reth/);
+        expect((await pool.query("select 1 from meta where key = 'c6_nightly'")).rowCount).toBe(0);
+        chain.reads.receipts = receipts;
+        for (let i = 0; i < 100 && !(await pool.query("select 1 from meta where key = 'c6_nightly'")).rowCount; i++) await new Promise((ok) => setTimeout(ok, 50));
+        expect((await pool.query("select value from meta where key = 'c6_nightly'")).rows).toEqual([{ value: "2026-10-22" }]);
       } finally {
         await halt();
       }

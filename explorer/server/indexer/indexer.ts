@@ -16,7 +16,7 @@ import { seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth, type HealthRow } from "./health.ts";
 import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
-import { markNightly, nightlyDue, runAudit, type AuditKind } from "./audit.ts";
+import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
 import { deriveCursor, stage2 } from "./stage2.ts";
 import type { ExportedRecord, RecordsHeader } from "./records.ts";
 import { REINDEX_KEY } from "./reindex.ts";
@@ -345,7 +345,10 @@ export function createIndexer(o: IndexerOptions) {
   }
 
   /** C6 (design section 4.5): blocks fetched again from reth and compared with the index. Writes the row and returns it. */
-  const auditOnce = (kind: AuditKind): Promise<HealthRow> => runAudit(o.pool, o.reads, kind, o.random);
+  const auditOnce = async (kind: AuditKind): Promise<AuditResult> => {
+    const at = new Date(now());
+    return runAudit(o.pool, o.reads, kind, o.random, undefined, kind === "day" ? await nightlyWindow(o.pool, at) : undefined);
+  };
 
   /** Stage 2 for each block that stage 1 holds and the derive cursor has not reached, in order, up to `upTo` when given. */
   async function catchUpDerive(upTo = Infinity): Promise<number> {
@@ -453,8 +456,8 @@ export function createIndexer(o: IndexerOptions) {
         try {
           await auditOnce("sample");
           if (await nightlyDue(o.pool, new Date(now()))) {
-            await auditOnce("day");
-            await markNightly(o.pool, new Date(now()));
+            // The day counts as audited only when every block was read; otherwise the next pass tries again.
+            if ((await auditOnce("day")).complete) await markNightly(o.pool, new Date(now()));
           }
         } catch (e) {
           log(`indexer (audit): ${(e as Error).message}`);

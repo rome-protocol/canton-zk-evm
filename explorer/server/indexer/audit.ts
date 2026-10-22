@@ -48,17 +48,41 @@ async function suspects(pool: Pool): Promise<number[]> {
 }
 
 export type AuditKind = "sample" | "day";
+/** A run's row, and whether every block it chose was read from reth (a mismatch is still a complete run; an unreachable reth is not). */
+export type AuditResult = HealthRow & { complete: boolean };
+/** The blocks of a nightly run are those with a header time in `[from, to)`. */
+export interface AuditWindow { from: Date; to: Date }
+
+const DAY_MS = 86_400_000;
+const MAX_CATCH_UP_DAYS = 7;
+const startOfDay = (at: Date): number => Math.floor(at.getTime() / DAY_MS) * DAY_MS;
 
 /**
- * One run of C6: `sample` looks at 20 random blocks, `day` at every block of the last 24 hours (by the header's time), and each also at every block an
- * earlier run named. Writes the row and returns it. A read of reth that fails makes the row `degraded` with the error and keeps the blocks it had named.
+ * What the nightly run at `at` looks at: the whole UTC day before today, and, when the indexer missed nights (it was down, or a run could not read
+ * reth), every day since the last run, up to a week.
  */
-export async function runAudit(pool: Pool, reads: AuditReads, kind: AuditKind, random: () => number = Math.random, count = SAMPLE_SIZE): Promise<HealthRow> {
+export async function nightlyWindow(pool: Pool, at: Date): Promise<AuditWindow> {
+  const to = startOfDay(at);
+  const r = await pool.query("select value from meta where key = 'c6_nightly'");
+  const last = r.rowCount ? Date.parse(String(r.rows[0].value)) : NaN;
+  // A run on day D looked at everything before D 00:00, so the next one starts there.
+  const from = Number.isFinite(last) ? Math.max(last, to - MAX_CATCH_UP_DAYS * DAY_MS) : to - DAY_MS;
+  return { from: new Date(Math.min(from, to - DAY_MS)), to: new Date(to) };
+}
+
+/**
+ * One run of C6: `sample` looks at 20 random blocks, `day` at every block of the window (by the header's time; the previous UTC day by default), and
+ * each also at every block an earlier run named. Writes the row and returns it. A read of reth that fails makes the row `degraded` with the error and keeps the blocks it had named.
+ */
+export async function runAudit(pool: Pool, reads: AuditReads, kind: AuditKind, random: () => number = Math.random, count = SAMPLE_SIZE, window?: AuditWindow): Promise<AuditResult> {
   const named = await suspects(pool);
   const head = Number((await pool.query("select coalesce(max(number), 0) as n from blocks")).rows[0].n);
   const wanted = kind === "sample"
     ? sampleNumbers(head, count, random)
-    : (await pool.query("select number from blocks where timestamp >= now() - interval '24 hours' order by number")).rows.map((r) => Number(r.number) );
+    : await (async () => {
+      const w = window ?? await nightlyWindow(pool, new Date());
+      return (await pool.query("select number from blocks where timestamp >= $1 and timestamp < $2 order by number", [w.from, w.to])).rows.map((r) => Number(r.number));
+    })();
   const numbers = [...new Set([...wanted, ...named])].sort((a, b) => a - b);
   const bad: Mismatch[] = [];
   try {
@@ -69,17 +93,17 @@ export async function runAudit(pool: Pool, reads: AuditReads, kind: AuditKind, r
     }
   } catch (e) {
     const row: HealthRow = { id: "C6", status: "degraded", value: { kind, checked: numbers.length, suspect: [...new Set([...named, ...bad.map((m) => m.block)])] },
-      threshold: { sample: count, window: "24 hours" }, detail: `the audit could not read reth: ${(e as Error).message}` };
+      threshold: { sample: count, window: "previous UTC day" }, detail: `the audit could not read reth: ${(e as Error).message}` };
     await setHealth(pool, [row]);
-    return row;
+    return { ...row, complete: false };
   }
   const row: HealthRow = {
     id: "C6", status: bad.length > 0 ? "degraded" : "ok",
-    value: { kind, checked: numbers.length, mismatches: bad, suspect: bad.map((m) => m.block) }, threshold: { sample: count, window: "24 hours" },
+    value: { kind, checked: numbers.length, mismatches: bad, suspect: bad.map((m) => m.block) }, threshold: { sample: count, window: "previous UTC day" },
     detail: bad.length > 0 ? `block ${bad[0]!.block} disagrees with reth: ${bad[0]!.what}${bad.length > 1 ? ` (and ${bad.length - 1} more: ${bad.slice(1, 6).map((m) => m.block).join(", ")})` : ""}` : null,
   };
   await setHealth(pool, [row]);
-  return row;
+  return { ...row, complete: true };
 }
 
 /** The UTC day (YYYY-MM-DD) of the last nightly run, kept in `meta`; the nightly run is due once the hour is past `hour` and today has none. */
