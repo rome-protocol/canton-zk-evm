@@ -185,6 +185,33 @@ Alerts and the overall status read these ids by name, so they are fixed here. A 
 
 The same run answers the design's main open question about revert data: `trace_replayBlockTransactions` does carry the `output` of a failed transaction, for `Error(string)`, `Panic(uint256)` and a custom error (`Reverts.sol`, one failing call to each, in one block). The `debug_traceBlockByNumber` fallback is not needed.
 
+## The API at scale (L2)
+
+L2 is the acceptance test of the health, limits and load slice (design section 9, budgets B3, B4, B6 and B7). It seeds a database through the indexer's own write path, then sends the mixed load of the design (60% single objects, 20% address pages, 10% lists, 5% search, and 5% `getLogs`) at 200 requests a second while the indexer keeps writing blocks of 1,428 transactions every 3 s, 2,000 live-stream clients stay open, and `/api/health` is asked throughout. The server is the deployed one: the pages' routes, the live stream, and the health route read from a pool of its own, with the instance's checks running on a timer in the background. The load runs in a process of its own and is open loop (a request's time runs from when it was due). The test is `explorer/test/l2/l2.test.ts`; the numbers below are the `l2-results` file of the CI job.
+
+**`getLogs` is provisional.** The route that will serve it (`/api?module=logs&action=getLogs`, E8a) does not exist yet. Until it does, L2 sends the query that route will run (10,000 blocks, one address, 1,000 rows) straight to the database, on the API's pool, open loop at its 5% share. A pass says the query is fast; it says nothing about the route. When E8a lands, the load points at the route.
+
+Measured in CI on a GitHub-hosted `ubuntu-latest` runner, with the pinned PostgreSQL (`shared_buffers` 1 GB), on the same machine as the server and the load. It is not the reference machine.
+
+| | Budget | 3,000,000 transactions, 120 s |
+|---|---|---|
+| Database | | 3,058,776 transactions, 2,142 blocks; the one address sends 1,000,076 of them |
+| B3 one block, transaction or address (p97.5) | p95 ≤ 100 ms | 22 ms |
+| B3 an address's page of transactions, the one with a million (p97.5) | ≤ 300 ms | 18 ms |
+| B3 a list page (p97.5) | ≤ 200 ms | 14 ms |
+| B3 search (p97.5) | ≤ 100 ms | 7 ms |
+| B3 `getLogs` (provisional, p95) | ≤ 500 ms | 12 ms |
+| B4 a new final block to 2,000 stream clients (p95) | ≤ 500 ms | 63 ms |
+| B6 size per million transactions | ≤ 2.5 GB | 1.24 GB |
+| B7 `/api/health` (p97.5), answers other than 200 | ≤ 50 ms | 5 ms, none |
+| Ingestion of a 1,428-transaction block, while the load runs | | 239 to 378 ms |
+
+The load tool reports p97.5, which is stricter than the p95 the budgets name, so p97.5 is what is held to them.
+
+### What was wrong at 3,000,000 transactions
+
+An earlier run at this size failed every budget: an address's page took seconds, the load backed up behind it, and ingestion took 26 s a block. The cause was one query. An address's page reads three keys, the transactions it sent, received and created, each newest first. The index on `created_contract` held the address alone, with no order, so the planner walked the primary key backwards and filtered on the address: for an address that created nothing, it read all 3,000,000 rows, 5 to 8 s on a database that is warm. Migration `0021_address_page_created_contract_index.sql` replaces it with an index in the page's own order, as the other two keys have, and the page costs 0.3 ms. `explorer/server/rest/paging-plans.test.ts` fails without it. `/api/health` used to refresh this instance's checks inside the request (5 s for a reth that hangs); it now only reads the table.
+
 ## What CI runs
 
 CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof is made or timed in CI. The WebAssembly tests print verification timings. The jobs are:
