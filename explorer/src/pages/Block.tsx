@@ -116,11 +116,11 @@ export function Block() {
           <div><b>The hashes do not match.</b> reth's hash for this block, the hash in its block record and the hash of the record's header are not all the same. The explorer's status is red until this is explained.</div>
         </div>
       )}
-      {b.status !== "genesis" && <Tiles txCount={b.txCount} gasUsed={b.gasUsed} times={times} />}
+      {b.status !== "genesis" && <Tiles txCount={b.txCount} gasUsed={b.gasUsed} times={times} unindexed={b.status === "unindexed"} />}
       <div className="sides"><EvmSide b={b} st={st} /><CantonPanel b={b} st={st} /></div>
       {b.status !== "genesis" && (
         <>
-          <HowFinal times={times} final={b.canton !== null} />
+          <HowFinal times={times} final={b.canton !== null} unindexed={b.status === "unindexed"} />
           {b.canton && <ProofCard c={b.canton} pins={st?.pins}><Verify b={b} st={st} /></ProofCard>}
           {!b.canton && <Verify b={b} st={st} />}
           <div className="legs"><Icon name="lock" size={14} /><span>{LEGS_THIS_BLOCK}</span></div>

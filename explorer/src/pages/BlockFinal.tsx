@@ -23,10 +23,10 @@ const tile = (k: string, v: string, s: string) => (
 );
 
 /** The four numbers at the top of the block page. A time the producer's journal does not hold is shown as a dash, with the reason under it. */
-export function Tiles({ txCount, gasUsed, times }: { txCount: number; gasUsed: number; times: Times }) {
+export function Tiles({ txCount, gasUsed, times, unindexed = false }: { txCount: number; gasUsed: number; times: Times; unindexed?: boolean }) {
   const t = times.state === "reading" ? null : times.became;
   const why = times.state === "reading" ? "reading the producer's log" : times.state === "unreadable" ? "cannot be read right now"
-    : !times.final ? "not final yet" : times.lifecycle === null ? "no row in the producer's log" : "not in the producer's log";
+    : unindexed ? "Canton holds it, not read yet" : !times.final ? "not final yet" : times.lifecycle === null ? "no row in the producer's log" : "not in the producer's log";
   return (
     <div className="tiles" role="group" aria-label="This block in numbers">
       {tile("Transactions", count(txCount), `${count(gasUsed)} gas`)}
@@ -40,9 +40,10 @@ export function Tiles({ txCount, gasUsed, times }: { txCount: number; gasUsed: n
 const PART_LABEL = { prepare: "", proof: "Proof", send: "", canton: "" } as const;
 
 /** "How this block became final": the whole way as a bar, and the six steps under it with their times and where each time comes from. */
-export function HowFinal({ times, final }: { times: Times; final: boolean }) {
+export function HowFinal({ times, final, unindexed = false }: { times: Times; final: boolean; unindexed?: boolean }) {
   const t = times.state === "reading" ? null : times.became;
-  const caption = !final ? "This block is not final yet, so its way is not finished."
+  const caption = unindexed ? "Canton holds this block and the explorer has not read it yet, so its way to final is not shown. This page looks again."
+    : !final ? "This block is not final yet, so its way is not finished."
     : times.state === "reading" ? "Reading the producer's times…"
     : times.state === "unreadable" ? "The producer's times cannot be read right now, so only Canton's record time is shown."
     : t?.totalMs != null ? `Cut to final in ${secs(t.totalMs, 3)}. Times are from the producer's log, and the last one is Canton's record time.`

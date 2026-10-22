@@ -435,6 +435,13 @@ describe("a block that Canton holds and the indexer has not read", () => {
     expect(canton.getByText("Final on Canton, not indexed yet.")).toBeInTheDocument();
     expect(canton.queryByText("Not on Canton yet.")).toBeNull();
   });
+
+  it("does not call it 'not final yet' in the tiles or the way to final: Canton holds it and the explorer has not read it", async () => {
+    await open(block({ status: "unindexed", number: 4, hash: hash(4), parentHash: hash(3), canton: null }));
+    expect(screen.queryByText(/not final yet/i)).toBeNull();
+    expect(screen.getAllByText("Canton holds it, not read yet").length).toBeGreaterThan(0);
+    expect(screen.getByText(/its way to final is not shown/)).toBeInTheDocument();
+  });
 });
 
 describe("a block that is still being proven", () => {
