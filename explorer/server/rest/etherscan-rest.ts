@@ -3,7 +3,7 @@
  * these reads take a block window, an order, and how many rows to skip and to return; the callers keep `skip + limit` at 10,000 or less (the route checks it), and
  * every side of a union is cut at `skip + limit` rows, so a page costs its own rows however many an address has.
  */
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { bytes, hex, hexOrNull } from "./chain-rest.ts";
 
@@ -40,13 +40,55 @@ export interface LogFilter {
 
 export type EtherscanRest = ReturnType<typeof createEtherscanRest>;
 
-export function createEtherscanRest(pool: Pool) {
+const txColumns = `t.block_number, t.tx_index, t.hash, b.hash as block_hash, extract(epoch from b.timestamp)::bigint as ts, t.nonce, t.gas_limit::text as gas_limit,
+    t.effective_gas_price::text as price, t.gas_used::text as gas_used, t.cumulative_gas_used::text as cumulative`;
+
+/** A read that the database cancelled for running too long: the door answers it with Etherscan's own words for a query that is too big. */
+export class QueryTimeout extends ChainDbError {}
+
+/** The longest a read of this door may run (ms). A client that asks for a wide search is held to it, so that a few of them cannot hold the pool's connections for long. */
+export const READ_TIMEOUT_MS = 5000;
+
+/** The SQL of one `tokentx`, `tokennfttx` or `token1155tx` page, and its values. A transfer's standard follows from its columns (ERC-20 has no token_id, ERC-721 no amount, ERC-1155 both), which are
+ * the predicates of migration 0028's partial indexes; the same text must be here for the planner to use them. */
+export function tokenMovesSql(standard: TokenStandard, a: string | null, token: string | null, w: Window): { sql: string; values: unknown[] } {
+  const d = w.sort === "desc" ? "desc" : "asc";
+  const kind = standard === "ERC-20" ? "tt.token_id is null" : standard === "ERC-721" ? "tt.amount is null" : "tt.amount is not null and tt.token_id is not null";
+  const values: unknown[] = [w.start, w.end, w.skip + w.limit];
+  const at = (b: string) => (values.push(bytes(b)), `$${values.length}`);
+  const who = a === null ? null : at(a), only = token === null ? "" : ` and tt.token = ${at(token)}`;
+  const side = (where: string) =>
+    `(select tt.block_number, tt.log_index, tt.batch_index from token_transfers tt
+       where ${where} and ${kind} and tt.block_number between $1 and $2${only} order by tt.block_number ${d}, tt.log_index ${d}, tt.batch_index ${d} limit $3)`;
+  const keys = who === null ? side("true") : `${side(`tt.from_address = ${who}`)} union ${side(`tt.to_address = ${who}`)}`;
+  values.push(w.limit, w.skip);
+  return {
+    sql: `with k as (${keys})
+       select ${txColumns}, tt.log_index, tt.batch_index, tt.token, tt.from_address, tt.to_address, tt.amount::text as amount, tt.token_id::text as token_id, tk.name, tk.symbol, tk.decimals
+       from k join token_transfers tt on tt.block_number = k.block_number and tt.log_index = k.log_index and tt.batch_index = k.batch_index
+         join tokens tk on tk.address = tt.token
+         join transactions t on t.block_number = tt.block_number and t.tx_index = tt.tx_index join blocks b on b.number = tt.block_number
+       order by tt.block_number ${d}, tt.log_index ${d}, tt.batch_index ${d} limit $${values.length - 1} offset $${values.length}`,
+    values,
+  };
+}
+
+export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS }: { timeoutMs?: number } = {}) {
+  /** One read, in a read-only transaction that has its own statement timeout (set local, so the connection goes back to the pool as it was). */
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
+    let client: PoolClient;
+    try { client = await pool.connect(); } catch (e) { throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`); }
     try {
-      return (await pool.query(sql, values)).rows;
+      await client.query("begin read only");
+      await client.query(`set local statement_timeout = ${Math.trunc(timeoutMs)}`);
+      const rows = (await client.query(sql, values)).rows;
+      await client.query("commit");
+      return rows;
     } catch (e) {
+      await client.query("rollback").catch(() => undefined);
+      if ((e as { code?: string }).code === "57014") throw new QueryTimeout(`a read ran longer than ${timeoutMs} ms: ${sql.slice(0, 80).replace(/\s+/g, " ")}`);
       throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`);
-    }
+    } finally { client.release(); }
   }
 
   /** The newest final block (null before the first), and the block stage 2 has derived up to: what stage 2 writes is complete only up to the second. */
@@ -57,8 +99,6 @@ export function createEtherscanRest(pool: Pool) {
   }
 
   const dirOf = (w: Window): "asc" | "desc" => (w.sort === "asc" ? "asc" : "desc");
-  const txColumns = `t.block_number, t.tx_index, t.hash, b.hash as block_hash, extract(epoch from b.timestamp)::bigint as ts, t.nonce, t.gas_limit::text as gas_limit,
-    t.effective_gas_price::text as price, t.gas_used::text as gas_used, t.cumulative_gas_used::text as cumulative`;
   const baseOf = (r: Row) => ({
     block: Number(r.block_number), index: r.tx_index as number, hash: hex(r.hash), blockHash: hex(r.block_hash), timestamp: Number(r.ts), nonce: Number(r.nonce), gasLimit: r.gas_limit as string,
     gasPrice: r.price as string, gasUsed: r.gas_used as string, cumulativeGasUsed: r.cumulative as string,
@@ -129,24 +169,8 @@ export function createEtherscanRest(pool: Pool) {
 
   /** The transfers of tokens of one standard that an address sent or received and/or that one token made, as Etherscan's `tokentx`, `tokennfttx` and `token1155tx` list them. */
   async function tokenMoves(standard: TokenStandard, a: string | null, token: string | null, w: Window): Promise<TokenMoveRow[]> {
-    const d = dirOf(w);
-    const values: unknown[] = [standard, w.start, w.end, w.skip + w.limit];
-    const at = (b: string) => (values.push(bytes(b)), `$${values.length}`);
-    const who = a === null ? null : at(a), only = token === null ? "" : ` and tt.token = ${at(token)}`;
-    const side = (where: string) =>
-      `(select tt.block_number, tt.log_index, tt.batch_index from token_transfers tt join tokens tk on tk.address = tt.token and tk.standard = $1
-         where ${where} and tt.block_number between $2 and $3${only} order by tt.block_number ${d}, tt.log_index ${d}, tt.batch_index ${d} limit $4)`;
-    const keys = who === null ? side("true") : `${side(`tt.from_address = ${who}`)} union ${side(`tt.to_address = ${who}`)}`;
-    values.push(w.limit, w.skip);
-    const rows = await query(
-      `with k as (${keys})
-       select ${txColumns}, tt.log_index, tt.batch_index, tt.token, tt.from_address, tt.to_address, tt.amount::text as amount, tt.token_id::text as token_id, tk.name, tk.symbol, tk.decimals
-       from k join token_transfers tt on tt.block_number = k.block_number and tt.log_index = k.log_index and tt.batch_index = k.batch_index
-         join tokens tk on tk.address = tt.token
-         join transactions t on t.block_number = tt.block_number and t.tx_index = tt.tx_index join blocks b on b.number = tt.block_number
-       order by tt.block_number ${d}, tt.log_index ${d}, tt.batch_index ${d} limit $${values.length - 1} offset $${values.length}`,
-      values,
-    );
+    const { sql, values } = tokenMovesSql(standard, a, token, w);
+    const rows = await query(sql, values);
     return rows.map((r) => ({
       ...baseOf(r), logIndex: r.log_index, token: hex(r.token), from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id, name: r.name, symbol: r.symbol,
       decimals: r.decimals === null ? null : Number(r.decimals),

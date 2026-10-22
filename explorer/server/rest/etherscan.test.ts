@@ -8,7 +8,7 @@ import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/
 import { createIndexer } from "../indexer/indexer.ts";
 import type { Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
-import { createEtherscanRest } from "./etherscan-rest.ts";
+import { createEtherscanRest, tokenMovesSql, type TokenStandard } from "./etherscan-rest.ts";
 import { MAX_BALANCES, TEXTS } from "./etherscan.ts";
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
@@ -498,6 +498,60 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
         expect(await keys(`address=${Z}`)).toEqual(["2:900", "3:900", "3:901"]);
         expect(shape(await get(logsUrl(`topic1=${T21}&fromBlock=10001`)))).toEqual({ status: "0", message: "No records found", result: [] });
       } finally { await sql("delete from blocks where number = 20000"); }
+    });
+  });
+
+  describe("the cost of the token lists and of a read that runs too long", () => {
+    // Each standard's side reads the index of its own standard, so an address with a million ERC-20 transfers costs the NFT lists nothing. Seq scans are off, so that the plan
+    // shows which index the side would use on a table of any size.
+    const sides: [TokenStandard, string][] = [["ERC-20", "WHERE (token_id IS NULL)"], ["ERC-721", "WHERE (amount IS NULL)"], ["ERC-1155", "WHERE ((amount IS NOT NULL) AND (token_id IS NOT NULL))"]];
+    /** The definitions of the indexes that the sides of a page read the address's rows from (not the primary key that the page's rows are joined by). */
+    const indexesOf = async (standard: TokenStandard, a: string | null, token: string | null) => {
+      const { sql, values } = tokenMovesSql(standard, a, token, { start: 0, end: 100, sort: "desc", skip: 0, limit: 25 });
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local enable_seqscan = off");
+        const text = (await client.query(`explain ${sql}`, values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
+        const names = [...text.matchAll(/Index (?:Only )?Scan(?: Backward)? using (\S+) on token_transfers_p/g)].map((m) => m[1]!).filter((n) => !n.endsWith("_pkey"));
+        return (await client.query("select indexdef from pg_indexes where indexname = any($1)", [names])).rows.map((r) => r.indexdef as string);
+      } finally { await client.query("rollback"); client.release(); }
+    };
+    for (const [standard, predicate] of sides) {
+      it(`reads ${standard} transfers of an address from the partial indexes of that standard, both ways`, async () => {
+        const defs = await indexesOf(standard, A, null);
+        expect(defs.length).toBeGreaterThanOrEqual(2);
+        for (const d of defs) expect(d).toContain(predicate);
+        expect(defs.some((d) => d.includes("(from_address,"))).toBe(true);
+        expect(defs.some((d) => d.includes("(to_address,"))).toBe(true);
+      });
+    }
+    it("reads an address and one token together from an index that carries the token next to the address, or the standard's own", async () => {
+      const defs = await indexesOf("ERC-20", A, T1);
+      expect(defs.length).toBeGreaterThanOrEqual(2);
+      for (const d of defs) expect(/\((from|to)_address, token,/.test(d) || d.includes("WHERE (token_id IS NULL)")).toBe(true);
+    });
+
+    /** A pool whose reads run `behave`, to see what the reads ask of the database and what the door answers when it cancels one. */
+    const fake = (behave: (sql: string) => unknown) => {
+      const seen: string[] = [];
+      const client = { query: async (sql: string) => { seen.push(sql); const r = behave(sql); if (r instanceof Error) throw r; return { rows: [] }; }, release: () => undefined };
+      const door = createApi({ config: config(), reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest({ connect: async () => client } as unknown as Pool, { timeoutMs: 1234 }) });
+      return { seen, get: (t: string) => door("GET", t) };
+    };
+    it("holds every read to a statement timeout, and answers a cancelled one with Etherscan's own words (recorded answer)", async () => {
+      const { seen, get: ask } = fake((sql) => (/^select/i.test(sql.trim()) ? Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" }) : null));
+      expect(shape(await ask("/api?module=logs&action=getLogs&address=" + A))).toEqual({ status: "0", message: "NOTOK", result: "Query Timeout occured. Please select a smaller result dataset" });
+      expect(seen[0]).toMatch(/^begin/i);
+      expect(seen[1]).toBe("set local statement_timeout = 1234");
+      expect(seen.at(-1)).toMatch(/^rollback/i); // the failed transaction is ended, and the connection goes back
+    });
+    it("answers any other failed read as it did before, and a good read ends in a commit", async () => {
+      const bad = fake((sql) => (/^select/i.test(sql.trim()) ? Object.assign(new Error("connection reset"), { code: "08006" }) : null));
+      expect(shape(await bad.get("/api?module=logs&action=getLogs&address=" + A))).toEqual(NOTOK(TEXTS.broken));
+      const good = fake(() => null);
+      await good.get("/api?module=logs&action=getLogs&address=" + A);
+      expect(good.seen.some((q) => /^commit/i.test(q))).toBe(true);
     });
   });
 

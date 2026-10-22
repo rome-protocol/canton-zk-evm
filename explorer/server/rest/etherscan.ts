@@ -12,7 +12,7 @@
 import type { Answer } from "../api.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
-import type { Closest, EtherscanRest, InternalRow, LogFilter, TokenMoveRow, TokenStandard, TxRow, Window } from "./etherscan-rest.ts";
+import { QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
 
 /** `page × offset` may be no more than this, as Etherscan's window is. */
 export const RESULT_WINDOW = 10_000;
@@ -47,6 +47,7 @@ export const TEXTS = {
   topic: "Error! Invalid topic format",
   topicOp: "Error! Invalid topic operator, use and or or",
   logsWide: "Query Timeout occured. Please select a smaller result dataset",
+  timeout: "Query Timeout occured. Please select a smaller result dataset",
   noRecords: "No records found",
 } as const;
 
@@ -367,6 +368,7 @@ export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
     } catch (e) {
       if (e instanceof NotOk) return notOk(e);
       if (e instanceof Empty) return empty(e);
+      if (e instanceof QueryTimeout) { console.error(`etherscan api: ${e.message}`); return notOk(new NotOk(TEXTS.timeout)); }
       if (!(e instanceof RethError || e instanceof ChainDbError)) throw e;
       console.error(`etherscan api: ${e.message}`);
       return notOk(new NotOk(TEXTS.broken));
