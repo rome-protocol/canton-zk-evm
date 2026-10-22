@@ -3,7 +3,8 @@
  * as decimal strings, addresses in lowercase), because the tools that are pointed at it (Foundry, Hardhat, ethers) read only that shape. HTTP is 200 for everything, as
  * Etherscan's is; a refusal is `status` "0". `apikey` is never read: the tools insist on sending one, and there are no keys (design 6.6).
  *
- * This file is the account module (balance, balancemulti, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks) and the door itself; the other
+ * This file is the account module (balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks), the transaction module
+ * (getstatus, gettxreceiptstatus), the block module (getblockreward, getblocknobytime, getblockcountdown), the logs module (getLogs) and the door itself; the other
  * modules register their actions in `MODULES` as they land. What is final is all that is served: every row is from a final block, a balance is reth's at the newest
  * final block (never the database's copy), and a list that stage 2 writes (internal calls, token transfers) stops at the block stage 2 has reached, so it is never
  * partly written. The texts of the answers are Etherscan's where the module's documentation and its answers give one, and are held by tests with recorded answers.
@@ -11,7 +12,7 @@
 import type { Answer } from "../api.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
-import type { EtherscanRest, InternalRow, TokenMoveRow, TokenStandard, TxRow, Window } from "./etherscan-rest.ts";
+import type { Closest, EtherscanRest, InternalRow, LogFilter, TokenMoveRow, TokenStandard, TxRow, Window } from "./etherscan-rest.ts";
 
 /** `page × offset` may be no more than this, as Etherscan's window is. */
 export const RESULT_WINDOW = 10_000;
@@ -36,6 +37,17 @@ export const TEXTS = {
   tokenWho: "Error! Missing address or contractaddress",
   txlistinternal: "Error! Missing address, txhash or startblock and endblock",
   blocktype: "Error! Invalid blocktype, use blocks or uncles",
+  blockno: "Error! Invalid block no",
+  noBlock: "Error! Block does not exist",
+  timestamp: "Error! Invalid timestamp format",
+  closest: "Error! Invalid closest value, use before or after",
+  noClosest: "Error! Closest block was not found",
+  passed: "Error! Block number already pass",
+  noRhythm: "Error! Ostia cuts blocks on demand, so there is no block time to count down by",
+  topic: "Error! Invalid topic format",
+  topicOp: "Error! Invalid topic operator, use and or or",
+  logsWide: "Query Timeout occured. Please select a smaller result dataset",
+  noRecords: "No records found",
 } as const;
 
 /** A refusal: `status` "0", `message` "NOTOK" and the reason as the result, unless a text is given for the message instead (Etherscan words some refusals that way). */
@@ -44,11 +56,14 @@ export class NotOk extends Error {
   readonly inMessage: boolean;
   constructor(reason: string, inMessage = false) { super(reason); this.reason = reason; this.inMessage = inMessage; }
 }
+/** A list that has no rows, with its module's own words: Etherscan's `logs` module says "No records found" where its account lists say "No transactions found". */
+export class Empty extends Error {}
 /** What a handler gives back; a list with no rows is Etherscan's "No transactions found". */
 type Result = string | object[] | object;
 const answer = (body: unknown): Answer => ({ status: 200, body });
 const okBody = (result: Result): Answer =>
   answer(Array.isArray(result) && result.length === 0 ? { status: "0", message: TEXTS.noRows, result: [] } : { status: "1", message: "OK", result });
+const empty = (e: Empty): Answer => answer({ status: "0", message: e.message, result: [] });
 const notOk = (e: NotOk): Answer => answer(e.inMessage ? { status: "0", message: e.reason, result: null } : { status: "0", message: "NOTOK", result: e.reason });
 
 /** The request's parameters: the query's and a form body's, the query's first; one that is empty is as good as absent. Names are as Etherscan spells them. */
@@ -212,8 +227,111 @@ account.tokentx = tokenList("ERC-20");
 account.tokennfttx = tokenList("ERC-721");
 account.token1155tx = tokenList("ERC-1155");
 
+const blockNo = (v: string | null): number => {
+  if (v === null || !WHOLE.test(v)) throw new NotOk(TEXTS.blockno);
+  return Number(v);
+};
+const txHashOf = (v: string | null): string => {
+  if (v === null || !HASH.test(v)) throw new NotOk(TEXTS.txhash);
+  return v.toLowerCase();
+};
+
+/** What the stored transaction says: it succeeded or reverted. A hash the index does not hold has not failed (Etherscan answers no error for it). Only final blocks are indexed. */
+const transaction: Record<string, Handler> = {
+  async getstatus(c) {
+    const ok = await c.rest.txSuccess(txHashOf(c.p.get("txhash")));
+    return ok === false ? { isError: "1", errDescription: "Reverted" } : { isError: "0", errDescription: "" };
+  },
+  async gettxreceiptstatus(c) {
+    const ok = await c.rest.txSuccess(txHashOf(c.p.get("txhash")));
+    return { status: ok === null ? "" : ok ? "1" : "0" };
+  },
+};
+
+const block: Record<string, Handler> = {
+  /** There is no block reward on Ostia, so the reward is the block's priority fees (the base fee is burnt), the miner is its fee recipient, and there are no uncles. */
+  async getblockreward(c) {
+    const n = blockNo(c.p.get("blockno"));
+    const b = await c.rest.blockReward(n);
+    if (b === null) throw new NotOk(TEXTS.noBlock);
+    return { blockNumber: String(b.block), timeStamp: String(b.timestamp), blockMiner: b.miner, blockReward: b.reward, uncles: null, uncleInclusionReward: "0" };
+  },
+  async getblocknobytime(c) {
+    const ts = c.p.get("timestamp");
+    if (ts === null || !WHOLE.test(ts)) throw new NotOk(TEXTS.timestamp);
+    const closest = c.p.get("closest");
+    if (closest !== "before" && closest !== "after") throw new NotOk(TEXTS.closest);
+    const n = await c.rest.blockAtTime(Number(ts), closest as Closest);
+    if (n === null) throw new NotOk(TEXTS.noClosest);
+    return String(n);
+  },
+  /** A countdown needs a rhythm to count by; `on_demand` cuts a block only when a transaction waits, so it has none. */
+  async getblockcountdown(c) {
+    const target = blockNo(c.p.get("blockno"));
+    const r = await c.rest.rhythm();
+    if (r === null || r.strategy !== "fixed_rhythm" || r.intervalMs === null) throw new NotOk(TEXTS.noRhythm);
+    const head = await finalHead(c);
+    if (target <= head) throw new NotOk(TEXTS.passed);
+    const remaining = target - head;
+    return { CurrentBlock: String(head), CountdownBlock: String(target), RemainingBlock: String(remaining), EstimateTimeInSec: String((remaining * r.intervalMs) / 1000) };
+  },
+};
+
+/** The most logs a `getLogs` page holds, and the widest range of blocks it will search without an address or a topic0 to narrow it by (the indexes are on those two). */
+export const MAX_LOGS = 1_000;
+export const MAX_LOG_RANGE = 10_000;
+const hexq = (n: number | string): string => (BigInt(n) === 0n ? "0x" : "0x" + BigInt(n).toString(16));
+
+const logs: Record<string, Handler> = {
+  async getLogs(c) {
+    const { head } = await c.heads();
+    const p = c.p;
+    const edge = (name: string, fallback: number): number => {
+      const v = p.get(name);
+      if (v === null || v === "latest") return fallback;
+      if (!WHOLE.test(v)) throw new NotOk(TEXTS.blocks);
+      return Number(v);
+    };
+    const from = edge("fromBlock", 0), to = Math.min(edge("toBlock", head ?? -1), head ?? -1);
+    const whole = (name: string, fallback: number): number => {
+      const v = p.get(name);
+      if (v === null) return fallback;
+      if (!WHOLE.test(v) || Number(v) < 1) throw new NotOk(TEXTS.paging);
+      return Number(v);
+    };
+    const page = whole("page", 1), offset = Math.min(whole("offset", MAX_LOGS), MAX_LOGS);
+    if (page * offset > RESULT_WINDOW) throw new NotOk(TEXTS.window, true);
+    const a = p.get("address");
+    const address = a === null ? null : addressOf(a);
+    const topics: (string | null)[] = [0, 1, 2, 3].map((i) => {
+      const t = p.get(`topic${i}`);
+      if (t === null) return null;
+      if (!HASH.test(t)) throw new NotOk(TEXTS.topic);
+      return t.toLowerCase();
+    });
+    // Topics are combined left to right; the operator between two is `topicX_Y_opr`, `and` when it is not given.
+    const given = topics.flatMap((t, i) => (t === null ? [] : [i]));
+    const ops = given.slice(1).map((j, k) => {
+      const op = (p.get(`topic${given[k]}_${j}_opr`) ?? "and").toLowerCase();
+      if (op !== "and" && op !== "or") throw new NotOk(TEXTS.topicOp);
+      return op;
+    });
+    // topic0 narrows the search only when every topic is and-ed with it.
+    const narrowed = address !== null || (topics[0] !== null && ops.every((o) => o === "and"));
+    if (head === null || from > to) throw new Empty(TEXTS.noRecords);
+    if (!narrowed && to - from + 1 > MAX_LOG_RANGE) throw new NotOk(TEXTS.logsWide);
+    const filter: LogFilter = { from, to, address, topics, ops, skip: (page - 1) * offset, limit: offset };
+    const rows = await c.rest.logs(filter);
+    if (rows.length === 0) throw new Empty(TEXTS.noRecords);
+    return rows.map((l) => ({
+      address: l.address, topics: l.topics, data: l.data, blockNumber: hexq(l.block), blockHash: l.blockHash, timeStamp: hexq(l.timestamp), gasPrice: hexq(l.gasPrice), gasUsed: hexq(l.gasUsed),
+      logIndex: hexq(l.logIndex), transactionHash: l.txHash, transactionIndex: hexq(l.txIndex),
+    }));
+  },
+};
+
 /** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
-export const MODULES: Record<string, Record<string, Handler>> = { account };
+export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
   account: ["balancehistory", "addresstokenbalance", "addresstokennftbalance", "addresstokennftinventory", "fundedby", "txnbridge"],
@@ -241,6 +359,7 @@ export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
       return okBody(await (known[wanted] as Handler)(ctx));
     } catch (e) {
       if (e instanceof NotOk) return notOk(e);
+      if (e instanceof Empty) return empty(e);
       if (!(e instanceof RethError || e instanceof ChainDbError)) throw e;
       console.error(`etherscan api: ${e.message}`);
       return notOk(new NotOk(TEXTS.broken));
