@@ -5,7 +5,7 @@
  */
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
-import { MAX_LIMIT, DEFAULT_LIMIT } from "./paging.ts";
+import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
 
 type Fields = readonly string[];
@@ -34,6 +34,7 @@ const raw: Query = { name: "raw", about: "1 for the rows as the chain wrote them
 const sort = (values: readonly string[]): Query => ({ name: "sort", about: `The order of the list; ${values[0]} when left out.`, values });
 const blockFilter: Query = { name: "filter", about: "all blocks, only the blocks with transactions, or only the empty ones (genesis is not one); all when left out.", values: ["all", "transactions", "empty"] };
 const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
+const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const paged = [limit, before], pagedAfter = [limit, after];
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
@@ -51,6 +52,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/txs/{hash}/trace": { tag: "Transactions", summary: "The call tree of a transaction, as reth traced it. A frame's input is cut at 1,024 bytes (its whole size is `inputSize`); `raw=1` serves it whole. It never changes for a final transaction.", param: "The transaction's 0x hash.", query: [raw], object: F.trace },
   "/api/canton/updates": { tag: "Canton", summary: "The newest Canton updates that carry a block.", query: paged, page: { items: F.updateItem, derived: false } },
   "/api/canton/updates/{updateId}": { tag: "Canton", summary: "One Canton update.", param: "The update id (1220 and 64 hex digits).", object: F.updateDetail },
+  "/api/canton/updates/{updateId}/around": { tag: "Canton", summary: "The Canton updates around one, newest first: up to n newer, the update itself and up to n older, by the list's own key (record time, update id). `submittedTemplate`, `submittedChoice` and `txCount` are the producer log's and the block's; null where the log or the block does not hold them.", param: "The update id (1220 and 64 hex digits).", query: [around], note: "An object with `items`, each with the fields in the item list of this route.", object: F.updateAround },
   "/api/addresses": { tag: "Accounts", summary: `Addresses by balance or by transactions. The balance is the database's copy, as of its \`balanceBlock\`. ${DERIVED}`, query: [sort(SORTS.addresses), ...paged], page: { items: F.addressItem, derived: true } },
   "/api/addresses/{address}": { tag: "Accounts", summary: "One address. Its balance is reth's at the newest final block; the counters are the database's. A token's address says so.", param: "A 0x address.", object: F.addressDetail },
   "/api/addresses/{address}/txs": { tag: "Accounts", summary: "The transactions that an address sent, received or created.", param: "A 0x address.", query: paged, page: { items: F.txItem, derived: false } },

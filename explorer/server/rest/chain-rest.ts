@@ -44,6 +44,8 @@ export interface UpdateDetail extends UpdateItem {
   /** What the producer's journal says it submitted for the update; null for an update the journal does not hold. */
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
 }
+/** An update in the list around one: what the producer's log says it submitted is null for an update the log does not hold. */
+export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null; txCount: number | null }
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
 
 export const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from b.timestamp)::bigint as ts, t.from_address, t.to_address, t.value::text as value, t.nonce, t.type, t.gas_used,
@@ -210,6 +212,28 @@ export function createChainRest(pool: Pool) {
     return rows.map((r) => ({ ...updateItem(r), micros: Number(r.micros) }));
   }
 
+  const aroundSelect = `${updateSelect}, u.submitted_template, u.submitted_choice, (select b.tx_count from blocks b where b.update_id = u.update_id order by b.number limit 1) as tx_count`;
+  const aroundFrom = "from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer";
+  const aroundItem = (r: Row): UpdateAroundItem & { micros: number } => ({
+    ...updateItem(r), submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, txCount: r.tx_count === null ? null : Number(r.tx_count), micros: Number(r.micros),
+  });
+
+  /** One update as the list around it shows it; undefined when there is no such update. */
+  async function aroundOne(updateId: string): Promise<UpdateAroundItem & { micros: number } | undefined> {
+    const [r] = await query(`select ${aroundSelect} ${aroundFrom} where u.update_id = $1`, [updateId]);
+    return r && aroundItem(r);
+  }
+
+  /** The `n` updates after the key (record time in microseconds, update id) and the `n` before it, by the list's own key; newest first, without the update at the key. */
+  async function around(at: number, updateId: string, n: number): Promise<{ newer: UpdateAroundItem[]; older: UpdateAroundItem[] }> {
+    const key = `(${EPOCH} + $1::bigint * interval '1 microsecond', $2::text)`;
+    const [newer, older] = await Promise.all([
+      query(`select ${aroundSelect} ${aroundFrom} where (u.record_time, u.update_id) > ${key} order by u.record_time, u.update_id limit $3`, [at, updateId, n]),
+      query(`select ${aroundSelect} ${aroundFrom} where (u.record_time, u.update_id) < ${key} order by u.record_time desc, u.update_id desc limit $3`, [at, updateId, n]),
+    ]);
+    return { newer: newer.reverse().map(aroundItem), older: older.map(aroundItem) };
+  }
+
   async function update(updateId: string): Promise<UpdateDetail | undefined> {
     const [r] = await query(
       `select ${updateSelect}, t.package_id, t.package_name, t.module, t.entity, u.signatories, u.command_id, u.submitted_template, u.submitted_choice, u.argument_bytes, u.traffic_bytes,
@@ -229,5 +253,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, traceOf, txLogs, txInternal, txTransfers, updates, update };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
 }

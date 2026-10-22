@@ -8,7 +8,7 @@ import { cached } from "./cache.ts";
 import type { ChainRest } from "./chain-rest.ts";
 import { traceKey } from "./chain-rest.ts";
 import { REST_FIELDS as F, pick } from "./fields.ts";
-import { BadRequest, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
+import { BadRequest, aroundOf, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import { traceOf, type CallFrame } from "./trace.ts";
 import { RethTooBig, type Reth } from "../reth.ts";
@@ -193,6 +193,17 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(pick({ ...u, template: pick(u.template, F.updateTemplate), signatories: u.signatories.map((s) => pick(s, F.signatory)), producerRecord: u.producerRecord && pick(u.producerRecord, F.producerRecord) }, F.updateDetail)), "composite");
   }
 
+  /** The updates just newer and just older than one, by the list's key: a window of the list, so a newer update can still join it. */
+  async function around(id: string, q: URLSearchParams): Promise<Answer> {
+    const n = aroundOf(q.get("n"));
+    if (!UPDATE.test(id)) return fail(400, "A Canton update is named by its id, 1220 and 64 hex digits.");
+    const here = await rest.aroundOne(id);
+    if (!here) return fail(404, NOT_FOUND_HERE);
+    const { newer, older } = await rest.around(here.micros, id, n);
+    const items = [...newer, here, ...older];
+    return cached(ok(pick({ items: items.map((u) => pick(u, F.updateAroundItem)) }, F.updateAround)), "list");
+  }
+
   return router([
     ["/api/blocks", (_, q) => blocks(q)],
     ["/api/blocks/{id}", (id) => oneBlock(id)],
@@ -207,5 +218,6 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     ["/api/txs/{hash}/trace", (hash, q) => trace(hash, q)],
     ["/api/canton/updates", (_, q) => updates(q)],
     ["/api/canton/updates/{updateId}", (id) => oneUpdate(id)],
+    ["/api/canton/updates/{updateId}/around", (id, q) => around(id, q)],
   ]);
 }

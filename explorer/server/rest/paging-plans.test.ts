@@ -33,6 +33,15 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(await plan(/from canton_updates u join/)).toMatch(/Index Cond: \(ROW\(record_time, update_id\) </);
   });
 
+  it("Canton updates around one: each side is a range on the record time index, not a scan", async () => {
+    await createChainRest(recording()).around(1700000000000000, "u1", 3);
+    const newer = await plan(/\(u\.record_time, u\.update_id\) > /);
+    expect(newer).toMatch(/Index Cond: \(ROW\(record_time, update_id\) >/);
+    expect(newer).not.toMatch(/Seq Scan on canton_updates/);
+    const older = await plan(/\(u\.record_time, u\.update_id\) < /);
+    expect(older).toMatch(/Index Cond: \(ROW\(record_time, update_id\) </);
+  });
+
   it("the blocks list pages through the index of its filter", async () => {
     const chain = createChainRest(recording());
     await chain.blocks(50, 10, "empty");

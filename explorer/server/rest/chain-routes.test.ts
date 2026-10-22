@@ -121,9 +121,30 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect((await get(`/api/txs/0x${"00".repeat(32)}?raw=1`)).status).toBe(404);
   });
 
+  it("serves the Canton updates around one: n newer and n older by the list's key, newest first, with what the producer's log says it submitted", async () => {
+    const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
+    await pool.query("update canton_updates set submitted_template = 'Zk.Chain:ZkChain', submitted_choice = 'Advance' where update_id = $1", [id(2)]);
+    const mid = body(await get(`/api/canton/updates/${id(2)}/around?n=1`));
+    same(mid, F.updateAround);
+    expect(mid.items.map((u: { updateId: string }) => u.updateId)).toEqual([id(3), id(2), id(1)]);
+    for (const u of mid.items) same(u, F.updateAroundItem);
+    const [, here, older] = mid.items;
+    expect([here.submittedTemplate, here.submittedChoice, here.block]).toEqual(["Zk.Chain:ZkChain", "Advance", 2]);
+    expect([older.submittedTemplate, older.submittedChoice]).toEqual([null, null]);
+    expect(here.txCount).toBe(body(await get("/api/blocks/2")).txCount);
+    expect(body(await get(`/api/canton/updates/${id(3)}/around?n=1`)).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(3), id(2)]);
+    expect(body(await get(`/api/canton/updates/${id(1)}/around?n=5`)).items.map((u: { updateId: string }) => u.updateId)).toEqual([id(3), id(2), id(1)]);
+    expect(body(await get(`/api/canton/updates/${id(2)}/around`)).items).toHaveLength(3);
+    expect(body(await get(`/api/canton/updates/${id(2)}/around?n=99`)).items).toHaveLength(3);
+    for (const bad of ["n=0", "n=-1", "n=abc", "n=1.5"]) expect((await get(`/api/canton/updates/${id(2)}/around?${bad}`)).status, bad).toBe(400);
+    expect((await get(`/api/canton/updates/nope/around`)).status).toBe(400);
+    expect((await get(`/api/canton/updates/1220${"00".repeat(32)}/around`)).status).toBe(404);
+    expect((await get(`/api/canton/updates/${id(2)}/around?n=1`)).headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+  });
+
   it("never serves the builder participant's completion offset", async () => {
     await pool.query("update canton_updates set completion_offset = 4242, command_id = coalesce(command_id, 'cmd-1') where update_id = $1", [chain.blocks[1]!.record.updateId]);
-    for (const target of [`/api/canton/updates/${chain.blocks[1]!.record.updateId}`, "/api/canton/updates", "/api/blocks/2", "/api/block/2"]) {
+    for (const target of [`/api/canton/updates/${chain.blocks[1]!.record.updateId}`, `/api/canton/updates/${chain.blocks[1]!.record.updateId}/around`, "/api/canton/updates", "/api/blocks/2", "/api/block/2"]) {
       const text = JSON.stringify((await get(target)).body);
       expect(text, target).not.toMatch(/completion_?offset/i);
       expect(text, target).not.toContain("4242");

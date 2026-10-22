@@ -66,6 +66,8 @@ export const REST_FIELDS = {
   frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
   updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block"],
   updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "template", "contractId", "blockHash", "signatories", "producerRecord"],
+  updateAround: ["items"],
+  updateAroundItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "submittedTemplate", "submittedChoice", "txCount"],
   updateTemplate: ["packageId", "packageName", "module", "entity"],
   signatory: ["role", "party"],
   producerRecord: ["template", "choice", "commandId", "argumentBytes", "trafficBytes"],
