@@ -16,6 +16,10 @@ describe("the indexer's command line", () => {
     expect(parseCommand(["reindex", "--records", "records.jsonl"])).toEqual({ kind: "rebuild", records: "records.jsonl" });
     expect(parseCommand(["export-records", "records.jsonl"])).toEqual({ kind: "export-records", file: "records.jsonl" });
   });
+  it("reads the stats rebuild, which takes nothing more", () => {
+    expect(parseCommand(["stats-rebuild"])).toEqual({ kind: "stats-rebuild" });
+    expect(() => parseCommand(["stats-rebuild", "now"])).toThrow(UsageError);
+  });
   it("refuses what it cannot read, and says how to use it", () => {
     for (const argv of [["reindex"], ["reindex", "0"], ["reindex", "x"], ["reindex", "9", "5"], ["reindex", "1", "2", "3"], ["reindex", "--records"], ["reindex", "--records", "a", "b"],
       ["export-records"], ["export-records", "--x"], ["run", "now"], ["nope"], ["reindex", "--from", "1", "--until", "3"]]) {

@@ -7,6 +7,8 @@ import { ensurePartitions } from "../db/partitions.ts";
 import { migrate } from "../db/migrate.ts";
 import { DAY, HOUR, MINUTE, rebuildStats, rollupStats } from "./stats.ts";
 import { histLength } from "./stats-hist.ts";
+import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
+import { createIndexer } from "./indexer.ts";
 
 const T0 = Date.UTC(2026, 9, 20, 12, 0, 0); // 12:00:00 UTC on a day with nothing else in it
 const at = (sec: number) => new Date(T0 + Math.round(sec * 1000));
@@ -169,5 +171,27 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     const before = await dump(pool);
     await rollupStats(pool, { now: () => T0 + 2 * MINUTE });
     expect(await dump(pool)).toBe(before);
+  }));
+
+  it("runs by itself while the indexer runs, and once on demand", () => withDatabase(async (pool) => {
+    await migrate(pool);
+    const chain = makeChain([{ txs: 2 }, { txs: 3 }]);
+    let clock = 0;
+    const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline", pollMs: 20, checkMs: 50, rollupMs: 50, now: () => clock });
+    try {
+      await indexer.open();
+      await indexer.runOnce();
+      clock = Number((await pool.query("select extract(epoch from max(record_time))::float8 * 1000 as t from blocks")).rows[0].t) + 90_000;
+      const halt = indexer.start();
+      try {
+        for (let i = 0; i < 100 && !(await pool.query("select 1 from stats_minute")).rowCount; i++) await new Promise((ok) => setTimeout(ok, 50));
+        expect(Number((await pool.query("select sum(txs)::int as n from stats_minute")).rows[0].n)).toBe(5);
+      } finally {
+        await halt();
+      }
+      expect((await indexer.rollupStatsOnce()).minutes).toBeGreaterThan(0);
+    } finally {
+      await indexer.close().catch(() => undefined);
+    }
   }));
 });
