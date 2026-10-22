@@ -50,6 +50,8 @@ export const REST_FIELDS = {
   blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "updateId", "recordTime"],
   /** One block: what the pages already have, with the legs count, whether stage 2 has derived it, and the producer's times. */
   blockDetail: [...FIELDS.block, "legsCount", "derived", "lifecycle"],
+  /** The Canton side of a block as its page shows it: the record's hex is served by /record. */
+  cantonSummary: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch"],
   blockLifecycle: ["strategy", "cutReason", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt"],
   txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created"],
   /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived). */

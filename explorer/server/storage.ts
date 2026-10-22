@@ -2,6 +2,7 @@ import { existsSync, renameSync } from "node:fs";
 import pg from "pg";
 import { ConfigError, type Config } from "./config.ts";
 import { createChainDb, type ChainDb } from "./chain-db.ts";
+import { createChainRest, type ChainRest } from "./rest/chain-rest.ts";
 import { migrate } from "./db/migrate.ts";
 import { TICKETS_MAX, type FaucetOptions } from "./faucet.ts";
 import { clientHasher, databaseFaucetStore, fileFaucetStore, loadClientKey, type FaucetStore } from "./faucet-store.ts";
@@ -22,13 +23,15 @@ export interface Storage {
   faucet: Pick<FaucetOptions, "store" | "leader" | "clientKeyHash">;
   /** The final blocks and transactions the indexer has written, which the block and transaction routes read. Null without a database. */
   chain: ChainDb | null;
+  /** The reads behind the REST routes, on the same database. */
+  chainRest: ChainRest | null;
   /** What was imported from the old files at open, for the log and for tests. */
   imported: { tracker: number; faucet: number };
   /** Gives up what it holds: closes the database. The leads are given up by the tracker's and the faucet's own close. */
   close(): Promise<void>;
 }
 
-const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
+const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
 
 /** The old file, once its contents are in the database: renamed, so that it is not read again and is still there to look at. */
 function retire(file: string): void {
@@ -85,6 +88,7 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
       tracker: { store: trackerStore, leader: leaders(TRACKER_LOCK) },
       faucet: { store: faucetStore, leader: faucetStore ? leaders(FAUCET_LOCK) : alwaysLeader, clientKeyHash },
       chain: createChainDb(pool),
+      chainRest: createChainRest(pool),
       imported,
       close: () => pool.end(),
     };

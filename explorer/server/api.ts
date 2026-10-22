@@ -6,6 +6,10 @@ import { ChainDbError, type ChainDb } from "./chain-db.ts";
 import { checkProofFacts, readProofFacts, type FactCheck, type ProofCheck } from "./proof.ts";
 import { RethError, type Reth, type TokenInfo } from "./reth.ts";
 import type { Tracker, TxState } from "./tracker.ts";
+import { cached, type Rule } from "./rest/cache.ts";
+import { chainRoutes } from "./rest/chain-routes.ts";
+import type { ChainRest } from "./rest/chain-rest.ts";
+import { BadRequest } from "./rest/paging.ts";
 import { FIELDS, pick } from "./rest/fields.ts";
 
 export { FIELDS };
@@ -20,7 +24,9 @@ export interface Answer { status: number; body: unknown; headers?: Record<string
 /** `body` is the text of a POST's body. `ip` is the client's address, which the faucet limits. */
 export type Api = (method: string, target: string, body?: string, ip?: string) => Promise<Answer>;
 /** With no `faucet`, the faucet is off. */
-export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker; now?: () => number }
+export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker; now?: () => number;
+  /** The reads behind the REST routes of blocks, transactions and Canton updates; without them those routes are off. */
+  rest?: ChainRest }
 
 /** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */
 type ApiTxState = TxState | "unindexed";
@@ -35,7 +41,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): Api {
+export function createApi({ config, reth, ledger, chain, tracker, rest, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): Api {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -224,6 +230,10 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     return t ? ok(pick(t, FIELDS.faucetTicket)) : fail(404, "No such ticket. A ticket is kept for a while after its coin is final, and is lost if the explorer is rebuilt.");
   }
 
+  const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id), transaction });
+  /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
+  const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list" };
+
   return async (method, target, body, ip) => {
     let url: URL, parts: string[];
     try {
@@ -237,7 +247,10 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     try {
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
       const isTicket = name === "faucet" && arg === "ticket" && parts.length === 4;
-      if (root !== "api" || parts.length > (isTicket ? 4 : 3)) return fail(404, "No such route.");
+      if (root !== "api") return fail(404, "No such route.");
+      const served = restRoutes?.(parts, url.searchParams);
+      if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
+      if (parts.length > (isTicket ? 4 : 3)) return fail(404, "No such route.");
       if (isTicket) return method === "GET" ? await ticket(parts[3]!) : fail(405, "Use GET.");
       if (name === "faucet" && parts.length === 2) {
         if (method === "POST") return await giveCoin(body, ip);
@@ -255,8 +268,12 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
       ]);
       const route = read.get(name ?? "");
       if (!route) return fail(404, "No such route.");
-      return method === "GET" ? await route() : fail(405, "Use GET.");
+      if (method !== "GET") return fail(405, "Use GET.");
+      const answer = await route();
+      const rule = RULES[name ?? ""];
+      return rule ? cached(answer, rule) : answer;
     } catch (e) {
+      if (e instanceof BadRequest) return fail(400, e.message);
       if (!(e instanceof RethError || e instanceof LedgerError || e instanceof ChainDbError)) throw e;
       console.error(`${method} ${url.pathname}: ${e.message}`);
       return fail(502, "The explorer cannot read the chain right now.");

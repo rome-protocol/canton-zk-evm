@@ -1,0 +1,177 @@
+/**
+ * The REST routes of the chain (design 6.1): blocks, transactions and Canton updates. Every answer is built field by field from the allowlists in fields.ts,
+ * every list is a keyset page, and every 200 carries the cache rule of what it holds. Stage 2 fields are "not derived yet" (`derived: false`, nulls or an empty
+ * page) while the derive cursor is below the block.
+ */
+import type { Answer } from "../api.ts";
+import { cached } from "./cache.ts";
+import type { ChainRest } from "./chain-rest.ts";
+import { traceKey } from "./chain-rest.ts";
+import { REST_FIELDS as F, pick } from "./fields.ts";
+import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
+import { traceOf, type CallFrame } from "./trace.ts";
+import type { Reth } from "../reth.ts";
+
+const HASH = /^0x[0-9a-f]{64}$/, UPDATE = /^1220[0-9a-f]{64}$/;
+const ok = (body: unknown): Answer => ({ status: 200, body });
+const fail = (status: number, error: string): Answer => ({ status, body: { error } });
+export const NOT_FOUND_HERE = "Nothing is held for that. Only blocks that are final on Canton are listed here.";
+
+export interface ChainRouteDeps {
+  rest: ChainRest;
+  reth: Pick<Reth, "rpc">;
+  /** The pages' own block and transaction answers (the routes that exist already), which these routes add to. */
+  block: (id: string) => Promise<Answer>;
+  transaction: (hash: string) => Promise<Answer>;
+}
+
+/** The route for a request, or undefined when it is none of these. `parts` is the path split into lowercase segments, `/api` first. */
+export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) {
+  const page = <T extends object, K extends keyof T>(rows: T[], limit: number, key: (r: T) => string, fields: readonly K[], derived?: boolean) => {
+    const p = pageOf(rows, limit, key);
+    const items = p.items.map((r) => pick(r, fields));
+    return derived === undefined ? pick({ items, next: p.next }, F.page) : pick({ derived, items, next: p.next }, F.derivedPage);
+  };
+  const blockKey = (id: string): number | string => {
+    if (HASH.test(id)) return id;
+    if (/^\d+$/.test(id) && Number.isSafeInteger(Number(id))) return Number(id);
+    throw new BadRequest("A block is named by its number or its 0x hash.");
+  };
+  async function finalBlock(id: string): Promise<number | undefined> {
+    return rest.numberOf(blockKey(id));
+  }
+  async function finalTx(hash: string) {
+    if (!HASH.test(hash)) throw new BadRequest("A transaction is named by its 0x hash.");
+    const at = await rest.placeOf(hash);
+    return at && { at, derived: at.block <= (await rest.deriveCursor()) };
+  }
+  /** `after` of an ascending list inside one block or transaction. */
+  const afterOf = (q: URLSearchParams, shape: Parameters<typeof cursorOf>[1]) => cursorOf(q.get("after"), shape);
+
+  async function blocks(q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int"]);
+    const rows = await rest.blocks((before?.[0] as number | undefined) ?? null, limit);
+    return cached(ok(page(rows, limit, (b) => keyOf(b.number), F.blockItem)), "list");
+  }
+
+  async function oneBlock(id: string): Promise<Answer> {
+    const a = await block(id);
+    if (a.status !== 200) return a;
+    const body = a.body as { status: string; number: number; canton: Record<string, unknown> | null };
+    const final = body.status === "final";
+    const extras = final ? await rest.blockExtras(body.number) : undefined;
+    const derived = final && body.number <= (await rest.deriveCursor());
+    // The record's hex is kept apart (/record): a block's page is small.
+    const canton = body.canton && pick(body.canton, F.cantonSummary);
+    return cached(ok(pick({ ...body, canton, legsCount: extras?.legsCount ?? null, derived, lifecycle: extras?.lifecycle ? pick(extras.lifecycle, F.blockLifecycle) : null } as Record<string, unknown>, F.blockDetail)), "composite");
+  }
+
+  async function blockTxs(id: string, q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int"]), n = await finalBlock(id);
+    if (n === undefined) return fail(404, NOT_FOUND_HERE);
+    return cached(ok(page(await rest.blockTxs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (t) => keyOf(t.index), F.txItem)), "composite");
+  }
+
+  async function blockLegs(id: string, q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int"]), n = await finalBlock(id);
+    if (n === undefined) return fail(404, NOT_FOUND_HERE);
+    return cached(ok(page(await rest.blockLegs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (l) => keyOf(l.legIndex), F.leg)), "composite");
+  }
+
+  /** The record is a chain fact that never changes: header, transactions and proof, as hex. */
+  async function record(id: string): Promise<Answer> {
+    const n = await finalBlock(id), r = n === undefined ? undefined : await rest.record(n);
+    if (!r) return fail(404, NOT_FOUND_HERE);
+    return cached(ok(pick({ number: r.number, hash: r.hash, contractId: r.contractId, header: r.headerHex, txs: r.txsHex, proof: r.proofHex }, F.record)), "immutable");
+  }
+
+  async function txs(q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int"]);
+    return cached(ok(page(await rest.txs(before, limit), limit, (t) => keyOf(t.block, t.index), F.txItem)), "list");
+  }
+
+  async function oneTx(hash: string): Promise<Answer> {
+    const a = await transaction(hash);
+    if (a.status !== 200) return a;
+    const body = a.body as { status: string };
+    const here = body.status === "final" ? await finalTx(hash) : undefined;
+    const derived = !!here?.derived;
+    // Stage 2 keeps a row only for a transaction that made calls or reverted: past the derive cursor, no row means no calls and no revert reason.
+    const trace = derived && here ? await rest.traceOf(here.at) : undefined;
+    return cached(ok(pick({ ...body, derived, callCount: derived ? trace?.callCount ?? 0 : null, revertReason: trace?.revertReason ?? null } as Record<string, unknown>, F.txDetail)), "composite");
+  }
+
+  async function logs(hash: string, q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int"]), raw = q.get("raw") === "1", here = await finalTx(hash);
+    if (!here) return fail(404, NOT_FOUND_HERE);
+    const rows = await rest.txLogs(here.at, (after?.[0] as number | undefined) ?? null, limit);
+    // Logs are decoded once a contract is verified; until then `decoded` is null. The raw form has no such field, and a final transaction's raw logs never change.
+    const withDecoded = rows.map((l) => ({ ...l, decoded: null }));
+    return cached(ok(page(withDecoded, limit, (l) => keyOf(l.logIndex), raw ? F.rawLog : F.log)), raw ? "immutable" : "composite");
+  }
+
+  async function internal(hash: string, q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", here = await finalTx(hash);
+    if (!here) return fail(404, NOT_FOUND_HERE);
+    const after = q.get("after");
+    if (after !== null && !/^t([0-9]{1,10}(-[0-9]{1,10})*)?$/.test(after)) throw new BadRequest('after is "t" and a trace address, such as t0-1.');
+    if (!here.derived) return cached(ok(pick({ derived: false, items: [], next: null }, F.derivedPage)), "composite");
+    const rows = await rest.txInternal(here.at, after, limit);
+    return cached(ok(page(rows, limit, (c) => traceKey(c.traceAddress), F.internal, true)), raw ? "immutable" : "composite");
+  }
+
+  async function transfers(hash: string, q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), raw = q.get("raw") === "1", after = afterOf(q, ["int", "int"]), here = await finalTx(hash);
+    if (!here) return fail(404, NOT_FOUND_HERE);
+    if (!here.derived) return cached(ok(pick({ derived: false, items: [], next: null }, F.derivedPage)), "composite");
+    const rows = await rest.txTransfers(here.at, after, limit);
+    return cached(ok(page(rows, limit, (t) => keyOf(t.logIndex, t.batchIndex), F.transfer, true)), raw ? "immutable" : "composite");
+  }
+
+  /** The full call tree, asked of reth for a transaction of a final block. */
+  async function trace(hash: string): Promise<Answer> {
+    const here = await finalTx(hash);
+    if (!here) return fail(404, NOT_FOUND_HERE);
+    const t = await traceOf(reth, hash);
+    if (!t) return fail(404, "reth holds no trace of that transaction.");
+    return cached(ok(pick({ frames: t.frames.map((f: CallFrame) => pick(f, F.frame)), truncated: t.truncated }, F.trace)), "composite");
+  }
+
+  async function updates(q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "text"]);
+    return cached(ok(page(await rest.updates(before, limit), limit, (u) => keyOf(u.micros, u.updateId), F.updateItem)), "list");
+  }
+
+  async function oneUpdate(id: string): Promise<Answer> {
+    if (!UPDATE.test(id)) return fail(400, "A Canton update is named by its id, 1220 and 64 hex digits.");
+    const u = await rest.update(id);
+    if (!u) return fail(404, NOT_FOUND_HERE);
+    return cached(ok(pick({ ...u, template: pick(u.template, F.updateTemplate), signatories: u.signatories.map((s) => pick(s, F.signatory)), producerRecord: u.producerRecord && pick(u.producerRecord, F.producerRecord) }, F.updateDetail)), "composite");
+  }
+
+  return (parts: string[], q: URLSearchParams): (() => Promise<Answer>) | undefined => {
+    const [, name, a, b] = parts;
+    const n = parts.length;
+    if (name === "blocks") {
+      if (n === 2) return () => blocks(q);
+      if (n === 3) return () => oneBlock(a!);
+      if (n === 4 && b === "transactions") return () => blockTxs(a!, q);
+      if (n === 4 && b === "legs") return () => blockLegs(a!, q);
+      if (n === 4 && b === "record") return () => record(a!);
+    }
+    if (name === "txs") {
+      if (n === 2) return () => txs(q);
+      if (n === 3) return () => oneTx(a!);
+      if (n === 4 && b === "logs") return () => logs(a!, q);
+      if (n === 4 && b === "internal") return () => internal(a!, q);
+      if (n === 4 && b === "token-transfers") return () => transfers(a!, q);
+      if (n === 4 && b === "trace") return () => trace(a!);
+    }
+    if (name === "canton" && a === "updates") {
+      if (n === 3) return () => updates(q);
+      if (n === 4) return () => oneUpdate(b!);
+    }
+    return undefined;
+  };
+}
+
