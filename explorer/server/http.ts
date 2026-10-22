@@ -9,6 +9,7 @@ import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
 import { lastIdOf, topicsOf, type StreamHub } from "./rest/stream.ts";
+import { ETHERSCAN_REFUSED, MAX_VERIFY_BODY, REST_REFUSED, createLimits, isVerification, retryAfter, verificationRefused, verificationTooBig, type Limits } from "./limits.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
@@ -67,8 +68,8 @@ function clientIp(req: IncomingMessage, ipHeader: string | null): string {
   return last || req.socket.remoteAddress || "unknown";
 }
 
-/** `ipHeader` names the header that carries the client's address for the faucet's limits, and is the public RPC's when none is given. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
-export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub): Server {
+/** `ipHeader` names the header that carries the client's address for the faucet's and the REST limits (6.6), and is the public RPC's when none is given. `limits` holds the per-client limits of the REST routes, the Etherscan door and verification; `/rpc`, the live streams and the faucet keep their own. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub, limits: Limits = createLimits()): Server {
   const root = resolve(dist);
   async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
@@ -134,6 +135,34 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         req.socket.setTimeout(0);
         res.on("close", attached.detach);
         return void open();
+      }
+      if (pathname === "/api") {
+        // The Etherscan door: its own rate, and its own answer when the client is over it (HTTP 200, as Etherscan gives, and a Retry-After).
+        const send = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+          void res.writeHead(status, { ...JSON_TYPE, "cache-control": "no-store", ...headers }).end(JSON.stringify(body));
+        const ip = clientIp(req, ipHeader);
+        const wait = limits.etherscan.take(ip);
+        if (wait !== null) return send(200, ETHERSCAN_REFUSED, retryAfter(wait));
+        const query = new URL(target, "http://explorer").searchParams;
+        let sent: string | undefined;
+        if (method === "POST") {
+          // The action may be in the form, so a body is read up to a verification's 500 KB; one that is not a verification may be no bigger than the other routes' bodies.
+          if (Number(req.headers["content-length"] ?? 0) > MAX_VERIFY_BODY) return send(200, verificationTooBig(), { connection: "close" });
+          const body = await readBody(req, MAX_VERIFY_BODY);
+          if (body === null || (body.length > MAX_BODY && !isVerification(query, body))) return send(200, verificationTooBig(), { connection: "close" });
+          sent = body;
+        }
+        if (isVerification(query, sent)) {
+          const later = limits.verification.take(ip);
+          if (later !== null) return send(200, verificationRefused(later), retryAfter(later));
+        }
+        const { status, body, headers } = await api(method, target, sent, ip);
+        return send(status, body, { ...headers });
+      }
+      // The pages' REST routes share one rate per client, and `/healthz` is in it: it answers the same as `/api/status` (reth and Canton on every call), so it must not be a way round the limit. The rate is far above any proxy's probe. A faucet request (`POST /api/faucet`) has the faucet's own limits, and the live stream its own count; `GET /api/faucet` and the ticket route read from reth, so they take a token like the rest.
+      if ((pathname.startsWith("/api/") && !(method === "POST" && pathname === "/api/faucet")) || pathname === "/healthz") {
+        const wait = limits.rest.take(clientIp(req, ipHeader));
+        if (wait !== null) return void res.writeHead(429, { ...JSON_TYPE, "cache-control": "no-store", ...retryAfter(wait) }).end(JSON.stringify({ error: REST_REFUSED(wait) }));
       }
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req, pathname === "/api/verify" ? VERIFY_BODY_MAX : MAX_BODY) : undefined;

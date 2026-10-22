@@ -31,13 +31,15 @@ export interface Storage {
   statsRest: StatsRest | null;
   /** The database's pool, for the live stream's reads. Null without a database. */
   pool: pg.Pool | null;
+  /** A small pool of its own for the health route's reads and this instance's health writes, so that they never queue behind the pages' queries. Null without a database. */
+  healthPool: pg.Pool | null;
   /** What was imported from the old files at open, for the log and for tests. */
   imported: { tracker: number; faucet: number };
   /** Gives up what it holds: closes the database. The leads are given up by the tracker's and the faucet's own close. */
   close(): Promise<void>;
 }
 
-const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, accountRest: null, statsRest: null, pool: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
+const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, accountRest: null, statsRest: null, pool: null, healthPool: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
 
 /** The old file, once its contents are in the database: renamed, so that it is not read again and is still there to look at. */
 function retire(file: string): void {
@@ -63,6 +65,8 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
   }
   const pool = new pg.Pool({ ...config.database, max: 10 });
   pool.on("error", (e) => console.error(`explorer: the database connection failed: ${e.message}`));
+  const healthPool = new pg.Pool({ ...config.database, max: 2 });
+  healthPool.on("error", (e) => console.error(`explorer: the database connection failed: ${e.message}`));
   try {
     if (opts.migrate !== false) await migrate(pool);
     const trackerStore: TrackerStore = databaseTrackerStore(pool, config.tracker.max);
@@ -93,16 +97,17 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
     return {
       tracker: { store: trackerStore, leader: leaders(TRACKER_LOCK) },
       faucet: { store: faucetStore, leader: faucetStore ? leaders(FAUCET_LOCK) : alwaysLeader, clientKeyHash },
-      chain: createChainDb(pool),
+      chain: createChainDb(pool, healthPool),
       chainRest: createChainRest(pool),
       accountRest: createAccountRest(pool),
       statsRest: createStatsRest(pool),
       pool,
+      healthPool,
       imported,
-      close: () => pool.end(),
+      close: async () => { await Promise.all([pool.end(), healthPool.end()]); },
     };
   } catch (e) {
-    await pool.end().catch(() => undefined);
+    await Promise.all([pool.end(), healthPool.end()]).catch(() => undefined);
     throw e;
   }
 }

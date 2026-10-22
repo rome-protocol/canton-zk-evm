@@ -18,6 +18,8 @@ import { buildOpenApi } from "./rest/openapi.ts";
 import { router } from "./rest/router.ts";
 import type { VerifyApi } from "./verifier/api.ts";
 import { FIELDS, pick } from "./rest/fields.ts";
+import type { ApiHealth } from "./api-health.ts";
+import { httpStatusOf } from "./health.ts";
 
 export { FIELDS };
 
@@ -42,6 +44,8 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   stats?: StatsRest;
   /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
   live?: boolean;
+  /** The checks this API instance writes about what it sees: its own timer writes the rows in the background, and `/api/health` only reads the table and says which instance answered. Without it the answer shows the rows the other roles wrote. */
+  health?: ApiHealth;
   /** The verification routes: a submission and where one is. Without it they are off. */
   verify?: VerifyApi }
 
@@ -58,7 +62,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, stats, live, verify, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, stats, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -114,6 +118,25 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         indexHead: head?.number ?? null, indexLag, deriveCursor: facts.deriveCursor, chainInstance: facts.chainInstance,
       },
     };
+  }
+
+  /**
+   * Every row of health_checks through the health model (design 6.5): each check with its word, the time since it changed and since its writer last looked, the overall
+   * word, and 503 only for `down`. A database that cannot be read is `down`, said by this instance itself.
+   */
+  async function healthAnswer(): Promise<Answer> {
+    try {
+      const h = await chain.health(apiHealth?.instance);
+      return {
+        status: httpStatusOf(h.status),
+        body: { status: h.status, instance: apiHealth?.instance ?? null, starting: !h.started, problems: h.problems, checks: h.checks.map((c) => pick(c, FIELDS.healthCheck)) },
+        headers: { "Cache-Control": "no-store" },
+      };
+    } catch (e) {
+      console.error(`health: ${(e as Error).message}`);
+      const detail = "the database cannot be read";
+      return { status: 503, body: { status: "down", instance: apiHealth?.instance ?? null, starting: false, problems: [`database: ${detail}`], checks: [{ id: "database", role: "api", status: "down", detail }] }, headers: { "Cache-Control": "no-store" } };
+    }
   }
 
   /** `light` is for the REST routes, whose pages leave out the transactions and the record's transactions bytes. */
@@ -270,6 +293,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list", "openapi.json": "composite" };
   const legacy = router([
     ["/api/status", () => status()],
+    ["/api/health", () => healthAnswer()],
     ["/api/block/{id}", (id) => block(id)],
     ["/api/tx/{hash}", (hash) => transaction(hash)],
     ["/api/address/{address}", (a) => address(a)],

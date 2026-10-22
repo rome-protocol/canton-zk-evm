@@ -74,6 +74,16 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(await plan(/b\.holder = \$1/)).toMatch(/token_balances_holdings_idx/);
   });
 
+  it("an address's page of transactions reads each of its three keys, sent, received and created, through an index that is the page's own order", async () => {
+    await ensurePartitions(pool, { head: 1 }); // the tables of a fresh database have no partition, and a plan over none says nothing
+    const accounts = createAccountRest(recording());
+    await accounts.addressTxs(addr, [5, 1], 10);
+    const text = await plan(/with k as \(\(select block_number, tx_index from transactions where from_address/);
+    for (const key of ["from_address", "to_address", "created_contract"]) expect(text, key).toMatch(new RegExp(`Index (Only )?Scan using \\w*${key}_block_number_tx_index_idx`));
+    // not the primary key walked backwards with the address as a filter, which reads the whole table for an address that never created anything
+    expect(text).not.toMatch(/Index Scan Backward using \w*_pkey/);
+  });
+
   it("the lists sorted on a count or a balance page by their own index, with the address as the tie-breaker", async () => {
     const accounts = createAccountRest(recording());
     await accounts.addresses("balance", [5, addr], 10);
