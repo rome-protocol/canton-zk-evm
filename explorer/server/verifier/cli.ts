@@ -10,6 +10,7 @@ import { access, constants } from "node:fs/promises";
 import { Pool } from "pg";
 import { connectionConfig } from "../db/connect.ts";
 import { CompilerStore } from "./compilers.ts";
+import { reservedAddresses, seedGateway } from "./gateway.ts";
 import { JobQueue } from "./jobs.ts";
 import { DockerSandbox } from "./sandbox.ts";
 import { loadVerifierSettings, VerifierSettingsError } from "./settings.ts";
@@ -31,18 +32,30 @@ async function main(): Promise<number> {
     maxOutputBytes: s.compileMaxOutputBytes, maxInputBytes: s.compileMaxInputBytes,
   });
   const queue = new JobQueue(pool);
-  const worker = new VerifierWorker(pool, queue, new Verifier(pool, new SolcRunner(store, sandbox), s.compileMaxInputBytes), {
+  const verifier = new Verifier(pool, new SolcRunner(store, sandbox), s.compileMaxInputBytes, reservedAddresses(s.gateway));
+  const worker = new VerifierWorker(pool, queue, verifier, {
     cacheUsable: () => access(s.cacheDir, constants.W_OK).then(() => null, (e: Error) => `the compiler cache folder cannot be written: ${e.message}`),
     jobTimeoutMs: FETCH_MS * 2 + s.compileTimeoutMs + 30_000,
   });
   const stop = new AbortController();
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
   const prune = setInterval(() => { queue.prune().catch((e: Error) => console.error(`verifier: prune: ${e.message}`)); }, HOUR);
+  // The gateway's source is published here, not by a submission: tried now, and each minute until the gateway has one (its contract may not be indexed yet).
+  let seeding: NodeJS.Timeout | undefined;
+  if (s.gateway) {
+    const g = s.gateway;
+    const seed = (): void => {
+      seedGateway(pool, verifier, g, stop.signal).then((r) => { if (r !== "waiting") clearInterval(seeding); }, (e: Error) => console.error(`verifier: gateway source: ${e.message}`));
+    };
+    seeding = setInterval(seed, 60_000);
+    seed();
+  }
   console.log("verifier: running");
   try {
     await worker.run(stop.signal);
   } finally {
     clearInterval(prune);
+    clearInterval(seeding);
     await pool.end();
   }
   return 0;

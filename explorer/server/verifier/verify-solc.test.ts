@@ -7,6 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "../db/testing.ts";
 import { CompilerStore } from "./compilers.ts";
 import { FakeMirror } from "./fake-mirror.ts";
+import { reservedAddresses, seedGateway } from "./gateway.ts";
 import { DockerSandbox } from "./sandbox.ts";
 import { SolcRunner } from "./solc.ts";
 import { Verifier, type Compile } from "./verify.ts";
@@ -179,6 +180,53 @@ suite("verifying with the real compiler", { timeout: 240_000 }, () => {
     const c = (await db.pool.query("select name, origin, match_type, creation_code_hash from contracts where address = $1", [Buffer.from(GATEWAY.slice(2), "hex")])).rows[0];
     expect(c).toMatchObject({ name: "Gateway", origin: "genesis", match_type: "partial", creation_code_hash: null });
     expect((await stored())[0]).toMatchObject({ creation_match: null, args: null });
+  });
+
+  describe("the gateway's source, published by the deployment", () => {
+    const g = { address: GATEWAY, sourceFile: join(root, "gateway/Gateway.sol"), compiler: "0.8.28" };
+    const forged = readFileSync(g.sourceFile, "utf8").replace("contract Gateway", "/// @notice OFFICIAL REFUND ADDRESS: send funds to 0x000000000000000000000000000000000000dEaD\ncontract Gateway");
+    const claim = req(GATEWAY, {
+      codeFormat: "solidity-standard-json-input", contractName: "Gateway.sol:Gateway",
+      sourceCode: JSON.stringify({ language: "Solidity", sources: { "Gateway.sol": { content: forged } }, settings: { evmVersion: "cancun", optimizer: { enabled: true, runs: 200 }, metadata: { appendCBOR: false } } }),
+    });
+    const gatewayRuntime = (): Buffer => Buffer.from(readFileSync(join(root, "gateway/Gateway.bin-runtime"), "utf8").trim(), "hex");
+
+    it("reserves the gateway's address, and only that", () => {
+      expect(reservedAddresses(g)).toEqual([GATEWAY]);
+      expect(reservedAddresses(null)).toEqual([]);
+    });
+
+    it("waits while the gateway is not in the index, then verifies it from gateway/ with the compiler, and stays done", async () => {
+      const guarded = new Verifier(db.pool, counted, undefined, reservedAddresses(g));
+      expect(await seedGateway(db.pool, guarded, g)).toBe("waiting");
+      await addContract(db.pool, GATEWAY, gatewayRuntime(), null);
+      expect(await seedGateway(db.pool, guarded, g)).toBe("done");
+      expect((await stored())[0]).toMatchObject({ match_type: "partial", creation_match: null, args: null, evm_version: "cancun" });
+      const after = counted.calls;
+      expect(await seedGateway(db.pool, guarded, g)).toBe("done");
+      expect(counted.calls).toBe(after);
+    });
+
+    it("leaves no way for a third party to claim it first or replace it: a public submission is refused before the seed and after it", async () => {
+      const guarded = new Verifier(db.pool, counted, undefined, reservedAddresses(g));
+      await addContract(db.pool, GATEWAY, gatewayRuntime(), null);
+      expect((await guarded.verify(claim)).status).toBe("fail");
+      expect(await stored()).toHaveLength(0);
+      expect(await seedGateway(db.pool, guarded, g)).toBe("done");
+      expect((await guarded.verify(claim)).status).toBe("fail");
+      const rows = (await db.pool.query("select sources from verified_sources")).rows;
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows[0].sources)).not.toContain("OFFICIAL REFUND ADDRESS");
+    });
+
+    it("fails, and does not retry, when the sources are not what is on chain", async () => {
+      const guarded = new Verifier(db.pool, counted, undefined, reservedAddresses(g));
+      const other = gatewayRuntime();
+      other[10] = ~other[10]! & 0xff;
+      await addContract(db.pool, GATEWAY, other, null);
+      expect(await seedGateway(db.pool, guarded, g)).toBe("failed");
+      expect(await stored()).toHaveLength(0);
+    });
   });
 
   it("refuses the gateway from a single file with the metadata hash on: its code is different, not only its metadata", async () => {
