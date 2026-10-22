@@ -583,7 +583,7 @@ describe("a block that cannot be shown", () => {
     expect(await screen.findByRole("heading", { name: "Not found" })).toBeInTheDocument();
     expect(screen.getByText(NOT_FOUND.replace("Not found. ", ""))).toBeInTheDocument();
     await tick(10_000);
-    expect(calls.filter((c) => c.startsWith("/api/block"))).toHaveLength(1);
+    expect(calls.filter((c) => c.startsWith("/api/block/"))).toHaveLength(1);
   });
 
   it("says what a block is named by when the address is not a number or a hash", async () => {
