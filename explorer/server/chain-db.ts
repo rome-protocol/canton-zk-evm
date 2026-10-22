@@ -101,11 +101,11 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return (await query(`select ${SUMMARY} from blocks b order by b.number desc limit $1`, [n])).map(summary);
   }
 
-  /** A final block by number or hash, or undefined. */
-  async function block(key: number | string): Promise<FinalBlockRow | undefined> {
+  /** A final block by number or hash, or undefined. `withTxs` false leaves out the record's transactions, which are most of its bytes (`txsHex` is then empty). */
+  async function block(key: number | string, withTxs = true): Promise<FinalBlockRow | undefined> {
     const byNumber = typeof key === "number";
     const [r] = await query(
-      `select ${SUMMARY}, b.parent_hash, b.gas_used, b.gas_limit, b.base_fee_per_gas::text as base_fee, b.fee_recipient, b.state_root, r.header, r.txs, p.proof
+      `select ${SUMMARY}, b.parent_hash, b.gas_used, b.gas_limit, b.base_fee_per_gas::text as base_fee, b.fee_recipient, b.state_root, r.header, ${withTxs ? "r.txs" : "null::bytea as txs"}, p.proof
        from blocks b left join block_records r on r.number = b.number left join proofs p on p.number = b.number
        where ${byNumber ? "b.number = $1" : "b.hash = $1"}`,
       [byNumber ? key : bytes(key)],
@@ -243,7 +243,13 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return (await query("select 1 from blocks where number = 1")).length > 0;
   }
 
-  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, genesisReferenced };
+  /** Where stage 2 is (the derive cursor), and the chain instance this database belongs to (the update of block 1). Null while there is none. */
+  async function indexFacts(): Promise<{ deriveCursor: number | null; chainInstance: string | null }> {
+    const [r] = await query("select (select position from cursors where stream = 'derive') as derive, (select value from meta where key = 'chain_instance') as instance");
+    return { deriveCursor: r?.derive === null || r?.derive === undefined ? null : Number(r.derive), chainInstance: r?.instance ?? null };
+  }
+
+  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, genesisReferenced, indexFacts };
 }
 
 export type ChainDb = ReturnType<typeof createChainDb>;

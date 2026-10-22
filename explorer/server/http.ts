@@ -1,8 +1,14 @@
 import { readFile, stat } from "node:fs/promises";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { gzip } from "node:zlib";
+import { promisify } from "node:util";
+import { textOf } from "./rest/cache.ts";
+
+const gzipAsync = promisify(gzip);
 import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
+import { lastIdOf, topicsOf, type StreamHub } from "./rest/stream.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
@@ -12,6 +18,15 @@ const TYPES: Record<string, string> = {
 /** The biggest request body the server reads. The faucet's is one address. */
 /** Room for a human check's token, which can be a few thousand characters. */
 const MAX_BODY = 8192;
+
+/** An ended stream that has not flushed and closed by now is destroyed: a client that stops reading cannot hold its slot. */
+export const END_DEADLINE_MS = 10_000;
+export function endWithin(res: ServerResponse, ms = END_DEADLINE_MS): void {
+  res.end();
+  const t = setTimeout(() => res.destroy(), ms);
+  t.unref();
+  res.once("close", () => clearTimeout(t));
+}
 
 /** The body as text, or null when it is bigger than the limit (what is left is thrown away). */
 function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null> {
@@ -28,6 +43,15 @@ function readBody(req: IncomingMessage, limit = MAX_BODY): Promise<string | null
   });
 }
 
+/** An answer of at least this many characters is gzipped for a client that accepts it. */
+const GZIP_FROM = 1024;
+
+/** True when an `If-None-Match` header names the tag (a weak mark on either side does not matter for a GET). */
+function matches(header: string | string[] | undefined, etag: string): boolean {
+  const sent = (Array.isArray(header) ? header.join(",") : header)?.split(",").map((t) => t.trim().replace(/^W\//, ""));
+  return !!sent && (sent.includes("*") || sent.includes(etag.replace(/^W\//, "")));
+}
+
 /** The public RPC's door: its handler, and the header that names the client's address when a trusted proxy sets one. */
 export interface RpcDoor { handler: PublicRpc; ipHeader: string | null }
 
@@ -42,7 +66,7 @@ function clientIp(req: IncomingMessage, ipHeader: string | null): string {
 }
 
 /** `ipHeader` names the header that carries the client's address for the faucet's limits, and is the public RPC's when none is given. Serves `/api/*` and `/healthz` from the API, `POST /rpc` from the public RPC when it is on, and everything else from the pages' build in `dist`, with the home page for any route the pages own. */
-export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null): Server {
+export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader: string | null = rpc?.ipHeader ?? null, stream?: StreamHub): Server {
   const root = resolve(dist);
   async function page(pathname: string): Promise<{ file: string; bytes: Buffer } | null> {
     let name: string;
@@ -86,11 +110,47 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
           return send(200, { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Something went wrong in the RPC. Try again in a moment." } });
         }
       }
+      if (pathname === "/api/stream") {
+        const fail = (status: number, error: string, headers: Record<string, string> = {}) =>
+          void res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...headers }).end(JSON.stringify({ error }));
+        if (!stream) return fail(404, "Live updates are off on this explorer.");
+        if (method !== "GET") return fail(405, "Use GET.", { allow: "GET" });
+        const topics = topicsOf(new URL(target, "http://explorer").searchParams.get("topics"));
+        if (!topics) return fail(400, "topics is a list of blocks, txs, inflight and stats.");
+        // The head goes out with the first byte: a stream that is refused is a plain 429, and one that is taken starts with its retry delay.
+        let started = false;
+        const open = () => {
+          if (started) return;
+          started = true;
+          res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store, no-transform", "x-accel-buffering": "no", "x-content-type-options": "nosniff" });
+          res.write("retry: 3000\n\n");
+        };
+        const sink = { write: (c: string) => { open(); res.write(c); }, backlog: () => res.writableLength, end: () => endWithin(res), destroy: () => void res.destroy() };
+        const attached = stream.attach(clientIp(req, ipHeader), topics, lastIdOf(req.headers["last-event-id"]), sink);
+        if (!attached.ok) return fail(429, attached.error, { "retry-after": "5" });
+        req.socket.setNoDelay(true);
+        req.socket.setTimeout(0);
+        res.on("close", attached.detach);
+        return void open();
+      }
       if (pathname.startsWith("/api/") || pathname === "/healthz") {
         const sent = method === "POST" ? await readBody(req) : undefined;
         if (sent === null) return void res.writeHead(413, { "content-type": "application/json", connection: "close" }).end(JSON.stringify({ error: "That request is too big." }));
         const { status, body, headers } = await api(method, target, sent, clientIp(req, ipHeader));
-        res.writeHead(status, { ...headers, "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+        const text = textOf(body);
+        // An answer that names its cache rule (and a validator) may be cached; it is revalidated cheaply with If-None-Match. Anything else is never cached.
+        // A big answer (a block's record is about 0.35 MB of hex) goes gzipped to a client that accepts it, off the event loop; the gzip form has its own tag.
+        const out: Record<string, string> = { "cache-control": "no-store", ...headers, "content-type": "application/json" };
+        const zip = text.length >= GZIP_FROM && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""));
+        if (zip && out.etag) out.etag = out.etag.replace(/"$/, '-gz"');
+        if (status === 200 && out.etag && (method === "GET" || method === "HEAD") && matches(req.headers["if-none-match"], out.etag)) {
+          return void res.writeHead(304, { etag: out.etag, "cache-control": out["cache-control"] as string, vary: "accept-encoding" }).end();
+        }
+        if (zip) {
+          const zipped = await gzipAsync(text);
+          return void res.writeHead(status, { ...out, "content-encoding": "gzip", vary: "accept-encoding", "content-length": zipped.length }).end(method === "HEAD" ? undefined : zipped);
+        }
+        res.writeHead(status, { ...out, vary: "accept-encoding" }).end(text);
       } else if (method !== "GET" && method !== "HEAD") {
         res.writeHead(405, { allow: "GET, HEAD" }).end();
       } else {

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { encodeAbiParameters } from "viem";
-import { createReth, ALLOWED_METHODS, RethError } from "./reth.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { createReth, ALLOWED_METHODS, MAX_ANSWER_BYTES, RethError, RethTooBig } from "./reth.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
 
 const H = (c: string) => "0x" + c.repeat(64);
@@ -98,6 +100,8 @@ describe("addresses", () => {
     });
     expect(await r.balance(A("5"))).toBe(500000000000000000n);
     expect(seen[0]).toEqual([A("5"), "latest"]);
+    expect(await r.balanceAt(A("5"), 255)).toBe(500000000000000000n);
+    expect(seen[1]).toEqual([A("5"), "0xff"]);
     expect(await r.nonce(A("5"))).toBe(3);
     expect(await r.code(A("5"))).toBe("0x6080");
   });
@@ -184,7 +188,38 @@ describe("failures", () => {
     expect(fake?.calls).toEqual([]);
   });
 
-  it("only lists eth_, net_ and web3_ methods", () => {
-    for (const m of ALLOWED_METHODS) expect(m).toMatch(/^(eth|net|web3)_/);
+  it("only lists eth_, net_ and web3_ methods, and trace_transaction (never a replay)", () => {
+    for (const m of ALLOWED_METHODS) expect(m).toMatch(/^(eth|net|web3)_|^trace_transaction$/);
+  });
+});
+
+describe("an answer bigger than the cap", () => {
+  const big = { jsonrpc: "2.0", id: 1, result: "0x" + "ab".repeat(5000) };
+  it("is refused as RethTooBig, and a small answer still comes through", async () => {
+    fake = await startFakeReth({ trace_transaction: "0x" + "ab".repeat(5000), eth_blockNumber: "0x1" });
+    const r = createReth(fake.url, 2000, 1000);
+    const e = await r.rpc("trace_transaction", [H("a")]).catch((x) => x);
+    expect(e).toBeInstanceOf(RethTooBig);
+    expect((e as Error).message).toMatch(/trace_transaction: reth's answer is bigger than 1000 bytes/);
+    expect(await r.blockNumber()).toBe(1);
+  });
+
+  it("is refused when it comes chunked with no length", async () => {
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => { res.writeHead(200, { "content-type": "application/json" }); res.write(JSON.stringify(big).slice(0, 4000)); setTimeout(() => res.end(JSON.stringify(big).slice(4000)), 20); });
+    });
+    await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+    try {
+      const r = createReth(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, 2000, 1000);
+      await expect(r.rpc("trace_transaction", [H("a")])).rejects.toBeInstanceOf(RethTooBig);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((ok) => server.close(ok));
+    }
+  });
+
+  it("is 32 MB by default", () => {
+    expect(MAX_ANSWER_BYTES).toBe(32 * 1024 * 1024);
   });
 });
