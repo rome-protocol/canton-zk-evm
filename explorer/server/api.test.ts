@@ -88,7 +88,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
     ? {
         head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)),
         tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf, lifecycleOf: built.lifecycleOf, inFlight: built.inFlight,
-        indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced, indexFacts: built.indexFacts,
+        indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced, indexFacts: built.indexFacts, health: built.health,
       }
     : built;
   // The indexer commits a block between the route's first look in the database and its second: the first read of a block by number misses, the rest are true.

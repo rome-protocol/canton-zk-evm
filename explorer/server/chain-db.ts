@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { evaluate, specOf, type Evaluation, type RawRow } from "./health.ts";
 
 /** The database could not be read. The routes answer 502 for it, like a read that reth failed. */
 export class ChainDbError extends Error {}
@@ -75,13 +76,7 @@ type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-exp
 const summary = (r: Row): FinalSummary => ({ number: Number(r.number), hash: hex(r.hash), timestamp: Number(r.ts), txCount: r.tx_count, updateId: r.update_id, recordTime: isoTime(r.record_time) });
 
 /** The final blocks and their transactions, read from the tables the indexer fills (design section 4). Nothing here writes. */
-/**
- * The checks the indexer refreshes on every round of its timer (every 2 s), whatever their status says: a row of one of these that has not been looked at
- * for three rounds means the indexer is not running (design section 6.5). The other checks are written when they fail, so their age says nothing.
- */
-export const REFRESHED_CHECKS: readonly string[] = ["C4", "C5", "derive_lag", "C10"];
-
-export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?: number } = {}) {
+export function createChainDb(pool: Pool) {
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     try {
       return (await pool.query(sql, values)).rows;
@@ -214,28 +209,42 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return { attempts, poolWaiting: p ? { waiting: p.waiting, at: p.at } : null };
   }
 
+  /** Every row of health_checks, with its ages by the database's clock. */
+  async function healthRows(): Promise<RawRow[]> {
+    const rows = await query(
+      `select check_id, status, value, threshold, detail, extract(epoch from now() - changed_at)::float8 as since, extract(epoch from now() - checked_at)::float8 as age,
+         ${MS("changed_at")} as changed_at, ${MS("checked_at")} as checked_at from health_checks order by check_id`,
+    );
+    return rows.map((r) => ({
+      id: r.check_id, status: r.status, value: r.value, threshold: r.threshold, detail: r.detail, sinceSeconds: Number(r.since), ageSeconds: Number(r.age), changedAt: r.changed_at, refreshedAt: r.checked_at,
+    }));
+  }
+
+  /** Whether the indexer has written a record: its cursor exists once it has. */
+  async function started(): Promise<boolean> {
+    return (await query("select 1 from cursors where stream = 'reader_updates'")).length > 0;
+  }
+
+  /** The whole of /api/health: every row through the health model. `instance` is the API instance that is answering. */
+  async function health(instance?: string): Promise<Evaluation & { started: boolean }> {
+    const [rows, begun] = await Promise.all([healthRows(), started()]);
+    const e = evaluate(rows, { ...(instance !== undefined ? { instance } : {}), started: begun });
+    return { ...e, started: begun };
+  }
+
   /**
    * The indexer's own word on itself: a record written, every check row that is not ok, the checks it has stopped refreshing (a stopped or crashed indexer
    * leaves its last ok rows behind, so a row's age counts as much as its status), and the two signers. Block 1 exists when the genesis is referenced.
+   * It reads the rows through the same model as /api/health, leaving out the API instances' own rows, which that route answers for.
    */
   async function indexer(): Promise<IndexerState> {
-    const [cursor] = await query("select 1 from cursors where stream = 'reader_updates'");
-    const checks = await query("select check_id, status, detail, extract(epoch from now() - checked_at)::float8 as age from health_checks order by check_id");
+    const begun = await started();
     const parties = await query("select party, role from canton_parties");
     const party = (role: string) => parties.find((p) => p.role === role)?.party as string | undefined;
     const [operator, confirmer] = [party("operator"), party("confirmer")];
-    let down = false;
-    const problems = checks.flatMap((c) => {
-      if (REFRESHED_CHECKS.includes(c.check_id) && Number(c.age) > staleSeconds) { down = true; return [`${c.check_id}: the indexer has not checked in ${Math.round(Number(c.age))} s`]; }
-      if (c.status === "down") down = true;
-      return c.status === "ok" ? [] : [`${c.check_id}: ${c.detail ?? c.status}`];
-    });
-    // A refreshed check with no row has not been looked at at all: after a rebuild from an export (which writes the cursor but runs no check round), or before
-    // a new indexer's first round. No row must not read as healthy, or a database with no indexer behind it answers ok.
-    if (cursor !== undefined) {
-      for (const id of REFRESHED_CHECKS) if (!checks.some((c) => c.check_id === id)) { down = true; problems.push(`${id}: the indexer has not checked yet`); }
-    }
-    return { started: cursor !== undefined, problems, down, signers: operator && confirmer ? { operator, confirmer } : null };
+    const rows = (await healthRows()).filter((r) => specOf(r.id).role !== "api");
+    const e = evaluate(rows, { started: begun });
+    return { started: begun, problems: e.problems, down: e.down, signers: operator && confirmer ? { operator, confirmer } : null };
   }
 
   /** True once block 1 is indexed: it names reth's genesis as its parent, which the indexer checks before it writes the block. */
@@ -249,7 +258,7 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return { deriveCursor: r?.derive === null || r?.derive === undefined ? null : Number(r.derive), chainInstance: r?.instance ?? null };
   }
 
-  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, genesisReferenced, indexFacts };
+  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, health, genesisReferenced, indexFacts };
 }
 
 export type ChainDb = ReturnType<typeof createChainDb>;
