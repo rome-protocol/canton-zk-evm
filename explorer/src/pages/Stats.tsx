@@ -4,7 +4,7 @@ import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type Sta
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { count, short, span, units } from "../format.ts";
+import { count, pct, plural, sec, short, span, trim, units } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 
 const DEFAULT_WINDOW: StatsWindow = "24h";
@@ -14,11 +14,6 @@ const STEP: Record<StatsWindow, { word: string; every: string }> = { "1h": { wor
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const DASH = <span className="muted">—</span>;
-/** A time for a figure: two places under a second, one under 100 s, whole seconds under ten minutes, then minutes. */
-const sec = (s: number) => (s < 1 ? `${s.toFixed(2)} s` : s < 100 ? `${s.toFixed(1)} s` : s < 600 ? `${Math.round(s)} s` : span(s));
-const pct = (r: number) => (r >= 1 ? "100%" : `${Math.floor(r * 1000) / 10}%`);
-const trim = (n: number, places: number) => String(+n.toFixed(places));
-const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
 
 /** "14 – 20 Oct 2026" for days, or the hours of a window of hours. The end of a window is the start of the next step, which is not in it. */
 function heading(s: StatsSummary): string {

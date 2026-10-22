@@ -90,3 +90,10 @@ export function party(id: string): string {
   const [name, rest] = id.split("::");
   return rest && rest.length > 8 ? `${name}::${rest.slice(0, 4)}…${rest.slice(-4)}` : id;
 }
+
+/** A time for a figure: two places under a second, one under 100 s, whole seconds under ten minutes, then minutes. */
+export const sec = (s: number) => (s < 1 ? `${s.toFixed(2)} s` : s < 100 ? `${s.toFixed(1)} s` : s < 600 ? `${Math.round(s)} s` : span(s));
+/** A share as a percentage, cut and never rounded up, so 99.96 % is not shown as 100 %. */
+export const pct = (r: number) => (r >= 1 ? "100%" : `${Math.floor(r * 1000) / 10}%`);
+export const trim = (n: number, places: number) => String(+n.toFixed(places));
+export const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
