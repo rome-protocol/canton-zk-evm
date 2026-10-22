@@ -31,9 +31,11 @@ class Journal:
         self.error: dict | None = None   # {"time", "error"} of the last write that failed; None once a write has worked since
         self._checked = None             # the day whose file's last line is known to be whole
 
-    def event(self, name: str, **fields) -> None:
+    def event(self, name: str, at: float | None = None, **fields) -> None:
+        """`at` is the time of the fact when it is older than the line (a UTC time in seconds, as `clock` gives): Canton's answer is stamped
+        when it came, not when it was written down."""
         self.seq += 1   # a line that is lost leaves a gap in the sequence, which the loader can see
-        t = self.clock()
+        t = self.clock() if at is None else at
         line = {"v": JOURNAL_FORMAT, "run": self.run_id, "seq": self.seq, "time": iso_ms(t), "event": name, **fields}
         try:
             data = (json.dumps(line, separators=(",", ":")) + "\n").encode()
@@ -70,12 +72,16 @@ class Attempt:
         self.cut_written = self.closed = False   # closed: the attempt has its last line (answered, skipped or failed)
         self.stage = "cut"
 
-    def event(self, name: str, **fields) -> None:
+    def now(self) -> float:
+        """The journal's clock now: what a fact is stamped with when it is written down later (`event(..., at=)`)."""
+        return self.journal.clock() if self.journal is not None else time.time()
+
+    def event(self, name: str, at: float | None = None, **fields) -> None:
         self.stage = name
         if name in ("answered", "skipped"):
             self.closed = True
         if self.journal is not None:
-            self.journal.event(name, attempt=self.seq, **fields)
+            self.journal.event(name, at=at, attempt=self.seq, **fields)
 
     def cut(self, number: int | None) -> None:
         """The decision to build, written once the number is known (it is Canton's head plus one)."""
@@ -99,11 +105,21 @@ class Attempt:
 TRAFFIC_TIMEOUT = 1.0   # seconds a traffic read waits for the participant to answer
 TRAFFIC_PAUSE = 60.0    # after a read timed out, the participant is not asked again for this long, so a hung one costs a block at most once a minute
 _paused_until = 0.0
+_completions_paused_until = 0.0   # the same back-off for the completions read (builder.Ledger.paid_traffic)
 
 
 def reset_traffic_pause() -> None:
-    global _paused_until
-    _paused_until = 0.0
+    global _paused_until, _completions_paused_until
+    _paused_until = _completions_paused_until = 0.0
+
+
+def completions_paused() -> bool:
+    return time.monotonic() < _completions_paused_until
+
+
+def pause_completions() -> None:
+    global _completions_paused_until
+    _completions_paused_until = time.monotonic() + TRAFFIC_PAUSE
 
 
 def _count(value: object) -> int | None:
@@ -155,6 +171,16 @@ def read_traffic(url: str, headers, timeout: float = TRAFFIC_TIMEOUT) -> dict | 
         if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
             _paused_until = time.monotonic() + TRAFFIC_PAUSE
         return None
+
+
+def paid_traffic_cost(items: object, command_id: str) -> int | None:
+    """The `paidTrafficCost` (bytes, a number or the digits of an int64) of the completion of this command in a completions read, or None
+    where the read shows no completion of it or it carries no cost."""
+    for item in items if isinstance(items, list) else []:
+        done = item.get("completionResponse", {}).get("Completion", {}).get("value") if isinstance(item, dict) else None
+        if isinstance(done, dict) and done.get("commandId") == command_id:
+            return _count(done.get("paidTrafficCost"))
+    return None
 
 
 def check_settings(strategy: str, gather_ms: float, heartbeat_seconds: float, max_in_flight: int = 1, provers: int = 1) -> None:
