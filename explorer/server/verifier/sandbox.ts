@@ -59,7 +59,8 @@ export class DockerSandbox {
       "--network", "none", "--read-only", "--tmpfs", `/tmp:rw,noexec,nosuid,nodev,size=${o.tmpBytes}`,
       "--memory", String(o.memoryBytes), "--memory-swap", String(o.memoryBytes), "--cpus", String(o.cpus), "--pids-limit", String(o.maxPids),
       "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "65534:65534", "--workdir", "/tmp",
-      "-v", `${binary}:/solc:ro`, "--entrypoint", "timeout", o.image, "-s", "KILL", backstop, "/solc", ...args,
+      // A bind mount that fails when the file is not there: `-v` would make a root-owned folder at that path in the compiler cache.
+      "--mount", `type=bind,src=${binary},dst=/solc,readonly`, "--entrypoint", "timeout", o.image, "-s", "KILL", backstop, "/solc", ...args,
     ];
   }
 
@@ -80,8 +81,11 @@ export class DockerSandbox {
     return r.code === 0 ? { ok: true, detail: r.out.trim() } : { ok: false, detail: r.out.trim().slice(0, 300) || "docker did not answer" };
   }
 
-  /** Runs `binary args` with `stdin` as its input. Rejects with a SandboxError on a timeout, output or input over the cap, or a run that could not start. */
-  async run(binary: string, args: string[], stdin: string): Promise<RunResult> {
+  /**
+   * Runs `binary args` with `stdin` as its input. Rejects with a SandboxError on a timeout, output or input over the cap, or a run that could not start.
+   * When `signal` aborts, the container is stopped and removed, and the run rejects as a timeout.
+   */
+  async run(binary: string, args: string[], stdin: string, signal?: AbortSignal): Promise<RunResult> {
     if (!binary.startsWith("/") || /[,:\s]/.test(binary)) throw new SandboxError("failed", "the program's path must be absolute, without commas, colons or spaces");
     const input = Buffer.from(stdin);
     if (input.length > this.o.maxInputBytes) throw new SandboxError("input-too-large", `the input is ${input.length} bytes, over the limit of ${this.o.maxInputBytes}`);
@@ -106,6 +110,11 @@ export class DockerSandbox {
         void this.docker(["rm", "-f", "-v", name]).then(() => fail(why));
       });
       timer = setTimeout(() => stop(new SandboxError("timeout", `the compiler ran for more than ${Math.round(this.o.timeoutMs / 1000)} s and was stopped`)), this.o.timeoutMs);
+      if (signal) {
+        const onAbort = (): void => stop(new SandboxError("timeout", "the job was stopped before the compiler finished"));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
       const take = (into: Buffer[]) => (c: Buffer): void => {
         size += c.length;
         if (size > this.o.maxOutputBytes) { stop(new SandboxError("output-too-large", `the compiler gave more than ${this.o.maxOutputBytes} bytes of output and was stopped`)); return; }

@@ -30,7 +30,8 @@ describe("the run command", () => {
     for (const want of ["--network none", "--read-only", "--memory 2147483648", "--memory-swap 2147483648", "--cpus 1", "--cap-drop ALL", "--security-opt no-new-privileges", "--user 65534:65534", "--pull never", "--rm", "--pids-limit 128"])
       expect(args).toContain(want);
     expect(args).toMatch(/--tmpfs \/tmp:rw,noexec,nosuid,nodev,size=\d+/);
-    expect(args).toContain("-v /c/solc:/solc:ro");
+    expect(args).toContain("--mount type=bind,src=/c/solc,dst=/solc,readonly");
+    expect(args).not.toContain(" -v ");
     expect(args).toMatch(/--entrypoint timeout \S+@sha256:0+ -s KILL 70 \/solc --standard-json$/);
   });
   it("gives the container no network and no published port, whatever the settings", () => {
@@ -173,5 +174,29 @@ real("a run in a real container", () => {
   it("check() says whether the image is there", async () => {
     expect((await sandbox().check()).ok).toBe(true);
     expect((await new DockerSandbox({ image: "docker.invalid/none@sha256:" + "1".repeat(64) }).check()).ok).toBe(false);
+  });
+
+  it("fails, and makes nothing, when the program is not there: the mount does not create a folder in its place", async () => {
+    const missing = join(dir, "not-there", "solc");
+    const e = await failing(sandbox().run(missing, [], ""));
+    expect(e.kind).toBe("unavailable");
+    expect(existsSync(missing)).toBe(false);
+    expect(existsSync(join(dir, "not-there"))).toBe(false);
+    expect(leftovers()).toBe("");
+  });
+
+  it("stops the container when the job's signal aborts, at once and for good", async () => {
+    const ac = new AbortController();
+    const started = Date.now();
+    const run = sandbox({ timeoutMs: 30_000 }).run(program("sleeper", "sleep 25"), [], "", ac.signal);
+    setTimeout(() => ac.abort(), 800);
+    const e = await failing(run);
+    expect(e.kind).toBe("timeout");
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(leftovers()).toBe("");
+    // A signal that is aborted already never starts a container.
+    const again = await failing(sandbox().run(program("never", "echo ran"), [], "", ac.signal));
+    expect(again.kind).toBe("timeout");
+    expect(leftovers()).toBe("");
   });
 });

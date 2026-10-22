@@ -195,8 +195,22 @@ export class CompilerStore {
     await rename(tmp, this.seenFile);
   }
 
-  /** The compiler for a version: from the cache when it is there and still hashes right, else downloaded, checked and cached. */
-  get(asked: string): Promise<Compiler> {
+  /**
+   * The compiler for a version: from the cache when it is there and still hashes right, else downloaded, checked and cached. When `signal` aborts, the caller stops
+   * waiting (it rejects with the signal's reason); a download in hand still ends by itself, and the cache keeps it.
+   */
+  get(asked: string, signal?: AbortSignal): Promise<Compiler> {
+    const got = this.fetchOne(asked);
+    if (!signal) return got;
+    if (signal.aborted) { got.catch(() => undefined); return Promise.reject(signal.reason); }
+    return new Promise<Compiler>((ok, no) => {
+      const onAbort = (): void => no(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      got.then(ok, no).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+  }
+
+  private fetchOne(asked: string): Promise<Compiler> {
     const key = asked.trim().replace(/^v/, "");
     let p = this.inflight.get(key);
     if (!p) {
@@ -216,14 +230,17 @@ export class CompilerStore {
     if (before && before !== sha) throw new CompilerError("refused", `the compiler list changed the hash of ${build.longVersion} since it was first seen`);
 
     const path = join(this.bin, sha);
-    if (await stat(path).then(() => true, () => false)) {
-      if ((await sha256File(path)) === sha) {
+    const have = await stat(path).then((st) => st, () => null);
+    if (have) {
+      // Only a regular file that hashes right is used. Anything else at the compiler's path (a folder that a mount made, a link) is damage in the store's own
+      // cache, and is removed.
+      if (have.isFile() && (await sha256File(path)) === sha) {
         const t = new Date(this.o.now());
         await utimes(path, t, t);
         return { version: build.longVersion, sha256: sha, path };
       }
       // A cached file that no longer hashes right (damaged, or changed by someone): the store's own file, so it is removed and fetched again.
-      await rm(path, { force: true });
+      await rm(path, { recursive: true, force: true });
     }
 
     const body = await this.request(new URL(build.path, this.o.listUrl), this.o.maxBinaryBytes);

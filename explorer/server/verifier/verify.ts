@@ -12,7 +12,7 @@ import { SandboxError } from "./sandbox.ts";
 import type { Compiled } from "./solc.ts";
 
 /** What the verifier needs of the compiler: `SolcRunner` has it. */
-export interface Compile { compile(version: string, input: object | string): Promise<Compiled> }
+export interface Compile { compile(version: string, input: object | string, signal?: AbortSignal): Promise<Compiled> }
 
 export type Outcome =
   /** The address is not a contract the index knows (its block may not be final yet): the tools try again later. */
@@ -46,8 +46,9 @@ export class Verifier {
     this.reserved = new Set(reserved.map((a) => a.toLowerCase()));
   }
 
-  /** Verifies a request. A request that cannot be run at all (a bad address, nonsense JSON) throws RequestError; every other answer is an Outcome. */
-  async verify(req: VerifyRequest, opts: { operator?: boolean } = {}): Promise<Outcome> {
+  /**
+   * Verifies a request. When `opts.signal` aborts, the compile is stopped and nothing is written (it throws the signal's reason). A request that cannot be run at all (a bad address, nonsense JSON) throws RequestError; every other answer is an Outcome. */
+  async verify(req: VerifyRequest, opts: { operator?: boolean; signal?: AbortSignal } = {}): Promise<Outcome> {
     const p = prepare(req, this.maxSourceBytes);
     if (!opts.operator && this.reserved.has(p.address.toLowerCase())) {
       return { status: "fail", result: "Fail - Unable to verify. The source of this contract is published by the operator of the network, and cannot be submitted." };
@@ -66,7 +67,7 @@ export class Verifier {
 
     let compiled: Compiled;
     try {
-      compiled = await this.runner.compile(p.version, p.input);
+      compiled = await this.runner.compile(p.version, p.input, opts.signal);
     } catch (e) {
       if (e instanceof CompilerError) {
         if (e.kind === "unknown" || e.kind === "refused") return { status: "fail", result: `Fail - Unable to verify. ${e.message}` };
@@ -79,6 +80,8 @@ export class Verifier {
       }
       throw e;
     }
+    // A job that was told to stop writes nothing: its result is already given as a failure.
+    opts.signal?.throwIfAborted();
     const errors = compilerErrors(compiled.output);
     if (errors) return { status: "fail", result: `Fail - Unable to verify. The compiler reported errors:\n${errors}` };
 
@@ -102,6 +105,7 @@ export class Verifier {
     const named = (p.settings.libraries ?? {}) as Record<string, Record<string, string>>;
     for (const src of [named, m.libraries]) for (const [file, names] of Object.entries(src)) libraries[file] = { ...libraries[file], ...names };
     const optimizer = (p.settings.optimizer ?? {}) as { enabled?: unknown; runs?: unknown };
+    opts.signal?.throwIfAborted();
     const client = await this.pool.connect();
     try {
       await client.query("begin");

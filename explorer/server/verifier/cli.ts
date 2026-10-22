@@ -18,12 +18,14 @@ import { Verifier } from "./verify.ts";
 import { VerifierWorker } from "./worker.ts";
 
 const HOUR = 3_600_000;
+/** The compiler list and the download each may take this long; a job gets both, a compile, and a margin. */
+const FETCH_MS = 120_000;
 
 async function main(): Promise<number> {
   const s = loadVerifierSettings();
   const pool = new Pool(connectionConfig());
   pool.on("error", (e) => console.error(`verifier: database connection: ${e.message}`));
-  const store = new CompilerStore({ listUrl: s.listUrl, userAgent: s.userAgent, cacheDir: s.cacheDir, maxCacheBytes: s.cacheMaxBytes });
+  const store = new CompilerStore({ listUrl: s.listUrl, userAgent: s.userAgent, cacheDir: s.cacheDir, maxCacheBytes: s.cacheMaxBytes, fetchTimeoutMs: FETCH_MS });
   const sandbox = new DockerSandbox({
     image: s.sandboxImage, dockerBin: s.dockerBin, timeoutMs: s.compileTimeoutMs, memoryBytes: s.compileMemoryBytes,
     maxOutputBytes: s.compileMaxOutputBytes, maxInputBytes: s.compileMaxInputBytes,
@@ -31,7 +33,7 @@ async function main(): Promise<number> {
   const queue = new JobQueue(pool);
   const worker = new VerifierWorker(pool, queue, new Verifier(pool, new SolcRunner(store, sandbox), s.compileMaxInputBytes), {
     cacheUsable: () => access(s.cacheDir, constants.W_OK).then(() => null, (e: Error) => `the compiler cache folder cannot be written: ${e.message}`),
-    jobTimeoutMs: s.compileTimeoutMs * 2 + 30_000,
+    jobTimeoutMs: FETCH_MS * 2 + s.compileTimeoutMs + 30_000,
   });
   const stop = new AbortController();
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());

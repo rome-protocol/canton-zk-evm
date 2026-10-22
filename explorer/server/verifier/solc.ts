@@ -19,9 +19,9 @@ export class SolcRunner {
   }
 
   /** Compiles standard JSON input with the given version, in the sandbox. A compile that solc itself reports errors for still returns: the errors are in the output. */
-  async compile(version: string, input: object | string): Promise<Compiled> {
-    const compiler = await this.store.get(version);
-    const run = await this.sandbox.run(compiler.path, ["--standard-json"], typeof input === "string" ? input : JSON.stringify(input));
+  async compile(version: string, input: object | string, signal?: AbortSignal): Promise<Compiled> {
+    const compiler = await this.store.get(version, signal);
+    const run = await this.sandbox.run(compiler.path, ["--standard-json"], typeof input === "string" ? input : JSON.stringify(input), signal);
     let output: unknown;
     try { output = JSON.parse(run.stdout); } catch { output = null; }
     if (!output || typeof output !== "object" || Array.isArray(output)) {

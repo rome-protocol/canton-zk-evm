@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -83,6 +83,34 @@ describe("a good download", () => {
     const b = await s.get(V1);
     expect(sha(readFileSync(b.path))).toBe(a.sha256);
     expect(mirror.downloads()).toBe(2);
+  });
+});
+
+describe("a cache entry that is not a file", () => {
+  it("is removed, whatever it is, and the compiler is fetched again", async () => {
+    mirror.entries = [{ longVersion: V1, body: binary("one") }];
+    const s = store();
+    const a = await s.get(V1);
+    // What a bind mount makes when the file is gone: a folder at the compiler's path.
+    rmSync(a.path);
+    mkdirSync(join(a.path, "inside"), { recursive: true });
+    const b = await s.get(V1);
+    expect(statSync(b.path).isFile()).toBe(true);
+    expect(sha(readFileSync(b.path))).toBe(a.sha256);
+    expect(mirror.downloads()).toBe(2);
+  });
+});
+
+describe("a caller that stops waiting", () => {
+  it("is rejected with the signal's reason, and the download in hand is kept", async () => {
+    mirror.entries = [{ longVersion: V1, body: binary("one") }];
+    const s = store();
+    const ac = new AbortController();
+    const p = s.get(V1, ac.signal);
+    ac.abort(new Error("the job timed out"));
+    await expect(p).rejects.toThrow("the job timed out");
+    await expect(s.get(V1, ac.signal)).rejects.toThrow("the job timed out");
+    expect((await s.get(V1)).version).toBe(V1);
   });
 });
 

@@ -58,7 +58,7 @@ suite("the verifier role", () => {
   it("fails a job that takes longer than its time, and a request that cannot be run, and goes on", async () => {
     const q = queue();
     const slow = await q.submit(req(A), key);
-    const w = worker({ verify: () => new Promise(() => undefined) }, { jobTimeoutMs: 50 });
+    const w = worker({ verify: () => new Promise(() => undefined) }, { jobTimeoutMs: 50, stopGraceMs: 20 });
     expect(await w.step()).toBe("ended");
     expect(await q.status(slow)).toMatchObject({ status: "fail", result: expect.stringContaining("took too long") });
     const bad = await q.submit(req(A), key);
@@ -93,5 +93,55 @@ suite("the verifier role", () => {
     await db.pool.query("update verification_jobs set created_at = now() - interval '10 seconds'");
     await worker({ verify: async () => { throw new Error("unused"); } }, { stuckSeconds: 1, cacheUsable: async () => "the cache folder cannot be written" }).health();
     expect(await rows()).toEqual({ "verifier/compilers": "degraded", "verifier/queue": "degraded" });
+  });
+
+  it("stops a job that is over its time: the compile is told to stop, nothing is stored, and the next job starts after it", async () => {
+    let running = 0, most = 0, aborted = 0;
+    const slow = {
+      calls: 0,
+      async compile(_v: string, _i: object | string, signal?: AbortSignal) {
+        slow.calls++;
+        running++; most = Math.max(most, running);
+        try {
+          await new Promise<void>((ok, no) => {
+            if (slow.calls > 1) { setTimeout(ok, 10); return; } // the second job is quick
+            signal?.addEventListener("abort", () => { aborted++; setTimeout(() => no(signal.reason), 30); }, { once: true });
+          });
+          return { output: stub.output, compiler: { version: "0.8.28+commit.7893614a", sha256: "00".repeat(32) }, ms: 1 };
+        } finally { running--; }
+      },
+    };
+    const q = queue();
+    const first = await q.submit(req(A), key);
+    const w = worker(new Verifier(db.pool, slow), { jobTimeoutMs: 100, stopGraceMs: 2000 });
+    const started = Date.now();
+    expect(await w.step()).toBe("ended");
+    // It ended when the job stopped (30 ms after the signal), not at the end of the grace.
+    expect(Date.now() - started).toBeLessThan(1500);
+    expect(aborted).toBe(1);
+    expect(await q.status(first)).toMatchObject({ status: "fail", result: expect.stringContaining("took too long") });
+    expect((await db.pool.query("select count(*)::int n from verified_sources")).rows[0].n).toBe(0);
+    // The next job runs, and the two compiles never ran together.
+    await db.pool.query("delete from verification_jobs");
+    const second = await q.submit(req(A), key);
+    expect(await w.step()).toBe("ended");
+    expect(await q.status(second)).toMatchObject({ status: "pass" });
+    expect(most).toBe(1);
+  });
+
+  it("keeps its health rows fresh while a job runs", async () => {
+    await queue().submit(req(A), key);
+    const slow = { verify: () => new Promise<any>((ok) => setTimeout(() => ok({ status: "fail", result: "Fail - x" }), 700)) };
+    const w = worker(slow, { healthMs: 100, pollMs: 50 });
+    const stop = new AbortController();
+    const run = w.run(stop.signal);
+    await new Promise((r) => setTimeout(r, 300));
+    const a = (await db.pool.query("select checked_at from health_checks where check_id = 'verifier/compilers'")).rows[0].checked_at as Date;
+    await new Promise((r) => setTimeout(r, 300));
+    const b = (await db.pool.query("select checked_at from health_checks where check_id = 'verifier/compilers'")).rows[0].checked_at as Date;
+    // Both reads were made while the 700 ms job was still running.
+    expect(b.getTime()).toBeGreaterThan(a.getTime());
+    stop.abort();
+    await run;
   });
 });

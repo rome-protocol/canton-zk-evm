@@ -5,6 +5,8 @@ type Env = Record<string, string | undefined>;
 export interface VerifierSettings {
   listUrl: string; userAgent: string; cacheDir: string; cacheMaxBytes: number; sandboxImage: string; dockerBin: string;
   compileTimeoutMs: number; compileMemoryBytes: number; compileMaxOutputBytes: number; compileMaxInputBytes: number;
+  /** The gateway's address, its source file and the compiler version it is built with: set together, or all unset. */
+  gateway: { address: string; sourceFile: string; compiler: string } | null;
 }
 
 function whole(env: Env, name: string, fallback: number, min: number, max: number): number {
@@ -25,6 +27,8 @@ function required(env: Env, name: string, what: string): string {
  * release list), `OUTSIDE_USER_AGENT` (what the compiler download says it is: the project's contact), `SOLC_CACHE_DIR` (where compilers are kept; a folder
  * the Docker daemon sees at the same path) and `SANDBOX_IMAGE` (the image a compile runs in, by digest; it must be on the machine already).
  * The limits default to the design's: 60 s, 2 GB, one CPU (fixed), and a cap on the output and on the input.
+ * `GATEWAY_ADDRESS`, `GATEWAY_SOURCE_FILE` and `GATEWAY_COMPILER` go together: the verifier then publishes that source as the gateway's verified source and refuses
+ * every submission for that address.
  */
 export function loadVerifierSettings(env: Env = process.env): VerifierSettings {
   const listUrl = required(env, "SOLC_LIST_URL", "the address of the compiler release list");
@@ -33,8 +37,17 @@ export function loadVerifierSettings(env: Env = process.env): VerifierSettings {
   if (!/@sha256:[0-9a-f]{64}$/.test(sandboxImage)) throw new VerifierSettingsError("SANDBOX_IMAGE must be named by digest (name@sha256:...)");
   const cacheDir = required(env, "SOLC_CACHE_DIR", "the folder the compilers are kept in");
   if (!cacheDir.startsWith("/")) throw new VerifierSettingsError("SOLC_CACHE_DIR must be an absolute path");
+  const g = ["GATEWAY_ADDRESS", "GATEWAY_SOURCE_FILE", "GATEWAY_COMPILER"].map((k) => (env[k] ?? "").trim());
+  let gateway: VerifierSettings["gateway"] = null;
+  if (g.some((v) => v !== "")) {
+    if (g.some((v) => v === "")) throw new VerifierSettingsError("GATEWAY_ADDRESS, GATEWAY_SOURCE_FILE and GATEWAY_COMPILER are set together, or none of them");
+    if (!/^0x[0-9a-fA-F]{40}$/.test(g[0]!)) throw new VerifierSettingsError("GATEWAY_ADDRESS is not an address");
+    if (!g[1]!.startsWith("/")) throw new VerifierSettingsError("GATEWAY_SOURCE_FILE must be an absolute path");
+    if (!/^\d+\.\d+\.\d+/.test(g[2]!)) throw new VerifierSettingsError("GATEWAY_COMPILER is not a Solidity version");
+    gateway = { address: g[0]!.toLowerCase(), sourceFile: g[1]!, compiler: g[2]! };
+  }
   return {
-    listUrl, userAgent: required(env, "OUTSIDE_USER_AGENT", "the identity the compiler download gives, the project's contact"), cacheDir, sandboxImage,
+    gateway, listUrl, userAgent: required(env, "OUTSIDE_USER_AGENT", "the identity the compiler download gives, the project's contact"), cacheDir, sandboxImage,
     cacheMaxBytes: whole(env, "SOLC_CACHE_MAX_MB", 1024, 64, 100_000) * 1024 ** 2, dockerBin: env.SANDBOX_DOCKER_BIN || "docker",
     compileTimeoutMs: whole(env, "SOLC_TIMEOUT_MS", 60_000, 1000, 600_000), compileMemoryBytes: whole(env, "SOLC_MEMORY_MB", 2048, 256, 65_536) * 1024 ** 2,
     compileMaxOutputBytes: whole(env, "SOLC_MAX_OUTPUT_MB", 16, 1, 256) * 1024 ** 2, compileMaxInputBytes: whole(env, "SOLC_MAX_INPUT_KB", 2048, 16, 65_536) * 1024,

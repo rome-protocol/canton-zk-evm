@@ -206,6 +206,10 @@ verifier_docker_cli() {
 }
 
 # The verifier's container, in ARGS (also without the database's settings).
+# Trust boundary: this container takes submissions from anyone and is given the Docker socket, which is root on the machine that owns the daemon. The compiler itself
+# runs in a container of its own that has no network, a read-only filesystem, no capabilities and no user rights (server/verifier/sandbox.ts); the process that
+# starts it is the part that must not be broken into. So the verifier runs only where EXPLORER_VERIFIER=1 is set, and DOCKER_SOCKET should name the socket of a rootless
+# Docker daemon (or a socket proxy that allows only create, start, wait and remove) wherever the machine has more than the explorer on it.
 verifier_args() {
   [ -n "${SOLC_LIST_URL:-}" ] || fail "EXPLORER_VERIFIER=1 needs SOLC_LIST_URL, the address of the compiler release list"
   local sock=${DOCKER_SOCKET:-/var/run/docker.sock} gid cache=$STATE/explorer-verifier/solc bin=$STATE/explorer-verifier/bin/docker
@@ -220,6 +224,7 @@ verifier_args() {
   fi
   ARGS=(run -d --name "$VERIFIER_NAME" "${HARDEN[@]}" --network host -e HOME=/tmp --group-add "$gid"
     -v "$sock:/var/run/docker.sock" -v "$bin:/usr/local/bin/docker:ro" -v "$cache:$cache"
+    -e "GATEWAY_ADDRESS=$GATEWAY_ADDRESS" -e "GATEWAY_SOURCE_FILE=/repo/gateway/Gateway.sol" -e "GATEWAY_COMPILER=$SOLC_VERSION"
     -e "SOLC_CACHE_DIR=$cache" -e "SANDBOX_IMAGE=$BUSYBOX_IMAGE" -e "SOLC_LIST_URL=$SOLC_LIST_URL" -e "OUTSIDE_USER_AGENT=${OUTSIDE_USER_AGENT:-Rome Protocol rome@romeprotocol.com}")
   for v in SOLC_TIMEOUT_MS SOLC_MEMORY_MB SOLC_MAX_OUTPUT_MB SOLC_MAX_INPUT_KB SOLC_CACHE_MAX_MB; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
@@ -259,9 +264,10 @@ stop_indexer() {
   quietly rm "$INDEXER_NAME" 2> /dev/null || true
 }
 
-# The verifier stops on SIGTERM after the job in hand (a compile is at most a minute).
+# The verifier stops on SIGTERM after the job in hand: docker waits for as long as a compile may run (SOLC_TIMEOUT_MS, a minute by default) and 30 seconds more.
+# A job that is still downloading a compiler is not waited for; its lease runs out and it is taken again.
 stop_verifier() {
-  quietly stop -t 30 "$VERIFIER_NAME" 2> /dev/null || true
+  quietly stop -t "$(( ${SOLC_TIMEOUT_MS:-60000} / 1000 + 30 ))" "$VERIFIER_NAME" 2> /dev/null || true
   quietly rm "$VERIFIER_NAME" 2> /dev/null || true
 }
 
