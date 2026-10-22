@@ -8,6 +8,8 @@ export const ALLOWED_METHODS: ReadonlySet<string> = new Set([
   "eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getBlockReceipts",
   "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getBalance", "eth_getTransactionCount",
   "eth_getCode", "eth_call",
+  // For a transaction's call tree (the explorer's /trace route): one transaction of a final block, never a replay of a block.
+  "trace_transaction",
   // For the faucet: the chain id, fee data and the signed transfer.
   "eth_chainId", "eth_gasPrice", "eth_maxPriorityFeePerGas", "eth_sendRawTransaction",
 ]);

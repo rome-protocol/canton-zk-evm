@@ -120,7 +120,7 @@ function receipt(v: unknown): FinalReceipt {
   };
 }
 
-function frame(v: unknown): TraceFrame | null {
+export function frame(v: unknown): TraceFrame | null {
   const f = obj(v);
   const action = obj(f.action);
   const result = f.result === null || f.result === undefined ? null : obj(f.result);

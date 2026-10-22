@@ -184,7 +184,7 @@ describe("failures", () => {
     expect(fake?.calls).toEqual([]);
   });
 
-  it("only lists eth_, net_ and web3_ methods", () => {
-    for (const m of ALLOWED_METHODS) expect(m).toMatch(/^(eth|net|web3)_/);
+  it("only lists eth_, net_ and web3_ methods, and trace_transaction (never a replay)", () => {
+    for (const m of ALLOWED_METHODS) expect(m).toMatch(/^(eth|net|web3)_|^trace_transaction$/);
   });
 });

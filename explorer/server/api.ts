@@ -6,48 +6,11 @@ import { ChainDbError, type ChainDb } from "./chain-db.ts";
 import { checkProofFacts, readProofFacts, type FactCheck, type ProofCheck } from "./proof.ts";
 import { RethError, type Reth, type TokenInfo } from "./reth.ts";
 import type { Tracker, TxState } from "./tracker.ts";
+import { FIELDS, pick } from "./rest/fields.ts";
 
-/** The fields of each answer, and of each object inside one. Nothing else is ever sent: the answers are built field by field, and the API field test holds every object to these lists. */
-export const FIELDS = {
-  status: ["chainId", "chainName", "coin", "pins", "ok", "starting", "problems", "evm", "canton", "final", "proving", "latest", "signers", "faucet", "publicRpc"],
-  coin: ["symbol", "decimals"],
-  pins: ["programVK", "rootC", "file"],
-  final: ["number", "hash", "timestamp", "recordTime"],
-  proving: ["number", "hash", "timestamp"],
-  /** One of the newest final blocks, for the home page's list. */
-  latest: ["number", "hash", "timestamp", "txCount", "updateId", "recordTime"],
-  signers: ["operator", "confirmer"],
-  faucet: ["on"],
-  /** What the faucet shows about itself, and what it answers a request with. */
-  faucetInfo: ["on", "address", "balance", "amount", "perAddressSeconds", "perIpSeconds", "maxPerHour", "queue", "captcha"],
-  faucetCaptcha: ["siteKey", "scriptUrl", "widgetClass"],
-  /** What a request is answered with: a ticket, and its place in line. */
-  faucetQueued: ["ticket", "position", "to", "amount"],
-  /** Where a ticket is. */
-  faucetTicket: ["ticket", "status", "position", "to", "amount", "hash", "state", "block", "reason"],
-  block: ["status", "number", "hash", "parentHash", "timestamp", "txCount", "gasUsed", "gasLimit", "baseFee", "miner", "stateRoot", "genesisReferenced", "canton", "transactions"],
-  canton: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch", "headerHex", "txsHex", "proofHex"],
-  /** The proof's three facts, each of which is a {value, ok} pair. */
-  proof: ["programVK", "rootC", "blockHash"],
-  fact: ["value", "ok"],
-  blockTx: ["hash", "from", "to", "success", "transfer"],
-  transfer: ["symbol", "decimals", "to", "value"],
-  txBlock: ["number", "hash", "updateId"],
-  log: ["address", "topics", "data"],
-  /** Where a transaction has been, from the producer's journal and the API: null when no row is kept for it. */
-  lifecycle: ["state", "reason", "acceptedAt", "acceptedVia", "includedAt", "attempts", "leftOutReason", "proofStartedAt", "proofEndedAt", "submittedAt", "committedAt", "finalAt", "finalBlock", "timeToFinalMs"],
-  /** The attempts that are not final, and reth's pool count from the producer's latest sample. */
-  inFlight: ["final", "attempts", "poolWaiting"],
-  inFlightAttempt: ["number", "strategy", "cutReason", "stage", "txCount", "poolWaiting", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt", "outcome"],
-  poolSample: ["waiting", "at"],
-  tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
-  address: ["address", "kind", "balance", "nonce", "token", "createdBy"],
-  token: ["name", "symbol", "decimals"],
-  createdBy: ["txHash", "block"],
-} as const;
+export { FIELDS };
 
-/** A copy of an object with the listed fields and no others. */
-const pick = <T extends object, K extends keyof T>(o: T, fields: readonly K[]): Pick<T, K> => Object.fromEntries(fields.map((k) => [k, o[k]])) as Pick<T, K>;
+
 const fact = (f: FactCheck) => pick(f, FIELDS.fact);
 const proofOf = (p: ProofCheck | null) => p && { programVK: fact(p.programVK), rootC: fact(p.rootC), blockHash: fact(p.blockHash) };
 
