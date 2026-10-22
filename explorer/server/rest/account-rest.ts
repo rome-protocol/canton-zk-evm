@@ -30,7 +30,7 @@ export interface TokenTransferItem { txHash: string; block: number; txIndex: num
 export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 export interface ContractItem {
-  address: string; name: string | null; origin: string; creator: string | null; creationBlock: number | null; interactionCount: number; verified: boolean; matchType: string | null; codeSize: number;
+  address: string; name: string | null; origin: string; creator: string | null; creationBlock: number | null; creationTxIndex: number | null; interactionCount: number; verified: boolean; matchType: string | null; codeSize: number;
   destroyedBlock: number | null;
 }
 export interface ContractDetail extends ContractItem {
@@ -188,9 +188,9 @@ export function createAccountRest(pool: Pool) {
     return rows.map((r) => ({ block: Number(r.block_number), balance: r.value }));
   }
 
-  const contractSelect = `c.address, c.name, c.origin, c.creator, c.creation_block, c.interaction_count, c.verified_source, c.match_type, c.destroyed_block, c.last_interaction_block, c.runtime_code_hash, bc.size`;
+  const contractSelect = `c.address, c.name, c.origin, c.creator, c.creation_block, c.creation_tx_index, c.interaction_count, c.verified_source, c.match_type, c.destroyed_block, c.last_interaction_block, c.runtime_code_hash, bc.size`;
   const contractItem = (r: Row): ContractItem => ({
-    address: hex(r.address), name: r.name, origin: r.origin, creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), interactionCount: Number(r.interaction_count),
+    address: hex(r.address), name: r.name, origin: r.origin, creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), creationTxIndex: num(r.creation_tx_index), interactionCount: Number(r.interaction_count),
     verified: r.verified_source !== null, matchType: r.match_type, codeSize: r.size, destroyedBlock: num(r.destroyed_block),
   });
 

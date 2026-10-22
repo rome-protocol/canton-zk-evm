@@ -3,6 +3,7 @@ import pg from "pg";
 import { ConfigError, type Config } from "./config.ts";
 import { createChainDb, type ChainDb } from "./chain-db.ts";
 import { createChainRest, type ChainRest } from "./rest/chain-rest.ts";
+import { createAccountRest, type AccountRest } from "./rest/account-rest.ts";
 import { migrate } from "./db/migrate.ts";
 import { TICKETS_MAX, type FaucetOptions } from "./faucet.ts";
 import { clientHasher, databaseFaucetStore, fileFaucetStore, loadClientKey, type FaucetStore } from "./faucet-store.ts";
@@ -25,13 +26,14 @@ export interface Storage {
   chain: ChainDb | null;
   /** The reads behind the REST routes, on the same database. */
   chainRest: ChainRest | null;
+  accountRest: AccountRest | null;
   /** What was imported from the old files at open, for the log and for tests. */
   imported: { tracker: number; faucet: number };
   /** Gives up what it holds: closes the database. The leads are given up by the tracker's and the faucet's own close. */
   close(): Promise<void>;
 }
 
-const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
+const noStorage: Storage = { tracker: {}, faucet: {}, chain: null, chainRest: null, accountRest: null, imported: { tracker: 0, faucet: 0 }, close: async () => undefined };
 
 /** The old file, once its contents are in the database: renamed, so that it is not read again and is still there to look at. */
 function retire(file: string): void {
@@ -89,6 +91,7 @@ export async function openStorage(config: Config, opts: OpenOptions = {}): Promi
       faucet: { store: faucetStore, leader: faucetStore ? leaders(FAUCET_LOCK) : alwaysLeader, clientKeyHash },
       chain: createChainDb(pool),
       chainRest: createChainRest(pool),
+      accountRest: createAccountRest(pool),
       imported,
       close: () => pool.end(),
     };

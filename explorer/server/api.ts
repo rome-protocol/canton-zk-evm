@@ -9,6 +9,8 @@ import type { Tracker, TxState } from "./tracker.ts";
 import { cached, type Rule } from "./rest/cache.ts";
 import { chainRoutes } from "./rest/chain-routes.ts";
 import type { ChainRest } from "./rest/chain-rest.ts";
+import { accountRoutes } from "./rest/account-routes.ts";
+import type { AccountRest } from "./rest/account-rest.ts";
 import { BadRequest } from "./rest/paging.ts";
 import { FIELDS, pick } from "./rest/fields.ts";
 
@@ -26,7 +28,9 @@ export type Api = (method: string, target: string, body?: string, ip?: string) =
 /** With no `faucet`, the faucet is off. */
 export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: ChainDb; faucet?: Faucet; tracker?: Tracker; now?: () => number;
   /** The reads behind the REST routes of blocks, transactions and Canton updates; without them those routes are off. */
-  rest?: ChainRest }
+  rest?: ChainRest;
+  /** The reads behind the REST routes of addresses, contracts, tokens and legs, and the search by name; without them those routes are off. */
+  accounts?: AccountRest }
 
 /** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */
 type ApiTxState = TxState | "unindexed";
@@ -41,7 +45,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): Api {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): Api {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -231,6 +235,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, faucet =
   }
 
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id), transaction });
+  const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
   /** What the routes that came first may be cached for: what they hold can still change, so a few seconds (the list of attempts, one second). */
   const RULES: Record<string, Rule | undefined> = { block: "composite", tx: "composite", address: "composite", "in-flight": "list" };
 
@@ -248,7 +253,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, faucet =
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
       const isTicket = name === "faucet" && arg === "ticket" && parts.length === 4;
       if (root !== "api") return fail(404, "No such route.");
-      const served = restRoutes?.(parts, url.searchParams);
+      const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
       if (parts.length > (isTicket ? 4 : 3)) return fail(404, "No such route.");
       if (isTicket) return method === "GET" ? await ticket(parts[3]!) : fail(405, "Use GET.");
