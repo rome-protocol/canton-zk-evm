@@ -252,7 +252,10 @@ def run(seconds, per_block, results):
     try:
         while time.monotonic() < end:
             sender.next_batch()
-            out = subprocess.run(["bash", "-c", "cut_block"], check=True, capture_output=True, text=True, env={**os.environ, "CUT_BLOCK_JSON": "1"}).stdout
+            cutting = subprocess.run(["bash", "-c", "cut_block"], capture_output=True, text=True, env={**os.environ, "CUT_BLOCK_JSON": "1"})
+            if cutting.returncode != 0:   # the reason is in what cut_block printed
+                raise RuntimeError(f"cut_block exited {cutting.returncode}: {(cutting.stderr + cutting.stdout).strip()[-1500:]}")
+            out = cutting.stdout
             returned = time.monotonic()
             number = int(rpc("eth_blockNumber", []), 16)
             count = len(rpc("eth_getBlockByNumber", [hex(number), False])["transactions"])
