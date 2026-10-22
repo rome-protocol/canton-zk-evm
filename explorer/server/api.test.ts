@@ -249,6 +249,28 @@ describe.skipIf(!TEST_URL)("status and health", () => {
       expect((await get("/api/status")).status).toBe(200);
     });
 
+    it("answers 200 for degraded rows, which it names in `problems`, and 503 only for a row that is down or no longer refreshed (design 6.5)", async () => {
+      const { get, pool } = await boot(chain());
+      await writeChecks(pool, "1 second");
+      // what an indexer with no journal and no status file writes: all four are degraded, and the blocks are still indexed
+      await pool.query(
+        `insert into health_checks (check_id, status, detail, changed_at, checked_at) values
+           ('journal', 'degraded', 'no journal folder is set', now(), now()), ('producer_alive', 'degraded', 'no producer status file is set', now(), now()),
+           ('producer_state', 'degraded', 'no producer status file is set', now(), now()), ('C8', 'degraded', 'there is no producer journal loaded', now(), now())`,
+      );
+      const degraded = await get("/api/status");
+      expect(degraded.status).toBe(200);
+      expect(degraded.body).toMatchObject({ ok: false, starting: false });
+      expect((degraded.body as Obj).problems).toEqual([
+        "C8: there is no producer journal loaded", "journal: no journal folder is set", "producer_alive: no producer status file is set", "producer_state: no producer status file is set",
+      ]);
+      // /healthz is the same answer, and what the container's health check reads
+      expect((await get("/healthz")).status).toBe(200);
+      // one row down turns it 503; the others stay named
+      await pool.query("insert into health_checks (check_id, status, detail, changed_at, checked_at) values ('C7', 'down', 'stopped', now(), now())");
+      expect((await get("/api/status")).status).toBe(503);
+    });
+
     it("keeps the check's own words for a check that has failed and is being refreshed", async () => {
       const { get, pool } = await boot(chain());
       await writeChecks(pool, "1 second");

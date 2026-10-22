@@ -104,15 +104,18 @@ export function createApi({ config, reth, ledger, chain, tracker, faucet = creat
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
     const read = await Promise.all([chain.head(), chain.latest(10), chain.indexer()]).then((r) => r, (e: unknown) => e as Error);
     if (read instanceof Error) console.error(`status: ${read.message}`);
-    const [head, newest, s] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], signers: null }] as const : read;
+    const [head, newest, s] = read instanceof Error ? [undefined, [], { started: false, problems: ["the database cannot be read"], down: true, signers: null }] as const : read;
     // Above the indexed head, reth's newest block is being proven only if Canton does not hold it yet: at or below reth's finalized block it is final and the
     // indexer is behind (the problems line says so, and the block's page calls it unindexed), so it is not named as proving.
     const finalizedAt = latest && latest.number > (head?.number ?? 0) ? await finalizedNumber() : undefined;
     const proving = latest && latest.number > (head?.number ?? 0) && !(finalizedAt !== undefined && latest.number <= finalizedAt) ? latest : null;
     const starting = !s.started && s.problems.length === 0;
-    const all = s.started && s.problems.length === 0 && latest !== undefined && canton;
+    // 503 only for what a load balancer must act on: the indexer not started, a check that is down or has stopped being refreshed, reth or Canton unreachable.
+    // A degraded check is named in `problems` and the answer stays 200 (design 6.5); `ok` is the overall word and is true only when every check is.
+    const serving = s.started && !s.down && latest !== undefined && canton;
+    const all = serving && s.problems.length === 0;
     return {
-      status: all ? 200 : 503,
+      status: serving ? 200 : 503,
       body: {
         chainId: config.chainId, chainName: config.chainName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
         final: head ? pick(head, FIELDS.final) : null,

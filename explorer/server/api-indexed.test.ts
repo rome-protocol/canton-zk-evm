@@ -88,7 +88,7 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
       // Records written and no check round yet (as after a rebuild from an export): not healthy until the refreshed checks have been looked at.
       expect((await db.indexer()).problems).toEqual(["C4", "C5", "derive_lag", "C10"].map((c) => `${c}: the indexer has not checked yet`));
       await pool.query("insert into health_checks (check_id, status, changed_at, checked_at) select c, 'ok', now(), now() from unnest($1::text[]) as c", [["C4", "C5", "derive_lag", "C10"]]);
-      expect(await db.indexer()).toEqual({ started: true, problems: [], signers: { operator: OPERATOR, confirmer: CONFIRMER } });
+      expect(await db.indexer()).toEqual({ started: true, problems: [], down: false, signers: { operator: OPERATOR, confirmer: CONFIRMER } });
       expect(await db.genesisReferenced()).toBe(true);
     });
   });

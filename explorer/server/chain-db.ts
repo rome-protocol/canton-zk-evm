@@ -57,7 +57,8 @@ export interface InFlight { attempts: InFlightAttempt[]; poolWaiting: { waiting:
 export interface Signers { operator: string; confirmer: string }
 
 /** What the indexer's rows say about the indexer: used for the health route. `started` is false until it has written its first record. */
-export interface IndexerState { started: boolean; problems: string[]; signers: Signers | null }
+/** `problems` names every check that is not ok; `down` is true only when one of them is down or has stopped being refreshed (design 6.5: degraded still answers 200). */
+export interface IndexerState { started: boolean; problems: string[]; down: boolean; signers: Signers | null }
 
 const hex = (b: Buffer): string => "0x" + b.toString("hex");
 const hexOrNull = (b: Buffer | null): string | null => (b === null ? null : hex(b));
@@ -223,16 +224,18 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     const parties = await query("select party, role from canton_parties");
     const party = (role: string) => parties.find((p) => p.role === role)?.party as string | undefined;
     const [operator, confirmer] = [party("operator"), party("confirmer")];
+    let down = false;
     const problems = checks.flatMap((c) => {
-      if (REFRESHED_CHECKS.includes(c.check_id) && Number(c.age) > staleSeconds) return [`${c.check_id}: the indexer has not checked in ${Math.round(Number(c.age))} s`];
+      if (REFRESHED_CHECKS.includes(c.check_id) && Number(c.age) > staleSeconds) { down = true; return [`${c.check_id}: the indexer has not checked in ${Math.round(Number(c.age))} s`]; }
+      if (c.status === "down") down = true;
       return c.status === "ok" ? [] : [`${c.check_id}: ${c.detail ?? c.status}`];
     });
     // A refreshed check with no row has not been looked at at all: after a rebuild from an export (which writes the cursor but runs no check round), or before
     // a new indexer's first round. No row must not read as healthy, or a database with no indexer behind it answers ok.
     if (cursor !== undefined) {
-      for (const id of REFRESHED_CHECKS) if (!checks.some((c) => c.check_id === id)) problems.push(`${id}: the indexer has not checked yet`);
+      for (const id of REFRESHED_CHECKS) if (!checks.some((c) => c.check_id === id)) { down = true; problems.push(`${id}: the indexer has not checked yet`); }
     }
-    return { started: cursor !== undefined, problems, signers: operator && confirmer ? { operator, confirmer } : null };
+    return { started: cursor !== undefined, problems, down, signers: operator && confirmer ? { operator, confirmer } : null };
   }
 
   /** True once block 1 is indexed: it names reth's genesis as its parent, which the indexer checks before it writes the block. */
