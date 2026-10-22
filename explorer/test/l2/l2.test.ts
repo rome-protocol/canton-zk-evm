@@ -105,7 +105,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const served: number[] = []; // how long the server itself took for each request, from its arrival to the end of its answer
       const slowest: { ms: number; url: string }[] = []; // the slowest answers, named, so that a failed budget says which route
       server.on("request", (rq, rs) => {
-        if (rq.url?.startsWith("/api/stream") || rq.url?.startsWith("/api?module=logs")) return; // the stream has its own budget, and so has getLogs (B3)
+        if (rq.url?.startsWith("/api/stream") || rq.url?.startsWith("/api?module=logs") || rq.url?.startsWith("/api?module=account")) return; // the stream has its own budget, and so have getLogs and txlist (B3)
         const t = performance.now(), url = rq.url ?? "";
         rs.on("finish", () => { const ms = performance.now() - t; served.push(ms); if (slowest.length < 12 || ms > slowest[slowest.length - 1]!.ms) { slowest.push({ ms, url: url.slice(0, 100) }); slowest.sort((a, b) => b.ms - a.ms); slowest.length = Math.min(slowest.length, 12); } });
       });
@@ -182,34 +182,44 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         }
         return times;
       })();
-      // getLogs: the route itself, GET /api?module=logs&action=getLogs over the last 10,000 blocks, one address, 1,000 logs, through the server in front (its limits too), open-loop at
-      // its 5% share (a request every 1000 / (5% of RATE) ms whether or not the last has finished, timed from when it was due, so that a slow answer cannot lower its own rate).
-      // Each request comes from a client of its own, as the load of the other routes does, so that the per-client limit of Etherscan's /api (E7b) is not what is measured.
+      // The Etherscan routes, through the server in front (their limits too), open-loop (a request every `gap` ms whether or not the last has finished, timed from when it was due, so
+      // that a slow answer cannot lower its own rate). Each request comes from a client of its own, as the load of the other routes does, so that the per-client limit of Etherscan's
+      // /api (E7b) is not what is measured. A share is a fraction of RATE; `ok` says whether an answer is a good one.
+      const openLoop = (target: string, share: number, ipBase: number, ms: number[], ok: (body: { status: string; result: unknown[] }) => boolean) => {
+        const miss = { n: 0 };
+        const done = (async () => {
+          const gap = 1000 / Math.max(1, Math.round(RATE * share));
+          const inflight = new Set<Promise<void>>();
+          let due = performance.now(), sent = 0;
+          while (running) {
+            const wait = due - performance.now();
+            if (wait > 0) await sleep(wait);
+            const at = due, n = sent++;
+            due += gap;
+            const p: Promise<void> = fetch(target, { headers: { "x-client-ip": `10.${ipBase}.${(n >> 8) & 255}.${n & 255}` } })
+              .then(async (res) => { const body = (await res.json()) as { status: string; result: unknown[] }; ms.push(performance.now() - at); if (res.status !== 200 || !ok(body)) miss.n++; }, () => { ms.push(Infinity); })
+              .finally(() => { inflight.delete(p); });
+            inflight.add(p);
+          }
+          await Promise.all(inflight);
+        })();
+        return { done, miss };
+      };
+      // getLogs: the last 10,000 blocks, one address, 1,000 logs.
       const logsMs: number[] = [];
-      let logsEmpty = 0;
-      const logsLoop = (async () => {
-        const last = head, first = Math.max(1, last - 9999), gap = 1000 / Math.max(1, Math.round(RATE * 0.05));
-        const target = `http://127.0.0.1:${port}/api?module=logs&action=getLogs&address=${HOT_LOGS}&fromBlock=${first}&toBlock=${last}&page=1&offset=1000`;
-        const inflight = new Set<Promise<void>>();
-        let due = performance.now(), sent = 0;
-        while (running) {
-          const wait = due - performance.now();
-          if (wait > 0) await sleep(wait);
-          const at = due, n = sent++;
-          due += gap;
-          const p: Promise<void> = fetch(target, { headers: { "x-client-ip": `10.253.${(n >> 8) & 255}.${n & 255}` } })
-            .then(async (res) => { const body = (await res.json()) as { status: string; result: unknown[] }; logsMs.push(performance.now() - at); if (res.status !== 200 || body.status !== "1" || body.result.length === 0) logsEmpty++; }, () => { logsMs.push(Infinity); })
-            .finally(() => { inflight.delete(p); });
-          inflight.add(p);
-        }
-        await Promise.all(inflight);
-      })();
+      const last = head, first = Math.max(1, last - 9999);
+      const logsRun = openLoop(`http://127.0.0.1:${port}/api?module=logs&action=getLogs&address=${HOT_LOGS}&fromBlock=${first}&toBlock=${last}&page=1&offset=1000`, 0.05, 253, logsMs, (b) => b.status === "1" && b.result.length > 0);
+      // B3's Etherscan txlist of the address with a million transactions: a page of 100, newest first, and the default (no offset: the first 10,000 rows, with their input), each at 1% of the rate.
+      const txlistMs: number[] = [], txlistWideMs: number[] = [];
+      const txlistRun = openLoop(`http://127.0.0.1:${port}/api?module=account&action=txlist&address=${HOT}&page=1&offset=100&sort=desc`, 0.01, 252, txlistMs, (b) => b.status === "1" && b.result.length === 100);
+      const txlistWideRun = openLoop(`http://127.0.0.1:${port}/api?module=account&action=txlist&address=${HOT}`, 0.01, 251, txlistWideMs, (b) => b.status === "1" && b.result.length > 0);
       await finished;
       loop.disable(); clearInterval(watch);
       served.sort((a, b) => a - b);
       running = false;
       const ingestTimes = await ingestion;
-      await logsLoop;
+      await Promise.all([logsRun.done, txlistRun.done, txlistWideRun.done]);
+      const logsEmpty = logsRun.miss.n;
       const report = JSON.parse(out) as { streams: number; results: { name: string; target: number; requests: number; non2xx: number; errors: number; timeouts: number; latency: Record<string, number> }[]; received: { number: number; times: number[] }[] };
 
       // ---- The numbers.
@@ -219,6 +229,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         transactions: written, blocks: head, seedSeconds, hotAddressTransactions: hotTxs, seconds: SECONDS, rate: RATE, streams: report.streams,
         databaseBytes: bytes, gigabytesPerMillionTransactions: bytes / 1e9 / (written / 1e6),
         classes: report.results, getLogs: { route: "/api?module=logs&action=getLogs", requests: logsMs.length, empty: logsEmpty, p95: q95(logsMs), max: Math.max(...logsMs) },
+        txlist: { route: "/api?module=account&action=txlist", page: { offset: 100, requests: txlistMs.length, wrong: txlistRun.miss.n, p95: q95(txlistMs), max: Math.max(...txlistMs) }, defaultPage: { rows: "up to 10,000", requests: txlistWideMs.length, wrong: txlistWideRun.miss.n, p95: q95(txlistWideMs), max: Math.max(...txlistWideMs) } },
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
         server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5), slowest },
         ingestion: { timesMs: ingestTimes, blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
@@ -233,6 +244,10 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       expect(by.list!.latency.p97_5, "B3, a list page").toBeLessThanOrEqual(BUDGET.listMs);
       expect(by["address page"]!.latency.p97_5, "B3, an address's page of transactions").toBeLessThanOrEqual(BUDGET.addressPageMs);
       expect(logsEmpty, "getLogs found logs every time").toBe(0);
+      expect(txlistRun.miss.n + txlistWideRun.miss.n, "txlist answered rows every time").toBe(0);
+      expect(txlistMs.length, "txlist was asked").toBeGreaterThan(0);
+      expect(summary.txlist.page.p95, "B3, an Etherscan txlist page of the address with a million transactions").toBeLessThanOrEqual(BUDGET.addressPageMs);
+      expect(summary.txlist.defaultPage.p95, "B3, the default Etherscan txlist (10,000 rows) of the address with a million transactions").toBeLessThanOrEqual(BUDGET.addressPageMs);
       expect(summary.getLogs.p95, "B3, getLogs over 10,000 blocks with an address, through the route").toBeLessThanOrEqual(BUDGET.getLogsMs);
       expect(lag.length, "blocks were written during the load").toBeGreaterThanOrEqual(Math.floor(SECONDS / 3) - 4);
       expect(summary.sse.minClients, "every client got every block").toBe(SSE);
