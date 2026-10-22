@@ -125,10 +125,10 @@ jobs:
   # this is the scaled run (3,000,000 transactions, with the one address at its million), and docs/METRICS.md says what it measured. The numbers are in the l2-results artifact.
   l2:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 170
     env:
-      L2_TRANSACTIONS: ${{ inputs.l2_transactions || '3000000' }}
-      L2_SECONDS: ${{ inputs.l2_seconds || '120' }}
+      L2_TRANSACTIONS: ${{ inputs.l2_transactions || '10000000' }}
+      L2_SECONDS: ${{ inputs.l2_seconds || '600' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
@@ -151,6 +151,8 @@ jobs:
             sleep 1
           done
           [ "$ok" -ge 3 ] || { docker logs explorer-l2-db; exit 1; }
+      - name: Disk before L2
+        run: df -h / /var/lib/docker /mnt 2>/dev/null || true
       - name: Run L2
         run: |
           set -a; . ./PINS; set +a
