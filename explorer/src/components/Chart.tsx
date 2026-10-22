@@ -1,7 +1,8 @@
 import type { StatsSeries } from "../api.ts";
 import { axisTicks, scaleOf, timeTicks } from "../chart-scale.ts";
 
-export interface Line { name: string; tone: "a" | "b"; points: StatsSeries["points"] }
+/** `draw` gives one line its own form where the chart holds both bars and a line; without it the chart's `kind` is used. */
+export interface Line { name: string; tone: "a" | "b"; points: StatsSeries["points"]; draw?: "bars" | "lines" }
 
 const W = 600, H = 200, L = 44, R = 8, T = 10, B = 24;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -32,10 +33,10 @@ export function Chart({ lines, kind, fmt, fmtPoint = fmt, from, to, step, label 
         {timeTicks(f, t).map((k) => (
           <text key={k.at} className="ch-ax" x={L + ((k.at - f) / (t - f)) * iw} y={H - 6} textAnchor="middle">{k.label}</text>
         ))}
-        {kind === "bars" && lines.map((l) => l.points.map((p, i) => p.value === null ? null : (
+        {lines.filter((l) => (l.draw ?? kind) === "bars").map((l) => l.points.map((p, i) => p.value === null ? null : (
           <rect key={`${l.name}${i}`} className={cls(l.tone)} x={x(i) - Math.max(0.5, slot * 0.4)} width={Math.max(1, slot * 0.8)} y={y(p.value)} height={T + ih - y(p.value)} />
         )))}
-        {kind === "lines" && lines.map((l) => {
+        {lines.filter((l) => (l.draw ?? kind) === "lines").map((l) => {
           const runs: { i: number; v: number }[][] = [];
           l.points.forEach((p, i) => { if (p.value === null) runs.push([]); else { if (!runs.length) runs.push([]); runs[runs.length - 1]!.push({ i, v: p.value }); } });
           return runs.filter((r) => r.length).map((r, k) => r.length === 1

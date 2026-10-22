@@ -57,7 +57,7 @@ function Reliability({ s }: { s: StatsSummary }) {
 }
 const STEP_NAME: Record<StatsWindow, string> = { "1h": "last hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
 
-type Part = { metric: StatsMetric; name: string; tone: "a" | "b" };
+type Part = { metric: StatsMetric; name: string; tone: "a" | "b"; draw?: "bars" | "lines" };
 /** One chart: the series it draws are read one by one, and one that cannot be read leaves the other cards alone. */
 function ChartCard({ title, sub, parts, window, kind, fmt, point, note, legend = true }: { title: string; sub: string; parts: Part[]; window: StatsWindow; kind: "lines" | "bars"; fmt: (v: number) => string; point?: (v: number) => string; note?: string; legend?: boolean }) {
   const reads = parts.map((p) => useQuery({ queryKey: ["stats-series", p.metric, window], queryFn: () => getStatsSeries(p.metric, window), refetchInterval: 60_000 })); // eslint-disable-line react-hooks/rules-of-hooks
@@ -72,7 +72,7 @@ function ChartCard({ title, sub, parts, window, kind, fmt, point, note, legend =
       {failed ? <p className="muted small chart-msg">This chart cannot be read right now. The page tries again in a minute.</p>
         : !ready || !first ? <p className="muted small chart-msg" aria-busy="true">Reading…</p>
         : <Chart kind={kind} fmt={fmt} fmtPoint={point} from={first.from} to={first.to} step={first.step} label={`${title}, ${sub}`}
-            lines={parts.map((p, i) => ({ name: p.name, tone: p.tone, points: data[i]!.points }))} />}
+            lines={parts.map((p, i) => ({ name: p.name, tone: p.tone, draw: p.draw, points: data[i]!.points }))} />}
       {note && <p className="card-note small muted">{note}</p>}
     </section>
   );
@@ -86,21 +86,29 @@ function PerBlock({ s }: { s: StatsSummary }) {
     <section className="card panel">
       <div className="list-h"><div><h3>Transactions per block</h3> <span className="muted small">{count(s.blocks.count)} final blocks{t.mean !== null && ` · mean ${trim(t.mean, 1)}`}{t.median !== null && ` · median ${trim(t.median, 1)}`}{t.max !== null && ` · largest ${count(t.max)}`}</span></div></div>
       <ul className="sizes">{sizes.map((x) => <li key={x.size}><span>{sizeLabel(x.size)} txs</span><span className="track"><i style={{ width: `${(x.count / top) * 100}%` }} /></span><b>{plural(x.count, "block")}</b></li>)}</ul>
-      <table>
+      <div className="scroll"><table className="tbl">
         <thead><tr><th>Block size</th><th className="r">Blocks</th><th className="r">Proof, median</th><th className="r">Proof, p95</th></tr></thead>
         <tbody>{sizes.map((x, k) => { const p = proof[k]; return <tr key={x.size}><td>{sizeLabel(x.size)}</td><td className="r">{count(x.count)}</td><td className="r">{p?.median != null ? span(p.median) : DASH}</td><td className="r">{p?.p95 != null ? span(p.p95) : DASH}</td></tr>; })}</tbody>
-      </table>
+      </table></div>
     </section>
   );
 }
 
+/** The most a step's p95 time to final may be before the rule cuts differently: above this for more than an hour. */
+const SLOW_FINAL_SECONDS = 20;
+
 function Rule({ s }: { s: StatsSummary }) {
-  const p = s.prover;
+  const p = s.prover, word = STEP[s.window].word;
+  // The same series as the Time to final chart (so one read serves both): the p95 of each step, to find the worst and count those above the line.
+  const ttf = useQuery({ queryKey: ["stats-series", "time_to_final_p95", s.window], queryFn: () => getStatsSeries("time_to_final_p95", s.window), refetchInterval: 60_000 }).data;
+  const vals = (ttf?.points ?? []).map((x) => x.value).filter((v): v is number => v !== null);
+  const worst = vals.length ? Math.max(...vals) : null, over = vals.filter((v) => v > SLOW_FINAL_SECONDS).length;
   return (
     <div className="rule">
       <h4>The two numbers the block-cutting rule watches</h4>
       <dl className="kv wide">
-        <dt className="kv-k">p95 time to final</dt><dd className="kv-v">{s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window</span></> : DASH}</dd>
+        <dt className="kv-k">p95 time to final</dt>
+        <dd className="kv-v">{worst !== null ? <><b>{sec(worst)}</b> <span className="muted small">by the {word} (the worst) · {plural(over, "step")} above {SLOW_FINAL_SECONDS} s{s.timeToFinal ? ` · ${sec(s.timeToFinal.p95)} over the whole window` : ""}</span></> : s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window</span></> : DASH}</dd>
         <dt className="kv-k">Busiest ten minutes</dt>
         <dd className="kv-v">{p.maxBusyRatio10m !== null ? <><b>{pct(p.maxBusyRatio10m)}</b> <span className="muted small">of what one prover can carry · {count(p.windowsOver)} of {count(p.windowsCounted)} ten-minute windows above {pct(p.loadedAbove)}</span></> : DASH}</dd>
         <dt className="kv-k">Cutting now</dt>
@@ -162,7 +170,7 @@ export function Stats() {
           <div className="cols">
             <ChartCard title="Time to final" sub={`accepted to final on Canton, per ${step}`} window={window} kind="lines" fmt={secs} point={sec} parts={[{ metric: "time_to_final_p50", name: "median", tone: "a" }, { metric: "time_to_final_p95", name: "p95", tone: "b" }]} />
             <ChartCard title="Proof time" sub={`ZisK's time per block, per ${step}`} window={window} kind="lines" fmt={secs} point={sec} parts={[{ metric: "proof_time_p50", name: "median", tone: "a" }, { metric: "proof_time_p95", name: "p95", tone: "b" }]} />
-            <ChartCard title="Transactions per second" sub={`average, per ${step}`} window={window} kind="bars" fmt={(v) => trim(v, 2)} point={(v) => `${trim(v, 2)} tx/s`} parts={[{ metric: "tps", name: "average", tone: "a" }]} note="The scale stops where ordinary steps can be read; a step above it is marked and named." />
+            <ChartCard title="Transactions per second" sub={`per ${step}`} window={window} kind="bars" fmt={(v) => trim(v, 2)} point={(v) => `${trim(v, 2)} tx/s`} parts={[{ metric: "tps", name: "average", tone: "a", draw: "bars" }, { metric: "busiest_minute_tps", name: "busiest minute", tone: "b", draw: "lines" }]} note="The scale stops where ordinary steps can be read; a step above it is marked and named." />
             <ChartCard title={`Blocks per ${step}`} sub="final blocks, by the time of their record" window={window} kind="bars" fmt={(v) => trim(v, 1)} point={(v) => plural(v, "block")} parts={[{ metric: "blocks", name: "blocks", tone: "a" }]} note="Cut on demand: a block is cut when transactions wait and the previous block is final." />
           </div>
           <div className="cols">

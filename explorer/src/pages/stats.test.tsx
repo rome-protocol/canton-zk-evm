@@ -9,7 +9,7 @@ import { series, summary, wave } from "./stats-fixtures.ts";
 
 type Handlers = { summary?: (w: string) => Reply; series?: (metric: StatsMetric, window: StatsWindow, path: string) => Reply; faucetOn?: boolean; faucet?: () => Reply };
 const ordinary = (metric: StatsMetric, window: StatsWindow) => {
-  const base = { time_to_final_p50: 8.4, time_to_final_p95: 9.5, proof_time_p50: 7.1, proof_time_p95: 7.6, tps: 0.2, blocks: 5, busy_ratio: 0.012 }[metric as string] ?? 1;
+  const base = { time_to_final_p50: 8.4, time_to_final_p95: 9.5, proof_time_p50: 7.1, proof_time_p95: 7.6, tps: 0.2, busiest_minute_tps: 0.9, blocks: 5, busy_ratio: 0.012 }[metric as string] ?? 1;
   return reply(series(metric, wave(base), { window }));
 };
 async function open(path = "/stats?window=7d", h: Handlers = {}) {
@@ -154,6 +154,31 @@ describe("the stats page", () => {
     expect(card).toHaveTextContent("0 of 1,008 ten-minute windows above 60%");
     expect(card).toHaveTextContent("on_demand");
     expect(card).toHaveTextContent("a block when transactions wait");
+  });
+
+  it("draws the transactions-per-second chart with two series, the average as bars and the busiest minute as a line, and a legend that names both", async () => {
+    const calls = await open("/stats?window=7d");
+    const card = (await screen.findByRole("heading", { name: "Transactions per second" })).closest("section")!;
+    await waitFor(() => expect(card.querySelectorAll("rect").length).toBeGreaterThan(0));
+    expect(card.querySelectorAll("polyline").length).toBeGreaterThan(0);
+    const legend = card.querySelector(".legend")!;
+    expect(legend).toHaveTextContent("average");
+    expect(legend).toHaveTextContent("busiest minute");
+    expect(legend.querySelectorAll(".sw")).toHaveLength(2);
+    expect(calls.some((c) => c.includes("metric=busiest_minute_tps") && c.includes("window=7d"))).toBe(true);
+  });
+
+  it("draws the block-size table with the shared table class, so its numbers align", async () => {
+    await open();
+    const card = (await screen.findByRole("heading", { name: "Transactions per block" })).closest("section")!;
+    expect(card.querySelector("table")).toHaveClass("tbl");
+  });
+
+  it("gives the rule's p95 time to final by the step of the window: the worst one, and how many were above 20 s", async () => {
+    await open("/stats?window=7d", { series: (m, w) => m === "time_to_final_p95" ? reply(series(m, (i) => (i === 10 ? 25 : i === 11 ? 31 : 9), { window: w })) : ordinary(m, w) });
+    const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+    await waitFor(() => expect(card).toHaveTextContent("31.0 s by the hour"));
+    expect(card).toHaveTextContent("2 steps above 20 s");
   });
 
   it("gives the faucet's requests, what it sent, its time to final, and says what it did not record", async () => {

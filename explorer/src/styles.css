@@ -386,6 +386,8 @@ rect.ch-a, circle.ch-a, path.ch-a, .sw.ch-a { fill: var(--canton); }
 rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 .ch-off { padding: 2px 6px 6px; }
 .legend { display: inline-flex; gap: 14px; }
+.legend .sw.ch-a { background: var(--canton); }
+.legend .sw.ch-b { background: var(--evm); }
 .legend .sw { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
 .sizes { list-style: none; margin: 0; padding: 14px 20px; display: flex; flex-direction: column; gap: 8px; }
 .sizes li { display: grid; grid-template-columns: 110px 1fr 90px; gap: 12px; align-items: center; font-size: 13px; }
@@ -393,6 +395,7 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 .sizes .track i { display: block; height: 100%; background: var(--canton); }
 .sizes b { text-align: right; font-weight: 500; }
 .panel table { width: 100%; }
+.panel .scroll { padding: 0 20px 14px; }
 .rule { padding: 14px 20px 18px; border-top: 1px solid var(--line-2); }
 .rule h4 { margin: 0 0 8px; font-size: 14px; }
 @media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }
