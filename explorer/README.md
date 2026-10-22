@@ -95,6 +95,8 @@ The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_D
 | `GET /api/faucet` | Whether the faucet is on, its address, its balance, what it gives per request and how long an address waits between requests |
 | `POST /api/faucet` | Takes a request for coin: the address in the body, `{"address": "0x…"}`, and the human check's token as `captcha` when the faucet asks for one. Answers 202 with a ticket. See [The faucet](#the-faucet) |
 | `GET /api/faucet/ticket/<id>` | Where a request is: queued (with its place in line), sent (with the transaction hash and the tracker's word), final (with the block), or failed (with the reason) |
+| `POST /api/verify` | Queues a contract's source for [verification](#contract-verification); answers 202 with a `guid`, 400 for a body that is wrong, 413 for a source over 500 KB, 429 over the client's hourly limit, and 503 when the verifier role is not running. Registered only where the explorer has a database |
+| `GET /api/verify/<guid>` | `guid`, `status` (`pending`, `running`, `pass`, `fail`, `already`) and `result`, a sentence (`Pending in queue` until the job ends); 404 for a GUID that is not known. Never cached |
 
 Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/api.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
 
@@ -154,6 +156,12 @@ Every page has the same header (the chain's name and id, which link home, a sear
 Colours are variables in `src/styles.css`, light by default and dark when the system asks for it. There is no switch and nothing is stored. Times are UTC. Every hash is shown shortened, with a button to copy the whole value and one to read it in full.
 
 The fonts are IBM Plex Sans and IBM Plex Mono, served by the explorer from `public/fonts` (SIL Open Font License; the licence texts sit next to the files). The pages load nothing from another host, and a test holds them to that.
+
+## Contract verification
+
+A person sends a contract's Solidity source (a single file or standard JSON input) with its compiler version, settings, constructor arguments and libraries, to `POST /api/verify`, and asks `GET /api/verify/{guid}` how it went. The API only queues the request (the body may be up to 600 KB, the source 500 KB, and a client may send 30 an hour); a separate role, `node server/verifier/cli.ts`, takes the jobs one at a time, downloads the compiler named, checks its SHA-256 against the compiler list, runs it in a throwaway container with no network, and compares the result with the code on chain: a full match, a partial match (only the metadata differs), or a similar one for a contract with the same runtime code. A contract in the genesis is matched on its runtime code alone. The role writes its state to `health_checks` (`verifier/compilers`, `verifier/queue`), and while no role has done so in the last minute `POST /api/verify` answers 503, "Verification is not running."
+
+The role is off unless you start it: `EXPLORER_VERIFIER=1 SOLC_LIST_URL=<the compiler list> explorer/run.sh start` runs it as its own container (`cze-explorer-verifier`), and `start` without the switch stops one that an earlier run left. It needs the Docker socket, the pinned Docker program (downloaded once and checked), and the pinned sandbox image on the machine (`run.sh` says what to pull). The header of `explorer/run.sh` has the settings.
 
 ## The faucet
 
