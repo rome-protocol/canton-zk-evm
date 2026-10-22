@@ -21,6 +21,9 @@ export const FIELDS = {
   faucetQueued: ["ticket", "position", "to", "amount"],
   /** Where a ticket is. */
   faucetTicket: ["ticket", "status", "position", "to", "amount", "hash", "state", "block", "reason"],
+  /** What a submission for verification is answered with, and where a verification is. */
+  verifyQueued: ["guid"],
+  verifyJob: ["guid", "status", "result"],
   block: ["status", "number", "hash", "parentHash", "timestamp", "txCount", "gasUsed", "gasLimit", "baseFee", "miner", "stateRoot", "genesisReferenced", "canton", "transactions"],
   canton: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch", "headerHex", "txsHex", "proofHex"],
   /** The proof's three facts, each of which is a {value, ok} pair. */
