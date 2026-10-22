@@ -3,7 +3,7 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { UpdateDetail, UpdateItem } from "../api.ts";
-import { fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, update } from "../test-utils.tsx";
+import { block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, update } from "../test-utils.tsx";
 
 const SYNC = "da::1220" + "e8".repeat(32);
 const item = (n: number, over: Partial<UpdateItem> = {}): UpdateItem => ({
@@ -99,8 +99,61 @@ describe("one Canton update", () => {
     expect(screen.getByRole("link", { name: "Open block 3 →" })).toHaveAttribute("href", "/block/3");
     const nav = within(screen.getByRole("navigation", { name: "Neighbouring blocks" }));
     expect(nav.getByRole("link", { name: "block 2" })).toHaveAttribute("href", "/block/2");
-    expect(nav.getByRole("link", { name: "block 4" })).toHaveAttribute("href", "/block/4");
     expect(row(side("On the EVM"), "Block hash")).toHaveTextContent(hash(3));
+  });
+
+  it("draws the next block's link only when that block is final, so the newest final update has none", async () => {
+    await open();
+    const nav = within(screen.getByRole("navigation", { name: "Neighbouring blocks" }));
+    expect(nav.queryByRole("link", { name: "block 4" })).toBeNull();
+  });
+
+  it("links the next block when it is final", async () => {
+    await open({ update: () => reply(detail({ ...item(2), blockHash: hash(2) })) }, update(2));
+    const nav = within(screen.getByRole("navigation", { name: "Neighbouring blocks" }));
+    expect(await nav.findByRole("link", { name: "block 3" })).toHaveAttribute("href", "/block/3");
+  });
+
+  it("fills the EVM side from the block: parent, time, transactions, gas, state root, proof and hashes", async () => {
+    await open({ block: () => reply(block()) });
+    const e = side("On the EVM");
+    await vi.waitFor(() => expect(row(e, "Transactions")).toHaveTextContent("1"));
+    expect(row(e, "Parent")).toHaveTextContent(`Block 2 · ${hash(2).slice(0, 6)}`);
+    expect(row(e, "Block time")).toHaveTextContent("01:37:16 UTC");
+    expect(row(e, "Block time")).toHaveTextContent("made 7.4 s before the record time");
+    expect(row(e, "Gas used")).toHaveTextContent("51,698 of 30,000,000");
+    expect(row(e, "State root")).toHaveTextContent(hash(0x10).slice(0, 6));
+    expect(row(e, "Proof")).toHaveTextContent("1,344 bytes");
+    expect(row(e, "Hashes")).toHaveTextContent("reth, the record and the record's header give the same hash");
+  });
+
+  it("says the block cannot be read when the block route fails, and keeps the rows it has", async () => {
+    await open({ block: () => reply({ error: "down" }, 503) });
+    expect(await within(screen.getByRole("region", { name: "On the EVM" })).findByText("The block cannot be read right now.")).toBeInTheDocument();
+    expect(row(side("On the EVM"), "Block hash")).toHaveTextContent(hash(3));
+  });
+
+  it("shows what the record holds: the sizes of its three parts, each to copy, and where Verify is", async () => {
+    await open({ block: () => reply(block()) });
+    const r = within(await screen.findByRole("region", { name: "What the record holds" }));
+    expect(r.getByText("header 612 bytes")).toBeInTheDocument();
+    expect(r.getByText("transactions 181 bytes")).toBeInTheDocument();
+    expect(r.getByText("proof 1,344 bytes")).toBeInTheDocument();
+    expect(r.getByText(/2,137 bytes in all/)).toBeInTheDocument();
+    for (const part of ["header", "transactions", "proof"]) expect(r.getByRole("button", { name: `Copy the ${part}` })).toBeInTheDocument();
+    expect(r.getByRole("link", { name: "Verify in your browser" })).toHaveAttribute("href", "/block/3");
+  });
+
+  it("lists the newest Canton updates under it, marks this one when it is among them, and leads to all of them", async () => {
+    await open({ updates: () => reply(page([item(4), item(3), item(2)])) });
+    const t = within(await screen.findByRole("region", { name: "Newest Canton updates" }));
+    const rows = t.getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toHaveAttribute("aria-current", "true");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(within(rows[0]!).getByRole("link", { name: "1220 0404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
+    expect(within(rows[0]!).getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
+    expect(t.getByRole("link", { name: "All Canton updates →" })).toHaveAttribute("href", "/canton");
   });
 
   it("says Not found with the server's words for an update it does not hold", async () => {
