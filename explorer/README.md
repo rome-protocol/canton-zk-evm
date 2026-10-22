@@ -108,7 +108,7 @@ Every limit is per client: the connection's address, or the last address in `TRU
 | The pages' REST routes (`/api/...`) | 20 a second, bursts of 60 | `429` with `Retry-After` |
 | Etherscan's door (`/api`) | 10 a second and 600 a minute | HTTP 200 with `{"status":"0","message":"NOTOK","result":"Max rate limit reached"}`, as Etherscan answers, and `Retry-After` |
 | Verification (`verifysourcecode`, `verifyproxycontract`) | 30 an hour, 500 KB a request | HTTP 200 with `status` "0", `message` "NOTOK" and the reason; `Retry-After` for the hourly limit. Any other request to `/api` may carry 8 KB |
-| `/rpc` | 300 a minute (`PUBLIC_RPC_RATE_PER_MINUTE`) | as in "The public RPC" |
+| `/rpc` | 300 a minute (`RPC_RATE_PER_MINUTE`) | as in "The public RPC" |
 | `GET /api/stream` | 4 streams for a client, 5,000 for an instance | `429` with `Retry-After` |
 | The faucet (`/api/faucet`) | its own limits | as in "The faucet" |
 
