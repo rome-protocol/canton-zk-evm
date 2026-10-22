@@ -29,6 +29,7 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_demo_sidecar.py' -v
           python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_demo_call_log.py' -v
           python3 -m unittest discover -s tests -p 'test_demo_nightly_l3.py' -v
+          python3 -m unittest discover -s tests -p 'test_demo_nightly_l5_probe.py' -v
 
   # demo/TKA.bin is what the pinned solc makes of demo/TKA.sol.
   token:

@@ -6,7 +6,7 @@
 # log, $WORK/w1.log, is copied here with the results of
 #   L3  a flood of blocks of plain transfers, cut one after another through the real builder: index lag, live-stream delay and database growth (tests/demo_nightly_l3.py)
 #   L4  the pages in a cold browser on a slow link (explorer/test/l4)
-#   L5  the contract tools against the explorer's Etherscan-compatible API (explorer/test/l5); SKIPPED, never passed, while that API is not there
+#   L5  the contract tools against the explorer's Etherscan-compatible API (explorer/test/l5); SKIPPED, never passed, while that API is not there (explorer/test/l5/DOOR)
 # into $NIGHTLY_OUT. Every part runs even when an earlier one broke a budget; the rehearsal then fails if any did.
 #
 # Reads: NIGHTLY_OUT (the folder for the results), L3_SECONDS (how long L3 floods; 1800 by default), L3_TXS_PER_BLOCK (1428, what fits under the 30 Mgas cap),
@@ -44,10 +44,17 @@ docker rm -f -v "$l4_name" >/dev/null 2>&1 || true
 echo "== L5: the contract tools against the Etherscan-compatible API"
 L5=$ROOT/explorer/test/l5
 l5_rc=0
-if ! EXPLORER=$EXPLORER "$L5/l5.sh" probe; then
-  # A skip is not a pass. The API's modules (E8a, E9b) are what L5 tests; without them every check would fail for a reason that is not a defect.
-  jq -n '{status: "skipped", reason: "SKIPPED: E8a/E9b not landed", checks: [], failures: []}' > "$NIGHTLY_OUT/l5.json"
-  echo "L5 SKIPPED: E8a/E9b not landed (the explorer does not answer /api?module=proxy&action=eth_blockNumber)"
+# explorer/test/l5/DOOR says whether the API is there (fixed in the repo); the probe must agree. Absent and silent is a skip; anything else that is not "there and answering"
+# is a failure, so that a door that has landed and then broke cannot hide behind a skip.
+probe_rc=0
+EXPLORER=$EXPLORER "$L5/l5.sh" probe || probe_rc=$?
+if [ "$probe_rc" = 3 ]; then
+  # A skip is not a pass. The API's modules (E8b, E9b) are what L5 tests; without them every check would fail for a reason that is not a defect.
+  "$L5/l5.sh" skipped > "$NIGHTLY_OUT/l5.json"
+  echo "L5 SKIPPED: E8b/E9b not landed (DOOR says absent, and the explorer does not answer /api?module=proxy&action=eth_blockNumber)"
+elif [ "$probe_rc" != 0 ]; then
+  jq -n '{status: "failed", checks: [], failures: ["L5: the Etherscan-compatible API is not what DOOR says it is (see the log)"]}' > "$NIGHTLY_OUT/l5.json"
+  nightly_failed+=("L5 (probe exit $probe_rc)")
 else
   chain_id=$(($(rpc eth_chainId | jq -r .result)))
   l5_work=$WORK/l5
@@ -96,7 +103,7 @@ fi
   jq -r '"| L4 pages | " + ([.pages[] | "\(.name) LCP \(if .median.lcpMs then (.median.lcpMs | round) else "n/a" end) ms\(if .held then "" else " (not held)" end)"] | join(", ")) + (if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) + " |"' "$NIGHTLY_OUT/l4.json"
   jq -r '"| L5 contract tools | \(if .reason then .reason else (.status | ascii_upcase) end)\(if (.failures | length) > 0 then " **\(.failures | join("; ") | gsub("\n"; " "))**" else "" end) |"' "$NIGHTLY_OUT/l5.json"
   echo
-  echo "L4's Address and Contract pages are measured and not held: there is no Contract page yet (E11a) and the Address page is a stub. L5 is skipped, not passed, until the Etherscan-compatible API (E8a, E9b) is in the explorer."
+  echo "L4's Address and Contract pages are measured and not held: there is no Contract page yet (E11a) and the Address page is a stub. L5 is skipped, not passed, until the Etherscan-compatible API (E8b, E9b) is in the explorer and explorer/test/l5/DOOR says so."
 } > "$NIGHTLY_OUT/summary.md"
 cat "$NIGHTLY_OUT/summary.md"
 
