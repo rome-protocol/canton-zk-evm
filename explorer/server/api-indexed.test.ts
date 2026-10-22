@@ -7,7 +7,7 @@ import { migrate } from "./db/migrate.ts";
 import { TEST_URL, checkRequired, withDatabase } from "./db/testing.ts";
 import { createIndexer } from "./indexer/indexer.ts";
 import { createJournal } from "./indexer/journal.ts";
-import { RUN1, Run, iso, makeFolder, putFile, removeFolders } from "./indexer/journal-fixtures.ts";
+import { RUN1, RUN2, Run, iso, makeFolder, putFile, removeFolders } from "./indexer/journal-fixtures.ts";
 import type { Reth } from "./reth.ts";
 import { CHAIN_ID, CONFIRMER, GATEWAY, OPERATOR, PINS, makeChain } from "../test/synthetic-chain.ts";
 
@@ -148,6 +148,49 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
         });
         // the other one was never accepted by the API: it has an inclusion time and no acceptance time
         expect((await get(`/api/tx/${b!.hash}`)).body).toMatchObject({ lifecycle: { acceptedAt: null, includedAt: iso(t - 7000), timeToFinalMs: null } });
+      });
+    });
+
+    it("takes the committed attempt over one cut short by a crash, and gives a block settled as committed its commit time", async () => {
+      // a transaction built in run 1, which crashed during the proof, then committed in run 2
+      await withDatabase(async (pool) => {
+        const { chain, get } = await served(pool, [{ txs: 1 }]);
+        const t = Date.parse(chain.blocks[0]!.record.recordTime);
+        const hash = chain.blocks[0]!.block.transactions[0]!.hash;
+        const b = chain.blocks[0]!;
+        const dir = makeFolder();
+        const run1 = new Run(RUN1);
+        run1.start(t - 120_000);
+        run1.add(t - 100_000, "cut", { attempt: 1, number: 1, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 5, in_flight_at_cut: 0 });
+        run1.add(t - 99_000, "built", { attempt: 1, block_hash: "0x" + "77".repeat(32), parent_hash: b.block.parentHash, tx_hashes: [hash], gas_used: 21000, legs: 0, rebuilds: 0, left_out: [] });
+        run1.add(t - 98_000, "proof_started", { attempt: 1, prover: "prover-a" });
+        const run2 = new Run(RUN2);
+        run2.start(t - 60_000);
+        run2.committed(1, 1, chain);
+        putFile(dir, "2026-10-21.jsonl", [...run1.lines, ...run2.lines]);
+        await createJournal({ pool, folder: dir }).load();
+        expect((await get(`/api/tx/${hash}`)).body).toMatchObject({
+          lifecycle: { state: "final", proofStartedAt: iso(t - 6800), proofEndedAt: iso(t - 100), submittedAt: iso(t - 50), committedAt: iso(t + 40), finalAt: iso(t) },
+        });
+      });
+      // an attempt whose outcome the producer never knew, settled as committed by the indexed block
+      await withDatabase(async (pool) => {
+        const { chain, get } = await served(pool, [{ txs: 1 }]);
+        const t = Date.parse(chain.blocks[0]!.record.recordTime);
+        const b = chain.blocks[0]!;
+        const dir = makeFolder();
+        const run = new Run(RUN1);
+        run.start(t - 60_000);
+        run.add(t - 8000, "cut", { attempt: 1, number: 1, strategy: "on_demand", cut_reason: "pool", pool_waiting: 1, idle_before_cut_ms: 5, in_flight_at_cut: 0 });
+        run.add(t - 7000, "built", { attempt: 1, block_hash: b.block.hash, parent_hash: b.block.parentHash, tx_hashes: b.block.transactions.map((x) => x.hash), gas_used: b.block.gasUsed, legs: 0, rebuilds: 0, left_out: [] });
+        run.add(t - 100, "proof_ended", { attempt: 1, prover: "prover-a", outcome: "ok", seconds: 6.7 });
+        run.add(t - 50, "submitted", { attempt: 1, command_id: "ostia-1", argument_bytes: 4321 });
+        run.add(t + 30_000, "answered", { attempt: 1, outcome: "unknown", reason: "timeout", update_id: null, completion_offset: null, seconds: 30, traffic_bytes: null, traffic_before: null, traffic_after: null });
+        putFile(dir, "2026-10-21.jsonl", run.lines);
+        await createJournal({ pool, folder: dir }).load();
+        const lifecycle = (await get(`/api/tx/${b.block.transactions[0]!.hash}`)).body as { lifecycle: { committedAt: string | null; submittedAt: string | null } };
+        expect(lifecycle.lifecycle.submittedAt).toBe(iso(t - 50));
+        expect(lifecycle.lifecycle.committedAt).not.toBeNull();
       });
     });
 

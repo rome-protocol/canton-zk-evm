@@ -166,16 +166,16 @@ export function createChainDb(pool: Pool, { staleSeconds = 6 }: { staleSeconds?:
     return r && { hash: hex(r.hash), updateId: r.update_id };
   }
 
-  /** The lifecycle of a transaction: its row, and the attempt that held it (the committed one first, else the latest). Undefined when no row is kept (no journal, or a transaction nobody accepted). */
+  /** The lifecycle of a transaction: its row, and the attempt that held it (the committed one first, one settled as committed after it, else the latest). Undefined when no row is kept (no journal, or a transaction nobody accepted). */
   async function lifecycleOf(hash: string): Promise<TxLifecycle | undefined> {
     const [r] = await query(
       `select l.state, l.state_reason, ${MS("l.accepted_at")} as accepted_at, l.accepted_via, ${MS("l.first_included_at")} as included_at, l.attempts, l.last_left_out_reason,
          ${MS("a.proof_started_at")} as proof_started_at, ${MS("a.proof_ended_at")} as proof_ended_at, ${MS("a.submitted_at")} as submitted_at,
-         ${MS("case when a.outcome = 'committed' then a.answered_at end")} as committed_at, ${MS("l.final_at")} as final_at, l.final_block,
+         ${MS("case when a.outcome = 'committed' then a.answered_at when a.resolved_outcome = 'committed' then coalesce(a.resolved_at, a.answered_at) end")} as committed_at, ${MS("l.final_at")} as final_at, l.final_block,
          (extract(epoch from l.final_at - l.accepted_at) * 1000)::bigint as time_to_final
        from tx_lifecycle l left join lateral (
          select ba.* from attempt_transactions x join block_attempts ba on ba.attempt_id = x.attempt_id
-          where x.tx_hash = l.tx_hash and x.left_out_reason is null order by (ba.outcome = 'committed') desc, ba.attempt_id desc limit 1) a on true
+          where x.tx_hash = l.tx_hash and x.left_out_reason is null order by coalesce(ba.outcome = 'committed' or ba.resolved_outcome = 'committed', false) desc, coalesce(ba.outcome = 'committed', false) desc, ba.attempt_id desc limit 1) a on true
        where l.tx_hash = $1`,
       [bytes(hash)],
     );

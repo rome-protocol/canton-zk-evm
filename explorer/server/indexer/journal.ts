@@ -271,7 +271,7 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
 export async function joinAttempts(pool: Pool): Promise<void> {
   // Only attempts whose outcome is open and blocks with no attempt yet (the partial indexes of migration 0015 hold exactly those).
   await pool.query(
-    `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id)
+    `update block_attempts a set resolved_outcome = 'committed', update_id = coalesce(a.update_id, b.update_id), resolved_at = coalesce(a.resolved_at, b.record_time)
        from blocks b where b.hash = a.block_hash and (a.outcome is null or a.outcome = 'unknown') and a.resolved_outcome is distinct from 'committed'`,
   );
   const best = `select a.attempt_id from block_attempts a
