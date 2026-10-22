@@ -173,7 +173,8 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
     expect(Number.isInteger(W1_BLOCK) && W1_BLOCK > 0, "set EXPLORER_TEST_W1_BLOCK to the block that Stress.sol filled").toBe(true);
     const gateway = (process.env.GATEWAY_ADDRESS ?? "").toLowerCase();
     expect(gateway).toMatch(/^0x[0-9a-f]{40}$/);
-    // Stage 2 inline is the default; the measurements below are for both shapes of the design's section 4.3, so the second is run as `behind`.
+    // Stage 2 `behind` is the default (W1's worst-case block takes more than B1 for both stages together inline, see docs/METRICS.md); the measurements below are for both
+    // shapes of the design's section 4.3, and the budgets are asserted for the default, `behind`.
     for (const shape of ["inline", "behind"] as const) {
       await withDatabase(async (pool: Pool) => {
         const { migrate } = await import("../db/migrate.ts");
@@ -242,12 +243,15 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
             + `stage 2 reads ${s2.readMs} ms, stage 2 write ${s2.writeMs} ms; all three reads again ${readMs} ms, the trace read alone ${traceMs} ms; `
             + `${timings.filter((t) => t.stage === 1).length} blocks in all`);
           // After the timings are said, so that a run that falls short of the shape still prints them.
-          expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(3000);
+          expect(Number(tok.transfers), "the Flood calls must succeed, or the block has no token traffic").toBeGreaterThanOrEqual(20_000);
           expect(Number(tok.nft_legs)).toBeGreaterThan(0);
           expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(10);
           // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
-          expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(1000);
-          expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(3000);
+          // They are asserted for `behind`, the default. `inline` is measured and said above; section 4.3 makes it the default only if both its stages fit B1, and they do not.
+          if (shape === "behind") {
+            expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(1000);
+            expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(3000);
+          }
         } finally {
           await indexer.close();
         }

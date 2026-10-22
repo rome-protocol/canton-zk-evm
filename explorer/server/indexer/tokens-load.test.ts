@@ -200,6 +200,47 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
     });
   }, 300_000);
 
+  /** W1's ERC-1155 traffic (test/fixtures/Flood.sol, Multi): `n` TransferBatch logs of 4,096 ids, each to a holder no block has seen. Both stages, through the indexer's own timings. */
+  async function bigBatches(n: number, derive: "inline" | "behind"): Promise<{ stage1: number; stage2: number; legs: number }> {
+    let out = { stage1: 0, stage2: 0, legs: 0 };
+    await inDb(async (pool) => {
+      await migrate(pool);
+      const chain: SyntheticChain = makeChain([{ txs: 1 }, { txs: 1 }]);
+      const t = chain.blocks[0]!.traces[0]!;
+      t.frames = [{ ...t.frames[0]!, traceAddress: [], type: "call", callType: "call", created: null }, create([0], ERC1155)];
+      t.calls = t.frames.length;
+      const ids = Array.from({ length: 4096 }, (_, i) => i + 1), ones = ids.map(() => 1);
+      for (let b = 0; b < n; b++) chain.blocks[1]!.receipts[0]!.logs.push(batch(0, 0x4000 + b, ids, ones));
+      let s1 = 0, s2 = 0;
+      const indexer = createIndexer({
+        pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive,
+        onTiming: (x) => { if (x.block !== 2) return; if (x.stage === 1) s1 = x.readMs + x.writeMs; else s2 = x.readMs + x.writeMs; },
+      });
+      opened.push(indexer);
+      await indexer.open();
+      await indexer.runOnce();
+      if (derive === "behind") await indexer.deriveOnce();
+      expect((await tok(pool, ERC1155)).h).toBe(n);
+      out = { stage1: s1, stage2: s2, legs: n * 4096 };
+    });
+    return out;
+  }
+  // W1 holds five such logs (20,480 legs) and the cap holds about twelve (49,152 legs). `behind` is the default, so its budgets apply: B1 for stage 1 and B2 for both stages.
+  // The CI runner is about four times slower than a laptop, so the asserted shape is three logs (12,288 legs); the rehearsal's W1 runs the real five. LOAD_HOLDERS prints
+  // the rest: both modes at five and at twelve logs (on a laptop: inline 5 = 0.8 s for both stages, 12 = 1.8 s, against inline's B1 of 1.0 s).
+  it("three 4,096-id TransferBatch logs to three new holders, behind: stage 1 inside B1 and both stages inside B2", async () => {
+    const r = await bigBatches(3, "behind");
+    if (process.env.LOAD_HOLDERS) console.log(`big batches 3 behind: ${r.legs} legs, stage 1 ${r.stage1} ms, stage 2 ${r.stage2} ms`);
+    expect(r.stage1).toBeLessThan(B1_MS);
+    expect(r.stage1 + r.stage2).toBeLessThan(B2_MS);
+  }, 300_000);
+  for (const [n, derive] of [[5, "inline"], [5, "behind"], [12, "inline"], [12, "behind"]] as const) {
+    it.skipIf(!process.env.LOAD_HOLDERS)(`${n} 4,096-id TransferBatch logs to ${n} new holders, ${derive}: measured, not asserted`, async () => {
+      const r = await bigBatches(n, derive);
+      console.log(`big batches ${n} ${derive}: ${r.legs} legs, stage 1 ${r.stage1} ms, stage 2 ${r.stage2} ms`);
+    }, 300_000);
+  }
+
   it("2,500 NFTs of a collection with history moved in one block: the owners rebuild inside B1, and the full reindex inside its limit", async () => {
     const NFTS = 2500, mint: Log[] = [], move: Log[] = [];
     for (let i = 0; i < NFTS; i++) mint.push(nft(0, 0x5000 + i, i + 1));
