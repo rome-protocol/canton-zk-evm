@@ -278,6 +278,8 @@ async function run(pool: Pool, o: RollupOptions, fresh: boolean): Promise<Rollup
     if (first === null) return { from: null, to: end, minutes: 0 };
     start = Math.floor(first / MINUTE) * MINUTE;
   }
+  // Minute rows older than the retention are gone, so an hour in that range can only be rebuilt from its minutes if all of them are computed again: start at its first minute.
+  if (start < Math.floor(now / DAY) * DAY - KEPT_MINUTE_DAYS * DAY) start = Math.floor(start / HOUR) * HOUR;
   let extrasAt: number = cur?.detail?.extrasAt ?? 0;
   const setCursor = (db: Pool | PoolClient, position: number, ex: number) =>
     db.query(

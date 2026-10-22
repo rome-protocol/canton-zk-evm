@@ -143,5 +143,11 @@ create trigger stats_dirty_attempts_upd after update on block_attempts referenci
 create trigger stats_dirty_lifecycle_ins after insert on tx_lifecycle referencing new table as new_rows for each statement execute function stats_dirty_lifecycle();
 create trigger stats_dirty_lifecycle_upd after update on tx_lifecycle referencing old table as old_rows new table as new_rows for each statement execute function stats_dirty_lifecycle();
 create trigger stats_dirty_runs_ins after insert on producer_runs referencing new table as new_rows for each statement execute function stats_dirty_runs();
-create trigger stats_dirty_runs_upd after update on producer_runs referencing new table as new_rows for each statement execute function stats_dirty_runs();
+-- Only a change of the settings (the test flag) moves a run between the counts; stopped_at and the like change every run's row and must not mark anything.
+create function stats_dirty_runs_upd() returns trigger language plpgsql as $$
+begin
+  insert into stats_dirty (at) select min(n.started_at) from new_rows n join old_rows o on o.run_id = n.run_id where o.settings is distinct from n.settings having count(*) > 0;
+  return null;
+end $$;
+create trigger stats_dirty_runs_upd after update on producer_runs referencing old table as old_rows new table as new_rows for each statement execute function stats_dirty_runs_upd();
 create trigger stats_dirty_derive_trg after insert or update on cursors for each row execute function stats_dirty_derive();

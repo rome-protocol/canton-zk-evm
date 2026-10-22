@@ -257,6 +257,32 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     expect((await pool.query("select count(*)::int as n from stats_day")).rows[0].n).toBe(2);
   }));
 
+  it("a late fact older than the minute rows' retention, in the middle of an hour, gives the hour and day the same rows as a full rebuild", () => inDb(async (pool) => {
+    const old = -40 * 86400;
+    await block(pool, 1, old + 10 * 60, { txs: 2 });
+    await block(pool, 2, old + 20 * 60, { txs: 3 });
+    await rollupStats(pool, { now: () => T0 + 5 * MINUTE, chunkMs: 3 * DAY });
+    expect((await pool.query("select blocks from stats_hour where bucket = $1", [at(old)])).rows[0].blocks).toBe(2);
+    // The minute rows of that hour are gone by now. A block that arrives late, 40 minutes into the same hour, must not make the hour forget the other two.
+    await block(pool, 3, old + 40 * 60, { txs: 4 });
+    await rollupStats(pool, { now: () => T0 + 5 * MINUTE + 10_000, chunkMs: 3 * DAY });
+    expect((await pool.query("select count(*)::int as n from stats_minute where bucket < $1", [at(-30 * 86400)])).rows[0].n).toBe(0);
+    expect((await pool.query("select blocks, txs from stats_hour where bucket = $1", [at(old)])).rows[0]).toMatchObject({ blocks: 3, txs: 9 });
+    expect((await pool.query("select blocks, txs from stats_day where bucket = $1", [at(old - 12 * 3600)])).rows[0]).toMatchObject({ blocks: 3, txs: 9 });
+    const incremental = await dump(pool);
+    await rebuildStats(pool, { now: () => T0 + 5 * MINUTE + 10_000, chunkMs: 3 * DAY });
+    expect(await dump(pool)).toBe(incremental);
+  }));
+
+  it("a change to a producer run's other columns marks nothing dirty; a change of its settings does", () => inDb(async (pool) => {
+    const r = await run(pool, false);
+    await pool.query("delete from stats_dirty");
+    await pool.query("update producer_runs set stopped_at = $1 where run_id = $2", [at(0), r]);
+    expect((await pool.query("select count(*)::int as n from stats_dirty")).rows[0].n).toBe(0);
+    await pool.query("update producer_runs set settings = $1 where run_id = $2", [JSON.stringify({ test: true }), r]);
+    expect((await pool.query("select count(*)::int as n from stats_dirty")).rows[0].n).toBe(1);
+  }));
+
   it("a clock that goes back does not lose or double anything", () => inDb(async (pool) => {
     await block(pool, 1, 10);
     await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
