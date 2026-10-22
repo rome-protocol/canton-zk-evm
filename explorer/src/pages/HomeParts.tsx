@@ -126,17 +126,19 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
   txs: TxListItem[] | undefined; coin: { symbol: string; decimals: number }; error?: string; pending?: InFlightTx[]; pendingRead?: Read; details?: Record<string, Details>;
 }) {
   const now = useNow();
+  const waiting = pending.filter((p) => !txs?.some((t) => t.hash === p.hash));
+  const final = txs ?? [];
   return (
     <section className="card" aria-labelledby="txs-h">
       <div className="sec-h"><h3 id="txs-h">Latest transactions</h3><span className="muted small">Including those not final yet</span></div>
       {pendingRead === "error" && <p className="muted small">Transactions not final yet cannot be read right now.</p>}
-      {error ? <p className="muted">{error}</p> : !txs ? <p className="muted">Reading the transactions…</p> : txs.length ? (
+      {waiting.length || final.length ? (
         <>
           <div className="scroll">
             <table className="tbl">
               <thead><tr><th>Transaction</th><th>From / to</th><th className="r">Value</th><th>Stage</th></tr></thead>
               <tbody>
-                {pending.filter((p) => !txs.some((t) => t.hash === p.hash)).map((p) => {
+                {waiting.map((p) => {
                   const d = details[p.hash] ?? "reading";
                   return (
                     <tr key={p.hash}>
@@ -147,7 +149,7 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
                     </tr>
                   );
                 })}
-                {txs.map((t) => (
+                {final.map((t) => (
                   <tr key={t.hash}>
                     <td><Link className="mono" to={`/tx/${t.hash}`}>{short(t.hash, 8, 4)}</Link><span className="ago">{duration(now - t.timestamp * 1000)} ago</span></td>
                     <td className="mono small"><Who from={t.from} to={t.to} created={t.created} /></td>
@@ -158,9 +160,10 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
               </tbody>
             </table>
           </div>
-          <Foot to="/txs">View all transactions</Foot>
+          {error ? <p className="muted">{error}</p> : !txs ? <p className="muted">Reading the transactions…</p> : !txs.length && <p className="muted">No final transactions yet.</p>}
+          {final.length > 0 && <Foot to="/txs">View all transactions</Foot>}
         </>
-      ) : <p className="muted">No final transactions yet.</p>}
+      ) : error ? <p className="muted">{error}</p> : !txs ? <p className="muted">Reading the transactions…</p> : <p className="muted">No final transactions yet.</p>}
     </section>
   );
 }

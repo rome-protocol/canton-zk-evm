@@ -190,10 +190,11 @@ describe("the list of latest transactions", () => {
 
 describe("the list of latest transactions, with those not final yet", () => {
   const at = new Date(NOW - 4000).toISOString();
-  const open = async (over: { inFlight?: () => ReturnType<typeof reply>; tx?: (h: string) => ReturnType<typeof reply> } = {}) => {
+  const open = async (over: { txs?: () => ReturnType<typeof reply>; inFlight?: () => ReturnType<typeof reply>; tx?: (h: string) => ReturnType<typeof reply> } = {}) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);
     fakeApi(route({
+      txs: over.txs,
       inFlight: over.inFlight ?? (() => reply(inFlight({ transactions: [{ hash: hash(0xb1), stage: "waiting", at }, { hash: hash(0xb2), stage: "proving", at }] }))),
       tx: over.tx ?? ((h) => reply(tx({ hash: h, status: h === hash(0xb1) ? "waiting" : "proving", state: h === hash(0xb1) ? "pending" : "proving", block: null, value: h === hash(0xb1) ? "250000000000000000" : "1000000000000000000", from: addr(0x71), to: addr(0x9b) }))),
     }));
@@ -231,6 +232,21 @@ describe("the list of latest transactions, with those not final yet", () => {
     const region = await open({ inFlight: () => reply({ error: "no" }, 500) });
     expect(region.getByText("Transactions not final yet cannot be read right now.")).toBeInTheDocument();
     expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+  });
+
+  it("lists those not final yet, and says there is no final one, when the final list is empty", async () => {
+    const region = await open({ txs: () => reply(page([])) });
+    const rows = region.getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("Waiting")).toBeInTheDocument();
+    expect(within(rows[1]!).getByText("Being proven")).toBeInTheDocument();
+    expect(region.getByText("No final transactions yet.")).toBeInTheDocument();
+  });
+
+  it("lists those not final yet, and says the final list cannot be read, when the final list fails", async () => {
+    const region = await open({ txs: () => reply({ error: "no" }, 502) });
+    expect(region.getAllByRole("row").slice(1)).toHaveLength(2);
+    expect(region.getByText("The explorer cannot read this list right now.")).toBeInTheDocument();
   });
 
   it("lists only the final ones, with no note, when none is waiting or being proven", async () => {
