@@ -223,6 +223,16 @@ export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_
         throw e;
       }
     },
+    /** An ERC-20 token's `totalSupply()` as of one block (for the Etherscan `tokensupply`): 0 when the address is no token, as Etherscan gives. */
+    async tokenSupplyAt(token: string, block: number): Promise<bigint> {
+      try {
+        const out = await read("eth_call", [{ to: token, data: "0x18160ddd" }, tag(block)], data);
+        return out.length >= 66 ? BigInt(out.slice(0, 66)) : 0n;
+      } catch (e) {
+        if (e instanceof RethError && e.answered) return 0n;
+        throw e;
+      }
+    },
     /** The name, symbol and decimals of an ERC-20 token, or null when the address does not answer those three calls. */
     async token(a: string): Promise<TokenInfo | null> {
       const [n, s, d] = await Promise.all([erc20(a, SELECTOR.name), erc20(a, SELECTOR.symbol), erc20(a, SELECTOR.decimals)]);
