@@ -234,7 +234,7 @@ function Around({ id }: { id: string }) {
         <>
           <div className="scroll">
             <table className="tbl">
-              <thead><tr><th>Offset</th><th>Update id</th><th>Record time</th><th>Template · choice</th><th>EVM block</th><th className="r">Transactions</th></tr></thead>
+              <thead><tr><th>Offset</th><th>Update id</th><th>Record time</th><th>Template · choice {PRODUCER}</th><th>EVM block</th><th className="r">Transactions</th></tr></thead>
               <tbody>
                 {items.map((x) => (
                   <tr key={x.updateId} aria-current={x.updateId === id ? "true" : undefined} className={x.updateId === id ? "here" : undefined}>

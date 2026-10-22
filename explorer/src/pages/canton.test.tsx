@@ -231,7 +231,8 @@ describe("one Canton update", () => {
     const calls = await open();
     const t = within(await screen.findByRole("region", { name: "Canton updates around this one" }));
     expect(calls).toContain(`/api/canton/updates/${update(3)}/around`);
-    expect(t.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Offset", "Update id", "Record time", "Template · choice", "EVM block", "Transactions"]);
+    expect(t.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(["Offset", "Update id", "Record time", "Template · choice producer log", "EVM block", "Transactions"]);
+    expect(within(t.getAllByRole("columnheader")[3]!).getByText("producer log")).toHaveClass("tag");
     const rows = t.getAllByRole("row").slice(1);
     expect(rows).toHaveLength(3);
     expect(rows[1]).toHaveAttribute("aria-current", "true");
