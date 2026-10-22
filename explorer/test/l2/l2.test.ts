@@ -3,7 +3,7 @@
  * (60% single objects, 20% address pages, 10% lists, 5% getLogs, 5% search) at `L2_RATE` requests a second, while ingestion keeps writing blocks of
  * 1,428 transactions every 3 s, with `L2_SSE` live-stream clients and the health route asked throughout. It asserts B3, B4, B6 and B7 and writes the
  * numbers to `L2_RESULTS` (a JSON file) and to the log. It runs only when `L2=1`, on the pinned PostgreSQL; the design's size is
- * `L2_TRANSACTIONS=10000000 L2_SECONDS=600`, and CI runs a smaller one (docs/METRICS.md says which, and what was measured).
+ * `L2_TRANSACTIONS=10000000 L2_SECONDS=600`, `L2_KEEP_DATABASE=1` leaves the seeded database in place to look at query plans, and CI runs a smaller one (docs/METRICS.md says which, and what was measured).
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -92,7 +92,12 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const source = createStreamSource({ pool, connection: { connectionString: db.url }, hub, log: () => undefined });
       const server = createHttpServer(api, folder, undefined, "x-client-ip", hub);
       const served: number[] = []; // how long the server itself took for each request, from its arrival to the end of its answer
-      server.on("request", (rq, rs) => { if (rq.url?.startsWith("/api/stream")) return; const t = performance.now(); rs.on("finish", () => served.push(performance.now() - t)); });
+      const slowest: { ms: number; url: string }[] = []; // the slowest answers, named, so that a failed budget says which route
+      server.on("request", (rq, rs) => {
+        if (rq.url?.startsWith("/api/stream")) return;
+        const t = performance.now(), url = rq.url ?? "";
+        rs.on("finish", () => { const ms = performance.now() - t; served.push(ms); if (slowest.length < 12 || ms > slowest[slowest.length - 1]!.ms) { slowest.push({ ms, url: url.slice(0, 100) }); slowest.sort((a, b) => b.ms - a.ms); slowest.length = Math.min(slowest.length, 12); } });
+      });
       await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
       stops.push(() => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }));
       await source.start();
@@ -190,7 +195,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         databaseBytes: bytes, gigabytesPerMillionTransactions: bytes / 1e9 / (written / 1e6),
         classes: report.results, getLogs: { requests: logsMs.length, p95: q95(logsMs), max: Math.max(...logsMs) },
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
-        server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5) },
+        server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5), slowest },
         ingestion: { timesMs: ingestTimes, blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
       };
       console.log("L2 " + JSON.stringify(summary, null, 1));
@@ -212,7 +217,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
     } finally {
       for (const stop of stops.reverse()) await Promise.resolve(stop()).catch(() => undefined);
       rmSync(folder, { recursive: true, force: true });
-      await db.drop().catch(() => undefined);
+      if (process.env.L2_KEEP_DATABASE === "1") console.log(`L2 left the database ${db.url} for inspection`); else await db.drop().catch(() => undefined);
     }
   }, (SECONDS + 600 + TXS / 2000) * 1000); // the seed, then the load; a hang ends the run in minutes, not in an hour
 });
