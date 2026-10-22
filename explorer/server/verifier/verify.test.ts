@@ -3,6 +3,7 @@ import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "../db/
 import { addContract, CompilerError, hashOf, outputFor, SandboxError, StubCompile } from "./verify-fixtures.ts";
 import { RequestError, type VerifyRequest } from "./request.ts";
 import { Verifier } from "./verify.ts";
+import { writeContracts } from "../indexer/contracts.ts";
 
 checkRequired();
 const suite = TEST_URL ? describe : describe.skip;
@@ -248,5 +249,31 @@ suite("verifying a contract", () => {
     expect(refused.result).toMatch(/published by the operator/);
     expect(stub.calls).toBe(0);
     expect(await guarded.verify(req(A), { operator: true })).toMatchObject({ status: "pass" });
+  });
+  it("follows the code at an address: made again with other code, the contract is unverified, its new code verifies, and the old source stays with the old code", async () => {
+    const BODY2 = "6080604052348015600e575f80fd5b50600436106030575f3560e01c8063".padEnd(130, "5b");
+    const runtime2 = Buffer.concat([Buffer.from(BODY2, "hex"), meta(1)]);
+    const creation2 = Buffer.concat([HEAD, runtime2, meta(1)]);
+    const hex = (b: Buffer) => "0x" + b.toString("hex");
+    const addr = Buffer.from(A.slice(2), "hex");
+    const state = async () => (await db.pool.query("select name, match_type, verified_source, encode(runtime_code_hash, 'hex') h from contracts where address = $1", [addr])).rows[0];
+    await addContract(db.pool, A, runtime, creation);
+    await addContract(db.pool, B, runtime, creation);
+    expect(await v.verify(req(A))).toMatchObject({ status: "pass", similar: 1 });
+    const old = Number((await state()).verified_source);
+    expect(await state()).toMatchObject({ name: "Box", match_type: "full" });
+    // The contract is destroyed and made again at the same address with other code (the metamorphic pattern).
+    await writeContracts(db.pool, 9, [{ address: A, creator: "0x" + "01".repeat(20), txIndex: 0, traceAddress: [], runtimeCode: hex(runtime2), initCode: hex(creation2) }], [], { code: async () => "0x" });
+    expect(await state()).toMatchObject({ name: null, match_type: null, verified_source: null, h: hashOf(runtime2).toString("hex") });
+    // The clone of the old code keeps the old source.
+    expect((await db.pool.query("select match_type, verified_source from contracts where address = $1", [Buffer.from(B.slice(2), "hex")])).rows[0]).toMatchObject({ match_type: "similar", verified_source: String(old) });
+    // The new code verifies, and does not answer 'already' for the source of the old.
+    stub.output = outputFor("Box.sol", "Box", { creation: creation2.toString("hex"), runtime: runtime2.toString("hex") });
+    expect(await v.verify(req(A))).toMatchObject({ status: "pass", match: "full" });
+    const now = await state();
+    expect(now).toMatchObject({ name: "Box", match_type: "full" });
+    expect(Number(now.verified_source)).not.toBe(old);
+    expect(await sources()).toHaveLength(2);
+    expect(await v.verify(req(A))).toEqual({ status: "already", result: "Already Verified" });
   });
 });

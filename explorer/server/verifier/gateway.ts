@@ -20,7 +20,7 @@ export const reservedAddresses = (g: Gateway | null): string[] => (g ? [g.addres
 export async function seedGateway(pool: Pool, verifier: Pick<Verifier, "verify">, g: Gateway, signal?: AbortSignal): Promise<"done" | "waiting" | "failed"> {
   const addr = Buffer.from(g.address.slice(2), "hex");
   const { rows } = await pool.query<{ verified: boolean }>(
-    "select exists (select 1 from verified_sources v where v.address = c.address) as verified from contracts c where c.address = $1", [addr],
+    "select exists (select 1 from verified_sources v where v.address = c.address and v.runtime_code_hash = c.runtime_code_hash) as verified from contracts c where c.address = $1", [addr],
   );
   if (rows.length === 0) return "waiting";
   if (rows[0]!.verified) return "done";

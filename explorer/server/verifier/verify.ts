@@ -48,8 +48,8 @@ export class Verifier {
     }
     const addr = Buffer.from(p.address.slice(2), "hex");
     const found = await this.pool.query<{ runtime_code_hash: Buffer; runtime: Buffer; creation: Buffer | null; verified: number | null; verified_match: string | null }>(
-      `select c.runtime_code_hash, rb.code as runtime, cb.code as creation, (select v.id from verified_sources v where v.address = c.address) as verified,
-         (select v.match_type from verified_sources v where v.address = c.address) as verified_match
+      `select c.runtime_code_hash, rb.code as runtime, cb.code as creation, (select v.id from verified_sources v where v.address = c.address and v.runtime_code_hash = c.runtime_code_hash) as verified,
+         (select v.match_type from verified_sources v where v.address = c.address and v.runtime_code_hash = c.runtime_code_hash) as verified_match
        from contracts c join bytecodes rb on rb.code_hash = c.runtime_code_hash left join bytecodes cb on cb.code_hash = c.creation_code_hash
        where c.address = $1`,
       [addr],
@@ -100,7 +100,7 @@ export class Verifier {
         `insert into verified_sources (address, runtime_code_hash, language, compiler_version, code_format, contract_path, contract_name, optimizer_enabled, optimizer_runs,
            evm_version, settings, sources, abi, compiler_metadata, constructor_args, libraries, license, match_type, creation_match, verified_at)
          values ($1, $2, 'solidity', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
-         on conflict (address) do update set runtime_code_hash = excluded.runtime_code_hash, language = excluded.language, compiler_version = excluded.compiler_version,
+         on conflict (address, runtime_code_hash) do update set language = excluded.language, compiler_version = excluded.compiler_version,
            code_format = excluded.code_format, contract_path = excluded.contract_path, contract_name = excluded.contract_name, optimizer_enabled = excluded.optimizer_enabled,
            optimizer_runs = excluded.optimizer_runs, evm_version = excluded.evm_version, settings = excluded.settings, sources = excluded.sources, abi = excluded.abi,
            compiler_metadata = excluded.compiler_metadata, constructor_args = excluded.constructor_args, libraries = excluded.libraries, license = excluded.license,
@@ -137,7 +137,7 @@ export class Verifier {
 export async function markSimilar(c: Pick<PoolClient, "query">, runtimeCodeHash: Buffer, sourceId: number, name: string, reserved: ReadonlySet<string> = new Set()): Promise<number> {
   const r = await c.query(
     `update contracts c set verified_source = $2, match_type = 'similar', name = coalesce(c.name, $3)
-     where c.runtime_code_hash = $1 and c.verified_source is null and not exists (select 1 from verified_sources v where v.address = c.address)
+     where c.runtime_code_hash = $1 and c.verified_source is null and not exists (select 1 from verified_sources v where v.address = c.address and v.runtime_code_hash = c.runtime_code_hash)
        and c.address <> all($4::bytea[])`,
     [runtimeCodeHash, sourceId, name, [...reserved].map((a) => Buffer.from(a.slice(2), "hex"))],
   );

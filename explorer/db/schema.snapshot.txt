@@ -674,11 +674,10 @@ table verified_sources
   column match_type text not null
   column verified_at timestamp with time zone not null
   column creation_match text
-  constraint verified_sources_address_key UNIQUE (address)
   constraint verified_sources_code_format CHECK ((code_format = ANY (ARRAY['solidity-single-file'::text, 'solidity-standard-json-input'::text])))
   constraint verified_sources_creation_match CHECK ((creation_match = ANY (ARRAY['full'::text, 'partial'::text])))
   constraint verified_sources_match_type CHECK ((match_type = ANY (ARRAY['full'::text, 'partial'::text])))
   constraint verified_sources_pkey PRIMARY KEY (id)
   CREATE INDEX verified_sources_runtime_code_hash_idx ON public.verified_sources USING btree (runtime_code_hash)
-  CREATE UNIQUE INDEX verified_sources_address_key ON public.verified_sources USING btree (address)
+  CREATE UNIQUE INDEX verified_sources_address_code_key ON public.verified_sources USING btree (address, runtime_code_hash)
   CREATE UNIQUE INDEX verified_sources_pkey ON public.verified_sources USING btree (id)
