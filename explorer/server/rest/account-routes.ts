@@ -146,7 +146,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     addressOf(a);
     const { held, source } = await accounts.source(a);
     if (!held) return missing(NO_CONTRACT);
-    const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, libraries: null, verifiedAt: null };
+    const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, matchNote: null, libraries: null, verifiedAt: null };
     const body = source ? { ...source, address: a, verified: true, files: source.files.map((f) => pick(f, F.sourceFile)) } : empty;
     return cached(ok(pick(body, F.source)), "composite");
   }

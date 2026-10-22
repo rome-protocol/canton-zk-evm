@@ -230,9 +230,11 @@ table contracts
   column last_interaction_block bigint
   column destroyed_block bigint
   constraint contracts_creation_code_hash_fkey FOREIGN KEY (creation_code_hash) REFERENCES bytecodes(code_hash)
+  constraint contracts_match_type CHECK ((match_type = ANY (ARRAY['full'::text, 'partial'::text, 'similar'::text])))
   constraint contracts_origin_check CHECK ((origin = ANY (ARRAY['genesis'::text, 'create'::text])))
   constraint contracts_pkey PRIMARY KEY (address)
   constraint contracts_runtime_code_hash_fkey FOREIGN KEY (runtime_code_hash) REFERENCES bytecodes(code_hash)
+  constraint contracts_verified_source_fk FOREIGN KEY (verified_source) REFERENCES verified_sources(id)
   CREATE INDEX contracts_creation_block_idx ON public.contracts USING btree (creation_block DESC)
   CREATE INDEX contracts_creation_place_idx ON public.contracts USING btree (COALESCE(creation_block, (0)::bigint), COALESCE(creation_tx_index, 0), address)
   CREATE INDEX contracts_interaction_count_address_idx ON public.contracts USING btree (interaction_count DESC, address DESC)
@@ -643,7 +645,11 @@ table verification_jobs
   column created_at timestamp with time zone not null
   column started_at timestamp with time zone
   column finished_at timestamp with time zone
+  column attempts integer not null default 0
+  column not_before timestamp with time zone
+  constraint verification_jobs_kind CHECK ((kind = ANY (ARRAY['source'::text, 'proxy'::text])))
   constraint verification_jobs_pkey PRIMARY KEY (guid)
+  constraint verification_jobs_status CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'pass'::text, 'fail'::text, 'already'::text])))
   CREATE INDEX verification_jobs_client_key_created_at_idx ON public.verification_jobs USING btree (client_key, created_at)
   CREATE INDEX verification_jobs_status_created_at_idx ON public.verification_jobs USING btree (status, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'running'::text]))
   CREATE UNIQUE INDEX verification_jobs_pkey ON public.verification_jobs USING btree (guid)
@@ -669,8 +675,11 @@ table verified_sources
   column license text
   column match_type text not null
   column verified_at timestamp with time zone not null
-  constraint verified_sources_address_key UNIQUE (address)
+  column creation_match text
+  constraint verified_sources_code_format CHECK ((code_format = ANY (ARRAY['solidity-single-file'::text, 'solidity-standard-json-input'::text])))
+  constraint verified_sources_creation_match CHECK ((creation_match = ANY (ARRAY['full'::text, 'partial'::text])))
+  constraint verified_sources_match_type CHECK ((match_type = ANY (ARRAY['full'::text, 'partial'::text])))
   constraint verified_sources_pkey PRIMARY KEY (id)
   CREATE INDEX verified_sources_runtime_code_hash_idx ON public.verified_sources USING btree (runtime_code_hash)
-  CREATE UNIQUE INDEX verified_sources_address_key ON public.verified_sources USING btree (address)
+  CREATE UNIQUE INDEX verified_sources_address_code_key ON public.verified_sources USING btree (address, runtime_code_hash)
   CREATE UNIQUE INDEX verified_sources_pkey ON public.verified_sources USING btree (id)

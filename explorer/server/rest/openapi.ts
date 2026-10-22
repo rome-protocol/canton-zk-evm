@@ -77,6 +77,8 @@ export const DOCS: Record<string, Doc> = {
   "/api/in-flight": { tag: "Status", summary: "The attempts that are not final yet. Nothing here is a fact of the chain until its block is final.", object: FIELDS.inFlight },
   "/api/faucet": { tag: "Faucet", summary: "GET: what the faucet shows about itself. POST {\"address\": \"0x...\"}: asks for coin, and answers with a ticket.", object: FIELDS.faucetInfo },
   "/api/faucet/ticket/{ticket}": { tag: "Faucet", summary: "Where a faucet request is.", param: "The ticket a request was answered with.", object: FIELDS.faucetTicket },
+  "/api/verify": { tag: "Verification", method: "post", summary: "Sends a contract's Solidity source for verification: single file or standard JSON input, with the compiler version, the settings, the constructor arguments and the libraries. Answers 202 with a GUID to ask about.", note: "Queued: the GUID." },
+  "/api/verify/{guid}": { tag: "Verification", summary: "Where a verification is: pending, running, or its result (Pass, Fail or Already Verified, with the reason).", param: "The GUID a submission was answered with.", object: FIELDS.verifyJob },
   "/healthz": { tag: "Status", summary: "The same answer as /api/status, for a load balancer: 503 when the explorer is not serving.", object: FIELDS.status },
   "/rpc": { tag: "RPC", method: "post", summary: "The public JSON-RPC: what a wallet or a script sees of the chain, final blocks only. A body is one call or a batch (at most 20 calls, 256 KiB).", note: "JSON-RPC 2.0" },
   "/api/openapi.json": { tag: "Status", summary: "This description.", note: "An OpenAPI 3.1 document." },
@@ -111,6 +113,11 @@ export function buildOpenApi(paths: readonly string[], info: { title: string }):
       ...(d.param ? [{ name: /\{(\w+)\}/.exec(path)![1], in: "path", required: true, description: d.param, schema: { type: "string" } }] : []),
       ...(d.query ?? []).map((q) => ({ name: q.name, in: "query", required: false, description: q.about, schema: { type: "string", ...(q.values ? { enum: [...q.values] } : {}) } })),
     ];
+    if (path === "/api/verify") {
+      out[path] = { post: { tags: [d.tag], summary: d.summary, requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["address", "codeFormat", "sourceCode", "contractName", "compilerVersion"] } } } },
+        responses: { 202: { description: d.note ?? "Queued.", content: { "application/json": { schema: object(FIELDS.verifyQueued) } } }, 400: fail("The request is wrong; the message says how."), 413: fail("The source is too big."), 429: fail("The limits are reached."), 503: fail("Verification is not running, or the queue is full.") } } };
+      continue;
+    }
     if (d.method === "post") {
       out[path] = { post: { tags: [d.tag], summary: d.summary, requestBody: { required: true, content: { "application/json": { schema: { type: ["object", "array"] } } } },
         responses: { 200: { description: d.note ?? "The answer.", content: { "application/json": { schema: {} } } }, 413: fail("The body is too big."), 429: fail("Too many requests; Retry-After says when to try again.") } } };
