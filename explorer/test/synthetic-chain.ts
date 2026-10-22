@@ -27,6 +27,8 @@ export interface BlockShape {
   leg?: number;
   /** The sender of every tenth transaction (an address with a long history: the load test's one address with a million). */
   hot?: string;
+  /** When the block's record became readable, as an ISO time. Fixed by the block's number when absent; a load test gives the time of the writing. */
+  at?: string;
 }
 
 /** The leg hash of README.md's formula, written out here on its own so that a mistake in the indexer's copy shows up as a failing test. */
@@ -111,7 +113,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     number, hash, parentHash, timestamp: 1_790_000_000 + number * 3, gasLimit: 30_000_000, gasUsed: cumulative, baseFeePerGas: 7n, miner: hex(0xbeef),
     stateRoot: "0x" + "01".repeat(32), transactionsRoot: "0x" + "02".repeat(32), receiptsRoot: "0x" + "03".repeat(32), extraData: "0x", size: 1000 + shape.txs * 150, transactions: txs,
   };
-  const at = new Date(Date.UTC(2026, 9, 21, 0, 0, 0) + number * 3000).toISOString();
+  const at = shape.at ?? new Date(Date.UTC(2026, 9, 21, 0, 0, 0) + number * 3000).toISOString();
   const record: BlockRecord = {
     updateId: `1220${number.toString(16).padStart(8, "0")}${instance.toString(16).padStart(2, "0")}${"ee".repeat(27)}`, offset: number * 10, recordTime: at, chainId: CHAIN_ID, number, blockHash: hash, parentHash,
     headerHex, txsHex: txList(serialized), proofHex: proofHex(hash, pins), operator: OPERATOR, confirmer: CONFIRMER, synchronizerId: "sync::1220" + "99".repeat(32),

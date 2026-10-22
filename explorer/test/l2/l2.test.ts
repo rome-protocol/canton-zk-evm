@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { describe, expect, it } from "vitest";
 import pg from "pg";
 import { createApi } from "../../server/api.ts";
@@ -47,7 +48,10 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
     const folder = mkdtempSync(join(tmpdir(), "explorer-l2-"));
     const stops: (() => Promise<void> | void)[] = [];
     try {
-      const { pool } = db;
+      // The API's pool is sized as a server's would be (the helper's is for small tests); the pool of the helper stays for the seed's and the load's own checks.
+      const pool = new pg.Pool({ connectionString: db.url, max: int("L2_POOL", 20) });
+      pool.on("error", () => undefined);
+      stops.push(() => pool.end());
       await migrate(pool);
       // ---- Seed through the indexer's own write path, a batch of blocks at a time.
       const chain = makeChain([]);
@@ -57,7 +61,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       let head = 0, parent = chain.genesisHash, written = 0;
       async function append(count: number): Promise<void> {
         for (let i = 0; i < count; i++) {
-          const b = makeBlock(++head, parent, { txs: BLOCK_TXS, hot: HOT });
+          const b = makeBlock(++head, parent, { txs: BLOCK_TXS, hot: HOT, at: new Date().toISOString() });
           parent = b.block.hash;
           chain.blocks.push(b);
           written += BLOCK_TXS;
@@ -85,6 +89,8 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       const hub = createStreamHub();
       const source = createStreamSource({ pool, connection: { connectionString: db.url }, hub, log: () => undefined });
       const server = createHttpServer(api, folder, undefined, "x-client-ip", hub);
+      const served: number[] = []; // how long the server itself took for each request, from its arrival to the end of its answer
+      server.on("request", (rq, rs) => { if (rq.url?.startsWith("/api/stream")) return; const t = performance.now(); rs.on("finish", () => served.push(performance.now() - t)); });
       await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
       stops.push(() => new Promise<void>((ok) => { server.closeAllConnections(); server.close(() => ok()); }));
       await source.start();
@@ -126,14 +132,22 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         await sleep(55); // under the per-client rate of 20 a second
       }
       expect(refused, "paths of the load that did not answer 200").toEqual([]);
+      // A server that has been up for a while has its pool's connections open and its database's caches warm; the first second of a cold one is not what B3 is about.
+      // So, as a deployed one would have, open the pool before the load starts: a few rounds of concurrent requests, each from a client of its own.
+      const warm = classes.flatMap((c) => c.paths.slice(0, 12));
+      for (let round = 0; round < 3; round++) await Promise.all(warm.map((path, i) => fetch(`http://127.0.0.1:${port}${path}`, { headers: { "x-client-ip": `10.251.${round}.${i}` } }).then((r) => r.arrayBuffer())));
       const driveConfig = join(folder, "drive.json");
-      writeFileSync(driveConfig, JSON.stringify({ host: "127.0.0.1", port, seconds: SECONDS, ipHeader: "x-client-ip", connections: 20, sse: SSE, classes }));
+      writeFileSync(driveConfig, JSON.stringify({ host: "127.0.0.1", port, seconds: SECONDS, ipHeader: "x-client-ip", connections: 32, sse: SSE, classes }));
 
       // ---- Run: the load in its own process, ingestion and getLogs in this one.
       const load = spawn(process.execPath, ["test/l2/drive.ts", driveConfig], { stdio: ["ignore", "pipe", "inherit"] });
       let out = "";
       load.stdout.on("data", (d: Buffer) => { out += d; });
       const finished = new Promise<void>((ok, fail) => { load.on("exit", (code) => (code === 0 ? ok() : fail(new Error(`the load process exited ${code}`)))); });
+      const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
+      // Every answer of the health route that is not 200, with the checks that made it so: a B7 failure says which row went down or stale.
+      const unhealthy: string[] = [];
+      const watch = setInterval(() => { void fetch(`http://127.0.0.1:${port}/api/health`, { headers: { "x-client-ip": "10.250.0.3" } }).then(async (r) => { if (r.status === 200) return; const j = (await r.json()) as { status: string; checks: { id: string; role: string; status: string; stale: boolean; detail: unknown }[] }; unhealthy.push(`${r.status} ${j.status}: ${j.checks.filter((c) => c.status !== "ok" || c.stale).map((c) => `${c.role}/${c.id} ${c.stale ? "stale" : c.status} ${c.detail ?? ""}`).join("; ")}`); }).catch(() => undefined); }, 250);
       const ingestedBefore = head;
       let running = true;
       const ingestion = (async () => {
@@ -159,6 +173,8 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         }
       })();
       await finished;
+      loop.disable(); clearInterval(watch);
+      served.sort((a, b) => a - b);
       running = false;
       const ingestTimes = await ingestion;
       await logsLoop;
@@ -172,6 +188,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
         databaseBytes: bytes, gigabytesPerMillionTransactions: bytes / 1e9 / (written / 1e6),
         classes: report.results, getLogs: { requests: logsMs.length, p95: q95(logsMs), max: Math.max(...logsMs) },
         sse: { blocks: lag.length, p95: Math.max(...lag.map((l) => l.p95)), max: Math.max(...lag.map((l) => l.max)), minClients: Math.min(...lag.map((l) => l.clients)) },
+        server: { requests: served.length, p50Ms: served[Math.floor(served.length / 2)], p97_5Ms: served[Math.floor(served.length * 0.975)], maxMs: served[served.length - 1], eventLoopP99Ms: loop.percentile(99) / 1e6, eventLoopMaxMs: loop.max / 1e6, unhealthyAnswers: unhealthy.slice(0, 5) },
         ingestion: { blocks: ingestTimes.length, p95: q95(ingestTimes), max: Math.max(...ingestTimes) },
       };
       console.log("L2 " + JSON.stringify(summary, null, 1));
@@ -188,6 +205,7 @@ describe.skipIf(!TEST_URL || process.env.L2 !== "1")("L2: the API at scale, on t
       expect(summary.sse.minClients, "every client got every block").toBe(SSE);
       expect(summary.sse.p95, "B4").toBeLessThanOrEqual(BUDGET.sseMs);
       expect(summary.gigabytesPerMillionTransactions, "B6").toBeLessThanOrEqual(BUDGET.gigabytesPerMillion);
+      expect(unhealthy, "B7, the health route answered something other than 200").toEqual([]);
       expect(by.health!.latency.p97_5, "B7").toBeLessThanOrEqual(BUDGET.healthMs);
     } finally {
       for (const stop of stops.reverse()) await Promise.resolve(stop()).catch(() => undefined);
