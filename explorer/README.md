@@ -99,6 +99,21 @@ The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_D
 
 Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/api.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
 
+### Rate limits
+
+Every limit is per client: the connection's address, or the last address in `TRUSTED_IP_HEADER` behind our own proxy (never read without it). An IPv6 client counts as its whole /64. There are no API keys. The limits are in `server/limits.ts`, and `server/http-limits.test.ts` holds a test for each.
+
+| Surface | Limit | When it is reached |
+|---|---|---|
+| The pages' REST routes (`/api/...`) | 20 a second, bursts of 60 | `429` with `Retry-After` |
+| Etherscan's door (`/api`) | 10 a second and 600 a minute | HTTP 200 with `{"status":"0","message":"NOTOK","result":"Max rate limit reached"}`, as Etherscan answers, and `Retry-After` |
+| Verification (`verifysourcecode`, `verifyproxycontract`) | 30 an hour, 500 KB a request | HTTP 200 with `status` "0", `message` "NOTOK" and the reason; `Retry-After` for the hourly limit. Any other request to `/api` may carry 8 KB |
+| `/rpc` | 300 a minute (`PUBLIC_RPC_RATE_PER_MINUTE`) | as in "The public RPC" |
+| `GET /api/stream` | 4 streams for a client, 5,000 for an instance | `429` with `Retry-After` |
+| The faucet (`/api/faucet`) | its own limits | as in "The faucet" |
+
+`/healthz` is the proxy's probe and has no limit.
+
 ## The public RPC
 
 With `PUBLIC_RPC=1` the server answers `POST /rpc`, the address a wallet adds as its network. It forwards to reth, but it shows only what is final on Canton.
