@@ -343,6 +343,13 @@ contract Vault {
       });
     }
 
+    it("does not search for other spellings of the source: line endings that the chain's metadata hash does not cover make a partial match", async () => {
+      const c = await compileVault(true);
+      await addContract(db.pool, A, c.runtime, c.creation);
+      const crlf = { ...c.input, sources: { "Vault.sol": { content: VAULT.replace(/\n/g, "\r\n") } } };
+      expect(await v.verify(req(A, submit(crlf)))).toMatchObject({ status: "pass", match: "partial" });
+    });
+
     it("is a partial match when only the metadata hash differs, and a full match when nothing does", async () => {
       const c = await compileVault(true);
       const md = c.runtime.readUInt16BE(c.runtime.length - 2);

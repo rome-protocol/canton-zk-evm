@@ -106,6 +106,14 @@ class DiffedCompilation extends SolidityCompilation {
   }
 }
 
+/**
+ * The library's Verification, without its search for "perfect metadata". When the metadata hash on chain is not the compiled one, the library tries other line
+ * endings and spacing of the sources, and it may fetch missing sources from IPFS or GitHub to do it. Nothing may leave this machine at verify time, so the search is
+ * off: a source that differs from the deployed one in what its metadata hash covers is a partial match, as before the library.
+ */
+class OfflineVerification extends Verification {}
+(OfflineVerification.prototype as unknown as { checkForPerfectMetadata: () => Promise<void> }).checkForPerfectMetadata = async () => undefined;
+
 /** The chain as the library reads it: one contract, from the rows the indexer stored. Nothing is fetched. */
 function chainOfRows(on: OnChain): SourcifyChain {
   const hex = (b: Buffer): string => "0x" + b.toString("hex");
@@ -128,7 +136,7 @@ export async function matchWithSourcify(
   solc: SandboxSolc, version: string, input: SolidityJsonInput, target: { path: string; name: string }, on: OnChain, given: Buffer | null,
 ): Promise<Matched> {
   const compilation = new DiffedCompilation(solc, version, input, target);
-  const verification = new Verification(compilation, chainOfRows(on), ADDRESS, on.creationInput ? ZERO_TX : undefined);
+  const verification = new OfflineVerification(compilation, chainOfRows(on), ADDRESS, on.creationInput ? ZERO_TX : undefined);
   try {
     await verification.verify();
   } catch (e) {
