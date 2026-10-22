@@ -39,24 +39,37 @@ export interface StreamOptions {
   onEvent: (e: StreamEvent) => void;
   /** True once the stream is open, false while it is down. */
   onState: (live: boolean) => void;
+  /** Called once when the server says there is no stream here (404: live updates are turned off). The stream is not tried again. */
+  onOff?: () => void;
   /** Waits before trying again: the first, and the most it grows to. */
   retryMs?: { first: number; max: number };
+  /** How long the stream may say nothing before it is taken as dead and opened again. The server's heartbeat is every 15 s, so the default is three of them. */
+  idleMs?: number;
 }
 
 /** Opens the stream, keeps it open (trying again with a growing wait), and resumes from the last event id it saw. Returns the function that closes it. */
-export function openStream({ topics, onEvent, onState, retryMs = { first: 1000, max: 15_000 } }: StreamOptions): () => void {
+export function openStream({ topics, onEvent, onState, onOff, retryMs = { first: 1000, max: 15_000 }, idleMs = 45_000 }: StreamOptions): () => void {
   const stop = new AbortController();
   let lastId: number | null = null;
   let wait = retryMs.first;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   async function run(): Promise<void> {
+    // One controller per connection, so that a connection that goes quiet can be dropped without closing the stream for good.
+    const conn = new AbortController();
+    const onStop = () => conn.abort();
+    stop.signal.addEventListener("abort", onStop);
+    let idle: ReturnType<typeof setTimeout> | undefined;
+    const watch = () => { clearTimeout(idle); idle = setTimeout(() => conn.abort(), idleMs); };
+    let off = false;
     try {
       const headers: Record<string, string> = { accept: "text/event-stream" };
       if (lastId !== null) headers["Last-Event-ID"] = String(lastId);
-      const res = await fetch(`/api/stream?topics=${topics.join(",")}`, { headers, signal: stop.signal });
+      const res = await fetch(`/api/stream?topics=${topics.join(",")}`, { headers, signal: conn.signal });
+      if (res.status === 404) { off = true; throw new Error("stream off"); }
       if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
       onState(true);
+      watch();
       wait = retryMs.first;
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -64,6 +77,7 @@ export function openStream({ topics, onEvent, onState, retryMs = { first: 1000, 
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        watch();
         const parsed = parseFrames(buffer + decoder.decode(value, { stream: true }));
         buffer = parsed.rest;
         for (const e of parsed.events) {
@@ -73,8 +87,12 @@ export function openStream({ topics, onEvent, onState, retryMs = { first: 1000, 
       }
     } catch {
       // Down for any reason: the wait below, then another try.
+    } finally {
+      clearTimeout(idle);
+      stop.signal.removeEventListener("abort", onStop);
     }
     if (stop.signal.aborted) return;
+    if (off) { onOff?.(); return; }
     onState(false);
     timer = setTimeout(run, wait);
     wait = Math.min(wait * 2, retryMs.max);

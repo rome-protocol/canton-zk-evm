@@ -95,4 +95,36 @@ describe("openStream", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(calls).toHaveLength(1);
   });
+
+  it("stops for good, and says so, when the server answers that there is no stream", async () => {
+    vi.useFakeTimers();
+    const calls = server([{ status: 404 }, { chunks: [], hold: true }]);
+    const states: boolean[] = [];
+    let off = 0;
+    const close = openStream({ topics: ["blocks"], onEvent: () => {}, onState: (s) => states.push(s), onOff: () => { off++; }, retryMs: { first: 1000, max: 4000 } });
+    await flush();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls).toHaveLength(1);
+    expect(off).toBe(1);
+    expect(states).toEqual([]);
+    close();
+  });
+
+  it("opens the stream again when nothing has arrived for the idle time, even though the connection looks open", async () => {
+    vi.useFakeTimers();
+    const calls = server([{ chunks: [BLOCK(3)], hold: true }, { chunks: [BLOCK(4)], hold: true }]);
+    const seen: number[] = [], states: boolean[] = [];
+    const close = openStream({ topics: ["blocks"], onEvent: (e) => seen.push(e.id!), onState: (s) => states.push(s), retryMs: { first: 1000, max: 4000 }, idleMs: 45_000 });
+    await flush();
+    await vi.advanceTimersByTimeAsync(44_000);
+    expect(calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(states).toEqual([true, false]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.headers["Last-Event-ID"]).toBe("3");
+    expect(seen).toEqual([3, 4]);
+    expect(states).toEqual([true, false, true]);
+    close();
+  });
 });
