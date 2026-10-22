@@ -121,7 +121,8 @@ for _ in $(seq 1 120); do healthy && break; sleep 1; done
 healthy || fail "the explorer is not healthy: $(curl -s "$EXPLORER/healthz" | cut -c1-600)"
 
 # The explorer took its pins from this run's own guest.txt, not from the recorded session's that the image carries.
-status=$(curl -s "$EXPLORER/api/status"   # 503 with the producer rows, and the body is the same)
+# 503 while the producer rows are degraded, and the body is the same
+status=$(curl -s "$EXPLORER/api/status")
 [ "$(jq -r .pins.file <<<"$status")" = guest.txt ] || fail "the explorer's pins did not come from the run's guest.txt: $(jq -c .pins <<<"$status")"
 [ "$(jq -r '.pins.programVK | ascii_downcase | sub("^0x"; "")' <<<"$status")" = "$VK" ] || fail "the explorer's program key is not the run's: $(jq -c .pins <<<"$status")"
 [ "$(jq -r '.pins.rootC | ascii_downcase | sub("^0x"; "")' <<<"$status")" = "$RC" ] || fail "the explorer's ZisK release is not the run's: $(jq -c .pins <<<"$status")"
