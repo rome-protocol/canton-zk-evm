@@ -11,21 +11,34 @@ const REFRESH: Record<string, readonly string[]> = {
   derived: ["stats"],
 };
 
+/** Connecting: not tried yet or being tried. Live: open. Down: it dropped and is being tried again. Off: the server has no stream, so the pages poll. */
+export type StreamState = "connecting" | "live" | "down" | "off";
+
 /**
- * Keeps one live stream open for as long as the page is shown, and reads again what an event says has changed. Returns whether the stream is up:
- * a page that polls does so only while it is not.
+ * Keeps one live stream open for as long as the page is shown, and reads again what an event says has changed. Returns how the stream is: a page
+ * that polls does so whenever it is not live. The server does not replay the in-flight and stats events to a stream that comes back, so when
+ * one does, the status and the in-flight attempts are read again here.
  */
-export function useLive(topics: readonly Topic[]): boolean {
+export function useLiveState(topics: readonly Topic[]): StreamState {
   const client = useQueryClient();
-  const [live, setLive] = useState(false);
+  const [state, setState] = useState<StreamState>("connecting");
   const key = topics.join(",");
   useEffect(() => {
+    let wasLive = false;
     const close = openStream({
       topics: key.split(",") as Topic[],
-      onState: setLive,
+      onState: (up) => {
+        setState(up ? "live" : "down");
+        if (up && wasLive) for (const k of ["in-flight", "status"]) void client.invalidateQueries({ queryKey: [k] });
+        if (up) wasLive = true;
+      },
+      onOff: () => setState("off"),
       onEvent: (e) => { for (const k of REFRESH[e.event] ?? []) void client.invalidateQueries({ queryKey: [k] }); },
     });
-    return () => { close(); setLive(false); };
+    return () => { close(); setState("connecting"); };
   }, [client, key]);
-  return live;
+  return state;
 }
+
+/** Whether the stream is up. */
+export const useLive = (topics: readonly Topic[]): boolean => useLiveState(topics) === "live";
