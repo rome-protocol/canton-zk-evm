@@ -11,6 +11,7 @@ import { cached } from "./cache.ts";
 import type { AccountRest, AddressSort, ContractSort, TokenSort } from "./account-rest.ts";
 import { REST_FIELDS as F, pick } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
+import { router } from "./router.ts";
 import type { Reth } from "../reth.ts";
 
 const ADDRESS = /^0x[0-9a-f]{40}$/, LEG_ID = /^0x[0-9a-f]{64}$/;
@@ -33,7 +34,7 @@ export interface AccountRouteDeps {
   search: (q: string) => Promise<Answer>;
 }
 
-/** The route for a request, or undefined when it is none of these. `parts` is the path split into lowercase segments, `/api` first. */
+/** The routes of accounts, contracts, tokens and legs: a router for a request's path, with the list of the paths it serves. */
 export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   /** A page of rows in the fields of an allowlist. `derived` is the pages' own word on stage 2, and is always given: these lists are all derived. */
   const page = <T extends object, K extends keyof T>(rows: T[], limit: number, key: (r: T) => string, fields: readonly K[], derived: boolean) => {
@@ -194,34 +195,23 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return cached(ok(pick({ path: items[0]!.path, matches: items }, F.search)), "list");
   }
 
-  return (parts: string[], q: URLSearchParams): (() => Promise<Answer>) | undefined => {
-    const [, name, a, b] = parts;
-    const n = parts.length;
-    if (name === "addresses") {
-      if (n === 2) return () => addressList(q);
-      if (n === 3) return () => oneAddress(a!);
-      if (n === 4 && b === "txs") return () => addressTxs(a!, q);
-      if (n === 4 && b === "internal") return () => addressInternal(a!, q);
-      if (n === 4 && b === "token-transfers") return () => addressTransfers(a!, q);
-      if (n === 4 && b === "tokens") return () => addressTokens(a!, q);
-      if (n === 4 && b === "coin-history") return () => coinHistory(a!, q);
-    }
-    if (name === "contracts") {
-      if (n === 2) return () => contractList(q);
-      if (n === 3) return () => oneContract(a!);
-      if (n === 4 && b === "source") return () => contractSource(a!);
-    }
-    if (name === "tokens") {
-      if (n === 2) return () => tokenList(q);
-      if (n === 3) return () => oneToken(a!);
-      if (n === 4 && b === "holders") return () => tokenHolders(a!, q);
-      if (n === 4 && b === "transfers") return () => tokenTransfers(a!, q);
-    }
-    if (name === "legs") {
-      if (n === 2) return () => legList(q);
-      if (n === 3) return () => oneLeg(a!);
-    }
-    if (name === "search" && n === 2) return () => find(q.get("q") ?? "");
-    return undefined;
-  };
+  return router([
+    ["/api/addresses", (_, q) => addressList(q)],
+    ["/api/addresses/{address}", (a) => oneAddress(a)],
+    ["/api/addresses/{address}/txs", (a, q) => addressTxs(a, q)],
+    ["/api/addresses/{address}/internal", (a, q) => addressInternal(a, q)],
+    ["/api/addresses/{address}/token-transfers", (a, q) => addressTransfers(a, q)],
+    ["/api/addresses/{address}/tokens", (a, q) => addressTokens(a, q)],
+    ["/api/addresses/{address}/coin-history", (a, q) => coinHistory(a, q)],
+    ["/api/contracts", (_, q) => contractList(q)],
+    ["/api/contracts/{address}", (a) => oneContract(a)],
+    ["/api/contracts/{address}/source", (a) => contractSource(a)],
+    ["/api/tokens", (_, q) => tokenList(q)],
+    ["/api/tokens/{address}", (a) => oneToken(a)],
+    ["/api/tokens/{address}/holders", (a, q) => tokenHolders(a, q)],
+    ["/api/tokens/{address}/transfers", (a, q) => tokenTransfers(a, q)],
+    ["/api/legs", (_, q) => legList(q)],
+    ["/api/legs/{id}", (id) => oneLeg(id)],
+    ["/api/search", (_, q) => find(q.get("q") ?? "")],
+  ]);
 }

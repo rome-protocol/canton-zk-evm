@@ -9,6 +9,7 @@ import type { ChainRest } from "./chain-rest.ts";
 import { traceKey } from "./chain-rest.ts";
 import { REST_FIELDS as F, pick } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
+import { router } from "./router.ts";
 import { traceOf, type CallFrame } from "./trace.ts";
 import type { Reth } from "../reth.ts";
 
@@ -25,7 +26,7 @@ export interface ChainRouteDeps {
   transaction: (hash: string) => Promise<Answer>;
 }
 
-/** The route for a request, or undefined when it is none of these. `parts` is the path split into lowercase segments, `/api` first. */
+/** The routes of the chain: a router for a request's path, with the list of the paths it serves. */
 export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) {
   const page = <T extends object, K extends keyof T>(rows: T[], limit: number, key: (r: T) => string, fields: readonly K[], derived?: boolean) => {
     const p = pageOf(rows, limit, key);
@@ -149,29 +150,19 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(pick({ ...u, template: pick(u.template, F.updateTemplate), signatories: u.signatories.map((s) => pick(s, F.signatory)), producerRecord: u.producerRecord && pick(u.producerRecord, F.producerRecord) }, F.updateDetail)), "composite");
   }
 
-  return (parts: string[], q: URLSearchParams): (() => Promise<Answer>) | undefined => {
-    const [, name, a, b] = parts;
-    const n = parts.length;
-    if (name === "blocks") {
-      if (n === 2) return () => blocks(q);
-      if (n === 3) return () => oneBlock(a!);
-      if (n === 4 && b === "transactions") return () => blockTxs(a!, q);
-      if (n === 4 && b === "legs") return () => blockLegs(a!, q);
-      if (n === 4 && b === "record") return () => record(a!);
-    }
-    if (name === "txs") {
-      if (n === 2) return () => txs(q);
-      if (n === 3) return () => oneTx(a!);
-      if (n === 4 && b === "logs") return () => logs(a!, q);
-      if (n === 4 && b === "internal") return () => internal(a!, q);
-      if (n === 4 && b === "token-transfers") return () => transfers(a!, q);
-      if (n === 4 && b === "trace") return () => trace(a!);
-    }
-    if (name === "canton" && a === "updates") {
-      if (n === 3) return () => updates(q);
-      if (n === 4) return () => oneUpdate(b!);
-    }
-    return undefined;
-  };
+  return router([
+    ["/api/blocks", (_, q) => blocks(q)],
+    ["/api/blocks/{id}", (id) => oneBlock(id)],
+    ["/api/blocks/{id}/transactions", (id, q) => blockTxs(id, q)],
+    ["/api/blocks/{id}/legs", (id, q) => blockLegs(id, q)],
+    ["/api/blocks/{id}/record", (id) => record(id)],
+    ["/api/txs", (_, q) => txs(q)],
+    ["/api/txs/{hash}", (hash) => oneTx(hash)],
+    ["/api/txs/{hash}/logs", (hash, q) => logs(hash, q)],
+    ["/api/txs/{hash}/internal", (hash, q) => internal(hash, q)],
+    ["/api/txs/{hash}/token-transfers", (hash, q) => transfers(hash, q)],
+    ["/api/txs/{hash}/trace", (hash) => trace(hash)],
+    ["/api/canton/updates", (_, q) => updates(q)],
+    ["/api/canton/updates/{updateId}", (id) => oneUpdate(id)],
+  ]);
 }
-
