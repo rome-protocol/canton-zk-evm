@@ -129,7 +129,7 @@ function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coi
         <Item label="Result">
           {waiting ? <span className="muted">Not run yet</span> : t.success === null ? <span className="muted">Not known</span> : t.success ? <Good>Success</Good> : <Bad>Failed (reverted)</Bad>}
         </Item>
-        <Item label="Stage"><Chip status={t.status} />{finalAt && t.status === "final" && <span className="muted"> final {ago(finalAt)}</span>}</Item>
+        <Item label="Stage"><Chip status={t.status} />{finalAt && t.status === "final" && <span className="muted"> · committed on Canton {ago(finalAt)}</span>}</Item>
         <Item label="Block"><BlockItem t={t} head={t.status === "final" ? head : undefined} /></Item>
         <BlockFacts t={t} coin={coin} block={block} read={read} detail={detail} />
         <Item label="From"><HashLink value={t.from} to={`/address/${t.from}`} full /></Item>

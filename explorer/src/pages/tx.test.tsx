@@ -525,7 +525,7 @@ describe("the facts the block and the detail add to the overview", () => {
   it("shows the time of its block, the stage, the final head, the gas price, the fees, the burnt fees and its position", async () => {
     await openFinal(undefined, { txDetail: () => reply(txDetail({ index: 2 })) });
     await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
-    expect(row("Stage")).toHaveTextContent(/^Final final /);
+    expect(row("Stage")).toHaveTextContent(/^Final · committed on Canton /);
     expect(row("Block")).toHaveTextContent("final head is 3");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     await waitFor(() => expect(row("Fees")).toHaveTextContent("Base 0.67 gwei · Max 2 gwei · Max priority 1 gwei"));
