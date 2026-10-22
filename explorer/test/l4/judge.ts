@@ -44,13 +44,13 @@ export function judge(pages: PageResult[]): string[] {
   for (const held of HELD) {
     const p = pages.find((x) => x.name === held);
     if (!p) { failures.push(`${held}: not measured`); continue; }
-    const lcp = p.median.lcpMs;
+    const lcp = p.median.lcpMs ?? null;
     if (lcp === null) failures.push(`${held}: no largest contentful paint was recorded`);
     else if (lcp > B5_LCP_MS) failures.push(`${held}: median LCP ${Math.round(lcp)} ms > ${B5_LCP_MS} ms`);
-    const js = p.median.scriptGzipBytes;
+    const js = p.median.scriptGzipBytes ?? null;
     if (js === null || js === 0) failures.push(`${held}: no script was measured`);
     else if (js > B5_SCRIPT_GZIP_BYTES) failures.push(`${held}: ${Math.round(js)} bytes of gzipped script > ${B5_SCRIPT_GZIP_BYTES}`);
-    const api = p.median.apiBeforeFcp;
+    const api = p.median.apiBeforeFcp ?? null;
     if (api === null) failures.push(`${held}: no first paint was recorded`);
     else if (api > B5_API_CALLS_BEFORE_PAINT) failures.push(`${held}: ${api} API calls before the first paint > ${B5_API_CALLS_BEFORE_PAINT}`);
   }
