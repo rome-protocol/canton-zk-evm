@@ -94,6 +94,7 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
     final: false,
     attempts: [{ number: 4, strategy: "timer", cutReason: "interval", stage: "proving", txCount: 3, poolWaiting: 1, cutAt: at(0), builtAt: at(0.2), proofStartedAt: at(0.6), proofEndedAt: null, submittedAt: null, answeredAt: null, outcome: null }],
     poolWaiting: { waiting: 1, at: at(0.5) },
+    transactions: [],
     ...over,
   };
 }

@@ -182,7 +182,9 @@ export interface InFlightAttempt {
   txCount: number | null; poolWaiting: number | null;
   cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null; outcome: string | null;
 }
-export interface InFlight { final: false; attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null }
+/** A transaction that is not final: waiting in reth's pool, or in a block being proven. `at` is when the explorer accepted it (UTC, ISO). */
+export interface InFlightTx { hash: string; stage: "waiting" | "proving"; at: string }
+export interface InFlight { final: false; attempts: InFlightAttempt[]; poolWaiting: { waiting: number; at: string } | null; transactions: InFlightTx[] }
 
 export const getBlocks = async (limit: number) => (await call(`/api/blocks?limit=${limit}`, [200])).body as Page<BlockListItem>;
 export const getTxs = async (limit: number) => (await call(`/api/txs?limit=${limit}`, [200])).body as Page<TxListItem>;

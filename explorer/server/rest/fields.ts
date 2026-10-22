@@ -33,7 +33,8 @@ export const FIELDS = {
   /** Where a transaction has been, from the producer's journal and the API: null when no row is kept for it. */
   lifecycle: ["state", "reason", "acceptedAt", "acceptedVia", "includedAt", "attempts", "leftOutReason", "proofStartedAt", "proofEndedAt", "submittedAt", "committedAt", "finalAt", "finalBlock", "timeToFinalMs"],
   /** The attempts that are not final, and reth's pool count from the producer's latest sample. */
-  inFlight: ["final", "attempts", "poolWaiting"],
+  inFlight: ["final", "attempts", "poolWaiting", "transactions"],
+  inFlightTx: ["hash", "stage", "at"],
   inFlightAttempt: ["number", "strategy", "cutReason", "stage", "txCount", "poolWaiting", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt", "outcome"],
   poolSample: ["waiting", "at"],
   tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
