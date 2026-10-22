@@ -209,8 +209,10 @@ describe.skipIf(!TEST_URL)("GET /api/health", () => {
       const api = createApi({ config, reth: { block: async () => ({ number: 5 }) } as never, ledger: { ledgerEnd: async () => 9 } as never, chain: createChainDb(db.pool), health });
       const timer = Date.now();
       const refreshing = health.refresh(); // the background timer's work: three probes side by side, each given up on after 150 ms
+      const asked = Date.now();
       const a = await api("GET", "/api/health");
-      expect(Date.now() - timer).toBeLessThan(120); // not held by the probes
+      expect(Date.now() - asked).toBeLessThan(50); // B7: answers in well under 50 ms, not held by the probes that hang
+      expect(Date.now() - timer).toBeLessThan(120);
       expect(a.status).toBe(200);
       await refreshing;
       expect(Date.now() - timer).toBeLessThan(450); // side by side, not one after another

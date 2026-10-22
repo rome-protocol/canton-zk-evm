@@ -106,14 +106,14 @@ Every limit is per client: the connection's address, or the last address in `TRU
 
 | Surface | Limit | When it is reached |
 |---|---|---|
-| The pages' REST routes (`/api/...`) | 20 a second, bursts of 60 | `429` with `Retry-After` |
+| The pages' REST routes (`/api/...`) and `/healthz` | 20 a second, bursts of 60 | `429` with `Retry-After` |
 | Etherscan's door (`/api`) | 10 a second and 600 a minute | HTTP 200 with `{"status":"0","message":"NOTOK","result":"Max rate limit reached"}`, as Etherscan answers, and `Retry-After` |
 | Verification (`verifysourcecode`, `verifyproxycontract`) | 30 an hour, 500 KB a request | HTTP 200 with `status` "0", `message` "NOTOK" and the reason; `Retry-After` for the hourly limit. Any other request to `/api` may carry 8 KB |
 | `/rpc` | 300 a minute (`RPC_RATE_PER_MINUTE`) | as in "The public RPC" |
 | `GET /api/stream` | 4 streams for a client, 5,000 for an instance | `429` with `Retry-After` |
 | The faucet (`/api/faucet`) | its own limits | as in "The faucet" |
 
-`/healthz` is the proxy's probe and has no limit.
+`/healthz` answers the same as `/api/status` (it reads reth and Canton on every call), so it shares the pages' REST rate per client. That rate is far above any proxy's probe, and a client over it cannot reach reth or Canton through `/healthz`.
 
 ## The public RPC
 

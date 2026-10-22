@@ -39,7 +39,7 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   accounts?: AccountRest;
   /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
   live?: boolean;
-  /** The checks this API instance writes about what it sees; `/api/health` asks it to refresh them before it answers. Without it the answer shows the rows the other roles wrote. */
+  /** The checks this API instance writes about what it sees: its own timer writes the rows in the background, and `/api/health` only reads the table and says which instance answered. Without it the answer shows the rows the other roles wrote. */
   health?: ApiHealth }
 
 /** Where a transaction is, as the page says: the tracker's states, and "unindexed" for one in a block that is final on Canton and not in the database yet. */

@@ -132,6 +132,13 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
   // A refreshed check with no row has not been looked at: after a rebuild from an export, or before a new indexer's first round. No row must not read as healthy.
   if (started) {
     for (const id of REFRESHED_CHECKS) if (!checks.some((c) => c.id === id)) checks.push(synthetic(id, "indexer", "down", "the indexer has not checked yet"));
+    // The same for the answering instance's own reth and Canton rows: its timer has not written them yet (or they were removed), so nothing has looked from here.
+    if (instance !== undefined) {
+      for (const check of ["reth", "canton"]) {
+        const id = apiRowId(instance, check);
+        if (!checks.some((c) => c.id === id)) checks.push(synthetic(id, "api", "degraded", "this instance has not checked yet"));
+      }
+    }
   }
   // The names of what is wrong follow the order of the rows, then the checks that have no row; the list of checks is then put in order by id.
   const problems = checks.filter((c) => c.status !== "ok").map((c) => `${c.id}: ${c.detail ?? c.status}`);

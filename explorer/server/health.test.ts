@@ -55,6 +55,17 @@ describe("the health model (design 6.5)", () => {
     expect(other.checks.find((c) => c.id === "api/b/reth")).toMatchObject({ status: "degraded", written: "down", elsewhere: true });
   });
 
+  it("does not read as healthy when the answering instance has written no reth or Canton row yet", () => {
+    const none = evaluate([...fresh()], { instance: "a" });
+    expect(none.status).toBe("degraded");
+    for (const id of ["api/a/reth", "api/a/canton"]) expect(none.checks.find((c) => c.id === id)).toMatchObject({ status: "degraded", detail: "this instance has not checked yet" });
+    const half = evaluate([...fresh(), row("api/a/reth", "ok")], { instance: "a" });
+    expect(half.checks.map((c) => c.id)).toContain("api/a/canton");
+    expect(half.checks.find((c) => c.id === "api/a/reth")).toMatchObject({ status: "ok" });
+    // Asked without an instance (/api/status, /healthz) the API's own rows are not required.
+    expect(evaluate([...fresh()]).status).toBe("ok");
+  });
+
   it("is degraded for a faucet, a tracker or a verifier that is empty, stuck or unusable, and never down", () => {
     for (const id of ["faucet", "tracker", "verifier/compilers", "verifier/queue"]) {
       const e = evaluate([...fresh(), row(id, "down", 1, "empty")]);
