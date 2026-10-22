@@ -99,6 +99,17 @@ The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_D
 
 Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/api.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
 
+## Stats
+
+The indexer rolls its facts up into `stats_minute`, `stats_hour` and `stats_day` (migration 0022 added the columns the stats page needs). Every run recomputes the minutes from a lookback before its cursor to the open minute, so a run twice changes nothing and a late fact is repaired by the next run. Runs whose settings carry `test = true` are counted in the `test_*` columns and left out of everything else. `node server/indexer/cli.ts stats-rebuild` forgets the rows and builds them again from the facts.
+
+`GET /api/stats/summary?window=` gives the numbers of design section 8 over a window (`1h`, `6h`, `24h`, `7d` or `30d`, `24h` when left out), and what is live now: the rate over the last 60 s, what is waiting (with the age of the pool sample), the open transactions by age (normal, slow, stuck, the stuck ones listed), and the lost ones. `GET /api/stats/series?metric=&window=&step=` gives one metric as a point for each step. Both are listed, with their fields, in `/api/openapi.json`.
+
+- A window is the last whole buckets of the rows it is read from (1 h and 6 h: minute rows; 24 h and 7 d: hour rows; 30 d: day rows), the open bucket included. Buckets are cut from the epoch in UTC.
+- Times are read from histograms whose buckets are 5% apart, so a percentile is never below the truth and at most 5% above it.
+- A time or a rate with nothing behind it is `null`, never a guess. A count with nothing behind it is 0. `asOf` is when the rollups last ran, and `dataSince` is the first day with a row.
+- A series step is `1m`, `10m`, `1h` or `1d`, as the window allows. `busy_ratio` is drawn in `10m`, `1h` or `1d` only, and the daily address and contract counts in `1d`.
+
 ## The public RPC
 
 With `PUBLIC_RPC=1` the server answers `POST /rpc`, the address a wallet adds as its network. It forwards to reth, but it shows only what is final on Canton.
