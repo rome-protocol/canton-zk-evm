@@ -19,6 +19,14 @@ export function duration(ms: number): string {
 /** How long a block took to commit: from its own timestamp, in whole seconds, to Canton's record time. */
 export const commitTime = (timestampSeconds: number, recordTime: string) => duration(Date.parse(recordTime) - timestampSeconds * 1000);
 
+/** A measured time in seconds: two places under a minute ("7.24 s"), then minutes and whole seconds ("1 min 28 s"). */
+export function span(totalSeconds: number): string {
+  const t = Math.max(0, totalSeconds);
+  if (t < 59.995) return `${t.toFixed(2)} s`;
+  const s = Math.round(t), m = Math.floor(s / 60);
+  return s % 60 ? `${m} min ${s % 60} s` : `${m} min`;
+}
+
 /** A whole number with its thousands grouped. */
 export const count = (n: number | string | bigint) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 

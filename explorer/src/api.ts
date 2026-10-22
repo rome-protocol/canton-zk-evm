@@ -169,7 +169,10 @@ export async function search(q: string): Promise<SearchResult> {
 
 /** A page of a list, newest first. `next` is the cursor of the following page, null on the last. */
 export interface Page<T> { items: T[]; next: string | null }
-export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string }
+export interface BlockListItem { number: number; hash: string; timestamp: number; txCount: number; gasUsed: number; gasLimit: number; miner: string; legsCount: number; updateId: string; recordTime: string;
+  /** ZisK's time for the block, and the way from the producer's cut to Canton's record time, in seconds; null where the producer's journal has no times. */
+  proofSeconds: number | null; finalSeconds: number | null }
+export type BlockFilter = "all" | "transactions" | "empty";
 export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null }
 /** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */
 export interface InFlightAttempt {
@@ -208,7 +211,9 @@ export interface UpdateDetail extends UpdateItem {
 const PAGE = 25;
 const cursor = (name: string, c: string | null) => (c ? `&${name}=${encodeURIComponent(c)}` : "");
 /** The paged lists. `before` is the cursor of a list that runs newest first, `after` of one that runs in order; null asks for the first page. */
-export const getBlockPage = async (before: string | null, limit = PAGE) => (await call(`/api/blocks?limit=${limit}${cursor("before", before)}`, [200])).body as Page<BlockListItem>;
+export const getBlockPage = async (before: string | null, limit = PAGE, filter: BlockFilter = "all") => (await call(`/api/blocks?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as Page<BlockListItem>;
+/** The address of the blocks as a file: the newest blocks of the filter, with the list's columns. */
+export const blocksCsvPath = (filter: BlockFilter) => `/api/blocks?format=csv&filter=${filter}`;
 export const getBlockTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
 export const getBlockLegs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/blocks/${encodeURIComponent(id)}/legs?limit=${limit}${cursor("after", after)}`, [200])).body as Page<LegItem>;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
