@@ -1,7 +1,8 @@
 /**
  * The reads behind `/api/stats` (design sections 6.1 and 8). Nothing here writes. The rollup rows come from the minute, hour and day tables; the numbers that
  * are live (transactions per second now, what is waiting, what is open, what was lost) come from the tables the rollups are made of.
- * Test runs (settings `test = true`) are left out of every count, as the rollups leave them out.
+ * Test runs (settings `test = true`) are left out of the rollup rows. The live lists and counts (open, stuck, lost) and the day's address counts do not
+ * look at test runs.
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";

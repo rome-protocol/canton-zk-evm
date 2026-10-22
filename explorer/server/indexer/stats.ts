@@ -1,9 +1,10 @@
 /**
  * The stats rollups (design section 8): minute, hour and day rows with histograms, rebuilt from the facts.
  *
- * Every run recomputes the minutes from (the cursor minus a lookback) to the open minute, a chunk at a time, and replaces the rows of each chunk in one
- * transaction. Nothing is ever incremented, so a run twice changes nothing, and a fact that arrives late (a lifecycle record, a proof end) is repaired by the
- * next run as long as it falls inside the lookback. Buckets are `floor(epoch / 60 s)`, days are UTC, and `date_trunc` is not used, so the session time zone
+ * Every run recomputes the minutes from the earlier of (the cursor minus a lookback) and (the earliest fact time any writer touched since the last run, left in
+ * `stats_dirty` by the triggers of migration 0022) to the open minute, a chunk at a time, and replaces the rows of each chunk in one transaction. Nothing is
+ * ever incremented, so a run twice changes nothing, and a fact that arrives late (a block caught up after an outage, a journal loaded late) is rolled up by
+ * the next run however old it is. Buckets are `floor(epoch / 60 s)`, days are UTC, and `date_trunc` is not used, so the session time zone
  * does not matter. Runs whose settings carry `test = true` are counted apart in the `test_*` columns and left out of everything else.
  */
 import type { Pool, PoolClient } from "pg";
@@ -15,7 +16,7 @@ export const TABLES = { minute: "stats_minute", hour: "stats_hour", day: "stats_
 
 export const SCALARS = [
   "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed",
-  "attempts", "attempts_not_taken", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates",
+  "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates",
   "proof_busy_ms", "test_blocks", "test_txs", "test_attempts", "test_proof_busy_ms",
 ] as const;
 type Scalar = (typeof SCALARS)[number];
@@ -89,15 +90,22 @@ const TTF = `
     left join producer_runs r on r.run_id = a.run_id
    where l.final_at >= $1 and l.final_at < $2 and coalesce(r.settings->>'test', '') <> 'true'
    group by 1, 2`;
+/** Transactions that belong to a test run (a flood test) are left out of the counts: the run of an attempt that carried them says so. */
+const NOT_TEST = `not exists (select 1 from attempt_transactions x join block_attempts xa on xa.attempt_id = x.attempt_id join producer_runs xr on xr.run_id = xa.run_id
+                                where x.tx_hash = tx_lifecycle.tx_hash and coalesce(xr.settings->>'test', '') = 'true')`;
 const COUNT_BY = (col: string, where: string) =>
-  `select floor(extract(epoch from ${col}) / 60)::bigint as m, count(*)::int as n from tx_lifecycle where ${col} >= $1 and ${col} < $2 ${where} group by 1`;
+  `select floor(extract(epoch from ${col}) / 60)::bigint as m, count(*)::int as n from tx_lifecycle where ${col} >= $1 and ${col} < $2 ${where} and ${NOT_TEST} group by 1`;
+/** A proof longer than this is not looked for across the end of a chunk (it would need a read of all later attempts). */
+const PROOF_MAX = "6 hours";
 const ATTEMPTS = `
   select extract(epoch from a.cut_at)::float8 * 1000 as cut, extract(epoch from a.proof_started_at)::float8 * 1000 as ps, extract(epoch from a.proof_ended_at)::float8 * 1000 as pe,
          extract(epoch from a.submitted_at)::float8 * 1000 as sub, extract(epoch from a.answered_at)::float8 * 1000 as ans,
          a.outcome, a.proof_outcome, a.tx_count, coalesce(r.settings->>'test', '') = 'true' as test
     from block_attempts a left join producer_runs r on r.run_id = a.run_id
-   where (a.cut_at >= $1 and a.cut_at < $2) or (a.proof_ended_at >= $1 and a.proof_ended_at < $2) or (a.answered_at >= $1 and a.answered_at < $2)
-      or (a.proof_started_at < $2 and a.proof_ended_at >= $1)`;
+   where (a.cut_at >= $1 and a.cut_at < $2) or (a.answered_at >= $1 and a.answered_at < $2)
+      or (a.proof_ended_at >= $1 and a.proof_ended_at < $2::timestamptz + interval '${PROOF_MAX}' and a.proof_started_at < $2)`;
+/** The reads, for the test that checks each one has an index to read by. Parameters are as in computeMinutes. */
+export const QUERIES = { blocks: BLOCKS, ttf: TTF, accepted: COUNT_BY("accepted_at", ""), lost: COUNT_BY("lost_at", "and state in ('dropped', 'lost')"), attempts: ATTEMPTS } as const;
 
 /** The minute rows of [from, to) (milliseconds, whole minutes), from the facts. Minutes with no fact have no row. */
 export async function computeMinutes(db: Pool | PoolClient, from: number, to: number): Promise<Map<number, Row>> {
@@ -143,7 +151,7 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
     else bump(r, "time_to_final_hist", k, n);
   }
   for (const x of (await db.query(COUNT_BY("accepted_at", ""), [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.accepted += Number(x.n);
-  for (const x of (await db.query(COUNT_BY("updated_at", "and state in ('dropped', 'lost')"), [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.lost += Number(x.n);
+  for (const x of (await db.query(COUNT_BY("lost_at", "and state in ('dropped', 'lost')"), [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.lost += Number(x.n);
 
   const L = histLength("time");
   for (const x of (await db.query(ATTEMPTS, [a, b])).rows) {
@@ -162,10 +170,12 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
     if (r0) {
       const s = r0.scalars;
       s.attempts++;
-      // One bucket for each attempt, so the shares add up to at most all attempts: refused, then failed, then not taken.
+      // One bucket for each attempt, so the shares add up to at most all attempts: refused, then failed, then not taken. Skipped (nothing to include) and cancelled ones are counted apart and are not failures.
       if (x.outcome === "refused") s.attempts_refused++;
       else if (x.outcome === "failed" || x.proof_outcome === "failed" || x.proof_outcome === "wrong_block") s.attempts_failed++;
-      else if (x.outcome === "not_taken" || x.outcome === "skipped" || x.outcome === "cancelled") s.attempts_not_taken++;
+      else if (x.outcome === "not_taken") s.attempts_not_taken++;
+      else if (x.outcome === "skipped") s.attempts_skipped++;
+      else if (x.outcome === "cancelled") s.attempts_cancelled++;
     }
     const r1 = at(x.proof_outcome === "ok" ? pe : null);
     if (r1 && ps !== null && pe !== null) {
@@ -225,18 +235,40 @@ async function firstFact(pool: Pool): Promise<number | null> {
   const { rows: [r] } = await pool.query(`
     select extract(epoch from least(
       (select min(record_time) from blocks), (select min(cut_at) from block_attempts),
-      (select min(least(accepted_at, final_at)) from tx_lifecycle), (select min(updated_at) from tx_lifecycle where state in ('dropped', 'lost'))))::float8 * 1000 as t`);
+      (select min(least(accepted_at, final_at)) from tx_lifecycle), (select min(lost_at) from tx_lifecycle)))::float8 * 1000 as t`);
   return r.t === null ? null : Number(r.t);
 }
 
-/** One run of the rollups, up to the open minute. Safe to run twice, and from two places at once (the chunks are transactions over the same rows). */
-export async function rollupStats(pool: Pool, o: RollupOptions = {}): Promise<RollupResult> {
+/** The advisory lock a run holds: two runs (the loop, a command) never work at once, and a rebuild keeps the loop out until it is done. */
+const LOCK = 7_020_220;
+export const KEPT_MINUTE_DAYS = 30;
+
+/** Takes the earliest fact time any writer left since the last run, and moves the cursor back to it. Returns it (null when nothing was left). */
+async function claimDirty(db: PoolClient): Promise<number | null> {
+  const { rows: [r] } = await db.query(`with d as (delete from stats_dirty returning at) select extract(epoch from min(at))::float8 * 1000 as t from d`);
+  const t = r.t === null ? null : Math.floor(Number(r.t) / MINUTE) * MINUTE;
+  if (t !== null) await db.query("update cursors set position = least(position, $2) where stream = $1", [CURSOR, t]);
+  return t;
+}
+
+async function run(pool: Pool, o: RollupOptions, fresh: boolean): Promise<RollupResult> {
   const now = (o.now ?? Date.now)();
   const lookback = o.lookbackMs ?? 15 * MINUTE, chunk = Math.max(MINUTE, Math.floor((o.chunkMs ?? 60 * MINUTE) / MINUTE) * MINUTE);
   const openStart = Math.floor(now / MINUTE) * MINUTE, end = openStart + MINUTE;
+  const claim = await pool.connect();
+  try {
+    await claim.query("begin");
+    await claimDirty(claim);
+    await claim.query("commit");
+  } catch (e) {
+    await claim.query("rollback").catch(() => undefined);
+    throw e;
+  } finally {
+    claim.release();
+  }
   const cur = (await pool.query("select position, detail from cursors where stream = $1", [CURSOR])).rows[0];
   let start: number;
-  if (cur) start = Math.min(Math.floor((Number(cur.position) - lookback) / MINUTE) * MINUTE, openStart);
+  if (cur && !fresh) start = Math.min(Math.floor((Number(cur.position) - lookback) / MINUTE) * MINUTE, openStart);
   else {
     const first = await firstFact(pool);
     if (first === null) return { from: null, to: end, minutes: 0 };
@@ -248,6 +280,7 @@ export async function rollupStats(pool: Pool, o: RollupOptions = {}): Promise<Ro
       `insert into cursors (stream, position, detail, updated_at) values ($1, $2, $3, $4)
        on conflict (stream) do update set position = excluded.position, detail = excluded.detail, updated_at = excluded.updated_at`,
       [CURSOR, position, JSON.stringify({ extrasAt: ex }), new Date(now)]);
+  // The cursor is "recompute from here": it moves back with the first chunk and forward with each, so a run that stops half way is finished by the next.
   const days = new Set<number>();
   for (let a = start; a < end; a += chunk) {
     const b = Math.min(a + chunk, end);
@@ -277,12 +310,49 @@ export async function rollupStats(pool: Pool, o: RollupOptions = {}): Promise<Ro
   }
   if (did) extrasAt = now;
   await setCursor(pool, openStart, extrasAt);
+  // Minute rows are kept 30 days, cut at a day's start so that no hour is left half built.
+  await pool.query("delete from stats_minute where bucket < $1", [new Date(today - KEPT_MINUTE_DAYS * DAY)]);
   return { from: start, to: end, minutes: Math.round((end - start) / MINUTE) };
 }
 
-/** Forget every rollup row and the cursor, then build them again from the facts. */
+/** Runs `fn` holding the advisory lock on one connection; `wait` false gives up (null) when another run holds it. */
+async function locked<T>(pool: Pool, wait: boolean, fn: () => Promise<T>): Promise<T | null> {
+  const lock = await pool.connect();
+  try {
+    if (wait) await lock.query("select pg_advisory_lock($1)", [LOCK]);
+    else if (!(await lock.query("select pg_try_advisory_lock($1) as ok", [LOCK])).rows[0].ok) return null;
+    try {
+      return await fn();
+    } finally {
+      await lock.query("select pg_advisory_unlock($1)", [LOCK]);
+    }
+  } finally {
+    lock.release();
+  }
+}
+
+/** One run of the rollups, up to the open minute. Safe to run twice. A run that finds another one working does nothing (minutes: 0). */
+export async function rollupStats(pool: Pool, o: RollupOptions = {}): Promise<RollupResult> {
+  const r = await locked(pool, false, () => run(pool, o, false));
+  return r ?? { from: null, to: Math.floor((o.now ?? Date.now)() / MINUTE) * MINUTE + MINUTE, minutes: 0 };
+}
+
+/** Forget every rollup row and the cursor, then build them again from the facts. One transaction empties them, and the loop waits out the whole rebuild. */
 export async function rebuildStats(pool: Pool, o: RollupOptions = {}): Promise<RollupResult> {
-  await pool.query("delete from stats_minute"); await pool.query("delete from stats_hour"); await pool.query("delete from stats_day");
-  await pool.query("delete from cursors where stream = $1", [CURSOR]);
-  return rollupStats(pool, o);
+  return (await locked(pool, true, async () => {
+    const db = await pool.connect();
+    try {
+      await db.query("begin");
+      for (const t of Object.values(TABLES)) await db.query(`delete from ${t}`);
+      await db.query("delete from stats_dirty");
+      await db.query("delete from cursors where stream = $1", [CURSOR]);
+      await db.query("commit");
+    } catch (e) {
+      await db.query("rollback").catch(() => undefined);
+      throw e;
+    } finally {
+      db.release();
+    }
+    return run(pool, o, true);
+  })) as RollupResult;
 }

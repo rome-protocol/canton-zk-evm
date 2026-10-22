@@ -5,7 +5,7 @@ import type { Pool } from "pg";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { ensurePartitions } from "../db/partitions.ts";
 import { migrate } from "../db/migrate.ts";
-import { DAY, HOUR, MINUTE, rebuildStats, rollupStats } from "./stats.ts";
+import { DAY, HOUR, MINUTE, QUERIES, rebuildStats, rollupStats } from "./stats.ts";
 import { histLength } from "./stats-hist.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
 import { createIndexer } from "./indexer.ts";
@@ -89,6 +89,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     await life(pool, 1, { accepted_at: at(10), final_at: at(80), final_block: 1 });
     await life(pool, 2, { final_at: at(100) });
     await life(pool, 3, { accepted_at: at(65), final_at: at(110), final_block: 3 });
+    await ins(pool, "attempt_transactions", { attempt_id: a5, position: 0, tx_hash: hex(203) }); // C was in the test run's attempt: left out of the accepted count
     await life(pool, 4, { state: "lost", updated_at: at(30) });
     await life(pool, 5, { accepted_at: at(86), final_at: at(85) });
     // The day's extras: addresses a1, b2, c3 sent; two addresses first seen in blocks 1-4; one contract created in block 2; one verification that day.
@@ -114,7 +115,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
 
     const m1 = await minuteRow(pool, 60);
     expect(m1).toMatchObject({ blocks: 2, empty_blocks: 1, busy_blocks: 2, txs: 2, txs_failed: 0, gas_used: "100", gas_limit_sum: "2000", argument_bytes: "50", traffic_bytes: "0", traffic_updates: 0,
-      max_txs_in_block: 2, accepted: 2, lost: 0, attempts: 5, attempts_refused: 1, attempts_failed: 1, attempts_not_taken: 1, proof_busy_ms: "20000",
+      max_txs_in_block: 2, accepted: 1, lost: 0, attempts: 5, attempts_refused: 1, attempts_failed: 1, attempts_not_taken: 1, proof_busy_ms: "20000",
       ttf_without_acceptance: 1, clock_skew: 2, test_blocks: 1, test_txs: 5, test_attempts: 1, test_proof_busy_ms: "10000" });
     expect(nz(m1.txs_per_block_hist)).toEqual({ 0: 1, 2: 1 });
     expect(nz(m1.busy_gap_hist)).toEqual({ 109: 1 }); // block 2 is 2.001 s after block 1: 109 edges are at or below it; block 4's gap is -8 s and counts as skew
@@ -127,7 +128,7 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
 
     const h = (await pool.query("select * from stats_hour")).rows;
     expect(h).toHaveLength(1);
-    expect(h[0]).toMatchObject({ bucket: at(0), blocks: 3, txs: 5, txs_failed: 1, gas_used: "400", attempts: 6, max_txs_in_block: 3, proof_busy_ms: "30000", test_blocks: 1, accepted: 3, lost: 1 });
+    expect(h[0]).toMatchObject({ bucket: at(0), blocks: 3, txs: 5, txs_failed: 1, gas_used: "400", attempts: 6, max_txs_in_block: 3, proof_busy_ms: "30000", test_blocks: 1, accepted: 2, lost: 1 });
     expect(nz(h[0].txs_per_block_hist)).toEqual({ 0: 1, 2: 1, 3: 1 });
     const d = (await pool.query("select * from stats_day")).rows;
     expect(d).toHaveLength(1);
@@ -153,16 +154,103 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     expect(days).toEqual([[0, 5], [DAY, 1]]);
   }));
 
-  it("a late fact inside the lookback is repaired by the next run, and one outside it only by a rebuild", () => inDb(async (pool) => {
+  it("late facts, however old, are rolled up by the next run, and the rows equal a rebuild's (the data, not the clock, moves the rollup)", () => inDb(async (pool) => {
+    await block(pool, 1, 10);
+    await rollupStats(pool, { now: () => T0 + 30 * MINUTE });
+    // A catch-up after an outage: block 2 (4 transactions) is indexed with a record time 25 minutes before the last run, and a journal facts arrive as old.
+    const r = await run(pool, false);
+    await block(pool, 2, 5 * 60, { txs: 4 });
+    await life(pool, 1, { accepted_at: at(2 * 60) });
+    const a = await attempt(pool, r, 2, { cut_at: at(5 * 60 - 1), proof_started_at: at(5 * 60 - 1), proof_ended_at: at(5 * 60 + 1), proof_outcome: "ok", outcome: "committed" });
+    await pool.query("update blocks set attempt_id = $1 where number = 2", [a]);
+    await life(pool, 2, { state: "dropped", updated_at: at(7 * 60) });
+    await rollupStats(pool, { now: () => T0 + 30 * MINUTE + 10_000 });
+    expect(await pool.query("select count(*)::int as n from stats_dirty").then((x) => x.rows[0].n)).toBe(0);
+    const hour = (await pool.query("select * from stats_hour")).rows[0];
+    expect(hour).toMatchObject({ blocks: 2, txs: 4, accepted: 1, lost: 1, attempts: 1, proof_busy_ms: "2000" });
+    const day = (await pool.query("select blocks, txs from stats_day")).rows[0];
+    expect(day).toMatchObject({ blocks: 2, txs: 4 });
+    const incremental = await dump(pool);
+    await rebuildStats(pool, { now: () => T0 + 30 * MINUTE + 10_000 });
+    expect(await dump(pool)).toBe(incremental);
+  }));
+
+  it("a first deployment against a chain that already exists keeps the history that is indexed after the first run", () => inDb(async (pool) => {
+    await block(pool, 5, 3 * 3600 + 10);
+    await rollupStats(pool, { now: () => T0 + 4 * HOUR });
+    await block(pool, 1, 10, { txs: 2 });
+    await block(pool, 2, 3600 + 10, { txs: 3 });
+    await rollupStats(pool, { now: () => T0 + 4 * HOUR + 10_000 });
+    expect(Number((await pool.query("select sum(txs)::int as n from stats_hour")).rows[0].n)).toBe(5);
+    expect((await pool.query("select count(*)::int as n from stats_hour")).rows[0].n).toBe(3);
+  }));
+
+  it("a loss is counted in the minute it happened, not in the minute of its last write, and goes when the transaction turns final", () => inDb(async (pool) => {
+    await block(pool, 1, 10);
+    await life(pool, 1, { state: "dropped", updated_at: at(10) });
+    await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
+    expect((await minuteRow(pool, 0))?.lost).toBe(1);
+    await pool.query("update tx_lifecycle set state_reason = 'again', updated_at = $1 where state = 'dropped'", [at(150)]); // written again while still dropped
+    await rollupStats(pool, { now: () => T0 + 6 * MINUTE });
+    expect((await minuteRow(pool, 0))?.lost).toBe(1);
+    expect((await minuteRow(pool, 120))?.lost ?? 0).toBe(0);
+    await pool.query("update tx_lifecycle set state = 'final', final_at = $1, updated_at = $1", [at(29 * 60)]);
+    await rollupStats(pool, { now: () => T0 + 30 * MINUTE });
+    expect((await pool.query("select sum(lost)::int as n from stats_hour")).rows[0].n).toBe(0);
+  }));
+
+  it("skipped and cancelled attempts are counted apart and are not part of the refused or failed or not-taken counts", () => inDb(async (pool) => {
+    const r = await run(pool, false);
+    await attempt(pool, r, 1, { cut_at: at(1), outcome: "skipped" });
+    await attempt(pool, r, 2, { cut_at: at(2), outcome: "cancelled" });
+    await attempt(pool, r, 3, { cut_at: at(3), outcome: "committed" });
+    await rollupStats(pool, { now: () => T0 + 2 * MINUTE });
+    expect(await minuteRow(pool, 0)).toMatchObject({ attempts: 3, attempts_not_taken: 0, attempts_skipped: 1, attempts_cancelled: 1, attempts_refused: 0, attempts_failed: 0 });
+  }));
+
+  it("every read of a time window has an index to read by: no table scan on the big tables", () => inDb(async (pool) => {
+    const db = await pool.connect();
+    try {
+      await db.query("set enable_seqscan = off");
+      for (const [name, sql] of Object.entries(QUERIES)) {
+        const params = name === "ttf" ? [at(0), at(60), [0, 1]] : [at(0), at(60)];
+        const plan = (await db.query(`explain ${sql}`, params)).rows.map((x) => x["QUERY PLAN"]).join("\n");
+        expect(plan, name).not.toMatch(/Seq Scan on (tx_lifecycle|block_attempts|blocks)\b/);
+      }
+      const day = (await db.query("explain select count(*) from addresses where first_seen_block between 1 and 2")).rows.map((x) => x["QUERY PLAN"]).join("\n");
+      expect(day).not.toMatch(/Seq Scan on addresses/);
+    } finally {
+      db.release();
+    }
+  }));
+
+  it("stats-rebuild waits for a run in progress, and a run started during a rebuild does nothing", () => inDb(async (pool) => {
     await block(pool, 1, 10);
     await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
-    await life(pool, 1, { accepted_at: at(2 * 60 + 30) }); // two minutes ago: inside the 15 minutes
-    await life(pool, 2, { accepted_at: new Date(T0 - 3 * HOUR) });
-    await rollupStats(pool, { now: () => T0 + 6 * MINUTE });
-    expect((await minuteRow(pool, 120))?.accepted).toBe(1);
-    expect((await pool.query("select count(*)::int as n from stats_minute where bucket = $1", [new Date(T0 - 3 * HOUR)])).rows[0].n).toBe(0);
-    await rebuildStats(pool, { now: () => T0 + 6 * MINUTE });
-    expect((await pool.query("select accepted from stats_minute where bucket = $1", [new Date(T0 - 3 * HOUR)])).rows[0].accepted).toBe(1);
+    const lock = await pool.connect();
+    await lock.query("select pg_advisory_lock(7020220)");
+    try {
+      expect((await rollupStats(pool, { now: () => T0 + 6 * MINUTE })).minutes).toBe(0);
+      let done = false;
+      const rebuilding = rebuildStats(pool, { now: () => T0 + 6 * MINUTE }).then(() => { done = true; });
+      await new Promise((ok) => setTimeout(ok, 200));
+      expect(done).toBe(false);
+      expect((await pool.query("select count(*)::int as n from stats_minute")).rows[0].n).toBe(1); // nothing was emptied
+      await lock.query("select pg_advisory_unlock(7020220)");
+      await rebuilding;
+    } finally {
+      lock.release();
+    }
+    expect((await pool.query("select count(*)::int as n from stats_minute")).rows[0].n).toBe(1);
+  }));
+
+  it("minute rows older than 30 days are pruned, and the hour and day rows stay", () => inDb(async (pool) => {
+    await block(pool, 1, -40 * 86400);
+    await block(pool, 2, 10);
+    await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
+    expect((await pool.query("select count(*)::int as n from stats_minute")).rows[0].n).toBe(1);
+    expect((await pool.query("select count(*)::int as n from stats_hour")).rows[0].n).toBe(2);
+    expect((await pool.query("select count(*)::int as n from stats_day")).rows[0].n).toBe(2);
   }));
 
   it("a clock that goes back does not lose or double anything", () => inDb(async (pool) => {
