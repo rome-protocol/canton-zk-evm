@@ -34,6 +34,8 @@ const after: Query = { name: "after", about: "The `next` of the page before: thi
 const raw: Query = { name: "raw", about: "1 for the rows as the chain wrote them, without what the explorer decodes from them (an immutable answer).", values: ["1"] };
 const sort = (values: readonly string[]): Query => ({ name: "sort", about: `The order of the list; ${values[0]} when left out.`, values });
 const blockFilter: Query = { name: "filter", about: "all blocks, only the blocks with transactions, or only the empty ones (genesis is not one); all when left out.", values: ["all", "transactions", "empty"] };
+const txFilter: Query = { name: "filter", about: "all transactions, only the reverted ones (`failed`), or only the calls into contracts (`calls`, a transaction with input); all when left out.", values: ["all", "failed", "calls"] };
+const txCsv: Query = { name: "format", about: "csv for the newest transactions as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const paged = [limit, before], pagedAfter = [limit, after];
@@ -45,7 +47,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/blocks/{id}/transactions": { tag: "Blocks", summary: "The transactions of a block, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
   "/api/blocks/{id}/legs": { tag: "Blocks", summary: "The gateway legs a block recorded, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.leg, derived: false } },
   "/api/blocks/{id}/record": { tag: "Blocks", summary: "The Canton record of a block: header, transactions and proof, as hex.", param: "The block's number or its 0x hash.", object: F.record },
-  "/api/txs": { tag: "Transactions", summary: "The newest final transactions.", query: paged, page: { items: F.txItem, derived: false } },
+  "/api/txs": { tag: "Transactions", summary: "The newest final transactions.", query: [...paged, txFilter, txCsv], page: { items: F.txItem, derived: false } },
   "/api/txs/{hash}": { tag: "Transactions", summary: "One transaction. Its stage 2 fields are null until its block is derived. `raw=1` is the receipt of a final transaction as reth gave it, which never changes.", param: "The transaction's 0x hash.", query: [raw], object: F.txDetail },
   "/api/txs/{hash}/logs": { tag: "Transactions", summary: "The logs of a transaction, with the events that can be decoded.", param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.log, derived: false } },
   "/api/txs/{hash}/internal": { tag: "Transactions", summary: `The internal calls that moved value. ${DERIVED}`, param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.internal, derived: true } },

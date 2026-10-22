@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { ApiStatus, CantonSide, Fact } from "../api.ts";
+import type { ApiStatus, CantonSummary, Fact } from "../api.ts";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { count, short } from "../format.ts";
@@ -21,7 +21,7 @@ function FactRows({ label, fact, match, mismatch }: { label: string; fact: Fact;
   );
 }
 
-function ProofFacts({ c, pins }: { c: CantonSide; pins: ApiStatus["pins"] | undefined }) {
+function ProofFacts({ c, pins }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined }) {
   if (!c.proof) return <div className="alert bad-alert flat facts-gap"><Icon name="cross" size={15} /><div>{PROOF_LENGTH}</div></div>;
   const { programVK, rootC, blockHash } = c.proof;
   const pin = (v: string | undefined) => <>does not match this explorer's pin{v && <> <span className="mono">{short(v)}</span></>}</>;
@@ -41,7 +41,7 @@ function ProofFacts({ c, pins }: { c: CantonSide; pins: ApiStatus["pins"] | unde
 }
 
 /** "The proof": what the proof's own bytes say, next to this explorer's pins, with the in-browser check under it. */
-export function ProofCard({ c, pins, children }: { c: CantonSide; pins: ApiStatus["pins"] | undefined; children: ReactNode }) {
+export function ProofCard({ c, pins, children }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; children: ReactNode }) {
   return (
     <section className="card side canton proof" aria-labelledby="proof-h">
       <div className="side-h"><span className="side-l" id="proof-h">The proof</span><span className="muted small">read from the proof's own bytes, compared with this explorer's pins{pins?.file && <>, from <span className="mono">{pins.file}</span></>}</span></div>

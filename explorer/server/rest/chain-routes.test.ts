@@ -44,6 +44,9 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     // The synthetic chain's token and call rows are not what these tests need: one transfer and one internal call, written as stage 2 writes them.
     const at = tx(2, 1), who = (n: number) => Buffer.alloc(20, n);
     const [t] = (await pool.query("select block_number, tx_index from tx_hashes where hash = $1", [Buffer.from(at.slice(2), "hex")])).rows;
+    // One transaction is a contract creation: no recipient, a created contract, and a method id taken from its init code.
+    const [made] = (await pool.query("select block_number, tx_index from tx_hashes where hash = $1", [Buffer.from(tx(3, 6).slice(2), "hex")])).rows;
+    await pool.query("update transactions set to_address = null, created_contract = $3, method_id = $4 where block_number = $1 and tx_index = $2", [made.block_number, made.tx_index, who(7), Buffer.from("60806040", "hex")]);
     await pool.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount) values ($1, 90, 0, $2, $3, $4, $5, 50), ($1, 91, 1, $2, $3, $4, $5, 7)", [t.block_number, t.tx_index, who(1), who(2), who(3)]);
     await pool.query("insert into internal_calls (block_number, tx_index, trace_address, call_type, from_address, to_address, value) values ($1, $2, '{}', 'call', $3, $4, 9), ($1, $2, '{0,1}', 'call', $4, $3, 4)", [t.block_number, t.tx_index, who(2), who(3)]);
   });
@@ -151,6 +154,29 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
       expect(text, target).not.toMatch(/completion_?offset/i);
       expect(text, target).not.toContain("4242");
     }
+  });
+
+  it("lists transactions filtered to the failed and to the calls, and as a bounded CSV", async () => {
+    const all = body(await get("/api/txs?limit=100")).items as { hash: string; success: boolean; methodId: string | null; to: string | null }[];
+    const failed = body(await get("/api/txs?filter=failed&limit=100")).items as typeof all;
+    expect(failed.map((t) => t.hash)).toEqual(all.filter((t) => !t.success).map((t) => t.hash));
+    // A creation carries init code, so it has a method id from the first four bytes; it is not a call into a contract.
+    const creation = all.find((t) => t.to === null);
+    expect(creation).toBeDefined();
+    expect(creation!.methodId).not.toBeNull();
+    const calls = body(await get("/api/txs?filter=calls&limit=100")).items as typeof all;
+    expect(calls.map((t) => t.hash)).toEqual(all.filter((t) => t.methodId !== null && t.to !== null).map((t) => t.hash));
+    expect(calls.map((t) => t.hash)).not.toContain(creation!.hash);
+    for (const t of calls) same(t, F.txItem);
+    expect((await get("/api/txs?filter=nope")).status).toBe(400);
+    expect((await get("/api/txs?format=json")).status).toBe(400);
+    const csv = await get("/api/txs?format=csv&filter=calls");
+    expect(csv.status).toBe(200);
+    expect(csv.headers?.["content-type"]).toMatch(/^text\/csv/);
+    expect(csv.headers?.["content-disposition"]).toMatch(/attachment; filename="transactions\.csv"/);
+    const lines = String(csv.body).trim().split("\r\n");
+    expect(lines[0]).toMatch(/^hash,block,index,time,from,to,/);
+    expect(lines.length - 1).toBe(calls.length);
   });
 
   it("lists blocks with the proof time and the time to final, filtered, and as a bounded CSV", async () => {
@@ -269,6 +295,22 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const missing = await get("/api/blocks/999/record");
     expect(missing.status).toBe(404);
     expect(missing.headers?.["cache-control"]).toBeUndefined();
+  });
+
+  it("numbers a transaction's logs by their place among its own logs, 0-based, as well as by their place in the block, and keeps counting across pages", async () => {
+    const all = body(await get(`/api/txs/${tx(2, 3)}/logs`)).items as { logIndex: number; position: number }[];
+    expect(all.length).toBeGreaterThan(1);
+    expect(all.map((l) => l.position)).toEqual(all.map((_, i) => i));
+    const first = body(await get(`/api/txs/${tx(2, 3)}/logs?limit=1`));
+    const second = body(await get(`/api/txs/${tx(2, 3)}/logs?limit=1&after=${first.next}`));
+    expect(first.items[0].position).toBe(0);
+    expect(second.items[0]).toMatchObject({ position: 1, logIndex: all[1]!.logIndex });
+    expect(body(await get(`/api/txs/${tx(2, 3)}/logs?raw=1`)).items[0]).not.toHaveProperty("position");
+  });
+
+  it("gives a final transaction its place in its block and the fee caps the sender signed", async () => {
+    expect(body(await get(`/api/txs/${tx(2, 1)}`))).toMatchObject({ index: 1, maxFeePerGas: "9", maxPriorityFeePerGas: "1" });
+    expect(body(await get(`/api/txs/${tx(3, 4)}`))).toMatchObject({ index: 4 });
   });
 
   it("says 'not derived yet' for what stage 2 has not reached, and caches it as nothing final", async () => {

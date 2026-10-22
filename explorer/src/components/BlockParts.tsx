@@ -17,7 +17,7 @@ function Result({ success }: { success: boolean }) {
 }
 
 /** The sender's name when it is the chain's faucet, which is the one address the explorer knows by name. */
-function Sender({ address, faucet, chain }: { address: string; faucet: string | null | undefined; chain: string }) {
+export function Sender({ address, faucet, chain }: { address: string; faucet: string | null | undefined; chain: string }) {
   const named = faucet !== null && faucet !== undefined && faucet.toLowerCase() === address.toLowerCase();
   return named ? <Link to={`/address/${address}`} title={address}>{chain} faucet</Link> : <HashLink value={address} to={`/address/${address}`} />;
 }
