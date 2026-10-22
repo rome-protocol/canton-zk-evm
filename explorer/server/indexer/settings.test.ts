@@ -4,11 +4,11 @@ import { IndexerSettingsError, loadIndexerSettings } from "./settings.ts";
 const GW = "0x" + "9A".repeat(20);
 
 describe("the indexer's settings", () => {
-  it("defaults to stage 2 inline, and lowercases the gateway", () => {
-    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW })).toEqual({ gateway: "0x" + "9a".repeat(20), derive: "inline", pollMs: 250, rethBehindMs: 10_000, traceTimeoutMs: 60_000, genesisFile: null, journalDir: null, producerStatusFile: null, journalMs: 1000 });
+  it("defaults to stage 2 behind (W1 measured inline over B1), and lowercases the gateway", () => {
+    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW })).toEqual({ gateway: "0x" + "9a".repeat(20), derive: "behind", pollMs: 250, rethBehindMs: 10_000, traceTimeoutMs: 60_000, genesisFile: null, journalDir: null, producerStatusFile: null, journalMs: 1000 });
   });
-  it("takes behind and the timers", () => {
-    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, INDEX_DERIVE: "behind", INDEX_POLL_MS: "500", INDEX_TRACE_TIMEOUT_MS: "90000" })).toMatchObject({ derive: "behind", pollMs: 500, traceTimeoutMs: 90_000 });
+  it("takes inline and the timers", () => {
+    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, INDEX_DERIVE: "inline", INDEX_POLL_MS: "500", INDEX_TRACE_TIMEOUT_MS: "90000" })).toMatchObject({ derive: "inline", pollMs: 500, traceTimeoutMs: 90_000 });
   });
   it("takes the genesis file's path", () => {
     expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, GENESIS_FILE: "/state/genesis.json" }).genesisFile).toBe("/state/genesis.json");
