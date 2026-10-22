@@ -13,6 +13,7 @@ beforeEach(async () => {
   const api = async (_m: string, target: string) =>
     target === "/api/big" ? { status: 200, body: { hex: "ab".repeat(2000) }, headers: { "cache-control": "public, max-age=3", etag: '"big1"' } }
     : target === "/api/cached" ? { status: 200, body: { n: 1 }, headers: { "cache-control": "public, max-age=3", etag: '"v1"' } }
+    : target === "/api/file" ? { status: 200, body: "a,b\r\n1,2\r\n", headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="x.csv"' } }
     : target === "/api/missing" ? { status: 404, body: { error: "no" }, headers: { "cache-control": "public, max-age=3", etag: '"v1"' } }
     : { status: 200, body: { n: 2 } };
   server = createHttpServer(api, join(dir, "dist"));
@@ -22,6 +23,12 @@ afterEach(async () => { await new Promise((ok) => server.close(ok)); rmSync(dir,
 const get = (path: string, headers: Record<string, string> = {}) => fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`, { headers });
 
 describe("the api's cache headers", () => {
+  it("sends a text answer as it is, under the type it names", async () => {
+    const res = await get("/api/file");
+    expect(res.headers.get("content-type")).toBe("text/csv; charset=utf-8");
+    expect(await res.text()).toBe("a,b\r\n1,2\r\n");
+    expect((await get("/api/cached")).headers.get("content-type")).toBe("application/json");
+  });
   it("passes an answer's own cache rule and tag through, and never caches one that names none", async () => {
     const res = await get("/api/cached");
     expect(res.headers.get("cache-control")).toBe("public, max-age=3");

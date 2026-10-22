@@ -49,10 +49,32 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   /** `after` of an ascending list inside one block or transaction. */
   const afterOf = (q: URLSearchParams, shape: Parameters<typeof cursorOf>[1]) => cursorOf(q.get("after"), shape);
 
+  const FILTERS = ["all", "transactions", "empty"] as const;
+  /** The most blocks one CSV holds. */
+  const CSV_MAX = 1000;
+  const csvCell = (v: string | number | null) => (v === null ? "" : String(v));
+
   async function blocks(q: URLSearchParams): Promise<Answer> {
+    const f = q.get("filter") ?? "all", format = q.get("format");
+    if (!(FILTERS as readonly string[]).includes(f)) throw new BadRequest(`filter is one of ${FILTERS.join(", ")}.`);
+    if (format !== null && format !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
+    const filter = f as (typeof FILTERS)[number];
+    if (format === "csv") return blocksCsv(q, filter);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int"]);
-    const rows = await rest.blocks((before?.[0] as number | undefined) ?? null, limit);
+    const rows = await rest.blocks((before?.[0] as number | undefined) ?? null, limit, filter);
     return cached(ok(page(rows, limit, (b) => keyOf(b.number), F.blockItem)), "list");
+  }
+
+  /** The newest blocks as a file, with the columns of the list: a bounded export, not a way to walk the chain. */
+  async function blocksCsv(q: URLSearchParams, filter: (typeof FILTERS)[number]): Promise<Answer> {
+    const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
+    const rows = (await rest.blocks(null, limit, filter)).slice(0, limit);
+    const lines = ["block,time,transactions,gas_used,gas_limit,proof_seconds,seconds_to_final,canton_update_id,stage"];
+    for (const b of rows) {
+      lines.push([b.number, new Date(b.timestamp * 1000).toISOString(), b.txCount, b.gasUsed, b.gasLimit, b.proofSeconds === null ? null : b.proofSeconds.toFixed(3), b.finalSeconds === null ? null : b.finalSeconds.toFixed(3), b.updateId, b.number === 0 ? "genesis" : "final"].map(csvCell).join(","));
+    }
+    const answer = ok(lines.join("\r\n") + "\r\n");
+    return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": 'attachment; filename="blocks.csv"' } }, "list");
   }
 
   async function oneBlock(id: string): Promise<Answer> {

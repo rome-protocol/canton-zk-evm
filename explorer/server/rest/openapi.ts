@@ -32,11 +32,13 @@ const before: Query = { name: "before", about: "The `next` of the page before: t
 const after: Query = { name: "after", about: "The `next` of the page before: this page is the rows after that key, oldest first. Leave out for the first page." };
 const raw: Query = { name: "raw", about: "1 for the rows as the chain wrote them, without what the explorer decodes from them (an immutable answer).", values: ["1"] };
 const sort = (values: readonly string[]): Query => ({ name: "sort", about: `The order of the list; ${values[0]} when left out.`, values });
+const blockFilter: Query = { name: "filter", about: "all blocks, only the blocks with transactions, or only the empty ones (genesis is not one); all when left out.", values: ["all", "transactions", "empty"] };
+const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const paged = [limit, before], pagedAfter = [limit, after];
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
 export const DOCS: Record<string, Doc> = {
-  "/api/blocks": { tag: "Blocks", summary: "The newest final blocks.", query: paged, page: { items: F.blockItem, derived: false } },
+  "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },
   "/api/blocks/{id}": { tag: "Blocks", summary: "One block, by number or 0x hash.", param: "The block's number or its 0x hash.", object: F.blockDetail },
   "/api/blocks/{id}/transactions": { tag: "Blocks", summary: "The transactions of a block, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
   "/api/blocks/{id}/legs": { tag: "Blocks", summary: "The gateway legs a block recorded, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.leg, derived: false } },

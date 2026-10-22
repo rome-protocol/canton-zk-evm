@@ -47,7 +47,7 @@ export const REST_FIELDS = {
   page: ["items", "next"],
   /** A page of a list that stage 2 fills: `derived` is false while the derive cursor has not reached the block, and the list is then empty, not final. */
   derivedPage: ["derived", "items", "next"],
-  blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "updateId", "recordTime"],
+  blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "updateId", "recordTime", "proofSeconds", "finalSeconds"],
   /** One block: what the pages already have, with the legs count, whether stage 2 has derived it, and the producer's times. */
   blockDetail: [...FIELDS.block.filter((f) => f !== "transactions"), "legsCount", "derived", "lifecycle"],
   /** The Canton side of a block as its page shows it: the record's hex is served by /record. */

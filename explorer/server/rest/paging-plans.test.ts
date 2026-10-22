@@ -33,6 +33,14 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(await plan(/from canton_updates u join/)).toMatch(/Index Cond: \(ROW\(record_time, update_id\) </);
   });
 
+  it("the blocks list pages through the index of its filter", async () => {
+    const chain = createChainRest(recording());
+    await chain.blocks(50, 10, "empty");
+    expect(await plan(/b\.tx_count = 0 and b\.number > 0/)).toMatch(/blocks_empty_idx/);
+    await chain.blocks(50, 10, "transactions");
+    expect(await plan(/b\.tx_count > 0/)).toMatch(/blocks_with_txs_idx/);
+  });
+
   it("contracts by place, tokens by first transfer, and an address's holdings", async () => {
     const accounts = createAccountRest(recording());
     await accounts.contracts("newest", null, [5, 1, addr], 10);

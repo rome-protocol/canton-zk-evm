@@ -130,6 +130,40 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     }
   });
 
+  it("lists blocks with the proof time and the time to final, filtered, and as a bounded CSV", async () => {
+    await pool.query("insert into producer_runs (run_id, started_at, strategy, settings, source_commit) values ('00000000-0000-0000-0000-000000000009', now(), 'rhythm', '{}', 'x') on conflict do nothing");
+    const [a] = (await pool.query(
+      `insert into block_attempts (run_id, attempt_seq, number, strategy, cut_reason, cut_at, proof_started_at, proof_ended_at)
+       select '00000000-0000-0000-0000-000000000009', 1, 2, 'rhythm', 'pool', b.record_time - interval '8 seconds', b.record_time - interval '7.5 seconds', b.record_time - interval '0.5 seconds' from blocks b where b.number = 2 returning attempt_id`)).rows;
+    await pool.query("update blocks set attempt_id = $1 where number = 2", [a.attempt_id]);
+    const all = body(await get("/api/blocks"));
+    const two = all.items.find((b: { number: number }) => b.number === 2), three = all.items.find((b: { number: number }) => b.number === 3);
+    expect(two.proofSeconds).toBeCloseTo(7, 3);
+    expect(two.finalSeconds).toBeCloseTo(8, 3);
+    expect(three.proofSeconds).toBeNull();
+    expect(three.finalSeconds).toBeNull();
+    expect(body(await get("/api/blocks?filter=transactions")).items.map((b: { number: number }) => b.number)).toEqual([3, 2]);
+    expect(body(await get("/api/blocks?filter=empty")).items.map((b: { number: number }) => b.number)).toEqual([1]);
+    expect(body(await get("/api/blocks?filter=all")).items.length).toBe(3);
+    const p = body(await get("/api/blocks?filter=transactions&limit=1"));
+    expect(p.items.map((b: { number: number }) => b.number)).toEqual([3]);
+    expect(body(await get(`/api/blocks?filter=transactions&limit=1&before=${p.next}`)).items.map((b: { number: number }) => b.number)).toEqual([2]);
+    expect((await get("/api/blocks?filter=nope")).status).toBe(400);
+    const csv = await get("/api/blocks?format=csv&filter=transactions");
+    expect(csv.status).toBe(200);
+    expect(csv.headers?.["content-type"]).toMatch(/^text\/csv/);
+    expect(csv.headers?.["content-disposition"]).toMatch(/attachment; filename="blocks\.csv"/);
+    const lines = String(csv.body).trim().split("\r\n");
+    expect(lines[0]).toBe("block,time,transactions,gas_used,gas_limit,proof_seconds,seconds_to_final,canton_update_id,stage");
+    expect(lines.length).toBe(3);
+    expect(lines[2]!.split(",")[0]).toBe("2");
+    expect(lines[2]!.split(",")[5]).toBe("7.000");
+    expect(lines[1]!.split(",")[5]).toBe("");
+    expect((await get("/api/blocks?format=xml")).status).toBe(400);
+    expect((await get("/api/blocks?format=csv&limit=0")).status).toBe(400);
+    expect(String(csv.body)).not.toMatch(/completion/i);
+  });
+
   it("pages every list by keyset, in a stable order, without a repeat or a gap", async () => {
     const seen: number[] = [];
     let next: string | null = null;
