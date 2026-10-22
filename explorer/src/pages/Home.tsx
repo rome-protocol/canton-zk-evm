@@ -6,7 +6,7 @@ import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, short, utc } from "../format.ts";
-import { listPoll, readOf, summarize, useBlocks, useInFlight } from "../stats.ts";
+import { listPoll, readOf, summarize, usualProof, useBlocks, useInFlight } from "../stats.ts";
 import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { type Details, Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
@@ -107,7 +107,7 @@ export function Home() {
       <Hero tries={tries} />
       <Strip status={data} />
       <Stats summary={summarize(data, blocks.data?.items ?? [], flightRead === "ok" ? flight.data! : null)} flight={flightRead} />
-      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} />
+      <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} usual={usualProof(blocks.data?.items ?? [])} later={pending} />
       <AddToWallet status={data} />
       <div className="cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />

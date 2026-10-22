@@ -44,6 +44,12 @@ export function summarize(status: ApiStatus, blocks: BlockListItem[], flight: In
   };
 }
 
+/** The proof time a block usually takes: the 10th to the 90th percentile of the served proof times, so one slow proof does not stretch it. Null under three blocks with a time. */
+export const usualProof = (blocks: BlockListItem[]): { lowMs: number; highMs: number } | null => {
+  const ms = blocks.flatMap((b) => (b.proofSeconds === null ? [] : [Math.max(0, b.proofSeconds * 1000)])).sort((a, b) => a - b);
+  return ms.length >= 3 ? { lowMs: Math.round(percentile(ms, 0.1)), highMs: Math.round(percentile(ms, 0.9)) } : null;
+};
+
 /** What a page knows of a route it reads: not answered yet, failed, or answered. */
 export type Read = "loading" | "error" | "ok";
 export const readOf = (q: { isError: boolean; data: unknown }): Read => (q.isError ? "error" : q.data ? "ok" : "loading");
