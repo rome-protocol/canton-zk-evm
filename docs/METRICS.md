@@ -191,20 +191,20 @@ L2 is the acceptance test of the health, limits and load slice (design section 9
 
 **`getLogs` is provisional.** The route that will serve it (`/api?module=logs&action=getLogs`, E8a) does not exist yet. Until it does, L2 sends the query that route will run (10,000 blocks, one address, 1,000 rows) straight to the database, on the API's pool, open loop at its 5% share. A pass says the query is fast; it says nothing about the route. When E8a lands, the load points at the route.
 
-Measured in CI on a GitHub-hosted `ubuntu-latest` runner, with the pinned PostgreSQL (`shared_buffers` 1 GB), on the same machine as the server and the load. It is not the reference machine.
+Measured in CI on a GitHub-hosted `ubuntu-latest` runner, with the pinned PostgreSQL (`shared_buffers` 1 GB), on the same machine as the server and the load. It is not the reference machine: the design's run on the reference machine (the explorer's testnet host) is still to be made, with `L2_TRANSACTIONS=10000000 L2_SECONDS=600` (and `L2_KEEP_DATABASE=1` to keep the seeded database for a look at plans). The 10,000,000-transaction column was run once in CI, on this branch, by setting those two values in the job; the seed took 33 minutes, the database is 12.5 GB, and the runner had 85 GB free. Every pull request runs the 3,000,000 column, which takes about a quarter of an hour.
 
-| | Budget | 3,000,000 transactions, 120 s |
-|---|---|---|
-| Database | | 3,058,776 transactions, 2,142 blocks; the one address sends 1,000,076 of them |
-| B3 one block, transaction or address (p97.5) | p95 ≤ 100 ms | 22 ms |
-| B3 an address's page of transactions, the one with a million (p97.5) | ≤ 300 ms | 18 ms |
-| B3 a list page (p97.5) | ≤ 200 ms | 14 ms |
-| B3 search (p97.5) | ≤ 100 ms | 7 ms |
-| B3 `getLogs` (provisional, p95) | ≤ 500 ms | 12 ms |
-| B4 a new final block to 2,000 stream clients (p95) | ≤ 500 ms | 63 ms |
-| B6 size per million transactions | ≤ 2.5 GB | 1.24 GB |
-| B7 `/api/health` (p97.5), answers other than 200 | ≤ 50 ms | 5 ms, none |
-| Ingestion of a 1,428-transaction block, while the load runs | | 239 to 378 ms |
+| | Budget | 3,000,000 transactions, 120 s (every pull request) | 10,000,000 transactions, 600 s (the design's size, run once) |
+|---|---|---|---|
+| Database | | 3,058,776 transactions, 2,142 blocks; the one address sends 1,000,076 of them | 10,287,312 transactions, 7,204 blocks; the one address sends 1,001,429 of them |
+| B3 one block, transaction or address (p97.5) | p95 ≤ 100 ms | 22 ms | 40 ms |
+| B3 an address's page of transactions, the one with a million (p97.5) | ≤ 300 ms | 18 ms | 34 ms |
+| B3 a list page (p97.5) | ≤ 200 ms | 14 ms | 30 ms |
+| B3 search (p97.5) | ≤ 100 ms | 7 ms | 18 ms |
+| B3 `getLogs` (provisional, p95) | ≤ 500 ms | 12 ms | 19 ms |
+| B4 a new final block to 2,000 stream clients (p95) | ≤ 500 ms | 63 ms | 100 ms |
+| B6 size per million transactions | ≤ 2.5 GB | 1.24 GB | 1.22 GB |
+| B7 `/api/health` (p97.5), answers other than 200 | ≤ 50 ms | 5 ms, none | 22 ms, none |
+| Ingestion of a 1,428-transaction block, while the load runs | | 239 to 378 ms | 319 to 481 ms |
 
 The load tool reports p97.5, which is stricter than the p95 the budgets name, so p97.5 is what is held to them.
 

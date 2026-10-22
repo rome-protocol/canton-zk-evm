@@ -7,7 +7,7 @@ on:
     branches: [main]
     paths: [".github/actions/pinned-images/**", "explorer/**", "network/canton/**", "tests/fake_sidecar.py", "sidecar/**", "verifier/**", "mpt/**", "prover/fixtures/**", "rust-toolchain.toml", "PINS", ".github/workflows/explorer.yml"]
 
-  # L2 at another size, by hand: the design's size is 10000000 and 600 (see docs/METRICS.md for what that needs).
+  # L2 at another size, by hand: the design's size is 10000000 and 600, which takes about 50 minutes and 13 GB of disk (docs/METRICS.md has the run).
   workflow_dispatch:
     inputs:
       l2_transactions: { description: "L2: transactions in the seeded database", default: "3000000" }
@@ -125,10 +125,10 @@ jobs:
   # this is the scaled run (3,000,000 transactions, with the one address at its million), and docs/METRICS.md says what it measured. The numbers are in the l2-results artifact.
   l2:
     runs-on: ubuntu-latest
-    timeout-minutes: 170
+    timeout-minutes: 90
     env:
-      L2_TRANSACTIONS: ${{ inputs.l2_transactions || '10000000' }}
-      L2_SECONDS: ${{ inputs.l2_seconds || '600' }}
+      L2_TRANSACTIONS: ${{ inputs.l2_transactions || '3000000' }}
+      L2_SECONDS: ${{ inputs.l2_seconds || '120' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
