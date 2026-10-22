@@ -123,8 +123,9 @@ echo "ok: external mode refuses to start without CZE_PERSIST=1"
 
 # 7b. prover/common.sh sets STATE to the prover's folder (CZE_PROVER_STATE). restart.sh sets it back to the chain's state folder before it
 # uses it again: with the prover's state elsewhere, it read <prover state>/canton/parties.env and made a venv there (found by a reboot test).
-awk '/^\. "\$ROOT\/prover\/common\.sh"/ {seen=1; next} seen && /^STATE=\$CZE_STATE_DIR/ {ok=1} seen && !ok && /\$STATE\// && !/^ *#/ {bad=1} END {exit !(seen && ok && !bad)}' \
+awk '/^\. "\$ROOT\/prover\/common\.sh"/ {seen=1; next} seen && /^STATE=\$CZE_STATE_DIR/ {ok=1} seen && !ok && /\$\{?STATE\}?([\/"]|$)/ && !/^ *#/ {bad=1} END {exit !(seen && ok && !bad)}' \
   "$ROOT/network/restart.sh" || fail "restart.sh uses STATE after sourcing prover/common.sh without setting it back to CZE_STATE_DIR"
+echo "ok: restart.sh uses the chain's state folder after loading the prover's paths"
 
 # 8. The Ledger API users' prefix: up.sh records it, restart.sh uses it (a shell without it does not fall back to ostia-), and a different one is refused.
 grep -q 'CZE_USER_PREFIX=%s' "$ROOT/network/up.sh" || fail "up.sh does not record CZE_USER_PREFIX in persist.env"
