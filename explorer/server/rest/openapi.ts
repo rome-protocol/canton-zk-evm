@@ -119,7 +119,7 @@ function schemaOf(d: Doc): unknown {
 }
 
 /** The document for the paths that are registered, in the order given. A path with no description is left out, and the test of the API fails for it. */
-export function buildOpenApi(paths: readonly string[], info: { title: string }): Record<string, unknown> {
+export function buildOpenApi(paths: readonly string[], info: { title: string; limits?: { rpcPerMinute?: number } }): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const path of paths) {
     const d = DOCS[path];
@@ -155,6 +155,8 @@ export function buildOpenApi(paths: readonly string[], info: { title: string }):
     openapi: "3.1.0",
     info: {
       title: info.title, version: "1",
+      // The limits the server holds, for the API page to show: the numbers come from the same constants and settings the server enforces.
+      "x-limits": { pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}) },
       description: "Read-only. Every list is a keyset page (`next` is the cursor for the following page). Amounts are decimal strings. Times are ISO 8601 UTC.",
     },
     paths: out,

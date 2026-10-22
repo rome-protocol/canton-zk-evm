@@ -281,7 +281,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   ]);
   // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
   const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
-  const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API` });
+  const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API`, limits: config.publicRpc.on ? { rpcPerMinute: config.publicRpc.ratePerMinute } : undefined });
 
   const api: Api = async (method, target, body, ip) => {
     let url: URL, parts: string[];

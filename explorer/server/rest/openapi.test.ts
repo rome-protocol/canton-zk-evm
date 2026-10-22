@@ -105,4 +105,11 @@ describe("the API description", () => {
       expect(paging.length, path).toBe(d.page ? 1 : 0);
     }
   });
+  it("states the limits the server holds, from its own settings: the page size always, the public RPC's rate only where it is on", async () => {
+    const off = (await body(full(), "/api/openapi.json")).info["x-limits"];
+    expect(off).toEqual({ pageSize: 100 });
+    const on = (await body(full(withRpc), "/api/openapi.json")).info["x-limits"];
+    expect(on).toEqual({ pageSize: 100, rpcPerMinute: withRpc.publicRpc.ratePerMinute });
+    expect(withRpc.publicRpc.ratePerMinute).toBe(300);
+  });
 });
