@@ -359,3 +359,40 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .seg button[aria-pressed="true"] { background: var(--canton-tint); color: var(--canton); font-weight: 600; }
 .csv { border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font-size: 13px; background: var(--surface); color: var(--ink); text-decoration: none; }
 .amber { color: var(--amber); }
+
+/* Stats page */
+.chip-bad { color: var(--bad); background: var(--bad-tint); border-color: var(--bad-line); }
+.stats-sub { margin-left: 10px; font-size: 14px; }
+.stats.six { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
+.panel { padding: 0; margin-bottom: 14px; overflow: hidden; }
+.panel > .list-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
+.panel .card-note { padding: 0 20px 14px; margin: 10px 0 0; }
+.cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
+.cell { display: flex; flex-direction: column; gap: 4px; padding: 14px 20px; border-right: 1px solid var(--line-2); }
+.cell:last-child { border-right: 0; }
+.cell .stat-v { font-size: 26px; }
+.stat-v.ok { color: var(--ok); }
+.stat-v.bad { color: var(--bad); }
+.lostlist { list-style: none; margin: 0; padding: 10px 20px; border-top: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 4px; }
+.chart { margin: 0; padding: 10px 14px 4px; }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart-msg { padding: 18px 20px; margin: 0; }
+.ch-grid { stroke: var(--line-2); stroke-width: 1; }
+.ch-ax { fill: var(--muted); font-size: 10px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+.ch-line { stroke-width: 1.4; stroke-linejoin: round; }
+.ch-line.ch-a { stroke: var(--canton); }
+.ch-line.ch-b { stroke: var(--evm); }
+rect.ch-a, circle.ch-a, path.ch-a, .sw.ch-a { fill: var(--canton); }
+rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
+.ch-off { padding: 2px 6px 6px; }
+.legend { display: inline-flex; gap: 14px; }
+.legend .sw { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.sizes { list-style: none; margin: 0; padding: 14px 20px; display: flex; flex-direction: column; gap: 8px; }
+.sizes li { display: grid; grid-template-columns: 110px 1fr 90px; gap: 12px; align-items: center; font-size: 13px; }
+.sizes .track { height: 12px; border-radius: 3px; background: var(--line-2); overflow: hidden; }
+.sizes .track i { display: block; height: 100%; background: var(--canton); }
+.sizes b { text-align: right; font-weight: 500; }
+.panel table { width: 100%; }
+.rule { padding: 14px 20px 18px; border-top: 1px solid var(--line-2); }
+.rule h4 { margin: 0 0 8px; font-size: 14px; }
+@media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }

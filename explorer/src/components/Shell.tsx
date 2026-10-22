@@ -17,7 +17,7 @@ const DEFAULT_NAME = "Ostia";
  */
 export const NAV: ReadonlyArray<readonly [path: string, label: string, built: boolean]> = [
   ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", true], ["/contracts", "Contracts", false], ["/tokens", "Tokens", false],
-  ["/canton", "Canton", true], ["/stats", "Stats", false], ["/faucet", "Faucet", true], ["/api/openapi.json", "API", true],
+  ["/canton", "Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/api/openapi.json", "API", true],
 ];
 
 /** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. */
