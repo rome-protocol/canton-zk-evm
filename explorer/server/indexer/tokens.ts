@@ -114,12 +114,12 @@ const WIDTH = 8;
  * The legs of the transfers a filter selects, as SQL: one row for each account whose balance moves, with the change (an NFT counts one; the zero address
  * has no balance). The filter and the mode are put in by the caller; the placeholders `$1`, `$2` and so on are the caller's.
  */
-export function legsSql(filter: string, mode: "derived" | "read"): string {
+export function legsSql(filter: string, mode: "derived" | "read" | "any"): string {
   return `select t.token, x.holder, case when k.standard = 'ERC-1155' then t.token_id else 0 end as tid,
             x.sign * (case when k.standard = 'ERC-721' then 1 else t.amount end) as delta, t.block_number as block
           from token_transfers t join tokens k on k.address = t.token
           cross join lateral (values (t.from_address, -1), (t.to_address, 1)) as x(holder, sign)
-          where ${filter} and k.balance_mode = '${mode}' and x.holder <> '\\x0000000000000000000000000000000000000000'::bytea`;
+          where ${filter} ${mode === "any" ? "" : `and k.balance_mode = '${mode}'`} and x.holder <> '\\x0000000000000000000000000000000000000000'::bytea`;
 }
 
 /**
@@ -129,6 +129,13 @@ export function legsSql(filter: string, mode: "derived" | "read"): string {
 export async function writeTokens(c: Pick<PoolClient, "query">, n: number, reads: Pick<FinalReads, "call">): Promise<number> {
   const count = await writeTransfers(c, n, reads);
   if (count === 0) return 0;
+  // The rows the block touches that exist are locked first, in one statement and in one (token, holder, id) order, whichever mode their token is in: the check locks its
+  // batch in that order too (balances.ts), so the two never wait for each other's rows in crossed orders (the two writes below would take read tokens' rows and then derived tokens').
+  await c.query(
+    `select 1 from token_balances b join (select distinct token, holder, tid from (${legsSql("t.block_number = $1", "any")}) l) k on b.token = k.token and b.holder = k.holder and b.token_id = k.tid
+     order by b.token, b.holder, b.token_id for update of b`,
+    [n],
+  );
   // Read-mode tokens: the holders the block touched are read again by the check.
   await c.query(
     `insert into token_balances (token, holder, token_id, value, updated_block, checked_block)

@@ -433,4 +433,35 @@ describe.skipIf(!TEST_URL)("a reindex keeps what stage 2 made, on the pinned Pos
       await indexer.close();
     });
   }, 30_000);
+
+  it("takes a block's balance rows in one (token, holder, id) order, so that the check and a block that touch a read token and a derived one never deadlock", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, 3);
+      await indexer.runOnce();
+      // FEE (the higher address) is a read token, ERC20 a derived one; block 4 moves both, from holders whose rows exist.
+      await pool.query("update tokens set balance_mode = 'read' where address = $1", [hx(FEE)]);
+      chain.blocks[3]!.receipts[0]!.logs.push(erc20(ERC20, ALICE, BOB, 5));
+      chain.reads.rethHead = 4;
+      // The check's side of the crossing: it holds the derived token's row, and next asks for the read token's (its batch is locked in (token, holder, id) order).
+      const check = await pool.connect();
+      try {
+        await check.query("begin");
+        await check.query("select 1 from token_balances where token = $1 and holder = $2 for update", [hx(ERC20), hx(ALICE)]);
+        const block = indexer.runOnce().then(() => null, (e) => e as Error);
+        // Wait until the block's stage 2 is waiting for a row lock.
+        let waiting = false;
+        for (let i = 0; i < 100 && !waiting; i++) {
+          waiting = (await rows(pool, "select 1 from pg_stat_activity where wait_event_type = 'Lock' and pid <> pg_backend_pid() and datname = current_database()")).length > 0;
+          if (!waiting) await new Promise((r) => setTimeout(r, 50));
+        }
+        expect(waiting, "the block must be waiting for the check's row").toBe(true);
+        // Before the change the block held FEE's rows (its read-mode insert) while it waited, so this was a deadlock (40P01) in one of the two.
+        await check.query("select 1 from token_balances where token = $1 and holder = $2 for update", [hx(FEE), hx(BOB)]);
+        await check.query("commit");
+        expect(await block, "the block goes through once the check lets go").toBeNull();
+      } finally { await check.query("rollback").catch(() => undefined); check.release(); }
+      expect((await rows(pool, "select value::text as v from token_balances where token = $1 and holder = $2", [hx(ERC20), hx(BOB)]))[0].v).toBe("255");
+      await indexer.close();
+    });
+  }, 30_000);
 });
