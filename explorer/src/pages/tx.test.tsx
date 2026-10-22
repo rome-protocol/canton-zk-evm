@@ -42,8 +42,8 @@ describe("the transaction page, for a final transaction", () => {
 
   it("says how it ended and where it is final", async () => {
     await open();
-    expect(row("Result")).toHaveTextContent("Success");
-    expect(row("Result").firstElementChild).toHaveClass("fact-ok");
+    expect(row("Status")).toHaveTextContent("Success");
+    expect(row("Status").firstElementChild).toHaveClass("fact-ok");
     expect(row("Block")).toHaveTextContent("3, final on Canton in update 1220 0303…0303");
     expect(within(row("Block")).getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
   });
@@ -64,7 +64,7 @@ describe("the transaction page, for a final transaction", () => {
   it("shows the value, the fee, the gas price, the gas with its share used, the nonce and the type", async () => {
     await open();
     expect(row("Value")).toHaveTextContent("0 tROME");
-    expect(row("Fee")).toHaveTextContent("0.0000863 tROME");
+    expect(row("Transaction fee")).toHaveTextContent("0.0000863 tROME");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     expect(row("Gas used")).toHaveTextContent("51,698 of 100,000 (51.70%)");
     expect(row("Nonce and position")).toHaveTextContent("1");
@@ -106,8 +106,8 @@ describe("the transaction page, for a final transaction", () => {
   it("is final and failed when it reverted", async () => {
     await open(tx({ success: false, logs: [] }));
     expect(chip()).toHaveTextContent("Final");
-    expect(row("Result")).toHaveTextContent("Failed (reverted)");
-    expect(row("Result").firstElementChild).toHaveClass("fact-bad");
+    expect(row("Status")).toHaveTextContent("Failed (reverted)");
+    expect(row("Status").firstElementChild).toHaveClass("fact-bad");
     expect(screen.queryByText("Not final yet.", { exact: false })).toBeNull();
   });
 
@@ -142,11 +142,11 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
 
   it("shows what reth knows, and says what it does not know yet", async () => {
     await open(waitingTx());
-    expect(row("Result")).toHaveTextContent("Not run yet");
+    expect(row("Status")).toHaveTextContent("Not run yet");
     expect(row("Block")).toHaveTextContent("None yet");
     expect(row("Token to move")).toHaveTextContent("10 TKA to 0x5a5a…5a5a");
     expect(row("Value")).toHaveTextContent("0 tROME");
-    expect(row("Fee")).toHaveTextContent("Known once a block holds it");
+    expect(row("Transaction fee")).toHaveTextContent("Known once a block holds it");
     expect(row("Gas limit")).toHaveTextContent("100,000");
     expect(row("Nonce and position")).toHaveTextContent("1");
     expect(row("Type")).toHaveTextContent("2 (EIP-1559)");
@@ -207,7 +207,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(row("Block")).toHaveTextContent("4, not on Canton yet");
     expect(within(row("Block")).getByRole("link", { name: "4" })).toHaveAttribute("href", "/block/4");
     expect(row("Gas used")).toHaveTextContent("34,598 of 100,000");
-    expect(row("Result")).toHaveTextContent("Success");
+    expect(row("Status")).toHaveTextContent("Success");
     answer = tx({ block: { number: 4, hash: hash(4), updateId: update(4) } });
     await tick();
     expect(chip()).toHaveTextContent("Final");
@@ -267,11 +267,11 @@ describe("a transaction that cannot be shown", () => {
     renderApp(`/tx/${H}`);
     await screen.findByRole("heading", { name: "Transaction" });
     expect(row("Value")).toHaveTextContent("…");
-    expect(row("Fee")).not.toHaveTextContent("tROME");
+    expect(row("Transaction fee")).not.toHaveTextContent("tROME");
     expect(screen.queryByText(/tROME/)).toBeNull();
     named();
     await waitFor(() => expect(row("Value")).toHaveTextContent("2 TST"));
-    expect(row("Fee")).toHaveTextContent("3 TST");
+    expect(row("Transaction fee")).toHaveTextContent("3 TST");
     expect(calls).toContain("/api/status");
   });
 
@@ -386,6 +386,18 @@ describe("the block's answers, kept by one cache for every page", () => {
     await user.click(within(row("Block")).getByRole("link", { name: "3" }));
     expect(await screen.findByRole("heading", { name: "Block #3" })).toBeInTheDocument();
     expect(screen.queryByText(/something went wrong|cannot read/i)).toBeNull();
+  });
+});
+
+describe("the order of the overview, as on the screen", () => {
+  it("reads Status, Stage, Block, Time, From, To, the token, Value, Transaction fee, Gas price, Gas, Fees, Burnt fees, then Nonce and position and Type", async () => {
+    await openFinal(undefined, { txDetail: () => reply(txDetail({ index: 2 })) });
+    await waitFor(() => expect(row("Fees")).toHaveTextContent("Base"));
+    const labels = within(screen.getByRole("region", { name: "Transaction" })).getAllByText(/./, { selector: "dt" }).map((d) => d.textContent);
+    const at = (l: string) => labels.indexOf(l);
+    const order = ["Status", "Stage", "Block", "Time", "From", "To", "Token moved", "Value", "Transaction fee", "Gas price", "Gas used", "Fees", "Burnt fees", "Nonce and position", "Type"];
+    expect(order.map(at).every((i) => i >= 0)).toBe(true);
+    expect(order.map(at)).toEqual([...order.map(at)].sort((a, b) => a - b));
   });
 });
 

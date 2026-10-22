@@ -92,18 +92,22 @@ const WEI = /^\d+$/;
 /** The base fee burnt: the block's base fee times the gas the transaction used. */
 const burnt = (baseFee: string | null, gasUsed: number | null) => (baseFee !== null && WEI.test(baseFee) && gasUsed !== null ? (BigInt(baseFee) * BigInt(gasUsed)).toString() : null);
 
-/** Time and fees: the facts the block and the detail route add. Each is left out when it cannot be known, and "reading" while it is being read. */
-function BlockFacts({ t, coin, block, read, detail }: { t: ApiTxSeen; coin: Coin | undefined; block: BlockSummary | undefined; read: BlockRead; detail: Detail }) {
+/** The block's time, shown after the block. It is "reading" while the block is being read, and has no row for a transaction in no block. */
+function TimeItem({ t, block, read }: { t: ApiTxSeen; block: BlockSummary | undefined; read: BlockRead }) {
   if (!t.block) return null;
   const ms = block ? block.timestamp * 1000 : null;
+  return <Item label="Time"><FromBlock read={read}>{ms !== null && <><span className="mono">{utcDate(ms)} {utc(ms)}</span> <span className="muted">· {ago(new Date(ms).toISOString())}</span></>}</FromBlock></Item>;
+}
+
+/** The price and the fee caps and the burnt fees: what the block and the detail route add after the gas. Each is left out when it cannot be known, and "reading" while it is being read. */
+function FeeFacts({ t, coin, block, detail }: { t: ApiTxSeen; coin: Coin | undefined; block: BlockSummary | undefined; detail: Detail }) {
+  if (!t.block) return null;
   const base = block?.baseFee ?? null, d = detail.data;
   const burn = burnt(base, t.gasUsed);
   const capsKnown = d && (d.maxFeePerGas !== null || d.maxPriorityFeePerGas !== null);
   const caps = !d ? (detail.failed ? <span className="muted">cannot be read right now</span> : t.status === "final" ? <span className="muted">reading…</span> : null) : null;
   return (
     <>
-      <Item label="Time"><FromBlock read={read}>{ms !== null && <><span className="mono">{utcDate(ms)} {utc(ms)}</span> <span className="muted">· {ago(new Date(ms).toISOString())}</span></>}</FromBlock></Item>
-      {t.gasPrice !== null && <Item label="Gas price"><span className="mono">{gwei(t.gasPrice)}</span></Item>}
       {(base !== null || capsKnown || caps) && (
         <Item label="Fees">
           {caps ?? <>
@@ -126,22 +130,24 @@ function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coi
   return (
     <section className="card" aria-label="Transaction">
       <Kv wide>
-        <Item label="Result">
+        <Item label="Status">
           {waiting ? <span className="muted">Not run yet</span> : t.success === null ? <span className="muted">Not known</span> : t.success ? <Good>Success</Good> : <Bad>Failed (reverted)</Bad>}
         </Item>
         <Item label="Stage"><Chip status={t.status} />{finalAt && t.status === "final" && <span className="muted"> · committed on Canton {ago(finalAt)}</span>}</Item>
         <Item label="Block"><BlockItem t={t} head={t.status === "final" ? head : undefined} /></Item>
-        <BlockFacts t={t} coin={coin} block={block} read={read} detail={detail} />
+        <TimeItem t={t} block={block} read={read} />
         <Item label="From"><HashLink value={t.from} to={`/address/${t.from}`} full /></Item>
         <Item label="To">{to || <span className="muted">none, this transaction created a contract</span>}</Item>
         {t.created && <Item label="Created contract"><HashLink value={t.created} to={`/address/${t.created}`} full /></Item>}
         <TransferItem t={t} waiting={waiting} />
         <Item label="Value"><InCoin raw={t.value} coin={coin} /></Item>
-        <Item label="Fee">
+        <Item label="Transaction fee">
           {t.fee !== null ? <InCoin raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}
         </Item>
+        {t.gasPrice !== null && <Item label="Gas price"><span className="mono">{gwei(t.gasPrice)}</span></Item>}
         {t.gasUsed === null ? <Item label="Gas limit"><span className="mono">{count(t.gas)}</span></Item>
           : <Item label="Gas used"><span className="mono">{count(t.gasUsed)}</span> <span className="muted">of {count(t.gas)}{t.gas > 0 && ` (${((t.gasUsed / t.gas) * 100).toFixed(2)}%)`}</span></Item>}
+        <FeeFacts t={t} coin={coin} block={block} detail={detail} />
         <CallsItem t={t} detail={detail} />
         <Item label="Nonce and position">
           <span className="mono">{t.nonce}</span>
