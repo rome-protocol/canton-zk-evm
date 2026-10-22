@@ -174,6 +174,16 @@ describe("the token transfers and the input on Overview", () => {
     expect(card.getAllByRole("row")[2]).toHaveTextContent("id 7");
   });
 
+  it("puts both cards full width after the facts and the side cards, so a phone reads Overview, Canton record, The proof, Token transfers, Input", async () => {
+    await open({ txTransfers: () => reply({ items: [transfer()], next: null, derived: true }) });
+    const transfers = await screen.findByRole("region", { name: "Token transfers" }), input = screen.getByRole("region", { name: "Input data" });
+    const grid = document.querySelector(".tx-grid")!;
+    for (const card of [transfers, input]) {
+      expect(grid.contains(card)).toBe(false);
+      expect(grid.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
   it("falls back to the raw amount when the token cannot be read", async () => {
     await open({ txTransfers: () => reply({ items: [transfer()], next: null, derived: true }), address: () => reply(account()) });
     const card = within(await screen.findByRole("region", { name: "Token transfers" }));
