@@ -44,7 +44,7 @@ try {
     void source?.start();
   });
   const stopTimers = startStreamTimers(hub);
-  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => hub.close(), stopTimers], server, tracker, also: [faucet], release: [() => faucet.close(), () => tracker.close(), () => source?.stop(), () => storage.close()] });
+  onShutdown({ stop: [() => faucet.stop(), () => tracker.stop(), () => hub.close(), stopTimers], server, tracker, also: [faucet], release: [() => faucet.close(), () => tracker.close(), async () => void (await source?.stop()), () => storage.close()] });
 } catch (e) {
   if (!(e instanceof ConfigError)) throw e;
   console.error(`explorer: ${e.message}`);
