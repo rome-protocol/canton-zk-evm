@@ -23,28 +23,41 @@ const TOUCHED = `
 export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: number, to: number, derived: number): Promise<void> {
   const last = Math.min(to, derived);
   if (last < from) return;
+  // The planner chooses the holder's indexes for the look-ups below only when it knows the table; a reindex is rare and the sample is cheap.
+  await c.query("analyze token_transfers");
   // $1, $2: the range; $3: the facts that count.
   const range = [from, last, derived];
 
-  // The tokens and the holders' balances.
+  // The tokens and the holders' balances. The keys are the (token, holder, id) the range moves; each key's legs are looked up through the holder's
+  // indexes, so the time follows the range and not the token's whole history.
+  const keysOf = (mode: string) => `
+    with keys as materialized (select token, holder, tid from (${legsSql("t.block_number between $1 and $2", mode as "derived" | "read")}) l group by token, holder, tid),
+         tot as (
+           select q.token, q.holder, q.tid, sum(q.delta) as value, max(q.block) as updated from (
+             select k.token, k.holder, k.tid, (case when s.standard = 'ERC-721' then 1 else t.amount end) as delta, t.block_number as block
+             from keys k join tokens s on s.address = k.token
+             join token_transfers t on t.token = k.token and t.to_address = k.holder and t.block_number <= $3 and (s.standard <> 'ERC-1155' or t.token_id = k.tid)
+             union all
+             select k.token, k.holder, k.tid, -(case when s.standard = 'ERC-721' then 1 else t.amount end), t.block_number
+             from keys k join tokens s on s.address = k.token
+             join token_transfers t on t.token = k.token and t.from_address = k.holder and t.block_number <= $3 and (s.standard <> 'ERC-1155' or t.token_id = k.tid)
+           ) q group by q.token, q.holder, q.tid
+         )`;
   await c.query(
-    `with keys as (select token, holder, tid from (${legsSql("t.block_number between $1 and $2", "derived")}) l group by token, holder, tid),
-          tot as (
-            select l.token, l.holder, l.tid, sum(l.delta) as value, max(l.block) as updated
-            from (${legsSql("t.block_number <= $3 and t.token in (select token from token_transfers where block_number between $1 and $2)", "derived")}) l
-            join keys on keys.token = l.token and keys.holder = l.holder and keys.tid = l.tid group by l.token, l.holder, l.tid
-          )
-     insert into token_balances (token, holder, token_id, value, updated_block, checked_block)
-     select token, holder, tid, value, updated, null from tot order by token, holder, tid
-     on conflict (token, holder, token_id) do update set value = excluded.value, updated_block = excluded.updated_block, checked_block = null`,
+    `${keysOf("derived")}
+     insert into token_balances (token, holder, token_id, value, updated_block, checked_block, unanswered)
+     select token, holder, tid, value, updated, null, false from tot order by token, holder, tid
+     on conflict (token, holder, token_id) do update set value = excluded.value, updated_block = excluded.updated_block, checked_block = null, unanswered = false`,
     range,
   );
-  // A token that is read, not added up, keeps its values until the check reads them again.
+  // A token that is read, not added up, keeps its values until the check reads them again. The row's block is the last block that moved it, in the
+  // range or after it, so a range that ends before the holder's last transfer does not set the block back.
   await c.query(
-    `insert into token_balances (token, holder, token_id, value, updated_block, checked_block)
-     select token, holder, tid, 0, max(block), null from (${legsSql("t.block_number between $1 and $2", "read")}) l group by token, holder, tid order by token, holder, tid
-     on conflict (token, holder, token_id) do update set updated_block = excluded.updated_block, checked_block = null`,
-    range.slice(0, 2),
+    `${keysOf("read")}
+     insert into token_balances (token, holder, token_id, value, updated_block, checked_block, unanswered)
+     select token, holder, tid, 0, updated, null, false from tot order by token, holder, tid
+     on conflict (token, holder, token_id) do update set updated_block = greatest(token_balances.updated_block, excluded.updated_block), checked_block = null, unanswered = false`,
+    range,
   );
   await c.query(
     `insert into nft_owners (token, token_id, owner, updated_block)
@@ -59,7 +72,7 @@ export async function rebuildAggregates(c: Pick<PoolClient, "query">, from: numb
     `update tokens k set
        transfer_count = (select count(*) from token_transfers t where t.token = k.address and t.block_number <= $3),
        first_transfer_block = coalesce((select min(block_number) from token_transfers t where t.token = k.address and t.block_number <= $3), k.first_transfer_block),
-       holder_count = (select count(*) from token_balances b where b.token = k.address and b.value > 0)
+       holder_count = (select count(distinct b.holder) from token_balances b where b.token = k.address and b.value > 0)
      where k.address in (select token from token_transfers where block_number between $1 and $2)`,
     [from, last, derived],
   );

@@ -98,7 +98,7 @@ describe.skipIf(!TEST_URL)("balances, owners and the check, on the pinned Postgr
         { id: "1", o: hex(hx(BOB)), u: "3" }, { id: "2", o: hex(hx(ALICE)), u: "2" },
       ]);
       const holders = await rows(pool, "select encode(address, 'hex') as a, holder_count from tokens order by address");
-      expect(holders.map((r) => [r.a, r.holder_count])).toEqual([[hex(hx(ERC20)), "2"], [hex(hx(ERC721)), "2"], [hex(hx(ERC1155)), "3"], [hex(hx(FEE)), "2"]]);
+      expect(holders.map((r) => [r.a, r.holder_count])).toEqual([[hex(hx(ERC20)), "2"], [hex(hx(ERC721)), "2"], [hex(hx(ERC1155)), "2"], [hex(hx(FEE)), "2"]]); // the ERC-1155 counts ALICE and CAROL once each, not once for each id
       await indexer.close();
     });
   });

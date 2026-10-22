@@ -108,7 +108,6 @@ export async function readMetadata(reads: Pick<FinalReads, "call">, token: strin
 }
 
 const bytea = (h: string): Buffer => Buffer.from(h.slice(2), "hex");
-const ZERO = Buffer.alloc(20);
 const WIDTH = 8;
 
 /**
@@ -134,21 +133,29 @@ export async function writeTokens(c: Pick<PoolClient, "query">, n: number, reads
   await c.query(
     `insert into token_balances (token, holder, token_id, value, updated_block, checked_block)
      select token, holder, tid, 0, $1, null from (${legsSql("t.block_number = $1", "read")}) l group by token, holder, tid order by token, holder, tid
-     on conflict (token, holder, token_id) do update set updated_block = excluded.updated_block, checked_block = null`,
+     on conflict (token, holder, token_id) do update set updated_block = excluded.updated_block, checked_block = null, unanswered = false`,
     [n],
   );
-  // Derived tokens: add the block's changes, and move the holder count by the balances that crossed zero.
+  // Derived tokens: add the block's changes, and move the holder count by the holders that crossed zero. A holder is counted once, whatever number of
+  // ids (an ERC-1155's) it holds. The statement reads the balances as they were before its own insert (one snapshot), by the primary key.
   const moved = await c.query(
     `with d as (select token, holder, tid, sum(delta) as delta from (${legsSql("t.block_number = $1", "derived")}) l group by token, holder, tid),
-          old as (select b.token, b.holder, b.token_id, b.value from token_balances b join d on b.token = d.token and b.holder = d.holder and b.token_id = d.tid),
           up as (
-            insert into token_balances (token, holder, token_id, value, updated_block, checked_block)
-            select token, holder, tid, delta, $1, null from d order by token, holder, tid
-            on conflict (token, holder, token_id) do update set value = token_balances.value + excluded.value, updated_block = excluded.updated_block, checked_block = null
+            insert into token_balances (token, holder, token_id, value, updated_block, checked_block, unanswered)
+            select token, holder, tid, delta, $1, null, false from d order by token, holder, tid
+            on conflict (token, holder, token_id) do update set value = token_balances.value + excluded.value, updated_block = excluded.updated_block, checked_block = null, unanswered = false
             returning 1
-          )
-     select d.token, sum(((coalesce(o.value, 0) + d.delta) > 0)::int - (coalesce(o.value, 0) > 0)::int)::int as holders
-     from d left join old o on o.token = d.token and o.holder = d.holder and o.token_id = d.tid group by d.token`,
+          ),
+          dn as (
+            select d.token, d.holder, d.tid, coalesce(o.value, 0) as before, coalesce(o.value, 0) + d.delta as after
+            from d left join token_balances o on o.token = d.token and o.holder = d.holder and o.token_id = d.tid
+          ),
+          h as (select token, holder, bool_or(before > 0) as was, bool_or(after > 0) as is from dn group by token, holder)
+     select h.token, sum((h.is or u.any)::int - (h.was or u.any)::int)::int as holders
+     from h cross join lateral (
+       select exists (select 1 from token_balances x where x.token = h.token and x.holder = h.holder and x.value > 0
+                      and not exists (select 1 from dn where dn.token = h.token and dn.holder = h.holder and dn.tid = x.token_id)) as any
+     ) u group by h.token`,
     [n],
   );
   await c.query(
@@ -237,4 +244,3 @@ export async function nameContracts(c: Pick<PoolClient, "query">, tokens: Buffer
   );
 }
 
-export { ZERO as ZERO_ADDRESS };
