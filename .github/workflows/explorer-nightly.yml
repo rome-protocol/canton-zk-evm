@@ -1,6 +1,6 @@
 name: explorer-nightly
 
-# The nightly load test of the explorer (design section 9; docs/METRICS.md, "The nightly load test (E13)"). It runs on a schedule and by hand, never on a pull request:
+# The nightly load test of the explorer (docs/METRICS.md, "The nightly load test"). It runs on a schedule and by hand, never on a pull request:
 # a pull request runs the scaled L2 in explorer.yml, and the sizes here are the design's. The one exception is a pull request that changes the nightly's own files
 # (the paths below): it runs a short version of everything, so that a change to the nightly is seen to run before it is merged. A workflow can be dispatched by
 # name only once it is on the default branch, so the first run of a new nightly is that.
@@ -139,7 +139,7 @@ jobs:
         if: always()
         run: docker rm -f -v explorer-nightly-l2-db
 
-  # W1 and the lab on the real chain (what the demo's rehearsal does), then L3, L4 and L5 on the same chain, through tests/demo_nightly_chain.sh. L3's index lag is held to B1 (2.75 s on this runner, the lead's ruling of 2026-10-23), and its time to final is not
+  # W1 and the lab on the real chain (what the demo's rehearsal does), then L3, L4 and L5 on the same chain, through tests/demo_nightly_chain.sh. L3's index lag is held to B1 (2.75 s on this runner; see docs/METRICS.md, "B1 and B2 on the reference machine and on the runner"), and its time to final is not
   # measured (no GPU, a stand-in proof); the design's 30 minutes is the default length of its flood. The rehearsal fails if any part broke a budget.
   chain:
     runs-on: ubuntu-latest

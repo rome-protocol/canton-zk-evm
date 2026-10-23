@@ -18,7 +18,7 @@ and, over the whole flood, the growth of the explorer's database per million tra
 lag is an upper bound, over by at most one ledger poll plus one database tick.
 Time to final is NOT measured: the flood's transactions go straight to reth (not through the explorer's RPC, so tx_lifecycle has no accepted_at for them), and
 without a GPU there is no proof to wait for; a block's `final` and `served` would be the same moment.
-Held to B1 (p95 <= 2.75 s, the lead's ruling of 2026-10-23: on the shared runner the project's W1-derived B1 of explorer/test/budgets.ts; the design's 1.0 s for a block of
+Held to B1 (p95 <= 2.75 s, on the shared runner the project's W1-derived B1 of explorer/test/budgets.ts; the design's 1.0 s for a block of
 at most 1,428 transactions is checked on the reference machine, the explorer's DevNet host), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions).
 
   demo_nightly_l3.py run <seconds> <transactions per block> <results.json>
@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# B1 as the lead ruled for L3 (2026-10-23, docs/METRICS.md): L3 runs on a shared GitHub runner (Canton, reth, the builder, PostgreSQL and the explorer share its CPU), so its index
+# B1 for L3 (docs/METRICS.md): L3 runs on a shared GitHub runner (Canton, reth, the builder, PostgreSQL and the explorer share its CPU), so its index
 # lag is held to the W1-derived provisional B1 of explorer/test/budgets.ts (B1_MS = 2750), now that the measurement is precise; the design's 1.0 s is checked on the reference
 # machine (the explorer's DevNet host). test_demo_nightly_l3.py checks that the two files agree.
 B1_S = 2.75
