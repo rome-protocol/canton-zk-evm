@@ -38,9 +38,11 @@ export function addressOfWord(word: string): string | null {
   return "0x" + word.slice(26);
 }
 
-type ProxyReads = Pick<FinalReads, "storageAt" | "call">;
+export type ProxyReads = Pick<FinalReads, "storageAt" | "call">;
+/** The reads that look at one address again: its code as well. */
+export type ProxyProbe = ProxyReads & { code(account: string, n: number): Promise<string> };
 
-async function detect(k: CreatedContract, n: number, reads: ProxyReads): Promise<ProxyRow | null> {
+export async function detect(k: CreatedContract, n: number, reads: ProxyReads): Promise<ProxyRow | null> {
   const target = minimalProxyTarget(k.runtimeCode);
   if (target) return { proxy: k.address, kind: "eip1167", implementation: target, beacon: null };
   const [impl, beacon, logic] = await Promise.all([EIP1967_IMPLEMENTATION_SLOT, EIP1967_BEACON_SLOT, EIP1822_SLOT].map((s) => reads.storageAt(k.address, s, n)));
@@ -96,6 +98,11 @@ export async function writeProxies(c: Pick<PoolClient, "query">, n: number, crea
     for (const r of rows) if (r) found.push(r);
   }
   if (found.length === 0) return 0;
+  await upsertProxies(c, n, found);
+  return found.length;
+}
+
+async function upsertProxies(c: Pick<PoolClient, "query">, n: number, found: ProxyRow[]): Promise<void> {
   await c.query(
     `insert into proxies (proxy, kind, implementation, beacon, checked_block)
      select t.p, t.k, t.i, t.b, $1::bigint from unnest($2::bytea[], $3::text[], $4::bytea[], $5::bytea[]) as t(p, k, i, b)
@@ -103,5 +110,17 @@ export async function writeProxies(c: Pick<PoolClient, "query">, n: number, crea
        where proxies.checked_block <= excluded.checked_block`,
     [n, found.map((p) => bytea(p.proxy)), found.map((p) => p.kind), found.map((p) => (p.implementation === null ? null : bytea(p.implementation))), found.map((p) => (p.beacon === null ? null : bytea(p.beacon)))],
   );
-  return found.length;
+}
+
+/**
+ * Looks at one address again, at block `n`, and writes what it finds in the caller's transaction (the API's `verifyproxycontract`, which reads the slots at the final head
+ * rather than trust the row a log last refreshed: a proxy upgraded without a log, as an EIP-1822 `updateCodeAddress` does, is seen here). An address that is no proxy at
+ * `n` loses its row, unless a later block has written it. Returns what it found.
+ */
+export async function refreshProxy(c: Pick<PoolClient, "query">, address: string, n: number, reads: ProxyProbe): Promise<ProxyRow | null> {
+  const runtimeCode = await reads.code(address, n);
+  const found = await detect({ address, creator: address, txIndex: 0, traceAddress: [], runtimeCode, initCode: "0x" }, n, reads);
+  if (found) await upsertProxies(c, n, [found]);
+  else await c.query("delete from proxies where proxy = $1 and checked_block <= $2", [bytea(address), n]);
+  return found;
 }

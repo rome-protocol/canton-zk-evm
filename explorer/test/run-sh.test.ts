@@ -114,7 +114,7 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     expect(cmd).toContain(` -v ${join(state, "explorer-verifier", "bin", "docker")}:/usr/local/bin/docker:ro`);
     expect(cmd).toContain(` -v ${join(state, "explorer-verifier", "solc")}:${join(state, "explorer-verifier", "solc")}`);
     expect(cmd).toContain(` -e SOLC_CACHE_DIR=${join(state, "explorer-verifier", "solc")}`);
-    expect(cmd).toContain(` -e SANDBOX_IMAGE=${pins.BUSYBOX_IMAGE}`);
+    expect(cmd).toContain(` -e SANDBOX_IMAGE=${pins.SOLC_SANDBOX_IMAGE}`);
     expect(cmd).toContain(" -e SOLC_LIST_URL=https://lists.example/list.json");
     expect(cmd).toContain(" -e OUTSIDE_USER_AGENT=Rome Protocol rome@romeprotocol.com");
     expect(cmd).toContain(" -e SOLC_TIMEOUT_MS=30000");

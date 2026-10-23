@@ -293,7 +293,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return a.status === 200 ? { ...a, body: pick(a.body as { guid: string; status: string; result: string }, FIELDS.verifyJob) } : a;
   }
 
-  const etherscanDoor = etherscanRest && etherscan({ rest: etherscanRest, reth, chainId: config.chainId, ...(rpc ? { rpc } : {}) });
+  const etherscanDoor = etherscanRest && etherscan({ rest: etherscanRest, reth, chainId: config.chainId, ...(rpc ? { rpc } : {}), ...(verify ? { verify } : {}) });
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
   const statsRestRoutes = stats && statsRoutes({ stats, now });

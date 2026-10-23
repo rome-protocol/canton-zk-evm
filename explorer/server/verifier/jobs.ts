@@ -69,10 +69,38 @@ export class JobQueue {
     }
   }
 
-  /** What `checkverifystatus` answers, or null for a GUID no job has. */
-  async status(guid: string): Promise<JobView | null> {
+  /**
+   * Records a proxy verification that was answered on the spot (the slots were just read at the final head), as an ended job of kind `proxy`, so that
+   * `checkproxyverification` has a GUID to answer by. It counts against the client's hourly limit like a source does. No verifier takes it: only waiting jobs are claimed.
+   */
+  async recordProxy(address: string, clientKey: Buffer, status: "pass" | "fail", result: string): Promise<string> {
+    if (!ADDRESS.test(address)) throw new SubmitRefused(400, "The contract address is not an address.");
+    const guid = randomUUID();
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("select pg_advisory_xact_lock(hashtext('verification_jobs_submit'))");
+      const mine = (await client.query<{ n: string }>("select count(*) as n from verification_jobs where client_key = $1 and created_at > now() - interval '1 hour'", [clientKey])).rows[0]!;
+      if (Number(mine.n) >= this.limits.perClientPerHour) throw new SubmitRefused(429, `At most ${this.limits.perClientPerHour} verifications an hour from one client.`);
+      await client.query(
+        `insert into verification_jobs (guid, kind, address, request, request_bytes, status, result, client_key, created_at, started_at, finished_at)
+         values ($1, 'proxy', $2, '{}'::jsonb, 2, $3, $4, $5, now(), now(), now())`,
+        [guid, Buffer.from(address.slice(2), "hex"), status, result, clientKey],
+      );
+      await client.query("commit");
+      return guid;
+    } catch (e) {
+      await client.query("rollback").catch(() => undefined);
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** What `checkverifystatus` answers, or null for a GUID no job has. `kind` keeps the two checks apart: a source's GUID is not a proxy's. */
+  async status(guid: string, kind: "source" | "proxy" = "source"): Promise<JobView | null> {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(guid)) return null;
-    const r = (await this.pool.query<{ status: JobStatus; result: string | null }>("select status, result from verification_jobs where guid = $1", [guid])).rows[0];
+    const r = (await this.pool.query<{ status: JobStatus; result: string | null }>("select status, result from verification_jobs where guid = $1 and kind = $2", [guid, kind])).rows[0];
     if (!r) return null;
     const waiting = r.status === "pending" || r.status === "running";
     return { guid, status: r.status, result: waiting ? PENDING_TEXT : (r.result ?? (r.status === "pass" ? "Pass - Verified" : "Fail - Unable to verify")) };

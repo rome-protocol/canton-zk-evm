@@ -13,7 +13,7 @@ export class SandboxError extends Error {
 }
 
 export interface SandboxOptions {
-  /** The image the compiler runs in, by digest (PINS' BUSYBOX_IMAGE is enough: the compilers are static programs). Never pulled by the sandbox. */
+  /** The image the compiler runs in, by digest (PINS' SOLC_SANDBOX_IMAGE: the official linux-amd64 compilers need glibc's shared libraries, which busybox does not have). Never pulled by the sandbox. */
   image: string;
   dockerBin?: string;
   /** At most this long from the start of the run, the container's start included. */

@@ -95,4 +95,19 @@ suite("the verification job queue", () => {
     expect(await q.prune()).toBe(1);
     expect((await db.pool.query("select count(*)::int as n from verification_jobs")).rows[0].n).toBe(1);
   });
+
+  it("records a proxy verification as an ended job that only the proxy check can see, and counts it against the client", async () => {
+    const q = new JobQueue(db.pool, { perClientPerHour: 2 });
+    const address = "0x" + "c3".repeat(20);
+    const guid = await q.recordProxy(address, client(1), "pass", "The proxy is verified.");
+    expect(await q.status(guid, "proxy")).toEqual({ guid, status: "pass", result: "The proxy is verified." });
+    expect(await q.status(guid)).toBeNull();
+    const src = await q.submit(req(), client(1));
+    expect(await q.status(src, "proxy")).toBeNull();
+    await expect(q.recordProxy(address, client(1), "fail", "no")).rejects.toMatchObject({ status: 429 });
+    await expect(q.recordProxy("0x12", client(2), "fail", "no")).rejects.toMatchObject({ status: 400 });
+    // An ended job is never claimed.
+    await db.pool.query("delete from verification_jobs where guid = $1", [src]);
+    expect(await q.claim(60_000)).toBeNull();
+  });
 });

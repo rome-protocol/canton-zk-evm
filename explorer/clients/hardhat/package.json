@@ -1,0 +1,11 @@
+{
+  "name": "ostia-hardhat-client-check",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Hardhat and hardhat-verify, pinned by the lockfile, used by explorer/server/rest/etherscan-contract-tools.test.ts to verify a contract through the Etherscan door.",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-verify": "2.1.3",
+    "hardhat": "2.29.1"
+  }
+}
