@@ -8,7 +8,7 @@ import { Icon, ICON_NAMES } from "./Icon.tsx";
 
 describe("the icon set", () => {
   it("has the icons the approved screens use: the stat-card labels, the doc, the cube, the download and the menu", () => {
-    for (const n of ["cube", "clock", "shield", "link", "bolt", "doc", "download", "menu"]) expect(ICON_NAMES, n).toContain(n);
+    for (const n of ["cube", "clock", "shield", "link", "bolt", "doc", "download", "menu", "activity"]) expect(ICON_NAMES, n).toContain(n);
   });
 
   it("draws every icon as a decorative svg with something in it", () => {
