@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import demo_nightly_l3 as l3  # noqa: E402
 
 
-def block(n, txs=1000, served=0.2, final=0.3, sse=0.05):
-    return {"number": n, "txs": txs, "served_s": served, "final_s": final, "sse_after_served_s": sse}
+def block(n, txs=1000, served=0.2, sse=0.05):
+    return {"number": n, "txs": txs, "served_s": served, "sse_after_served_s": sse}
 
 
 class Percentile(unittest.TestCase):
@@ -81,6 +81,34 @@ class Clock(unittest.TestCase):
     def test_an_update_id_that_is_not_hex_never_reaches_a_query(self):
         self.assertEqual(l3.reader_offsets(["12'; drop table blocks; --"]), {})
         self.assertEqual(l3.reader_offsets([None, ""]), {})
+
+
+class DatabaseClock(unittest.TestCase):
+    def clock(self):
+        c = l3.DbClock("unused")
+        for line in ["5 100.00\n", "5 100.02\n", "6 100.04\n", "6 100.06\n", "9 100.08\n"]:
+            c.tick(line)
+        return c
+
+    def test_a_block_is_between_the_last_tick_that_could_not_see_it_and_the_first_that_could(self):
+        self.assertEqual(self.clock().seen(6), (100.02, 100.04))
+        self.assertEqual(self.clock().seen(8), (100.06, 100.08))   # 7 and 8 were written between two ticks: they share the tick that saw them
+        self.assertEqual(self.clock().seen(9), (100.06, 100.08))
+
+    def test_a_block_already_there_at_the_first_tick_has_no_tick_before_it(self):
+        self.assertEqual(self.clock().seen(5), (None, 100.0))
+
+    def test_a_block_no_tick_has_seen_has_no_time(self):
+        self.assertEqual(self.clock().seen(10), (100.08, None))
+
+    def test_anything_psql_prints_that_is_not_a_tick_is_kept_as_the_error_and_not_a_tick(self):
+        c = self.clock()
+        c.tick("ERROR:  relation \"blocks\" does not exist\n")
+        self.assertEqual(len(c.times), 5)
+        self.assertIn("does not exist", c.error)
+
+    def test_the_gaps_are_the_time_between_ticks(self):
+        self.assertEqual([round(g, 2) for g in self.clock().gaps()], [0.02] * 4)
 
 
 class Poller(unittest.TestCase):
@@ -173,8 +201,8 @@ class Judge(unittest.TestCase):
         self.assertTrue(any(f.startswith("B4") for f in failures), failures)
 
     def test_a_block_never_served_fails(self):
-        _, failures = l3.judge([block(1), dict(block(2), served_s=None, final_s=None)], **self.ok)
-        self.assertTrue(any("never served" in f for f in failures), failures)
+        _, failures = l3.judge([block(1), dict(block(2), served_s=None)], database_clock_error="boom", **self.ok)
+        self.assertTrue(any("never seen in the database" in f and "boom" in f for f in failures), failures)
 
     def test_a_block_that_never_reached_the_stream_fails(self):
         blocks = [block(i) for i in range(19)] + [dict(block(19), sse_after_served_s=None)]
@@ -184,6 +212,20 @@ class Judge(unittest.TestCase):
     def test_a_block_whose_clock_could_not_start_fails(self):
         _, failures = l3.judge([block(1), dict(block(2), t0_from="fallback")], **self.ok)
         self.assertTrue(any(f.startswith("B1") and "[2]" in f for f in failures), failures)
+
+    def test_a_block_in_the_database_that_the_api_never_answered_for_fails(self):
+        _, failures = l3.judge([block(1), dict(block(2), api_answer_after_served_s=None)], **self.ok)
+        self.assertTrue(any("[2]" in f and "API never answered" in f for f in failures), failures)
+
+    def test_time_to_final_is_reported_as_not_measured(self):
+        summary, _ = l3.judge([block(i) for i in range(20)], **self.ok)
+        self.assertIs(summary["final_measured"], False)
+        self.assertFalse(any(k.startswith("final_p") for k in summary))
+
+    def test_a_stream_event_before_the_database_tick_is_not_clamped_to_zero(self):
+        # B4 can fail: a late event shows its delay, and an early one a negative number inside the measurement error
+        summary, _ = l3.judge([block(i, sse=-0.01) for i in range(10)] + [block(10 + i, sse=0.8) for i in range(10)], **self.ok)
+        self.assertEqual(summary["sse_p95_s"], 0.8)
 
     def test_b6_over_budget_fails(self):
         _, failures = l3.judge([block(i) for i in range(20)], growth=3.0e9, txs_added=50_000)

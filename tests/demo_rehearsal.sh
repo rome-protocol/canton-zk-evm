@@ -225,7 +225,7 @@ cut_block() {
   out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
     "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $out"
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
-  # The nightly's L3 times a block from the offset the commit answered with.
+  # The nightly's L3 reads the block's update id here when it can; it times a block from the update's offset on the reader's participant (canton_updates.reader_offset, found by update id).
   [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
 }
 # Canton's head: what the chain's state contract holds, as one JSON line {"headNumber", "headHash"}. L3 reads it after a cut that failed, to tell a chain that forked

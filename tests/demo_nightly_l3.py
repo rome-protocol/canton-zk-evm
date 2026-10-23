@@ -2,20 +2,26 @@
 """L3 of the explorer's design (section 9), the nightly flood on the rehearsal chain: the real reth, Canton, builder and the explorer's indexer, with the
 stand-in proof. It floods the producer with blocks of plain transfers (1,428 fit under the 30 Mgas cap), cut one after another as the builder takes them,
 and measures, for each block, from the moment the update can be read on the reader's participant (the ledger end, polled every 20 ms, reaches the offset the
-update has on that participant, which the indexer stored (canton_updates.reader_offset; offsets are local to a participant, so the builder's own is no use); the clock starts at the last poll that could not read it, so a lag is an upper bound, at most one poll too long):
-  served   the first time the explorer's API answers for the block from its database (status final, with the Canton record): B1's index lag, polled every 60 ms
-           (the REST routes allow 20 requests a second to a client). An answer from reth alone ("unindexed", "proving") does not count: reth has the block the
-           moment the builder commits, so it would say nothing of the indexer.
-  final    the first time the API says the block is final
-  sse      how long after `served` a live-stream client receives the block's `block` event (B4); every block must reach the client
-and, over the whole flood, the growth of the explorer's database per million transactions (B6).
-Held to B1 (p95 <= 1.0 s), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions). Without a GPU there is no proving, so time to final here is the
-chain's without a proof: it is reported, not held to a budget.
+update has on that participant, which the indexer stored (canton_updates.reader_offset, found by the update's id; offsets are local to a participant, so the builder's
+own is no use); the clock starts at the last poll that could not read it, so a lag is an upper bound, at most one poll too long):
+  served   the moment the block's row is readable in the explorer's PostgreSQL (what the API serves from): a psql session polls `select max(number), clock_timestamp()
+           from blocks` every 20 ms, and the first tick that sees the block is its time. It is taken from the database, never from an API answer, so it holds nothing
+           of the size of the answer (/api/block/N lists all 1,428 transactions) or of the polls before it. B1's index lag. The first answer of the API from its database
+           (status final, with the Canton record; one from reth alone says nothing of the indexer) is still waited for, polled every 60 ms, and its delay after `served`
+           is reported (api_answer_after_served_s).
+  sse      how long after the block was readable in the database (the last tick that could not see it, an upper bound) a live-stream client receives the block's
+           `block` event (B4); every block must reach the client. It is not clamped: an event that came before the tick shows as a negative number, within the error.
+and, over the whole flood, the growth of the explorer's database per million transactions (B6). l3.json reports the measurement error (measurement_error_s): the
+lag is an upper bound, over by at most one ledger poll plus one database tick.
+Time to final is NOT measured: the flood's transactions go straight to reth (not through the explorer's RPC, so tx_lifecycle has no accepted_at for them), and
+without a GPU there is no proof to wait for; a block's `final` and `served` would be the same moment.
+Held to B1 (p95 <= 2.75 s, the lead's ruling of 2026-10-23: on the shared runner the project's W1-derived B1 of explorer/test/budgets.ts; the design's 1.0 s for a block of
+at most 1,428 transactions is checked on the reference machine, devnet-ostia), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions).
 
   demo_nightly_l3.py run <seconds> <transactions per block> <results.json>
 
 Reads: EXPLORER (the explorer's URL), L3_PY (the Python of the demo's virtualenv), L3_DB (the explorer's database container), and the demo's own variables,
-which the rehearsal exports with the function `cut_block` (bash -c cut_block cuts a block through the real builder; with CUT_BLOCK_JSON=1 it prints the commit's offset),
+which the rehearsal exports with the function `cut_block` (bash -c cut_block cuts a block through the real builder; with CUT_BLOCK_JSON=1 it prints the commit's update id),
 and L3_LEDGER (the reader's participant, http://127.0.0.1:7577). The next batch of transfers is sent while the builder cuts the block before it. Exits 1 when a budget is broken.
 """
 import json
@@ -33,8 +39,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# B1 as the project holds it since W1 re-set it (2026-10-22, docs/METRICS.md, explorer/test/budgets.ts: B1_MS = 2750): the design's 1.0 s was provisional. L3's index lag is
-# the whole way from the ledger to the database's answer, so it is held to the same number; test_demo_nightly_l3.py checks that the two files agree.
+# B1 as the lead ruled for L3 (2026-10-23, docs/METRICS.md): L3 runs on a shared GitHub runner (Canton, reth, the builder, PostgreSQL and the explorer share its CPU), so its index
+# lag is held to the W1-derived provisional B1 of explorer/test/budgets.ts (B1_MS = 2750), now that the measurement is precise; the design's 1.0 s is checked on the reference
+# machine (devnet-ostia). test_demo_nightly_l3.py checks that the two files agree.
 B1_S = 2.75
 B4_S = 0.5
 B6_BYTES = 2.5e9
@@ -43,6 +50,8 @@ POLL_S = 0.06
 GIVE_UP_S = 180
 HASH_LISTS = re.compile(r'\[\s*(?:"0x[0-9a-fA-F]+"(?:\s*,\s*"0x[0-9a-fA-F]+")*)?\s*\]')   # a list of transaction hashes, which the builder report holds by the thousand
 LEDGER_POLL_S = 0.02
+DB_POLL_S = 0.02
+WALL_OFFSET = time.time() - time.monotonic()   # monotonic seconds + this = wall-clock seconds (the database's clock is the wall clock of this machine)
 
 
 def percentile(values, p):
@@ -59,24 +68,27 @@ def growth_per_million(size_before, size_after, txs_before, txs_after):
     return (size_after - size_before) / (txs_after - txs_before) * 1_000_000
 
 
-def judge(blocks, growth, txs_added):
+def judge(blocks, growth, txs_added, database_clock_error=None):
     """The summary of a flood and the budgets it broke."""
     failures = []
     if not blocks:
         return {"blocks": 0}, ["no block was cut"]
     never = [b["number"] for b in blocks if b["served_s"] is None]
     if never:
-        failures.append(f"blocks {never} were never served")
+        failures.append(f"blocks {never} were never seen in the database by the clock that times them" + (f" (its last error: {database_clock_error})" if database_clock_error else ""))
+    unanswered = [b["number"] for b in blocks if b["served_s"] is not None and "api_answer_after_served_s" in b and b["api_answer_after_served_s"] is None]
+    if unanswered:
+        failures.append(f"blocks {unanswered} were in the database but the API never answered for them from it")
     clockless = [b["number"] for b in blocks if b.get("t0_from") == "fallback"]
     if clockless:
         failures.append(f"B1: the clock of blocks {clockless} could not start from the reader's ledger end (the offset was not read), so their lag is not measured")
     served = [b["served_s"] for b in blocks if b["served_s"] is not None]
-    final = [b["final_s"] for b in blocks if b["final_s"] is not None]
     sse = [b["sse_after_served_s"] for b in blocks if b["sse_after_served_s"] is not None]
     summary = {
         "blocks": len(blocks), "transactions": sum(b["txs"] for b in blocks), "largest_block_txs": max(b["txs"] for b in blocks),
         "served_p50_s": percentile(served, 50), "served_p95_s": percentile(served, 95), "served_max_s": max(served, default=None),
-        "final_p50_s": percentile(final, 50), "final_p95_s": percentile(final, 95), "final_max_s": max(final, default=None),
+        "final_measured": False,
+        "final_note": "time to final is not measured: the flood goes straight to reth (tx_lifecycle has no accepted_at for it) and a stand-in proof is no wait",
         "sse_p50_s": percentile(sse, 50), "sse_p95_s": percentile(sse, 95), "sse_received": len(sse),
         "growth_bytes_per_million": growth, "transactions_added_to_the_database": txs_added,
         "budgets": {"B1_p95_s": B1_S, "B4_p95_s": B4_S, "B6_bytes_per_million": B6_BYTES},
@@ -130,6 +142,15 @@ def reader_offsets(update_ids):
     if not ids or not all(u.isalnum() for u in ids):   # an update id is hex; anything else does not go into a query
         return {}
     return {row[0]: int(row[1]) for row in sql_rows("select update_id, reader_offset from canton_updates where update_id in (" + ",".join(f"'{u}'" for u in ids) + ")")}
+
+
+def block_updates(numbers):
+    """The update id of each block as the indexer stored it (blocks.update_id), by block number: it does not depend on what `cut_block` printed, so a cut that failed
+    but committed is timed like any other."""
+    ns = [n for n in numbers if isinstance(n, int)]
+    if not ns:
+        return {}
+    return {int(row[0]): row[1] for row in sql_rows("select number, update_id from blocks where number in (" + ",".join(str(n) for n in ns) + ")")}
 
 
 def database():
@@ -199,6 +220,53 @@ class LedgerClock(threading.Thread):
             return None
         i = bisect.bisect_left(self.offsets, offset)   # the ledger end only grows, so the polls are in order
         return self.sent[max(0, i - 1)] if i < len(self.offsets) else None
+
+
+class DbClock(threading.Thread):
+    """When each block's row became readable in the explorer's PostgreSQL: one psql session runs `select max(number), clock_timestamp() from blocks` every 20 ms, and every
+    tick is kept as (database clock, newest block number). The database runs on this machine, so its clock is this one's (time.time()). Blocks are written in order, so
+    the first tick whose newest number reaches a block is when the block was first seen, and the tick before it could not see it: the block became readable between the
+    two (a commit is atomic), and the gap between them is the measurement error."""
+    def __init__(self, container):
+        super().__init__(daemon=True)
+        self.container, self.stop, self.times, self.newest, self.proc, self.error = container, False, [], [], None, None
+
+    def run(self):
+        try:
+            self.proc = subprocess.Popen(["docker", "exec", "-i", self.container, "psql", "-U", "explorer", "-d", "explorer", "-AtF", " "],
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            self.proc.stdin.write("select coalesce(max(number), 0), extract(epoch from clock_timestamp())::float8 from blocks;\n\\watch " + str(DB_POLL_S) + "\n")
+            self.proc.stdin.flush()
+            for line in self.proc.stdout:
+                self.tick(line)
+                if self.stop:
+                    break
+        except Exception as e:  # a dead clock is blocks that cannot be timed: judge() names them
+            self.error = f"{type(e).__name__}: {str(e)[:200]}"
+        finally:
+            if self.proc is not None:
+                self.proc.kill()
+
+    def tick(self, line):
+        """One line of psql's output: `<newest block number> <epoch seconds>`; anything else (a header, an error) is kept as the last error."""
+        m = re.fullmatch(r"(\d+) (\d+\.?\d*)", line.strip())
+        if not m:
+            self.error = line.strip()[:200] or self.error
+            return
+        number, at = int(m.group(1)), float(m.group(2))
+        if self.newest and number < self.newest[-1]:   # the table cannot lose blocks while L3 runs; a reindex would, and the clock must not run backwards
+            return
+        self.times.append(at)
+        self.newest.append(number)
+
+    def seen(self, number):
+        """(the last tick that could not see the block, the first tick that could), as wall-clock seconds; None for either when there is no such tick."""
+        i = bisect.bisect_left(self.newest, number)
+        return (self.times[i - 1] if 0 < i <= len(self.times) else None), (self.times[i] if i < len(self.times) else None)
+
+    def gaps(self):
+        """The gaps between consecutive ticks: how long the database was not looked at."""
+        return [b - a for a, b in zip(self.times, self.times[1:])]
 
 
 def committed(output):
@@ -285,24 +353,27 @@ def run(seconds, per_block, results):
     stream.start()
     clock = LedgerClock(os.environ.get("L3_LEDGER", "http://127.0.0.1:7577"))
     clock.start()
+    dbclock = DbClock(os.environ["L3_DB"])
+    dbclock.start()
     size0, txs0 = database()
+    accepted0 = sql("select count(*) from tx_lifecycle where accepted_at is not null")
     tables0 = table_sizes()
     cut = []          # (number, update id, returned at, transactions)
-    seen = {}         # number -> {"served": t, "final": t}
+    seen = {}         # number -> {"api_sent": t, "api_answered": t}: the first answer of the API from its database (monotonic seconds)
     done = threading.Event()
     cuts_kept = []    # cuts that reported a failure but that Canton and reth both hold
 
     def watch():
         while True:
-            active = [(n, t) for n, _, t, _ in list(cut) if "final" not in seen.setdefault(n, {}) and time.monotonic() - t < GIVE_UP_S]
+            active = [(n, t) for n, _, t, _ in list(cut) if "api_answered" not in seen.setdefault(n, {}) and time.monotonic() - t < GIVE_UP_S]
             if not active and done.is_set():
                 return
             for number, _ in active:
+                sent = time.monotonic()
                 status, body = get(f"{base}/api/block/{number}")
-                now = time.monotonic()
                 if status == 200 and from_database(body):
-                    seen[number].setdefault("served", now)
-                    seen[number]["final"] = now
+                    seen[number].setdefault("api_sent", sent)
+                    seen[number].setdefault("api_answered", time.monotonic())
                 time.sleep(POLL_S)
             if not active:
                 time.sleep(POLL_S)
@@ -345,30 +416,45 @@ def run(seconds, per_block, results):
     watcher.join(timeout=GIVE_UP_S + 30)
     # A block's `block` event can come a moment after the API serves it: give the stream until every served block has arrived, up to 5 s.
     grace = time.monotonic() + 5
-    while time.monotonic() < grace and any("served" in seen.get(n, {}) and n not in stream.arrived for n, *_ in cut):
+    while time.monotonic() < grace and any("api_answered" in seen.get(n, {}) and n not in stream.arrived for n, *_ in cut):
         time.sleep(0.1)
-    stream.stop = clock.stop = True
+    stream.stop = clock.stop = dbclock.stop = True
     size1, txs1 = database()
+    accepted1 = sql("select count(*) from tx_lifecycle where accepted_at is not null")
     tables1 = table_sizes()
-    offsets = reader_offsets([u for _, u, _, _ in cut])
+    update_ids = block_updates([n for n, *_ in cut])   # the block's update by its number in the database, not from what cut_block printed
+    offsets = reader_offsets([update_ids.get(n) or u for n, u, _, _ in cut])
     blocks = []
-    for number, update_id, returned, count in cut:
+    for number, printed_id, returned, count in cut:
+        update_id = update_ids.get(number) or printed_id
         mark, got = seen.get(number, {}), stream.arrived.get(number)
-        served = mark.get("served")
         offset = offsets.get(update_id)
         t0 = clock.reached(offset)
         t0_from = "ledger" if t0 is not None else "fallback"
         t0 = returned if t0 is None else t0
+        before, first = dbclock.seen(number)          # wall-clock seconds: the last database tick that could not see the block, the first that could
+        t0, got = t0 + WALL_OFFSET, None if got is None else got + WALL_OFFSET
+        answered = mark.get("api_answered")
         blocks.append({"number": number, "txs": count, "update_id": update_id, "reader_offset": offset, "t0_from": t0_from,
-                       "served_s": None if served is None else max(0.0, served - t0),
-                       "final_s": None if "final" not in mark else max(0.0, mark["final"] - t0),
-                       "sse_after_served_s": None if served is None or got is None else max(0.0, got - served)})
-    summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0)
+                       "served_s": None if first is None else max(0.0, first - t0),
+                       "database_tick_gap_s": None if first is None or before is None else first - before,
+                       "api_answer_after_served_s": None if first is None or answered is None else answered + WALL_OFFSET - first,
+                       "sse_after_served_s": None if got is None or (before is None and first is None) else got - (first if before is None else before)})
+    summary, failures = judge(blocks, growth_per_million(size0, size1, txs0, txs1), txs1 - txs0, dbclock.error)
     if blocks:
         summary["blocks_per_minute"] = round(len(blocks) / flood_s * 60, 2)
     if txs1 > txs0:   # where the growth is: the five tables that grew most, in bytes per million transactions added
         grown = sorted(((t, tables1.get(t, 0) - tables0.get(t, 0)) for t in tables1), key=lambda kv: -kv[1])[:5]
         summary["growth_by_table_bytes_per_million"] = {t: round(g / (txs1 - txs0) * 1_000_000) for t, g in grown}
+    gaps, ledger_gaps = dbclock.gaps(), [b - a for a, b in zip(clock.sent, clock.sent[1:])]
+    summary["measurement_error_s"] = {
+        "note": "the lag is an upper bound: over by at most the ledger poll gap (the clock starts at the last poll that could not read the update) plus the database tick gap (the block is timed at the first tick that saw it); the stream delay is measured from the last tick that could not see the block, so it is over by at most one database tick gap",
+        "database_tick_gap_p95_s": percentile(gaps, 95), "database_tick_gap_max_s": max(gaps, default=None), "database_ticks": len(dbclock.times),
+        "ledger_poll_gap_p95_s": percentile(ledger_gaps, 95), "ledger_poll_gap_max_s": max(ledger_gaps, default=None),
+        "lag_over_by_at_most_s": None if not gaps or not ledger_gaps else max(gaps) + max(ledger_gaps),
+        "database_clock_last_error": dbclock.error,
+    }
+    summary["transactions_with_accepted_at"] = accepted1 - accepted0   # why time to final is not measured: the flood does not go through the explorer's RPC
     summary.update(cuts_failed_but_committed=cuts_kept, ledger_end_polls=len(clock.offsets), ledger_end_polls_unanswered=clock.misses, ledger_end_last_error=clock.last_miss)
     summary.update(seconds=seconds, flood_seconds=round(flood_s, 1), transactions_per_block_sent=per_block, database_bytes_before=size0, database_bytes_after=size1, failures=failures, per_block=blocks)
     Path(results).write_text(json.dumps(summary, indent=1))
