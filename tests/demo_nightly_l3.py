@@ -41,6 +41,7 @@ POLL_S = 0.06
 GIVE_UP_S = 180
 HASH_LISTS = re.compile(r'\[(?:\s*"0x[0-9a-fA-F]+"\s*,?)*\s*\]')   # a list of transaction hashes, which the builder report holds by the thousand
 LEDGER_POLL_S = 0.02
+CUT_RETRIES = 2   # a cut that fails is tried again this many times before L3 stops
 
 
 def percentile(values, p):
@@ -220,7 +221,9 @@ class Sender(threading.Thread):
     """Sends batches of transfers one after another, one batch ahead of the builder: the next batch goes into reth's pool while the builder cuts the block before it."""
     def __init__(self, py, root, per_block):
         super().__init__(daemon=True)
-        self.cmd, self.ready, self.stop, self.error = [py, str(root / "demo_w1.py"), "plain", str(per_block)], queue.Queue(maxsize=1), False, None
+        # At the lowest priority: on the runner the sender shares its cores with Canton, reth, the builder and the explorer, and a sender that is ahead of them starved
+        # Canton into answering the builder's Advance too late (20 s) in two of four trial runs.
+        self.cmd, self.ready, self.stop, self.error = ["nice", "-n", "19", py, str(root / "demo_w1.py"), "plain", str(per_block)], queue.Queue(maxsize=1), False, None
 
     def run(self):
         try:
@@ -256,6 +259,7 @@ def run(seconds, per_block, results):
     cut = []          # (number, update id, returned at, transactions)
     seen = {}         # number -> {"served": t, "final": t}
     done = threading.Event()
+    cut_retries = []
 
     def watch():
         while True:
@@ -281,11 +285,19 @@ def run(seconds, per_block, results):
     try:
         while time.monotonic() < end:
             sender.next_batch()
-            cutting = subprocess.run(["bash", "-c", "cut_block"], capture_output=True, text=True, env={**os.environ, "CUT_BLOCK_JSON": "1"})
-            if cutting.returncode != 0:   # the reason is in what cut_block printed: all of it is kept beside the results, and the lists of hashes are left out of the message
+            for attempt in range(1 + CUT_RETRIES):
+                cutting = subprocess.run(["bash", "-c", "cut_block"], capture_output=True, text=True, env={**os.environ, "CUT_BLOCK_JSON": "1"})
+                if cutting.returncode == 0:
+                    break
+                # The reason is in what cut_block printed: all of it is kept beside the results, and the lists of hashes are left out of the message. The builder puts the
+                # block's transactions back and takes them again at the next run, so a cut that Canton answered too late is tried again, and said so in the results.
                 said = cutting.stderr + cutting.stdout
-                Path(results).with_name("l3-cut-failure.txt").write_text(said)
-                raise RuntimeError(f"cut_block exited {cutting.returncode}: {HASH_LISTS.sub('[...]', said).strip()[:2500]}")
+                Path(results).with_name(f"l3-cut-failure-{len(cut) + 1}-{attempt + 1}.txt").write_text(said)
+                reason = f"cut_block exited {cutting.returncode}: {HASH_LISTS.sub('[...]', said).strip()[:1200]}"
+                print(reason, flush=True)
+                if attempt == CUT_RETRIES:
+                    raise RuntimeError(reason)
+                cut_retries.append({"block_after": len(cut), "attempt": attempt + 1, "reason": reason[:600]})
             out = cutting.stdout
             returned = time.monotonic()
             number = int(rpc("eth_blockNumber", []), 16)
@@ -323,7 +335,7 @@ def run(seconds, per_block, results):
     if txs1 > txs0:   # where the growth is: the five tables that grew most, in bytes per million transactions added
         grown = sorted(((t, tables1.get(t, 0) - tables0.get(t, 0)) for t in tables1), key=lambda kv: -kv[1])[:5]
         summary["growth_by_table_bytes_per_million"] = {t: round(g / (txs1 - txs0) * 1_000_000) for t, g in grown}
-    summary.update(ledger_end_polls=len(clock.offsets), ledger_end_polls_unanswered=clock.misses, ledger_end_last_error=clock.last_miss)
+    summary.update(cut_retries=cut_retries, ledger_end_polls=len(clock.offsets), ledger_end_polls_unanswered=clock.misses, ledger_end_last_error=clock.last_miss)
     summary.update(seconds=seconds, flood_seconds=round(flood_s, 1), transactions_per_block_sent=per_block, database_bytes_before=size0, database_bytes_after=size1, failures=failures, per_block=blocks)
     Path(results).write_text(json.dumps(summary, indent=1))
     print(json.dumps({k: v for k, v in summary.items() if k != "per_block"}, indent=1))
