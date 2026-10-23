@@ -30,7 +30,9 @@ export function checksWord(s: ApiStatus, h: ApiHealth | undefined): { dot: Dot; 
   const bad = list?.filter((c) => c.status !== "ok").length ?? 0;
   if (list && bad) return { dot: "bad", text: `${bad} of ${count(list.length)} checks not ok` };
   if (!s.ok) return { dot: "off", text: "Checks" };
-  return { dot: "ok", text: list ? `All ${count(list.length)} checks ok` : "Checks pass" };
+  // The strip also names the faucet, which is the API's own check and not in the count: when it is not ok, the count says it is the indexer's checks that pass.
+  const apiBad = h?.checks.some((c) => c.role === "api" && c.id === "faucet" && c.status !== "ok");
+  return { dot: "ok", text: list ? `All ${count(list.length)} ${apiBad ? "indexer " : ""}checks ok` : "Checks pass" };
 }
 
 /**

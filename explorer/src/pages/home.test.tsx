@@ -65,6 +65,15 @@ describe("the home page's status strip", () => {
     expect(strip().getByText("Producer").closest(".sd")).toHaveClass("ok");
   });
 
+  it("does not say all checks are ok in green beside a red Faucet: the faucet is the API's own check, so the count says whose checks it counts", async () => {
+    fakeApi(route({ health: () => reply(strip16("faucet", "down")) }));
+    renderApp("/");
+    await screen.findByRole("region", { name: "Chain status" });
+    await strip().findByText("All 6 indexer checks ok");
+    expect(strip().getByText("Faucet").closest(".sd")).toHaveClass("bad");
+    expect(strip().queryByText("All 6 checks ok")).toBeNull();
+  });
+
   it("names the block when a check failed, in red", async () => {
     await home({ ok: false, problems: ["block 3: reth's hash is 0x1111…1111, the record's hash is 0x2222…2222"] }, 503);
     expect(strip().getByText("A check failed").closest(".sd")).toHaveClass("bad");
