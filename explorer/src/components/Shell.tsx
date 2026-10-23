@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Link, NavLink, useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
 import { useNow, useStatus } from "../useStatus.ts";
@@ -20,6 +20,16 @@ export const NAV: ReadonlyArray<readonly [path: string, label: string, built: bo
   ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", true], ["/contracts", "Contracts", true], ["/tokens", "Tokens", true],
   ["/canton", "Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/docs/api", "API", true],
 ];
+
+/** The page of the header that owns a detail route: a block is read under Blocks, a transaction under Transactions. A route no page of the header owns keeps nothing lit. */
+const PARENT: Readonly<Record<string, string>> = { block: "/blocks", tx: "/txs", contract: "/contracts", address: "/addresses", token: "/tokens", leg: "/legs", canton: "/canton", docs: "/docs/api" };
+export function parentPath(pathname: string): string {
+  if (pathname === "/") return "/";
+  const [, first = "", ...rest] = pathname.split("/");
+  const list = `/${first}`;
+  if (rest.length === 0 && NAV.some(([to]) => to === list)) return list;
+  return PARENT[first] ?? "";
+}
 
 /** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. */
 function TopBar({ status: s }: { status: ApiStatus }) {
@@ -48,7 +58,9 @@ export function Shell({ children }: { children: ReactNode }) {
 
 function ShellBody({ children }: { children: ReactNode }) {
   const status = useStatus().data;
-  const home = useLocation().pathname === "/";
+  const { pathname } = useLocation();
+  const home = pathname === "/";
+  const parent = parentPath(pathname);
   return (
     <div className="page">
       {status && <TopBar status={status} />}
@@ -59,7 +71,7 @@ function ShellBody({ children }: { children: ReactNode }) {
           {status?.networkName && <span className="pill">{status.networkName}</span>}
         </Link>
         <nav className="nav" aria-label="Pages">
-          {NAV.filter(([, , built]) => built).map(([to, label]) => <NavLink key={to} to={to} end={to === "/"} className="navlink">{label}</NavLink>)}
+          {NAV.filter(([, , built]) => built).map(([to, label]) => <Link key={to} to={to} className={`navlink${to === parent ? " active" : ""}`} aria-current={to === parent ? "page" : undefined}>{label}</Link>)}
         </nav>
         {!home && <SearchBox />}
       </header>

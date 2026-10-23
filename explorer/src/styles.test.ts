@@ -34,10 +34,30 @@ describe("themes", () => {
 describe("fonts and outside requests", () => {
   it("serves IBM Plex from the explorer: every font file the styles name is in public/fonts, with its licence", () => {
     const files = [...css.matchAll(/url\((\/fonts\/[^)]+)\)/g)].map((m) => m[1]!);
-    expect(files.length).toBe(5);
+    expect(files.length).toBe(7);
     for (const f of files) expect(existsSync(join(root, "public", f)), f).toBe(true);
     expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Sans.txt"))).toBe(true);
     expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Mono.txt"))).toBe(true);
+    expect(readFileSync(join(root, "public/fonts/OFL-IBM-Plex-Serif.txt"), "utf8")).toMatch(/SIL Open Font License, Version 1\.1/);
+  });
+
+  it("sets the wordmark and every h1 in IBM Plex Serif, and numbers in tabular figures", () => {
+    expect(css).toMatch(/@font-face \{ font-family: "IBM Plex Serif"; font-weight: 500;/);
+    expect(css).toMatch(/\nh1, \.name \{ font-family: "IBM Plex Serif", /);
+    expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain("font-variant-numeric: tabular-nums");
+  });
+
+  it("lines the header, the top bar and the footer up with the page's column", () => {
+    const column = "max(32px, calc((100% - 1216px) / 2))";
+    expect(/\.main \{[^}]*max-width: 1280px[^}]*padding: 26px 32px/.exec(css)).not.toBeNull();
+    for (const sel of [".top", ".topbar", ".foot"]) expect(new RegExp(`\\n\\${sel} \\{[^}]*${column.replace(/[()*/+]/g, "\\$&")}`).test(css), sel).toBe(true);
+  });
+
+  it("draws the network as a filled pill in the brand's purple on pink", () => {
+    const pill = /\n\.pill \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(pill).toContain("background: var(--pill)");
+    expect(pill).toContain("color: var(--canton)");
+    expect(pill).not.toContain("border:");
   });
 
   it("loads nothing from another host: no web address in the pages' styles, markup or code", () => {

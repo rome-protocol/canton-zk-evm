@@ -184,7 +184,7 @@ Every page has the same header (the chain's name and id, which link home, a sear
 
 Colours are variables in `src/styles.css`, light by default and dark when the system asks for it. There is no switch and nothing is stored. Times are UTC. Every hash is shown shortened, with a button to copy the whole value and one to read it in full.
 
-The fonts are IBM Plex Sans and IBM Plex Mono, served by the explorer from `public/fonts` (SIL Open Font License; the licence texts sit next to the files). The pages load nothing from another host, and a test holds them to that.
+The fonts are IBM Plex Sans (text), IBM Plex Serif (the wordmark and page titles) and IBM Plex Mono, served by the explorer from `public/fonts` (SIL Open Font License; the licence texts sit next to the files). The pages load nothing from another host, and a test holds them to that.
 
 ## Contract verification
 
