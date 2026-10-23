@@ -1,6 +1,8 @@
 -- Etherscan's ethsupply is the genesis allocation minus every fee burnt up to the final head. Summing `burnt_fees` over the whole table costs more with every block,
 -- so each block keeps the running total of the fees burnt up to and including it (`burnt_total`), and ethsupply reads one row. A trigger keeps the total right for
 -- every writer: a new block adds its fees to the total of the block before it, a reindex that changes a block's fees (or a removed block) moves the total of each later block by the difference.
+-- Writers insert one block at a time (stage1, seed-chain and the tests all do), and a statement that inserts several blocks is refused, because it would count the fees of its earlier rows twice.
+-- A reindex that writes the same fees again (an upsert that changes nothing) leaves the later blocks alone.
 alter table blocks add column burnt_total numeric(78,0) not null default 0;
 
 update blocks b set burnt_total = s.total
@@ -31,5 +33,17 @@ begin
   return null;
 end $$;
 
+create function blocks_burnt_total_one_row() returns trigger language plpgsql as $$
+begin
+  if (select count(*) from inserted) > 1 then
+    raise exception 'blocks: insert one block at a time, the running total of burnt fees (burnt_total) would count the earlier rows twice';
+  end if;
+  return null;
+end $$;
+
 create trigger blocks_burnt_total_before before insert or update of burnt_fees on blocks for each row execute function blocks_burnt_total_before();
-create trigger blocks_burnt_total_after after insert or update of burnt_fees or delete on blocks for each row execute function blocks_burnt_total_after();
+create trigger blocks_burnt_total_after_insert after insert on blocks for each row execute function blocks_burnt_total_after();
+-- The update trigger fires only for a block whose fees changed: a reindex that writes the same fees again would otherwise rewrite every later row.
+create trigger blocks_burnt_total_after_update after update of burnt_fees on blocks for each row when (old.burnt_fees is distinct from new.burnt_fees) execute function blocks_burnt_total_after();
+create trigger blocks_burnt_total_after_delete after delete on blocks for each row execute function blocks_burnt_total_after();
+create trigger blocks_burnt_total_one_row after insert on blocks referencing new table as inserted for each statement execute function blocks_burnt_total_one_row();

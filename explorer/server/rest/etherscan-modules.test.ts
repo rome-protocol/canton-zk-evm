@@ -150,12 +150,52 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the token, stats and 
       await sql("update blocks set burnt_fees = 5000000000 where number = 1");
       expect(await totals()).toEqual([[1, "5000000000"], [2, "7000000000"], [3, "10000000000"]]);
       await sql("update blocks set burnt_fees = 1000000000 where number = 1");
-      // A block written above the others adds to the last total, and one written below the others moves them.
-      await sql("insert into blocks select 4, $1::bytea, parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, 7000000000, priority_fees, tx_count, log_count, size_bytes, state_root, transactions_root, receipts_root, extra_data, legs_count, legs_hash, update_id, record_time, attempt_id, indexed_at, 0 from blocks where number = 3", [Buffer.alloc(32, 4)]);
+      // A block written above the others adds to the last total.
+      const add = (n: number, fees: number) => sql("insert into blocks select $2::bigint, $1::bytea, parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, $3::numeric, priority_fees, tx_count, log_count, size_bytes, state_root, transactions_root, receipts_root, extra_data, legs_count, legs_hash, update_id, record_time, attempt_id, indexed_at, 0 from blocks where number = 3", [Buffer.alloc(32, n), n, fees]);
+      await add(4, 7000000000);
       try {
         expect((await totals()).at(-1)).toEqual([4, "13000000000"]);
       } finally { await sql("delete from blocks where number = 4"); }
       expect(await totals()).toEqual([[1, "1000000000"], [2, "3000000000"], [3, "6000000000"]]);
+    });
+
+    it("keeps the totals right for a block written out of order, and equal to a full recompute", async () => {
+      const add = (n: number, fees: number) => sql("insert into blocks select $2::bigint, $1::bytea, parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, $3::numeric, priority_fees, tx_count, log_count, size_bytes, state_root, transactions_root, receipts_root, extra_data, legs_count, legs_hash, update_id, record_time, attempt_id, indexed_at, 0 from blocks where number = 3", [Buffer.alloc(32, n), n, fees]);
+      const wrong = async () => (await sql("select count(*)::int as n from blocks b join (select number, sum(burnt_fees) over (order by number) as t from blocks) s using (number) where b.burnt_total <> s.t")).rows[0].n;
+      const totals = async () => (await sql("select number::int, burnt_total::text as t from blocks where number > 3 order by number")).rows.map((r) => [r.number, r.t]);
+      // Blocks 4, 5 and 7 first, then 6 below the last: the totals of 7 moves, and every total is the sum of the fees up to it.
+      for (const [n, f] of [[4, 1], [5, 2], [7, 4], [6, 3]]) await add(n, f * 1000000000);
+      try {
+        expect(await totals()).toEqual([[4, "7000000000"], [5, "9000000000"], [6, "12000000000"], [7, "16000000000"]]);
+        expect(await wrong()).toBe(0);
+        await sql("update blocks set burnt_fees = 10000000000 where number = 5");
+        expect(await totals()).toEqual([[4, "7000000000"], [5, "17000000000"], [6, "20000000000"], [7, "24000000000"]]);
+        expect(await wrong()).toBe(0);
+        await sql("delete from blocks where number = 6");
+        expect(await totals()).toEqual([[4, "7000000000"], [5, "17000000000"], [7, "21000000000"]]);
+        expect(await wrong()).toBe(0);
+      } finally { await sql("delete from blocks where number > 3"); }
+      expect(await wrong()).toBe(0);
+    });
+
+    it("leaves the later blocks alone when a reindexed block keeps its fees (no row rewritten), and moves them when the fees change", async () => {
+      const xmins = async () => (await sql("select number::int, xmin::text as x from blocks where number > 1 order by number")).rows.map((r) => [r.number, r.x]);
+      const before = await xmins();
+      await sql("update blocks set burnt_fees = burnt_fees, hash = hash where number = 1");
+      await sql("update blocks set burnt_fees = burnt_fees where number = 1");
+      expect(await xmins()).toEqual(before);
+      expect((await sql("select burnt_total::text as t from blocks where number = 3")).rows[0].t).toBe("6000000000");
+      await sql("update blocks set burnt_fees = burnt_fees + 1 where number = 1");
+      try {
+        expect(await xmins()).not.toEqual(before);
+        expect((await sql("select burnt_total::text as t from blocks where number = 3")).rows[0].t).toBe("6000000001");
+      } finally { await sql("update blocks set burnt_fees = 1000000000 where number = 1"); }
+      expect((await sql("select burnt_total::text as t from blocks where number = 3")).rows[0].t).toBe("6000000000");
+    });
+
+    it("refuses a statement that writes several blocks, which would count the fees of its earlier rows twice (migration 0029)", async () => {
+      await expect(sql("insert into blocks select n, $1::bytea || int4send(n), parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, burnt_fees, priority_fees, tx_count, log_count, size_bytes, state_root, transactions_root, receipts_root, extra_data, legs_count, legs_hash, update_id, record_time, attempt_id, indexed_at, 0 from blocks, generate_series(10, 11) n where number = 3", [Buffer.alloc(28, 9)])).rejects.toThrow(/insert one block at a time/);
+      expect((await sql("select count(*)::int as n from blocks")).rows[0].n).toBe(3);
     });
 
     it("refuses ethsupply while the database does not hold the genesis allocation", async () => {
