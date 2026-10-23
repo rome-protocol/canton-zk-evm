@@ -245,6 +245,7 @@ table contracts
   CREATE INDEX contracts_interaction_count_address_idx ON public.contracts USING btree (interaction_count DESC, address DESC)
   CREATE INDEX contracts_name_idx ON public.contracts USING gin (name gin_trgm_ops)
   CREATE INDEX contracts_runtime_code_hash_idx ON public.contracts USING btree (runtime_code_hash)
+  CREATE INDEX contracts_verified_idx ON public.contracts USING btree (address) WHERE (verified_source IS NOT NULL)
   CREATE UNIQUE INDEX contracts_pkey ON public.contracts USING btree (address)
 
 table cursors
@@ -763,9 +764,13 @@ table verification_jobs
   column finished_at timestamp with time zone
   column attempts integer not null default 0
   column not_before timestamp with time zone
+  column method text
+  column tool text
   constraint verification_jobs_kind CHECK ((kind = ANY (ARRAY['source'::text, 'proxy'::text])))
+  constraint verification_jobs_method_check CHECK ((method = ANY (ARRAY['etherscan'::text, 'api'::text])))
   constraint verification_jobs_pkey PRIMARY KEY (guid)
   constraint verification_jobs_status CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'pass'::text, 'fail'::text, 'already'::text])))
+  constraint verification_jobs_tool_check CHECK ((tool = ANY (ARRAY['forge'::text, 'hardhat'::text, 'remix'::text, 'unknown'::text])))
   CREATE INDEX verification_jobs_client_key_created_at_idx ON public.verification_jobs USING btree (client_key, created_at)
   CREATE INDEX verification_jobs_status_created_at_idx ON public.verification_jobs USING btree (status, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'running'::text]))
   CREATE UNIQUE INDEX verification_jobs_pkey ON public.verification_jobs USING btree (guid)
@@ -792,10 +797,14 @@ table verified_sources
   column match_type text not null
   column verified_at timestamp with time zone not null
   column creation_match text
+  column method text
+  column tool text
   constraint verified_sources_code_format CHECK ((code_format = ANY (ARRAY['solidity-single-file'::text, 'solidity-standard-json-input'::text])))
   constraint verified_sources_creation_match CHECK ((creation_match = ANY (ARRAY['full'::text, 'partial'::text])))
   constraint verified_sources_match_type CHECK ((match_type = ANY (ARRAY['full'::text, 'partial'::text])))
+  constraint verified_sources_method_check CHECK ((method = ANY (ARRAY['etherscan'::text, 'api'::text])))
   constraint verified_sources_pkey PRIMARY KEY (id)
+  constraint verified_sources_tool_check CHECK ((tool = ANY (ARRAY['forge'::text, 'hardhat'::text, 'remix'::text, 'unknown'::text])))
   CREATE INDEX verified_sources_runtime_code_hash_idx ON public.verified_sources USING btree (runtime_code_hash)
   CREATE UNIQUE INDEX verified_sources_address_code_key ON public.verified_sources USING btree (address, runtime_code_hash)
   CREATE UNIQUE INDEX verified_sources_pkey ON public.verified_sources USING btree (id)

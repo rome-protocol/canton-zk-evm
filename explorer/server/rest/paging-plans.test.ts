@@ -230,6 +230,30 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     }
   }
 
+  it("a contract's event count, the contract list's counts and the facts joined to each listed contract read an index each, never the table whole", async () => {
+    await ensurePartitions(pool, { head: 1 });
+    const accounts = createAccountRest(recording());
+    await accounts.eventCountOf(addr);
+    const events = await plan(/select count\(\*\) as n from \(select 1 from logs where address = \$1 limit/);
+    expect(events).toMatch(/Index Only Scan using logs_p\d+_address_\w*idx/);
+    expect(events).not.toMatch(/Seq Scan|Sort Key|^\s*Filter:/m);
+    expect(events).toMatch(/Index Cond: \(address = /);
+    await accounts.contractCounts();
+    const counts = await plan(/select \(select count\(\*\) from contracts\) as n/);
+    expect(counts).toMatch(/Index Only Scan using contracts_verified_idx on contracts/);
+    expect(counts).toMatch(/Index Only Scan using \w+ on contracts/);
+    // A page of the list: the verified source, the creation's block, the account and the token each joined by its primary key (one row at most, whatever the page's size).
+    await accounts.contracts("newest", true, [5, 1, addr], 10);
+    const list = await plan(/coalesce\(c\.creation_block, 0\) desc/);
+    for (const t of ["verified_sources", "blocks"]) expect(list, t).toMatch(new RegExp(`Index Scan using \\w+ on ${t}`));
+    expect(list).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("interactions", null, [5, addr], 10);
+    expect(await plan(/order by c\.interaction_count desc/)).not.toMatch(/Seq Scan|Sort Key/);
+    // The events' time: the block of each log is read by its primary key.
+    await accounts.contractEvents(addr, null, [5, 1], 10);
+    expect(await plan(/from logs l join transactions t/)).toMatch(/Index Scan using blocks_pkey on blocks/);
+  });
+
   it("the transactions list oldest first reads the same indexes as newest first, in either direction of those indexes, with no sort and no filter", async () => {
     await ensurePartitions(pool, { head: 100 });
     const chain = createChainRest(recording());
