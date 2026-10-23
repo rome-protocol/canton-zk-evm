@@ -78,7 +78,7 @@ function BlockItem({ t, head }: { t: ApiTxSeen; head: number | undefined }) {
   return t.block.updateId ? <>{link}, final on Canton in update <HashLink value={t.block.updateId} kind="update" />{tail}</> : <>{link}, {t.status === "unindexed" ? "final on Canton, not indexed yet" : "not on Canton yet"}{tail}</>;
 }
 
-/** Every call the transaction made, as the trace counts them (the Internal calls tab lists only those that moved value). A block the explorer has not derived yet says so, and gives no count. */
+/** Every call the transaction made, as the trace counts them (the Internal calls tab lists every one of them). A block the explorer has not derived yet says so, and gives no count. */
 function CallsItem({ t, detail }: { t: ApiTxSeen; detail: Detail }) {
   if (t.status !== "final") return null;
   const d = detail.data;
@@ -290,7 +290,7 @@ function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin |
       <Panel id={tab}>
         {tab === "overview" && <>{overview}{below}</>}
         {tab === "logs" && <LogsTab t={t} />}
-        {tab === "internal" && <InternalTab t={t} coin={coin} />}
+        {tab === "internal" && <InternalTab t={t} coin={coin} callCount={detail.data?.derived ? detail.data.callCount : null} />}
         {tab === "tree" && <TreeTab hash={t.hash} coin={coin} />}
         {tab === "raw" && <RawTab hash={t.hash} />}
       </Panel>

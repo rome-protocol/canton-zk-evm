@@ -233,6 +233,89 @@ describe("the Internal calls tab", () => {
     expect(screen.getByText(/No call under the top-level call/)).toBeInTheDocument();
   });
 
+  it("says 'parent call failed' for a call under a failed call, and counts no coin it moved", async () => {
+    const user = userEvent.setup();
+    await open({ labels, txTrace: () => reply({ frames: [
+      frame({ from: SENDER, to: DISPERSE }),
+      frame({ traceAddress: [0], from: DISPERSE, to: T, value: "1000000000000000000", error: "execution reverted" }),
+      frame({ traceAddress: [0, 0], from: T, to: TO, value: "2000000000000000000" }),
+      frame({ traceAddress: [1], from: DISPERSE, to: TO, value: "3000000000000000000" }),
+    ], truncated: false }) }, tx(), "?tab=internal");
+    const rows = await screen.findAllByRole("row");
+    expect(rows[1]).toHaveTextContent("true");
+    expect(rows[2]).toHaveTextContent("execution reverted");
+    expect(rows[3]).toHaveTextContent("parent call failed");
+    expect(rows[3]).not.toHaveTextContent("true");
+    expect(rows[4]).toHaveTextContent("true");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (1)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Only those moving tROME (1)" }));
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("call 3");
+  });
+
+  it("shows every call of a reverted transaction as failed and counts none as moving coin", async () => {
+    await open({ labels, txTrace: () => reply({ frames: [
+      frame({ from: SENDER, to: DISPERSE, error: "execution reverted" }),
+      frame({ traceAddress: [0], from: DISPERSE, to: TO, value: "1000000000000000000" }),
+    ], truncated: false }) }, tx({ success: false }), "?tab=internal");
+    const rows = await screen.findAllByRole("row");
+    expect(rows[2]).toHaveTextContent("parent call failed");
+    expect(rows[2]).not.toHaveTextContent("true");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (0)" })).toBeInTheDocument();
+    cleanup();
+    // The transaction failed and its top frame carries no error of its own: nothing it did took effect.
+    await open({ labels, txTrace: () => reply({ frames: [frame({ from: SENDER, to: DISPERSE }), frame({ traceAddress: [0], from: DISPERSE, to: TO, value: "1000000000000000000" })], truncated: false }) }, tx({ success: false }), "?tab=internal");
+    const again = await screen.findAllByRole("row");
+    expect(again[1]).toHaveTextContent("parent call failed");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (0)" })).toBeInTheDocument();
+  });
+
+  it("does not count a delegatecall or a staticcall that carries its caller's value, and shows no value for it", async () => {
+    await open({ labels, txTrace: () => reply({ frames: [
+      frame({ from: SENDER, to: DISPERSE, value: "1000000000000000000" }),
+      frame({ traceAddress: [0], callType: "delegatecall", from: DISPERSE, to: T, value: "1000000000000000000" }),
+      frame({ traceAddress: [1], callType: "staticcall", from: DISPERSE, to: T, value: "1000000000000000000" }),
+    ], truncated: false }) }, tx(), "?tab=internal");
+    const rows = await screen.findAllByRole("row");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (1)" })).toBeInTheDocument();
+    expect(rows[1]).toHaveTextContent("1 tROME");
+    expect(rows[2]).toHaveTextContent("DELEGATECALL");
+    expect(rows[2]).not.toHaveTextContent("tROME");
+    expect(rows[3]).not.toHaveTextContent("tROME");
+  });
+
+  it("reads the source of a bounded number of verified contracts, and none for an unverified one", async () => {
+    const verified = Array.from({ length: 40 }, (_, i) => tokenLabel({ address: addr(0x80 + i), name: `V${i}`, symbol: null, kind: "contract", standard: null, decimals: null, verified: true }));
+    const unverified = Array.from({ length: 5 }, (_, i) => tokenLabel({ address: addr(0xc0 + i), name: `U${i}`, symbol: null, kind: "contract", standard: null, decimals: null, verified: false }));
+    const frames = [frame({ from: SENDER, to: verified[0]!.address }), ...[...verified, ...unverified].map((l, i) => frame({ traceAddress: [i], from: SENDER, to: l.address }))];
+    const calls = await open({ labels: labelsOf([...verified, ...unverified]), txTrace: () => reply({ frames, truncated: false }), contracts: (_a, sub) => (sub === "source" ? reply(contractSource(0x80, { verified: false, abi: null })) : reply({ error: "none" }, 404)) }, tx(), "?tab=internal");
+    await screen.findAllByRole("row");
+    await waitFor(() => expect(used(calls, "/source").length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    const asked = used(calls, "/source");
+    expect(asked.length).toBeLessThanOrEqual(20);
+    for (let i = 0; i < 5; i++) expect(asked.some((c) => c.includes(addr(0xc0 + i)))).toBe(false);
+  });
+
+  it("shows the calls fifty at a time, with a button for fifty more, and decodes only the rows it shows", async () => {
+    const user = userEvent.setup();
+    const frames = Array.from({ length: 120 }, (_, i) => frame({ traceAddress: i === 0 ? [] : [i - 1], from: SENDER, to: DISPERSE }));
+    await open({ labels, txTrace: () => reply({ frames, truncated: false }) }, tx(), "?tab=internal");
+    expect(await screen.findAllByRole("row")).toHaveLength(51);
+    await user.click(screen.getByRole("button", { name: /Show 50 more/ }));
+    expect(screen.getAllByRole("row")).toHaveLength(101);
+    await user.click(screen.getByRole("button", { name: /Show 20 more/ }));
+    expect(screen.getAllByRole("row")).toHaveLength(121);
+    expect(screen.queryByRole("button", { name: /Show .* more/ })).toBeNull();
+  });
+
+  it("shows a creation's function as 'create', not the first bytes of its init code", async () => {
+    await open({ txTrace: () => reply({ frames: [frame({ input: "0x60806040" + "00".repeat(20), inputSize: 24, to: null, created: addr(0xc7), type: "create", callType: "create" })], truncated: false }) }, tx(), "?tab=internal");
+    const row = (await screen.findAllByRole("row"))[1]!;
+    expect(row).toHaveTextContent("create");
+    expect(row).not.toHaveTextContent("0x60806040");
+  });
+
   it("shows a failed call's reason, a creation's new address, and a call without a selector as none", async () => {
     await open({ txTrace: () => reply({ frames: [frame({ input: "0x", inputSize: 0, to: null, created: addr(0xc7), type: "create", callType: "create", error: "out of gas", gasUsed: null })], truncated: false }) }, tx(), "?tab=internal");
     const row = (await screen.findAllByRole("row"))[1]!;
@@ -247,6 +330,13 @@ describe("the Internal calls tab", () => {
     const row = (await screen.findAllByRole("row"))[1]!;
     expect(row).toHaveTextContent("transfer(…)");
     expect(screen.getByRole("status")).toHaveTextContent("Showing the first 1 calls");
+  });
+
+  it("counts the calls of the whole transaction in the heading when the trace served only the first ones", async () => {
+    await open({ txDetail: () => reply(txDetail({ callCount: 7000 })), txTrace: () => reply({ frames: [frame(), frame({ traceAddress: [0] })], truncated: true }) }, tx(), "?tab=internal");
+    await screen.findAllByRole("row");
+    await waitFor(() => expect(screen.getByText(/internal calls under the top-level call/)).toHaveTextContent("7,000 internal calls"));
+    expect(screen.getByRole("button", { name: /Only those moving tROME \(0 or more\)/ })).toBeInTheDocument();
   });
 
   it("says the server's words when the trace cannot be read", async () => {
