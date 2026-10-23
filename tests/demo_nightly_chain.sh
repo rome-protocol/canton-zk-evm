@@ -45,8 +45,8 @@ echo "== L5: the contract tools against the Etherscan-compatible API"
 L5=$ROOT/explorer/test/l5
 l5_rc=0
 # Whether the door is there, and which modules are in it, is read from /api/openapi.json (paths['/api'].get['x-modules']), never from a live call that can time out. Exit 3 is no door
-# in the description (a skip); 4 is a description that cannot be read (a failure). With the door there, any failure of a check of a module in it fails the job; the checks of a
-# module that is not in it yet (the contract module, E9b) are reported SKIPPED naming the module, and the run is "partial", never "passed".
+# in the description (a skip); 4 is a description that cannot be read (a failure). With the door there, any failure of a check fails the job, and a door without its x-modules (the proxy,
+# account and contract modules) is a failure; the run is "passed" only when every check ran and passed.
 probe_rc=0
 l5_modules=$(EXPLORER=$EXPLORER "$L5/l5.sh" probe) || probe_rc=$?
 if [ "$probe_rc" = 3 ]; then
