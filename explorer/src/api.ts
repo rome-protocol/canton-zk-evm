@@ -409,7 +409,12 @@ export const getToken = async (a: string) => (await call(tk(a), [200])).body as 
 export const getTokenHolders = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/holders")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenHolder>;
 export const getTokenTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
-export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
+/** Which of an address's transactions a list holds: all, those it sent, or those it received. */
+export type TxDirection = "all" | "sent" | "received";
+const directionQuery = (d: TxDirection) => (d === "all" ? "" : `&direction=${d}`);
+export const getAddressTxs = async (a: string, before: string | null, limit = PAGE, direction: TxDirection = "all") => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}${directionQuery(direction)}`, [200])).body as Page<TxListItem>;
+/** The newest transactions of an address as a CSV file (up to 1,000), kept to the direction. */
+export const addressTxsCsvPath = (a: string, direction: TxDirection = "all") => `${of(a, "/txs")}?format=csv${directionQuery(direction)}`;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
 /** An address's transfers also take `nft`: ERC-721 and ERC-1155 together, in one list. */
 export interface TransferFilter { token?: string; standard?: TokenStandard | "nft" }
