@@ -195,3 +195,16 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
     </section>
   );
 }
+
+/** What the explorer shows and what it does not, and why: Canton shows each party only what it is a party to. One line, as on screen 01. */
+export function LockBanner() {
+  return (
+    <section className="lock-banner" aria-label="What this explorer can and cannot show">
+      <Icon name="lock" size={15} />
+      <p>
+        <b>What this explorer can and cannot show.</b> Shown: every EVM block, transaction and address, and for each final block its record on Canton (update id, record time, synchronizer, offset and the proof).
+        {" "}Not shown: anything else on Canton. Daml legs settled with a block are seen only by their parties, the chain's operator, confirmer, gateway and builder, and each token's registry.
+      </p>
+    </section>
+  );
+}

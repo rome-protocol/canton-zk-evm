@@ -13,3 +13,10 @@
 .stat-k { display: flex; align-items: center; gap: 7px; }
 .stat-k .ic { color: var(--muted); flex: none; }
 .stat-ok { background: var(--ok-tint); border-color: var(--ok-line); }
+
+/* home: the hero and the lock banner */
+.hero p { max-width: 760px; margin: 8px 0 16px; font-size: 15px; }
+.hero-search { max-width: none; }
+.lock-banner { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--canton-tint); font-size: 13.5px; }
+.lock-banner .ic { flex: none; margin-top: 3px; color: var(--muted); }
+.lock-banner p { margin: 0; }

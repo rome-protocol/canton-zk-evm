@@ -3,7 +3,7 @@ import { act, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem, StatsSummary, StatsWindow } from "../api.ts";
 import { series, summary } from "./stats-fixtures.ts";
-import { addr, blockItem, fakeApi, hash, inFlight, page, renderApp, reply, route, status, tx, txItem, update } from "../test-utils.tsx";
+import { addr, blockItem, fakeApi, hash, inFlight, page, renderApp, reply, route, status, tokenItem, tx, txItem, update } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:37:27Z");
 const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockListItem[]) => {
@@ -425,13 +425,40 @@ describe("the numbers, from the stats routes", () => {
   });
 });
 
-describe("what this explorer can and cannot show", () => {
-  it("says it, with the proof's size, on every look at the home page", async () => {
+describe("the hero", () => {
+  const tries = () => within(screen.getByRole("region", { name: "Ostia block explorer" }).querySelector(".try") as HTMLElement).getAllByRole("link");
+  it("puts the search box under the intro with the long placeholder of screen 01", async () => {
     await home();
-    const box = within(screen.getByRole("region", { name: "What this explorer can and cannot show" }));
-    expect(box.getByText("Every EVM block, transaction and address, and for each final block its record on Canton: the update id, the commit time and the proof.")).toBeInTheDocument();
-    expect(box.getByText("Anything else on Canton. Daml legs settled with a block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.")).toBeInTheDocument();
-    expect(box.getByText("Every block is proven with ZisK 1.3.1 (a 1,344-byte proof) and checked by Canton's confirmers before it commits. Each block page can run that same check again, in your browser.")).toBeInTheDocument();
+    expect(screen.getAllByRole("searchbox", { name: "Search" })[0]).toHaveAttribute("placeholder", "Search by block number, transaction or block hash, address, or Canton update id");
+  });
+
+  it("offers the newest block, transaction, sender and Canton update, the hashes as screen 01 cuts them, and a token when there is one", async () => {
+    fakeApi(route({ tokenPages: () => reply(page([tokenItem(0xcb)])) }));
+    renderApp("/");
+    await screen.findByRole("link", { name: "tUSD" });
+    expect(tries().map((a) => a.textContent)).toEqual(["3", "0xa3a3a3…a3a3", "0x5b5b5b…5b5b", "122003030303…", "tUSD"]);
+    expect(tries()[4]).toHaveAttribute("href", `/search?q=${addr(0xcb)}`);
+    expect(tries()[3]).toHaveAttribute("href", `/search?q=${update(3)}`);
+  });
+
+  it("offers no token chip when the explorer knows no token", async () => {
+    await home();
+    expect(tries().map((a) => a.textContent)).toEqual(["3", "0xa3a3a3…a3a3", "0x5b5b5b…5b5b", "122003030303…"]);
+  });
+});
+
+describe("what this explorer can and cannot show", () => {
+  it("is one line, as on screen 01: what is shown, what is not, and who sees the legs, with no proof size or ZisK version", async () => {
+    await home();
+    const box = screen.getByRole("region", { name: "What this explorer can and cannot show" });
+    expect(box).toHaveTextContent("What this explorer can and cannot show. Shown: every EVM block, transaction and address, and for each final block its record on Canton (update id, record time, synchronizer, offset and the proof). Not shown: anything else on Canton. Daml legs settled with a block are seen only by their parties, the chain's operator, confirmer, gateway and builder, and each token's registry.");
+    expect(box.querySelectorAll("p")).toHaveLength(1);
+    expect(box).not.toHaveTextContent("1.3.1");
+  });
+
+  it("leaves no wallet card on the home page", async () => {
+    await home({ publicRpc: true });
+    expect(screen.queryByRole("heading", { name: "Add Ostia to your wallet" })).toBeNull();
   });
 
   it("shows no count of Daml legs anywhere", async () => {
