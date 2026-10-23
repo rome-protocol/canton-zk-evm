@@ -8,7 +8,7 @@ import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/
 import { createIndexer } from "../indexer/indexer.ts";
 import type { Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
-import { createAccountRest } from "./account-rest.ts";
+import { createAccountRest, transferCountSql } from "./account-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { PARTIAL_MATCH_NOTE } from "./account-rest.ts";
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
@@ -896,6 +896,37 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       // An address nothing has touched says what it does not know: no times, no funder, and no contracts made.
       expect(body(await get(`/api/addresses/${h(0xee)}`))).toMatchObject({ createdCount: 0, createdCountCapped: false, firstSeenTimestamp: null, lastActiveTimestamp: null, fundedBy: null });
       expect(Object.keys(body(await get(`/api/addresses/${h(0xee)}`)))).toContain("createdCountCapped");
+    });
+
+    it("counts the transfers of an address in each list from the partial indexes of its two sides, never from a scan of the table", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local enable_seqscan = off");
+        await client.query("set local enable_bitmapscan = off");
+        // Many ERC-20 transfers over many senders, a few NFT ones: the shape the partial indexes are for (a table of a few rows is read in block order instead). Rolled back.
+        const [first] = (await client.query("select block_number, tx_index from token_transfers order by block_number limit 1")).rows;
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 20000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, g, null from generate_series(1, 4000) g", [first.block_number, first.tx_index, who(0xb1), who(0xa1), who(0xa2)]);
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 30000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, null, g from generate_series(1, 120) g", [first.block_number, first.tx_index, who(0xb3), who(0xa1), who(0xa2)]);
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 40000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, g, g from generate_series(1, 120) g", [first.block_number, first.tx_index, who(0xb2), who(0xa1), who(0xa2)]);
+        await client.query("analyze token_transfers");
+        // The partition that holds the rows (the others, ahead of the head, are empty and planned as empty ones are).
+        const part = String((await client.query("select tableoid::regclass::text as p from token_transfers limit 1")).rows[0].p);
+        for (const [filter, list, predicate] of [["x.token_id is null", "erc20", /WHERE \(token_id IS NULL\)$/], ["x.token_id is not null", "nft", /WHERE \(token_id IS NOT NULL\)$/]] as const) {
+          const text = `select ${transferCountSql(filter).replace(/\$3/g, "10000")} from (select $1::bytea as address) q`;
+          const p = (await client.query("explain " + text, [A])).rows.map((r) => r["QUERY PLAN"]).join("\n");
+          expect(p, list).not.toMatch(/Seq Scan/);
+          for (const col of ["from_address", "to_address"]) {
+            // An index-only read by the address, with the predicate left to the index: no row filter after the read.
+            const node = new RegExp(`Index Only Scan using (\\S+) on ${part} [^\\n]*\\n\\s*Index Cond: \\(${col} =`).exec(p);
+            expect(node, `${list} ${col}\n${p}`).not.toBeNull();
+            // The partition's index has a name of its own, so it is checked by its definition: the partial index of this list.
+            const [def] = (await client.query("select indexdef from pg_indexes where indexname = $1", [node![1]])).rows;
+            expect(String(def.indexdef), `${list} ${col}`).toMatch(predicate);
+          }
+        }
+        await client.query("rollback");
+      } finally { await client.query("rollback"); client.release(); }
     });
 
     it("stops counting the contracts an address made at a ceiling, and says so", async () => {

@@ -98,6 +98,13 @@ export interface NameMatch { kind: "token" | "contract"; name: string | null; sy
 
 export type AccountRest = ReturnType<typeof createAccountRest>;
 
+/** The transfers of an address in one list (one standard group), counted to the ceiling $3 from each side: a transfer to itself is once, as the list shows it. */
+export const transferCountSql = (filter: string) =>
+  `(select count(*) from (select 1 from (
+      (select x.block_number, x.log_index, x.batch_index from token_transfers x where x.from_address = q.address and ${filter} limit $3)
+      union (select x.block_number, x.log_index, x.batch_index from token_transfers x where x.to_address = q.address and ${filter} limit $3)
+    ) u limit $3) k)`;
+
 export function createAccountRest(pool: Pool) {
   async function query(sql: string, values: unknown[] = []): Promise<Row[]> {
     try {
@@ -161,12 +168,6 @@ export function createAccountRest(pool: Pool) {
   /** The most transfers of one list that are counted for the tabs of an address: past it the count is not given. */
   const TRANSFER_COUNT_CAP = 10_000;
 
-  /** The transfers of an address in one list (one standard group), counted to the ceiling $3 from each side: a transfer to itself is once, as the list shows it. */
-  const transferCount = (filter: string) =>
-    `(select count(*) from (select 1 from (
-        (select x.block_number, x.log_index, x.batch_index from token_transfers x where x.from_address = q.address and ${filter} limit $3)
-        union (select x.block_number, x.log_index, x.batch_index from token_transfers x where x.to_address = q.address and ${filter} limit $3)
-      ) u limit $3) k)`;
   /** A count that stopped at the ceiling is not a count. */
   const within = (n: unknown, cap: number): number | null => (Number(n) > cap ? null : Number(n));
 
@@ -181,7 +182,7 @@ export function createAccountRest(pool: Pool) {
          (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.first_seen_block) as first_ts,
          (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.last_active_block) as last_ts,
          (select count(*) from (select 1 from contracts k where k.creator = q.address limit $2) k) as created_count,
-         ${transferCount("x.token_id is null")} as erc20_count, ${transferCount("x.token_id is not null")} as nft_count,
+         ${transferCountSql("x.token_id is null")} as erc20_count, ${transferCountSql("x.token_id is not null")} as nft_count,
          f.from_address as fund_from, f.hash as fund_tx, f.block_number as fund_block, f.value as fund_value, f.ts as fund_ts
        from (select $1::bytea as address) q left join addresses ad on ad.address = q.address left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address
          left join lateral (select t.from_address, t.hash, t.block_number, t.value::text as value, extract(epoch from b.timestamp)::bigint as ts
