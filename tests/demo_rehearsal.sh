@@ -181,6 +181,15 @@ for _ in $(seq 1 90); do [ "$(curl -sf "$EXPLORER/api/faucet/ticket/$ticket" | j
 [ "$(balance)" = 0xde0b6b3a7640000 ] || fail "the address does not hold 1 tROME after the payout: $(balance)"
 [ "$(ask)" = 429 ] || fail "the faucet sent to the same address again"
 
+echo "--- the Etherscan door's proxy: ethers' EtherscanProvider and Foundry's cast, against the faucet's final payout"
+# The coin is final and the address has no code, so the proxy, the account module and /rpc all have one answer for it. ethers runs in the explorer's image, with its own packages;
+# cast is the pinned release, checked against its SHA-256 by the script (it is not in PINS: the chain has no funded test accounts).
+chain_id=$(($(rpc eth_chainId | jq -r .result)))
+docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e EXPLORER_URL="$EXPLORER" -e CHAIN_ID="$chain_id" -e ETHERSCAN_ADDRESS="$TO" -e ETHERSCAN_BALANCE=1000000000000000000 -e ETHERSCAN_TX="$payout" \
+  -v "$ROOT:/repo:ro" -w /tmp "$EXPLORER_NODE_IMAGE" \
+  sh -c "mkdir /tmp/explorer && cd /repo/explorer && tar cf - --exclude=./node_modules . | tar xf - -C /tmp/explorer && cd /tmp/explorer && npm ci --ignore-scripts && npx vitest run e2e/etherscan" || fail "ethers' EtherscanProvider and the Etherscan door disagree"
+EXPLORER=$EXPLORER ETHERSCAN_ADDRESS=$TO ETHERSCAN_BALANCE=1000000000000000000 ETHERSCAN_TX=$payout "$ROOT/tests/demo_etherscan_cast.sh" || fail "cast and the Etherscan door's proxy disagree"
+
 echo "--- what the explorer asked reth and Canton for"
 # Canton, asked by the explorer (the ledger end, for its status) and by the indexer (the ledger end, the updates and the participant id), and nothing else;
 # every update request names the reader party and the block record, and no other party.
