@@ -124,7 +124,10 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.blocks.bySize).toEqual([["0"], ["1-10"], ["11-100"], ["101-1000"], ["over 1000"]].map(([size]) => ({ size, count: 0 })));
     expect(s.acceptedNotFinal).toMatchObject({ beingProven: 0, waiting: 0 });
     expect(s.cutting).toBeNull(); // no producer run is known
-    expect(s.faucet).toEqual({ requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null });
+    expect(s.faucet).toMatchObject({ requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null });
+    // the migration set the start of counting to its own time, which is after this test's clock: the window was not recorded
+    expect(s.faucet.turnedAway).toBeNull();
+    expect(typeof s.faucet.turnedAwaySince).toBe("string");
   });
 
   it("draws a series of empty steps: 0 for a count, null for a time and a rate", async () => {
@@ -205,6 +208,11 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     await fq(4, "queued", 10_000);
     await fq(5, "sent", 20_000, { sent_at: at(NOW - 15_000) });
     await fq(6, "final", 7200_000, { sent_at: at(NOW - 7199_000), final_at: at(NOW - 7190_000) });
+    // Refusals (counted by minute and reason). The faucet began to count at 08:00. 11:30 is outside the 1 h window, which starts at 11:31.
+    await pool.query("update faucet_refusals_since set since = $1", [at(t(8, 0))]);
+    const refused = (minute: number, reason: string, n: number) => ins(pool, "faucet_refusals", { minute: at(minute), reason, n });
+    await refused(t(11, 30), "hour", 100); await refused(t(11, 31), "hour", 1); await refused(t(12, 10), "address", 3); await refused(t(12, 10), "ip", 2);
+    await refused(t(12, 25), "captcha", 4); await refused(t(9, 0), "address", 10); await refused(t(7, 59), "ip", 1000);
   });
   afterAll(async () => { await db?.drop(); });
 
@@ -295,10 +303,42 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.cutting).toEqual({ strategy: "on_demand", since: new Date(NOW - 1800_000).toISOString() });
     // 1 h window: requests 600, 500, 400, 10, 20 s old = 5 (the one 2 h old is outside); sent (sent_at set) 3; final 2, failed 1. The times from request to final: 10 s and 25 s.
     same(s.faucet, F.statsFaucet);
-    expect(s.faucet).toMatchObject({ requests: 5, sent: 3, final: 2, failed: 1, turnedAway: null });
+    expect(s.faucet).toMatchObject({ requests: 5, sent: 3, final: 2, failed: 1 });
     expect(s.faucet.timeToFinal).toEqual({ median: edge(A), p95: edge(C + 1), samples: 2, capped: false });
     const d = body(await get("/api/stats/summary?window=6h"));
     expect(d.faucet).toMatchObject({ requests: 6, sent: 4, final: 3, failed: 1 });
+  });
+
+  it("adds the faucet's refusals of the window by reason, and gives none for a window that starts before they were counted", async () => {
+    const s = body(await get("/api/stats/summary?window=1h"));
+    same(s.faucet.turnedAway, F.statsTurnedAway);
+    same(s.faucet.turnedAway.byReason, F.statsTurnedAwayReasons);
+    // 11:31 to 12:30: the minute 11:30 is out, so hour is 1; 12:10 address 3 and ip 2; 12:25 captcha 4.
+    expect(s.faucet.turnedAway).toEqual({ total: 10, byReason: { address: 3, ip: 2, hour: 1, captcha: 4 } });
+    expect(s.faucet.turnedAwaySince).toBe(new Date(t(8, 0)).toISOString());
+    // 6 h: 06:31 to 12:30 starts before 08:00, so the window is not fully recorded: no count at all, not a partial one
+    const six = body(await get("/api/stats/summary?window=6h"));
+    expect(six.faucet.turnedAway).toBeNull();
+    expect(six.faucet.turnedAwaySince).toBe(new Date(t(8, 0)).toISOString());
+    expect(body(await get("/api/stats/summary?window=24h")).faucet.turnedAway).toBeNull();
+    expect(body(await get("/api/stats/summary?window=30d")).faucet.turnedAway).toBeNull();
+  });
+
+  it("counts a window that starts exactly when the counting began", async () => {
+    await pool.query("update faucet_refusals_since set since = $1", [at(t(6, 31))]);
+    try {
+      const six = body(await get("/api/stats/summary?window=6h"));
+      expect(six.faucet.turnedAway).toEqual({ total: 1120, byReason: { address: 13, ip: 1002, hour: 101, captcha: 4 } });
+    } finally { await pool.query("update faucet_refusals_since set since = $1", [at(t(8, 0))]); }
+  });
+
+  it("gives no turned-away count and no start when the faucet never counted (no start recorded)", async () => {
+    await pool.query("delete from faucet_refusals_since");
+    try {
+      const s = body(await get("/api/stats/summary?window=1h"));
+      expect(s.faucet.turnedAway).toBeNull();
+      expect(s.faucet.turnedAwaySince).toBeNull();
+    } finally { await pool.query("insert into faucet_refusals_since (since) values ($1)", [at(t(8, 0))]); }
   });
 
   it("splits no open transaction into normal and slow while there is no time to final to measure against", async () => {

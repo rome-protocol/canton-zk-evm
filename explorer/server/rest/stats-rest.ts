@@ -50,7 +50,11 @@ export interface StatsRest {
   /** The chain's transactions since its first block, exact through the newest final block (one function with /api/txs); null where the rollups cannot say. */
   txTotal(): Promise<TxTotal | null>;
   /** The faucet's requests made in [from, to): by state, and the time from request to final as a time histogram (empty when none is final). */
-  faucet(from: number, to: number): Promise<{ requests: number; sent: number; final: number; failed: number; hist: number[] }>;
+  faucet(from: number, to: number): Promise<{
+    requests: number; sent: number; final: number; failed: number; hist: number[];
+    /** The requests it turned away in [from, to) by reason, and when the counting began (null when it never did). */
+    turnedAway: { since: number | null; byReason: Record<"address" | "ip" | "hour" | "captcha", number> };
+  }>;
 }
 
 export function createStatsRest(pool: Pool): StatsRest {
@@ -150,7 +154,10 @@ export function createStatsRest(pool: Pool): StatsRest {
         where requested_at >= $1 and requested_at < $2 and state = 'final' and final_at is not null group by 1`, [new Date(from), new Date(to), TIME_EDGES as number[]]);
     const hist = new Array(histLength("time")).fill(0) as number[];
     for (const x of k) hist[Number(x.k)] = Number(x.n);
-    return { requests: Number(c.requests ?? 0), sent: Number(c.sent ?? 0), final: Number(c.final ?? 0), failed: Number(c.failed ?? 0), hist };
+    const byReason = { address: 0, ip: 0, hour: 0, captcha: 0 };
+    for (const r of await query("select reason, sum(n)::float8 as n from faucet_refusals where minute >= $1 and minute < $2 group by reason", [new Date(from), new Date(to)])) byReason[r.reason as keyof typeof byReason] = Number(r.n);
+    const [since] = await query("select extract(epoch from min(since))::float8 * 1000 as at from faucet_refusals_since");
+    return { requests: Number(c.requests ?? 0), sent: Number(c.sent ?? 0), final: Number(c.final ?? 0), failed: Number(c.failed ?? 0), hist, turnedAway: { since: num(since?.at), byReason } };
   }
 
   return { rows, peak, lastMinuteTxs, state, txTotal: () => totalOf(query), pool: poolSample, open, stuck, lost, cutting, faucet };
