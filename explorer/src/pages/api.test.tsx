@@ -157,6 +157,17 @@ describe("the API page", () => {
     expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
   });
 
+  it("keeps the placeholder answer when the faucet's balance is not of a final block, because the route answers from the final head", async () => {
+    const addr = "0x" + "fa".repeat(20);
+    for (const balanceBlock of [null, undefined]) {
+      await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: addr, balance: "998996990000000000000000", amount: "1", perAddressSeconds: 1, balanceBlock }) });
+      await waitFor(() => expect(screen.getByLabelText("Example request").textContent).toContain(`&address=${addr}`));
+      expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
+      expect(screen.getByLabelText("Example answer").textContent).not.toContain("998996990000000000000000");
+      cleanup();
+    }
+  });
+
   it("does not put a hostile or long faucet address or chain name into the examples", async () => {
     await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: "0x<script>" + "z".repeat(500), balance: "12", amount: "1", perAddressSeconds: 1 }) });
     await screen.findByLabelText("Example request");

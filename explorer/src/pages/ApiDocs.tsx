@@ -140,7 +140,8 @@ export function ApiDocs() {
   // The faucet's own address and its balance at the final head are real, so the example is a real answer; where the faucet is off the examples keep placeholders.
   const f = useQuery({ queryKey: ["faucet-info"], queryFn: getFaucetInfo, staleTime: 30_000 }).data;
   const example = f?.on && f.address && ADDRESS.test(f.address) ? f.address : null;
-  const exBalance = example && f?.balance && DECIMAL.test(f.balance) ? f.balance : null;
+  // The route answers from the final head, so only a balance read at a named final block is the answer it would give.
+  const exBalance = example && f?.balance && typeof f.balanceBlock === "number" && DECIMAL.test(f.balance) ? f.balance : null;
   const request = `GET ${origin}/api\n    ?module=account&action=balance\n    &address=${example ?? "<address>"}\n    &tag=latest`;
   const answer = `{\n  "status": "1",\n  "message": "OK",\n  "result": "${exBalance ?? "<balance in wei, a decimal string>"}"\n}`;
   const foundry = `# verify a contract, as on Etherscan\nforge verify-contract <address> \\\n  src/<File>.sol:<Contract> \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
