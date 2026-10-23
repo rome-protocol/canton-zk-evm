@@ -357,6 +357,8 @@ table logs partition by RANGE (block_number)
   column data bytea not null
   constraint logs_pkey PRIMARY KEY (block_number, log_index)
   CREATE INDEX logs_address_block_number_idx ON ONLY public.logs USING btree (address, block_number)
+  CREATE INDEX logs_address_place_idx ON ONLY public.logs USING btree (address, block_number DESC, log_index DESC)
+  CREATE INDEX logs_address_topic0_place_idx ON ONLY public.logs USING btree (address, topic0, block_number DESC, log_index DESC)
   CREATE INDEX logs_topic0_block_number_idx ON ONLY public.logs USING btree (topic0, block_number)
   CREATE UNIQUE INDEX logs_pkey ON ONLY public.logs USING btree (block_number, log_index)
 

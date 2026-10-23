@@ -9,7 +9,7 @@ describe("the header", () => {
     renderApp("/faucet");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
     expect(nav.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
-      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Canton", "/canton"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
+      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Contracts", "/contracts"], ["Canton", "/canton"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
     ]);
     expect(nav.getByRole("link", { name: "Faucet" })).toHaveClass("active");
     expect(nav.getByRole("link", { name: "Home" })).not.toHaveClass("active");
@@ -19,7 +19,7 @@ describe("the header", () => {
     fakeApi(route({}));
     renderApp("/");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
-    for (const gone of ["Contracts", "Tokens"]) expect(nav.queryByRole("link", { name: gone })).toBeNull();
+    for (const gone of ["Tokens"]) expect(nav.queryByRole("link", { name: gone })).toBeNull();
   });
 
   it("has the search box in the header on every page but the home page, where the big one is", async () => {

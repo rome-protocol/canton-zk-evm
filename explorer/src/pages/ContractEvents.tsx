@@ -1,0 +1,87 @@
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { decodeEventOf, eventKinds, methodNames, type AbiEntry, type Decoded } from "../abi-call.ts";
+import { getContractEvents, type ContractDetail, type ContractEvent } from "../api.ts";
+import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { HashLink } from "../components/HashLink.tsx";
+import { Icon } from "../components/Icon.tsx";
+import { Pager, usePaged } from "../components/Pager.tsx";
+import { useAbi } from "./useAbi.ts";
+import "./tx.css";
+
+const TOPIC = /^0x[0-9a-fA-F]{64}$/;
+const short = (h: string) => `${h.slice(0, 10)}…`;
+
+/** What a log says, in the words of its event: each argument by name, an address as a link. Everything is text. */
+function Args({ d }: { d: Decoded }) {
+  return (
+    <div className="ev-args">
+      {d.args.map((a, i) => (
+        <span key={i}>{i > 0 && ", "}<span className="muted">{a.name || `arg${i}`}</span>{" "}
+          {a.type === "address" && /^0x[0-9a-f]{40}$/.test(a.value) ? <Link className="mono" to={`/address/${a.value}`}>{a.value.slice(0, 8)}…{a.value.slice(-4)}</Link> : <span className="mono wrap">{a.value}</span>}</span>
+      ))}
+    </div>
+  );
+}
+
+function Row({ e, abi, methods }: { e: ContractEvent; abi: AbiEntry[]; methods: Map<string, string> }) {
+  const d = useMemo(() => decodeEventOf(abi, e.topics, e.data), [abi, e.topics, e.data]);
+  const method = e.method === null ? null : (methods.get(e.method) ?? e.method);
+  return (
+    <tr>
+      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link></div></td>
+      <td>{method === null ? <span className="muted">—</span> : <span className="tag method" title={e.method ?? undefined}>{method}</span>}</td>
+      <td>{d ? <span className="mono" title={d.signature}>{d.name}</span> : <span className="muted">Not decoded</span>}<div className="mono small muted" title={e.topics[0]}>{e.topics[0] ? short(e.topics[0]) : "anonymous"}</div></td>
+      <td>{d ? <Args d={d} /> : <span className="mono small wrap muted">{e.topics.length > 1 || e.data !== "0x" ? `${e.topics.length - (e.topics[0] ? 1 : 0)} indexed, data ${e.data.length > 66 ? e.data.slice(0, 66) + "…" : e.data}` : "no data"}</span>}</td>
+    </tr>
+  );
+}
+
+/** Events: the logs the contract wrote in final blocks, newest first, decoded with its verified ABI (a proxy's with the implementation's too), paged. */
+export function EventsTab({ detail }: { detail: ContractDetail }) {
+  const abis = useAbi(detail);
+  const abi = abis.all;
+  const methods = useMemo(() => methodNames(abi), [abi]);
+  const kinds = useMemo(() => eventKinds(abi), [abi]);
+  const [topic, setTopic] = useState<string | null>(null);
+  const [typing, setTyping] = useState(false);
+  const [text, setText] = useState("");
+  const p = usePaged(["contract-events", detail.address, topic], (c) => getContractEvents(detail.address, topic, c));
+  const apply = () => { if (TOPIC.test(text.trim())) { setTopic(text.trim().toLowerCase()); } };
+  const typed = topic !== null && !kinds.some((k) => k.topic0 === topic);
+  return (
+    <section className="card" aria-label="Events">
+      <div className="list-h">
+        <h2>Events <span className="muted thin">from final blocks, {kinds.length > 0 || abi.length > 0 ? "decoded with the verified ABI" : "shown raw while the source is not verified"}, newest first</span></h2>
+        <div className="ev-filter">
+          <div className="seg" role="group" aria-label="Event kind">
+            <button type="button" aria-pressed={topic === null} onClick={() => { setTopic(null); setTyping(false); }}>All events</button>
+            {kinds.map((k) => <button key={k.topic0} type="button" aria-pressed={topic === k.topic0} title={k.signature} onClick={() => { setTopic(k.topic0); setTyping(false); }}>{k.name}</button>)}
+          </div>
+          <button type="button" className="btn" aria-pressed={typing || typed} onClick={() => setTyping((t) => !t)}><Icon name="search" size={13} /> Filter by topic</button>
+        </div>
+      </div>
+      {typing && (
+        <form className="fn-q" onSubmit={(ev) => { ev.preventDefault(); apply(); }}>
+          <label htmlFor="ev-topic" className="muted small">First topic</label>
+          <input id="ev-topic" className="inp mono" type="text" spellCheck={false} placeholder="0x and 64 hex digits" value={text} onChange={(ev) => setText(ev.target.value)} />
+          <button type="submit" className="btn">Filter</button>
+        </form>
+      )}
+      {typing && text.trim() !== "" && !TOPIC.test(text.trim()) && <p className="fact-bad small" role="alert">A topic is 0x and 64 hex digits.</p>}
+      {typed && <p className="small muted card-note">Only the logs whose first topic is <span className="mono">{topic}</span>.</p>}
+      {p.error && !p.data ? <ErrorCard message={p.error.message} retrying />
+        : !p.data ? <LoadingCard>Reading the events…</LoadingCard>
+        : p.data.items.length === 0 ? <p className="muted">{topic ? "This contract has written no logs of that kind in a final block." : "This contract has written no logs in a final block."}</p>
+        : (
+          <div className="tbl-wrap">
+            <table className="tbl">
+              <thead><tr><th>Transaction</th><th>Method</th><th>Event</th><th>Decoded</th></tr></thead>
+              <tbody>{p.data.items.map((e) => <Row key={`${e.block}-${e.logIndex}`} e={e} abi={abi} methods={methods} />)}</tbody>
+            </table>
+          </div>
+        )}
+      <Pager p={p} label="Events pages" />
+    </section>
+  );
+}

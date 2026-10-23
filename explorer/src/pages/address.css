@@ -1,0 +1,12 @@
+.addr-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-top: 14px; align-items: start; }
+.addr-cards h2 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+.addr-cards h2 .muted { font-weight: 400; font-size: 12.5px; margin-left: 8px; }
+.addr-bal { font-size: 30px; font-weight: 500; line-height: 1.15; margin: 4px 0 8px; }
+.addr-bal small { font-size: 14px; color: var(--muted); font-weight: 400; }
+.hold { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-2); }
+.hold:last-of-type { border-bottom: 0; }
+.hold .r { text-align: right; }
+.way { font-size: 11px; font-weight: 600; border-radius: 5px; padding: 1px 7px; border: 1px solid var(--line); }
+.way-out { color: var(--warn, #8a5a00); background: var(--warn-tint, #fdf3dc); }
+.way-in { color: var(--ok); background: var(--ok-tint, #e6f5ea); }
+.way-self { color: var(--muted); background: var(--surface-2); }

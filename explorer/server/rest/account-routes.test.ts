@@ -237,6 +237,14 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(all.find((c) => c.address === C)).toMatchObject({ verified: false, matchType: null });
   });
 
+  it("gives each contract in the list its token standard, its balance and its counts, and none for what the index has not seen", async () => {
+    const all = body(await get("/api/contracts?sort=interactions")).items as { address: string }[];
+    expect(all.find((c) => c.address === C)).toMatchObject({ standard: null, balance: "3000000000000000000000000", balanceBlock: 3, txCount: 1009, internalCount: 0 });
+    expect(all.find((c) => c.address === T1)).toMatchObject({ standard: "ERC-20" });
+    expect(all.find((c) => c.address === K)).toMatchObject({ standard: null, balance: null, balanceBlock: null, txCount: 0, internalCount: 0 });
+    expect(body(await get(`/api/contracts/${C}`))).toMatchObject({ balance: "3000000000000000000000000", txCount: 1009 });
+  });
+
   it("answers a contract with its code, proxy and verification, and its source with every file", async () => {
     const vault = body(await get(`/api/contracts/${K}`));
     expect(vault).toMatchObject({
@@ -271,6 +279,23 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     } finally {
       await pool.query("update verified_sources set match_type = 'full' where address = $1", [Buffer.from(K.slice(2), "hex")]);
     }
+  });
+
+  it("lists the logs a contract wrote, newest first, with their transaction and method, and keeps one event kind on a topic", async () => {
+    const [any] = (await sql("select address from logs group by address order by count(*) desc limit 1")).rows;
+    expect(any).toBeDefined();
+    const W = "0x" + (any.address as Buffer).toString("hex");
+    const all = await walk(`/api/contracts/${W}/events`, "before", 2);
+    expect(all.length).toBeGreaterThan(0);
+    same(body(await get(`/api/contracts/${W}/events`)), F.page);
+    for (const e of all) { same(e, F.contractEvent); expect(e.address).toBe(W); }
+    const order = all.map((e) => [e.block, e.logIndex]);
+    expect(order).toEqual([...order].sort((x, y) => y[0] - x[0] || y[1] - x[1]));
+    const topic = all[0]!.topics[0];
+    const kept = await walk(`/api/contracts/${W}/events?topic0=${topic}`, "before", 2);
+    expect(kept.length).toBe(all.filter((e) => e.topics[0] === topic).length);
+    expect((await get(`/api/contracts/${W}/events?topic0=0x12`)).status).toBe(400);
+    expect(body(await get(`/api/contracts/${h(0x99)}/events`)).items).toEqual([]);
   });
 
   it("answers a token with its numbers, and names the ones it does not hold", async () => {

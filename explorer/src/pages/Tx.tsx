@@ -11,6 +11,7 @@ import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
 import { count, gwei, short, utc, utcDate } from "../format.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
+import { MethodRows } from "./TxDecoded.tsx";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
 import { CantonRecord, ProofSide } from "./TxSides.tsx";
 import { InternalTab, LogsTab, Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
@@ -172,14 +173,14 @@ function Input({ data }: { data: string }) {
   );
 }
 
-/** The input as it was sent, with its 4-byte method id. The explorer holds no verified interface for the contract, so there is no decode. */
+/** The input as it was sent, with its 4-byte method id, and its call by name when the contract called is verified. */
 function InputCard({ t }: { t: ApiTxSeen }) {
   const method = t.input.length >= 10 ? t.input.slice(0, 10) : null;
   return (
     <section className="card" aria-label="Input data">
       <Kv wide>
         <Item label="Input data"><Input data={t.input} /></Item>
-        {method && <Item label="Method id"><span className="mono">{method}</span> <span className="muted">The verified interface is not held, so the input is not decoded.</span></Item>}
+        {method && <MethodRows to={t.to} input={t.input} />}
       </Kv>
     </section>
   );
