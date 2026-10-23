@@ -22,6 +22,8 @@ ARG=42
 ARG_HEX=$(printf '%064x' "$ARG")
 RUNS_STANDARD=200
 RUNS_FLAT=201
+# The first submission waits for the verifier to download its compiler: forge asks again every 5 seconds, for this many tries (its own is 5).
+RETRIES=${VERIFY_RETRIES:-60}
 fail() { echo "FAIL: $*" >&2; exit 1; }
 usage() { echo "usage: $0 build <folder> | $0 verify" >&2; exit 2; }
 mode=${1:-}
@@ -111,7 +113,7 @@ door() {
 verify() {
   local profile=$1 at=$2 runs=$3; shift 3
   tool "$profile" "$FORGE" verify-contract "$at" src/Box.sol:Box --chain "$CHAIN_ID" --verifier etherscan --verifier-url "$EXPLORER/api" --etherscan-api-key any \
-    --constructor-args "$ARG_HEX" --rpc-url "$EXPLORER/rpc" --compiler-version "$COMPILER" --num-of-optimizations "$runs" --watch "$@"
+    --constructor-args "$ARG_HEX" --rpc-url "$EXPLORER/rpc" --compiler-version "$COMPILER" --num-of-optimizations "$runs" --watch --retries "$RETRIES" --delay 5 "$@"
 }
 # What the door's getsourcecode says of a verified Box, as Etherscan says it.
 check_verified() {
