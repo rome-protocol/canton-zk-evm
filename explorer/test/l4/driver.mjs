@@ -10,8 +10,8 @@
  *   node driver.mjs        reads EXPLORER (the explorer's URL), L4_TX (the hash of a transaction in the chain), L4_CONTRACT (the address of a contract), L4_OUT (the results file),
  *                          L4_REPEAT (default 5). The block and the account are the transaction's own. Exits 1 when a budget is broken.
  *
- * What the pages are today: the explorer has no Contract page yet (E11a), so Contract opens the Address page of the contract, and says so in its results; the Address
- * page is a small stub. Both are reported and not held, so the numbers will move when the pages land. They are not a pass.
+ * Which pages are held: the design's B5 holds Home, Block and Transaction. Address and Contract (the pages at /address/<account> and /contract/<contract>) are measured and
+ * reported with the same numbers and are not held; the results say so for each.
  */
 import { writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
@@ -44,8 +44,8 @@ const PAGES = [
   { name: "home", path: "/" },
   { name: "block", path: `/block/${tx.block.number}` },
   { name: "transaction", path: `/tx/${TX}` },
-  { name: "address", path: `/address/${tx.from}`, note: "the Address page is a stub today; reported, not held" },
-  { name: "contract", path: `/address/${CONTRACT}`, note: "there is no Contract page yet (E11a not landed): this is the Address page of a contract; reported, not held" },
+  { name: "address", path: `/address/${tx.from}`, note: "reported, not held: B5 holds Home, Block and Transaction only" },
+  { name: "contract", path: `/contract/${CONTRACT}`, note: "reported, not held: B5 holds Home, Block and Transaction only" },
 ];
 
 // In the page, before anything of its own: what the browser's performance timeline says, in one timebase (milliseconds since the navigation began).
