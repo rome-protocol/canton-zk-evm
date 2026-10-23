@@ -294,6 +294,15 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect((await sql("select 1 from proxies")).rowCount).toBe(0);
       expect((await get(`/api?module=contract&action=getsourcecode&address=${P}`)).result[0]).toMatchObject({ Proxy: "0", Implementation: "" });
     });
+    it("does not carry a proxy row over to an address made again with other code: only a row checked at or after the creation counts", async () => {
+      await sql("delete from proxies");
+      // The contract at P was made in block 5; a row checked in block 1 belongs to what was at the address before.
+      await sql("insert into proxies (proxy, kind, implementation, checked_block) values ($1, 'eip1167', $2, 1)", [Buffer.from(P.slice(2), "hex"), Buffer.from(IMPL.slice(2), "hex")]);
+      expect((await get(`/api?module=contract&action=getsourcecode&address=${P}`)).result[0]).toMatchObject({ Proxy: "0", Implementation: "" });
+      await sql("update proxies set checked_block = 5");
+      expect((await get(`/api?module=contract&action=getsourcecode&address=${P}`)).result[0]).toMatchObject({ Proxy: "1", Implementation: IMPL });
+      await sql("delete from proxies");
+    });
     it("keeps proxy GUIDs and source GUIDs apart, and refuses a bad address, an unknown contract and a bad expectation", async () => {
       await running();
       const p = await proxy();

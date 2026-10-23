@@ -28,7 +28,7 @@ export function createContractRest(query: Query) {
     const [r] = await query(
       `select v.match_type, v.code_format, v.contract_name, v.compiler_version, v.optimizer_enabled, v.optimizer_runs, v.evm_version, v.license, v.settings, v.sources, v.abi,
          v.constructor_args, v.libraries, c.match_type as contract_match, p.implementation, v.id as source_id
-       from contracts c left join verified_sources v on v.id = c.verified_source left join proxies p on p.proxy = c.address where c.address = $1`,
+       from contracts c left join verified_sources v on v.id = c.verified_source left join proxies p on p.proxy = c.address and p.checked_block >= coalesce(c.creation_block, 0) where c.address = $1`,
       [bytes(address)],
     );
     if (!r) return { held: false, verified: null, implementation: null };

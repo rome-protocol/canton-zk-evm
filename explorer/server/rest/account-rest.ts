@@ -229,7 +229,7 @@ export function createAccountRest(pool: Pool) {
       `select ${contractSelect}, encode(bc.code, 'hex') as code, (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx,
          p.kind as proxy_kind, p.implementation, p.beacon, p.checked_block, v.match_type as source_match_type, v.language, v.compiler_version, v.code_format, v.contract_path, v.contract_name, v.optimizer_enabled, v.optimizer_runs,
          v.evm_version, v.license, ${MS("v.verified_at")} as verified_at
-       from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash left join proxies p on p.proxy = c.address left join verified_sources v on v.id = c.verified_source where c.address = $1`,
+       from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash left join proxies p on p.proxy = c.address and p.checked_block >= coalesce(c.creation_block, 0) left join verified_sources v on v.id = c.verified_source where c.address = $1`,
       [bytes(a)],
     );
     if (!r) return undefined;
