@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ApiAddress, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
