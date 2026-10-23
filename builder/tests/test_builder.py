@@ -1013,6 +1013,7 @@ class CommandLine(Case):
     def test_unknown_outcome_exits_2_with_committed_null(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
         s.ledger.no_completion, s.ledger.head_fails_after_submit = True, True   # no completion, and the window over with no head to read
+        s.ledger.record_time = "2100-01-01T00:00:00.000000Z"
         with mock.patch.dict(os.environ, {"CZE_RESOLVE_SECONDS": "0"}):
             code, out = self.run_main(s)
         self.assertEqual(code, 2)
@@ -1025,9 +1026,10 @@ class CommandLine(Case):
         for commit in (True, False):
             s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
             s.ledger.no_completion, s.ledger.commit = True, commit
+            s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's time is past the window
             with mock.patch.dict(os.environ, {"CZE_RESOLVE_SECONDS": "0"}):
                 code, out = self.run_main(s)
-            self.assertEqual((code, out["committed"], out["resolved"]), (0 if commit else 2, commit, "window"))
+            self.assertEqual((code, out["committed"], out["resolved"]), (0 if commit else 2, commit, "head" if commit else "window"))
             self.assertNotIn("resolve", out)
 
     def test_exit_status_says_failed_when_reth_is_unreachable(self):
@@ -1150,9 +1152,14 @@ class NoAnswer(Case):
         self.assertIsNone(result["committed"], result)
         return result
 
-    def settle(self, s, result, now=None, pairs=None):
+    def settle(self, s, result, pairs=None):
         u = {**result["resolve"], "since": result["resolve"]["submittedAt"]}
-        return b.resolve_unknown(s.cfg, u, pairs if pairs is not None else b.read_saved(s.cfg) or [], now if now is not None else u["since"])
+        return b.resolve_unknown(s.cfg, u, pairs if pairs is not None else b.read_saved(s.cfg) or [])
+
+    def canton_time(self, s, result, after_window: float):
+        """Canton's time (the record time of the checkpoints it shows) is `after_window` seconds after the end of the command's window."""
+        at = result["resolve"]["submittedAt"] + s.cfg.resolve_seconds + after_window
+        s.ledger.record_time = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     def test_a_submit_that_times_out_but_commits_later_is_not_rewound_and_the_next_block_goes_on_top(self):
         t = tx(ALICE, 0)
@@ -1191,29 +1198,58 @@ class NoAnswer(Case):
         self.assertEqual(self.in_pool(s), {t["hash"]})   # the transactions go in a later block
         self.assertFalse(b.unresolved_path(s.cfg).exists() or b.saved_path(s.cfg).exists())
 
-    def test_the_window_passing_with_no_completion_lets_the_head_decide(self):
+    def test_the_window_passing_by_canton_time_with_no_completion_lets_the_head_decide(self):
         for commit in (True, False):
             s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
             s.ledger.no_completion, s.ledger.commit = True, commit
             result = b.build_block(s.cfg)
-            since = result["resolve"]["submittedAt"]
-            with self.assertRaises(b.Unresolved):   # the window is 300 s: until it is over, the head says nothing
-                self.settle(s, result, now=since + 299)
-            committed, lost, how, info = self.settle(s, result, now=since + 300)
-            self.assertEqual((committed, how), (commit, "window"))
+            if not commit:
+                with self.assertRaises(b.Unresolved):   # Canton's time is still before the end of the window: the head says nothing
+                    self.settle(s, result)
+                self.canton_time(s, result, -1)
+                with self.assertRaises(b.Unresolved):
+                    self.settle(s, result)
+                self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])   # reth is untouched
+                self.assertTrue(b.unresolved_path(s.cfg).exists())
+            self.canton_time(s, result, 1)
+            committed, lost, how, info = self.settle(s, result)
+            self.assertEqual((committed, how), (commit, "head" if commit else "window"))
             self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"] if commit else HEAD_HASH)
 
-    def test_completions_that_cannot_be_read_leave_everything_as_it_is_until_the_window_is_over(self):
+    def test_the_builders_clock_past_the_window_decides_nothing_while_canton_time_is_before_it(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        result["resolve"]["submittedAt"] -= 10 * s.cfg.resolve_seconds   # our clock says the window ended long ago
+        self.canton_time(s, result, -1)   # Canton's checkpoints say the participant has not got there (it lags, or it reconnected)
+        with self.assertRaises(b.Unresolved):
+            self.settle(s, result)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])   # reth is untouched
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        s.ledger.land(ok=True)   # the command commits after all
+        committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (True, "completion"))
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], result["blockHash"])
+
+    def test_the_head_showing_the_block_settles_it_before_the_window_is_over(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.completions_fail = True
+        s.ledger.no_completion, s.ledger.commit = True, True
+        result = b.build_block(s.cfg)
+        committed, _, how, _ = self.settle(s, result)   # Canton's time is long before the end of the window
+        self.assertEqual((committed, how), (True, "head"))
+
+    def test_completions_that_cannot_be_read_leave_everything_as_it_is_while_the_head_does_not_show_the_block(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.completions_fail, s.ledger.commit = True, False
         result = b.build_block(s.cfg)
         self.assertIsNone(result["committed"])
         self.assertIn("could not be read", result["reason"])
+        self.canton_time(s, result, 1)   # unread completions say nothing about Canton's time, whatever the checkpoints would show
         with self.assertRaises(b.Unresolved):
             self.settle(s, result)
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
-        committed, _, how, _ = self.settle(s, result, now=result["resolve"]["submittedAt"] + 301)
-        self.assertEqual((committed, how), (True, "window"))   # the head shows the block
+        s.ledger.head = {"headNumber": str(HEAD_NUMBER + 1), "headHash": result["blockHash"][2:]}   # the head shows the block
+        committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (True, "head"))
 
     def test_a_restart_settles_the_command_before_it_moves_reth(self):
         t = tx(ALICE, 0)
@@ -1385,7 +1421,7 @@ class NoAnswer(Case):
         before = len(s.ledger.completion_queries)
         with mock.patch.object(b, "COMPLETION_LIMIT", 2):
             self.assertEqual(self.settle(s, result)[:3], (True, [], "completion"))
-        self.assertEqual(len(s.ledger.completion_queries) - before, 3)
+        self.assertEqual(len(s.ledger.completion_queries) - before, 4)   # the checkpoint at 44 is one more item than the completions alone
 
     def test_the_completions_are_read_from_the_ledger_end_before_the_submit_for_the_builder_user(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
@@ -1399,12 +1435,20 @@ class NoAnswer(Case):
 class CompletionReading(unittest.TestCase):
     def test_a_completion_is_committed_without_a_status_or_with_code_0_and_failed_otherwise(self):
         done = lambda **v: {"completionResponse": {"Completion": {"value": {"commandId": "c", "offset": 7, **v}}}}
-        self.assertEqual(b.completion_in([done(status={}, updateId="u")], "c"), ({"committed": True, "updateId": "u", "completionOffset": 7}, 7))
+        self.assertEqual(b.completion_in([done(status={}, updateId="u")], "c"), ({"committed": True, "updateId": "u", "completionOffset": 7}, 7, None))
         self.assertEqual(b.completion_in([done(status={"code": 0})], "c")[0]["committed"], True)
-        found, last = b.completion_in([done(status={"code": 14, "message": "UNAVAILABLE"})], "c")
+        found, last, _ = b.completion_in([done(status={"code": 14, "message": "UNAVAILABLE"})], "c")
         self.assertEqual((found["committed"], "14" in found["reason"], "UNAVAILABLE" in found["reason"]), (False, True, True))
-        self.assertEqual(b.completion_in([done()], "other"), (None, 7))   # the offset reached, with no completion of this command
-        self.assertEqual(b.completion_in([{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9}}}}, "nonsense"], "c"), (None, 9))
+        self.assertEqual(b.completion_in([done()], "other"), (None, 7, None))   # the offset reached, with no completion of this command
+        self.assertEqual(b.completion_in([{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9}}}}, "nonsense"], "c"), (None, 9, None))
+        checkpoint = lambda offset, *times: {"completionResponse": {"OffsetCheckpoint": {"value": {"offset": offset, "synchronizerTimes": [{"synchronizerId": "s", "recordTime": t} for t in times]}}}}
+        self.assertEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:00.5Z")], "c")[2], 1792749600.5)   # Canton's time, in epoch seconds
+        self.assertAlmostEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:00.123456789Z")], "c")[2], 1792749600.123457, places=5)
+        self.assertEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:05Z"), checkpoint(10, "2026-10-23T10:00:01Z")], "c")[2], 1792749605)   # the latest checkpoint
+        self.assertEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:05Z", "2026-10-23T10:00:02Z")], "c")[2], 1792749602)   # every synchronizer must have got there
+        for bad in ("yesterday", "2026-10-23T10:00:00+03:00", 5, None):
+            self.assertIsNone(b.completion_in([checkpoint(9, bad)], "c")[2], bad)
+        self.assertIsNone(b.completion_in([checkpoint(9)], "c")[2])
 
 
 class Pieces(unittest.TestCase):

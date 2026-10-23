@@ -292,6 +292,7 @@ class FakeLedger:
         self.reply_status = None   # Advance is answered with this HTTP status and nothing else: no command is taken, no completion comes
         self.late = False   # Advance is answered with a 503 (a timeout), and the command commits or fails only when `land` is called
         self.pending: list = []   # (command id, header) of the commands `late` holds back
+        self.record_time = "2020-01-01T00:00:00.000000Z"   # Canton's time the OffsetCheckpoint of a completions read shows (far in the past: no command's window is over)
         self.land_offset = 43   # the offset `land` gives a decided command's completion
         self.earlier: list = []   # completions of the builder user from before the submit (offset <= the ledger end), as the participant shows them
         self.others: list = []   # completions of other commands, each with its own offset
@@ -417,6 +418,7 @@ class FakeLedger:
                     if ledger.completions_fail:
                         return self._reply(500, {"cause": "the participant is down"})
                     shown = [{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 40}}}},
+                             {"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 44, "synchronizerTimes": [{"synchronizerId": "sync::1", "recordTime": ledger.record_time}]}}}},
                              {"completionResponse": {"Completion": {"value": {"commandId": "someone-elses", "offset": 42, "paidTrafficCost": 1}}}}]
                     own = ledger.outcomes.get(ledger.submitted[-1]["commandId"]) if ledger.submitted and not ledger.no_completion else None
                     if own is not None:

@@ -322,17 +322,33 @@ COMPLETION_LIMIT = 500      # completions a read of the command's own outcome ta
 COMPLETION_READS = 20       # pages one look for a command's completion reads at most
 
 
+def record_seconds(text) -> float | None:
+    """Canton's record time (an ISO 8601 UTC string, up to nanoseconds, as in "2026-10-23T10:00:00.123456789Z") as epoch seconds, or None
+    when it is not one."""
+    match = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?Z", text) if isinstance(text, str) else None
+    if not match:
+        return None
+    whole = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+    return whole + float("0." + match.group(2)) if match.group(2) else whole
+
+
 def completion_in(items: list, command_id: str) -> tuple:
-    """(the command's outcome in a completions read, the last offset the read reached). The outcome is None when the read shows no
-    completion of the command, else {"committed": True, "updateId", "completionOffset"} (status code 0 or no status) or
-    {"committed": False, "reason"} (any other status code)."""
-    found, last = None, None
+    """(the command's outcome in a completions read, the last offset the read reached, Canton's time the read reached). The outcome is None
+    when the read shows no completion of the command, else {"committed": True, "updateId", "completionOffset"} (status code 0 or no status)
+    or {"committed": False, "reason"} (any other status code). Canton's time is the latest OffsetCheckpoint record time in the read (epoch
+    seconds; with several synchronizers in one checkpoint, the earliest of them), None when the read has no checkpoint with one."""
+    found, last, reached = None, None, None
     for item in items:
         response = item.get("completionResponse", {}) if isinstance(item, dict) else {}
         for kind in ("Completion", "OffsetCheckpoint"):
             value = response.get(kind, {}).get("value") if isinstance(response.get(kind), dict) else None
             if isinstance(value, dict) and type(value.get("offset")) is int:
                 last = value["offset"] if last is None else max(last, value["offset"])
+        checkpoint = response.get("OffsetCheckpoint", {}).get("value") if isinstance(response.get("OffsetCheckpoint"), dict) else None
+        times = checkpoint.get("synchronizerTimes") if isinstance(checkpoint, dict) else None
+        stamps = [record_seconds(t.get("recordTime")) for t in times if isinstance(t, dict)] if isinstance(times, list) else []
+        if stamps and None not in stamps:
+            reached = min(stamps) if reached is None else max(reached, min(stamps))
         done = response.get("Completion", {}).get("value") if isinstance(response.get("Completion"), dict) else None
         if not isinstance(done, dict) or done.get("commandId") != command_id:
             continue
@@ -345,7 +361,7 @@ def completion_in(items: list, command_id: str) -> tuple:
         else:
             found = {"committed": False, "reason": f"Canton failed the command (status {code}): {str(status.get('message', ''))[:500]}"}
         break
-    return found, last
+    return found, last, reached
 
 
 class Ledger:
@@ -368,6 +384,13 @@ class Ledger:
         """What the builder user's completions after offset `begin` say about the command: {"committed": True, "updateId", "completionOffset"}
         or {"committed": False, "reason"}, or None while there is no completion of it (it may still be in progress). Raises when the
         completions cannot be read."""
+        return self.completion_and_time(command_id, begin)[0]
+
+    def completion_and_time(self, command_id: str, begin: int) -> tuple:
+        """(`completion`, Canton's time the read reached: the latest OffsetCheckpoint record time in the completions after `begin`, epoch
+        seconds, None when there is none). A command that has no completion once this time is past the last moment it could commit never
+        will have one. Raises when the completions cannot be read."""
+        reached = None
         for _ in range(COMPLETION_READS):
             body = {"userId": self.cfg.ledger_user, "parties": [self.cfg.party], "beginExclusive": begin}
             try:
@@ -378,11 +401,13 @@ class Ledger:
                 raise
             if not isinstance(items, list):
                 raise ValueError("the completions are not a list")
-            found, last = completion_in(items, command_id)
+            found, last, seen = completion_in(items, command_id)
+            if seen is not None:
+                reached = seen if reached is None else max(reached, seen)
             if found or len(items) < COMPLETION_LIMIT or last is None or last <= begin:
-                return found
+                return found, reached
             begin = last   # a full page without the command: read on from where it ended
-        return None
+        return None, reached
 
     def readers(self) -> list:
         """The builder, then the parties given with --read-as."""
@@ -1003,29 +1028,34 @@ def read_saved(cfg: Config) -> list | None:
     return pairs
 
 
-def resolve_unknown(cfg: Config, u: dict, pairs: list, now: float) -> tuple:
+def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
     """Settles an Advance whose answer did not arrive, by its own command id. Reads the builder user's completions from the ledger end
     recorded before the submit. A completion that succeeded: the block committed, reth's head is made final. One that failed: it did not
-    commit, reth goes back to Canton's head and the block's transactions are sent to its pool again. No completion: raises `Unresolved`
-    while the command can still commit (cfg.resolve_seconds after `u["since"]`); after that Canton's head decides, because this
-    command can no longer change it. Raises too while the head cannot be read. Returns
+    commit, reth goes back to Canton's head and the block's transactions are sent to its pool again. No completion: Canton's head says
+    committed when it is this block's hash (it cannot be anything else then). Otherwise the command may still commit, and `Unresolved` is
+    raised, until the read has reached an OffsetCheckpoint whose record time is at or past `u["since"]` + cfg.resolve_seconds: that is
+    Canton's own time, so a participant that lags or reconnects after it confirmed the command cannot commit it later by our clock being
+    ahead. Then it is settled as not committed and the head is where reth goes. Raises too while the head cannot be read. Returns
     (committed, the transactions reth refused, how it was settled, {"updateId", "completionOffset"} when known)."""
-    over = now >= u["since"] + cfg.resolve_seconds
+    bound = u["since"] + cfg.resolve_seconds
     try:
-        found = Ledger(cfg).completion(u["commandId"], u["begin"])
+        found, reached = Ledger(cfg).completion_and_time(u["commandId"], u["begin"])
     except (OSError, ValueError, http.client.HTTPException) as e:
-        if not over:
-            raise Unresolved(f"the completion of command {u['commandId']} cannot be read yet: {e}") from e
-        found = None   # the window is over: the head decides, and raises if it cannot be read either
-    if found is None and not over:
-        raise Unresolved(f"command {u['commandId']} has no completion yet and may still commit")
+        found, reached, unread = None, None, e   # the head can still show the block
+    else:
+        unread = None
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
         if found is not None and found["committed"]:
             committed, how = True, "completion"
         else:
             head = "0x" + Ledger(cfg).head()["headHash"]
-            committed, how = head == u["hash"], "completion" if found else "window"
+            committed = head == u["hash"]
+            how = "completion" if found else "head" if committed else "window"
+            if found is None and not committed and (reached is None or reached < bound):
+                if unread is not None:
+                    raise Unresolved(f"the completion of command {u['commandId']} cannot be read yet: {unread}")
+                raise Unresolved(f"command {u['commandId']} has no completion yet and Canton's time has not passed the last moment it can commit")
         if committed:
             reth.forkchoice(u["hash"], u["hash"], u["hash"])
             clear_saved(cfg)
@@ -1054,7 +1084,7 @@ def recover_saved(cfg: Config, wait=None) -> dict | None:
                 pairs = read_saved(cfg) or []
             except BuilderError:   # the kept transactions are damaged (moved aside): the command is settled all the same
                 pairs = []
-            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u.get("submittedAt", 0)}, pairs, time.time())
+            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u.get("submittedAt", 0)}, pairs)
             settled = {"number": u.get("number"), "blockHash": u["hash"], "commandId": u["commandId"], "committed": committed, "resolved": how, **info}
             settled["lostTransactions"] = lost
             break
@@ -1466,7 +1496,7 @@ class Producer:
         window the command can still commit in is not over), nothing is built, reth is not moved and the status says the block is waiting."""
         u = self.unresolved
         try:
-            committed, lost, how, info = self.resolve(self.cfg, u, u["pairs"], self.clock())   # raises while it cannot be read: backoff
+            committed, lost, how, info = self.resolve(self.cfg, u, u["pairs"])   # raises while it cannot be read: backoff
         except Unresolved:
             self.write_status()
             self.wait(max(self.idle, 1.0))
@@ -1524,7 +1554,7 @@ class Producer:
                 self.unknown += 1
                 self.previous_kept = set()
                 self.unresolved = {"number": result["number"], "hash": result["blockHash"], "pairs": pairs, **(result.get("resolve") or {}),
-                                   "since": now, "attempt": self.attempt.seq if self.attempt else None}   # the next step finds out
+                                   "since": (result.get("resolve") or {}).get("submittedAt", now), "attempt": self.attempt.seq if self.attempt else None}   # the next step finds out
         self.emit(result)
         self.write_status()
         if result["committed"] is False:
@@ -1587,7 +1617,7 @@ def settle_once(cfg: Config, result: dict, sleep=time.sleep) -> dict:
     pairs = read_saved(cfg) or []
     while True:
         try:
-            committed, lost, how, info = resolve_unknown(cfg, u, pairs, time.time())
+            committed, lost, how, info = resolve_unknown(cfg, u, pairs)
         except Unresolved:
             sleep(2)
             continue

@@ -323,17 +323,18 @@ class Refusals(Loop):
         p.step()   # the transactions go in a new block 1 above Canton's head
         self.assertEqual((self.reports[2]["committed"], self.reports[2]["number"]), (True, HEAD_NUMBER + 1))
 
-    def test_with_no_completion_the_head_decides_only_when_the_window_is_over(self):
+    def test_with_no_completion_the_head_decides_only_when_canton_time_is_past_the_window(self):
         for commit in (True, False):
             s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
             s.ledger.no_completion, s.ledger.commit = True, commit
             p = self.producer(s)
             p.step()
-            self.now[0] += 299
-            p.step()
-            self.assertEqual(len(self.reports), 1)   # still waiting
-            self.assertEqual(self.status()["waitingToBeResolved"]["number"], HEAD_NUMBER + 1)
-            self.now[0] += 2
+            if not commit:
+                self.now[0] += 10_000   # the builder's clock is far past the window: it decides nothing
+                p.step()
+                self.assertEqual(len(self.reports), 1)   # still waiting
+                self.assertEqual(self.status()["waitingToBeResolved"]["number"], HEAD_NUMBER + 1)
+                s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's checkpoints are past it
             p.step()
             self.assertEqual(self.reports[1]["resolved"], "committed" if commit else "not committed")
 
