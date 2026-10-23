@@ -507,7 +507,7 @@ EXPLORER_TEST_DATABASE_URL=postgres://<user>:<password>@127.0.0.1:5432/postgres 
 
 `check-ledger-api.sh` starts the participants of the pinned Canton and saves the OpenAPI document that Canton writes about its own Ledger API, and `server/ledger.openapi.test.ts` checks the explorer's requests against it and the fake's answers for their shape. CI runs this in the Node image that `PINS` names (`EXPLORER_NODE_IMAGE`). The packages are pinned to exact versions in `package.json` and `package-lock.json`.
 
-`.github/workflows/explorer.yml` runs these jobs on a pull request: `tests` (typecheck, tests and build, in the pinned Node image), `database` (the database tests against the PostgreSQL that `PINS` pins, scaled L2 included), `verifier-sandbox`, `ledger-api` and `verify-wasm`.
+`.github/workflows/explorer.yml` runs these jobs on a pull request: `tests` (typecheck, tests and build, in the pinned Node image), `database` (the database tests against the PostgreSQL that `PINS` pins, which include L1), `l2` (the scaled L2, 3,000,000 transactions and 120 s), `verifier-sandbox`, `ledger-api` and `verify-wasm`. W1 runs in the rehearsal of `.github/workflows/demo.yml`.
 
 ## Verify
 
@@ -549,7 +549,7 @@ The Faucet route renders it with the coin from `/api/status`. The page is a comp
 
 The producer (`builder/`) writes a journal of what it does, and the indexer loads it into `producer_runs`, `block_attempts`, `attempt_transactions`, `tx_lifecycle` and `pool_samples`. `JOURNAL_DIR` is the producer's `journal/` folder (every `YYYY-MM-DD.jsonl` file in it, rotated ones included, read in order from the place the indexer kept in `cursors`) and `PRODUCER_STATUS_FILE` its `status.json`. Both are only read. `INDEX_JOURNAL_MS` (default 1000) is how often the journal is read. `run.sh start` mounts the builder's work folder (`CZE_WORK_DIR`, default `<state>/builder`) read-only for them when it exists.
 
-Every line is applied again without harm, and the lines of a run are put in the order of their numbers, so a line that arrives late finds its attempt. A line whose attempt has no `cut` line, a line of a format the indexer does not know and a line that cannot be read are counted and said in the health, and so is a gap in the numbers (a line the producer could not write): the counts are kept with the cursor and shown for an hour after the last one. A line cut short by a crash is left until it is whole, or dropped and counted when its file is old. The state of a transaction follows one order whoever writes it: `final` is terminal and beats `replaced`, `dropped` and `lost`; `replaced` is set only when another transaction with the same sender and nonce is final; otherwise the newer event wins.
+Applying a journal line twice does not duplicate its effect, and the lines of a run are processed in the order of their numbers, so a line that arrives late finds its attempt. A line whose attempt has no `cut` line, a line of a format the indexer does not know and a line that cannot be read are counted and said in the health, and so is a gap in the numbers (a line the producer could not write): the counts are kept with the cursor and shown for an hour after the last one. A line cut short by a crash is left until it is whole, or dropped and counted when its file is old. The state of a transaction follows one order whoever writes it: `final` is terminal and beats `replaced`, `dropped` and `lost`; `replaced` is set only when another transaction with the same sender and nonce is final; otherwise the newer event wins.
 
 The checks that use it are C8 (every attempt the journal says committed has its update in the index within 10 s, and every indexed block has a committed attempt), C9 (the producer's answer time is not before Canton's record time by more than 100 ms) and the rows `producer_alive`, `producer_state` and `prover` from `status.json` and the journal. All are `degraded` when they fail, which `/healthz` names and still answers 200 for. `producer_state` is degraded when the producer is not `running`, when 3 blocks in a row have failed, or when `waitingToBeResolved` in `status.json` (the block whose outcome is not known) has been set for over 60 s; `blocksUnknown` counts since the producer's loop started and is not read for this. C9 and `prover` read the last six hours of attempts. Without a journal or a status file the blocks are still indexed, the lifecycle stays blank, and the health says so. A chain with no new block is `ok`: the producer's liveness is the age of its status file, never the age of its journal.
 
@@ -562,11 +562,11 @@ The explorer is held to budgets (below) by six tests, named L1 to L5 and W1. The
 | L1 | `server/indexer/indexer.test.ts`, tests named `L1:` | Blocks of 0 to 5,000 transactions through both stages of the indexer, on the pinned PostgreSQL |
 | W1 | `tests/demo_rehearsal.sh` | The worst-case block that the 30 Mgas cap allows, on the rehearsal's real chain, indexed into a database of its own |
 | L2 | `test/l2/` | The API at scale: a seeded database, a mixed load at a fixed rate, live-stream clients and ingestion running. It runs only with `L2=1` and the database URL. `L2_TRANSACTIONS`, `L2_SECONDS`, `L2_RATE`, `L2_SSE` set its size, `L2_RESULTS` names the JSON file for its numbers and `L2_KEEP_DATABASE=1` keeps the seeded database for a look at query plans |
-| L3 | `tests/demo_nightly_l3.py` | A flood of blocks of plain transfers through the real builder, timed from the ledger to the served page |
+| L3 | `tests/demo_nightly_l3.py` | A flood of blocks of plain transfers through the real builder, timed from the moment the block's record can be read on the reader's participant until the block's row is visible in the explorer's PostgreSQL. The API's first answer after that and the live stream's delivery are reported separately, and page rendering is not timed |
 | L4 | `test/l4/` | The pages opened cold in a browser on a slow link: largest contentful paint, script size and calls before the first paint |
 | L5 | `test/l5/` | Developers' tools against the Etherscan-compatible API: the proxy module, `forge verify-contract`, `hardhat verify` and `cast` |
 
-`.github/workflows/explorer-nightly.yml` runs them every night at 02:17 UTC and by hand (`workflow_dispatch`, with the sizes as inputs), and never on a pull request. The one exception is a pull request that changes the nightly's own files: it runs a short version of everything, so that a change is seen to run before it merges. A pull request otherwise runs only the scaled L2 in `explorer.yml`. Each job keeps its numbers as an artifact and writes a summary to the run.
+`.github/workflows/explorer-nightly.yml` runs them every night at 02:17 UTC and by hand (`workflow_dispatch`, with the sizes as inputs), and never on a pull request. The one exception is a pull request that changes the nightly's own files: it runs a short version of everything, so that a change is seen to run before it merges. A pull request otherwise runs L1 and the scaled L2 in `explorer.yml`, and W1 in the rehearsal of `demo.yml`. Each job keeps its numbers as an artifact and writes a summary to the run.
 
 ## Limits and budgets
 
@@ -586,9 +586,9 @@ The limits are stated where each part is described. This table lists them in one
 
 The budgets that the load tests hold the explorer to are these. Each is checked by the test named beside it, and the measured figures are in [docs/METRICS.md](../docs/METRICS.md).
 
-| Budget | Held to | Test |
+| Budget | Limit | Test |
 |---|---|---|
-| Stage 1 of the worst-case block | at most 2,750 ms (`B1_MS` in `test/budgets.ts`) | L1, W1 |
+| Stage 1 of the worst-case block | at most 2,750 ms (`B1_MS` in `test/budgets.ts`) | L1, W1, L3 |
 | Both stages of the worst-case block | at most 12,750 ms (`B2_MS`) | L1, W1 |
 | One block, transaction or address through the API | p95 at most 100 ms; an address's page of transactions at most 300 ms; a list page at most 200 ms; search at most 100 ms; `getLogs` at most 500 ms | L2 |
 | A new final block to 2,000 stream clients | p95 at most 500 ms | L2 |
