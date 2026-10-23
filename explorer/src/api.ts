@@ -470,3 +470,14 @@ export const getContractSource = async (a: string) => (await call(at(a, "/source
 export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds. */ timestamp: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
 export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
   (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;
+
+/** What the faucet turned away in a summary window, and why. Only the reason is counted, never who asked. */
+export interface StatsTurnedAway { total: number; byReason: { address: number; ip: number; hour: number; captcha: number } }
+/** The faucet block of `/api/stats/summary` as the server now serves it. `turnedAway` is null for a window that starts before `turnedAwaySince` (shown as not recorded before that time); both are null where the counting never began. */
+export interface StatsSummaryFaucet {
+  requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null;
+  turnedAway: StatsTurnedAway | null; turnedAwaySince: string | null;
+}
+/** What `GET /api/faucet` adds to `FaucetInfo`: the block its balance is of, how many payouts go in one block, and how many were sent since 00:00 UTC (null where the faucet cannot count them). */
+export interface FaucetFacts { balanceBlock: number | null; batch: number; sentToday: number | null }
+export const getFaucetFacts = async () => { try { return (await call("/api/faucet", [200])).body as FaucetFacts; } catch { return null; } };
