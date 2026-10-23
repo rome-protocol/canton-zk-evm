@@ -89,7 +89,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
   const post = async (fields: Record<string, string>, ip = "203.0.113.5", limits = {}) => shape(await api(limits)("POST", "/api", form(fields), ip));
   const sql = (text: string, values: unknown[] = []) => pool.query(text, values);
   const running = () => sql("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('verifier/compilers', 'ok', '{}'::jsonb, now(), now()) on conflict (check_id) do update set checked_at = now()");
-  const worker = () => new VerifierWorker(pool, new JobQueue(pool), new Verifier(pool, stub), { cacheUsable: async () => null, log: () => undefined });
+  const worker = (reserved: string[] = []) => new VerifierWorker(pool, new JobQueue(pool), new Verifier(pool, stub, undefined, reserved), { cacheUsable: async () => null, log: () => undefined });
   const single = (over: Record<string, string> = {}) => ({
     action: "verifysourcecode", contractaddress: A, sourceCode: SOURCE, codeformat: "solidity-single-file", contractname: "Box", compilerversion: VERSION, optimizationUsed: "1", runs: "200",
     constructorArguements: "", evmversion: "default", licenseType: "3", apikey: "any", ...over,
@@ -156,6 +156,21 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect(await licenseOf({ licenseType: "14" }, "203.0.113.12")).toBe("BUSL-1.1");
       expect(await licenseOf({ licenseType: "99" }, "203.0.113.13")).toBe("MIT");
       expect(await licenseOf({ licenseType: "Apache-2.0" }, "203.0.113.14")).toBe("MIT");
+    });
+
+    it("keeps the gateway for the operator's seed: a verification of its address through the door is queued, then fails as the operator's", async () => {
+      await running();
+      // The verifier role starts its Verifier with the reserved addresses (cli.ts: reservedAddresses of the gateway); the door itself queues whatever it is given.
+      await addContract(pool, GATEWAY, runtime, null);
+      const sent = await post(single({ contractaddress: GATEWAY }), "203.0.113.21");
+      expect(sent).toMatchObject({ status: "1", message: "OK" });
+      expect(await get(`/api?module=contract&action=checkverifystatus&guid=${sent.result}`)).toEqual(NOTOK("Pending in queue"));
+      expect(await worker([GATEWAY]).step()).toBe("ended");
+      const answer = await get(`/api?module=contract&action=checkverifystatus&guid=${sent.result}`);
+      expect(answer).toMatchObject({ status: "0", message: "NOTOK" });
+      expect(answer.result).toMatch(/^Fail - Unable to verify\. The source of this contract is published by the operator of the network/);
+      expect(stub.calls).toBe(0);
+      expect((await get(`/api?module=contract&action=getsourcecode&address=${GATEWAY}`)).result[0]).toMatchObject({ SourceCode: "", ABI: "Contract source code not verified" });
     });
 
     it("takes standard JSON input in either brace form, and getsourcecode gives it back in the double braces", async () => {
