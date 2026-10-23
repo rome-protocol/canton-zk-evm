@@ -1,9 +1,20 @@
+import type { BlockListItem } from "../api.ts";
+import { usualProof } from "../stats.ts";
+
 /** What `GET /api/faucet` says. Amounts are whole numbers as decimal strings, in the coin's smallest unit. */
 export interface FaucetInfo {
   on: boolean; address: string | null; balance: string | null; amount: string; perAddressSeconds: number;
   perIpSeconds?: number; maxPerHour?: number;
   /** How many requests are waiting for a batch. */
   queue?: number;
+  /** The final head the balance was read at; null when none could be named (the balance is then the newest block's, which may not be final). Absent from a server that does not say it. */
+  balanceBlock?: number | null;
+  /** The most payouts that go in one block. */
+  batch?: number;
+  /** Payouts sent since 00:00 UTC, how many of those are final, and how many are in a block being proven now. Each is null where the faucet cannot count them, and absent from a server that does not say it. */
+  sentToday?: number | null;
+  finalToday?: number | null;
+  beingProven?: number | null;
   /** The human check, when the faucet asks for one: the script to load and the key to give it. */
   captcha?: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
 }
@@ -33,6 +44,12 @@ export type CoinResult =
 /** What reading a ticket gives: its state, or that the explorer does not know it, or that it could not be asked just now. */
 export type TicketResult = { kind: "ticket"; ticket: Ticket } | { kind: "unknown" } | { kind: "unreachable" };
 
+/** A payout from the faucet's address that is final: its transaction, who got it, the block and the time (seconds). */
+export interface RecentSend { hash: string; to: string; block: number; timestamp: number }
+
+/** What the transaction route says of a request's transfer: its nonce and the times it was taken into the pool, began to be proven, and became final. Each is null where it is not served. */
+export interface TxTimes { nonce: number | null; acceptedAt: string | null; proofStartedAt: string | null; finalAt: string | null }
+
 export interface FaucetClient {
   /** Throws an Error with a message fit to show when the faucet's information cannot be read. */
   info(): Promise<FaucetInfo>;
@@ -40,6 +57,16 @@ export interface FaucetClient {
   request(address: string, captcha?: string): Promise<CoinResult>;
   /** Never throws. */
   ticket(id: string): Promise<TicketResult>;
+  /** The newest final payouts from the faucet's address, newest first; null when they cannot be read just now. Never throws. */
+  recent?(faucet: string, limit: number): Promise<RecentSend[] | null>;
+  /** The newest final block's base fee in wei, or null when it cannot be read. Never throws. */
+  baseFee?(): Promise<string | null>;
+  /** The nonce and lifecycle times of a transaction, or null when it cannot be read. Never throws. */
+  txTimes?(hash: string): Promise<TxTimes | null>;
+  /** The proof time the newest blocks usually take (10th to 90th percentile), or null when too few blocks have one. Never throws. */
+  usualProof?(): Promise<{ lowMs: number; highMs: number } | null>;
+  /** The time Canton usually takes to commit a block, in ms: the median of the last hour's stats summary (the figure the home page shows), or of the last day's when the hour has none, or null when it is not served. Never throws. */
+  usualCommitMs?(): Promise<number | null>;
 }
 
 const UNREACHABLE = "The explorer cannot be reached. Try again in a moment.";
@@ -99,6 +126,49 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
       const t = answer.body;
       if (answer.status !== 200 || typeof t.ticket !== "string" || !STATUSES.includes(t.status as string)) return { kind: "unreachable" };
       return { kind: "ticket", ticket: t as unknown as Ticket };
+    },
+
+    async recent(faucet, limit) {
+      // Only what the faucet sent: the same address's incoming transfers (a top-up) are not payouts, so the route is asked for the sent ones, and the sender is checked again below.
+      const answer = await read(fetchFn, `/api/addresses/${encodeURIComponent(faucet)}/txs?direction=sent&limit=${Math.min(50, limit)}`);
+      const items = answer?.status === 200 && Array.isArray(answer.body.items) ? (answer.body.items as unknown[]) : null;
+      if (!items) return null;
+      const sends: RecentSend[] = [];
+      for (const t of items as Record<string, unknown>[]) {
+        if (typeof t.hash === "string" && typeof t.from === "string" && t.from.toLowerCase() === faucet.toLowerCase() && typeof t.to === "string" && typeof t.block === "number" && typeof t.timestamp === "number") {
+          sends.push({ hash: t.hash, to: t.to, block: t.block, timestamp: t.timestamp });
+        }
+      }
+      return sends.slice(0, limit);
+    },
+
+    async txTimes(hash) {
+      const answer = await read(fetchFn, `/api/txs/${encodeURIComponent(hash)}`);
+      if (answer?.status !== 200) return null;
+      const l = typeof answer.body.lifecycle === "object" && answer.body.lifecycle !== null ? (answer.body.lifecycle as Record<string, unknown>) : {};
+      const when = (v: unknown) => (typeof v === "string" && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(v) ? v : null);
+      return { nonce: typeof answer.body.nonce === "number" ? answer.body.nonce : null, acceptedAt: when(l.acceptedAt), proofStartedAt: when(l.proofStartedAt), finalAt: when(l.finalAt) };
+    },
+
+    async usualProof() {
+      const answer = await read(fetchFn, "/api/blocks?limit=10");
+      return answer?.status === 200 && Array.isArray(answer.body.items) ? usualProof(answer.body.items as BlockListItem[]) : null;
+    },
+
+    async usualCommitMs() {
+      // The last hour's median, as the home page shows it; when the chain made no block in that hour, the day's.
+      for (const window of ["1h", "24h"]) {
+        const answer = await read(fetchFn, `/api/stats/summary?window=${window}`);
+        const c = answer?.status === 200 ? (answer.body.commitTime as Record<string, unknown> | null | undefined) : null;
+        if (typeof c?.median === "number" && Number.isFinite(c.median) && c.median >= 0) return Math.round(c.median * 1000);
+      }
+      return null;
+    },
+
+    async baseFee() {
+      const answer = await read(fetchFn, "/api/blocks?limit=1");
+      const first = answer?.status === 200 && Array.isArray(answer.body.items) ? (answer.body.items[0] as Record<string, unknown> | undefined) : undefined;
+      return typeof first?.baseFee === "string" && /^\d+$/.test(first.baseFee) ? first.baseFee : null;
     },
   };
 }

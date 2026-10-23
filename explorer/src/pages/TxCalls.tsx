@@ -2,10 +2,11 @@ import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { decodeInputOf, methodNames, type Decoded } from "../abi-call.ts";
 import { abiOrStandard, type AbiEntry } from "../abi.ts";
-import { getTxTrace, type ApiTxSeen, type Label, type TraceFrame } from "../api.ts";
+import { getTxTrace, getTxTransfers, type ApiTxSeen, type Label, type TraceFrame } from "../api.ts";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { Amount } from "../components/Amount.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { usePaged } from "../components/Pager.tsx";
 import { Seg } from "../components/Seg.tsx";
 import { count, plural, short } from "../format.ts";
 import { PARENT_FAILED, voidedFrames, movesCoin } from "./txFrames.ts";
@@ -89,11 +90,15 @@ const PAGE = 50;
 
 /**
  * Every call of the transaction, the top level first and each call under it in the order reth traced them, as the trace route serves them.
- * A call counts as having moved coin by the rule the address pages use: the transaction succeeded, no call above it failed, and it is a plain call (not a
- * delegatecall, callcode or staticcall, whose trace value is the caller's) with a value. Names and functions are read for the rows on screen, fifty at a time.
+ * A call counts as having moved coin by movesCoin: the transaction succeeded, no call above it failed, and it is a plain call, a creation or a self-destruct
+ * (not a delegatecall, callcode or staticcall, whose trace value is the caller's) with a value. Names and functions are read for the rows on screen, fifty at a time.
+ * The closing note points at the Token transfers list only when that list holds a transfer of this transaction.
  */
 export function InternalTab({ t, coin, callCount }: { t: ApiTxSeen; coin: Coin | undefined; callCount?: number | null }) {
   const q = useQuery({ queryKey: ["tx-trace", t.hash], queryFn: () => getTxTrace(t.hash), retry: false, staleTime: 60_000 });
+  // The same list the Overview reads (one cache), so a note about token moves is made only for a transaction that has some.
+  const transfers = usePaged(["tx-transfers", t.hash], (after) => getTxTransfers(t.hash, after));
+  const hasTokenMoves = (transfers.data?.items.length ?? 0) > 0;
   const [view, setView] = useState<View>("all");
   const [limit, setLimit] = useState(PAGE);
   const frames = useMemo(() => q.data?.frames ?? [], [q.data]);
@@ -137,7 +142,7 @@ export function InternalTab({ t, coin, callCount }: { t: ApiTxSeen; coin: Coin |
         </div>
       )}
       {rest > 0 && <p className="small"><button type="button" className="btn" onClick={() => setLimit(limit + PAGE)}>Show {Math.min(rest, PAGE)} more</button> <span className="muted">{count(rest)} more {rest === 1 ? "call" : "calls"} not shown yet</span></p>}
-      {state.moving === 0 && frames.length > 0 && !truncated && <p className="small muted">None of these calls moved {sym}. The token moves are on the Token transfers list and in the logs.</p>}
+      {state.moving === 0 && frames.length > 0 && !truncated && <p className="small muted">None of these calls moved {sym}.{hasTokenMoves && " The token moves are on the Token transfers list and in the logs."}</p>}
     </section>
   );
 }

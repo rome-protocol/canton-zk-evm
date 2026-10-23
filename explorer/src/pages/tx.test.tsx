@@ -651,6 +651,15 @@ describe("the Token transfers row of the overview", () => {
     expect(calls.filter((c) => c.includes("/token-transfers"))).toHaveLength(1);
   });
 
+  it("gives no number when the transfers run past the first page, since the page cannot count what it has not read", async () => {
+    const items = Array.from({ length: 25 }, (_, i) => xfer(i));
+    await openFinal(tx({ transfer: null, lifecycle: journal() }), { labels: labelsOf([usd]), txTransfers: () => reply({ ...page(items, "cursor-2"), derived: true }) });
+    await waitFor(() => expect(row("Token transfers").querySelectorAll(".xfer-line")).toHaveLength(5));
+    const r = row("Token transfers");
+    expect(r).toHaveTextContent("and more in the Token transfers list below");
+    expect(r).not.toHaveTextContent(/and \d+ more/);
+  });
+
   it("falls back to the one transfer /api/tx decoded where the list holds none", async () => {
     await openFinal(tx({ lifecycle: journal() }), { txTransfers: () => reply({ ...page([]), derived: true }) });
     await waitFor(() => expect(row("Token moved")).toHaveTextContent("10 TKA"));

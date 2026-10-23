@@ -61,3 +61,26 @@ export function useWallet(chain: Chain | undefined) {
   }, [account !== null]);
   return { available: wallet !== null, account, chainId, canSend: account !== null && chain !== undefined && chainId === chain.chainId, wrongChain: account !== null && chain !== undefined && chainId !== null && chainId !== chain.chainId, error, connect, switchChain };
 }
+
+/** The address wallets and scripts use, on this explorer's own host. */
+export const rpcUrl = () => `${location.origin}/rpc`;
+
+/** Asks the visitor's wallet to add this chain and says how it went. `name` is the chain's name as drawn (a caller may cut it); `where` is where the details are to be read when there is no wallet. */
+export async function addNetwork(status: Pick<ApiStatus, "chainId" | "chainName" | "coin">, name: string, where: "above" | "below"): Promise<string> {
+  const wallet = injected();
+  if (!wallet) return `No wallet was found in this browser. Add the network by hand with ${where === "above" ? "the details above" : "the address below"}.`;
+  try {
+    await wallet.request({
+      method: "wallet_addEthereumChain",
+      params: [{
+        chainId: "0x" + status.chainId.toString(16), chainName: status.chainName,
+        nativeCurrency: { name: status.coin.symbol, symbol: status.coin.symbol, decimals: status.coin.decimals },
+        rpcUrls: [rpcUrl()], blockExplorerUrls: [location.origin],
+      }],
+    });
+    return `${name} is in your wallet.`;
+  } catch (e) {
+    const m = (e as { message?: string }).message;
+    return `Your wallet did not add the network${m ? `: ${m.length > 160 ? `${m.slice(0, 159)}…` : m}` : "."}`;
+  }
+}

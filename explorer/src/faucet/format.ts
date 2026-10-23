@@ -31,3 +31,22 @@ export function formatPeriod(seconds: number): string {
 export function shortHash(hash: string): string {
   return hash.length <= 12 ? hash : `${hash.slice(0, 6)}…${hash.slice(-4)}`;
 }
+
+/** A small amount of coin to its first two significant digits, cut and never rounded: 0.0000014. Zero is "0". Amounts of a whole coin or more go through `formatCoin`. */
+export function formatTiny(smallest: string, decimals: number): string {
+  const value = BigInt(smallest);
+  if (value === 0n) return "0";
+  if (value >= 10n ** BigInt(decimals)) return formatCoin(smallest, decimals);
+  const fraction = value.toString().padStart(decimals, "0");
+  const first = fraction.search(/[1-9]/);
+  return `0.${fraction.slice(0, first + 2).replace(/0+$/, "")}`;
+}
+
+/** A moment as "24 Oct, 17:57 UTC". */
+export function formatMoment(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getUTCDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getUTCMonth()]}, ${d.toISOString().slice(11, 16)} UTC`;
+}
+
+/** A whole number with thousands separators: the explorer's own `count`. */
+export { count as formatCount } from "../format.ts";

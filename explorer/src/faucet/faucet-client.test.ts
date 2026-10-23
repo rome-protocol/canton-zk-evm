@@ -91,3 +91,89 @@ describe("ticket", () => {
     expect(await client(() => Promise.reject(new TypeError("fetch failed"))).faucet.ticket("zz")).toEqual({ kind: "unreachable" });
   });
 });
+
+const FAUCET = "0xCD56aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac6b3";
+const tx = (over: Record<string, unknown> = {}) => ({ hash: "0xaa", from: FAUCET.toLowerCase(), to: ADDRESS, block: 19, timestamp: 1000, ...over });
+
+describe("recent", () => {
+  it("reads the faucet address's final transactions and keeps only what the faucet sent", async () => {
+    const { faucet, calls } = client(() => json(200, { items: [tx(), tx({ hash: "0xbb", from: ADDRESS, to: FAUCET }), tx({ hash: "0xcc", block: 16 })], next: null }));
+    expect(await faucet.recent!(FAUCET, 6)).toEqual([
+      { hash: "0xaa", to: ADDRESS, block: 19, timestamp: 1000 },
+      { hash: "0xcc", to: ADDRESS, block: 16, timestamp: 1000 },
+    ]);
+    expect(calls[0]?.url).toBe(`/api/addresses/${FAUCET}/txs?direction=sent&limit=6`);
+  });
+  it("shows at most the number asked for, and skips rows that are not whole", async () => {
+    const { faucet } = client(() => json(200, { items: [tx({ to: null }), tx({ hash: "0x1" }), tx({ hash: "0x2" }), tx({ hash: "0x3" })], next: null }));
+    expect((await faucet.recent!(FAUCET, 2))!.map((s) => s.hash)).toEqual(["0x1", "0x2"]);
+  });
+  it("says null, and never throws, when the answer cannot be read", async () => {
+    expect(await client(() => json(502, { error: "x" })).faucet.recent!(FAUCET, 6)).toBeNull();
+    expect(await client(() => json(200, { nope: 1 })).faucet.recent!(FAUCET, 6)).toBeNull();
+    expect(await client(() => { throw new Error("down"); }).faucet.recent!(FAUCET, 6)).toBeNull();
+  });
+});
+
+describe("txTimes", () => {
+  const body = { hash: "0xaa", nonce: 1004, lifecycle: { acceptedAt: "2026-10-23T17:57:31.428Z", includedAt: "2026-10-23T17:57:31.600Z", proofStartedAt: "2026-10-23T17:57:31.832Z", finalAt: null, state: "proving" } };
+  it("reads the transaction's nonce and the times of its lifecycle", async () => {
+    const { faucet, calls } = client(() => json(200, body));
+    expect(await faucet.txTimes!("0xaa")).toEqual({ nonce: 1004, acceptedAt: "2026-10-23T17:57:31.428Z", proofStartedAt: "2026-10-23T17:57:31.832Z", finalAt: null });
+    expect(calls[0]?.url).toBe("/api/txs/0xaa");
+  });
+  it("says null for a time it is not given, and null when the transaction cannot be read", async () => {
+    expect(await client(() => json(200, { nonce: 7, lifecycle: null })).faucet.txTimes!("0xaa")).toEqual({ nonce: 7, acceptedAt: null, proofStartedAt: null, finalAt: null });
+    expect(await client(() => json(200, { nonce: "x", lifecycle: { acceptedAt: 5, proofStartedAt: "soon" } })).faucet.txTimes!("0xaa")).toEqual({ nonce: null, acceptedAt: null, proofStartedAt: null, finalAt: null });
+    expect(await client(() => json(404, { error: "x" })).faucet.txTimes!("0xaa")).toBeNull();
+    expect(await client(() => { throw new Error("down"); }).faucet.txTimes!("0xaa")).toBeNull();
+  });
+});
+
+describe("usualProof", () => {
+  const block = (n: number, proofSeconds: number | null) => ({ number: n, proofSeconds });
+  it("reads the proof time the newest blocks usually take", async () => {
+    const { faucet, calls } = client(() => json(200, { items: [7, 7.2, 7.4, 7.7, 7.1].map((s, i) => block(i, s)) }));
+    expect(await faucet.usualProof!()).toEqual({ lowMs: 7000, highMs: 7700 });
+    expect(calls[0]?.url).toBe("/api/blocks?limit=10");
+  });
+  it("says null when fewer than three blocks have a proof time, or the blocks cannot be read", async () => {
+    expect(await client(() => json(200, { items: [block(1, 7), block(2, null)] })).faucet.usualProof!()).toBeNull();
+    expect(await client(() => json(500, {})).faucet.usualProof!()).toBeNull();
+    expect(await client(() => { throw new Error("down"); }).faucet.usualProof!()).toBeNull();
+  });
+});
+
+describe("baseFee", () => {
+  it("reads the newest block's base fee", async () => {
+    const { faucet, calls } = client(() => json(200, { items: [{ number: 21, baseFee: "67300000" }], next: null }));
+    expect(await faucet.baseFee!()).toBe("67300000");
+    expect(calls[0]?.url).toBe("/api/blocks?limit=1");
+  });
+  it("says null when there is no block, or the fee is not a number, or it cannot be read", async () => {
+    expect(await client(() => json(200, { items: [], next: null })).faucet.baseFee!()).toBeNull();
+    expect(await client(() => json(200, { items: [{ baseFee: "lots" }] })).faucet.baseFee!()).toBeNull();
+    expect(await client(() => json(500, {})).faucet.baseFee!()).toBeNull();
+  });
+});
+
+describe("usualCommitMs", () => {
+  it("reads the median commit time of the last hour's stats summary, in ms", async () => {
+    const { faucet, calls } = client(() => json(200, { commitTime: { median: 5.4, p95: 9, samples: 40, capped: false } }));
+    expect(await faucet.usualCommitMs!()).toBe(5400);
+    expect(calls[0]?.url).toBe("/api/stats/summary?window=1h");
+  });
+  it("reads the day's median when the last hour has none", async () => {
+    let n = 0;
+    const { faucet, calls } = client(() => json(200, n++ === 0 ? { commitTime: null } : { commitTime: { median: 6.27 } }));
+    expect(await faucet.usualCommitMs!()).toBe(6270);
+    expect(calls.map((c) => c.url)).toEqual(["/api/stats/summary?window=1h", "/api/stats/summary?window=24h"]);
+  });
+  it("says null when the summary has no commit time, a bad one, or cannot be read", async () => {
+    expect(await client(() => json(200, { commitTime: null })).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => json(200, {})).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => json(200, { commitTime: { median: "5" } })).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => json(500, {})).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => { throw new Error("down"); }).faucet.usualCommitMs!()).toBeNull();
+  });
+});

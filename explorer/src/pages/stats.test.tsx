@@ -122,10 +122,13 @@ describe("the stats page", () => {
     expect(calls.filter((c) => c.startsWith("/api/stats/series") && c.includes("window=1h")).length).toBeGreaterThanOrEqual(7);
   });
 
-  it("opens on 24 hours, the window the server defaults to, when the address names none, and links the data it reads", async () => {
+  it("opens on 7 days, as screen 10 does, when the address names no window, and links the data it reads", async () => {
     const calls = await open("/stats");
-    expect(calls).toContain("/api/stats/summary?window=24h");
-    expect(screen.getByRole("link", { name: /Data/ })).toHaveAttribute("href", "/api/stats/summary?window=24h");
+    expect(calls).toContain("/api/stats/summary?window=7d");
+    expect(screen.getByRole("button", { name: "7 days" })).toHaveAttribute("aria-pressed", "true");
+    const data = screen.getByRole("link", { name: /Data/ });
+    expect(data).toHaveAttribute("href", "/api/stats/summary?window=7d");
+    expect(data.querySelector("svg")).not.toBeNull();
   });
 
   it("draws five charts from seven series, and marks an hour above the scale with a caret and its time", async () => {
@@ -219,14 +222,41 @@ describe("the stats page", () => {
     await open("/stats?window=7d", {
       faucetOn: true,
       summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: { total: 77, byReason: { address: 40, ip: 20, hour: 15, captcha: 2 } } } })),
-      faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "998996990000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0 }),
+      faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "998996990000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, perIpSeconds: 600, queue: 0, balanceBlock: 21 }),
     });
     const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
     expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("77");
-    expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("40 same address · 20 same network · 15 hourly cap · 2 failed check");
+    await waitFor(() => expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("same address in 24 h: 40 · same network address in 10 min: 20 · hourly cap: 15 · failed check: 2"));
     expect(card).not.toHaveTextContent("[object Object]");
     await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("998,996.99"));
-    expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("queue now 0");
+    expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("tROME, as of block 21 · queue now 0");
+  });
+
+  it("names the windows the faucet runs with, not fixed ones", async () => {
+    const away = summary({ faucet: { ...summary().faucet, turnedAway: { total: 60, byReason: { address: 40, ip: 20, hour: 0, captcha: 0 } } } });
+    await open("/stats?window=7d", { faucetOn: true, summary: () => reply(away), faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1", perAddressSeconds: 43200, perIpSeconds: 300, queue: 0, balanceBlock: 21 }) });
+    const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    await waitFor(() => expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("same address in 12 h: 40 · same network address in 5 min: 20"));
+  });
+
+  it("says only 'same address' while the faucet's windows are not known", async () => {
+    const away = summary({ faucet: { ...summary().faucet, turnedAway: { total: 60, byReason: { address: 40, ip: 20, hour: 0, captcha: 0 } } } });
+    await open("/stats?window=7d", { summary: () => reply(away) });
+    const off = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    expect(within(off).getByText("Turned away by the limits").parentElement).toHaveTextContent("same address: 40 · same network address: 20");
+  });
+
+  it("says the balance may not be final when no block can be named for it", async () => {
+    await open("/stats?window=7d", { faucetOn: true, faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1", perAddressSeconds: 86400, queue: 2, balanceBlock: null }) });
+    const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("tROME, as of the newest block, which may not be final · queue now 2"));
+  });
+
+  it("says the queue is not served when the faucet does not give one, never 0", async () => {
+    await open("/stats?window=7d", { faucetOn: true, faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1", perAddressSeconds: 86400, balanceBlock: 21 }) });
+    const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("tROME, as of block 21 · queue not served"));
+    expect(within(card).getByText("Faucet balance").parentElement).not.toHaveTextContent("queue now");
   });
 
   it("says not recorded before the minute the counting began for a window that starts earlier, and plain not recorded where it never began", async () => {

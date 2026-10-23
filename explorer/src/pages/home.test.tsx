@@ -213,6 +213,20 @@ describe("the list of latest final blocks", () => {
   });
 });
 
+describe("the two latest cards are panels, as on screen 01", () => {
+  it("draws both as panels, so the header has its strip and the table lines run to the card's edges", async () => {
+    await home();
+    for (const name of ["Latest final blocks", "Latest transactions"]) expect(screen.getByRole("region", { name })).toHaveClass("card", "panel");
+  });
+
+  it("draws the block's cube in the accent colour, which the transaction rows' icon does not take", async () => {
+    await home();
+    const blocks = within(screen.getByRole("region", { name: "Latest final blocks" })).getAllByRole("row")[1]!;
+    expect(blocks.querySelector(".idcell")).toHaveClass("blk");
+    expect(within(screen.getByRole("region", { name: "Latest transactions" })).getAllByRole("row")[1]!.querySelector(".idcell")).not.toHaveClass("blk");
+  });
+});
+
 describe("the list of latest transactions", () => {
   it("shows the hash, who sent it to whom, the value in the chain's coin, and that it is final", async () => {
     await home();

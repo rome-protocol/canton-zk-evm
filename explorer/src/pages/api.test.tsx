@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
@@ -18,8 +18,8 @@ const doc = (over: Record<string, unknown> = {}) => ({
   },
   ...over,
 });
-async function open(h: { openapi?: () => Reply; rpc?: boolean } = {}) {
-  const calls = fakeApi(route({ openapi: h.openapi ?? (() => reply(doc())), status: () => reply(status({ publicRpc: h.rpc ?? true })) }));
+async function open(h: { openapi?: () => Reply; rpc?: boolean; faucet?: () => Reply } = {}) {
+  const calls = fakeApi(route({ faucet: h.faucet, openapi: h.openapi ?? (() => reply(doc())), status: () => reply(status({ publicRpc: h.rpc ?? true })) }));
   renderApp("/docs/api");
   return calls;
 }
@@ -129,5 +129,56 @@ describe("the API page", () => {
     expect(await within(card).findByText("at most 100 a page")).toBeInTheDocument();
     expect(within(card).queryByText("JSON-RPC")).toBeNull();
     expect(screen.queryByRole("button", { name: /to your wallet/ })).toBeNull();
+  });
+
+  it("tells the wallet's details in a table: network name, RPC, chain id with its hex, coin, explorer, and that only final blocks are served", async () => {
+    await open();
+    const card = await screen.findByRole("region", { name: /to your wallet/ });
+    const t = within(card).getByRole("table", { name: "Wallet details" });
+    const row = (k: string) => within(t).getByText(k).closest("tr")!;
+    expect(row("Network name")).toHaveTextContent("Ostia DevNet");
+    expect(row("RPC address")).toHaveTextContent(`${location.origin}/rpc`);
+    expect(row("Chain id")).toHaveTextContent("770101 · 0xbc035");
+    expect(row("Coin")).toHaveTextContent("tROME, 18 decimals");
+    expect(row("Explorer")).toHaveTextContent(location.origin);
+    expect(row("Final only")).toHaveTextContent('"latest" is the newest final block; a block being proven is not served');
+    expect(within(card).getByRole("button", { name: /Add .* to your wallet/ })).toBeInTheDocument();
+  });
+
+  it("uses the faucet's own address and balance in the balance example, and a placeholder where the faucet is off", async () => {
+    const addr = "0x" + "fa".repeat(20);
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: addr, balance: "998996990000000000000000", amount: "1", perAddressSeconds: 1, balanceBlock: 21 }) });
+    await waitFor(() => expect(screen.getByLabelText("Example request").textContent).toContain(`&address=${addr}`));
+    expect(screen.getByLabelText("Example answer").textContent).toContain('"result": "998996990000000000000000"');
+    cleanup();
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })) });
+    await screen.findByLabelText("Example request");
+    expect(screen.getByLabelText("Example request").textContent).toContain("&address=<address>");
+    expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
+  });
+
+  it("keeps the placeholder answer when the faucet's balance is not of a final block, because the route answers from the final head", async () => {
+    const addr = "0x" + "fa".repeat(20);
+    for (const balanceBlock of [null, undefined]) {
+      await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: addr, balance: "998996990000000000000000", amount: "1", perAddressSeconds: 1, balanceBlock }) });
+      await waitFor(() => expect(screen.getByLabelText("Example request").textContent).toContain(`&address=${addr}`));
+      expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
+      expect(screen.getByLabelText("Example answer").textContent).not.toContain("998996990000000000000000");
+      cleanup();
+    }
+  });
+
+  it("does not put a hostile or long faucet address or chain name into the examples", async () => {
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: "0x<script>" + "z".repeat(500), balance: "12", amount: "1", perAddressSeconds: 1 }) });
+    await screen.findByLabelText("Example request");
+    await waitFor(() => expect(screen.getByLabelText("Example request").textContent).toContain("&address=<address>"));
+    expect(document.body.textContent).not.toContain("<script>");
+    expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
+  });
+
+  it("puts the routes table in a scroll box, so a long path never widens the page", async () => {
+    await open();
+    const t = await screen.findByRole("table", { name: "REST routes" });
+    expect(t.parentElement).toHaveClass("scroll");
   });
 });

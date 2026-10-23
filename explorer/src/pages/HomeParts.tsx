@@ -110,7 +110,7 @@ const Foot = ({ to, children }: { to: string; children: string }) => <div classN
 export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | undefined; error?: string }) {
   const now = useNow();
   return (
-    <section className="card" aria-labelledby="latest-h">
+    <section className="card panel" aria-labelledby="latest-h">
       <div className="sec-h"><h3 id="latest-h">Latest final blocks</h3><span className="muted small">One Canton transaction each</span></div>
       {error ? <p className="muted">{error}</p> : !blocks ? <p className="muted">Reading the blocks…</p> : blocks.length ? (
         <>
@@ -120,7 +120,7 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
               <tbody>
                 {blocks.map((b) => (
                   <tr key={b.number}>
-                    <td><span className="idcell"><Icon name="cube" size={14} /><span><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></span></span></td>
+                    <td><span className="idcell blk"><Icon name="cube" size={14} /><span><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></span></span></td>
                     <td className="r">{b.txCount}</td>
                     <td className="r" title="from the producer's cut to Canton's record time">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
                     <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} plain lead={8} tail={4} /></td>
@@ -234,7 +234,7 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
     ...waiting.flatMap((p) => { const d = details[p.hash]; return typeof d === "object" ? [d.from, d.to, d.created, provingToken(d)] : []; }),
   ]);
   return (
-    <section className="card" aria-labelledby="txs-h">
+    <section className="card panel" aria-labelledby="txs-h">
       <div className="sec-h"><h3 id="txs-h">Latest transactions</h3><span className="muted small">Including those not final yet</span></div>
       {pendingRead === "error" && <p className="muted small">Transactions not final yet cannot be read right now.</p>}
       {waiting.length || final.length ? (
