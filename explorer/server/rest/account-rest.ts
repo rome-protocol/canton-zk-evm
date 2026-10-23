@@ -6,7 +6,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
-import { addressOfKey, bytes, hex, hexOrNull, MS, txSelect, type TxListItem, txItem } from "./chain-rest.ts";
+import { addressOfKey, bytes, hex, hexOrNull, MS, txSelect, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Key = (number | string)[];
@@ -60,6 +60,8 @@ export interface TokenItem {
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
 export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
+/** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
+export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account"; standard: string | null; verified: boolean }
 export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string }
 
 export type AccountRest = ReturnType<typeof createAccountRest>;
@@ -101,6 +103,21 @@ export function createAccountRest(pool: Pool) {
     return rows.map(addressItem);
   }
 
+  /**
+   * The labels of the addresses, in the order asked: a token's name and symbol and its standard, else a contract's name (from its verified source, else the token's) and whether its source is
+   * verified. One read for all of them, by the primary keys of the contracts and the tokens; nothing is guessed for an address they do not hold.
+   */
+  async function labels(addresses: string[]): Promise<LabelItem[]> {
+    const rows = await query(
+      `select q.address, tk.name as token_name, tk.symbol, tk.standard, c.name as contract_name, (c.verified_source is not null) as verified, tk.address is not null as is_token, c.address is not null as is_contract
+       from unnest($1::bytea[]) with ordinality as q(address, ord) left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address order by q.ord`,
+      [addresses.map(bytes)],
+    );
+    return rows.map((r): LabelItem => ({
+      address: hex(r.address), name: r.token_name ?? r.contract_name, symbol: r.symbol, kind: r.is_token ? "token" : r.is_contract ? "contract" : "account", standard: r.standard, verified: r.verified === true,
+    }));
+  }
+
   /** What the database holds of an address: the counters, the kind, the token it is and the transaction that made it. Undefined for an address nothing has touched. */
   async function address(a: string): Promise<AddressDetail | undefined> {
     const [r] = await query(
@@ -130,7 +147,7 @@ export function createAccountRest(pool: Pool) {
        order by t.block_number desc, t.tx_index desc limit $4`,
       [bytes(a), bn, ix, limit + 1],
     );
-    return rows.map(txItem);
+    return withTokenMoves(query, rows.map(txItem));
   }
 
   /** The internal calls an address is the caller or the callee of, newest first, after the key (block, index, trace address). */
@@ -373,6 +390,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName,
+    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
   };
 }

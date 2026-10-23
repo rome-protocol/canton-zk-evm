@@ -408,4 +408,70 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(await path(A)).toEqual({ path: `/address/${A}`, matches: [] });
     expect(await path("9")).toEqual(await get("/api/search?q=9").then(body));
   });
+  it("names many addresses at once: a token by its name, symbol and standard, a verified contract by its name, and an address nothing is known of by nothing", async () => {
+    const nobody = h(0x77);
+    const a = await get(`/api/labels?addresses=${T1},${K},${T2},${nobody},${C},${T1}`);
+    expect(a.status).toBe(200);
+    expect(a.headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+    same(body(a), ["items"]);
+    for (const l of body(a).items) same(l, F.label);
+    // In the order asked, each address once.
+    expect(body(a).items).toEqual([
+      { address: T1, name: "Test Token", symbol: "TT", kind: "token", standard: "ERC-20", verified: false },
+      { address: K, name: "Vault", symbol: null, kind: "contract", standard: null, verified: true },
+      { address: T2, name: "Gadget", symbol: "GDG", kind: "token", standard: "ERC-1155", verified: false },
+      { address: nobody, name: null, symbol: null, kind: "account", standard: null, verified: false },
+      { address: C, name: null, symbol: null, kind: "contract", standard: null, verified: false },
+    ]);
+  });
+
+  it("takes at most 100 addresses to label, each a lowercase 0x address, and at least one", async () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => "0x" + (i + 1).toString(16).padStart(40, "0")).join(",");
+    expect((await get(`/api/labels?addresses=${many(100)}`)).status).toBe(200);
+    expect(body(await get(`/api/labels?addresses=${many(100)}`)).items).toHaveLength(100);
+    for (const query of ["", "?addresses=", `?addresses=${many(101)}`, `?addresses=${A},nope`, `?addresses=0x${"A".repeat(40)}`, `?addresses=${A},,${B}`]) {
+      const a = await get(`/api/labels${query}`);
+      expect(a.status, query.slice(0, 40)).toBe(400);
+      expect(a.headers?.["cache-control"]).toBeUndefined();
+    }
+  });
+
+  it("gives each transaction of an address the token moves of its logs: the count, and the first move with its standard", async () => {
+    const txs = body(await get(`/api/addresses/${A}/txs`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const at = (b: number, i: number) => txs.find((t) => t.hash === txHash(b, i))!;
+    for (const t of txs) {
+      same(t, F.txItem);
+      same(t.tokenMoves, F.tokenMoves);
+      if (t.tokenMoves.first) same(t.tokenMoves.first, F.tokenMove);
+    }
+    expect(at(2, 0).tokenMoves).toEqual({ count: 2, more: false, first: { token: T1, amount: "10", tokenId: null, standard: "ERC-20" } });
+    // A batch: two moves of one token, the first with its id.
+    expect(at(3, 1).tokenMoves).toEqual({ count: 2, more: false, first: { token: T2, amount: "7", tokenId: "1", standard: "ERC-1155" } });
+    expect(at(2, 1).tokenMoves).toEqual({ count: 0, more: false, first: null });
+  });
+
+  it("says a token move is not known for a block stage 2 has not reached, rather than that there is none", async () => {
+    await setCursor(2);
+    try {
+      const txs = body(await get(`/api/addresses/${A}/txs`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const t of txs) {
+        if (t.block === 3) expect(t.tokenMoves).toBeNull();
+        else expect(t.tokenMoves).not.toBeNull();
+      }
+      expect(txs.some((t) => t.block === 3)).toBe(true);
+    } finally {
+      await setCursor(3);
+    }
+  });
+
+  it("reads the token moves of a page in one query, not one for each row", async () => {
+    const seen: string[] = [];
+    const spy = { query: (text: string, values?: unknown[]) => (seen.push(text), pool.query(text, values)) } as unknown as Pool;
+    const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
+    const reth = { code: async () => "0x6080", token: async () => null, block: async () => undefined, transaction: async () => null, balanceAt: async () => 0n } as unknown as Reth;
+    const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), accounts: createAccountRest(spy) });
+    const a = await api("GET", `/api/addresses/${A}/txs?limit=100`);
+    expect((a.body as { items: unknown[] }).items.length).toBeGreaterThan(3);
+    expect(seen.filter((t) => /from token_transfers/.test(t))).toHaveLength(1);
+  });
 });

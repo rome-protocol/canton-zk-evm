@@ -7,7 +7,8 @@ import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
 import { MAX_VERIFY_SOURCE, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
-import { SORTS } from "./account-routes.ts";
+import { MAX_LABELS, SORTS } from "./account-routes.ts";
+import { TOKEN_MOVES_CAP } from "./chain-rest.ts";
 import { MODULES } from "./etherscan.ts";
 import { MAX_PAGE_BYTES } from "./etherscan-rest.ts";
 import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
@@ -43,6 +44,7 @@ const csv: Query = { name: "format", about: "csv for the newest blocks as a file
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const topic0: Query = { name: "topic0", about: "Only the logs whose first topic (the event's signature hash) is this: 0x and 64 hex digits." };
 const paged = [limit, before], pagedAfter = [limit, after];
+const TOKEN_MOVES = `Each carries \`tokenMoves\`: how many token moves its logs hold (\`count\`, at most ${TOKEN_MOVES_CAP}, with \`more\` true past that) and the first (\`first\`: token, amount or tokenId, standard when the token is known), read from stage 2's transfers. \`tokenMoves\` is null, not empty, for a block stage 2 has not reached.`;
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
@@ -100,10 +102,10 @@ const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\"
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },
   "/api/blocks/{id}": { tag: "Blocks", summary: "One block, by number or 0x hash.", param: "The block's number or its 0x hash.", object: F.blockDetail },
-  "/api/blocks/{id}/transactions": { tag: "Blocks", summary: "The transactions of a block, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
+  "/api/blocks/{id}/transactions": { tag: "Blocks", summary: `The transactions of a block, in order. ${TOKEN_MOVES}`, param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
   "/api/blocks/{id}/legs": { tag: "Blocks", summary: "The gateway legs a block recorded, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.leg, derived: false } },
   "/api/blocks/{id}/record": { tag: "Blocks", summary: "The Canton record of a block: header, transactions and proof, as hex.", param: "The block's number or its 0x hash.", object: F.record },
-  "/api/txs": { tag: "Transactions", summary: "The newest final transactions.", query: [...paged, txFilter, txCsv], page: { items: F.txItem, derived: false } },
+  "/api/txs": { tag: "Transactions", summary: `The newest final transactions. ${TOKEN_MOVES}`, query: [...paged, txFilter, txCsv], page: { items: F.txItem, derived: false } },
   "/api/txs/{hash}": { tag: "Transactions", summary: "One transaction. Its stage 2 fields are null until its block is derived. `raw=1` is the receipt of a final transaction as reth gave it, which never changes.", param: "The transaction's 0x hash.", query: [raw], object: F.txDetail },
   "/api/txs/{hash}/logs": { tag: "Transactions", summary: "The logs of a transaction, with the events that can be decoded.", param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.log, derived: false } },
   "/api/txs/{hash}/internal": { tag: "Transactions", summary: `The internal calls that moved value. ${DERIVED}`, param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.internal, derived: true } },
@@ -114,11 +116,12 @@ export const DOCS: Record<string, Doc> = {
   "/api/canton/updates/{updateId}/around": { tag: "Canton", summary: "The Canton updates around one, newest first: up to n newer, the update itself and up to n older, by the list's own key (record time, update id). `submittedTemplate`, `submittedChoice` and `txCount` are the producer log's and the block's; null where the log or the block does not hold them.", param: "The update id (1220 and 64 hex digits).", query: [around], note: "An object with `items`, each with the fields in the item list of this route.", object: F.updateAround },
   "/api/addresses": { tag: "Accounts", summary: `Addresses by balance or by transactions. The balance is the database's copy, as of its \`balanceBlock\`. ${DERIVED}`, query: [sort(SORTS.addresses), ...paged], page: { items: F.addressItem, derived: true } },
   "/api/addresses/{address}": { tag: "Accounts", summary: "One address. Its balance is reth's at the newest final block; the counters are the database's. A token's address says so.", param: "A 0x address.", object: F.addressDetail },
-  "/api/addresses/{address}/txs": { tag: "Accounts", summary: "The transactions that an address sent, received or created.", param: "A 0x address.", query: paged, page: { items: F.txItem, derived: false } },
+  "/api/addresses/{address}/txs": { tag: "Accounts", summary: `The transactions that an address sent, received or created. ${TOKEN_MOVES}`, param: "A 0x address.", query: paged, page: { items: F.txItem, derived: false } },
   "/api/addresses/{address}/internal": { tag: "Accounts", summary: `The internal calls that moved value to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.addressInternal, derived: true } },
   "/api/addresses/{address}/token-transfers": { tag: "Accounts", summary: `The token transfers to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.tokenTransferItem, derived: true } },
   "/api/addresses/{address}/tokens": { tag: "Accounts", summary: `What an address holds, token by token. ${DERIVED}`, param: "A 0x address.", query: pagedAfter, page: { items: F.holding, derived: true } },
   "/api/addresses/{address}/coin-history": { tag: "Accounts", summary: `An address's balance at the blocks where it changed. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.coinPoint, derived: true } },
+  "/api/labels": { tag: "Accounts", summary: `The name of each address asked, for showing a token or a contract by name: its name and symbol (a token's, else a verified contract's name), its kind (token, contract or account), the token standard and whether its source is verified. Up to ${MAX_LABELS} addresses, in the order asked and each once; an address nothing is held for is an account with no name, and nothing is guessed.`, query: [{ name: "addresses", about: `1 to ${MAX_LABELS} lowercase 0x addresses, joined by commas.` }], note: "An object with `items`, each with the fields in the item list of this route.", object: F.label },
   "/api/contracts": { tag: "Contracts", summary: `Contracts. The balance and the counters are the database's copy, as of \`balanceBlock\`; reth's balance of one is at /api/addresses/{address}. ${DERIVED}`, query: [sort(SORTS.contracts), { name: "verified", about: "true for the contracts whose source is verified, false for the others.", values: ["true", "false"] }, ...paged], page: { items: F.contractItem, derived: true } },
   "/api/contracts/{address}": { tag: "Contracts", summary: "One contract, with its code, proxy and verification. Its balance and counters are the database's copy, as of `balanceBlock`, not reth's: read the balance at /api/addresses/{address}.", param: "A 0x address.", object: F.contractDetail },
   "/api/contracts/{address}/source": { tag: "Contracts", summary: "The verified source files and ABI of a contract. Every field after `verified` is empty while nothing is verified.", param: "A 0x address.", object: F.source },

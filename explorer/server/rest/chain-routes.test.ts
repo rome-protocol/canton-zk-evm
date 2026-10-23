@@ -362,4 +362,43 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const api = createApi({ config, reth: {} as Reth, ledger: {} as never, chain: createChainDb(pool) });
     expect((await api("GET", "/api/blocks")).status).toBe(404);
   });
+  it("gives each transaction of the lists the token moves of its logs, and null for a block stage 2 has not reached", async () => {
+    const who1 = "0x" + "01".repeat(20);
+    const want = { count: 2, more: false, first: { token: who1, amount: "50", tokenId: null, standard: null } };
+    const none = { count: 0, more: false, first: null };
+    for (const path of ["/api/txs?limit=100", "/api/blocks/2/transactions?limit=100"]) {
+      const items = body(await get(path)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const t of items) {
+        same(t, F.txItem);
+        same(t.tokenMoves, F.tokenMoves);
+        if (t.tokenMoves.first) same(t.tokenMoves.first, F.tokenMove);
+      }
+      expect(items.find((t) => t.hash === tx(2, 1))!.tokenMoves, path).toEqual(want);
+      expect(items.find((t) => t.hash === tx(2, 2))!.tokenMoves, path).toEqual(none);
+    }
+    await setCursor(2);
+    try {
+      const items = body(await get("/api/txs?limit=100")).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(items.filter((t) => t.block === 3).every((t) => t.tokenMoves === null)).toBe(true);
+      expect(items.filter((t) => t.block === 3).length).toBe(7);
+      expect(items.filter((t) => t.block === 2).every((t) => t.tokenMoves !== null)).toBe(true);
+      expect(body(await get("/api/blocks/3/transactions")).items.every((t: any) => t.tokenMoves === null)).toBe(true); // eslint-disable-line @typescript-eslint/no-explicit-any
+    } finally {
+      await setCursor(3);
+    }
+  });
+
+  it("counts at most 100 token moves for a transaction and says there are more", async () => {
+    const [t] = (await pool.query("select block_number, tx_index from tx_hashes where hash = $1", [Buffer.from(tx(3, 0).slice(2), "hex")])).rows;
+    await pool.query(
+      "insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount) select $1, 1000 + g, 0, $2, $3, $4, $5, g from generate_series(1, 150) g",
+      [t.block_number, t.tx_index, Buffer.alloc(20, 9), Buffer.alloc(20, 1), Buffer.alloc(20, 2)],
+    );
+    try {
+      const item = (body(await get("/api/txs?limit=100")).items as Record<string, any>[]).find((x) => x.hash === tx(3, 0))!; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(item.tokenMoves).toMatchObject({ count: 100, more: true, first: { amount: "1" } });
+    } finally {
+      await pool.query("delete from token_transfers where block_number = $1 and log_index >= 1000", [t.block_number]);
+    }
+  });
 });
