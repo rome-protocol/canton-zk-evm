@@ -47,6 +47,9 @@ const SOURCE = [
   "function pay(bytes32 id, address token, address to, uint256 amount)",
   "function mint(address to, uint256 amount)",
   "function burn(address from, uint256 amount)",
+  // OpenZeppelin's ERC20Burnable and ERC721Burnable
+  "function burn(uint256 value)",
+  "function burnFrom(address account, uint256 value)",
   "event Leg(uint8 kind, bytes32 id, address token, address account, uint256 amount, string party)",
   // EIP-1967 proxies, and EIP-1822's slot function
   "event Upgraded(address indexed implementation)",

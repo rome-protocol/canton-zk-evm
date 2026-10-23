@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { toEventSelector, toFunctionSelector } from "viem";
 import { decodeEventOf, decodeInputOf, methodNames } from "./abi-call.ts";
@@ -18,13 +19,22 @@ describe("the standard ABI", () => {
     expect(names.get("0xf242432a")).toBe("safeTransferFrom");
     expect(names.get("0xa1448194")).toBe("safeMint");
   });
-  it("holds the gateway's functions and its Leg event, as the gateway source writes them", () => {
+  it("holds every external function and every event of the gateway source (gateway/Gateway.sol)", () => {
+    const src = readFileSync(new URL("../../gateway/Gateway.sol", import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
+    const types = (params: string) => params.split(",").map((p) => p.trim().split(/\s+/)[0]).filter(Boolean).join(",");
+    const functions = [...src.matchAll(/function\s+(\w+)\s*\(([^)]*)\)\s*external/g)].map((m) => `${m[1]}(${types(m[2])})`);
+    const events = [...src.matchAll(/event\s+(\w+)\s*\(([^)]*)\)/g)].map((m) => `${m[1]}(${types(m[2])})`);
+    expect(functions.length).toBeGreaterThanOrEqual(6);
+    expect(events).toContain("Leg(uint8,bytes32,address,address,uint256,string)");
     const names = methodNames(STANDARD_ABI);
-    for (const s of ["register(string,string)", "claim(bytes32,address,uint256)", "withdraw(address,uint256,string)", "pay(bytes32,address,address,uint256)", "mint(address,uint256)", "burn(address,uint256)"]) {
-      expect(names.get(toFunctionSelector(s)), s).toBe(s.slice(0, s.indexOf("(")));
-    }
-    const leg = STANDARD_ABI.find((e) => e.type === "event" && e.name === "Leg");
-    expect(toEventSelector(`Leg(uint8,bytes32,address,address,uint256,string)`)).toBe(toEventSelector(`Leg(${leg?.inputs?.map((i) => i.type).join(",")})`));
+    for (const s of functions) expect(names.get(toFunctionSelector(s)), s).toBe(s.slice(0, s.indexOf("(")));
+    const topics = new Set(STANDARD_ABI.filter((e) => e.type === "event").map((e) => toEventSelector(`${e.name}(${(e.inputs ?? []).map((i) => i.type).join(",")})`)));
+    for (const s of events) expect(topics.has(toEventSelector(s)), s).toBe(true);
+  });
+  it("names the OpenZeppelin burn(uint256) and burnFrom(address,uint256) that ERC20Burnable and ERC721Burnable carry", () => {
+    const names = methodNames(STANDARD_ABI);
+    expect(names.get("0x42966c68")).toBe("burn");
+    expect(names.get("0x79cc6790")).toBe("burnFrom");
   });
   it("holds the proxy events of EIP-1967", () => {
     const ev = new Set(STANDARD_ABI.filter((e) => e.type === "event").map((e) => e.name));

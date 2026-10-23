@@ -19,12 +19,23 @@ describe("methodOf", () => {
     expect(methodOf(t({ methodId: "0xa1448194" }))).toBe("safeMint");
     expect(methodOf(t({ methodId: "0x23b872dd" }))).toBe("transferFrom");
   });
-  it("takes the name from the verified ABI first, and the standard one only when there is none", () => {
+  it("takes the name from the verified ABI first, then from the standard one for a selector the verified ABI does not name", () => {
     const verified = [{ type: "function", name: "deposit", inputs: [{ type: "address", name: "to" }] }];
     const id = "0xf340fa01";
     expect(methodOf(t({ methodId: id }), verified)).toBe("deposit");
-    expect(methodOf(t({ methodId: "0xa9059cbb" }), verified)).toBe("0xa9059cbb");
+    expect(methodOf(t({ methodId: "0xa9059cbb" }), verified)).toBe("transfer");
+    expect(methodOf(t({ methodId: "0x12345678" }), verified)).toBe("0x12345678");
+    expect(methodOf(t({ methodId: id }), verified)).toBe("deposit");
     expect(methodOf(t({ methodId: "0xa9059cbb" }), [])).toBe("transfer");
+  });
+  it("names the OpenZeppelin burn and burnFrom", () => {
+    expect(methodOf(t({ methodId: "0x42966c68" }))).toBe("burn");
+    expect(methodOf(t({ methodId: "0x79cc6790" }))).toBe("burnFrom");
+    expect(methodOf(t({ methodId: "0x79cc6790" }), [])).toBe("burnFrom");
+  });
+  it("reads the same verified ABI the same way on every row", () => {
+    const verified = [{ type: "function", name: "deposit", inputs: [{ type: "address", name: "to" }] }];
+    for (let i = 0; i < 3; i++) expect(methodOf(t({ methodId: "0xf340fa01" }), verified)).toBe("deposit");
   });
   it("shows the raw selector of a method that no ABI names", () => {
     expect(methodOf(t({ methodId: "0x12345678" }))).toBe("0x12345678");
