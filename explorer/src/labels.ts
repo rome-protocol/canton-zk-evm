@@ -80,8 +80,8 @@ export function useLabels(addresses: readonly (string | null | undefined)[]): La
       const parts = await Promise.all(chunks(missing, MAX_LABELS).map(fetchLabels));
       for (const l of parts.flat()) {
         const k = l.address.toLowerCase();
-        // Only a name is kept: "the index holds nothing of it" is true now and may not be once the block is final and indexed.
-        if (l.kind !== null) client.setQueryData(["label", k], l);
+        // Only a label with a name is kept: "the index holds nothing of it", and a contract not yet named, are true now and may not be once the block is final and indexed.
+        if (l.kind !== null && l.name !== null) client.setQueryData(["label", k], l);
         found.set(k, l);
       }
       return found;

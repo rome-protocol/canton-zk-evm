@@ -113,6 +113,20 @@ describe("reading the labels", () => {
     await waitFor(() => expect(result.current.get(addr(1))?.name).toBe("Disperse"));
   });
 
+  it("does not keep a nameless contract label: it is asked for again on the next page", async () => {
+    const answers: Label[] = [label(1, { kind: "contract", name: null })];
+    fakeApi((path) => {
+      const asked = new URL(path, "http://x").searchParams.get("addresses")!.split(",");
+      return reply({ items: asked.map((a) => answers.find((l) => l.address === a) ?? label(0, { address: a, kind: null })) });
+    });
+    const { result, rerender } = renderHook(({ rows }) => useLabels(rows), { wrapper: wrapper(), initialProps: { rows: [addr(1)] } });
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.get(addr(1))?.kind).toBe("contract");
+    answers[0] = label(1, { name: "Disperse", kind: "contract", verified: true });
+    rerender({ rows: [addr(1), addr(2)] });
+    await waitFor(() => expect(result.current.get(addr(1))?.name).toBe("Disperse"));
+  });
+
   it("shows no names, and no error, when the labels cannot be read", async () => {
     fakeApi(() => reply({ error: "down" }, 503));
     const { result } = renderHook(() => useLabels([addr(1)]), { wrapper: wrapper() });
