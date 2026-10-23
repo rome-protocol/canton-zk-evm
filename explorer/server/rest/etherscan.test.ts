@@ -521,7 +521,8 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
       it(`reads ${standard} transfers of an address from the partial indexes of that standard, both ways`, async () => {
         const defs = await indexesOf(standard, A, null);
         expect(defs.length).toBeGreaterThanOrEqual(2);
-        for (const d of defs) expect(d).toContain(predicate);
+        // An ERC-1155 side may read the NFT group's index (every transfer with a token id) as well as its own: neither holds an ERC-20 transfer.
+        for (const d of defs) expect(d.includes(predicate) || (standard === "ERC-1155" && d.includes("WHERE (token_id IS NOT NULL)")), d).toBe(true);
         expect(defs.some((d) => d.includes("(from_address,"))).toBe(true);
         expect(defs.some((d) => d.includes("(to_address,"))).toBe(true);
       });

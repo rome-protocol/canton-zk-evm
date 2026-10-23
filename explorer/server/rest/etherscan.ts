@@ -14,6 +14,7 @@ import type { PublicRpc } from "../public-rpc.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
 import type { VerifyApi } from "../verifier/api.ts";
+import { toolOf } from "../verifier/request.ts";
 import { NOT_VERIFIED, sourceCodeFields } from "./etherscan-contract-rest.ts";
 import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
 
@@ -592,7 +593,7 @@ const contract: Record<string, Handler> = {
     // A contract the index does not hold yet (its block is not final) is what Etherscan says for an address it does not know; the tools take it as "try again later".
     if (!found.held) throw new NotOk(`Unable to locate ContractCode at ${req.address}`);
     if (found.verified?.matchType === "full") throw new NotOk("Contract source code already verified");
-    const a = await v.enqueue(req, c.ip);
+    const a = await v.enqueue(req, c.ip, { method: "etherscan", tool: toolOf(c.p.get("tool")) });
     if (a.status !== 202) throw refused(a);
     return guidOf(a);
   },
