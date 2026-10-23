@@ -1,8 +1,5 @@
 # The tools L5 of the nightly load test runs, which are not Docker images and so are not in PINS (the chain has no funded test accounts, and tests/static.sh
-# keeps Foundry out of PINS). explorer/test/l5/l5.sh downloads the release and checks the SHA-256 before it unpacks anything. Hardhat and ethers are pinned by
-# package-lock.json. The Foundry release (v1.8.6, 2026-10-21; the SHA-256 is of the linux amd64 tarball and was computed from the download, and matches GitHub's):
-FOUNDRY_VERSION=v1.8.6
-FOUNDRY_URL=https://github.com/foundry-rs/foundry/releases/download/v1.8.6/foundry_v1.8.6_linux_amd64.tar.gz
-FOUNDRY_SHA256=58850106984038f3a7200f38a4182c8cb423d3a4f4c7848eacbc2453e6bc35fc
+# keeps Foundry out of PINS). The Foundry release and its SHA-256 are tests/FOUNDRY's, the one the client checks use: explorer/test/l5/l5.sh reads them there and checks
+# the SHA-256 before it unpacks anything. Hardhat and ethers are pinned by package-lock.json.
 # The compiler all three build with, so that the code on the chain is the code each tool compiles. Foundry and Hardhat fetch it themselves, from the Solidity project's builds.
 L5_SOLC_VERSION=0.8.28
