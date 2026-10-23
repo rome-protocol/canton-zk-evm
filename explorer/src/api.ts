@@ -314,12 +314,12 @@ export const blocksCsvPath = (filter: BlockFilter) => `/api/blocks?format=csv&fi
 export type TxFilter = "all" | "failed" | "calls";
 /** The final transactions, newest first, a page at a time; `filter` keeps the reverted ones or the calls into contracts (a transaction with input). */
 export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
-/** The newest final transactions of the filter as a file, with the list's columns. */
 /**
  * The transactions oldest first, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page count is `total` over the page
  * size where the total is known. The page is in the order the server gives it, oldest first.
  */
 export const getTxPageOldest = async (after: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?order=asc&limit=${limit}${cursor("after", after)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
+/** The newest final transactions of the filter as a file, with the list's columns. */
 export const txsCsvPath = (filter: TxFilter) => `/api/txs?format=csv&filter=${filter}`;
 /** A block's record as Canton holds it, read only when Verify is pressed. */
 export const getBlockRecord = async (id: string | number) => (await call(`/api/blocks/${encodeURIComponent(String(id))}/record`, [200])).body as { number: number; hash: string; contractId: string; header: string; txs: string; proof: string | null };
@@ -384,9 +384,15 @@ export type TokenSort = "holders" | "transfers" | "newest";
 export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean }
 export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
 const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;
-/** The token list's page: `total` is the list's own count (of the standard asked, or of all), `counts` is each standard's whatever is asked. */
-export interface TokenListPage extends DerivedPage<TokenListItem> { total: number; counts: Record<TokenStandard, number> }
-export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE, standard?: TokenStandard) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}${standard ? `&standard=${standard}` : ""}`, [200])).body as TokenListPage;
+/**
+ * The token list's page: `total` is the list's own count (of the standard and/or the gateway filter asked, or of all), `counts` is each standard's and `gatewayCount` is the gateway-wrapped
+ * tokens' (the From Canton tab), both whatever is asked.
+ */
+export interface TokenListPage extends DerivedPage<TokenListItem> { total: number; counts: Record<TokenStandard, number>; gatewayCount: number }
+/** The tokens in the order of `sort`, a page at a time; of one standard and/or only those the gateway wrapped when asked. */
+export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
+/** The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page is in the order the server gives it, the reverse of the list's. */
+export const getTokenListOldest = async (sort: TokenSort, after: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&order=asc&limit=${limit}${cursor("after", after)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
 export const getToken = async (a: string) => (await call(tk(a), [200])).body as TokenDetail;
 export const getTokenHolders = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/holders")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenHolder>;
 export const getTokenTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
@@ -396,10 +402,11 @@ export const getAddressInternal = async (a: string, before: string | null, limit
 export interface TransferFilter { token?: string; standard?: TokenStandard }
 const transferFilter = (f: TransferFilter) => `${f.token ? `&token=${f.token}` : ""}${f.standard ? `&standard=${f.standard}` : ""}`;
 export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE, filter: TransferFilter = {}) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}${transferFilter({ token: filter.token, standard: filter.standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
-/** The transfers of every token, newest first, of one standard when asked. */
-/** The newest token transfers of an address, or of a token, as a CSV file (up to 1,000), kept to the filter. */
+/** The newest token transfers of an address as a CSV file (up to 1,000), kept to the filter. */
 export const addressTransfersCsvPath = (a: string, filter: TransferFilter = {}) => `${of(a, "/token-transfers")}?format=csv${transferFilter(filter)}`;
+/** The newest transfers of one token as a CSV file (up to 1,000). */
 export const tokenTransfersCsvPath = (a: string) => `${tk(a, "/transfers")}?format=csv`;
+/** The transfers of every token, newest first, of one standard when asked. */
 export const getAllTokenTransfers = async (before: string | null, limit = PAGE, standard?: TokenStandard) => (await call(`/api/token-transfers?limit=${limit}${cursor("before", before)}${transferFilter({ standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
 export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
