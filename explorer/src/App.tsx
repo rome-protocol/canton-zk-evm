@@ -3,6 +3,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { NoPage } from "./components/Cards.tsx";
 import { Shell } from "./components/Shell.tsx";
 import { Address } from "./pages/Address.tsx";
+import { Addresses } from "./pages/Addresses.tsx";
 import { Blocks } from "./pages/Blocks.tsx";
 import { Block } from "./pages/Block.tsx";
 import { CantonUpdate, CantonUpdates } from "./pages/Canton.tsx";
@@ -27,6 +28,7 @@ export function App() {
           <Route path="/canton" element={<CantonUpdates />} />
           <Route path="/canton/:updateId" element={<CantonUpdate />} />
           <Route path="/faucet" element={<Faucet />} />
+          <Route path="/addresses" element={<Addresses />} />
           <Route path="/address/:addr" element={<Address />} />
           <Route path="/token/:addr" element={<Address />} />
           <Route path="/txs" element={<Txs />} />
