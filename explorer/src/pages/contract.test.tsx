@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ContractDetail, ContractSource } from "../api.ts";
 import { addr, addressDetail, contractDetail, contractSource, fakeApi, page, renderApp, reply, route, unverifiedSource } from "../test-utils.tsx";
 
+afterEach(() => vi.unstubAllGlobals());
 const A = addr(0xcb);
 const BAD = "Give an address as 0x and 40 hex digits.";
 const derived = <T,>(items: T[]) => reply({ ...page(items), derived: true });
@@ -234,5 +235,24 @@ describe("the contract page at the address route", () => {
     renderApp(`/address/${A}`);
     await screen.findByRole("heading", { name: "Address" });
     expect(screen.queryByRole("tab", { name: "Read" })).toBeNull();
+  });
+});
+
+describe("the contract page: the chip and the counts", () => {
+  it("names a token's standard in the head and counts the transactions and the token transfers on their tabs", async () => {
+    await open({ account: { sentCount: 5, receivedCount: 2, tokenTransferCount: 6 } });
+    expect(screen.getByRole("heading", { name: "Contract" }).parentElement).toHaveTextContent("ERC-20");
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Transactions 7" })).toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "Token transfers 6" })).toBeInTheDocument();
+  });
+
+  it("says it is reading the balance, not that it is not known, while the address is being read", async () => {
+    fakeApi(route({ contracts: (_a, sub) => (sub === "source" ? reply(contractSource()) : reply(contractDetail())) }));
+    const answered = globalThis.fetch;
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) => (input.startsWith("/api/addresses/") ? new Promise<Response>(() => {}) : answered(input, init)));
+    renderApp(`/contract/${A}`);
+    await screen.findByRole("heading", { name: "Contract" });
+    expect(screen.getByRole("region", { name: "Overview" })).toHaveTextContent("Reading…");
+    expect(screen.getByRole("region", { name: "Overview" })).not.toHaveTextContent("Not known yet");
   });
 });

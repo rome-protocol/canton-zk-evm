@@ -130,7 +130,7 @@ describe("the address page: the transactions tab", () => {
 
   it("is the first tab, and lists the transactions newest first with the way each went", async () => {
     await open(addressDetail(), { txs: () => reply(page([sent, got])) });
-    expect(tab("Transactions")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Transactions 4")).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(rows()).toHaveLength(2));
     expect(within(rows()[0]!).getByRole("link", { name: "0xa3a3…a3a3" })).toHaveAttribute("href", `/tx/${hash(0xa3)}`);
     expect(rows()[0]).toHaveTextContent("OUT");

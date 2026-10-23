@@ -108,7 +108,7 @@ export function Address({ tracker = false }: { tracker?: boolean } = {}) {
   // Design section 7: an address that holds code is the contract page. A token's own route keeps the tracker view.
   if (!tracker && a.kind !== "account") return <Contract addr={addr} />;
   const tabs: { id: TabId; label: string; n?: number }[] = [
-    { id: "transactions", label: "Transactions" },
+    { id: "transactions", label: "Transactions", n: a.sentCount + a.receivedCount },
     { id: "token-transfers", label: "Token transfers", n: a.tokenTransferCount },
     { id: "internal", label: "Internal calls", n: a.internalCount },
     { id: "coin-history", label: "Coin history" },

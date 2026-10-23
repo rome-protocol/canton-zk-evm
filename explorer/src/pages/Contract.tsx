@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { getAddressDetail, getContract, type ContractDetail } from "../api.ts";
+import { getAddressDetail, getContract, type AddressDetail, type ContractDetail } from "../api.ts";
 import { unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -21,15 +21,16 @@ const Dash = () => <span className="muted">—</span>;
 const utcStamp = (iso: string) => `${new Date(iso).toISOString().replace("T", " ").slice(0, 19)} UTC`;
 
 /** The balance is reth's at the final block, from the address route; the counts are the explorer's. */
-function Overview({ c }: { c: ContractDetail }) {
+function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<AddressDetail> }) {
   const coin = useStatus().data?.coin;
-  const a = useQuery({ queryKey: ["address-detail", c.address], queryFn: () => getAddressDetail(c.address) }).data;
+  const a = read.data;
   return (
     <section className="card" aria-label="Overview">
       <h2>Overview</h2>
       <Kv>
         <Item label={coin ? `${coin.symbol} balance` : "Balance"}>
-          {!a || a.balance === null || !coin ? <span className="muted" title="Read from reth at the final block">Not known yet</span>
+          {read.isPending ? <span className="muted" aria-busy="true">Reading…</span>
+            : !a || a.balance === null || !coin ? <span className="muted" title="Read from reth at the final block">Not known yet</span>
             : <span title={`${exact(a.balance, coin.decimals)} ${coin.symbol}, as of final block ${a.balanceBlock}, read from reth`}>{units(a.balance, coin.decimals)} {coin.symbol} <span className="muted small">as of final block {a.balanceBlock}</span></span>}
         </Item>
         {a?.token && <Item label="Token tracker"><Link to={`/token/${c.address}`}>{a.token.name ?? a.token.symbol ?? "Token"}{a.token.name && a.token.symbol ? ` (${a.token.symbol})` : ""}</Link></Item>}
@@ -99,11 +100,13 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
   const st = useStatus().data;
   const now = useNow();
   const q = useFollowing(["contract", addr], () => getContract(addr), (d) => d.derived);
+  const read = useQuery({ queryKey: ["address-detail", addr], queryFn: () => getAddressDetail(addr) });
   const wait = unready(q, "Reading the contract…");
   if (wait) return wait;
   const c = q.data!;
-  const tabs: { id: TabId; label: string; mark?: boolean }[] = [
-    { id: "transactions", label: "Transactions" }, { id: "token-transfers", label: "Token transfers" }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" }, { id: "write", label: "Write" }, { id: "events", label: "Events" },
+  const a = read.data;
+  const tabs: { id: TabId; label: string; mark?: boolean; n?: number }[] = [
+    { id: "transactions", label: "Transactions", n: a ? a.sentCount + a.receivedCount : undefined }, { id: "token-transfers", label: "Token transfers", n: a?.tokenTransferCount }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" }, { id: "write", label: "Write" }, { id: "events", label: "Events" },
   ];
   const asked = params.get("tab");
   const tab: TabId = tabs.find((t) => t.id === asked)?.id ?? "transactions";
@@ -113,19 +116,20 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
       <nav className="small muted" aria-label="Breadcrumb"><Link to="/contracts">Contracts</Link> / {c.name ?? <span className="mono">{c.address.slice(0, 6)}…{c.address.slice(-4)}</span>}</nav>
       <div className="ptitle">
         <h1>Contract</h1>
+        {c.standard && <span className="chip chip-kind">{c.standard}</span>}
         <span className={`chip ${c.verified ? "chip-final" : "chip-kind"}`}>{c.verified && <Icon name="check" size={12} />}{c.verified ? "Source code verified" : "Source code not verified"}</span>
         {c.name && <span className="muted">{c.name}</span>}
       </div>
       <div className="bighash"><HashLink value={c.address} full /></div>
       <div className="addr-cards">
-        <Overview c={c} />
+        <Overview c={c} read={read} />
         <Creation c={c} />
         <Verification c={c} />
       </div>
       <div className="tabs" role="tablist" aria-label="Contract sections">
         {tabs.map((t) => (
           <button key={t.id} type="button" role="tab" id={`tab-${t.id}`} aria-selected={t.id === tab} aria-controls={`panel-${t.id}`} onClick={() => pick(t.id)}>
-            {t.label}{t.mark && <> <span aria-label="verified">✓</span></>}
+            {t.label}{t.n !== undefined && <> <span className="count">{count(t.n)}</span></>}{t.mark && <> <span aria-label="verified">✓</span></>}
           </button>
         ))}
       </div>
