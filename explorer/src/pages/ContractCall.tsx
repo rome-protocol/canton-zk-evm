@@ -42,7 +42,7 @@ export function Fields({ e, values, onChange }: { e: AbiEntry; values: string[];
         return (
           <div className="field" key={i}>
             <label htmlFor={id} className="muted small">{label(p, i)}</label>
-            <input id={id} className="inp mono" type="text" spellCheck={false} autoComplete="off" value={values[i] ?? ""} onChange={(ev) => onChange(i, ev.target.value)} />
+            <input id={id} className="inp mono" type="text" placeholder={label(p, i)} spellCheck={false} autoComplete="off" value={values[i] ?? ""} onChange={(ev) => onChange(i, ev.target.value)} />
           </div>
         );
       })}
