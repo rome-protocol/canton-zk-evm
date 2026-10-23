@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Label } from "./api.ts";
 import { chunks, fetchLabels, labelKeys, labelName, MAX_LABELS, useLabels } from "./labels.ts";
 import { addr, fakeApi, reply } from "./test-utils.tsx";
@@ -63,14 +63,14 @@ describe("reading the labels", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("keeps what it has learned: a later page asks only for the addresses it has not seen", async () => {
+  it("keeps the names it has learned: a later page asks only for the addresses it has no name for", async () => {
     const calls = labelsApi([usd()]);
     const w = wrapper();
     const { result, rerender } = renderHook(({ rows }) => useLabels(rows), { wrapper: w, initialProps: { rows: [addr(1), addr(0xcb)] } });
     await waitFor(() => expect(result.current.get(addr(0xcb))).toBeDefined());
     rerender({ rows: [addr(1), addr(0xcb), addr(2)] });
     await waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[1]).toBe(`/api/labels?addresses=${addr(2)}`);
+    expect(calls[1]).toBe(`/api/labels?addresses=${addr(1)},${addr(2)}`);
     await waitFor(() => expect(result.current.get(addr(2))).toBeDefined());
     expect(result.current.get(addr(0xcb))?.name).toBe("Test USD");
   });
@@ -80,6 +80,37 @@ describe("reading the labels", () => {
     const { result } = renderHook(() => useLabels([addr(0xcb)]), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.get(addr(0xcb).toUpperCase().replace("0X", "0x"))?.symbol).toBe("tUSD"));
     expect(result.current.get(addr(9))).toBeUndefined();
+  });
+
+  it("is not ready while the labels of a page's new addresses are still on their way", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const asked = new URL(input, "http://x").searchParams.get("addresses")!.split(",");
+      if (asked.includes(addr(2))) await held;
+      return new Response(JSON.stringify({ items: asked.map((a) => label(0, { address: a, kind: null })) }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    const { result, rerender } = renderHook(({ rows }) => useLabels(rows), { wrapper: wrapper(), initialProps: { rows: [addr(1)] } });
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    rerender({ rows: [addr(1), addr(2)] });
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    expect(result.current.ready).toBe(false);
+    release();
+    await waitFor(() => expect(result.current.ready).toBe(true));
+  });
+
+  it("does not keep 'the index holds nothing of it': an address that answers kind null, then a name, shows the name on the next page", async () => {
+    const answers: Label[] = [label(1, { kind: null })];
+    fakeApi((path) => {
+      const asked = new URL(path, "http://x").searchParams.get("addresses")!.split(",");
+      return reply({ items: asked.map((a) => answers.find((l) => l.address === a) ?? label(0, { address: a, kind: null })) });
+    });
+    const { result, rerender } = renderHook(({ rows }) => useLabels(rows), { wrapper: wrapper(), initialProps: { rows: [addr(1)] } });
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(result.current.get(addr(1))?.name ?? null).toBeNull();
+    answers[0] = label(1, { name: "Disperse", kind: "contract", verified: true });
+    rerender({ rows: [addr(1), addr(2)] });
+    await waitFor(() => expect(result.current.get(addr(1))?.name).toBe("Disperse"));
   });
 
   it("shows no names, and no error, when the labels cannot be read", async () => {

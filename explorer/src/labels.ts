@@ -80,13 +80,15 @@ export function useLabels(addresses: readonly (string | null | undefined)[]): La
       const parts = await Promise.all(chunks(missing, MAX_LABELS).map(fetchLabels));
       for (const l of parts.flat()) {
         const k = l.address.toLowerCase();
-        client.setQueryData(["label", k], l);
+        // Only a name is kept: "the index holds nothing of it" is true now and may not be once the block is final and indexed.
+        if (l.kind !== null) client.setQueryData(["label", k], l);
         found.set(k, l);
       }
       return found;
     },
   });
   const data = query.data;
-  const ready = keys.length === 0 || query.isSuccess || query.isError;
+  // While a new set of addresses loads, the previous answer stays in view as placeholder data: that is not yet the answer.
+  const ready = keys.length === 0 || (query.isSuccess && !query.isPlaceholderData) || query.isError;
   return useMemo(() => (data || ready ? { get: (a) => (a ? data?.get(a.toLowerCase()) : undefined), ready } : none), [data, ready]);
 }
