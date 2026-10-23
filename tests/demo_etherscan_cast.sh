@@ -6,10 +6,11 @@
 #
 # Needs: EXPLORER (where it listens), ETHERSCAN_ADDRESS (an address without code), ETHERSCAN_BALANCE (its wei at the final block), ETHERSCAN_TX (a final transaction), and
 # CAST (a cast to use). Without CAST the pinned release is downloaded (Linux x86-64), checked against its SHA-256 and used from a folder of this run's own.
-# The release is pinned here and not in PINS, because the chain has no funded test accounts and PINS must not pin Foundry (tests/static.sh).
+# The release is pinned in tests/FOUNDRY and not in PINS, because the chain has no funded test accounts and PINS must not pin Foundry (tests/static.sh).
 set -euo pipefail
-FOUNDRY_VERSION=v1.8.6
-FOUNDRY_SHA256=58850106984038f3a7200f38a4182c8cb423d3a4f4c7848eacbc2453e6bc35fc
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck disable=SC1091
+. "$ROOT/tests/FOUNDRY"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 : "${EXPLORER:?EXPLORER is not set}" "${ETHERSCAN_ADDRESS:?ETHERSCAN_ADDRESS is not set}" "${ETHERSCAN_BALANCE:?ETHERSCAN_BALANCE is not set}" "${ETHERSCAN_TX:?ETHERSCAN_TX is not set}"
 
@@ -20,7 +21,7 @@ if [ -z "${CAST:-}" ]; then
   [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] || fail "the pinned Foundry is the Linux x86-64 build; set CAST to use another"
   TMP=$WORK
   curl -sSfL -o "$TMP/foundry.tar.gz" "https://github.com/foundry-rs/foundry/releases/download/$FOUNDRY_VERSION/foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
-  echo "$FOUNDRY_SHA256  $TMP/foundry.tar.gz" | sha256sum -c -
+  echo "$FOUNDRY_LINUX_AMD64_SHA256  $TMP/foundry.tar.gz" | sha256sum -c -
   tar -xzf "$TMP/foundry.tar.gz" -C "$TMP" cast
   CAST=$TMP/cast
 fi
