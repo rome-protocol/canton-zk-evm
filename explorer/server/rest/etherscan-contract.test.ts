@@ -62,6 +62,10 @@ describe("getsourcecode's fields", () => {
     expect(JSON.parse(json.SourceCode.slice(1, -1))).toEqual({ language: "Solidity", sources: { "a.sol": { content: "A" }, "b.sol": { content: "B" } }, settings: { optimizer: { enabled: true, runs: 200 } } });
     expect(json).toMatchObject({ EVMVersion: "cancun", ConstructorArguments: "00ff", Library: "L:0x" + "11".repeat(20) });
   });
+  it("gives the compiler's version with the v that Etherscan writes, whichever way it was stored (the verifier stores the compiler's own, with no v)", () => {
+    expect(sourceCodeFields(verified({ compilerVersion: VERSION.slice(1) })).CompilerVersion).toBe(VERSION);
+    expect(sourceCodeFields(verified({ compilerVersion: VERSION })).CompilerVersion).toBe(VERSION);
+  });
   it("is the same fields, empty, with the text in ABI, for a contract that is not verified, and carries the proxy", () => {
     const empty = sourceCodeFields({ held: true, verified: null, implementation: IMPL });
     expect(Object.keys(empty)).toEqual(FIELDS);

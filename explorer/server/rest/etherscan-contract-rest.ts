@@ -97,7 +97,7 @@ export function sourceCodeFields(s: ContractSourceRow): SourceCodeFields {
     : (files[0]?.[1] ?? "");
   const libraries = Object.values(v.libraries ?? {}).flatMap((names) => Object.entries(names).map(([name, address]) => `${name}:${address}`)).join(";");
   return {
-    SourceCode: code, ABI: JSON.stringify(v.abi), ContractName: v.contractName, CompilerVersion: v.compilerVersion, OptimizationUsed: v.optimizer ? "1" : "0", Runs: String(v.runs ?? 0),
+    SourceCode: code, ABI: JSON.stringify(v.abi), ContractName: v.contractName, CompilerVersion: v.compilerVersion.startsWith("v") ? v.compilerVersion : `v${v.compilerVersion}`, OptimizationUsed: v.optimizer ? "1" : "0", Runs: String(v.runs ?? 0),
     ConstructorArguments: v.constructorArgs ?? "", EVMVersion: v.evmVersion ?? "Default", Library: libraries, LicenseType: v.license ?? "None", ...proxy, SwarmSource: "",
   };
 }
