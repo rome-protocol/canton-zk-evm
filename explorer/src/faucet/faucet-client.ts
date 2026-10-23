@@ -118,7 +118,7 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
 
     async recent(faucet, limit) {
       // Only what the faucet sent: the same address's incoming transfers (a top-up) are not payouts. Asks for more than it shows so that they do not crowd the list.
-      const answer = await read(fetchFn, `/api/address/${encodeURIComponent(faucet)}/txs?limit=${Math.min(50, limit * 2)}`);
+      const answer = await read(fetchFn, `/api/addresses/${encodeURIComponent(faucet)}/txs?limit=${Math.min(50, limit * 2)}`);
       const items = answer?.status === 200 && Array.isArray(answer.body.items) ? (answer.body.items as unknown[]) : null;
       if (!items) return null;
       const sends: RecentSend[] = [];

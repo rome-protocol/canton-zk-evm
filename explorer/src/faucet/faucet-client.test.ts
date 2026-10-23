@@ -102,7 +102,7 @@ describe("recent", () => {
       { hash: "0xaa", to: ADDRESS, block: 19, timestamp: 1000 },
       { hash: "0xcc", to: ADDRESS, block: 16, timestamp: 1000 },
     ]);
-    expect(calls[0]?.url).toBe(`/api/address/${FAUCET}/txs?limit=12`);
+    expect(calls[0]?.url).toBe(`/api/addresses/${FAUCET}/txs?limit=12`);
   });
   it("shows at most the number asked for, and skips rows that are not whole", async () => {
     const { faucet } = client(() => json(200, { items: [tx({ to: null }), tx({ hash: "0x1" }), tx({ hash: "0x2" }), tx({ hash: "0x3" })], next: null }));

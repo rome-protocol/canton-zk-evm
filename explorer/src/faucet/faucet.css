@@ -31,7 +31,7 @@
 .faucet-page .ptitle .psub { overflow-wrap: anywhere; min-width: 0; }
 .faucet-page .fgrid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .faucet-page .fcol { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
-.faucet-page .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; min-width: 0; overflow: hidden; }
+.faucet-page .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0; min-width: 0; overflow: hidden; }
 .faucet-page .chead { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--line); }
 .faucet-page .chead h2 { font-size: 16px; font-weight: 600; margin: 0; }
 .faucet-page .cbody { padding: 18px 20px; margin: 0; min-width: 0; }
@@ -78,15 +78,17 @@
 .faucet-page .lim { list-style: none; display: flex; flex-direction: column; gap: 14px; }
 .faucet-page .lim li { display: flex; gap: 12px; align-items: flex-start; overflow-wrap: anywhere; }
 .faucet-page .lim .ic { color: var(--link); margin-top: 3px; }
-.faucet-page .kv > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
-.faucet-page .kv > div:last-child { border-bottom: 0; }
-.faucet-page .kv { padding-top: 8px; padding-bottom: 8px; }
-.faucet-page .kv dt { color: var(--muted); }
-.faucet-page .kv dd { margin: 0; overflow-wrap: anywhere; }
+.faucet-page .fkv > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.faucet-page .fkv > div:last-child { border-bottom: 0; }
+.faucet-page .fkv { display: block; padding-top: 8px; padding-bottom: 8px; }
+.faucet-page .fkv dt { color: var(--muted); }
+.faucet-page .fkv dd { margin: 0; overflow-wrap: anywhere; }
 .faucet-page .scroll { overflow-x: auto; }
 .faucet-page .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .faucet-page .tbl th { text-align: left; font-weight: 600; font-size: 12.5px; padding: 12px 20px 10px; }
 .faucet-page .tbl td { padding: 12px 20px; border-top: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+.faucet-page .tbl :is(th, td):first-child { padding-left: 20px; }
+.faucet-page .tbl :is(th, td):last-child { padding-right: 20px; }
 .faucet-page .tbl .r { text-align: right; }
 .faucet-page .tbl tr.live td { background: var(--amber-tint); }
 .faucet-page .tbl .ago { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
@@ -96,10 +98,10 @@
 .faucet-page .step { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 14px; padding-bottom: 18px; position: relative; }
 .faucet-page .step:not(:last-child)::before { content: ""; position: absolute; left: 11px; top: 26px; bottom: 2px; border-left: 2px solid var(--line); }
 .faucet-page .step-done:not(:last-child)::before { border-left-color: var(--ok-line); }
-.faucet-page .step .mark { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; border: 1.5px dashed var(--line); background: var(--surface); }
-.faucet-page .step-done .mark { background: var(--ok); border: 0; color: #fff; }
-.faucet-page .step-active .mark { border: 2px solid var(--amber); color: var(--amber); }
-.faucet-page .step-bad .mark { background: var(--bad); border: 0; color: #fff; }
+.faucet-page .step .smark { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; border: 1.5px dashed var(--line); background: var(--surface); }
+.faucet-page .step-done .smark { background: var(--ok); border: 0; color: #fff; }
+.faucet-page .step-active .smark { border: 2px solid var(--amber); color: var(--amber); }
+.faucet-page .step-bad .smark { background: var(--bad); border: 0; color: #fff; }
 .faucet-page .step > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .faucet-page .step-todo > div > b { color: var(--muted); font-weight: 500; }
 .faucet-page .step-active > div > b { color: var(--amber); }
@@ -109,7 +111,9 @@
 }
 @media (max-width: 520px) {
   .faucet-page .chead, .faucet-page .cbody, .faucet-page .cfoot { padding-left: 16px; padding-right: 16px; }
-  .faucet-page .kv > div { grid-template-columns: 90px minmax(0, 1fr); }
+  .faucet-page .fkv > div { grid-template-columns: 90px minmax(0, 1fr); }
   .faucet-page .tbl th, .faucet-page .tbl td { padding-left: 12px; padding-right: 12px; }
+  .faucet-page .tbl :is(th, td):first-child { padding-left: 16px; }
+  .faucet-page .tbl :is(th, td):last-child { padding-right: 16px; }
   .faucet-page .ptitle h1 { font-size: 24px; }
 }

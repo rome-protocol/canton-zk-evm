@@ -269,7 +269,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     return (
       <section className="card">
         <header className="chead"><h2>The faucet</h2></header>
-        <dl className="cbody kv">
+        <dl className="cbody fkv">
           <div><dt>Address</dt><dd>
             {info.address ? (
               <>
@@ -400,7 +400,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
         <ol className="steps" role="status">
           {steps.map((st, i) => (
             <li key={i} className={`step step-${st.state}`}>
-              <i className="mark" aria-hidden="true">{st.state === "done" ? <Icon name="ok" size={12} /> : st.state === "bad" ? <Icon name="bad" size={12} /> : st.state === "active" ? <Icon name="clock" size={12} /> : null}</i>
+              <i className="smark" aria-hidden="true">{st.state === "done" ? <Icon name="ok" size={12} /> : st.state === "bad" ? <Icon name="bad" size={12} /> : st.state === "active" ? <Icon name="clock" size={12} /> : null}</i>
               <div><b>{st.title}</b><span className="small muted">{st.detail}</span></div>
             </li>
           ))}
