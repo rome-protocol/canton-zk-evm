@@ -19,6 +19,8 @@ export interface FaucetState {
 export interface LoadWindow { now: number; addressMs: number; ipMs: number; max: number }
 export interface ClaimRules { addressMs: number; ipMs: number; maxPerHour: number }
 export type ClaimRefusal = "address" | "ip" | "hour";
+/** Why a request was turned away and counted: a limit, or a human check that failed. */
+export type Refused = ClaimRefusal | "captcha";
 
 /**
  * Where the faucet keeps its state across a restart: a file when no database is set, the database when one is. The faucet works in
@@ -30,6 +32,10 @@ export interface FaucetStore {
   save(tickets: Ticket[], limits: () => Pick<FaucetState, "addresses" | "ips" | "hourly">): Promise<boolean>;
   /** Checks the limits against every instance's requests and writes the request, in one step. Null when it was taken. */
   claim?(t: Ticket, rules: ClaimRules): Promise<ClaimRefusal | null>;
+  /** Counts one request turned away at `at` (milliseconds), by reason: a count and nothing else, never the address or the client. It never throws; a count that cannot be written is lost and logged. */
+  refused?(reason: Refused, at: number): Promise<void>;
+  /** How many payouts were sent at or after `from` (milliseconds), all instances together. */
+  sentSince?(from: number): Promise<number>;
   /** Tickets another instance wrote since the last call. */
   changes?(): Promise<Ticket[]>;
   find?(id: string): Promise<Ticket | null>;
@@ -282,6 +288,20 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
       return tickets;
     },
     remembered: () => written.size,
+    async refused(reason, at) {
+      try {
+        await pool.query(
+          "insert into faucet_refusals (minute, reason, n) values (date_trunc('minute', $1::timestamptz), $2, 1) on conflict (minute, reason) do update set n = faucet_refusals.n + 1",
+          [new Date(at), reason],
+        );
+      } catch (e) {
+        console.error(`faucet: cannot count a refusal: ${(e as Error).message}`);
+      }
+    },
+    async sentSince(from) {
+      const { rows } = await pool.query<{ n: number }>("select count(*)::int as n from faucet_requests where sent_at >= $1", [new Date(from)]);
+      return rows[0]!.n;
+    },
     async batchSigned(firstNonce, size, at) {
       const { rows } = await pool.query<{ batch_id: string }>("insert into faucet_batches (signed_at, first_nonce, size) values ($1, $2, $3) returning batch_id", [new Date(at), firstNonce, size]);
       return Number(rows[0]!.batch_id);
@@ -328,6 +348,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async purge(t) {
       await pool.query("update faucet_requests set signed_raw = null where signed_raw is not null and state in ('final', 'failed')");
       await pool.query("update faucet_requests set client_key = ''::bytea where client_key <> ''::bytea and requested_at < $1", [new Date(t - CLIENT_HASH_KEPT_MS)]);
+      await pool.query("delete from faucet_refusals where minute < $1", [new Date(t - CLIENT_HASH_KEPT_MS)]);
       // Settled requests older than 90 days leave only their day's count, in one step so a request is never deleted without being counted.
       await pool.query(
         `with old as (delete from faucet_requests where requested_at < $1 and state in ('final', 'failed') returning requested_at, state)
