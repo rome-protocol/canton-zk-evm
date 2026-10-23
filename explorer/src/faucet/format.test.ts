@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCoin, formatPeriod, formatWait, shortHash } from "./format.ts";
+import { formatAgo, formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
 
 describe("formatCoin", () => {
   it("shows whole coins with thousands separators", () => {
@@ -56,4 +56,29 @@ describe("shortHash", () => {
   it("leaves a short value alone", () => {
     expect(shortHash("0x1234")).toBe("0x1234");
   });
+});
+
+describe("formatTiny", () => {
+  it("keeps two significant digits, cut and never rounded", () => {
+    expect(formatTiny("1413300000000", 18)).toBe("0.0000014");
+    expect(formatTiny("1999999999999", 18)).toBe("0.0000019");
+    expect(formatTiny("1000000000000", 18)).toBe("0.000001");
+    expect(formatTiny("0", 18)).toBe("0");
+    expect(formatTiny("1500000000000000000", 18)).toBe("1.5");
+  });
+});
+
+describe("formatAgo and formatMoment", () => {
+  it("writes the time since in the explorer's words", () => {
+    expect(formatAgo(4000)).toBe("4 s ago");
+    expect(formatAgo(24 * 60_000)).toBe("24 min ago");
+    expect(formatAgo(62 * 60_000)).toBe("1 h 2 min ago");
+    expect(formatAgo(3 * 3600_000)).toBe("3 h ago");
+    expect(formatAgo(50 * 3600_000)).toBe("2 d ago");
+    expect(formatAgo(-5000)).toBe("0 s ago");
+  });
+  it("writes a moment in UTC", () => {
+    expect(formatMoment(Date.UTC(2026, 9, 24, 17, 57, 31))).toBe("24 Oct, 17:57 UTC");
+  });
+  it("counts with separators", () => expect(formatCount(1005)).toBe("1,005"));
 });

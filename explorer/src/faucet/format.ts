@@ -31,3 +31,33 @@ export function formatPeriod(seconds: number): string {
 export function shortHash(hash: string): string {
   return hash.length <= 12 ? hash : `${hash.slice(0, 6)}…${hash.slice(-4)}`;
 }
+
+/** A small amount of coin to its first two significant digits, cut and never rounded: 0.0000014. Zero is "0". Amounts of a whole coin or more go through `formatCoin`. */
+export function formatTiny(smallest: string, decimals: number): string {
+  const value = BigInt(smallest);
+  if (value === 0n) return "0";
+  if (value >= 10n ** BigInt(decimals)) return formatCoin(smallest, decimals);
+  const fraction = value.toString().padStart(decimals, "0");
+  const first = fraction.search(/[1-9]/);
+  return `0.${fraction.slice(0, first + 2).replace(/0+$/, "")}`;
+}
+
+/** How long ago, as the explorer's pages write it: 4 s, 24 min, 1 h 2 min, 3 d. Never negative. */
+export function formatAgo(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s} s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 === 0 ? `${h} h ago` : `${h} h ${m % 60} min ago`;
+  return `${Math.floor(h / 24)} d ago`;
+}
+
+/** A moment as "24 Oct, 17:57 UTC". */
+export function formatMoment(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getUTCDate()} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getUTCMonth()]}, ${d.toISOString().slice(11, 16)} UTC`;
+}
+
+/** A whole number with thousands separators. */
+export const formatCount = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
