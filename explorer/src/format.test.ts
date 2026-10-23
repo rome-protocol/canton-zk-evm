@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseFee, bytesOf, count, gwei, party, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, count, dateTime, feeOf, gwei, party, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
 
 describe("numbers", () => {
   it("groups thousands", () => {
@@ -77,5 +77,36 @@ describe("baseFee", () => {
 describe("a Canton update id", () => {
   it("is its first eight characters and its last four, as on the screens", () => {
     expect(shortUpdate("12204594" + "ab".repeat(26) + "b509")).toBe("12204594…b509");
+  });
+});
+
+describe("feeOf", () => {
+  it("shows a fee to ten decimals, with the zeros at the end cut, as the screens do", () => {
+    expect(feeOf("3536400000000", 18)).toBe("0.0000035364");
+    expect(feeOf("35440000000000", 18)).toBe("0.00003544");
+    expect(feeOf("246418600000000", 18)).toBe("0.0002464186");
+  });
+  it("cuts a longer fee and never rounds it up", () => {
+    expect(feeOf("6222516131082", 18)).toBe("0.0000062225");
+    expect(feeOf("1999999999999999999", 18)).toBe("1.9999999999");
+  });
+  it("shows a whole fee without a fraction, none as 0, and a fee below the tenth place as such", () => {
+    expect(feeOf("2000000000000000000", 18)).toBe("2");
+    expect(feeOf("0", 18)).toBe("0");
+    expect(feeOf("99999999", 18)).toBe("<0.0000000001");
+  });
+  it("groups the thousands of the whole part, and works with a coin of fewer decimals", () => {
+    expect(feeOf("1234567890000000000000", 18)).toBe("1,234.56789");
+    expect(feeOf("12345", 6)).toBe("0.012345");
+  });
+});
+
+describe("dateTime", () => {
+  it("writes a date and time as 'DD Mon YYYY, HH:MM:SS UTC'", () => {
+    expect(dateTime(Date.UTC(2026, 9, 20, 17, 44, 57, 999))).toBe("20 Oct 2026, 17:44:57 UTC");
+    expect(dateTime(Date.UTC(2026, 0, 5, 3, 4, 5))).toBe("05 Jan 2026, 03:04:05 UTC");
+  });
+  it("reads an ISO time too", () => {
+    expect(dateTime("2026-10-23T11:11:26.120Z")).toBe("23 Oct 2026, 11:11:26 UTC");
   });
 });
