@@ -92,7 +92,7 @@ The indexer reads the settings above that it shares with the server (`RETH_RPC_U
 
 ## What it reads from reth
 
-Only the `eth_` methods listed in `server/reth.ts`. reth's HTTP port serves `eth`, `net` and `web3`, so the explorer cannot list the pool of waiting transactions. It never uses the builder's WebSocket port or the Engine port, and it never starts a node. The reader refuses any method that is not on its list, before it makes a call.
+Only the methods listed in `server/reth.ts`: `eth_` reads, `eth_sendRawTransaction` for the faucet and the public RPC, and `trace_transaction` for one transaction's call tree. reth's HTTP port serves `eth`, `net` and `web3`, so the explorer cannot list the pool of waiting transactions. It never uses the builder's WebSocket port or the Engine port, and it never starts a node. The reader refuses any method that is not on its list, before it makes a call.
 
 ## What it reads from Canton
 
@@ -164,7 +164,7 @@ The indexer's other work:
 | `POST /api/verify` | Queues a contract's source for [verification](#contract-verification); answers 202 with a `guid`, 400 for a body that is wrong, 413 for a source over 500 KB, 429 over the client's hourly limit, and 503 when the verifier role is not running. Registered only where the explorer has a database |
 | `GET /api/verify/<guid>` | `guid`, `status` (`pending`, `running`, `pass`, `fail`, `already`) and `result`, a sentence (`Pending in queue` until the job ends); 404 for a GUID that is not known. Never cached |
 
-Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/api.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
+Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/rest/fields.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
 
 ### The REST API
 
