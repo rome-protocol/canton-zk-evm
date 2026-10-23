@@ -79,7 +79,7 @@ suite("the verifier role", () => {
     const q = queue();
     const guid = await q.submit(req(A), key);
     const lines: string[] = [];
-    expect(await worker(new Verifier(db.pool, stub), { log: (l) => lines.push(l) }).step()).toBe("again");
+    expect(await worker(new Verifier(db.pool, stub), { log: (l: string) => lines.push(l) }).step()).toBe("again");
     expect(await q.status(guid)).toMatchObject({ status: "pending" });
     // The operator can see why a job waits: the log says it, with the reason.
     expect(lines.join("\n")).toMatch(new RegExp(`job ${guid} is put back.*no docker`));
