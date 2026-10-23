@@ -18,7 +18,7 @@
  */
 import { keccak256, toHex } from "viem";
 import { describe, expect, it } from "vitest";
-import { B1_MS, B2_MS } from "../../test/budgets.ts";
+import { B1_MS, B2_MS, B2_RUNNER_MS } from "../../test/budgets.ts";
 import type { Pool } from "pg";
 import { createLedger } from "../ledger.ts";
 import { readProofFacts } from "../proof.ts";
@@ -251,9 +251,14 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
           expect(Number(tok.failed), "the Burners' reads spend all the gas they get and the FatReturn's answer is over 4 KB: all four are read as failed, and stage 2 goes on").toBeGreaterThanOrEqual(4);
           // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
           // They are asserted for `behind`, the default. `inline` is measured and said above; section 4.3 makes it the default only if both its stages fit B1, and they do not.
+          // B2 is met on the reference machine; this test runs on GitHub's shared runner (about 3x slower), so it is a regression check held to B2_RUNNER_MS, 1.25 x B2
+          // (lead ruling 2026-10-23, docs/METRICS.md). Both numbers and the measured sum are said, so a reader sees how far the run is from each.
           if (shape === "behind") {
-            expect(s1.readMs + s1.writeMs, "B1: stage 1 of the W1 block").toBeLessThan(B1_MS);
-            expect(s1.readMs + s1.writeMs + s2.readMs + s2.writeMs, "B2: both stages of the W1 block").toBeLessThan(B2_MS);
+            const b1Ms = s1.readMs + s1.writeMs;
+            const b2Sum = b1Ms + s2.readMs + s2.writeMs;
+            console.log(`W1 behind: B1 ${b1Ms} ms of ${B1_MS}; B2 ${b2Sum} ms against the budget ${B2_MS} (reference machine) and the runner tolerance ${B2_RUNNER_MS}`);
+            expect(b1Ms, "B1: stage 1 of the W1 block").toBeLessThan(B1_MS);
+            expect(b2Sum, `B2 runner tolerance (budget ${B2_MS} ms on the reference machine): both stages of the W1 block`).toBeLessThan(B2_RUNNER_MS);
           }
         } finally {
           await indexer.close();
