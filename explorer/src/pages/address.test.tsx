@@ -412,11 +412,19 @@ describe("the address page: the header facts", () => {
 });
 
 describe("the address page: the tab card", () => {
-  it("holds the tab bar inside the card, with no count for the transfer tabs", async () => {
+  it("holds the tab bar inside the card, with a count on a transfer tab only when the server gives an exact one", async () => {
     await open(addressDetail({ tokenTransferCount: 4, createdCount: 2 }));
     const card = screen.getByRole("region", { name: "Activity" });
     expect(within(card).getByRole("tablist")).toBeInTheDocument();
     expect(within(card).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers", "Internal calls 0", "Contracts created 2", "Coin history"]);
+  });
+  it("counts the transfer tabs by the lists they hold, never by the counter of every standard together", async () => {
+    await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: 3, nftTransferCount: 0 }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers 3", "NFT transfers 0", "Internal calls 0", "Contracts created 0", "Coin history"]);
+  });
+  it("gives a transfer tab no count when the server does not (past its ceiling, or an older server)", async () => {
+    await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: null, nftTransferCount: 5 }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers 5", "Internal calls 0", "Contracts created 0", "Coin history"]);
   });
   it("lists the contracts it created", async () => {
     await open(addressDetail({ createdCount: 2 }), { contracts: () => derived([contractItem(0xc1), contractItem(0xc2, { name: null, verified: false })]) }, `/address/${A}?tab=contracts`);

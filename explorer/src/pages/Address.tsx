@@ -45,11 +45,11 @@ export function Address() {
   // Design section 7: an address that holds code (a token too) is the contract page; a token has its own page at /token.
   if (a.kind !== "account") return <Contract addr={addr} />;
   const made = typeof a.createdCount === "number" ? `${count(a.createdCount)}${a.createdCountCapped ? "+" : ""}` : undefined;
-  // The counts of the transfer tabs are not served per standard, so they show none: a count of both together would be wrong for each.
+  // The transfer tabs count the list they hold (the server's own count of each, null past its ceiling), never `tokenTransferCount`, which adds every standard together.
   const tabs: { id: TabId; label: string; n?: number | string }[] = [
     { id: "transactions", label: "Transactions", n: a.sentCount + a.receivedCount },
-    { id: "token-transfers", label: "Token transfers" },
-    { id: "nft-transfers", label: "NFT transfers" },
+    { id: "token-transfers", label: "Token transfers", n: a.erc20TransferCount ?? undefined },
+    { id: "nft-transfers", label: "NFT transfers", n: a.nftTransferCount ?? undefined },
     { id: "internal", label: "Internal calls", n: a.internalCount },
     { id: "contracts", label: "Contracts created", n: made },
     { id: "coin-history", label: "Coin history" },

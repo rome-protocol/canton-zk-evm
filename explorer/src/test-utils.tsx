@@ -101,7 +101,7 @@ export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
 /** One address as /api/addresses/:address gives it: an account that sent 3 transactions, with reth's balance at final block 21. */
 export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {
   return {
-    address: addr(0x5b), kind: "account", balance: "9997910000000000000", balanceBlock: 21, sentCount: 3, receivedCount: 1, internalCount: 0, tokenTransferCount: 0,
+    address: addr(0x5b), kind: "account", balance: "9997910000000000000", balanceBlock: 21, sentCount: 3, receivedCount: 1, internalCount: 0, tokenTransferCount: 0, erc20TransferCount: null, nftTransferCount: null,
     firstSeenBlock: 2, firstSeenTimestamp: T0, lastActiveBlock: 20, lastActiveTimestamp: T0 + 96, createdCount: 0, createdCountCapped: false, fundedBy: null, token: null, createdBy: null, derived: true, ...over,
   };
 }

@@ -362,7 +362,7 @@ export interface AddressFunding { from: string; txHash: string; block: number; t
 /** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
 export interface AddressDetail {
   address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null;
-  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
+  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; erc20TransferCount?: number | null; nftTransferCount?: number | null; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
   /** The contracts it made. */
   createdCount: number;
   /** True when `createdCount` stopped at its ceiling: the address made more. */

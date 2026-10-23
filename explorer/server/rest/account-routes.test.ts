@@ -904,6 +904,19 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       expect(await capped.address(A, 3)).toMatchObject({ createdCount: 3, createdCountCapped: false });
     });
 
+    it("counts the token transfers and the NFT transfers an address lists, each up to a ceiling, and is silent past it", async () => {
+      // A is in 3 ERC-20 transfers (one of them to itself, listed once) and 2 NFT transfers: the counts are those of the two lists, not the counter of both together.
+      const detail = body(await get(`/api/addresses/${A}`));
+      same(detail, F.addressDetail);
+      expect(detail).toMatchObject({ erc20TransferCount: 3, nftTransferCount: 2 });
+      expect(body(await get(`/api/addresses/${B}`))).toMatchObject({ erc20TransferCount: 2, nftTransferCount: 0 });
+      expect(body(await get(`/api/addresses/${h(0xee)}`))).toMatchObject({ erc20TransferCount: 0, nftTransferCount: 0 });
+      const capped = createAccountRest(pool);
+      expect(await capped.address(A, 10, 3)).toMatchObject({ erc20TransferCount: 3, nftTransferCount: 2 });
+      expect(await capped.address(A, 10, 2)).toMatchObject({ erc20TransferCount: null, nftTransferCount: 2 });
+      expect(await capped.address(A, 10, 1)).toMatchObject({ erc20TransferCount: null, nftTransferCount: null });
+    });
+
     it("says who funded an address only when its first incoming transaction with value is in the block it first appeared in", async () => {
       const [before] = (await sql("select from_address, to_address, value::text as value, status from transactions where block_number = 3 and tx_index = 6")).rows;
       const fund = (value: number, status: number) => sql("update transactions set from_address = $1, to_address = $2, value = $3, status = $4 where block_number = 3 and tx_index = 6", [who(0xa2), who(0xf1), value, status]);
