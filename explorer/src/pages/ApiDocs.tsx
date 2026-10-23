@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useRef, useState } from "react";
 import { getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
-import { rpcUrl } from "../components/AddToWallet.tsx";
+import { addNetwork, rpcUrl } from "../components/AddToWallet.tsx";
 import { copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useStatus } from "../useStatus.ts";
@@ -32,29 +32,13 @@ const clip = (v: string, n = 40) => (v.length > n ? `${v.slice(0, n - 1)}…` : 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL = /^\d{1,80}$/;
 
-interface Provider { request(call: { method: string; params: unknown[] }): Promise<unknown> }
-
 /** The network's details, the way a wallet asks for them, and the button that asks the wallet to add it. Nothing where the explorer serves no public RPC. */
 function WalletCard({ status }: { status: ApiStatus }) {
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   if (!status.publicRpc) return null;
   const url = rpcUrl(), name = clip(status.chainName);
-  const add = async () => {
-    const wallet = (window as unknown as { ethereum?: Provider }).ethereum;
-    if (!wallet) return setNote("No wallet was found in this browser. Add the network by hand with the details above.");
-    try {
-      await wallet.request({ method: "wallet_addEthereumChain", params: [{
-        chainId: "0x" + status.chainId.toString(16), chainName: status.chainName,
-        nativeCurrency: { name: status.coin.symbol, symbol: status.coin.symbol, decimals: status.coin.decimals },
-        rpcUrls: [url], blockExplorerUrls: [location.origin],
-      }] });
-      setNote(`${name} is in your wallet.`);
-    } catch (e) {
-      const m = (e as { message?: string }).message;
-      setNote(`Your wallet did not add the network${m ? `: ${clip(m, 160)}` : "."}`);
-    }
-  };
+  const add = async () => setNote(await addNetwork(status, name, "above"));
   const rows: [string, React.ReactNode][] = [
     ["Network name", `${name} ${clip(status.networkName ?? "", 20)}`.trim()],
     ["RPC address", <><span className="mono">{url}</span><button type="button" className="copy" aria-label={copied ? "Copied" : "Copy the RPC address"} onClick={async () => {

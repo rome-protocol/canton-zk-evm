@@ -80,7 +80,7 @@ describe("the Add to wallet card", () => {
 });
 
 describe("where the card appears", () => {
-  it("is on the faucet page, and not on the home page, which leaves it to the footer link, when the public RPC is on", async () => {
+  it("is on neither the faucet page nor the home page, which leave it to the footer link and the API page, when the public RPC is on", async () => {
     fakeApi((path) => (path === "/api/faucet" ? { status: 200, body: { on: false, address: null, balance: null, amount: "1", perAddressSeconds: 1 } } : { status: 200, body: status({ publicRpc: true }) }));
     renderApp("/");
     await screen.findByRole("region", { name: "Chain status" });
@@ -88,8 +88,9 @@ describe("where the card appears", () => {
     expect(screen.getByRole("link", { name: "Add Ostia to your wallet" })).toHaveAttribute("href", "/docs/api#rpc-h");
     cleanup();
     renderApp("/faucet");
-    expect(await screen.findByRole("heading", { name: "Add Ostia to your wallet" })).toBeInTheDocument();
-    expect(screen.getByLabelText("RPC address")).toHaveTextContent("/rpc");
+    await screen.findByRole("heading", { level: 1, name: "Faucet" });
+    expect(screen.queryByRole("heading", { name: "Add Ostia to your wallet" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Add Ostia to your wallet" })).toHaveAttribute("href", "/docs/api#rpc-h");
   });
 
   it("is on no page when the public RPC is off", async () => {
