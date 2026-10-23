@@ -47,6 +47,21 @@ describe("fonts and outside requests", () => {
     expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain("font-variant-numeric: tabular-nums");
   });
 
+  it("sets numbers in the text face with figures of equal width, and only hashes and ids in IBM Plex Mono", () => {
+    const rules = rulesOf(css);
+    expect(winner(rules, [".num"], "font-family", false)).toBeUndefined();
+    expect(winner(rules, [".num"], "font-variant-numeric", false)).toBe("tabular-nums");
+    expect(winner(rules, [".mono"], "font-family", false)).toMatch(/IBM Plex Mono/);
+  });
+
+  it("lays the footer's sentence on the left and its links on the right in the muted colour, and stacks them on a phone", () => {
+    const rules = rulesOf(css);
+    expect(winner(rules, [".foot"], "flex-direction", false)).toBe("row");
+    expect(winner(rules, [".foot"], "justify-content", false)).toBe("space-between");
+    expect(winner(rules, [".foot-links a"], "color", false)).toBe("var(--muted)");
+    expect(winner(rules, [".foot"], "flex-direction", true)).toBe("column");
+  });
+
   it("lines the header, the top bar and the footer up with the page's column", () => {
     const column = "max(32px, calc((100% - 1216px) / 2))";
     expect(/\.main \{[^}]*max-width: 1280px[^}]*padding: 26px 32px/.exec(css)).not.toBeNull();
@@ -68,6 +83,43 @@ describe("fonts and outside requests", () => {
   });
 });
 
+type Rule = { sel: string; decls: Record<string, string>; order: number; phone: boolean };
+
+/** The rules of the styles in file order, flat; only the plain rules and the 720 px phone rules (the font faces and the dark colours are not the cascade this test is about). */
+function rulesOf(text: string): Rule[] {
+  const out: Rule[] = [];
+  const src = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  let order = 0;
+  const walk = (block: string, phone: boolean) => {
+    let i = 0;
+    while (i < block.length) {
+      const open = block.indexOf("{", i);
+      if (open < 0) break;
+      const head = block.slice(i, open).trim();
+      let depth = 1, j = open + 1;
+      while (depth && j < block.length) { if (block[j] === "{") depth++; else if (block[j] === "}") depth--; j++; }
+      const body = block.slice(open + 1, j - 1);
+      if (head.startsWith("@")) { if (head === "@media (max-width: 720px)") walk(body, true); }
+      else {
+        const decls: Record<string, string> = {};
+        for (const d of body.split(";")) { const k = d.indexOf(":"); if (k > 0) decls[d.slice(0, k).trim()] = d.slice(k + 1).trim(); }
+        for (const sel of head.split(",")) out.push({ sel: sel.trim().replace(/\s+/g, " "), decls, order: order++, phone });
+      }
+      i = j;
+    }
+  };
+  walk(src, false);
+  return out;
+}
+const specificity = (sel: string) => (sel.match(/[.:](?!:)[\w-]+/g) ?? []).length;
+
+/** What the browser uses for a property of an element that the given selectors match: the most specific rule, the later one among equals. */
+function winner(rules: Rule[], selectors: string[], prop: string, phone: boolean): string | undefined {
+  const hits = rules.filter((r) => selectors.includes(r.sel) && prop in r.decls && (phone || !r.phone));
+  hits.sort((a, b) => specificity(a.sel) - specificity(b.sel) || a.order - b.order);
+  return hits.at(-1)?.decls[prop];
+}
+
 describe("phone width", () => {
   const phone = /@media \(max-width: 720px\) \{([\s\S]*)\n\}/.exec(css)?.[1] ?? "";
 
@@ -75,12 +127,26 @@ describe("phone width", () => {
     expect(phone).not.toMatch(/\.pill \{ display: none; \}/);
     expect(css).toMatch(/\n\.menu \{[^}]*display: none/);
     expect(phone).toMatch(/\.menu \{[^}]*display: (inline-)?flex/);
-    expect(phone).toMatch(/\.search \{[^}]*flex-basis: 100%/);
   });
 
   it("folds the pages away behind the menu button, and shows them when it is open", () => {
     expect(phone).toMatch(/\.nav \{[^}]*display: none/);
     expect(phone).toMatch(/\.nav\.open \{[^}]*display: flex/);
+  });
+
+  // The rules above only read the text. These decide which rule the browser uses, as the first version of this header was broken by a base rule that came later in the file.
+  const all = rulesOf(css);
+  const NAV = [".nav", ".top .nav"], NAV_OPEN = [...NAV, ".nav.open", ".top .nav.open"], SEARCH = [".search", ".top .search"];
+
+  it("keeps the phone rules in force: the pages are folded away, and the search box takes the whole row, whichever rule comes later in the file", () => {
+    expect(winner(all, NAV, "display", false)).toBe("flex");
+    expect(winner(all, NAV, "display", true)).toBe("none");
+    expect(winner(all, NAV_OPEN, "display", true)).toBe("flex");
+    expect(winner(all, NAV, "flex", true)).toBe("1 1 100%");
+    expect(winner(all, SEARCH, "flex", true)).toBe("1 1 100%");
+    expect(winner(all, SEARCH, "max-width", true)).toBe("none");
+    expect(winner(all, SEARCH, "margin-left", true)).toBe("0");
+    expect(winner(all, SEARCH, "flex", false)).toBe("0 1 300px");
   });
 
   it("holds the top bar to one line: the checks and the final block, with the rest left for wide screens", () => {
