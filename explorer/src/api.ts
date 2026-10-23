@@ -344,3 +344,30 @@ export const getAddressInternal = async (a: string, before: string | null, limit
 export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
 export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
+
+/** A contract in the list. `origin` is "genesis" for a contract the chain's genesis holds (made by no transaction, so no creator and no creation block) or "create". `matchType` is full, partial, or similar (the same code verified at another address). */
+export interface ContractListItem {
+  address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null; interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
+  codeSize: number; destroyedBlock: number | null;
+}
+export type ContractSort = "interactions" | "newest" | "oldest";
+export interface ContractDetail extends ContractListItem {
+  creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
+  proxy: { kind: string; implementation: string | null; beacon: string | null; checkedBlock: number } | null;
+  verification: {
+    language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null;
+    license: string | null; verifiedAt: string; matchNote: string | null;
+  } | null;
+  derived: boolean;
+}
+/** The verified source of a contract. Every field after `verified` is empty while nothing is verified. */
+export interface ContractSource {
+  address: string; verified: boolean; matchType: "full" | "partial" | null; language: string | null; compilerVersion: string | null; codeFormat: string | null; contractPath: string | null; contractName: string | null;
+  optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null; license: string | null; settings: unknown; files: { path: string; content: string }[]; abi: unknown;
+  constructorArgs: string | null; libraries: unknown; verifiedAt: string | null; matchNote: string | null;
+}
+const at = (a: string, sub = "") => `/api/contracts/${encodeURIComponent(a)}${sub}`;
+export const getContractList = async (sort: ContractSort, verified: boolean | null, before: string | null, limit = PAGE) =>
+  (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as DerivedPage<ContractListItem>;
+export const getContract = async (a: string) => (await call(at(a), [200])).body as ContractDetail;
+export const getContractSource = async (a: string) => (await call(at(a, "/source"), [200])).body as ContractSource;

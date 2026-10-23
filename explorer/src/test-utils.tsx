@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -119,7 +119,7 @@ export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
-  addresses?: (arg: string, sub: string, path: string) => Reply;
+  addresses?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
   blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
@@ -133,6 +133,7 @@ export function route(h: {
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "addresses") return h.addresses ? h.addresses(decodeURIComponent(arg), sub, path) : gone();
+    if (kind === "contracts") return h.contracts ? h.contracts(decodeURIComponent(arg), sub, path) : gone();
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
     if (kind === "txs" && arg) {
       const [x, p] = [decodeURIComponent(arg), path];
@@ -209,3 +210,31 @@ export function txDetail(over: Partial<ApiTxDetail> = {}): ApiTxDetail {
   const { logs: _logs, ...rest } = tx();
   return { ...rest, derived: true, callCount: 2, revertReason: null, index: 0, maxFeePerGas: "2000000000", maxPriorityFeePerGas: "1000000000", ...over };
 }
+
+/** A verified contract made by a transaction in block 18, as the list gives it. */
+export const contractItem = (n: number, over: Partial<ContractListItem> = {}): ContractListItem => ({
+  address: addr(n), name: "TestUSD", origin: "create", creator: addr(0xe3), creationBlock: 18, interactionCount: 9, verified: true, matchType: "full", codeSize: 3318, destroyedBlock: null, ...over,
+});
+/** A contract of the chain's genesis: no creator, no creation block, no creation transaction. */
+export const genesisContract = (n: number, over: Partial<ContractListItem> = {}): ContractListItem =>
+  contractItem(n, { name: null, origin: "genesis", creator: null, creationBlock: null, interactionCount: 0, verified: false, matchType: null, codeSize: 100, ...over });
+
+const COMPILE = { language: "Solidity", compilerVersion: "v0.8.28+commit.7893614a", codeFormat: "solidity-standard-json-input", contractPath: "src/TestUSD.sol", contractName: "TestUSD", optimizerEnabled: true, optimizerRuns: 200, evmVersion: "cancun", license: "MIT" };
+export function contractDetail(n = 0xcb, over: Partial<ContractDetail> = {}): ContractDetail {
+  return {
+    ...contractItem(n), creationTxHash: hash(0xd7), lastInteractionBlock: 20, codeHash: hash(0xde), code: "0x6080604052" + "00".repeat(8), proxy: null,
+    verification: { ...COMPILE, verifiedAt: "2026-10-20T17:24:10.000Z", matchNote: null }, derived: true, ...over,
+  };
+}
+export function contractSource(n = 0xcb, over: Partial<ContractSource> = {}): ContractSource {
+  return {
+    address: addr(n), verified: true, matchType: "full", ...COMPILE, settings: { language: "Solidity", settings: { optimizer: { enabled: true, runs: 200 } } },
+    files: [{ path: "src/TestUSD.sol", content: "// SPDX-License-Identifier: MIT\npragma solidity 0.8.28;\ncontract TestUSD {}\n" }, { path: "@openzeppelin/contracts/token/ERC20/ERC20.sol", content: "contract ERC20 {}\n" }],
+    abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "", type: "uint256" }] }],
+    constructorArgs: "0x" + "00".repeat(12) + "e3".repeat(20), libraries: null, verifiedAt: "2026-10-20T17:24:10.000Z", matchNote: null, ...over,
+  };
+}
+export const unverifiedSource = (n = 0xcb): ContractSource => ({
+  address: addr(n), verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null,
+  evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, libraries: null, verifiedAt: null, matchNote: null,
+});
