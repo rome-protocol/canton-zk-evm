@@ -18,3 +18,18 @@ pre.dark.wrap { white-space: pre-wrap; word-break: break-all; }
 .btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 500; color: var(--ink); text-decoration: none; }
 .btn:hover { background: var(--surface-2); }
 .ctor { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; overflow-x: auto; }
+.fn-cols { columns: 2 340px; column-gap: 14px; }
+.fn { break-inside: avoid; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; background: var(--surface); overflow: hidden; }
+.fn-h { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: var(--surface-2); border: 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer; }
+.fn-h:disabled { cursor: default; }
+.fn-h .small { margin-left: auto; }
+.fn-name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.fn-b { padding: 12px 14px; display: grid; gap: 10px; }
+.field { display: grid; gap: 4px; }
+.inp { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 13px; }
+.fn-q { display: flex; align-items: center; gap: 10px; }
+.answer, .out { display: grid; gap: 4px; }
+.answer { overflow-wrap: anywhere; }
+.wallet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.ev-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ev-args > div { overflow-wrap: anywhere; }

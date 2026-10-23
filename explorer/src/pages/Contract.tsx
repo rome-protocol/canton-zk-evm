@@ -9,6 +9,7 @@ import { count, exact, units } from "../format.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
 import { TransfersTab, TxsTab } from "./AddressTabs.tsx";
 import { CodeTab } from "./ContractCode.tsx";
+import { ReadTab } from "./ContractRead.tsx";
 import { matchMeans, MatchChip } from "./ContractParts.tsx";
 import "./address.css";
 import "./contract.css";
@@ -86,7 +87,7 @@ function Verification({ c }: { c: ContractDetail }) {
   );
 }
 
-type TabId = "transactions" | "token-transfers" | "code";
+type TabId = "transactions" | "token-transfers" | "code" | "read";
 
 /** One contract: who made it, what it holds, whether its source is verified, and its code. The tab is in the link. */
 export function Contract() {
@@ -99,7 +100,7 @@ export function Contract() {
   if (wait) return wait;
   const c = q.data!;
   const tabs: { id: TabId; label: string; mark?: boolean }[] = [
-    { id: "transactions", label: "Transactions" }, { id: "token-transfers", label: "Token transfers" }, { id: "code", label: "Code", mark: c.verified },
+    { id: "transactions", label: "Transactions" }, { id: "token-transfers", label: "Token transfers" }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" },
   ];
   const asked = params.get("tab");
   const tab: TabId = tabs.find((t) => t.id === asked)?.id ?? "transactions";
@@ -127,6 +128,7 @@ export function Contract() {
       </div>
       <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
         {tab === "code" ? <CodeTab detail={c} chainId={st?.chainId} />
+          : tab === "read" ? <ReadTab detail={c} />
           : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : <TransfersTab a={c.address} />}
       </div>
     </>

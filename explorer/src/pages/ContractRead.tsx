@@ -44,7 +44,7 @@ function ReadItem({ n, address, e, tick, open }: { n: number; address: string; e
       <button type="button" className="fn-h" aria-expanded={!shut} disabled={inputs.length === 0} onClick={() => setToggled((t) => !t)}>
         <span className="muted">{n}.</span> <span className="mono fn-name">{headline(e)}</span>
         <span className="muted small">{inputs.length ? `returns ${returns || "nothing"}` : returns}</span>
-        {inputs.length > 0 && <Icon name="chevron" size={14} />}
+        {inputs.length > 0 && <Icon name="down" size={14} />}
       </button>
       {inputs.length === 0 ? <div className="fn-b"><Answer address={address} e={e} fields={[]} tick={tick} /></div>
         : !shut && (
