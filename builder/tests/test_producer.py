@@ -255,7 +255,7 @@ class Refusals(Loop):
         self.assertEqual(self.status()["waitingToBeResolved"], {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"], "commandId": self.reports[0]["commandId"]})
         s.ledger.no_completion, s.ledger.drop_but_commit = False, False
         p.step()   # finds out
-        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
+        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"], "updateId": "u1", "completionOffset": 43})
         self.assertEqual((self.status()["blocksCommitted"], self.status()["lastCommitted"]["number"]), (1, HEAD_NUMBER + 1))
         s.reth.pool[ALICE] = [tx(ALICE, 1)]
         p.step()
@@ -362,7 +362,7 @@ class Refusals(Loop):
         first = self.producer(s)
         first.step()
         block = self.reports[0]["blockHash"]
-        tb.b.saved_path(s.cfg).write_text("this is not json")   # the kept transactions cannot be read
+        b.saved_path(s.cfg).write_text("this is not json")   # the kept transactions cannot be read
         second = self.producer(s)
         second.load_unresolved()
         s.reth.pool[BOB] = [tx(BOB, 0, price=5)]   # more work: it must wait
@@ -377,8 +377,8 @@ class Refusals(Loop):
 
     def test_a_record_that_cannot_be_read_stops_the_building(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
-        tb.b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
-        tb.b.unresolved_path(s.cfg).write_text("{ this is not json")
+        b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        b.unresolved_path(s.cfg).write_text("{ this is not json")
         p = self.producer(s)
         p.step()
         p.step()
@@ -389,16 +389,16 @@ class Refusals(Loop):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         s.ledger.late = True
         p = self.producer(s)
-        real = tb.b.Ledger.advance
+        real = b.Ledger.advance
         def advance(ledger, chain, argument, command_id=None):
             try:
                 real(ledger, chain, argument, command_id)
             except Exception:
                 pass
             raise KeyboardInterrupt
-        with mock.patch.object(tb.b.Ledger, "advance", advance), self.assertRaises(KeyboardInterrupt):
+        with mock.patch.object(b.Ledger, "advance", advance), self.assertRaises(KeyboardInterrupt):
             p.step()
-        block = tb.b.load_unresolved(s.cfg)["hash"]
+        block = b.load_unresolved(s.cfg)["hash"]
         p.step()   # the record is on disk: the producer reads it and waits for the command instead of building
         self.assertEqual(len(s.ledger.submitted), 1)
         self.assertEqual(self.status()["waitingToBeResolved"]["hash"], block)

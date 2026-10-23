@@ -721,6 +721,10 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
         try:
             return _build(cfg, reth, chain, head, set(exclude), prove_empty, unknown_pairs, lost_so_far, attempt)
         except BaseException as e:
+            if unresolved_path(cfg).exists():
+                # An Advance was sent and is not settled: the command may still commit, so reth is not moved and nothing is put back.
+                # The record (and the saved copy of the transactions) make the next start settle it by its command id first.
+                raise
             try:
                 reth.forkchoice(head, head, head)
             except Exception as rewind:   # the error that brought us here is the one to report; the failed move back rides along as rewindError
@@ -856,10 +860,14 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     if lost:
         report["lostTransactions"] = lost
 
-    attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()))
     reason, rejected, answer = None, False, {}
     # The ledger end before the submit: the command's own completion, whenever it comes, is after it.
     begin = Ledger(cfg).end()
+    # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
+    # that makes the next start wait for the command instead of rewinding a block that may commit. Only a definite answer clears it.
+    resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time()}
+    save_unresolved(cfg, resolve)
+    attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()))
     # The participant's traffic is read around the Advance only for a block that is alone in flight: with another one, whose bytes are whose is not known.
     watch = attempt.journal is not None and attempt.in_flight == 0
     traffic_before = read_traffic(cfg) if watch else None
@@ -890,8 +898,6 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
         if found is None:
             if unknown_pairs is not None:
                 unknown_pairs.extend(reth.imported)
-            resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time()}
-            save_unresolved(cfg, resolve)
             answered("unknown", reason=reason[:600])
             return {"committed": None, **report, "resolve": resolve,
                     "reason": f"{reason}; the command has no completion yet, so it is not known whether the block committed",
@@ -901,6 +907,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
         else:
             reason = f"{reason}; {found['reason']}"
     if reason is not None:   # Canton refused the command (its own answer, or its failed completion): the block is not committed
+        clear_unresolved(cfg)    # a definite answer: the command cannot commit any more
         rewind_error = None
         try:
             reth.forkchoice(head, head, head)
@@ -929,6 +936,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     reth.forkchoice(block_hash, block_hash, block_hash)
     attempt.event("final_seen", number=n)
     clear_saved(cfg)
+    clear_unresolved(cfg)   # last: should reth's move above fail, the record stays and the next start settles the block as committed
     return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
 
 
@@ -952,13 +960,16 @@ def committed_hash(proof: str) -> str | None:
 
 def definite_rejection(code: int, body: str) -> bool:
     """Whether an HTTP error from submit-and-wait is Canton rejecting the command (a 4xx that carries an error code). A 5xx, a 429
-    (back-pressure), a 401 or 403 (token), a 408 or an answer with no error code is the service failing: the block may be fine."""
+    (back-pressure), a 401 or 403 (token), a 408 or an answer with no error code is the service failing: the block may be fine. A command id
+    that Canton already knows (DUPLICATE_COMMAND: committed or in progress; SUBMISSION_ALREADY_IN_FLIGHT) is no refusal either: the same
+    command is, or may be, committed, and its own completion says which."""
     if not 400 <= code < 500 or code in (401, 403, 408, 429):
         return False
     try:
-        return isinstance(json.loads(body).get("code"), str)
+        error = json.loads(body).get("code")
     except (ValueError, AttributeError):
         return False
+    return isinstance(error, str) and error not in ("DUPLICATE_COMMAND", "SUBMISSION_ALREADY_IN_FLIGHT")
 
 
 def read_saved(cfg: Config) -> list | None:
@@ -1021,12 +1032,20 @@ def recover_saved(cfg: Config, wait=None) -> dict | None:
     (saved before the block was) are sent to reth's pool again. Whether Canton took the block does not matter: a transaction of a
     committed block has a used nonce, and reth says so. An Advance with no answer comes first: it is settled by its command id (and
     raises `Unresolved` while it cannot be), because Canton's head says nothing until the command can no longer commit. Returns
-    None when nothing was saved, else {"recovered": how many, "lostTransactions": [{transaction, error}]} for the ones reth refused
-    for another reason."""
+    None when nothing was saved and nothing settled, else {"recovered": how many, "lostTransactions": [{transaction, error}]} for the
+    ones reth refused for another reason, and "settled": {"number", "blockHash", "commandId", "committed", "resolved", ...} when an earlier
+    block's command was settled here."""
     u = load_unresolved(cfg)
+    settled = None
     while u:   # with `wait` (the `once` command) this waits for the command; without it (the loop) it raises and the loop tries again
         try:
-            resolve_unknown(cfg, {**u, "since": u.get("submittedAt", 0)}, read_saved(cfg) or [], time.time())
+            try:
+                pairs = read_saved(cfg) or []
+            except BuilderError:   # the kept transactions are damaged (moved aside): the command is settled all the same
+                pairs = []
+            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u.get("submittedAt", 0)}, pairs, time.time())
+            settled = {"number": u.get("number"), "blockHash": u["hash"], "commandId": u["commandId"], "committed": committed, "resolved": how, **info}
+            settled["lostTransactions"] = lost
             break
         except Unresolved:
             if wait is None:
@@ -1034,7 +1053,7 @@ def recover_saved(cfg: Config, wait=None) -> dict | None:
             wait(2)
     pairs = read_saved(cfg)
     if pairs is None:
-        return None
+        return {"recovered": 0, "lostTransactions": settled.pop("lostTransactions", []), "settled": settled} if settled else None
     entries = json.loads(saved_path(cfg).read_text())
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
@@ -1192,11 +1211,15 @@ class Producer:
             u = load_unresolved(self.cfg)
             if not u:
                 return
-            pairs = read_saved(self.cfg) or []
-            ref = next(({"attempt_run": e["run"], "attempt": e["attempt"]} for e in json.loads(saved_path(self.cfg).read_text())
-                        if isinstance(e.get("run"), str) and type(e.get("attempt")) is int), {}) if pairs else {}
+            try:
+                pairs = read_saved(self.cfg) or []
+                ref = next(({"attempt_run": e["run"], "attempt": e["attempt"]} for e in json.loads(saved_path(self.cfg).read_text())
+                            if isinstance(e.get("run"), str) and type(e.get("attempt")) is int), {}) if pairs else {}
+            except BuilderError as e:   # the kept transactions are damaged: the command is still in doubt, and it is still waited for
+                print(f"cannot read the kept transactions of the unresolved command: {e}", file=sys.stderr)
+                pairs, ref = [], {}
             self.unresolved = {"pairs": pairs, **u, "since": u.get("submittedAt", 0), "number": u.get("number"), **ref}
-        except Exception as e:   # the files cannot be read: the step's own recovery says so and tries again
+        except Exception as e:   # the record cannot be read: step() builds nothing while it exists, and reads it again
             print(f"cannot read the unresolved command: {e}", file=sys.stderr)
 
     def due(self, now: float) -> str | None:
@@ -1250,6 +1273,12 @@ class Producer:
             if self.held:
                 self.held["next"] = 0   # a transaction that was held back may go in now
         try:
+            if self.unresolved is None and unresolved_path(self.cfg).exists():   # a command in doubt that this process does not know yet
+                self.load_unresolved()                                           # (cut short in this process, or its record was unreadable)
+                if self.unresolved is None:   # not readable: nothing is built while it exists
+                    self.write_status()
+                    self.wait(max(self.idle, 1.0))
+                    return
             if self.unresolved:
                 return self.settle_unknown()
             if saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
@@ -1434,13 +1463,15 @@ class Producer:
         self.unresolved = None
         report = {"resolved": "committed" if committed else "not committed", "number": u["number"], "blockHash": u["hash"]}
         if committed:
+            report.update(updateId=info.get("updateId"), completionOffset=info.get("completionOffset"))
             self.committed += 1
             self.last_block_at = now
             self.last_committed = {"number": u["number"], "hash": u["hash"], "time": iso(now)}
         extra = {"attempt_run": u["attempt_run"]} if u.get("attempt_run") else {}
-        self.journal.event("resolved", attempt=u.get("attempt"), outcome=report["resolved"], via=how, **extra)
+        known = {"update_id": info.get("updateId"), "completion_offset": info.get("completionOffset")} if committed else {}
+        self.journal.event("resolved", attempt=u.get("attempt"), outcome=report["resolved"], via=how, **known, **extra)
         if committed:
-            self.journal.event("final_seen", attempt=u.get("attempt"), number=u["number"])
+            self.journal.event("final_seen", attempt=u.get("attempt"), number=u["number"], **extra)
         if lost:
             report["lostTransactions"] = lost
             self.note_lost(lost, now)
@@ -1626,6 +1657,7 @@ def main() -> int:
                 return produce(cfg, args)
             recovered = recover_saved(cfg, wait=time.sleep)   # a block cut short earlier: its transactions go back to reth first
             before = recovered["lostTransactions"] if recovered else []
+            earlier = recovered.get("settled") if recovered else None   # what became of an earlier block whose Advance had no answer
             try:
                 result = build_block(cfg, {h.lower() for h in args.exclude})
             except Exception as e:   # the failure names the transactions lost on the way, and the ones the recovery could not resend
@@ -1635,6 +1667,8 @@ def main() -> int:
                 result = settle_once(cfg, result)
             if before:
                 result["lostTransactions"] = [*before, *result.get("lostTransactions", [])]
+            if earlier:
+                result["settledEarlier"] = earlier
     except Exception as e:   # a BuilderError, an unreachable service, a reply that is not JSON or not what was expected, and the like
         print(json.dumps(failure_report(e)))
         return 1

@@ -1104,6 +1104,21 @@ class CommandLine(Case):
     def test_a_reply_that_is_not_json_is_one_json_line(self):
         self.assert_failure(self.run_main(self.setup({}, bad_json=True)))
 
+    def test_once_reports_what_became_of_an_earlier_unanswered_block(self):
+        for ok in (True, False):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            s.ledger.late = True
+            earlier = b.build_block(s.cfg)
+            self.assertIsNone(earlier["committed"])
+            s.ledger.land(ok=ok)
+            s.ledger.late = False
+            with mock.patch.dict(os.environ, {"CZE_WORK_DIR": s.cfg.work_dir}):   # the work folder the first block was made in
+                code, out = self.run_main(s)
+            settled = out["settledEarlier"]
+            self.assertEqual((settled["number"], settled["blockHash"], settled["committed"], settled["resolved"]), (HEAD_NUMBER + 1, earlier["blockHash"], ok, "completion"))
+            self.assertEqual(out["number"], HEAD_NUMBER + (2 if ok else 1))   # a committed block is built upon; a failed one is built again
+
     def test_a_failing_prover_is_one_json_line(self):
         self.assert_failure(self.run_main(self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)), "prove")
 
@@ -1209,7 +1224,8 @@ class NoAnswer(Case):
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
         self.assertEqual(self.in_pool(s), set())
         s.ledger.land(ok=True)
-        self.assertIsNone(b.recover_saved(s.cfg))   # settled as committed: nothing to give back
+        found = b.recover_saved(s.cfg)   # settled as committed: nothing to give back
+        self.assertEqual((found["recovered"], found["settled"]["committed"]), (0, True))
         self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], result["blockHash"])
         self.assertEqual(self.in_pool(s), set())
 
@@ -1218,7 +1234,8 @@ class NoAnswer(Case):
         s = self.setup({ALICE: [t]})
         self.first(s)
         s.ledger.land(ok=False)
-        self.assertIsNone(b.recover_saved(s.cfg))
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["settled"]["committed"]), (0, False))
         self.assertEqual(self.in_pool(s), {t["hash"]})
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
 
@@ -1322,18 +1339,6 @@ class NoAnswer(Case):
         with mock.patch.object(b, "COMPLETION_LIMIT", 2):
             self.assertEqual(self.settle(s, result)[:3], (True, [], "completion"))
         self.assertEqual(len(s.ledger.completion_queries) - before, 3)
-
-    def test_once_reports_what_became_of_an_earlier_unanswered_block(self):
-        for ok in (True, False):
-            t = tx(ALICE, 0)
-            s = self.setup({ALICE: [t]})
-            earlier = self.first(s)
-            s.ledger.land(ok=ok)
-            s.ledger.late = False
-            code, out = self.run_main(s)
-            settled = out["settledEarlier"]
-            self.assertEqual((settled["number"], settled["blockHash"], settled["committed"], settled["resolved"]), (HEAD_NUMBER + 1, earlier["blockHash"], ok, "completion"))
-            self.assertEqual(out["number"], HEAD_NUMBER + (2 if ok else 1))   # a committed block is built upon; a failed one is built again
 
     def test_the_completions_are_read_from_the_ledger_end_before_the_submit_for_the_builder_user(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
