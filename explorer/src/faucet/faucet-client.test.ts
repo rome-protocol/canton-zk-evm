@@ -163,6 +163,12 @@ describe("usualCommitMs", () => {
     expect(await faucet.usualCommitMs!()).toBe(5400);
     expect(calls[0]?.url).toBe("/api/stats/summary?window=1h");
   });
+  it("reads the day's median when the last hour has none", async () => {
+    let n = 0;
+    const { faucet, calls } = client(() => json(200, n++ === 0 ? { commitTime: null } : { commitTime: { median: 6.27 } }));
+    expect(await faucet.usualCommitMs!()).toBe(6270);
+    expect(calls.map((c) => c.url)).toEqual(["/api/stats/summary?window=1h", "/api/stats/summary?window=24h"]);
+  });
   it("says null when the summary has no commit time, a bad one, or cannot be read", async () => {
     expect(await client(() => json(200, { commitTime: null })).faucet.usualCommitMs!()).toBeNull();
     expect(await client(() => json(200, {})).faucet.usualCommitMs!()).toBeNull();

@@ -65,7 +65,7 @@ export interface FaucetClient {
   txTimes?(hash: string): Promise<TxTimes | null>;
   /** The proof time the newest blocks usually take (10th to 90th percentile), or null when too few blocks have one. Never throws. */
   usualProof?(): Promise<{ lowMs: number; highMs: number } | null>;
-  /** The time Canton usually takes to commit a block, in ms: the median of the last hour's stats summary (the figure the Stats page and the home page show), or null when it is not served. Never throws. */
+  /** The time Canton usually takes to commit a block, in ms: the median of the last hour's stats summary (the figure the home page shows), or of the last day's when the hour has none, or null when it is not served. Never throws. */
   usualCommitMs?(): Promise<number | null>;
 }
 
@@ -156,9 +156,13 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
     },
 
     async usualCommitMs() {
-      const answer = await read(fetchFn, "/api/stats/summary?window=1h");
-      const c = answer?.status === 200 ? (answer.body.commitTime as Record<string, unknown> | null | undefined) : null;
-      return typeof c?.median === "number" && Number.isFinite(c.median) && c.median >= 0 ? Math.round(c.median * 1000) : null;
+      // The last hour's median, as the home page shows it; when the chain made no block in that hour, the day's.
+      for (const window of ["1h", "24h"]) {
+        const answer = await read(fetchFn, `/api/stats/summary?window=${window}`);
+        const c = answer?.status === 200 ? (answer.body.commitTime as Record<string, unknown> | null | undefined) : null;
+        if (typeof c?.median === "number" && Number.isFinite(c.median) && c.median >= 0) return Math.round(c.median * 1000);
+      }
+      return null;
     },
 
     async baseFee() {
