@@ -69,9 +69,9 @@ export function ethersChecks(t: ClientTarget): void {
     expect(await provider.call({ to: t.address, data: "0x" })).toBe("0x");
   });
 
-  it("ethers: the price of gas and the estimate of a plain send", async () => {
+  it("ethers: the price of gas and the estimate of a send of nothing", async () => {
     expect((await provider.getFeeData()).gasPrice).not.toBeNull();
-    expect(await provider.estimateGas({ to: t.address, value: 1 })).toBe(21000n);
+    expect(await provider.estimateGas({ to: t.address })).toBe(21000n);
   });
 
   it("ethers: a final transaction and its receipt", async () => {

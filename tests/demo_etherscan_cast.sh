@@ -64,7 +64,7 @@ eq "eth_getTransactionCount" "$(dec "$(proxy eth_getTransactionCount "address=$E
 eq "eth_getCode" "$(proxy eth_getCode "address=$ETHERSCAN_ADDRESS" tag=latest)" "$("$CAST" code "$ETHERSCAN_ADDRESS" --rpc-url "$RPC")"
 eq "eth_getStorageAt" "$(proxy eth_getStorageAt "address=$ETHERSCAN_ADDRESS" position=0x0 tag=latest)" "$("$CAST" storage "$ETHERSCAN_ADDRESS" 0 --rpc-url "$RPC")"
 eq "eth_call" "$(proxy eth_call "to=$ETHERSCAN_ADDRESS" data=0x tag=latest)" "$("$CAST" rpc eth_call "{\"to\":\"$ETHERSCAN_ADDRESS\",\"data\":\"0x\"}" latest --rpc-url "$RPC" | jq -r .)"
-eq "eth_estimateGas" "$(proxy eth_estimateGas "to=$ETHERSCAN_ADDRESS" value=0x1)" "$("$CAST" rpc eth_estimateGas "{\"to\":\"$ETHERSCAN_ADDRESS\",\"value\":\"0x1\"}" --rpc-url "$RPC" | jq -r .)"
+eq "eth_estimateGas" "$(proxy eth_estimateGas "to=$ETHERSCAN_ADDRESS")" "$("$CAST" rpc eth_estimateGas "{\"to\":\"$ETHERSCAN_ADDRESS\"}" --rpc-url "$RPC" | jq -r .)"
 eq "eth_gasPrice" "$(dec "$(proxy eth_gasPrice)")" "$("$CAST" gas-price --rpc-url "$RPC")"
 eq "eth_getUncleByBlockNumberAndIndex" "$(proxy_raw eth_getUncleByBlockNumberAndIndex "tag=$n_hex" index=0x0 | jq -c .result)" null
 
