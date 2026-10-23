@@ -53,7 +53,7 @@ describe("the contract page: Write", () => {
     const link = await within(t).findByRole("link", { name: /0xabab/ });
     expect(link).toHaveAttribute("href", `/tx/0x${"ab".repeat(32)}`);
     const sent = w.asked.find((c) => c.method === "eth_sendTransaction")!;
-    expect(sent.params).toEqual([{ from: ME, to: addr(0xcb), data: "0xa9059cbb" + OTHER.slice(2).padStart(64, "0") + (400).toString(16).padStart(64, "0") }]);
+    expect(sent.params).toEqual([{ from: ME, to: addr(0xcb), chainId: await chainHex(), data: "0xa9059cbb" + OTHER.slice(2).padStart(64, "0") + (400).toString(16).padStart(64, "0") }]);
     expect(rpcCalls.filter((c) => c.method === "eth_sendRawTransaction" || c.method === "eth_sendTransaction")).toHaveLength(0); // the page itself sends nothing
   });
 
@@ -79,6 +79,16 @@ describe("the contract page: Write", () => {
     expect(within(screen.getByRole("region", { name: "transfer" })).getByRole("button", { name: "Write" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Switch network" }));
     expect(w.asked.find((c) => c.method === "wallet_switchEthereumChain")!.params).toEqual([{ chainId: await chainHex() }]);
+  });
+
+  it("keeps Write off while it is not known which chain the wallet is on", async () => {
+    const w = standIn({ eth_chainId: () => { throw new Error("no chain"); } });
+    await open("write", { sources });
+    await userEvent.click(screen.getByRole("button", { name: "Connect wallet" }));
+    const t = screen.getByRole("region", { name: "transfer" });
+    await waitFor(() => expect(within(t).getByText(/Checking which chain/)).toBeInTheDocument());
+    expect(within(t).getByRole("button", { name: "Write" })).toBeDisabled();
+    expect(w.asked.some((c) => c.method === "eth_sendTransaction")).toBe(false);
   });
 
   it("says in plain words that the person declined, and that a wallet is missing", async () => {

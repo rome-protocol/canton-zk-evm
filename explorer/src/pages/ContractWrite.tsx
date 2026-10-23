@@ -19,7 +19,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
   const [sent, setSent] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const payable = e.stateMutability === "payable";
-  const ready = wallet.account !== null && !wallet.wrongChain;
+  const ready = wallet.canSend;
   const send = async () => {
     const w = injected();
     if (!w || !wallet.account) return;
@@ -30,7 +30,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
     }
     setProblem(null); setSent(null); setBusy(true);
     try {
-      const tx: Record<string, string> = { from: wallet.account, to: address, data };
+      const tx: Record<string, string> = { from: wallet.account, to: address, data, chainId: "0x" + (wallet.chainId ?? 0).toString(16) };
       if (wei !== null) tx.value = "0x" + wei.toString(16);
       setSent(String(await w.request({ method: "eth_sendTransaction", params: [tx] })));
     } catch (x) { setProblem(walletWords(x)); } finally { setBusy(false); }
@@ -48,7 +48,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
         )}
         <div className="fn-q">
           <button type="button" className="btn" disabled={!ready || busy} onClick={send}>Write</button>
-          {!ready && <span className="muted small">{wallet.account === null ? "Connect a wallet first" : "Switch your wallet to this chain first"}</span>}
+          {!ready && <span className="muted small">{wallet.account === null ? "Connect a wallet first" : wallet.wrongChain ? "Switch your wallet to this chain first" : "Checking which chain your wallet is on…"}</span>}
         </div>
         {problem && <p className="fact-bad small" role="alert">{problem}</p>}
         {sent && <p className="small" role="status">Your wallet sent it: <HashLink value={sent} to={`/tx/${sent}`} /></p>}

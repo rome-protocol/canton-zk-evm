@@ -33,7 +33,7 @@ describe("what is typed into a field", () => {
   it("keeps every digit of a number typed bare in a list or a tuple, above 2^53 and past 1e21", () => {
     expect(parseArg({ type: "uint256[]" }, "[1234567890123456789, 9007199254740993]")).toEqual([1234567890123456789n, 9007199254740993n]);
     expect(parseArg({ type: "uint256[]" }, "[1000000000000000000000]")).toEqual([10n ** 21n]);
-    expect(parseArg({ type: "uint256[2]" }, "[1, 115792089237316195423570985008687907853269984665640564039457584007913129639935]")[1]).toBe(2n ** 256n - 1n);
+    expect((parseArg({ type: "uint256[2]" }, "[1, 115792089237316195423570985008687907853269984665640564039457584007913129639935]") as bigint[])[1]).toBe(2n ** 256n - 1n);
     expect(parseArg({ type: "int256[]" }, "[-9007199254740993]")).toEqual([-9007199254740993n]);
     const t = { type: "tuple", components: [{ name: "who", type: "address" }, { name: "n", type: "uint256" }, { name: "xs", type: "uint256[]" }] };
     expect(parseArg(t, `["${ME}", 1234567890123456789, [10000000000000000001]]`)).toEqual([ME, 1234567890123456789n, [10000000000000000001n]]);

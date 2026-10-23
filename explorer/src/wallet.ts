@@ -59,5 +59,5 @@ export function useWallet(chain: Chain | undefined) {
     w.on("chainChanged", onChain as never);
     return () => { w.removeListener?.("accountsChanged", onAccounts as never); w.removeListener?.("chainChanged", onChain as never); };
   }, [account !== null]);
-  return { available: wallet !== null, account, chainId, wrongChain: account !== null && chain !== undefined && chainId !== null && chainId !== chain.chainId, error, connect, switchChain };
+  return { available: wallet !== null, account, chainId, canSend: account !== null && chain !== undefined && chainId === chain.chainId, wrongChain: account !== null && chain !== undefined && chainId !== null && chainId !== chain.chainId, error, connect, switchChain };
 }
