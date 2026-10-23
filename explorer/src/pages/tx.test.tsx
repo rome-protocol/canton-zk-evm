@@ -664,6 +664,15 @@ describe("the Token transfers row of the overview", () => {
     expect(calls.filter((c) => c.includes("/token-transfers"))).toHaveLength(1);
   });
 
+  it("reads each transfer as a sentence: From X to Y for N Token (SYM)", async () => {
+    await openFinal(tx({ transfer: null, lifecycle: journal() }), { labels: labelsOf([usd]), txTransfers: () => reply({ ...page([xfer(1)]), derived: true }) });
+    await waitFor(() => expect(row("Token transfers")).toHaveTextContent("tUSD"));
+    const line = row("Token transfers").querySelector(".xfer-line")!;
+    expect(line.textContent).toMatch(/^From \S+ to \S+ for [\d.,]+ .*Test USD \(tUSD\)/);
+    expect(line.textContent).not.toContain("→");
+    expect([...line.querySelectorAll(".muted")].map((x) => x.textContent)).toEqual(["From", "to", "for"]);
+  });
+
   it("gives no number when the transfers run past the first page, since the page cannot count what it has not read", async () => {
     const items = Array.from({ length: 25 }, (_, i) => xfer(i));
     await openFinal(tx({ transfer: null, lifecycle: journal() }), { labels: labelsOf([usd]), txTransfers: () => reply({ ...page(items, "cursor-2"), derived: true }) });
