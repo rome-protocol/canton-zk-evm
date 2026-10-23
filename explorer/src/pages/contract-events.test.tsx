@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeAbiParameters, toEventSelector } from "viem";
 import type { ContractEvent } from "../api.ts";
-import { addr, contractSource, hash, page, unverifiedSource } from "../test-utils.tsx";
+import { addr, contractDetail, contractSource, hash, page, unverifiedSource } from "../test-utils.tsx";
 import { open, TOKEN_ABI } from "./contract-harness.tsx";
 
 const A = addr(0xcb), ME = addr(0xe3), YOU = addr(0xe6);
@@ -19,6 +19,25 @@ const verified = { [A]: contractSource(0xcb, { abi: ABI }) };
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the contract page: Events", () => {
+  it("says no count when the server sends none, never \"undefined events\"", async () => {
+    await open("events", { detail: contractDetail(0xcb, { eventCount: undefined as unknown as number }), sources: verified, events: () => page([log(1)]) });
+    await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) });
+    const card = screen.getByRole("region", { name: "Events" });
+    expect(card.querySelector(".card-head")!.textContent).not.toMatch(/undefined|NaN/);
+  });
+
+  it("still draws a row whose server sends no block time, with no age rather than a broken page", async () => {
+    await open("events", { sources: verified, events: () => page([{ ...log(1), timestamp: undefined }]) });
+    const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+    expect(within(row).getByRole("link", { name: "19" })).toBeInTheDocument();
+    expect(row.querySelector(".c-hash .small")!.textContent).toBe("block 19");
+  });
+
+  it("says under the table that an event of a block still being proven is listed once the block is final", async () => {
+    await open("events", { sources: verified, events: () => page([log(1)]) });
+    expect(await screen.findByText(/Only events of final blocks are listed.*still being proven.*once the block is final/)).toBeInTheDocument();
+  });
+
   it("shows each log in the words of its event, with the method that wrote it, and links the addresses", async () => {
     await open("events", { sources: verified, events: () => page([log(1)]) });
     const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
@@ -27,6 +46,32 @@ describe("the contract page: Events", () => {
     expect(within(row).getByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).toHaveAttribute("href", `/address/${ME}`);
     expect(within(row).getByText("100")).toBeInTheDocument();
     expect(within(row).getByRole("link", { name: "19" })).toHaveAttribute("href", "/block/19");
+  });
+
+  describe("amounts in whole coins", () => {
+    const token = { name: "Test USD", symbol: "tUSD", decimals: 18 };
+    const big = (n: number) => log(n, { data: encodeAbiParameters([{ type: "uint256" }], [400n * 10n ** 18n]) });
+
+    it("writes the value of an ERC-20 Transfer of this token in whole coins, with every digit in the title", async () => {
+      await open("events", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources: verified, token, events: () => page([big(1)]) });
+      const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+      const unit = await within(row).findByText("400 tUSD");
+      expect(unit).toHaveAttribute("title", "400 tUSD");
+      expect(within(row).queryByText("400000000000000000000")).toBeNull();
+    });
+
+    it("leaves the raw number when the token is not an ERC-20 or its decimals are not known", async () => {
+      await open("events", { detail: contractDetail(0xcb, { standard: "ERC-721" }), sources: verified, token, events: () => page([big(1)]) });
+      const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+      expect(within(row).getByText("400000000000000000000")).toBeInTheDocument();
+      expect(within(row).queryByText(/tUSD/)).toBeNull();
+    });
+
+    it("leaves the raw number when the explorer does not know the token's decimals", async () => {
+      await open("events", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources: verified, events: () => page([big(1)]) });
+      const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+      expect(within(row).getByText("400000000000000000000")).toBeInTheDocument();
+    });
   });
 
   it("names a contract-creation transaction \"Create contract\", not the first bytes of its init code", async () => {
@@ -50,11 +95,39 @@ describe("the contract page: Events", () => {
     expect(filter).not.toHaveClass("btn");
   });
 
-  it("says a log is not decoded while the source is not verified, and shows the raw topics and data", async () => {
-    await open("events", { sources: { [A]: unverifiedSource() }, events: () => page([log(2, { method: null })]) });
+  it("says a log is not decoded when no known ABI names it, and shows the raw topics and data", async () => {
+    await open("events", { sources: { [A]: unverifiedSource() }, events: () => page([log(2, { method: null, topics: [hash(0x77), pad(ME)] })]) });
     expect(await screen.findByText("Not decoded")).toBeInTheDocument();
-    expect(screen.getByText(/2 indexed, data 0x/)).toBeInTheDocument();
-    expect(screen.getByText(/shown raw while the source is not verified/)).toBeInTheDocument();
+    expect(screen.getByText(/1 indexed, data 0x/)).toBeInTheDocument();
+  });
+
+  it("reads a standard token log in the words of its event while the source is not verified, and says so", async () => {
+    await open("events", { sources: { [A]: unverifiedSource() }, events: () => page([log(2, { method: null })]) });
+    const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+    expect(within(row).getByText("Transfer")).toBeInTheDocument();
+    expect(within(row).getByText("200")).toBeInTheDocument();
+    expect(screen.getByText(/standard token events, as the source is not verified/)).toBeInTheDocument();
+    expect(screen.queryByText(/with the verified ABI/)).toBeNull();
+  });
+
+  it("offers a button for each standard event seen on the page while the source is not verified", async () => {
+    await open("events", { sources: { [A]: unverifiedSource() }, events: () => page([log(2, { method: null })]) });
+    expect(await screen.findByRole("button", { name: "Transfer" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approval" })).toBeNull();
+  });
+
+  it("puts the count in the title's words and a row age under each block", async () => {
+    const now = Date.now();
+    await open("events", { detail: contractDetail(0xcb, { eventCount: 7 }), sources: verified, events: () => page([log(1, { timestamp: Math.floor(now / 1000) - 600 })]) });
+    expect(await screen.findByText(/^7 events from final blocks/)).toBeInTheDocument();
+    const row = (await screen.findByRole("link", { name: "19" })).closest("tr")!;
+    expect(row.textContent).toMatch(/block 19 · 10 min ago/);
+  });
+
+  it("says 100,000+ in the tab and the words when the count stopped at its ceiling", async () => {
+    await open("events", { detail: contractDetail(0xcb, { eventCount: 100000, eventCountCapped: true }), sources: verified, events: () => page([log(1)]) });
+    expect(await screen.findByText(/^100,000\+ events from final blocks/)).toBeInTheDocument();
+    expect(within(screen.getByRole("tab", { name: /Events/ })).getByText("100,000+")).toBeInTheDocument();
   });
 
   it("asks the API for only one kind of event when its button is pressed", async () => {

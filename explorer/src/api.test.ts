@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
 import {
-  ApiError, addressTransfersCsvPath, addressTxsCsvPath, getAddressTxs, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
+  ApiError, addressTransfersCsvPath, addressTxsCsvPath, getAddressTxs, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getContractList, getContractListOldest, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
   getFaucetFacts, getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
 } from "./api.ts";
 import { account, block, blockItem, holding, inFlight, status, tokenAddress, tokenItem, tokenTransfer, tx, txItem } from "./test-utils.tsx";
@@ -160,6 +160,14 @@ describe("the API client", () => {
     expect(urls()).toEqual([
       "/api/tokens?sort=holders&limit=10", "/api/tokens?sort=newest&limit=10&before=7%3A0xab&standard=ERC-1155", "/api/tokens?sort=transfers&limit=10&gateway=true",
       "/api/tokens?sort=holders&order=asc&limit=10", "/api/tokens?sort=newest&order=asc&limit=10&after=7%3A0xab&standard=ERC-20&gateway=true",
+    ]);
+    answer(200, { items: [], next: null, total: 0, counts: { all: 0, verified: 0, notVerified: 0 } });
+    await getContractList("newest", true, "5:1", 10);
+    await getContractListOldest("interactions", null, null, 3);
+    await getContractListOldest("oldest", false, "k1", 25);
+    expect(urls().slice(-3)).toEqual([
+      "/api/contracts?sort=newest&limit=10&verified=true&before=5%3A1", "/api/contracts?sort=interactions&order=asc&limit=3",
+      "/api/contracts?sort=oldest&order=asc&limit=25&verified=false&after=k1",
     ]);
     expect(txsCsvPath("failed")).toBe("/api/txs?format=csv&filter=failed");
     expect(blocksCsvPath("transactions")).toBe("/api/blocks?format=csv&filter=transactions");

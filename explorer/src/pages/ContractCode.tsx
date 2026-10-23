@@ -8,7 +8,8 @@ import { CopyButton, HashLink } from "../components/HashLink.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { count, plural } from "../format.ts";
 import { disassemble } from "../opcodes.ts";
-import { forgeCommand, MatchChip } from "./ContractParts.tsx";
+import { useStatus } from "../useStatus.ts";
+import { evmVersionNote, forgeCommand, MatchChip } from "./ContractParts.tsx";
 
 const SHOWN_HEX = 1200;
 const SHOWN_OPS = 200;
@@ -24,6 +25,8 @@ function Segmented<T extends string>({ label, value, options, onPick }: { label:
 }
 
 function Sources({ s }: { s: ContractSource }) {
+  const chain = useStatus().data?.chainName ?? "This chain";
+  const note = evmVersionNote(s.evmVersion, chain);
   const files = [...s.files].sort((a, b) => Number(b.path === s.contractPath) - Number(a.path === s.contractPath));
   const [path, setPath] = useState<string | null>(null);
   const open = files.find((f) => f.path === path) ?? files[0];
@@ -35,15 +38,15 @@ function Sources({ s }: { s: ContractSource }) {
     <section className="card" aria-label="Contract source code">
       <div className="list-h">
         <h2>Contract source code <MatchChip matchType={s.matchType} /></h2>
-        <a className="btn" href={download} download={`${name}-sources.json`}>Download sources</a>
+        <a className="btn-line" href={download} download={`${name}-sources.json`}>Download sources</a>
       </div>
       {s.matchNote && <p className="small muted card-note">{s.matchNote}</p>}
       <div className="code-cols">
         <Kv label="The compile">
           <Item label="Contract name"><span className="mono">{s.contractName}</span></Item>
-          <Item label="Compiler"><span className="mono">{s.compilerVersion}</span></Item>
+          <Item label="Compiler"><span className="mono">{s.compilerVersion && /^\d/.test(s.compilerVersion) ? `v${s.compilerVersion}` : s.compilerVersion}</span></Item>
           <Item label="Optimization">{s.optimizerEnabled === null ? <span className="muted">Not recorded</span> : s.optimizerEnabled ? `Yes, ${count(s.optimizerRuns ?? 0)} runs` : "No"}</Item>
-          <Item label="EVM version">{s.evmVersion ? <span className="mono">{s.evmVersion}</span> : <span className="muted">Compiler default</span>}</Item>
+          <Item label="EVM version">{s.evmVersion ? <><span className="mono">{s.evmVersion}</span>{note && <span className="muted small"> · {note}</span>}</> : <span className="muted">Compiler default</span>}</Item>
           <Item label="License">{s.license ?? <span className="muted">None given</span>}</Item>
           <Item label="Source format">{format}</Item>
           {libs && <Item label="Libraries"><span className="mono">{JSON.stringify(s.libraries)}</span></Item>}
