@@ -1,3 +1,6 @@
+import type { BlockListItem } from "../api.ts";
+import { usualProof } from "../stats.ts";
+
 /** What `GET /api/faucet` says. Amounts are whole numbers as decimal strings, in the coin's smallest unit. */
 export interface FaucetInfo {
   on: boolean; address: string | null; balance: string | null; amount: string; perAddressSeconds: number;
@@ -44,6 +47,9 @@ export type TicketResult = { kind: "ticket"; ticket: Ticket } | { kind: "unknown
 /** A payout from the faucet's address that is final: its transaction, who got it, the block and the time (seconds). */
 export interface RecentSend { hash: string; to: string; block: number; timestamp: number }
 
+/** What the transaction route says of a request's transfer: its nonce and the times it was taken into the pool, began to be proven, and became final. Each is null where it is not served. */
+export interface TxTimes { nonce: number | null; acceptedAt: string | null; proofStartedAt: string | null; finalAt: string | null }
+
 export interface FaucetClient {
   /** Throws an Error with a message fit to show when the faucet's information cannot be read. */
   info(): Promise<FaucetInfo>;
@@ -55,6 +61,10 @@ export interface FaucetClient {
   recent?(faucet: string, limit: number): Promise<RecentSend[] | null>;
   /** The newest final block's base fee in wei, or null when it cannot be read. Never throws. */
   baseFee?(): Promise<string | null>;
+  /** The nonce and lifecycle times of a transaction, or null when it cannot be read. Never throws. */
+  txTimes?(hash: string): Promise<TxTimes | null>;
+  /** The proof time the newest blocks usually take (10th to 90th percentile), or null when too few blocks have one. Never throws. */
+  usualProof?(): Promise<{ lowMs: number; highMs: number } | null>;
 }
 
 const UNREACHABLE = "The explorer cannot be reached. Try again in a moment.";
@@ -117,8 +127,8 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
     },
 
     async recent(faucet, limit) {
-      // Only what the faucet sent: the same address's incoming transfers (a top-up) are not payouts. Asks for more than it shows so that they do not crowd the list.
-      const answer = await read(fetchFn, `/api/addresses/${encodeURIComponent(faucet)}/txs?limit=${Math.min(50, limit * 2)}`);
+      // Only what the faucet sent: the same address's incoming transfers (a top-up) are not payouts, so the route is asked for the sent ones, and the sender is checked again below.
+      const answer = await read(fetchFn, `/api/addresses/${encodeURIComponent(faucet)}/txs?direction=sent&limit=${Math.min(50, limit)}`);
       const items = answer?.status === 200 && Array.isArray(answer.body.items) ? (answer.body.items as unknown[]) : null;
       if (!items) return null;
       const sends: RecentSend[] = [];
@@ -128,6 +138,19 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
         }
       }
       return sends.slice(0, limit);
+    },
+
+    async txTimes(hash) {
+      const answer = await read(fetchFn, `/api/txs/${encodeURIComponent(hash)}`);
+      if (answer?.status !== 200) return null;
+      const l = typeof answer.body.lifecycle === "object" && answer.body.lifecycle !== null ? (answer.body.lifecycle as Record<string, unknown>) : {};
+      const when = (v: unknown) => (typeof v === "string" && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(v) ? v : null);
+      return { nonce: typeof answer.body.nonce === "number" ? answer.body.nonce : null, acceptedAt: when(l.acceptedAt), proofStartedAt: when(l.proofStartedAt), finalAt: when(l.finalAt) };
+    },
+
+    async usualProof() {
+      const answer = await read(fetchFn, "/api/blocks?limit=10");
+      return answer?.status === 200 && Array.isArray(answer.body.items) ? usualProof(answer.body.items as BlockListItem[]) : null;
     },
 
     async baseFee() {
