@@ -10,7 +10,7 @@ import { Seg } from "../components/Seg.tsx";
 import { plural } from "../format.ts";
 import { labelName, useLabels, type Labels } from "../labels.ts";
 import { inUnits } from "./txValues.ts";
-import { useSources } from "./useSources.ts";
+import { MAX_SOURCES, useSources } from "./useSources.ts";
 
 /** The first topic of an ERC-20 Transfer. */
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -106,7 +106,8 @@ function readWith(logs: Shown[], labels: Labels): string {
 function LogList({ raws, t, extra, foot }: { raws: Raw[]; t: ApiTxSeen; extra?: ReactNode; foot?: ReactNode }) {
   const [mode, setMode] = useState<"decoded" | "hex">("decoded");
   const labels = useLabels(raws.flatMap((l) => [l.address, ...l.topics.map(topicAddress)]));
-  const contracts = raws.map((l) => l.address).filter((a) => { const k = labels.get(a)?.kind; return k === "contract" || k === "token"; });
+  // The verified source is read only for emitters the labels say are verified, and for the first few of them.
+  const contracts = [...new Set(raws.map((l) => l.address.toLowerCase()).filter((a) => { const l = labels.get(a); return l?.verified && (l.kind === "contract" || l.kind === "token"); }))].slice(0, MAX_SOURCES);
   const sources = useSources(contracts);
   const logs = useMemo<Shown[]>(() => raws.map((l) => {
     if (l.decoded) return { ...l, how: "verified" as const };

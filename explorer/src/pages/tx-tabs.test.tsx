@@ -180,6 +180,17 @@ describe("the Logs tab, decoded", () => {
   });
 });
 
+describe("the Logs tab reads sources sparingly", () => {
+  it("reads the source of a verified emitter, and none for an unverified one", async () => {
+    const ok = tokenLabel({ address: addr(0x81), name: "Ok", symbol: null, kind: "contract", standard: null, decimals: null, verified: true });
+    const no = tokenLabel({ address: addr(0x82), name: "No", symbol: null, kind: "contract", standard: null, decimals: null, verified: false });
+    const calls = await open({ labels: labelsOf([ok, no]), txLogs: () => reply(page([log(0, { address: ok.address }), log(1, { address: no.address })])), contracts: () => reply(contractSource(0x81, { verified: false, abi: null })) }, tx(), "?tab=logs");
+    await waitFor(() => expect(used(calls, `/api/contracts/${ok.address}/source`)).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(used(calls, `/api/contracts/${no.address}/source`)).toHaveLength(0);
+  });
+});
+
 describe("the Internal calls tab", () => {
   const T = addr(0xcb), DISPERSE = addr(0xd1), SENDER = addr(0x5b), TO = addr(0x5a);
   const usd = tokenLabel({ address: T, name: "Test USD", symbol: "tUSD", decimals: 18 });

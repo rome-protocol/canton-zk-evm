@@ -3,6 +3,9 @@ import { getContractSource } from "../api.ts";
 import type { AbiEntry } from "../abi.ts";
 import { labelKeys } from "../labels.ts";
 
+/** The most contracts whose verified source one view reads (one request each, and an answer can be large; the REST limit is shared by the whole page). */
+export const MAX_SOURCES = 20;
+
 export interface Known { abi: AbiEntry[] | null }
 
 /**

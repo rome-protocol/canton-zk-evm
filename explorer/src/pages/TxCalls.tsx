@@ -11,7 +11,7 @@ import { count, plural, short } from "../format.ts";
 import { PARENT_FAILED, voidedFrames, movesCoin } from "./txFrames.ts";
 import { labelName, useLabels, type Labels } from "../labels.ts";
 import { inUnits, listOf } from "./txValues.ts";
-import { useSources } from "./useSources.ts";
+import { MAX_SOURCES, useSources } from "./useSources.ts";
 
 type Coin = { symbol: string; decimals: number };
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
@@ -79,8 +79,6 @@ function Row({ f, n, voided, moved, coin, abis, labels }: { f: TraceFrame; n: nu
 type View = "all" | "value";
 /** How many calls the table shows at first and for each press of the button: names, functions and ABIs are read for the rows on screen only. */
 const PAGE = 50;
-/** The most contracts whose verified source is read for the rows on screen (one request each, answers can be large). */
-export const MAX_SOURCES = 20;
 
 /**
  * Every call of the transaction, the top level first and each call under it in the order reth traced them, as the trace route serves them.
