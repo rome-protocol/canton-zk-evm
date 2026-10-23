@@ -33,3 +33,5 @@ pre.dark.wrap { white-space: pre-wrap; word-break: break-all; }
 .wallet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
 .ev-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .ev-args > div { overflow-wrap: anywhere; }
+.ct-cell { display: flex; align-items: flex-start; gap: 10px; }
+.ct-ic { display: inline-flex; margin-top: 2px; color: var(--muted); }
