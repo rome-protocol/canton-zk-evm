@@ -148,6 +148,22 @@ class EveryOutcome(Lines):
         (line,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
         self.assertEqual((line["outcome"], line["via"], line["attempt_run"], line["attempt"]), ("not committed", "completion", first.journal.run_id, 1))
 
+    def test_an_outcome_that_commits_after_a_restart_is_written_to_the_attempt_that_made_it(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.late = True
+        first = self.producer(s)
+        first.step()
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        (resolved,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
+        (seen,) = [l for l in self.journal(s, "final_seen") if l["run"] == second.journal.run_id]
+        for line in (resolved, seen):
+            self.assertEqual((line["attempt_run"], line["attempt"]), (first.journal.run_id, 1))
+        self.assertEqual((resolved["update_id"], resolved["completion_offset"]), ("u1", 43))
+
     def test_a_pool_with_nothing_that_can_go_in_is_a_skipped_attempt(self):
         t = tx(BOB, 0)
         s = self.setup({BOB: [t]})

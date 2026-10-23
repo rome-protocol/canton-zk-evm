@@ -1240,6 +1240,101 @@ class NoAnswer(Case):
             else:
                 self.assertEqual(self.in_pool(s), {t["hash"]})
 
+    def interrupted_after_the_post(self):
+        """advance() as a process killed during the submit sees it: the POST went out, no answer comes, and the call is cut short."""
+        real = b.Ledger.advance
+        def advance(ledger, chain, argument, command_id=None):
+            try:
+                real(ledger, chain, argument, command_id)
+            except Exception:
+                pass
+            raise KeyboardInterrupt
+        return mock.patch.object(b.Ledger, "advance", advance)
+
+    def test_the_command_is_recorded_before_it_is_submitted_so_an_interrupt_during_the_submit_leaves_it(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.late = True
+        with self.interrupted_after_the_post(), self.assertRaises(KeyboardInterrupt):
+            b.build_block(s.cfg)
+        (sent,) = s.ledger.submitted
+        record = b.load_unresolved(s.cfg)
+        self.assertEqual((record["commandId"], record["begin"], record["number"]), (sent["commandId"], 42, HEAD_NUMBER + 1))
+        self.assertIsInstance(record["submittedAt"], float)
+        # no move back and no put back: the command is in doubt, reth stays on the block it built
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], record["hash"])
+        self.assertEqual(self.in_pool(s), set())
+        with self.assertRaises(b.Unresolved):   # the restart settles it first: no completion yet, so nothing is rewound or built
+            b.recover_saved(s.cfg)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], record["hash"])
+        s.ledger.land(ok=True)
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["settled"]["committed"], found["settled"]["number"]), (True, HEAD_NUMBER + 1))
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], record["hash"])
+        self.assertEqual(len(s.ledger.submitted), 1)   # never a second block at that height
+
+    def test_a_record_that_cannot_be_saved_means_nothing_is_submitted(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        with mock.patch.object(b, "save_unresolved", side_effect=b.BuilderError("disk full")), self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertEqual(s.ledger.submitted, [])
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)   # nothing was sent: the usual move back
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_the_record_is_cleared_by_every_definite_answer(self):
+        for kwargs in ({}, {"refuse": "wrong program key"}):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, **kwargs)
+            result = b.build_block(s.cfg)
+            self.assertEqual(result["committed"], not kwargs)
+            self.assertFalse(b.unresolved_path(s.cfg).exists())
+
+    def test_the_ledger_end_is_read_before_the_submitted_line_is_written(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        events = []
+        attempt = b.Attempt(None, 1)
+        attempt.event = lambda name, **kw: events.append(name)
+        with mock.patch.object(b.Ledger, "end", side_effect=OSError("the ledger end cannot be read")), self.assertRaises(OSError):
+            b.build_block(s.cfg, journal=attempt)
+        self.assertNotIn("submitted", events)
+        self.assertEqual(s.ledger.submitted, [])
+
+    def test_a_command_that_is_a_duplicate_or_already_in_flight_is_no_answer(self):
+        for code, refused in (("DUPLICATE_COMMAND", False), ("SUBMISSION_ALREADY_IN_FLIGHT", False), ("INTERPRETATION_ERROR", True)):
+            self.assertEqual(b.definite_rejection(409, json.dumps({"code": code, "cause": "x"})), refused, code)
+
+    def test_a_completion_of_the_same_id_from_before_the_submit_is_ignored(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        s.ledger.earlier = [{"commandId": result["commandId"], "offset": 10, "status": {"code": 9, "message": "another run's"}}]
+        with self.assertRaises(b.Unresolved):   # it is before `begin`: not this command's
+            self.settle(s, result)
+        s.ledger.land(ok=True)
+        self.assertEqual(self.settle(s, result)[0], True)
+
+    def test_a_full_page_of_other_completions_is_followed_to_the_commands_own(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        s.ledger.others = [{"commandId": f"other-{i}", "offset": 100 + i} for i in range(5)]
+        s.ledger.land_offset = 200
+        s.ledger.land(ok=True)
+        before = len(s.ledger.completion_queries)
+        with mock.patch.object(b, "COMPLETION_LIMIT", 2):
+            self.assertEqual(self.settle(s, result)[:3], (True, [], "completion"))
+        self.assertEqual(len(s.ledger.completion_queries) - before, 3)
+
+    def test_once_reports_what_became_of_an_earlier_unanswered_block(self):
+        for ok in (True, False):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            earlier = self.first(s)
+            s.ledger.land(ok=ok)
+            s.ledger.late = False
+            code, out = self.run_main(s)
+            settled = out["settledEarlier"]
+            self.assertEqual((settled["number"], settled["blockHash"], settled["committed"], settled["resolved"]), (HEAD_NUMBER + 1, earlier["blockHash"], ok, "completion"))
+            self.assertEqual(out["number"], HEAD_NUMBER + (2 if ok else 1))   # a committed block is built upon; a failed one is built again
+
     def test_the_completions_are_read_from_the_ledger_end_before_the_submit_for_the_builder_user(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         result = self.first(s)

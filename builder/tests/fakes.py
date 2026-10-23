@@ -291,6 +291,9 @@ class FakeLedger:
         self.no_completion = False   # a command that gets no answer has no completion either (it is still in progress)
         self.late = False   # Advance is answered with a 503 (a timeout), and the command commits or fails only when `land` is called
         self.pending: list = []   # (command id, header) of the commands `late` holds back
+        self.land_offset = 43   # the offset `land` gives a decided command's completion
+        self.earlier: list = []   # completions of the builder user from before the submit (offset <= the ledger end), as the participant shows them
+        self.others: list = []   # completions of other commands, each with its own offset
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.http.server_address[1]}"
@@ -300,8 +303,8 @@ class FakeLedger:
         for command_id, header in self.pending:
             if ok:
                 self.head = {"headNumber": str(int(self.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
-            self.outcomes[command_id] = {"commandId": command_id, "offset": 43, "updateId": "u1", "status": {}} if ok else \
-                {"commandId": command_id, "offset": 43, "status": {"code": 9, "message": message}}
+            self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok else \
+                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": message}}
         self.pending = []
 
     def close(self):
@@ -419,7 +422,13 @@ class FakeLedger:
                         shown.append({"completionResponse": {"Completion": {"value": {**own, **({"paidTrafficCost": ledger.paid} if ledger.paid is not None else {})}}}})
                     elif ledger.paid is not None and ledger.submitted:
                         shown.append({"completionResponse": {"Completion": {"value": {"commandId": ledger.submitted[-1]["commandId"], "offset": 43, "paidTrafficCost": ledger.paid}}}})
-                    return self._reply(200, shown)
+                    shown += [{"completionResponse": {"Completion": {"value": v}}} for v in [*ledger.earlier, *ledger.others]]
+                    # as the participant does: only what is after beginExclusive, in offset order, at most `limit` of it
+                    def offset(item):
+                        return next(iter(item["completionResponse"].values()))["value"]["offset"]
+                    shown = sorted((i for i in shown if offset(i) > body.get("beginExclusive", 0)), key=offset)
+                    limit = dict(q.split("=") for q in self.path.partition("?")[2].split("&") if "=" in q).get("limit")
+                    return self._reply(200, shown[:int(limit)] if limit else shown)
                 if self.path == "/v2/commands/submit-and-wait":
                     ledger.submitted.append(body)
                     command_id = body["commandId"]

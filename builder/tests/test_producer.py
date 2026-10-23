@@ -1,6 +1,7 @@
 """The always-on loop (`builder.py run`), against the same fakes as test_builder.py. The tests drive `Producer.step()` by hand with a
 fake clock and a recording `wait`, so no test sleeps; one test runs the real command and signals it."""
 import json, os, signal, subprocess, sys, tempfile, threading, time, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -300,7 +301,7 @@ class Refusals(Loop):
         s.ledger.land(ok=True)
         s.ledger.late = False
         p.step()
-        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": first["blockHash"]})
+        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": first["blockHash"], "updateId": "u1", "completionOffset": 43})
         self.assertIsNone(self.status()["waitingToBeResolved"])
         p.step()
         self.assertEqual((self.reports[2]["committed"], self.reports[2]["number"], self.reports[2]["transactions"]), (True, HEAD_NUMBER + 2, [c["hash"]]))
@@ -352,8 +353,59 @@ class Refusals(Loop):
         s.ledger.land(ok=True)
         s.ledger.late = False
         second.step()
-        self.assertEqual(self.reports[-1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": block})
+        self.assertEqual(self.reports[-1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": block, "updateId": "u1", "completionOffset": 43})
         self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], block)
+
+    def test_a_damaged_kept_file_does_not_let_a_block_be_built_while_a_command_is_in_doubt(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.late = True
+        first = self.producer(s)
+        first.step()
+        block = self.reports[0]["blockHash"]
+        tb.b.saved_path(s.cfg).write_text("this is not json")   # the kept transactions cannot be read
+        second = self.producer(s)
+        second.load_unresolved()
+        s.reth.pool[BOB] = [tx(BOB, 0, price=5)]   # more work: it must wait
+        second.step()
+        second.step()
+        self.assertEqual(len(s.ledger.submitted), 1)   # never a second block at that height
+        self.assertEqual(self.status()["waitingToBeResolved"]["hash"], block)
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        self.assertEqual(self.reports[-1]["resolved"], "committed")
+
+    def test_a_record_that_cannot_be_read_stops_the_building(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        tb.b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        tb.b.unresolved_path(s.cfg).write_text("{ this is not json")
+        p = self.producer(s)
+        p.step()
+        p.step()
+        self.assertEqual((s.ledger.submitted, self.built(s)), ([], []))
+        self.assertTrue(self.waits)   # it backs off and tries to read again
+
+    def test_a_submit_cut_short_in_this_process_is_waited_for_by_the_next_step(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.late = True
+        p = self.producer(s)
+        real = tb.b.Ledger.advance
+        def advance(ledger, chain, argument, command_id=None):
+            try:
+                real(ledger, chain, argument, command_id)
+            except Exception:
+                pass
+            raise KeyboardInterrupt
+        with mock.patch.object(tb.b.Ledger, "advance", advance), self.assertRaises(KeyboardInterrupt):
+            p.step()
+        block = tb.b.load_unresolved(s.cfg)["hash"]
+        p.step()   # the record is on disk: the producer reads it and waits for the command instead of building
+        self.assertEqual(len(s.ledger.submitted), 1)
+        self.assertEqual(self.status()["waitingToBeResolved"]["hash"], block)
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        p.step()
+        self.assertEqual(self.reports[-1]["resolved"], "committed")
 
     def test_a_transaction_that_cannot_be_put_back_is_listed_in_the_status(self):
         t = tx(ALICE, 0)
