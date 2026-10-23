@@ -2,7 +2,9 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { fakeApi, hash, inFlight, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+import type { StatsSummary } from "../api.ts";
+import { summary } from "./stats-fixtures.ts";
+import { addr, fakeApi, hash, inFlight, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:38:00Z");
 async function open(h: Parameters<typeof route>[0] = {}) {
@@ -124,7 +126,7 @@ describe("the all-time total", () => {
   it("says the total, how many are final, being proven and waiting, and the newest rows of the total", async () => {
     await open({ txs: () => reply(counted(1017)), inFlight: () => reply(some()) });
     await waitFor(() => expect(title()).toHaveTextContent("1,021 in all · 1,017 final · 3 being proven · 1 waiting"));
-    expect(screen.getByText("Showing the newest 2 of 1,021")).toBeInTheDocument();
+    expect(screen.getByText("Showing 2 of 1,021")).toBeInTheDocument();
   });
 
   it("says not counted yet when the server cannot count, and never writes 0 or a guess", async () => {
@@ -155,8 +157,12 @@ describe("the all-time total", () => {
   it("does not count twice the transactions of a block the final total already holds", async () => {
     const seen = inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 21, txCount: 3 }, { ...inFlight().attempts[0]!, number: 22, txCount: 2 }], poolWaiting: { waiting: 1, at }, transactions: [] });
     await open({ txs: () => reply(counted(1017)), inFlight: () => reply(seen) });
-    await waitFor(() => expect(title()).toHaveTextContent("1,020 in all · 1,017 final · 5 being proven · 1 waiting"));
-    expect(screen.getByText("Showing the newest 2 of 1,020")).toBeInTheDocument();
+    await waitFor(() => expect(title()).toHaveTextContent("1,020 in all · 1,017 final · 2 being proven · 1 waiting"));
+    expect(screen.getByText("Showing 2 of about 1,020")).toBeInTheDocument();
+    // The Not final yet card counts the same attempts as the title: one total, not two.
+    const card = within(screen.getByRole("region", { name: "Numbers" })).getByText("Not final yet").closest(".stat")!;
+    await waitFor(() => expect(card).toHaveTextContent("2 being proven · 1 waiting"));
+    expect(card).not.toHaveTextContent("5 being proven");
   });
 
   it("says at least when the pool is not counted, and offers no Last button the server cannot serve", async () => {
@@ -170,5 +176,156 @@ describe("the all-time total", () => {
     await userEvent.click(screen.getByRole("button", { name: "Failed" }));
     await waitFor(() => expect(screen.getByText(/Showing the newest 2 on this page/)).toBeInTheDocument());
     expect(screen.queryByText(/of 1,021/)).toBeNull();
+  });
+});
+
+describe("the four cards, from the stats routes", () => {
+  const tile = (label: string) => Array.from(screen.getByRole("region", { name: "Numbers" }).querySelectorAll(".stat")).find((e) => e.querySelector(".stat-k")!.textContent!.startsWith(label))! as HTMLElement;
+  const stats = (hour: Partial<StatsSummary> = {}, day: Partial<StatsSummary> = {}) => (path: string) => {
+    const w = new URL(path, "http://x").searchParams.get("window");
+    return w === "1h" ? reply(summary(hour)) : w === "24h" ? reply(summary(day)) : reply({ error: "no" }, 404);
+  };
+  const dayOf = (over: Partial<StatsSummary> = {}): Partial<StatsSummary> => ({
+    txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } },
+    blocks: { count: 21, empty: 0, busy: 0, bySize: [] }, ...over,
+  });
+
+  it("shows, as screen 04 does, the day's transactions with the all-time total, the last hour's time to final, what is not final with how many are stuck, and the lost ones", async () => {
+    await open({ stats: stats({}, dayOf()), inFlight: () => reply(inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 1, at: "2026-10-04T01:37:58Z" }, transactions: [] })) });
+    await waitFor(() => expect(tile("Transactions · 24 h")).toHaveTextContent("1,017"));
+    expect(tile("Transactions · 24 h")).toHaveTextContent("1,021 final in all · as of block 21");
+    expect(tile("Time to final · last hour")).toHaveTextContent(/p95/);
+    await waitFor(() => expect(tile("Not final yet")).toHaveTextContent("43 being proven · 1 waiting · 0 stuck (over 120 s)"));
+    expect(tile("Lost · all time")).toHaveTextContent("0");
+    expect(tile("Lost · all time")).toHaveClass("stat-ok");
+    expect(tile("Lost · all time")).toHaveTextContent("accepted by Ostia and never made final");
+  });
+
+  it("leaves the Lost card red and leads to the stats page when some were lost", async () => {
+    await open({ stats: stats({}, dayOf({ lost: { window: 2, total: 2, listed: [] } })) });
+    await waitFor(() => expect(tile("Lost · all time")).toHaveTextContent("2"));
+    expect(tile("Lost · all time")).not.toHaveClass("stat-ok");
+    expect(within(tile("Lost · all time")).getByRole("link", { name: "Stats" })).toHaveAttribute("href", "/stats");
+  });
+
+  it("says a dash and why for each card the stats cannot give, never a made-up number", async () => {
+    await open({ stats: () => reply({ error: "down" }, 500) });
+    await waitFor(() => expect(tile("Transactions · 24 h")).toHaveTextContent("the stats cannot be read right now"));
+    expect(tile("Lost · all time").querySelector(".stat-v")!.textContent).toBe("—");
+    expect(tile("Time to final · last hour").querySelector(".stat-v")!.textContent).toBe("—");
+  });
+});
+
+describe("the rows, with names, token chips and the screen's cuts", () => {
+  const usd = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
+  const moved = { count: 1, more: false, first: { token: addr(0xcb), amount: "100000000", tokenId: null, standard: "ERC-20", decimals: 6 } };
+  const labelled = (items: unknown[]) => {
+    const base = route({ txs: () => reply(page(items as never[])) });
+    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+    renderApp("/txs");
+  };
+
+  it("shows the receiver by name, the token moved as a chip, and cuts the hash 8 and 6", async () => {
+    labelled([txItem(3, { value: "0", tokenMoves: moved, methodId: "0xa9059cbb" })]);
+    const row = (await screen.findAllByRole("row"))[1]!;
+    expect(await within(row).findByRole("link", { name: "Test USD (tUSD)" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
+    expect(within(row).getByText("100 tUSD")).toHaveClass("tname");
+    expect(within(row).getByText("transfer")).toBeInTheDocument();
+    expect(within(row).getByRole("link", { name: "0xa3a3a3a3…a3a3a3" })).toHaveAttribute("href", `/tx/${txItem(3).hash}`);
+    expect(within(row).getByRole("link", { name: "0x5b5b5b…5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
+  });
+
+  describe("a transfer that is being proven", () => {
+    const at = "2026-10-04T01:37:58Z";
+    const proving = (value: string) => tx({ hash: hash(0xd2), status: "proving", state: "proving", block: { number: 4, hash: null, updateId: null }, success: null, to: addr(0xcb), value, transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" } });
+    const run = async (value: string) => {
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply(proving(value)) });
+      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      renderApp("/txs");
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("100 tUSD")).toHaveClass("tname");
+      return row;
+    };
+    it("is the token chip, never 0 of the coin", async () => { expect(await run("0")).not.toHaveTextContent("tROME"); });
+    it("has the coin beside the chip when some is sent", async () => { expect(await run("1000000000000000000")).toHaveTextContent("1 tROME"); });
+    it("is reverted, with a cross and no chip, when the receipt says it reverted", async () => {
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: false, logs: [] }) });
+      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      renderApp("/txs");
+      const row = (await screen.findAllByRole("row"))[1]!;
+      await waitFor(() => expect(row).toHaveTextContent("reverted"));
+      expect(row.querySelector(".tchip")).toBeNull();
+      expect(within(row).getByRole("img", { name: "Failed (reverted)" })).toBeInTheDocument();
+    });
+    it("takes the chip from the Transfer log of the receipt over the decoded input", async () => {
+      const logs = [{ address: addr(0xcb), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (7_000_000n).toString(16).padStart(64, "0") }];
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs }) });
+      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      renderApp("/txs");
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("7 tUSD")).toHaveClass("tname");
+      expect(row).not.toHaveTextContent("100 tUSD");
+    });
+  });
+
+  it("says Create: and what the transaction made, and shows a plain send as the coin", async () => {
+    labelled([txItem(3, { to: null, created: addr(0xd1), value: "0" }), txItem(2)]);
+    const rows = (await screen.findAllByRole("row")).slice(1);
+    expect(rows[0]).toHaveTextContent("Create contract");
+    expect(rows[0]).toHaveTextContent("Create:");
+    expect(within(rows[0]!).getByRole("link", { name: "0xd1d1d1…d1d1" })).toHaveAttribute("href", `/address/${addr(0xd1)}`);
+    expect(rows[1]).toHaveTextContent("0.25 tROME");
+  });
+
+  it("asks for the names of a page of rows in one call, not one per row", async () => {
+    const calls = (() => { const c: string[] = []; return c; })();
+    const base = route({ txs: () => reply(page([txItem(3), txItem(2), txItem(1)])) });
+    fakeApi(Object.assign((path: string) => { calls.push(path); return path.includes("/api/labels") ? reply({ items: [] }) : base(path); }, { routed: true }));
+    renderApp("/txs");
+    await screen.findAllByRole("row");
+    await waitFor(() => expect(calls.some((c) => c.includes("/api/labels"))).toBe(true));
+    expect(calls.filter((c) => c.includes("/api/labels")).length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("the subtitle and the list header add up", () => {
+  const at = "2026-10-04T01:37:58Z";
+  const counted = { ...page([txItem(3), txItem(2)], "2:0"), total: 1017, totalAsOfBlock: 21, totalAsOf: at };
+  const title = () => screen.getByRole("heading", { name: "Transactions" }).parentElement!;
+  const pool = (poolAt: string) => inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 1, at: poolAt }, transactions: [] });
+
+  it("calls the in-all figure about when the pool was read before the final total, since a waiting transaction may be final by then", async () => {
+    await open({ txs: () => reply(counted), inFlight: () => reply(pool("2026-10-04T01:37:50Z")) });
+    await waitFor(() => expect(title()).toHaveTextContent("about 1,021 in all · 1,017 final · 3 being proven · 1 waiting"));
+  });
+
+  it("says the figure exactly when nothing waits, whenever the pool was read: with none waiting nothing can be counted twice", async () => {
+    const empty = inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 0, at: "2026-10-04T01:37:50Z" }, transactions: [] });
+    await open({ txs: () => reply(counted), inFlight: () => reply(empty) });
+    await waitFor(() => expect(title()).toHaveTextContent("1,020 in all · 1,017 final · 3 being proven · 0 waiting"));
+    expect(title()).not.toHaveTextContent("about");
+    expect(await screen.findByText("Showing 2 of 1,020")).toBeInTheDocument();
+  });
+
+  it("says about when an attempt's block is already in the final total, even with none waiting", async () => {
+    const lapped = inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 21, txCount: 3 }], poolWaiting: { waiting: 0, at: "2026-10-04T01:37:50Z" }, transactions: [] });
+    await open({ txs: () => reply(counted), inFlight: () => reply(lapped) });
+    await waitFor(() => expect(title()).toHaveTextContent("about 1,017 in all · 1,017 final · 0 being proven · 0 waiting"));
+  });
+
+  it("says the figure exactly when the pool was read at or after the final total", async () => {
+    await open({ txs: () => reply(counted), inFlight: () => reply(pool(at)) });
+    await waitFor(() => expect(title()).toHaveTextContent("1,021 in all · 1,017 final"));
+    expect(title()).not.toHaveTextContent("about");
+  });
+
+  it("does not call the rows the newest of the total when not-final rows are cut off", async () => {
+    const burst = inFlight({
+      attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 40 }], poolWaiting: { waiting: 1000, at },
+      transactions: Array.from({ length: 10 }, (_, i) => ({ hash: hash(0xe0 + i), stage: "waiting" as const, at })),
+    });
+    await open({ txs: () => reply(counted), inFlight: () => reply(burst) });
+    expect(await screen.findByText("Showing 12 of 2,057")).toBeInTheDocument();
+    expect(screen.queryByText(/newest 12/)).toBeNull();
   });
 });

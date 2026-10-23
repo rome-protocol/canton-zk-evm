@@ -156,7 +156,7 @@ export async function getStatus(): Promise<ApiStatus> {
 }
 
 /** One check of /api/health: the word it counts for (`ok`, `degraded` or `down`). */
-export interface HealthCheck { id: string; role: string; status: "ok" | "degraded" | "down"; detail: string | null }
+export interface HealthCheck { id: string; role: string; status: "ok" | "degraded" | "down"; value?: unknown; detail: string | null }
 /** What /api/health says: the overall word, whether the index is still starting, and every check it runs. */
 export interface ApiHealth { status: "ok" | "degraded" | "down"; starting: boolean; problems: string[]; checks: HealthCheck[] }
 

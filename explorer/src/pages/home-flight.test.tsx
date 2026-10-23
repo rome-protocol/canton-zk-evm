@@ -5,7 +5,7 @@ import { fakeApi, inFlight, renderApp, reply, route } from "../test-utils.tsx";
 
 const NOT_READ = "The explorer cannot read what is in flight right now.";
 const FINAL_LINE = "Nothing is in flight: every block made so far is final.";
-const card = () => within(screen.getByRole("region", { name: "Numbers" })).getByText("Not final yet").parentElement!;
+const card = () => within(screen.getByRole("region", { name: "Numbers" })).getByText("Not final yet").closest(".stat")!;
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 30)); });
 
 describe("the home page when it cannot tell what is in flight", () => {

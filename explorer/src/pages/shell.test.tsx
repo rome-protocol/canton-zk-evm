@@ -172,7 +172,7 @@ describe("the shell", () => {
     await user.type(screen.getByRole("searchbox", { name: "Search" }), "   {Enter}");
     expect(calls.filter((c) => c.startsWith("/api/search"))).toEqual([]);
     expect(screen.queryByRole("heading", { name: "Not found" })).toBeNull();
-    expect(await screen.findByText("Final on Canton")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Chain status" })).toBeInTheDocument();
   });
 
   it("says so when the search itself cannot read the chain", async () => {
