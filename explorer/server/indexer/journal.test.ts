@@ -7,7 +7,7 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { createJournal, joinAttempts, parseLine } from "./journal.ts";
-import { RUN1, RUN2, Run, appendLines, iso, makeFolder, putFile, removeFolders } from "./journal-fixtures.ts";
+import { RUN1, RUN2, RUN3, Run, appendLines, iso, makeFolder, putFile, removeFolders } from "./journal-fixtures.ts";
 
 afterAll(removeFolders);
 
@@ -151,6 +151,16 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       await loader(pool, dir).load();
       expect(await one(pool, "select resolved_outcome from block_attempts where attempt_seq = 2")).toMatchObject({ resolved_outcome: "restarted" });
       expect(await state(2)).toBe("pending");
+      // a commit settled by its completion after a restart: its lines name the run that made the attempt, and carry Canton's update
+      const r3 = new Run(RUN3);
+      r3.start(T0 + 120_000);
+      r3.add(T0 + 120_100, "resolved", { attempt: 3, attempt_run: RUN1, outcome: "committed", via: "completion", update_id: "u3", completion_offset: 77 });
+      r3.add(T0 + 120_200, "final_seen", { attempt: 3, attempt_run: RUN1, number: 3 });
+      appendLines(dir, "2026-10-22.jsonl", r3.lines);
+      await loader(pool, dir).load();
+      const a3 = await one(pool, "select resolved_outcome, update_id, completion_offset, final_seen_at from block_attempts where attempt_seq = 3");
+      expect(a3).toMatchObject({ resolved_outcome: "committed", update_id: "u3" });
+      expect(a3.final_seen_at).not.toBeNull();
     });
   });
 

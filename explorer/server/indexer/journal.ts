@@ -216,12 +216,13 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         const id = await idOf(typeof ev.attempt_run === "string" ? ev.attempt_run : ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
         const outcome = text(ev.outcome, 40) === "committed" ? "committed" : text(ev.outcome, 40);
-        await set(id, { resolved_at: t, resolved_outcome: outcome });
+        const known = text(ev.update_id, 200) !== null ? { update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset) } : {}; // a commit settled by its completion carries them
+        await set(id, { resolved_at: t, resolved_outcome: outcome, ...known });
         if (outcome !== "committed") await putBack(id, t, outcome === "restarted" ? "the producer restarted before the block was answered" : "the block did not commit");
         break;
       }
       case "final_seen": {
-        const id = await idOf(ev.run, ev.attempt);
+        const id = await idOf(typeof ev.attempt_run === "string" ? ev.attempt_run : ev.run, ev.attempt); // a commit settled after a restart belongs to the run that made the attempt
         if (id === null) { orphans++; break; }
         await set(id, { final_seen_at: t });
         break;

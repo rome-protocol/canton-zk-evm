@@ -74,6 +74,7 @@ class FakeReth:
 
     def __init__(self, pool: dict, gas_limit: int = 30_000_000):
         self.pool, self.gas_limit = pool, gas_limit
+        self.genesis = "0x" + "66" * 32   # the hash of block 0
         self.mined: dict = {}   # hash -> transaction, for every transaction the pool lost when a block holding it became head
         self.engine_calls: list = []   # (method, params)
         self.ws_calls: list = []       # (method, params)
@@ -166,6 +167,8 @@ class FakeReth:
             return self._build(*params)
         if method == "debug_getRawBlock":
             return self.raw_blocks[int(params[0], 16)]
+        if method == "eth_getBlockByNumber" and int(params[0], 16) == 0:
+            return {"number": "0x0", "hash": self.genesis, "transactions": []}
         if method == "eth_getBlockByNumber":
             return {"number": params[0], "hash": self.by_number.get(int(params[0], 16)),
                     "transactions": [{"hash": t} for t in self.block_txs.get(self.by_number.get(int(params[0], 16)), [])]}
@@ -287,9 +290,27 @@ class FakeLedger:
         self.completions_delay = 0.0   # seconds the completions read takes to answer
         self.answer_time = None   # time.time() when submit-and-wait was answered
         self.completions_fail = False   # the completions read is answered with HTTP 500
+        self.outcomes: dict = {}   # command id -> the completion the participant shows for it (None: none yet)
+        self.no_completion = False   # a command that gets no answer has no completion either (it is still in progress)
+        self.reply_status = None   # Advance is answered with this HTTP status and nothing else: no command is taken, no completion comes
+        self.late = False   # Advance is answered with a 503 (a timeout), and the command commits or fails only when `land` is called
+        self.pending: list = []   # (command id, header) of the commands `late` holds back
+        self.record_time = "2020-01-01T00:00:00.000000Z"   # Canton's time the OffsetCheckpoint of a completions read shows (far in the past: no command's window is over)
+        self.land_offset = 43   # the offset `land` gives a decided command's completion
+        self.earlier: list = []   # completions of the builder user from before the submit (offset <= the ledger end), as the participant shows them
+        self.others: list = []   # completions of other commands, each with its own offset
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self.http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.http.server_address[1]}"
+
+    def land(self, ok: bool = True, message: str = "rejected") -> None:
+        """The commands held back by `late` are decided now: committed (the head moves) or failed (the head stays)."""
+        for command_id, header in self.pending:
+            if ok:
+                self.head = {"headNumber": str(int(self.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
+            self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok else \
+                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": message}}
+        self.pending = []
 
     def close(self):
         self.http.shutdown()
@@ -400,18 +421,37 @@ class FakeLedger:
                     if ledger.completions_fail:
                         return self._reply(500, {"cause": "the participant is down"})
                     shown = [{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 40}}}},
+                             {"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 44, "synchronizerTimes": [{"synchronizerId": "sync::1", "recordTime": ledger.record_time}]}}}},
                              {"completionResponse": {"Completion": {"value": {"commandId": "someone-elses", "offset": 42, "paidTrafficCost": 1}}}}]
-                    if ledger.paid is not None and ledger.submitted:
+                    own = ledger.outcomes.get(ledger.submitted[-1]["commandId"]) if ledger.submitted and not ledger.no_completion else None
+                    if own is not None:
+                        shown.append({"completionResponse": {"Completion": {"value": {**own, **({"paidTrafficCost": ledger.paid} if ledger.paid is not None else {})}}}})
+                    elif ledger.paid is not None and ledger.submitted:
                         shown.append({"completionResponse": {"Completion": {"value": {"commandId": ledger.submitted[-1]["commandId"], "offset": 43, "paidTrafficCost": ledger.paid}}}})
-                    return self._reply(200, shown)
+                    shown += [{"completionResponse": {"Completion": {"value": v}}} for v in [*ledger.earlier, *ledger.others]]
+                    # as the participant does: only what is after beginExclusive, in offset order, at most `limit` of it
+                    def offset(item):
+                        return next(iter(item["completionResponse"].values()))["value"]["offset"]
+                    shown = sorted((i for i in shown if offset(i) > body.get("beginExclusive", 0)), key=offset)
+                    limit = dict(q.split("=") for q in self.path.partition("?")[2].split("&") if "=" in q).get("limit")
+                    return self._reply(200, shown[:int(limit)] if limit else shown)
                 if self.path == "/v2/commands/submit-and-wait":
                     ledger.submitted.append(body)
+                    command_id = body["commandId"]
+                    failed = {"commandId": command_id, "offset": 43, "status": {"code": 9, "message": "failed"}}
                     if ledger.refuse and not ledger.fail_but_commit:
+                        ledger.outcomes[command_id] = failed
                         return self._reply(409, {"code": "INTERPRETATION_ERROR", "cause": ledger.refuse})
+                    if ledger.reply_status:
+                        return self._reply(ledger.reply_status, {"cause": "x"})
                     arg = body["commands"][0]["ExerciseCommand"]["choiceArgument"]
                     header = bytes.fromhex(arg["headerHex"])
+                    if ledger.late:
+                        ledger.pending.append((command_id, header))
+                        return self._reply(503, {"code": "REQUEST_TIME_OUT", "cause": "The server was not able to produce a timely response"})
                     if ledger.commit:
                         ledger.head = {"headNumber": str(int(ledger.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
+                    ledger.outcomes[command_id] = {"commandId": command_id, "offset": 43, "updateId": "u1", "status": {}} if ledger.commit else failed
                     if ledger.garbage_reply:
                         self.close_connection = True
                         return self.wfile.write(b"this is not http\r\n\r\n")
