@@ -212,6 +212,10 @@ describe("the tokens page to the screen", () => {
     expect(card.querySelector(":scope > .list-h")).not.toBeNull();
     const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
     expect(css).toMatch(/\.panel\s*>\s*\.list-h\s*\{[^}]*border-bottom/);
+    // The scroll box takes no side padding around a table; the first and last cells carry the 20px (measured in a browser in the PR).
+    expect(css).toMatch(/\.panel \.scroll\s*\{\s*padding:\s*0 0 14px/);
+    expect(css).toMatch(/\.panel \.tbl th:first-child[^{]*\{[^}]*padding-left:\s*20px/);
+    expect(css).toMatch(/\.panel \.tbl th:last-child[^{]*\{[^}]*padding-right:\s*20px/);
   });
 
   it("gives the feed card a header that sits inside the card (a panel card pulls no header out of its edge)", async () => {

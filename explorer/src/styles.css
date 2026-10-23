@@ -378,7 +378,11 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 .sizes .track i { display: block; height: 100%; background: var(--canton); }
 .sizes b { text-align: right; font-weight: 500; }
 .panel table { width: 100%; }
-.panel .scroll { padding: 0 20px 14px; }
+/* A table in a panel runs to the card's edges, so its lines do, and its first and last cells keep the card's 20px inset (screens 04, 09). */
+.panel .scroll { padding: 0 0 14px; }
+.panel .tbl th:first-child, .panel .tbl td:first-child { padding-left: 20px; }
+.panel .tbl th:last-child, .panel .tbl td:last-child { padding-right: 20px; }
+.panel .scroll:not(:has(> .tbl)) { padding: 0 20px 14px; }
 .rule { padding: 14px 20px 18px; border-top: 1px solid var(--line-2); }
 .rule h4 { margin: 0 0 8px; font-size: 14px; }
 .spark { display: block; width: 100%; height: 40px; margin: 2px 0; }

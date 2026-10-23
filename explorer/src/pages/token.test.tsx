@@ -171,10 +171,12 @@ describe("the token page: holders", () => {
   });
 
   it("names the block the balances are summed through, as the Tokens list does, when the index is behind Canton's final head", async () => {
-    await open(tokenDetail(), { status: () => reply(status({ indexHead: 5, indexLag: 4, deriveCursor: 5 })) });
+    // Canton's final head (9) is ahead of the index (5), which has summed through block 5: the page says 5.
+    const base = status();
+    await open(tokenDetail(), { status: () => reply(status({ final: { ...base.final!, number: 9 }, indexHead: 5, indexLag: 4, deriveCursor: 5 })) });
     await screen.findByRole("table", { name: "Token holders" });
     expect(screen.getByRole("region", { name: "Holder distribution" })).toHaveTextContent("as of final block 5");
-    expect(screen.getByRole("region", { name: "Holder distribution" })).not.toHaveTextContent("as of final block 3");
+    expect(screen.getByRole("region", { name: "Holder distribution" })).not.toHaveTextContent("as of final block 9");
   });
 
   it("shows each balance as a bare number under 'Balance (tUSD)', as screen 09b does, with the symbol in the tooltip", async () => {
