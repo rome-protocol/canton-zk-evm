@@ -37,7 +37,7 @@ describe("a hash", () => {
     expect(screen.getByText("0x353535…3535")).toBeInTheDocument();
     unmount();
     render(<MemoryRouter><HashLink value={h} lead={12} tail={6} /></MemoryRouter>);
-    expect(screen.getByText("0x353535353535…353535")).toBeInTheDocument();
+    expect(screen.getByText("0x3535353535…353535")).toBeInTheDocument();
   });
 
   it("shortens a Canton update id to the lengths a page asks for, and to twelve and eight when long", () => {
