@@ -348,7 +348,8 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .stats.six { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
 .panel { padding: 0; margin-bottom: 14px; overflow: hidden; }
 .panel > .card-head { margin: 0; } /* a panel has no padding, so its header must not pull itself out past the card's edge */
-.panel > .list-h, .panel > .sec-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
+.panel > .list-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
+.panel > .sec-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
 .panel > p.muted:not(.card-note) { padding: 0 20px; }
 .panel > .tbl-foot { margin: 0; padding: 12px 20px 16px; border-top: 1px solid var(--line-2); }
 .panel .card-note { padding: 0 20px 14px; margin: 10px 0 0; }
@@ -436,6 +437,12 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
   .txs tr { display: grid; grid-template-columns: auto auto 1fr; grid-template-areas: "h h res" "from to to" "did did did"; gap: 5px 8px; padding: 10px 0; border-bottom: 1px solid var(--line-2); }
   .txs tr:last-child { border-bottom: 0; }
   .txs td { display: block; padding: 0; border: 0; white-space: normal; font-size: 12.5px; }
+  /* a stacked row is inset by the panel's 20px as a whole, so the first and last cells take none of their own */
+  .panel .txs tr { padding: 10px 20px; }
+  .panel .txs td:first-child, .panel .txs td:last-child { padding: 0; }
+  /* the value is the one thing that must not be cut: a 1-wei send is 0.000000000000000001, so it breaks where it must rather than reads as zero */
+  .txs td.r { overflow-wrap: anywhere; min-width: 0; }
+  .txs .moved { justify-content: flex-start; min-width: 0; }
   .txs .c-hash { grid-area: h; font-size: 13.5px; }
   .txs .c-res { grid-area: res; justify-self: end; }
   .txs .c-from { grid-area: from; }
