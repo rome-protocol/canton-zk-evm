@@ -14,6 +14,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$ROOT/rust-toolchain.toml")
 [[ $EXPLORER_RUST_IMAGE == */rust:"$channel"-*@sha256:* ]] || fail "EXPLORER_RUST_IMAGE is not Rust $channel, the toolchain rust-toolchain.toml pins"
 
+# L4 of the nightly load test runs in the Playwright image whose browsers belong to the playwright-core that explorer/test/l4 pins: the same version, exactly.
+[[ ${EXPLORER_BROWSER_IMAGE:-} =~ @sha256:[0-9a-f]{64}$ ]] || fail "EXPLORER_BROWSER_IMAGE is not pinned by digest"
+[[ ${EXPLORER_BROWSER_IMAGE_ID:-} =~ ^sha256:[0-9a-f]{64}$ ]] || fail "EXPLORER_BROWSER_IMAGE_ID is missing"
+pw=$(sed -n 's/^ *"playwright-core": "\([0-9.]*\)".*$/\1/p' "$ROOT/explorer/test/l4/package.json")
+[ -n "$pw" ] || fail "explorer/test/l4/package.json does not pin playwright-core to an exact version"
+[[ $EXPLORER_BROWSER_IMAGE == */playwright:v"$pw"-*@sha256:* ]] || fail "EXPLORER_BROWSER_IMAGE is not the Playwright image of playwright-core $pw"
+
 # The Dockerfile names no image of its own: each stage starts from an image PINS pins, so there is one place to change them.
 froms=$(grep -E '^FROM ' "$ROOT/explorer/Dockerfile")
 [ -n "$froms" ] || fail "explorer/Dockerfile has no FROM"

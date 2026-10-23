@@ -7,6 +7,7 @@ import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { useAbi } from "./useAbi.ts";
+import "./block.css";
 import "./tx.css";
 
 const TOPIC = /^0x[0-9a-fA-F]{64}$/;
@@ -30,7 +31,7 @@ function Row({ e, abi, methods }: { e: ContractEvent; abi: AbiEntry[]; methods: 
   return (
     <tr>
       <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link></div></td>
-      <td>{method === null ? <span className="muted">—</span> : <span className="tag method" title={e.method ?? undefined}>{method}</span>}</td>
+      <td>{e.creation ? <span className="tag method" title="This transaction created a contract">Create contract</span> : method === null ? <span className="muted">—</span> : <span className="tag method" title={e.method ?? undefined}>{method}</span>}</td>
       <td>{d ? <span className="mono" title={d.signature}>{d.name}</span> : <span className="muted">Not decoded</span>}<div className="mono small muted" title={e.topics[0]}>{e.topics[0] ? short(e.topics[0]) : "anonymous"}</div></td>
       <td>{d ? <Args d={d} /> : <span className="mono small wrap muted">{e.topics.length > 1 || e.data !== "0x" ? `${e.topics.length - (e.topics[0] ? 1 : 0)} indexed, data ${e.data.length > 66 ? e.data.slice(0, 66) + "…" : e.data}` : "no data"}</span>}</td>
     </tr>
@@ -51,14 +52,14 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
   const typed = topic !== null && !kinds.some((k) => k.topic0 === topic);
   return (
     <section className="card" aria-label="Events">
-      <div className="list-h">
+      <div className="card-h">
         <h2>Events <span className="muted thin">from final blocks, {kinds.length > 0 || abi.length > 0 ? "decoded with the verified ABI" : "shown raw while the source is not verified"}, newest first</span></h2>
         <div className="ev-filter">
           <div className="seg" role="group" aria-label="Event kind">
             <button type="button" aria-pressed={topic === null} onClick={() => { setTopic(null); setTyping(false); }}>All events</button>
             {kinds.map((k) => <button key={k.topic0} type="button" aria-pressed={topic === k.topic0} title={k.signature} onClick={() => { setTopic(k.topic0); setTyping(false); }}>{k.name}</button>)}
           </div>
-          <button type="button" className="btn" aria-pressed={typing || typed} onClick={() => setTyping((t) => !t)}><Icon name="search" size={13} /> Filter by topic</button>
+          <button type="button" className="btn-line" aria-pressed={typing || typed} onClick={() => setTyping((t) => !t)}><Icon name="search" size={13} /> Filter by topic</button>
         </div>
       </div>
       {typing && (

@@ -1,0 +1,189 @@
+name: explorer-nightly
+
+# The nightly load test of the explorer (design section 9; docs/METRICS.md, "The nightly load test (E13)"). It runs on a schedule and by hand, never on a pull request:
+# a pull request runs the scaled L2 in explorer.yml, and the sizes here are the design's. The one exception is a pull request that changes the nightly's own files
+# (the paths below): it runs a short version of everything, so that a change to the nightly is seen to run before it is merged. A workflow can be dispatched by
+# name only once it is on the default branch, so the first run of a new nightly is that.
+#   l1     blocks of 0 to 5,000 transactions through both stages of the indexer, held to B1 and B2
+#   l2     the API at scale: 10,000,000 transactions and 600 s of the mixed load by default (B3, B4, B6, B7)
+#   chain  the rehearsal's real chain (reth, Canton, the real builder, a stand-in prover) with W1, the worst-case block, then L3 (a flood of blocks of plain transfers),
+#          L4 (the pages in a cold browser on a slow link) and L5 (the tools against the Etherscan-compatible API: the proxy, account and contract modules; one missing from the door fails)
+on:
+  pull_request:
+    paths: [".github/workflows/explorer-nightly.yml", ".github/actions/pinned-images/**", "tests/demo_nightly_*", "tests/test_demo_nightly_*", "tests/demo_rehearsal.sh", "explorer/test/l4/**", "explorer/test/l5/**", "PINS"]
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      l2_transactions: { description: "L2: transactions in the seeded database", default: "10000000" }
+      l2_seconds: { description: "L2: seconds of load", default: "600" }
+      l3_minutes: { description: "L3: minutes of the flood of blocks (the design's is 30)", default: "30" }
+      l4_repeat: { description: "L4: cold runs of each page", default: "5" }
+
+permissions:
+  contents: read
+
+# One nightly at a time: two on one repository would fight for the runners' disk and the registry's pull limit.
+concurrency:
+  group: explorer-nightly-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # L1: the indexer's two stages on synthetic blocks, against the pinned PostgreSQL (the same as the `database` job of explorer.yml, with only L1 run).
+  l1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE POSTGRES_IMAGE
+      - name: Start the pinned PostgreSQL, on this machine's loopback only
+        run: |
+          set -a; . ./PINS; set +a
+          PGPW=$(openssl rand -hex 16)
+          echo "::add-mask::$PGPW"
+          echo "PGPW=$PGPW" >> "$GITHUB_ENV"
+          docker run -d --name explorer-nightly-l1-db --security-opt no-new-privileges -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE"
+          ok=0
+          for _ in $(seq 1 60); do
+            if docker exec explorer-nightly-l1-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
+            sleep 1
+          done
+          [ "$ok" -ge 3 ] || { docker logs explorer-nightly-l1-db; exit 1; }
+      - name: Run L1
+        run: |
+          set -a; . ./PINS; set +a
+          mkdir -p "$RUNNER_TEMP/l1"
+          docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
+            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run server/indexer/indexer.test.ts -t 'L1:'" 2>&1 | tee "$RUNNER_TEMP/l1/l1.log"
+          test "${PIPESTATUS[0]}" = 0
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### L1: synthetic blocks within the ingestion budgets"
+            echo
+            echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/l1/l1.log" | grep -E '^L1 |Tests |passed|failed' | head -20 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: l1-results
+          path: ${{ runner.temp }}/l1/l1.log
+          if-no-files-found: warn
+      - name: Remove the PostgreSQL and its volume
+        if: always()
+        run: docker rm -f -v explorer-nightly-l1-db
+
+  # L2 at the design's size. The run of this size in CI took about 50 minutes and 13 GB of disk (docs/METRICS.md).
+  l2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      L2_TRANSACTIONS: ${{ inputs.l2_transactions || (github.event_name == 'pull_request' && '300000' || '10000000') }}
+      L2_SECONDS: ${{ inputs.l2_seconds || (github.event_name == 'pull_request' && '30' || '600') }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_NODE_IMAGE POSTGRES_IMAGE
+      - name: Start the pinned PostgreSQL, on this machine's loopback only
+        run: |
+          set -a; . ./PINS; set +a
+          PGPW=$(openssl rand -hex 16)
+          echo "::add-mask::$PGPW"
+          echo "PGPW=$PGPW" >> "$GITHUB_ENV"
+          # --shm-size and the two settings are as in explorer.yml's l2 job: a table of millions of rows needs them, and the runner has 16 GB.
+          docker run -d --name explorer-nightly-l2-db --security-opt no-new-privileges --shm-size=2g -p 127.0.0.1:5432:5432 \
+            -e POSTGRES_USER=explorer -e POSTGRES_PASSWORD="$PGPW" -e POSTGRES_DB=explorer "$POSTGRES_IMAGE" \
+            -c max_connections=200 -c shared_buffers=1GB -c effective_cache_size=6GB
+          ok=0
+          for _ in $(seq 1 60); do
+            if docker exec explorer-nightly-l2-db pg_isready -U explorer -q; then ok=$((ok + 1)); [ "$ok" -ge 3 ] && break; else ok=0; fi
+            sleep 1
+          done
+          [ "$ok" -ge 3 ] || { docker logs explorer-nightly-l2-db; exit 1; }
+      - name: Disk before L2
+        run: df -h / /var/lib/docker /mnt 2>/dev/null || true
+      - name: Run L2
+        run: |
+          set -a; . ./PINS; set +a
+          docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
+            -e L2=1 -e L2_TRANSACTIONS -e L2_SECONDS -e L2_SSE=2000 -e L2_RESULTS=/repo/explorer/l2-results.json \
+            -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
+            sh -c "npm ci --ignore-scripts && npx vitest run test/l2 --maxWorkers=2"
+      - name: Summary
+        if: always()
+        run: |
+          if [ -s explorer/l2-results.json ]; then
+            jq -r '"### L2: the API at scale\n\n\(.transactions) transactions, \(.seconds) s at \(.rate) requests a second, \(.streams) live-stream clients; database \((.databaseBytes / 1e9 * 10 | round) / 10) GB (\((.gigabytesPerMillionTransactions * 100 | round) / 100) GB per million transactions, budget 2.5); seed \(.seedSeconds | round) s; live stream p95 \(.sse.p95) s; ingestion p95 \(.ingestion.p95) ms"' explorer/l2-results.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '### L2: the API at scale\n\nNo results: the run stopped before it wrote them.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: l2-results
+          path: explorer/l2-results.json
+          if-no-files-found: warn
+      - name: Remove the PostgreSQL and its volume
+        if: always()
+        run: docker rm -f -v explorer-nightly-l2-db
+
+  # W1 and the lab on the real chain (what the demo's rehearsal does), then L3, L4 and L5 on the same chain, through tests/demo_nightly_chain.sh. L3's index lag is held to B1 (2.75 s on this runner, the lead's ruling of 2026-10-23), and its time to final is not
+  # measured (no GPU, a stand-in proof); the design's 30 minutes is the default length of its flood. The rehearsal fails if any part broke a budget.
+  chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      L3_MINUTES: ${{ inputs.l3_minutes || (github.event_name == 'pull_request' && '3' || '30') }}
+      L4_REPEAT: ${{ inputs.l4_repeat || (github.event_name == 'pull_request' && '2' || '5') }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE EXPLORER_NODE_IMAGE EXPLORER_RUST_IMAGE POSTGRES_IMAGE SOLC_IMAGE SOLC_SANDBOX_IMAGE
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: EXPLORER_BROWSER_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: The browser image is the pinned one
+        run: |
+          set -a; . ./PINS; set +a
+          test "$(docker image inspect --format '{{.Id}}' "$EXPLORER_BROWSER_IMAGE")" = "$EXPLORER_BROWSER_IMAGE_ID"
+          docker run --rm --user "$(id -u):$(id -g)" "$EXPLORER_BROWSER_IMAGE" node --version
+      - name: The rehearsal, then the nightly part
+        run: |
+          case "$L3_MINUTES" in ''|*[!0-9]*) echo "l3_minutes must be a whole number"; exit 1;; esac
+          case "$L4_REPEAT" in ''|*[!0-9]*) echo "l4_repeat must be a whole number"; exit 1;; esac
+          export NIGHTLY_OUT="$RUNNER_TEMP/nightly"
+          export L3_SECONDS=$((L3_MINUTES * 60))
+          export REHEARSAL_NIGHTLY=tests/demo_nightly_chain.sh
+          tests/demo_rehearsal.sh
+      - name: Summary
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/nightly/summary.md" ]; then
+            cat "$RUNNER_TEMP/nightly/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '### The nightly load test on the rehearsal chain\n\nNo summary: the rehearsal stopped before the nightly part wrote it.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chain-results
+          path: ${{ runner.temp }}/nightly
+          if-no-files-found: warn

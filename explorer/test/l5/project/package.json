@@ -1,0 +1,14 @@
+{
+  "name": "canton-zk-evm-explorer-l5",
+  "private": true,
+  "description": "L5 of the explorer's load test: the tools a developer verifies a contract with (Hardhat, ethers), pinned by the lockfile. Foundry is pinned in TOOLS.",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@nomicfoundation/hardhat-verify": "2.1.3",
+    "ethers": "6.17.0",
+    "hardhat": "2.29.1"
+  }
+}
