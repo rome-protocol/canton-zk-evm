@@ -109,11 +109,13 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .acell { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .acell .hx { display: inline-flex; align-items: center; gap: 5px; }
 .acell .ic { color: var(--muted); flex: none; }
+.acell .aname { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; }
 .acell .verified { display: inline-flex; color: var(--ok); }
 .tchip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 500; border-radius: 999px; padding: 1px 9px; border: 1px solid; white-space: nowrap; }
 .tchip-ft { color: var(--evm); background: var(--evm-tint); border-color: var(--evm-line); }
 .tchip-nft { color: var(--canton); background: var(--canton-tint); border-color: var(--canton-line); }
 .tchip .ic { flex: none; }
+.tchip .tname { display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate; vertical-align: bottom; }
 
 /* status words */
 .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; border-radius: 999px; padding: 2px 10px 2px 8px; border: 1px solid; white-space: nowrap; }

@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { Label, TokenMove } from "../api.ts";
-import { addr } from "../test-utils.tsx";
+import { useLabels } from "../labels.ts";
+import { addr, fakeApi, reply } from "../test-utils.tsx";
 import { AddressCell } from "./AddressCell.tsx";
 import { TokenChip } from "./Amount.tsx";
 import { ICON_NAMES } from "./Icon.tsx";
@@ -48,9 +52,23 @@ describe("an address cell", () => {
     expect(screen.getByRole("link")).toHaveAttribute("href", "/somewhere");
   });
 
-  it("matches the label whatever the case of the address", () => {
-    cell(usd.address.toUpperCase().replace("0X", "0x"), usd);
-    expect(screen.getByRole("link", { name: "Test USD (tUSD)" })).toBeInTheDocument();
+  it("finds the label of a mixed-case address through useLabels, which is what a page passes in", async () => {
+    fakeApi((path) => reply({ items: new URL(path, "http://x").searchParams.get("addresses")!.split(",").map((a) => (a === usd.address ? usd : { ...usd, address: a, name: null, symbol: null, kind: null })) }));
+    const mixed = "0x" + usd.address.slice(2).toUpperCase();
+    function Row() {
+      const labels = useLabels([mixed]);
+      return <AddressCell address={mixed} label={labels.get(mixed)} />;
+    }
+    render(<QueryClientProvider client={new QueryClient()}><MemoryRouter><Row /></MemoryRouter></QueryClientProvider>);
+    await waitFor(() => expect(screen.getByRole("link", { name: "Test USD (tUSD)" })).toBeInTheDocument());
+  });
+
+  it("isolates a name's direction and keeps the whole name in its tooltip, so a hostile name cannot reorder the text beside it", () => {
+    const hostile = "\u202eEvil".padEnd(300, "x");
+    const { container } = cell(usd.address, { ...usd, name: hostile, symbol: null });
+    const name = container.querySelector(".acell .aname")!;
+    expect(name.querySelector("bdi")).not.toBeNull();
+    expect(name.getAttribute("title")).toBe(hostile);
   });
 });
 
@@ -100,6 +118,34 @@ describe("a token amount chip", () => {
   it("does not show an amount the logs did not carry", () => {
     render(<TokenChip move={move({ amount: null, tokenId: null })} label={usd} />);
     expect(screen.getByText("tUSD").closest(".tchip")!.getAttribute("title")).toMatch(/amount is not in the logs/i);
+  });
+});
+
+describe("a long token id and name in a chip", () => {
+  const id = "9".repeat(78);
+  it("shortens a 78-digit token id and keeps the whole id in the tooltip", () => {
+    render(<TokenChip move={move({ token: pass.address, amount: null, tokenId: id, standard: "ERC-721", decimals: null })} label={pass} />);
+    const chip = screen.getByText(/OPASS/).closest(".tchip")!;
+    expect(chip.textContent).toBe("OPASS #999999…9999");
+    expect(chip.getAttribute("title")).toContain(id);
+  });
+  it("keeps the symbol in its own bidi-isolated element", () => {
+    const { container } = render(<TokenChip move={move()} label={{ ...usd, symbol: "\u202eEVIL" }} />);
+    expect(container.querySelector(".tchip bdi.tname")?.textContent).toBe("100 \u202eEVIL");
+  });
+});
+
+describe("the cells' styles", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "styles.css"), "utf8");
+  const rule = (sel: string) => css.split("\n").find((l) => l.startsWith(sel + " {")) ?? "";
+  it("cuts a long name short with an ellipsis, and isolates its direction", () => {
+    for (const sel of [".acell .aname", ".tchip .tname"]) {
+      const r = rule(sel);
+      expect(r, sel).toMatch(/max-width:\s*[\d.]+(ch|px|em|rem)/);
+      expect(r, sel).toMatch(/overflow:\s*hidden/);
+      expect(r, sel).toMatch(/text-overflow:\s*ellipsis/);
+      expect(r, sel).toMatch(/unicode-bidi:\s*isolate/);
+    }
   });
 });
 

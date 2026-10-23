@@ -22,8 +22,8 @@ describe("the standard ABI", () => {
   it("holds every external function and every event of the gateway source (gateway/Gateway.sol)", () => {
     const src = readFileSync(new URL("../../gateway/Gateway.sol", import.meta.url), "utf8").replace(/\/\/.*$/gm, "");
     const types = (params: string) => params.split(",").map((p) => p.trim().split(/\s+/)[0]).filter(Boolean).join(",");
-    const functions = [...src.matchAll(/function\s+(\w+)\s*\(([^)]*)\)\s*external/g)].map((m) => `${m[1]}(${types(m[2])})`);
-    const events = [...src.matchAll(/event\s+(\w+)\s*\(([^)]*)\)/g)].map((m) => `${m[1]}(${types(m[2])})`);
+    const functions = [...src.matchAll(/function\s+(\w+)\s*\(([^)]*)\)\s*external/g)].map((m) => `${m[1]}(${types(m[2] ?? "")})`);
+    const events = [...src.matchAll(/event\s+(\w+)\s*\(([^)]*)\)/g)].map((m) => `${m[1]}(${types(m[2] ?? "")})`);
     expect(functions.length).toBeGreaterThanOrEqual(6);
     expect(events).toContain("Leg(uint8,bytes32,address,address,uint256,string)");
     const names = methodNames(STANDARD_ABI);

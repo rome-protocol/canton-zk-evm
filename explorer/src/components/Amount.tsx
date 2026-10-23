@@ -18,15 +18,18 @@ export function TokenChip({ move, label }: { move: TokenMove; label?: Label | nu
   const name = symbol ?? short(move.token, 8, 4);
   const notes: string[] = [];
   if (!symbol) notes.push("The name of this token is not known.");
+  // The words are the contract's own: set apart (bdi) so that they cannot reorder the text beside the chip, and cut short if very long.
+  const text = (words: string) => <bdi className="tname">{words}</bdi>;
   if (move.tokenId !== null) {
     const copies = move.amount !== null && move.amount !== "1" ? `${count(move.amount)} × ` : "";
-    return <span className="tchip tchip-nft" title={[labelName(label) ?? move.token, ...notes].join(" ")}>{copies}{name} #{move.tokenId}</span>;
+    // A token id can be 78 digits: the chip keeps its ends, and the tooltip the whole id.
+    return <span className="tchip tchip-nft" title={[labelName(label) ?? move.token, `#${move.tokenId}`, ...notes].join(" ")}>{text(`${copies}${name} #${short(move.tokenId, 6, 4)}`)}</span>;
   }
-  if (move.amount === null) return <span className="tchip tchip-ft" title={[...notes, "The amount is not in the logs."].join(" ")}><Icon name="coin" size={12} />{name}</span>;
+  if (move.amount === null) return <span className="tchip tchip-ft" title={[...notes, "The amount is not in the logs."].join(" ")}><Icon name="coin" size={12} />{text(name)}</span>;
   const decimals = move.decimals ?? label?.decimals ?? null;
   if (decimals === null) {
     notes.push("Its decimals are not known, so this is the raw count in the token's smallest unit.");
-    return <span className="tchip tchip-ft" title={notes.join(" ")}><Icon name="coin" size={12} />{count(move.amount)} {name}</span>;
+    return <span className="tchip tchip-ft" title={notes.join(" ")}><Icon name="coin" size={12} />{text(`${count(move.amount)} ${name}`)}</span>;
   }
-  return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{`${units(move.amount, decimals)} ${name}`}</span>;
+  return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${units(move.amount, decimals)} ${name}`)}</span>;
 }
