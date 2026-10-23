@@ -48,9 +48,10 @@ function checksText(s: ApiStatus, checks: ReadonlyArray<{ status: string }> | un
 /** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. The values are bold; on a phone only the first two stay. */
 function TopBar({ status: s }: { status: ApiStatus }) {
   const now = useNow();
-  const health = useHealth().data;
+  const painted = usePainted();
+  const health = useHealth(painted).data;
   // The base fee is the newest final block's: the list route carries it, so the bar reads one block.
-  const newest = useBlocks(1, false, usePainted());
+  const newest = useBlocks(1, false, painted);
   const fee = newest.isError ? "Base fee cannot be read right now" : newest.data ? (newest.data.items[0] ? <>Base fee <b>{baseFee(newest.data.items[0].baseFee)}</b></> : "Base fee: no block yet") : "Base fee reading…";
   const tone = s.ok && !health?.checks.some((c) => c.status !== "ok") ? "ok" : s.ok ? "bad" : s.starting && !s.problems.length ? "off" : "bad";
   return (

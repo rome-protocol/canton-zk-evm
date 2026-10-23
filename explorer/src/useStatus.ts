@@ -10,9 +10,9 @@ export function useStatus() {
   return useQuery({ queryKey: ["status"], queryFn: getStatus, refetchInterval: POLL_MS });
 }
 
-/** The checks the server runs, read as often as the status. The top bar counts them; a page that cannot read them says nothing of the count. */
-export function useHealth() {
-  return useQuery({ queryKey: ["health"], queryFn: getHealth, refetchInterval: POLL_MS, retry: false });
+/** The checks the server runs, read as often as the status, once the first frame is drawn (`enabled`). The top bar counts them; a page that cannot read them says nothing of the count. */
+export function useHealth(enabled = true) {
+  return useQuery({ queryKey: ["health"], queryFn: getHealth, refetchInterval: POLL_MS, retry: false, enabled });
 }
 
 /** The time now, drawn again every second. The "ago" texts read it, so they keep counting while the status answer stays the same. */
