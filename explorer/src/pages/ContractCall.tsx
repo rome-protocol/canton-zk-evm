@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { typeOf, type AbiEntry, type AbiParam } from "../abi.ts";
 import type { Shown } from "../abi-call.ts";
@@ -16,10 +16,14 @@ export function useChoice(abis: Abis) {
   const note: ReactNode = abis.implementationAddress && abis.implementation
     ? <>Read and Write as proxy: {use === "implementation" ? "the functions are the implementation's" : "the functions are the proxy's own"}, called at this address. Implementation <Link className="mono" to={`/contract/${abis.implementationAddress}`}>{abis.implementationAddress.slice(0, 8)}…{abis.implementationAddress.slice(-4)}</Link>.</>
     : null;
+  const unknownImpl = abis.implementationAddress !== null && abis.implementation === null && abis.own !== null;
+  const note2: ReactNode = note ?? (unknownImpl
+    ? <>This contract is a proxy, and its implementation <Link className="mono" to={`/contract/${abis.implementationAddress}`}>{abis.implementationAddress!.slice(0, 8)}…{abis.implementationAddress!.slice(-4)}</Link> is not verified, so the implementation's functions are not known. These are the proxy's own functions.</>
+    : null);
   const switcher = both
     ? <div className="seg" role="group" aria-label="Functions from">{(["implementation", "own"] as const).map((o) => <button key={o} type="button" aria-pressed={o === use} onClick={() => setPick(o)}>{o === "own" ? "Proxy's own ABI" : "As proxy"}</button>)}</div>
     : null;
-  return { entries, note, switcher };
+  return { entries, note: note2, switcher };
 }
 
 /** What stands in for the functions while the ABI is read, when there is none to read, or when it could not be read. */
@@ -35,10 +39,11 @@ export const headline = (e: AbiEntry) => `${e.name} (${(e.inputs ?? []).map((p, 
 
 /** The typed fields of a function's inputs. */
 export function Fields({ e, values, onChange }: { e: AbiEntry; values: string[]; onChange: (i: number, v: string) => void }) {
+  const uid = useId(); // by position in the page, not by name: overloaded functions share a name
   return (
     <>
       {(e.inputs ?? []).map((p, i) => {
-        const id = `f-${e.name}-${i}`;
+        const id = `${uid}-f${i}`;
         return (
           <div className="field" key={i}>
             <label htmlFor={id} className="muted small">{label(p, i)}</label>

@@ -79,6 +79,26 @@ describe("the contract page: Read", () => {
     for (const c of rpcCalls.filter((x) => x.method === "eth_call")) expect((c.params[0] as { to: string }).to).toBe(A);
   });
 
+  it("says so when a proxy's implementation is not verified and lists the proxy's own functions", async () => {
+    const detail = contractDetail(0xcb, { proxy: { kind: "eip1967", implementation: IMPL, beacon: null, checkedBlock: 21 } });
+    await open("read", { detail, sources: { [A]: contractSource(0xcb, { abi: TOKEN_ABI }), [IMPL]: unverifiedSource(0xdd) } });
+    await waitFor(() => expect(document.body.textContent).toMatch(/is not verified, so the implementation's functions are not known\. These are the proxy's own functions/));
+    expect(screen.getByRole("region", { name: "name" })).toBeInTheDocument();
+  });
+
+  it("labels the fields of two overloaded functions each its own", async () => {
+    const abi = [
+      { type: "function", name: "get", stateMutability: "view", inputs: [{ name: "a", type: "uint256" }], outputs: [{ name: "", type: "uint256" }] },
+      { type: "function", name: "get", stateMutability: "view", inputs: [{ name: "a", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+    ];
+    await open("read", { sources: { [A]: contractSource(0xcb, { abi }) } });
+    await userEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    const one = screen.getByLabelText("a (uint256)"), two = screen.getByLabelText("a (address)");
+    expect(one.id).not.toBe(two.id);
+    await userEvent.type(one, "7");
+    expect(two).toHaveValue("");
+  });
+
   it("says the functions are not known while the source is not verified", async () => {
     const { rpcCalls } = await open("read", { sources: { [A]: unverifiedSource(0xcb) }, detail: contractDetail(0xcb, { verified: false, matchType: null, verification: null }) });
     expect(await screen.findByText(/not verified, so its functions are not known/)).toBeInTheDocument();

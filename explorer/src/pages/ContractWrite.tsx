@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { parseUnits } from "viem";
 import { callable, encodeCall, type AbiEntry } from "../abi-call.ts";
 import type { ApiStatus, ContractDetail } from "../api.ts";
@@ -19,6 +19,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
   const [sent, setSent] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const payable = e.stateMutability === "payable";
+  const valueId = `${useId()}-value`;
   const ready = wallet.canSend;
   const send = async () => {
     const w = injected();
@@ -42,8 +43,8 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
         <Fields e={e} values={values} onChange={(i, v) => setValues((a) => { const b = [...a]; b[i] = v; return b; })} />
         {payable && (
           <div className="field">
-            <label htmlFor={`v-${e.name}`} className="muted small">Value ({coin?.symbol ?? "coin"})</label>
-            <input id={`v-${e.name}`} className="inp mono" type="text" inputMode="decimal" autoComplete="off" placeholder={`value (${coin?.symbol ?? "coin"})`} value={value} onChange={(ev) => setValue(ev.target.value)} />
+            <label htmlFor={valueId} className="muted small">Value ({coin?.symbol ?? "coin"})</label>
+            <input id={valueId} className="inp mono" type="text" inputMode="decimal" autoComplete="off" placeholder={`value (${coin?.symbol ?? "coin"})`} value={value} onChange={(ev) => setValue(ev.target.value)} />
           </div>
         )}
         <div className="fn-q">
