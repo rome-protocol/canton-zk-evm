@@ -91,3 +91,39 @@ describe("ticket", () => {
     expect(await client(() => Promise.reject(new TypeError("fetch failed"))).faucet.ticket("zz")).toEqual({ kind: "unreachable" });
   });
 });
+
+const FAUCET = "0xCD56aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaac6b3";
+const tx = (over: Record<string, unknown> = {}) => ({ hash: "0xaa", from: FAUCET.toLowerCase(), to: ADDRESS, block: 19, timestamp: 1000, ...over });
+
+describe("recent", () => {
+  it("reads the faucet address's final transactions and keeps only what the faucet sent", async () => {
+    const { faucet, calls } = client(() => json(200, { items: [tx(), tx({ hash: "0xbb", from: ADDRESS, to: FAUCET }), tx({ hash: "0xcc", block: 16 })], next: null }));
+    expect(await faucet.recent!(FAUCET, 6)).toEqual([
+      { hash: "0xaa", to: ADDRESS, block: 19, timestamp: 1000 },
+      { hash: "0xcc", to: ADDRESS, block: 16, timestamp: 1000 },
+    ]);
+    expect(calls[0]?.url).toBe(`/api/address/${FAUCET}/txs?limit=12`);
+  });
+  it("shows at most the number asked for, and skips rows that are not whole", async () => {
+    const { faucet } = client(() => json(200, { items: [tx({ to: null }), tx({ hash: "0x1" }), tx({ hash: "0x2" }), tx({ hash: "0x3" })], next: null }));
+    expect((await faucet.recent!(FAUCET, 2)).map((s) => s.hash)).toEqual(["0x1", "0x2"]);
+  });
+  it("says null, and never throws, when the answer cannot be read", async () => {
+    expect(await client(() => json(502, { error: "x" })).faucet.recent!(FAUCET, 6)).toBeNull();
+    expect(await client(() => json(200, { nope: 1 })).faucet.recent!(FAUCET, 6)).toBeNull();
+    expect(await client(() => { throw new Error("down"); }).faucet.recent!(FAUCET, 6)).toBeNull();
+  });
+});
+
+describe("baseFee", () => {
+  it("reads the newest block's base fee", async () => {
+    const { faucet, calls } = client(() => json(200, { items: [{ number: 21, baseFee: "67300000" }], next: null }));
+    expect(await faucet.baseFee!()).toBe("67300000");
+    expect(calls[0]?.url).toBe("/api/blocks?limit=1");
+  });
+  it("says null when there is no block, or the fee is not a number, or it cannot be read", async () => {
+    expect(await client(() => json(200, { items: [], next: null })).faucet.baseFee!()).toBeNull();
+    expect(await client(() => json(200, { items: [{ baseFee: "lots" }] })).faucet.baseFee!()).toBeNull();
+    expect(await client(() => json(500, {})).faucet.baseFee!()).toBeNull();
+  });
+});
