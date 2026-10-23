@@ -1,8 +1,8 @@
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { getAddressDetail, getContract, getToken, type AddressDetail, type ContractDetail } from "../api.ts";
+import { ApiError, getAddressDetail, getContract, getToken, type AddressDetail, type ContractDetail } from "../api.ts";
 import { ago } from "../block-times.ts";
-import { LoadingCard, unready } from "../components/Cards.tsx";
+import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
@@ -96,11 +96,18 @@ function Verification({ c }: { c: ContractDetail }) {
   );
 }
 
-/** A token's Token transfers tab is the token's own transfers (every move of it), not only those that touch the contract's address. */
+/** The token behind a contract. A failed read tries again by itself, so a limit or an outage is never read as "no token". */
+function useTokenDetail(address: string, enabled: boolean) {
+  return useQuery({ queryKey: ["token-detail", address], queryFn: () => getToken(address), enabled, retry: false, staleTime: 30_000, refetchInterval: (q) => (q.state.status === "error" ? 5000 : false) });
+}
+const notFound = (e: unknown) => e instanceof ApiError && e.status === 404;
+
+/** A token's Token transfers tab is the token's own transfers (every move of it), not only those that touch the contract's address. Only a token the route does not know falls back to the address's. */
 function TokenTransfers({ address }: { address: string }) {
-  const t = useQuery({ queryKey: ["token-detail", address], queryFn: () => getToken(address), retry: false, staleTime: 30_000 });
+  const t = useTokenDetail(address, true);
   if (t.data) return <Transfers t={t.data} />;
-  return t.isPending ? <LoadingCard>Reading the transfers…</LoadingCard> : <TransfersTab a={address} />;
+  if (t.isPending) return <LoadingCard>Reading the transfers…</LoadingCard>;
+  return notFound(t.error) ? <TransfersTab a={address} /> : <ErrorCard message={t.error instanceof Error ? t.error.message : "The explorer cannot read the chain right now."} retrying />;
 }
 
 type TabId = "transactions" | "token-transfers" | "code" | "read" | "write" | "events";
@@ -114,13 +121,16 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
   const now = useNow();
   const q = useFollowing(["contract", addr], () => getContract(addr), (d) => d.derived);
   const read = useQuery({ queryKey: ["address-detail", addr], queryFn: () => getAddressDetail(addr) });
-  const tok = useQuery({ queryKey: ["token-detail", addr], queryFn: () => getToken(addr), enabled: !!read.data?.token, retry: false, staleTime: 30_000 }).data;
+  const tokq = useTokenDetail(addr, !!read.data?.token);
+  const tok = tokq.data;
   const wait = unready(q, "Reading the contract…");
   if (wait) return wait;
   const c = q.data!;
   const a = read.data;
+  // A token's tab counts the token's own transfers; no count until that is known. Only a 404 falls back to the address's count.
+  const tokenCount = !a ? undefined : !a.token ? a.tokenTransferCount : tok ? tok.transferCount : notFound(tokq.error) ? a.tokenTransferCount : undefined;
   const tabs: { id: TabId; label: string; mark?: boolean; n?: number | string }[] = [
-    { id: "transactions", label: "Transactions", n: a ? a.sentCount + a.receivedCount : undefined }, { id: "token-transfers", label: "Token transfers", n: tok?.transferCount ?? a?.tokenTransferCount }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" }, { id: "write", label: "Write" }, { id: "events", label: "Events", n: c.eventCountCapped ? `${count(c.eventCount)}+` : c.eventCount },
+    { id: "transactions", label: "Transactions", n: a ? a.sentCount + a.receivedCount : undefined }, { id: "token-transfers", label: "Token transfers", n: tokenCount }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" }, { id: "write", label: "Write" }, { id: "events", label: "Events", n: c.eventCountCapped ? `${count(c.eventCount)}+` : c.eventCount },
   ];
   const asked = params.get("tab");
   const tab: TabId = tabs.find((t) => t.id === asked)?.id ?? "transactions";
@@ -152,7 +162,7 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
           : tab === "read" ? <ReadTab detail={c} />
           : tab === "write" ? <WriteTab detail={c} />
           : tab === "events" ? <EventsTab detail={c} />
-          : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : a?.token ? <TokenTransfers address={c.address} /> : <TransfersTab a={c.address} />}
+          : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : !a ? <LoadingCard>Reading the transfers…</LoadingCard> : a.token ? <TokenTransfers address={c.address} /> : <TransfersTab a={c.address} />}
       </div>
     </>
   );
