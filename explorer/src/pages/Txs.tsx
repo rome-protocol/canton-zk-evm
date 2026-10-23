@@ -155,12 +155,15 @@ function Cards({ live, inBlocks }: { live: boolean; inBlocks?: number }) {
   );
 }
 
+/** The first page of All: read once, for the total in the subtitle and the page count and for the rows of page 1. */
+const FIRST_KEY = ["txs", "page", "all", null] as const;
+
 type Rows = { items: TxListItem[] | undefined; error: Error | null; page: number };
 type RowsProps = { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null; inAll: Total | null; finalTotal: number | null | undefined };
 
 /** The list of All with a counted total: Page x of y, First and Last, the last page read from the other end (`order=asc`). */
 function NumberedRows(props: RowsProps) {
-  const p = useBothEnds(["txs", "page", "all"], PER, (before, n) => getTxPage(before, n, "all"), (after, n) => getTxPageOldest(after, n, "all"), listPoll(props.live));
+  const p = useBothEnds(["txs", "page", "all"], PER, (before, n) => getTxPage(before, n, "all"), (after, n) => getTxPageOldest(after, n, "all"), listPoll(props.live), FIRST_KEY);
   return <FinalList {...props} rows={{ items: p.items, error: p.error, page: p.page }} pager={<NumberedPager p={p} label="Pages of transactions" />} />;
 }
 /** The filtered lists, and All while the server cannot count: the server totals only All, so these have no page count and no Last, only newer and older. */
@@ -241,7 +244,7 @@ export function Txs() {
   const notFinal = flight.data?.transactions ?? [];
   const all = totalOf(flight.data);
   // The total comes with the first page of all; the list below shares this read when it shows that page.
-  const first = useQuery({ queryKey: ["txs", "page", "all", null], queryFn: () => getTxPage(null, PER, "all"), refetchInterval: listPoll(live) }).data;
+  const first = useQuery({ queryKey: FIRST_KEY, queryFn: () => getTxPage(null, PER, "all"), refetchInterval: listPoll(live) }).data;
   const finalTotal = first ? (first.total ?? null) : undefined;
   const inAll = totalOf(flight.data, first?.totalAsOfBlock, first?.totalAsOf);
   const counts = headline(finalTotal, inAll, flight.data);

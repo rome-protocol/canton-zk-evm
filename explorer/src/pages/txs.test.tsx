@@ -382,6 +382,12 @@ describe("the pages of All: Page x of y and Last", () => {
     expect(within(nav()).getByRole("button", { name: "First" })).toBeDisabled();
   });
 
+  it("reads the first page of All once: the subtitle total, the rows and Page x of y come from one read", async () => {
+    const calls = await open({ txs: feed });
+    await within(await screen.findByRole("navigation", { name: "Pages of transactions" })).findByText("Page 1 of 3");
+    expect(calls.filter((c) => c === "/api/txs?limit=25")).toHaveLength(1);
+  });
+
   it("opens the last page from the other end with only what it holds (total mod page size), so it never overlaps the page before", async () => {
     const calls = await open({ txs: feed });
     await userEvent.click(await within(await screen.findByRole("navigation", { name: "Pages of transactions" })).findByRole("button", { name: "Last" }));

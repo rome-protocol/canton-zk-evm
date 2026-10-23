@@ -7,11 +7,12 @@ import type { Page } from "../api.ts";
  * first) by `newest`, and the last page by reading from the other end (`oldest`, `order=asc`) with exactly what the last page holds (the total modulo the page size, or a whole
  * page when it divides), so that the two ends never overlap. From the last page, back is further along that end's key, and the rows are drawn in the list's own order.
  * `go(n)` reaches the first and last pages and the one beside this: the ones the buttons ask for. The page count is the total the server gave over the page size.
+ * `firstKey`, when given, is the query key of the first page read from the top, so a caller that reads that page itself (for a total shown elsewhere) shares one read with the list.
  */
 export function useBothEnds<P extends Page<unknown> & { total?: number | null }>(
   key: readonly unknown[], per: number,
   newest: (cursor: string | null, limit: number) => Promise<P>, oldest: (cursor: string | null, limit: number) => Promise<P>,
-  refetchInterval: number | false = false,
+  refetchInterval: number | false = false, firstKey?: readonly unknown[],
 ) {
   const id = JSON.stringify(key);
   const [st, setSt] = useState<{ id: string; end: boolean; keys: Array<string | null>; lastN: number }>({ id, end: false, keys: [null], lastN: per });
@@ -19,9 +20,11 @@ export function useBothEnds<P extends Page<unknown> & { total?: number | null }>
   const cur = st.id === id ? st : { id, end: false, keys: [null], lastN: per };
   const at = cur.keys[cur.keys.length - 1] ?? null;
   const q = useQuery<P>({
-    queryKey: [...key, cur.end, at, cur.end ? cur.lastN : per],
+    queryKey: firstKey && !cur.end && at === null ? firstKey : [...key, cur.end, at, cur.end ? cur.lastN : per],
     queryFn: () => (cur.end ? oldest(at, cur.keys.length === 1 ? cur.lastN : per) : newest(at, per)),
     placeholderData: keepPreviousData,
+    // A page read a moment ago is not read again by the list that mounts when the total arrives (the filtered list gives way to this one): one read, not two.
+    staleTime: 1000,
     refetchInterval,
   });
   const total = q.data?.total ?? 0;
