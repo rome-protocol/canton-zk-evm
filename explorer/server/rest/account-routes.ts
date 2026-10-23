@@ -8,7 +8,7 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TokenStandard, type TokenTransferItem, type TxDirection } from "./account-rest.ts";
+import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type NftGroup, type TokenSort, type TokenStandard, type TokenTransferItem, type TxDirection } from "./account-rest.ts";
 import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
@@ -87,10 +87,10 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     // The balance a tool acts on is reth's at the newest final block, never the database's copy; with no final block yet there is nothing to read it at.
     const [held, balance] = await Promise.all([accounts.address(a), head === null ? Promise.resolve(null) : reth.balanceAt(a, head)]);
     const body = {
-      address: a, kind: "account", sentCount: 0, receivedCount: 0, internalCount: 0, tokenTransferCount: 0, firstSeenBlock: null, lastActiveBlock: null, token: null, createdBy: null, ...held,
+      address: a, kind: "account", sentCount: 0, receivedCount: 0, internalCount: 0, tokenTransferCount: 0, firstSeenBlock: null, firstSeenTimestamp: null, lastActiveBlock: null, lastActiveTimestamp: null, createdCount: 0, createdCountCapped: false, fundedBy: null, token: null, createdBy: null, ...held,
       balance: balance === null ? null : balance.toString(), balanceBlock: head, derived: await isDerived(),
     };
-    return cached(ok(pick(body, F.addressDetail)), "composite");
+    return cached(ok(pick({ ...body, fundedBy: body.fundedBy && pick(body.fundedBy, F.funding) }, F.addressDetail)), "composite");
   }
 
   const CSV_MAX = 1000;
@@ -156,10 +156,16 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     if (!(TOKEN_STANDARDS as readonly string[]).includes(v)) throw new BadRequest(`standard is one of ${TOKEN_STANDARDS.join(", ")}.`);
     return v as TokenStandard;
   };
+  /** An address's transfers also take the NFT group: `nft` (or `NFT`) is ERC-721 and ERC-1155 together. */
+  const transferStandardOf = (q: URLSearchParams): TokenStandard | NftGroup | null => {
+    const v = q.get("standard");
+    if (v !== null && v.toLowerCase() === "nft") return "nft";
+    try { return standardOf(q); } catch { throw new BadRequest(`standard is one of ${TOKEN_STANDARDS.join(", ")}, or nft for ERC-721 and ERC-1155 together.`); }
+  };
 
   async function addressTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const format = formatOf(q), standard = standardOf(q), token = q.get("token");
+    const format = formatOf(q), standard = transferStandardOf(q), token = q.get("token");
     if (token !== null) addressOf(token);
     if (format === "csv") return transfersCsv(`token-transfers-${a}.csv`, csvLimitOf(q), (limit) => accounts.addressTransfers(a, null, limit, { token, standard }));
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]);
@@ -184,9 +190,9 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
    */
   async function transfersCsv(name: string, limit: number, read: (limit: number) => Promise<TokenTransferItem[]>): Promise<Answer> {
     const [rows, derived] = [(await read(limit)).slice(0, limit), await isDerived()];
-    const lines = ["tx_hash,block,log_index,batch_index,time,method_id,token,standard,from,to,amount,token_id"];
+    const lines = ["tx_hash,block,log_index,batch_index,time,method_id,creation,token,standard,from,to,amount,token_id"];
     for (const t of rows) {
-      lines.push([t.txHash, t.block, t.logIndex, t.batchIndex, new Date(t.timestamp * 1000).toISOString(), t.methodId, t.token, t.standard, t.from, t.to, t.amount, t.tokenId].map(csvCell).join(","));
+      lines.push([t.txHash, t.block, t.logIndex, t.batchIndex, new Date(t.timestamp * 1000).toISOString(), t.methodId, String(t.creation), t.token, t.standard, t.from, t.to, t.amount, t.tokenId].map(csvCell).join(","));
     }
     const answer = ok(lines.join("\r\n") + "\r\n");
     return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${name}"`, "x-derived": String(derived) } }, "list");
@@ -206,6 +212,13 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return cached(ok(page(rows, limit, (h) => keyOf(h.token, h.tokenId), F.holding, await isDerived())), "composite");
   }
 
+  async function addressContracts(a: string, q: URLSearchParams): Promise<Answer> {
+    addressOf(a);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "addr"]);
+    const rows = await accounts.contractsMadeBy(a, before, limit);
+    return cached(ok(page(rows, limit, (c) => keyOf(c.creationBlock ?? 0, c.creationTxIndex ?? 0, c.address), F.contractItem, await isDerived())), "list");
+  }
+
   async function coinHistory(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int"]);
@@ -215,10 +228,12 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function contractList(q: URLSearchParams): Promise<Answer> {
     const by = sort<ContractSort>(q, SORTS.contracts), limit = limitOf(q.get("limit")), verified = verifiedOf(q.get("verified"));
-    const before = cursorOf(q.get("before"), by === "interactions" ? ["int", "addr"] : ["int", "int4", "addr"]);
-    const rows = await accounts.contracts(by, verified, before, limit);
+    const order = orderOf(q);
+    const before = cursorOf(q.get(order === "asc" ? "after" : "before"), by === "interactions" ? ["int", "addr"] : ["int", "int4", "addr"]);
+    const [rows, counts] = await Promise.all([accounts.contracts(by, verified, before, limit, order), accounts.contractCounts()]);
     const key = (c: (typeof rows)[number]) => (by === "interactions" ? keyOf(c.interactionCount, c.address) : keyOf(c.creationBlock ?? 0, c.creationTxIndex ?? 0, c.address));
-    return cached(ok(page(rows, limit, key, F.contractItem, await isDerived())), "list");
+    const total = verified === null ? counts.all : verified ? counts.verified : counts.notVerified;
+    return cached(ok(pick({ ...page(rows, limit, key, F.contractItem, await isDerived()), total, counts }, F.contractPage)), "list");
   }
 
   async function oneContract(a: string): Promise<Answer> {
@@ -232,7 +247,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     addressOf(a);
     const { held, source } = await accounts.source(a);
     if (!held) return missing(NO_CONTRACT);
-    const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, matchNote: null, libraries: null, verifiedAt: null };
+    const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, matchNote: null, libraries: null, verifiedAt: null, method: null, tool: null };
     const body = source ? { ...source, address: a, verified: true, files: source.files.map((f) => pick(f, F.sourceFile)) } : empty;
     return cached(ok(pick(body, F.source)), "composite");
   }
@@ -316,6 +331,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/addresses/{address}/internal", (a, q) => addressInternal(a, q)],
     ["/api/addresses/{address}/token-transfers", (a, q) => addressTransfers(a, q)],
     ["/api/addresses/{address}/tokens", (a, q) => addressTokens(a, q)],
+    ["/api/addresses/{address}/contracts", (a, q) => addressContracts(a, q)],
     ["/api/addresses/{address}/coin-history", (a, q) => coinHistory(a, q)],
     ["/api/contracts", (_, q) => contractList(q)],
     ["/api/contracts/{address}", (a) => oneContract(a)],

@@ -25,6 +25,20 @@ suite("the verification job queue", () => {
     expect(await q.status("00000000-0000-4000-8000-000000000000")).toBeNull();
   });
 
+  it("records how a submission came in and the tool it named, and hands both to the verifier that takes the job", async () => {
+    const q = new JobQueue(db.pool);
+    await q.submit(req(), client(1), { method: "etherscan", tool: "forge" });
+    expect((await db.pool.query("select method, tool from verification_jobs")).rows).toEqual([{ method: "etherscan", tool: "forge" }]);
+    expect(await q.claim(60_000)).toMatchObject({ via: { method: "etherscan", tool: "forge" } });
+    await db.pool.query("truncate verification_jobs");
+    await q.submit(req(), client(2), { method: "api", tool: null });
+    expect(await q.claim(60_000)).toMatchObject({ via: { method: "api", tool: null } });
+    // A job queued without it (the queue's older callers, a row from before) has no method, and says so.
+    await db.pool.query("truncate verification_jobs");
+    await q.submit(req(), client(3));
+    expect(await q.claim(60_000)).toMatchObject({ via: null });
+  });
+
   it("refuses too large a source before anything is stored, and a bad address", async () => {
     const q = new JobQueue(db.pool, { maxSourceBytes: 100 });
     await expect(q.submit(req({ sourceCode: "x".repeat(101) }), client(1))).rejects.toMatchObject({ status: 413 });

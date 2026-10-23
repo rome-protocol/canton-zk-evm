@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { MAX_SOURCE_BYTES, type VerifyRequest } from "./request.ts";
+import { MAX_SOURCE_BYTES, type Via, type VerifyMethod, type VerifyRequest, type VerifyTool } from "./request.ts";
 
 /** A submission that is refused: `status` is the HTTP status the route answers with. */
 export class SubmitRefused extends Error {
@@ -22,7 +22,8 @@ export const DEFAULT_LIMITS: QueueLimits = { maxSourceBytes: MAX_SOURCE_BYTES, p
 export type JobStatus = "pending" | "running" | "pass" | "fail" | "already";
 export interface JobView { guid: string; status: JobStatus; result: string }
 /** `attempts` is how many times the job was put back before this claim. */
-export interface Claimed { guid: string; request: VerifyRequest; createdAt: Date; attempts: number }
+/** `via` is how the submission came in; null for a job queued without it. */
+export interface Claimed { guid: string; request: VerifyRequest; createdAt: Date; attempts: number; via: Via | null }
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 /** What `checkverifystatus` says while a job has not ended (Etherscan's words). */
@@ -36,8 +37,8 @@ export class JobQueue {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
   }
 
-  /** Queues a request and returns its GUID. `clientKey` is the keyed hash of the client's address. */
-  async submit(req: VerifyRequest, clientKey: Buffer): Promise<string> {
+  /** Queues a request and returns its GUID. `clientKey` is the keyed hash of the client's address; `via` is how the request came in, which the job records. */
+  async submit(req: VerifyRequest, clientKey: Buffer, via: Via | null = null): Promise<string> {
     if (!ADDRESS.test(req.address ?? "")) throw new SubmitRefused(400, "The contract address is not an address.");
     if (typeof req.sourceCode !== "string" || req.sourceCode === "") throw new SubmitRefused(400, "No source code was sent.");
     const sourceBytes = Buffer.byteLength(req.sourceCode);
@@ -55,9 +56,9 @@ export class JobQueue {
       if (Number(counts.mine) >= this.limits.perClientPerHour) throw new SubmitRefused(429, `At most ${this.limits.perClientPerHour} verifications an hour from one client.`);
       if (Number(counts.waiting) >= this.limits.maxWaiting) throw new SubmitRefused(503, "Too many verifications are waiting; try again later.");
       await client.query(
-        `insert into verification_jobs (guid, kind, address, request, request_bytes, status, client_key, created_at)
-         values ($1, 'source', $2, $3::jsonb, $4, 'pending', $5, now())`,
-        [guid, Buffer.from(req.address.slice(2), "hex"), json, Buffer.byteLength(json), clientKey],
+        `insert into verification_jobs (guid, kind, address, request, request_bytes, status, client_key, created_at, method, tool)
+         values ($1, 'source', $2, $3::jsonb, $4, 'pending', $5, now(), $6, $7)`,
+        [guid, Buffer.from(req.address.slice(2), "hex"), json, Buffer.byteLength(json), clientKey, via?.method ?? null, via?.tool ?? null],
       );
       await client.query("commit");
       return guid;
@@ -110,12 +111,12 @@ export class JobQueue {
   async claim(leaseMs: number): Promise<Claimed | null> {
     await this.pool.query(
       "update verification_jobs set status = 'pending', lease_until = null where status = 'running' and lease_until < now()");
-    const r = (await this.pool.query<{ guid: string; request: VerifyRequest; created_at: Date; attempts: number }>(
+    const r = (await this.pool.query<{ guid: string; request: VerifyRequest; created_at: Date; attempts: number; method: VerifyMethod | null; tool: VerifyTool | null }>(
       `update verification_jobs set status = 'running', started_at = now(), lease_until = now() + ($1::int * interval '1 millisecond')
        where guid = (select guid from verification_jobs where status = 'pending' and (not_before is null or not_before <= now())
                       order by created_at limit 1 for update skip locked)
-       returning guid, request, created_at, attempts`, [leaseMs])).rows[0];
-    return r ? { guid: r.guid, request: r.request, createdAt: r.created_at, attempts: r.attempts } : null;
+       returning guid, request, created_at, attempts, method, tool`, [leaseMs])).rows[0];
+    return r ? { guid: r.guid, request: r.request, createdAt: r.created_at, attempts: r.attempts, via: r.method === null ? null : { method: r.method, tool: r.tool } } : null;
   }
 
   /** Ends a job with its result; its sources are dropped. A job that is not running any more (its lease ran out and another role has it) is left alone. */

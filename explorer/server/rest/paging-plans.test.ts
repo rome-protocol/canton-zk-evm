@@ -7,7 +7,7 @@ import { createChainRest } from "./chain-rest.ts";
 
 /**
  * A keyset page must cost its own rows, not the table: the comparison on the key is an index condition. The queries are the real ones, recorded as the
- * routes' code sends them, and each is explained with sequential scans off (the tables here are empty, so the planner's own pick says nothing).
+ * routes' code sends them, and each is explained with sequential and bitmap scans off (the tables here are empty, so the planner's own pick says nothing).
  */
 describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
   checkRequired();
@@ -24,6 +24,7 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     const c = await pool.connect();
     try {
       await c.query("set enable_seqscan = off");
+      await c.query("set enable_bitmapscan = off");
       return (await c.query(`explain ${q!.sql}`, q!.values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
     } finally { c.release(); }
   }
@@ -91,6 +92,26 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(await plan(/order by tk\.first_transfer_block desc/)).toMatch(/Index Cond: \(ROW\(first_transfer_block, address\) </);
     await accounts.holdings(addr, [addr, "0"], 10);
     expect(await plan(/b\.holder = \$1/)).toMatch(/token_balances_holdings_idx/);
+  });
+
+  it("the contract list's last page reads the same indexes backward, in each sort and with the verified filter", async () => {
+    const accounts = createAccountRest(recording());
+    // Newest from the other end reads oldest first and oldest from the other end reads newest first: the one index of the place, both ways. The most-interactions index is read backward.
+    await accounts.contracts("newest", null, [5, 1, addr], 10, "asc");
+    const newest = await plan(/coalesce\(c\.creation_block, 0\) asc, coalesce\(c\.creation_tx_index, 0\) asc, c\.address asc/);
+    expect(newest).toMatch(/Index Cond: \(ROW\(COALESCE\(creation_block/);
+    expect(newest).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("oldest", null, [5, 1, addr], 10, "asc");
+    const oldest = await plan(/coalesce\(c\.creation_block, 0\) desc, coalesce\(c\.creation_tx_index, 0\) desc, c\.address desc/);
+    expect(oldest).toMatch(/Index Cond: \(ROW\(COALESCE\(creation_block/);
+    expect(oldest).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("interactions", null, [5, addr], 10, "asc");
+    const busy = await plan(/order by c\.interaction_count asc, c\.address asc/);
+    expect(busy).toMatch(/Index Scan Backward using contracts_interaction_count_address_idx on contracts/);
+    expect(busy).toMatch(/Index Cond: \(ROW\(interaction_count, address\) >/);
+    expect(busy).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("interactions", true, [5, addr], 10, "asc");
+    expect(await plan(/order by c\.interaction_count asc, c\.address asc/)).not.toMatch(/Seq Scan|Sort Key/);
   });
 
   it("an address's page of transactions reads each of its three keys, sent, received and created, through an index that is the page's own order", async () => {
@@ -165,5 +186,103 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     }
     await accounts.holders(addr, ["7", addr, "0"], 10);
     expect(await plan(/order by b\.value desc, b\.holder desc, b\.token_id desc/)).toMatch(/Index Cond: .*ROW\(value, holder, token_id\) </s);
+  });
+
+  it("an address's facts read through indexes of their own: its funder, the contracts it made and how many", async () => {
+    await ensurePartitions(pool, { head: 1 });
+    const accounts = createAccountRest(recording());
+    await accounts.address(addr);
+    const facts = await plan(/left join lateral/);
+    // The funder: the partial index of transactions that carried value (a second index on the address, named after the first's), read oldest first and stopped at one row,
+    // with no filter on the rows read and no sort. The creations are counted from the index of the creator, without the table.
+    expect(facts).toMatch(/Index Scan using transactions_p\d+_to_address_block_number_tx_index_idx\d+ on transactions_p\d+ t_\d+/);
+    expect(facts).toMatch(/Index Only Scan using contracts_creator_place_idx on contracts k/);
+    expect(facts).not.toMatch(/Seq Scan|Sort Key|^\s*Filter:/m);
+    await accounts.contractsMadeBy(addr, [5, 1, addr], 10);
+    const made = await plan(/where c\.creator = \$1/);
+    expect(made).toMatch(/Index Scan using contracts_creator_place_idx on contracts c/);
+    expect(made).toMatch(/Index Cond: \(\(creator = .*ROW\(COALESCE\(creation_block/);
+    expect(made).not.toMatch(/Seq Scan|Sort Key|^\s*Filter:/m);
+  });
+
+  it("an address's token transfers of one token, of a standard, or of the NFT group read the index of the filter on both sides, with no filter on the rows read", async () => {
+    await ensurePartitions(pool, { head: 1 });
+    // Many ERC-20 transfers over many senders, and a few (spread thin, so that a token is far fewer than the rows of its address) of each other: with no rows the planner's pick of an index says nothing. The rows go in the way the
+    // account tests put them in, and out again at the end.
+    const rows = (token: number, amount: string, id: string, count: number) => pool.query(
+      `insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id)
+       select 1, $2::int + g, 0, 0, decode(repeat(lpad(to_hex($1::int), 2, '0'), 20), 'hex'), decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex'), decode(repeat(lpad(to_hex(16 + (g + 7) % 40), 2, '0'), 20), 'hex'), ${amount}, ${id} from generate_series(1, $3::int) g`,
+      [token, token * 100000, count],
+    );
+    await rows(0x31, "1", "null", 3000);
+    await rows(0x32, "null", "g", 60);
+    await rows(0x33, "1", "g", 60);
+    await rows(0x34, "1", "null", 60);
+    await pool.query("analyze token_transfers");
+    try {
+      await transferPlans();
+    } finally {
+      await pool.query("delete from token_transfers where block_number = 1");
+    }
+  });
+
+  async function transferPlans(): Promise<void> {
+    const accounts = createAccountRest(recording());
+    const who = "0x" + "11".repeat(20), tok = "0x" + "34".repeat(20);
+    // The partition that holds rows (the first) reads, on each side, an index-only scan of the index of the filter (the partial index of the standard, which the plan does not name, or the one of the token), with the address and the key as its index condition; the
+    // other partitions are empty here, so what the planner picks for them says nothing. The one sort is the page's own, over at most two pages of keys.
+    const sides = (p: string, index: string) => {
+      for (const side of ["from", "to"]) {
+        const line = p.split("\n").findIndex((l) => new RegExp(`Index Only Scan using token_transfers_p000000_${side}_${index}\\w* on token_transfers_p000000`).test(l));
+        expect(line, `${side} ${index}\n${p}`).toBeGreaterThanOrEqual(0);
+        expect(p.split("\n")[line + 2] ?? "").not.toMatch(/Filter:/);
+        expect(p.split("\n")[line + 1]).toMatch(new RegExp(`Index Cond: \\(\\(${side}_address = .*ROW\\(block_number, log_index, batch_index\\) <`));
+      }
+      expect(p).not.toMatch(/Seq Scan on token_transfers/);
+      expect(p.match(/Sort Key/g)?.length).toBe(1);
+    };
+    const cases: [{ token?: string; standard?: "ERC-20" | "ERC-721" | "ERC-1155" | "nft" }, string][] = [
+      [{ token: tok }, "address_token"], [{ standard: "ERC-20" }, "address_block_number_log_"], [{ standard: "ERC-721" }, "address_block_number_log_"], [{ standard: "ERC-1155" }, "address_block_number_log_"], [{ standard: "nft" }, "address_block_number_log_"],
+    ];
+    for (const [filter, index] of cases) {
+      await accounts.addressTransfers(who, [5, 1, 0], 10, filter);
+      sides(await plan(/with k as \(\(select x\.block_number, x\.log_index, x\.batch_index from token_transfers x where x\.from_address/), index);
+    }
+  }
+
+  it("a contract's event count, the contract list's counts and the facts joined to each listed contract read an index each, never the table whole", async () => {
+    await ensurePartitions(pool, { head: 1 });
+    const accounts = createAccountRest(recording());
+    await accounts.eventCountOf(addr);
+    const events = await plan(/select count\(\*\) as n from \(select 1 from logs where address = \$1 limit/);
+    expect(events).toMatch(/Index Only Scan using logs_p\d+_address_\w*idx/);
+    expect(events).not.toMatch(/Seq Scan|Sort Key|^\s*Filter:/m);
+    expect(events).toMatch(/Index Cond: \(address = /);
+    await accounts.contractCounts();
+    const counts = await plan(/select \(select count\(\*\) from contracts\) as n/);
+    expect(counts).toMatch(/Index Only Scan using contracts_verified_idx on contracts/);
+    expect(counts).toMatch(/Index Only Scan using \w+ on contracts/);
+    // A page of the list: the verified source, the creation's block, the account and the token each joined by its primary key (one row at most, whatever the page's size).
+    await accounts.contracts("newest", true, [5, 1, addr], 10);
+    const list = await plan(/coalesce\(c\.creation_block, 0\) desc/);
+    for (const t of ["verified_sources", "blocks"]) expect(list, t).toMatch(new RegExp(`Index Scan using \\w+ on ${t}`));
+    expect(list).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("interactions", null, [5, addr], 10);
+    expect(await plan(/order by c\.interaction_count desc/)).not.toMatch(/Seq Scan|Sort Key/);
+    // The events' time: the block of each log is read by its primary key.
+    await accounts.contractEvents(addr, null, [5, 1], 10);
+    expect(await plan(/from logs l join transactions t/)).toMatch(/Index Scan using blocks_pkey on blocks/);
+  });
+
+  it("the transactions list oldest first reads the same indexes as newest first, in either direction of those indexes, with no sort and no filter", async () => {
+    await ensurePartitions(pool, { head: 100 });
+    const chain = createChainRest(recording());
+    for (const [filter, where] of [["all", /order by t\.block_number asc/], ["failed", /t\.status = 0 order by t\.block_number asc/], ["calls", /t\.method_id is not null and t\.to_address is not null order by t\.block_number asc/]] as const) {
+      await chain.txs([50, 3], 10, filter, false, "asc");
+      const p = await plan(where);
+      expect(p, filter).toMatch(/Index Scan (Backward )?using transactions_p\d+_(block_number_tx_index_idx\d*|pkey)/);
+      expect(p, filter).toMatch(/Index Cond: \(ROW\(block_number, tx_index\) >/);
+      expect(p, filter).not.toMatch(/Sort Key|Seq Scan|^\s*Filter: \(?(status|method_id)/m);
+    }
   });
 });

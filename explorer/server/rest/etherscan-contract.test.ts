@@ -119,6 +119,19 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
   });
 
   describe("verifysourcecode and checkverifystatus", () => {
+    it("records that a verification came through the Etherscan API, and the tool when the request names one", async () => {
+      await running();
+      const seen = async () => (await sql("select method, tool from verification_jobs")).rows;
+      expect(await post(single())).toMatchObject({ status: "1" });
+      expect(await seen()).toEqual([{ method: "etherscan", tool: null }]);
+      await sql("truncate verification_jobs");
+      expect(await post(single({ tool: "forge" }))).toMatchObject({ status: "1" });
+      expect(await seen()).toEqual([{ method: "etherscan", tool: "forge" }]);
+      expect(await worker().step()).toBe("ended");
+      expect((await sql("select method, tool from verified_sources")).rows).toEqual([{ method: "etherscan", tool: "forge" }]);
+      stub.inputs.length = 0;
+    });
+
     it("takes a single file as forge sends it, answers a GUID, then Etherscan's texts, and getsourcecode and getabi follow", async () => {
       await running();
       const sent = await post(single({ libraryname1: "Lib", libraryaddress1: "0x" + "11".repeat(20) }));

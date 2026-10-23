@@ -241,9 +241,11 @@ table contracts
   constraint contracts_verified_source_fk FOREIGN KEY (verified_source) REFERENCES verified_sources(id)
   CREATE INDEX contracts_creation_block_idx ON public.contracts USING btree (creation_block DESC)
   CREATE INDEX contracts_creation_place_idx ON public.contracts USING btree (COALESCE(creation_block, (0)::bigint), COALESCE(creation_tx_index, 0), address)
+  CREATE INDEX contracts_creator_place_idx ON public.contracts USING btree (creator, COALESCE(creation_block, (0)::bigint) DESC, COALESCE(creation_tx_index, 0) DESC, address DESC) WHERE (creator IS NOT NULL)
   CREATE INDEX contracts_interaction_count_address_idx ON public.contracts USING btree (interaction_count DESC, address DESC)
   CREATE INDEX contracts_name_idx ON public.contracts USING gin (name gin_trgm_ops)
   CREATE INDEX contracts_runtime_code_hash_idx ON public.contracts USING btree (runtime_code_hash)
+  CREATE INDEX contracts_verified_idx ON public.contracts USING btree (address) WHERE (verified_source IS NOT NULL)
   CREATE UNIQUE INDEX contracts_pkey ON public.contracts USING btree (address)
 
 table cursors
@@ -607,11 +609,13 @@ table token_transfers partition by RANGE (block_number)
   CREATE INDEX token_transfers_from_erc1155_idx ON ONLY public.token_transfers USING btree (from_address, block_number DESC, log_index DESC, batch_index DESC) WHERE ((amount IS NOT NULL) AND (token_id IS NOT NULL))
   CREATE INDEX token_transfers_from_erc20_idx ON ONLY public.token_transfers USING btree (from_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NULL)
   CREATE INDEX token_transfers_from_erc721_idx ON ONLY public.token_transfers USING btree (from_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (amount IS NULL)
+  CREATE INDEX token_transfers_from_nft_idx ON ONLY public.token_transfers USING btree (from_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NOT NULL)
   CREATE INDEX token_transfers_to_address_block_number_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC)
   CREATE INDEX token_transfers_to_address_token_idx ON ONLY public.token_transfers USING btree (to_address, token, block_number DESC, log_index DESC, batch_index DESC)
   CREATE INDEX token_transfers_to_erc1155_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE ((amount IS NOT NULL) AND (token_id IS NOT NULL))
   CREATE INDEX token_transfers_to_erc20_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NULL)
   CREATE INDEX token_transfers_to_erc721_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (amount IS NULL)
+  CREATE INDEX token_transfers_to_nft_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NOT NULL)
   CREATE INDEX token_transfers_token_block_number_idx ON ONLY public.token_transfers USING btree (token, block_number DESC)
   CREATE INDEX token_transfers_token_token_id_block_number_log_index_idx ON ONLY public.token_transfers USING btree (token, token_id, block_number DESC, log_index DESC)
   CREATE UNIQUE INDEX token_transfers_pkey ON ONLY public.token_transfers USING btree (block_number, log_index, batch_index)
@@ -701,6 +705,7 @@ table transactions partition by RANGE (block_number)
   CREATE INDEX transactions_created_contract_place_idx ON ONLY public.transactions USING btree (created_contract, block_number DESC, tx_index DESC) WHERE (created_contract IS NOT NULL)
   CREATE INDEX transactions_failed_idx ON ONLY public.transactions USING btree (block_number DESC, tx_index DESC) WHERE (status = 0)
   CREATE INDEX transactions_from_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (from_address, block_number DESC, tx_index DESC)
+  CREATE INDEX transactions_funding_idx ON ONLY public.transactions USING btree (to_address, block_number, tx_index) WHERE ((value > (0)::numeric) AND (status = 1))
   CREATE INDEX transactions_to_address_block_number_tx_index_idx ON ONLY public.transactions USING btree (to_address, block_number DESC, tx_index DESC) WHERE (to_address IS NOT NULL)
   CREATE UNIQUE INDEX transactions_pkey ON ONLY public.transactions USING btree (block_number, tx_index)
 
@@ -759,9 +764,13 @@ table verification_jobs
   column finished_at timestamp with time zone
   column attempts integer not null default 0
   column not_before timestamp with time zone
+  column method text
+  column tool text
   constraint verification_jobs_kind CHECK ((kind = ANY (ARRAY['source'::text, 'proxy'::text])))
+  constraint verification_jobs_method_check CHECK ((method = ANY (ARRAY['etherscan'::text, 'api'::text])))
   constraint verification_jobs_pkey PRIMARY KEY (guid)
   constraint verification_jobs_status CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'pass'::text, 'fail'::text, 'already'::text])))
+  constraint verification_jobs_tool_check CHECK ((tool = ANY (ARRAY['forge'::text, 'hardhat'::text, 'remix'::text, 'unknown'::text])))
   CREATE INDEX verification_jobs_client_key_created_at_idx ON public.verification_jobs USING btree (client_key, created_at)
   CREATE INDEX verification_jobs_status_created_at_idx ON public.verification_jobs USING btree (status, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'running'::text]))
   CREATE UNIQUE INDEX verification_jobs_pkey ON public.verification_jobs USING btree (guid)
@@ -788,10 +797,14 @@ table verified_sources
   column match_type text not null
   column verified_at timestamp with time zone not null
   column creation_match text
+  column method text
+  column tool text
   constraint verified_sources_code_format CHECK ((code_format = ANY (ARRAY['solidity-single-file'::text, 'solidity-standard-json-input'::text])))
   constraint verified_sources_creation_match CHECK ((creation_match = ANY (ARRAY['full'::text, 'partial'::text])))
   constraint verified_sources_match_type CHECK ((match_type = ANY (ARRAY['full'::text, 'partial'::text])))
+  constraint verified_sources_method_check CHECK ((method = ANY (ARRAY['etherscan'::text, 'api'::text])))
   constraint verified_sources_pkey PRIMARY KEY (id)
+  constraint verified_sources_tool_check CHECK ((tool = ANY (ARRAY['forge'::text, 'hardhat'::text, 'remix'::text, 'unknown'::text])))
   CREATE INDEX verified_sources_runtime_code_hash_idx ON public.verified_sources USING btree (runtime_code_hash)
   CREATE UNIQUE INDEX verified_sources_address_code_key ON public.verified_sources USING btree (address, runtime_code_hash)
   CREATE UNIQUE INDEX verified_sources_pkey ON public.verified_sources USING btree (id)

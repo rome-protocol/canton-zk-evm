@@ -139,7 +139,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     const coins = body(await get(`/api/addresses/${A}/coin-history`));
     for (const x of coins.items) same(x, F.coinPoint);
     const contracts = body(await get("/api/contracts"));
-    same(contracts, F.derivedPage);
+    same(contracts, F.contractPage);
     for (const c of contracts.items) same(c, F.contractItem);
     const vault = body(await get(`/api/contracts/${K}`));
     same(vault, F.contractDetail);
@@ -773,6 +773,23 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       }
     });
 
+    it("pages the contract list from its other end with order=asc and after, for its last page, in each sort and with each filter", async () => {
+      for (const sort of ["interactions", "newest", "oldest"]) {
+        const own = mine(await walk(`/api/contracts?sort=${sort}`, "before", 1));
+        expect(own, sort).toHaveLength(4);
+        expect(mine(await walk(`/api/contracts?sort=${sort}&order=asc`, "after", 1)), sort).toEqual([...own].reverse());
+        expect(mine(await walk(`/api/contracts?sort=${sort}&order=asc&verified=true`, "after", 1)), sort).toEqual(["K"]);
+        expect(mine(await walk(`/api/contracts?sort=${sort}&order=asc&verified=false`, "after", 1)), sort).toEqual(mine(await walk(`/api/contracts?sort=${sort}&verified=false`, "before", 1)).reverse());
+        // The key that closes a page asks for the page after it, the way it was walked.
+        const first = body(await get(`/api/contracts?sort=${sort}&order=asc&limit=1`));
+        expect(first.next).not.toBeNull();
+        expect(body(await get(`/api/contracts?sort=${sort}&order=asc&limit=1&after=${first.next}`)).items).toHaveLength(1);
+      }
+      for (const path of ["/api/contracts?order=up", "/api/contracts?order=ASC", "/api/contracts?order=asc&before=3:1", "/api/contracts?after=2:1", "/api/contracts?order=asc&after=x", "/api/contracts?sort=newest&order=asc&after=1:2"]) {
+        expect((await get(path)).status, path).toBe(400);
+      }
+    });
+
     it("pages a filtered list by keyset in each order, without a repeat or a gap", async () => {
       for (const sort of ["holders", "transfers", "newest"]) {
         for (const standard of ["ERC-20", "ERC-1155"]) {
@@ -810,7 +827,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     });
 
     it("gives an address's token transfers and a token's as a bounded CSV, with the columns of the list", async () => {
-      const header = "tx_hash,block,log_index,batch_index,time,method_id,token,standard,from,to,amount,token_id";
+      const header = "tx_hash,block,log_index,batch_index,time,method_id,creation,token,standard,from,to,amount,token_id";
       const mineCsv = await get(`/api/addresses/${A}/token-transfers?format=csv`);
       expect(mineCsv.status).toBe(200);
       expect(mineCsv.headers?.["content-type"]).toBe("text/csv; charset=utf-8");
@@ -823,7 +840,8 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       const j0 = json[0]!, first = lines[1]!.split(",");
       expect(first.slice(0, 4)).toEqual([j0.txHash, String(j0.block), String(j0.logIndex), String(j0.batchIndex)]);
       expect(first[4]).toBe(new Date(j0.timestamp * 1000).toISOString());
-      expect(first.slice(6, 12)).toEqual([j0.token, j0.standard, j0.from, j0.to, j0.amount ?? "", j0.tokenId ?? ""]);
+      expect(first[6]).toBe(String(j0.creation));
+      expect(first.slice(7, 13)).toEqual([j0.token, j0.standard, j0.from, j0.to, j0.amount ?? "", j0.tokenId ?? ""]);
       // The filters of the list apply to the file.
       const t1 = String((await get(`/api/addresses/${A}/token-transfers?format=csv&token=${T1}`)).body).split("\r\n");
       expect(t1.length - 2).toBe(json.filter((t) => t.token === T1).length);
@@ -833,7 +851,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       const tokenCsv = await get(`/api/tokens/${T1}/transfers?format=csv&limit=2`);
       expect(tokenCsv.headers?.["content-disposition"]).toBe(`attachment; filename="token-transfers-${T1}.csv"`);
       expect(String(tokenCsv.body).split("\r\n")).toHaveLength(4);
-      expect(String(tokenCsv.body).split("\r\n").slice(1, 3).every((l) => l.split(",")[6] === T1)).toBe(true);
+      expect(String(tokenCsv.body).split("\r\n").slice(1, 3).every((l) => l.split(",")[7] === T1)).toBe(true);
       expect(String((await get(`/api/tokens/${T1}/transfers?format=csv`)).body).split("\r\n")).toHaveLength(5);
       // What it cannot say stays honest: a file has no `derived` flag, so it carries one in a header.
       expect(mineCsv.headers?.["x-derived"]).toBe("true");
@@ -863,6 +881,192 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
         }
         await client.query("rollback");
       } finally { client.release(); }
+    });
+  });
+
+  describe("address facts, the contracts an address made, and the NFT group of its transfers", () => {
+    const F1 = h(0xf1), ts = (block: number) => 1_790_000_000 + block * 3;
+    const idsOf = (items: { block: number; logIndex: number; batchIndex: number }[]) => items.map((t) => [t.block, t.logIndex, t.batchIndex]);
+
+    it("gives the creation count and the times of the first and the last block an address was seen in", async () => {
+      const detail = body(await get(`/api/addresses/${A}`));
+      same(detail, F.addressDetail);
+      expect(detail).toMatchObject({ createdCount: 3, createdCountCapped: false, firstSeenBlock: 1, firstSeenTimestamp: ts(1), lastActiveBlock: 3, lastActiveTimestamp: ts(3) });
+      expect(body(await get(`/api/addresses/${B}`))).toMatchObject({ createdCount: 0 });
+      // An address nothing has touched says what it does not know: no times, no funder, and no contracts made.
+      expect(body(await get(`/api/addresses/${h(0xee)}`))).toMatchObject({ createdCount: 0, createdCountCapped: false, firstSeenTimestamp: null, lastActiveTimestamp: null, fundedBy: null });
+      expect(Object.keys(body(await get(`/api/addresses/${h(0xee)}`)))).toContain("createdCountCapped");
+    });
+
+    it("stops counting the contracts an address made at a ceiling, and says so", async () => {
+      const capped = createAccountRest(pool);
+      expect(await capped.address(A, 2)).toMatchObject({ createdCount: 2, createdCountCapped: true });
+      expect(await capped.address(A, 3)).toMatchObject({ createdCount: 3, createdCountCapped: false });
+    });
+
+    it("says who funded an address only when its first incoming transaction with value is in the block it first appeared in", async () => {
+      const [before] = (await sql("select from_address, to_address, value::text as value, status from transactions where block_number = 3 and tx_index = 6")).rows;
+      const fund = (value: number, status: number) => sql("update transactions set from_address = $1, to_address = $2, value = $3, status = $4 where block_number = 3 and tx_index = 6", [who(0xa2), who(0xf1), value, status]);
+      await sql("insert into addresses (address, first_seen_block, last_active_block, sent_count, received_count, is_contract) values ($1, 3, 3, 0, 1, false)", [who(0xf1)]);
+      try {
+        await fund(5, 1);
+        const funded = body(await get(`/api/addresses/${F1}`)).fundedBy;
+        same(funded, F.funding);
+        expect(funded).toEqual({ from: B, txHash: txHash(3, 6), block: 3, timestamp: ts(3), value: "5" });
+        // A call that moved no value, or a failed one, funded nothing.
+        await fund(0, 1);
+        expect(body(await get(`/api/addresses/${F1}`)).fundedBy).toBeNull();
+        await fund(5, 0);
+        expect(body(await get(`/api/addresses/${F1}`)).fundedBy).toBeNull();
+        // The address was there before that transaction (a genesis balance, an internal call): the index cannot name its funder.
+        await fund(5, 1);
+        await sql("update addresses set first_seen_block = 2 where address = $1", [who(0xf1)]);
+        expect(body(await get(`/api/addresses/${F1}`)).fundedBy).toBeNull();
+      } finally {
+        await sql("delete from addresses where address = $1", [who(0xf1)]);
+        await sql("update transactions set from_address = $1, to_address = $2, value = $3, status = $4 where block_number = 3 and tx_index = 6", [before.from_address, before.to_address, before.value, before.status]);
+      }
+    });
+
+    it("lists the contracts an address made, newest first, one page after another", async () => {
+      const path = `/api/addresses/${A}/contracts`;
+      const answer = body(await get(path));
+      same(answer, F.derivedPage);
+      for (const c of answer.items) same(c, F.contractItem);
+      expect(mine(answer.items)).toEqual(["K", "C", "T1"]);
+      expect(answer.items.every((c: { creator: string }) => c.creator === A)).toBe(true);
+      expect(mine((await walk(path, "before", 1)) as never)).toEqual(["K", "C", "T1"]);
+      expect(mine((await walk(path, "before", 2)) as never)).toEqual(["K", "C", "T1"]);
+      // A genesis contract has no creator, and an address that made none has an empty list.
+      expect(body(await get(`/api/addresses/${B}/contracts`)).items).toEqual([]);
+      expect(body(await get(`/api/addresses/${h(0xee)}/contracts`)).items).toEqual([]);
+      expect(await get(`/api/addresses/0x12/contracts`)).toEqual({ status: 400, body: { error: NO_ADDRESS } });
+      expect(await get(`${path}?before=nonsense`)).toMatchObject({ status: 400 });
+      expect(await get(`${path}?limit=0`)).toMatchObject({ status: 400 });
+    });
+
+    it("keeps the transfers of ERC-721 and ERC-1155 together under standard=nft, in one list with one cursor", async () => {
+      await sql("insert into contracts (address, origin, creator, creation_block, creation_tx_index, runtime_code_hash, name) values ($1, 'create', $2, 2, 0, $3, 'Nft')", [who(0xb3), who(0xa1), Buffer.alloc(32, 1)]);
+      await sql("insert into tokens (address, standard, name, symbol, holder_count, transfer_count, first_transfer_block, metadata_status) values ($1, 'ERC-721', 'Nft', 'NFT', 1, 1, 3, 'read')", [who(0xb3)]);
+      await sql("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) values (3, 502, 0, 2, $1, $2, $3, null, 9)", [who(0xb3), who(0xa1), who(0xa2)]);
+      try {
+        const path = (q: string) => `/api/addresses/${A}/token-transfers?${q}`;
+        const nft = [[3, 502, 0], [3, 501, 1], [3, 501, 0]];
+        expect(idsOf(body(await get(path("standard=nft"))).items)).toEqual(nft);
+        expect(body(await get(path("standard=nft"))).items.map((t: { standard: string }) => t.standard)).toEqual(["ERC-721", "ERC-1155", "ERC-1155"]);
+        for (const limit of [1, 2]) expect(idsOf((await walk(path("standard=nft"), "before", limit)) as never)).toEqual(nft);
+        expect(idsOf(body(await get(path(`standard=nft&token=${T2}`))).items)).toEqual([[3, 501, 1], [3, 501, 0]]);
+        expect(idsOf(body(await get(path("standard=ERC-20"))).items)).toEqual([[3, 500, 0], [2, 501, 0], [2, 500, 0]]);
+        const csv = String((await get(path("standard=nft&format=csv"))).body).split("\r\n");
+        expect(csv.length - 2).toBe(nft.length);
+        // The group is for an address's list: the all-token feed takes the three standards.
+        expect(await get("/api/token-transfers?standard=nft")).toMatchObject({ status: 400 });
+        expect(await get(path("standard=nfts"))).toMatchObject({ status: 400 });
+      } finally {
+        await sql("delete from token_transfers where block_number = 3 and log_index = 502");
+        await sql("delete from tokens where address = $1", [who(0xb3)]);
+        await sql("delete from contracts where address = $1", [who(0xb3)]);
+      }
+    });
+
+    it("tells a creation from a call with no input in the CSV of token transfers", async () => {
+      const rowsOf = async () => String((await get(`/api/addresses/${A}/token-transfers?format=csv`)).body).split("\r\n").slice(1, -1).map((l) => l.split(","));
+      const [was] = (await sql("select to_address, created_contract from transactions where block_number = 2 and tx_index = 0")).rows;
+      // A call: every row says false.
+      expect((await rowsOf()).map((c) => c[6])).toEqual((await rowsOf()).map(() => "false"));
+      // A transaction that created a contract: its transfers say true, and only those, as the JSON's `creation` does.
+      await sql("update transactions set to_address = null, created_contract = $1 where block_number = 2 and tx_index = 0", [who(0xc2)]);
+      try {
+        const csv = await rowsOf();
+        const json = body(await get(`/api/addresses/${A}/token-transfers`)).items as { block: number; logIndex: number; batchIndex: number; creation: boolean }[];
+        expect(csv.map((c) => c[6])).toEqual(json.map((t) => String(t.creation)));
+        const made = csv.filter((c) => c[1] === "2" && c[2] === "500");
+        expect(made.length).toBeGreaterThan(0);
+        for (const c of made) expect(c[6]).toBe("true");
+        expect(csv.filter((c) => c[6] === "true").length).toBe(json.filter((t) => t.creation).length);
+      } finally {
+        await sql("update transactions set to_address = $1, created_contract = $2 where block_number = 2 and tx_index = 0", [was.to_address, was.created_contract]);
+      }
+    });
+  });
+
+  describe("contract facts: the event count and times, the list's totals and who made each, and how a source was verified", () => {
+    const ts = async (block: number) => Number((await sql("select extract(epoch from timestamp)::bigint as ts from blocks where number = $1", [block])).rows[0].ts);
+    const count = async (where = "true") => Number((await sql(`select count(*) as n from contracts where ${where}`)).rows[0].n);
+
+    it("tells the list's total and the count of each filter, which a filter does not change, and keeps to the filter asked", async () => {
+      const all = await count(), verified = await count("verified_source is not null");
+      expect(all).toBeGreaterThanOrEqual(4);
+      expect(verified).toBe(1);
+      const first = body(await get("/api/contracts"));
+      same(first, F.contractPage);
+      expect(first).toMatchObject({ total: all, counts: { all, verified, notVerified: all - verified } });
+      expect(body(await get("/api/contracts?verified=true"))).toMatchObject({ total: verified, counts: { all, verified, notVerified: all - verified } });
+      expect(body(await get("/api/contracts?verified=false"))).toMatchObject({ total: all - verified, counts: { all, verified, notVerified: all - verified } });
+      // Each sort says the same, and the count comes from the table whole, not from the page.
+      for (const sort of ["interactions", "newest", "oldest"]) expect(body(await get(`/api/contracts?sort=${sort}&limit=1`))).toMatchObject({ total: all, counts: { all } });
+    });
+
+    it("gives each contract in the list the compiler of its source and when it was made, and neither for what has none", async () => {
+      const items = body(await get("/api/contracts?sort=interactions")).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const c of items) same(c, F.contractItem);
+      const at = (a: string) => items.find((c) => c.address === a)!;
+      expect(at(K)).toMatchObject({ compilerVersion: "v0.8.30+commit.73712a01", creationBlock: 3 });
+      expect(at(K).createdAt).toBe(new Date((await ts(3)) * 1000).toISOString());
+      expect(at(C)).toMatchObject({ compilerVersion: null, creationBlock: 2 });
+      expect(at(C).createdAt).toBe(new Date((await ts(2)) * 1000).toISOString());
+      // A contract of the genesis state was made by nothing the explorer saw.
+      expect(at(h(0xb2))).toMatchObject({ compilerVersion: null, creationBlock: null, createdAt: null });
+      expect(body(await get(`/api/addresses/${A}/contracts`)).items.every((c: Record<string, unknown>) => "createdAt" in c && "compilerVersion" in c)).toBe(true);
+    });
+
+    it("counts a contract's events, and times each", async () => {
+      const txs = (await sql("select block_number, tx_index from transactions order by block_number, tx_index")).rows;
+      expect(new Set(txs.map((t) => t.block_number)).size).toBeGreaterThan(1);
+      const topic = Buffer.alloc(32, 0x79), W = who(0xc1);
+      try {
+        for (const [i, t] of [txs[0], txs[txs.length - 1], txs[txs.length - 1]].entries()) {
+          await sql("insert into logs (block_number, log_index, tx_index, address, topic0, data) values ($1, $2, $3, $4, $5, ''::bytea)", [t.block_number, 3000 + i, t.tx_index, W, topic]);
+        }
+        const detail = body(await get(`/api/contracts/${K}`));
+        expect(detail).toMatchObject({ eventCount: 3, eventCountCapped: false });
+        same(detail, F.contractDetail);
+        expect(body(await get(`/api/contracts/${C}`))).toMatchObject({ eventCount: 0, eventCountCapped: false });
+        const items = body(await get(`/api/contracts/${K}/events`)).items as { block: number; timestamp: number }[];
+        expect(items).toHaveLength(3);
+        expect(new Set(items.map((e) => e.block)).size).toBe(2);
+        for (const e of items) expect(e.timestamp).toBe(await ts(e.block));
+      } finally { await sql("delete from logs where address = $1 and topic0 = $2", [W, topic]); }
+    });
+
+    it("stops counting a contract's events at a ceiling, and says so", async () => {
+      const W = Buffer.alloc(20, 0x5f), topic = Buffer.alloc(32, 0x78);
+      const [tx] = (await sql("select block_number, tx_index from transactions order by block_number, tx_index limit 1")).rows;
+      await sql("insert into bytecodes (code_hash, code, size) values ($1, $2, 2) on conflict do nothing", [Buffer.alloc(32, 1), Buffer.from("6080", "hex")]);
+      await sql("insert into contracts (address, origin, runtime_code_hash, interaction_count) values ($1, 'genesis', $2, 0)", [W, Buffer.alloc(32, 1)]);
+      try {
+        await sql("insert into logs (block_number, log_index, tx_index, address, topic0, data) select $2, 2000 + g, $3, $1, $4, ''::bytea from generate_series(1, 5) g", [W, tx.block_number, tx.tx_index, topic]);
+        expect(body(await get(`/api/contracts/0x${W.toString("hex")}`))).toMatchObject({ eventCount: 5, eventCountCapped: false });
+        const capped = createAccountRest(pool);
+        expect(await capped.eventCountOf(`0x${W.toString("hex")}`, 3)).toEqual({ count: 3, capped: true });
+        expect(await capped.eventCountOf(`0x${W.toString("hex")}`, 5)).toEqual({ count: 5, capped: false });
+      } finally {
+        await sql("delete from logs where address = $1", [W]);
+        await sql("delete from contracts where address = $1", [W]);
+      }
+    });
+
+    it("serves how a source was verified and the tool named, and null for a source from before it was kept", async () => {
+      expect(body(await get(`/api/contracts/${K}`)).verification).toMatchObject({ method: null, tool: null });
+      expect(body(await get(`/api/contracts/${K}/source`))).toMatchObject({ method: null, tool: null });
+      await sql("update verified_sources set method = 'etherscan', tool = 'forge' where address = $1", [who(0xc1)]);
+      try {
+        expect(body(await get(`/api/contracts/${K}`)).verification).toMatchObject({ method: "etherscan", tool: "forge" });
+        expect(body(await get(`/api/contracts/${K}/source`))).toMatchObject({ method: "etherscan", tool: "forge" });
+        same(body(await get(`/api/contracts/${K}/source`)), F.source);
+        await sql("update verified_sources set method = 'api', tool = null where address = $1", [who(0xc1)]);
+        expect(body(await get(`/api/contracts/${K}`)).verification).toMatchObject({ method: "api", tool: null });
+      } finally { await sql("update verified_sources set method = null, tool = null where address = $1", [who(0xc1)]); }
     });
   });
 });

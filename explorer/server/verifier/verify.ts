@@ -6,7 +6,7 @@
  */
 import type { Pool, PoolClient } from "pg";
 import { CompilerError } from "./compilers.ts";
-import { pickContract, prepare, RequestError, type VerifyRequest } from "./request.ts";
+import { pickContract, prepare, RequestError, type Via, type VerifyRequest } from "./request.ts";
 import { SandboxError } from "./sandbox.ts";
 import { MatchFailure, matchWithSourcify, SandboxSolc, type Matched } from "./sourcify.ts";
 import type { Compiled } from "./solc.ts";
@@ -41,7 +41,7 @@ export class Verifier {
 
   /**
    * Verifies a request. When `opts.signal` aborts, the compile is stopped and nothing is written (it throws the signal's reason). A request that cannot be run at all (a bad address, nonsense JSON) throws RequestError; every other answer is an Outcome. */
-  async verify(req: VerifyRequest, opts: { operator?: boolean; signal?: AbortSignal } = {}): Promise<Outcome> {
+  async verify(req: VerifyRequest, opts: { operator?: boolean; signal?: AbortSignal; via?: Via | null } = {}): Promise<Outcome> {
     const p = prepare(req, this.maxSourceBytes);
     if (!opts.operator && this.reserved.has(p.address.toLowerCase())) {
       return { status: "fail", result: "Fail - Unable to verify. The source of this contract is published by the operator of the network, and cannot be submitted." };
@@ -98,19 +98,19 @@ export class Verifier {
       await client.query("begin");
       const ins = await client.query<{ id: string }>(
         `insert into verified_sources (address, runtime_code_hash, language, compiler_version, code_format, contract_path, contract_name, optimizer_enabled, optimizer_runs,
-           evm_version, settings, sources, abi, compiler_metadata, constructor_args, libraries, license, match_type, creation_match, verified_at)
-         values ($1, $2, 'solidity', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
+           evm_version, settings, sources, abi, compiler_metadata, constructor_args, libraries, license, match_type, creation_match, verified_at, method, tool)
+         values ($1, $2, 'solidity', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now(), $19, $20)
          on conflict (address, runtime_code_hash) do update set language = excluded.language, compiler_version = excluded.compiler_version,
            code_format = excluded.code_format, contract_path = excluded.contract_path, contract_name = excluded.contract_name, optimizer_enabled = excluded.optimizer_enabled,
            optimizer_runs = excluded.optimizer_runs, evm_version = excluded.evm_version, settings = excluded.settings, sources = excluded.sources, abi = excluded.abi,
            compiler_metadata = excluded.compiler_metadata, constructor_args = excluded.constructor_args, libraries = excluded.libraries, license = excluded.license,
-           match_type = excluded.match_type, creation_match = excluded.creation_match, verified_at = excluded.verified_at
+           match_type = excluded.match_type, creation_match = excluded.creation_match, verified_at = excluded.verified_at, method = excluded.method, tool = excluded.tool
            where verified_sources.match_type <> 'full' and excluded.match_type = 'full'
          returning id`,
         [addr, row.runtime_code_hash, solc.version, p.format, target.path, target.name, typeof optimizer.enabled === "boolean" ? optimizer.enabled : null,
           typeof optimizer.runs === "number" ? optimizer.runs : null, typeof p.settings.evmVersion === "string" ? p.settings.evmVersion : null, JSON.stringify(p.settings),
           JSON.stringify(m.sources), JSON.stringify(m.abi), m.metadata ? JSON.stringify(m.metadata) : null, m.constructorArgs, Object.keys(libraries).length > 0 ? JSON.stringify(libraries) : null,
-          p.license, m.kind, m.creationKind],
+          p.license, m.kind, m.creationKind, opts.via?.method ?? null, opts.via?.tool ?? null],
       );
       if (ins.rowCount === 0) { await client.query("rollback"); return { status: "already", result: "Already Verified" }; }
       const id = Number(ins.rows[0]!.id);
