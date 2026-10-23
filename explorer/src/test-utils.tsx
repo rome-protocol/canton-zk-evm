@@ -155,8 +155,6 @@ export function fakeApi(answer: ((path: string) => { status: number; body: unkno
 
 /** Renders the whole app at a route. The status is polled every few seconds, so a test of the pages gives it a polling query client with no retries. */
 export function renderApp(route = "/") {
-  // A page draws its first frame on a frame callback. jsdom's runs on a clock that a test which stops the date never advances, so a frame is a timer here, unless the test holds the frames itself.
-  if (!(requestAnimationFrame as { held?: boolean }).held) vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[route]}><App /></MemoryRouter></QueryClientProvider>);
 }
