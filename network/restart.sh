@@ -3,6 +3,8 @@
 # reth on its data, both sidecars, the prover and Canton, in that order. It makes nothing new: no new chain is proposed, no per-run secret is
 # made, no guest is built, and Canton's bootstrap is not run again (resume.canton starts the nodes on what they kept). Then it checks that
 # Canton's ZkChain head and reth agree, moving reth to Canton's head the way the builder does (network/sync_reth.py), and prints the head.
+# A builder's in-doubt command (unresolved.json in its work folder) is settled first, so reth is never unwound under a block that may still commit;
+# a block reth has above Canton's head is dropped (and its transactions sent again) only when no such record is left.
 # With CZE_CANTON=external (recorded in persist.env by up.sh) there is no database for Canton and no Canton to start: the participant is already
 # running, so this checks that it still has the package and the chain, starts the sidecar here if up.sh did, and moves reth to the chain's head.
 # It refuses to run without persistent state, or if any of the services is still running (network/down.sh stops them).
