@@ -105,7 +105,7 @@ export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail 
     firstSeenBlock: 2, lastActiveBlock: 20, token: null, createdBy: null, derived: true, ...over,
   };
 }
-export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
+export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
 export const page = <T,>(items: T[], next: string | null = null): Page<T> => ({ items, next });
 
 /** What the in-flight route answers while block 4 is being proven (the producer cut it at T0 + 16, built it in 0.2 s and began its proof 0.4 s after that), with one more transaction in reth's pool. */
@@ -255,7 +255,7 @@ export const unverifiedSource = (n = 0xcb): ContractSource => ({
 /** Test USD as the token list gives it: an ERC-20 of 6 decimals with a million in supply, 5 holders and 6 transfers. */
 export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenListItem => ({
   address: addr(n), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", holderCount: 5, transferCount: 6, firstTransferBlock: 19,
-  gatewayWrapped: false, metadataStatus: "read", ...over,
+  gatewayWrapped: false, metadataStatus: "read", creator: addr(0xa1), creationBlock: 19, createdAt: "2026-01-01T00:00:00.000Z", verified: false, ...over,
 });
 export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, ...over });
 export const tokenHolder = (n: number, value: string, over: Partial<TokenHolder> = {}): TokenHolder => ({ holder: addr(n), tokenId: "0", value, updatedBlock: 20, ...over });
