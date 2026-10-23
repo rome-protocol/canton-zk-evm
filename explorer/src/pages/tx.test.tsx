@@ -429,6 +429,7 @@ describe("the way to final", () => {
       "+0.41 sFinal on Canton01:37:23.412000Canton record time",
     ]);
     expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
+    expect(way().getByText("8.91 s")).toHaveClass("num");
   });
 
   it("adds the median time to final of the last hour, and says it was not refused or left out of any earlier block when the journal shows no earlier attempt", async () => {

@@ -78,7 +78,7 @@ function OnCanton({ u, now }: { u: UpdateDetail; now: number }) {
           <Item label="Signed by"><div className="signers">{u.signatories.map((s) => <div key={s.role + s.party}><span className="muted">the chain's {s.role}</span><HashLink value={s.party} kind="party" full /></div>)}</div></Item>
         )}
         {pr?.commandId && <Item label="Command id"><span className="mono">{pr.commandId}</span> {PRODUCER}</Item>}
-        {pr?.argumentBytes != null && <Item label="Carried"><span className="mono">{count(pr.argumentBytes)}</span> bytes in the argument{pr.trafficBytes != null && <>, <span className="mono">{count(pr.trafficBytes)}</span> bytes of traffic</>} {PRODUCER}</Item>}
+        {pr?.argumentBytes != null && <Item label="Carried"><span className="num">{count(pr.argumentBytes)}</span> bytes in the argument{pr.trafficBytes != null && <>, <span className="num">{count(pr.trafficBytes)}</span> bytes of traffic</>} {PRODUCER}</Item>}
       </Kv>
     </section>
   );

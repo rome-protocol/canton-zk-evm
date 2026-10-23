@@ -65,7 +65,7 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
       {l !== null && (l.timeToFinalMs !== null || l.attempts > 1 || l.leftOutReason || final) && (
         <div className="way-foot small">
           <span className="way-foot-l">
-            {l.timeToFinalMs !== null && final && <span>Final <b className="mono">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
+            {l.timeToFinalMs !== null && final && <span>Final <b className="num">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
             {median !== null && final && <span className="muted"> The median for the last hour is {sec(median)}.</span>}
           </span>
           <span className="way-foot-r muted">

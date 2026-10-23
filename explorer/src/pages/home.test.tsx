@@ -322,8 +322,20 @@ describe("the numbers, from the stats routes", () => {
 
   it("counts the day's transactions and blocks, and gives the success rate with the reverted ones, cut and never rounded up", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, bySize: [] } } })();
-    expect(tile("Transactions · 24 h")).toHaveTextContent("1,017in 21 blocks, each one Canton transaction");
+    expect(tile("Transactions · 24 h")).toHaveTextContent("1,017total not counted yetin 21 blocks, each one Canton transaction");
     expect(tile("Success rate")).toHaveTextContent("99.9%1,016 of 1,017 final transactions; 1 reverted");
+  });
+
+  it("shows the all-time total under the day's count, with the block it is as of", async () => {
+    await withStats({ day: { txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, bySize: [] } } })();
+    expect(tile("Transactions · 24 h")).toHaveTextContent("1,0171,021 final in all · as of block 21in 21 blocks, each one Canton transaction");
+    expect(screen.getByText("1,021 final in all · as of block 21")).toHaveAttribute("title", "All time, as of block 21");
+  });
+
+  it("says not counted yet, never 0, when the all-time total is not known", async () => {
+    await withStats({ day: { txs: { count: 5, failed: 0, successRate: 1, accepted: 5, allTime: null }, blocks: { count: 2, empty: 0, busy: 0, bySize: [] } } })();
+    expect(within(tile("Transactions · 24 h")).getByText("total not counted yet")).toBeInTheDocument();
+    expect(tile("Transactions · 24 h")).not.toHaveTextContent("0 in all");
   });
 
   it("shows no success rate for a day with no transaction, and never makes one up", async () => {
