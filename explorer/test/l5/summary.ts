@@ -1,8 +1,8 @@
 /**
  * L5's verdict, as pure code so a test holds it without a chain. L5 asks the explorer's Etherscan-compatible API to do what developers' tools ask of Etherscan.
  * `l5.sh probe` decides first, from /api/openapi.json (paths['/api'].get['x-modules']), whether the door is there and which modules are in it. Once the door is there,
- * any check that fails fails the job. A module that is not in the door yet (today the contract module, E9b) has its checks reported as skipped, naming the module:
- * a skip is never a pass, so a run with skips is "partial", and the job summary says so.
+ * any check that fails fails the job, and a module that L5 tests and the door lacks is a failure too. A check with `skipped` set (none today) is never a pass:
+ * a run with skips is "partial", and the job summary says so.
  */
 export interface Check { name: string; ok: boolean; seconds: number; detail: string; /** the module the check needs and the door lacks; the check did not run */ skipped?: string }
 export type Status = "passed" | "partial" | "failed" | "skipped";

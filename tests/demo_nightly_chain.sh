@@ -6,7 +6,7 @@
 # log, $WORK/w1.log, is copied here with the results of
 #   L3  a flood of blocks of plain transfers, cut one after another through the real builder: index lag, live-stream delay and database growth (tests/demo_nightly_l3.py)
 #   L4  the pages in a cold browser on a slow link (explorer/test/l4)
-#   L5  the contract tools against the explorer's Etherscan-compatible API (explorer/test/l5); the checks of a module that is not in the door yet (the contract module, E9b) are SKIPPED, never passed
+#   L5  the contract tools against the explorer's Etherscan-compatible API (explorer/test/l5); the proxy, account and contract modules' checks all run, and a module missing from the door fails
 # into $NIGHTLY_OUT. Every part runs even when an earlier one broke a budget; the rehearsal then fails if any did.
 #
 # Reads: NIGHTLY_OUT (the folder for the results), L3_SECONDS (how long L3 floods; 1800 by default), L3_TXS_PER_BLOCK (1428, what fits under the 30 Mgas cap),
@@ -64,15 +64,17 @@ else
   l5_docker() { # <name> <command...>: one step of L5 in the browser image, as this user, with Foundry mounted
     local name=$1; shift
     docker run --rm --name "$name" --network host --user "$(id -u):$(id -g)" -e HOME=/l5/home -e PATH=/foundry:/usr/local/bin:/usr/bin:/bin \
-      -e L5_EXPLORER="$EXPLORER" -e L5_RPC="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e L5_CHAIN_ID="$chain_id" -e L5_ADDRS="${l5_addrs:-}" -e L5_MODULES="$l5_modules" -e L5_ARGS=1,2,3 -e L5_TX="${l5_tx:-}" -e L5_OUT=/l5/l5.json \
+      -e L5_EXPLORER="$EXPLORER" -e L5_RPC="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e L5_CHAIN_ID="$chain_id" -e L5_ADDRS="${l5_addrs:-}" -e L5_MODULES="$l5_modules" -e L5_ARGS=1,2,3 -e L5_RUNS=200,201,202 -e L5_TX="${l5_tx:-}" -e L5_OUT=/l5/l5.json \
       -v "$l5_work:/l5" -v "$WORK/l5-foundry:/foundry:ro" -v "$L5:/src:ro" -w /l5/project "$EXPLORER_BROWSER_IMAGE" "$@"
   }
   l5_docker "cze-nightly-l5-build-$$" bash /src/l5.sh build || fail "L5's contract did not build"
   docker rm -f -v "cze-nightly-l5-build-$$" >/dev/null 2>&1 || true
-  # three Counters, one for each way of verifying, with the constructor arguments 1, 2 and 3
+  # three Counters, one for each way of verifying, with the constructor arguments 1, 2 and 3 and the optimizer runs 200, 201 and 202: three different runtime codes, so that
+  # verifying one is never a "similar match" for the others (which would make the tool stop at "already verified" and test nothing)
+  l5_runs=(200 201 202)
   l5_txs=()
   for n in 1 2 3; do
-    printf '%s%064x\n' "$(cat "$l5_work/creation.hex")" "$n" > "$l5_work/deploy-$n.hex"
+    printf '%s%064x\n' "$(cat "$l5_work/creation-${l5_runs[n-1]}.hex")" "$n" > "$l5_work/deploy-$n.hex"
     l5_txs+=("$(w1py deploy "$l5_work/deploy-$n.hex")")
   done
   # L3 leaves the transfers it sent after its last cut in the pool, and a block holds at most what 30 Mgas allows, so the first block after L3 may not hold the three deployments:
@@ -112,7 +114,7 @@ fi
   jq -r '"| L4 pages | " + ([.pages[] | "\(.name) LCP \(if .median.lcpMs then (.median.lcpMs | round) else "n/a" end) ms\(if .held then "" else " (not held)" end)"] | join(", ")) + (if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) + " |"' "$NIGHTLY_OUT/l4.json"
   jq -r '"| L5 Etherscan door | \(if .reason then .reason else (.status | ascii_upcase) end)\(if ((.modules // []) | length) > 0 then " (modules in the door: \(.modules | join(", ")))" else "" end)\(if ((.skipped // []) | length) > 0 then ". **SKIPPED, not passed:** \(.skipped | join("; "))" else "" end)\(if (.failures | length) > 0 then " **\(.failures | join("; ") | gsub("\n"; " "))**" else "" end) |"' "$NIGHTLY_OUT/l5.json"
   echo
-  echo "L4's Address and Contract pages are measured and not held: there is no Contract page yet (E11a) and the Address page is a stub. L5 runs the checks of the modules that are in the Etherscan-compatible door (read from /api/openapi.json); the contract module's (verifysourcecode, getabi; E9b) are skipped, never passed, and the run is partial until it lands."
+  echo "L4's Address and Contract pages are measured and not held: there is no Contract page yet (E11a) and the Address page is a stub. L5 runs the checks of the proxy, account and contract modules against the door (modules read from /api/openapi.json); the contract tools verify three Counters of three different runtime codes, and the status is passed only when every check ran and passed."
 } > "$NIGHTLY_OUT/summary.md"
 cat "$NIGHTLY_OUT/summary.md"
 

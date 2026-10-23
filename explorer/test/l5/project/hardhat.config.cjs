@@ -7,7 +7,7 @@ const chainId = Number(process.env.L5_CHAIN_ID);
 module.exports = {
   solidity: {
     version: process.env.L5_SOLC_VERSION || "0.8.28",
-    settings: { optimizer: { enabled: true, runs: 200 }, evmVersion: "cancun" },
+    settings: { optimizer: { enabled: true, runs: Number(process.env.L5_HARDHAT_RUNS || 200) }, evmVersion: "cancun" },
   },
   networks: { rome: { url: process.env.L5_RPC, chainId } },
   etherscan: {

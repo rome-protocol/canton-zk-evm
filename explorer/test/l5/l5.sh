@@ -6,8 +6,8 @@
 #   l5.sh skipped                   the JSON of a skip
 #   l5.sh tools <folder>            Foundry, the release and SHA-256 in TOOLS, into <folder>
 #   l5.sh prepare <folder>          this directory, with foundry.toml filled in for the chain, into <folder> (L5_EXPLORER, L5_CHAIN_ID)
-#   l5.sh build                     in <folder>/project: npm ci, forge build, and the contract's creation code to <folder>/creation.hex
-#   l5.sh verify                    in <folder>/project: the checks of l5.mjs against the deployed contracts, those of the modules in L5_MODULES (the contract module's are SKIPPED, never passed, while it is not there)
+#   l5.sh build                     in <folder>/project: npm ci, forge build, and the creation code of three builds (optimizer runs 200, 201, 202) to <folder>/creation-<runs>.hex
+#   l5.sh verify                    in <folder>/project: the checks of l5.mjs against the deployed contracts, those of the modules in L5_MODULES (a module of L5's missing from them fails)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 UA='Rome Protocol rome@romeprotocol.com'
@@ -69,9 +69,15 @@ case "${1:-}" in
   build)
     npm ci --ignore-scripts --no-audit --no-fund
     forge build
-    forge inspect Counter bytecode | sed 's/^0x//' > ../creation.hex
-    [ -s ../creation.hex ] || fail "forge produced no creation code"
-    echo "Counter's creation code: $(($(wc -c < ../creation.hex) / 2)) bytes"
+    # three different runtime codes (the optimizer runs 200, 201 and 202 change the metadata hash at the end of the code), so that verifying one contract is never a "similar match" for the other two
+    for runs in 200 201 202; do
+      FOUNDRY_OPTIMIZER_RUNS=$runs forge inspect Counter bytecode | sed 's/^0x//' > "../creation-$runs.hex"
+      [ -s "../creation-$runs.hex" ] || fail "forge produced no creation code for runs $runs"
+    done
+    cmp -s ../creation-200.hex ../creation-201.hex && fail "the creation codes of runs 200 and 201 are the same"
+    cmp -s ../creation-201.hex ../creation-202.hex && fail "the creation codes of runs 201 and 202 are the same"
+    cmp -s ../creation-200.hex ../creation-202.hex && fail "the creation codes of runs 200 and 202 are the same"
+    echo "Counter's creation code: $(($(wc -c < ../creation-200.hex) / 2)) bytes, three builds"
     ;;
   verify)
     node ../l5.mjs
