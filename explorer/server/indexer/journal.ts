@@ -57,7 +57,7 @@ export function parseLine(raw: string): { line: JournalLine } | { bad: "malforme
   const o = j as Record<string, unknown>;
   if (o.v !== 1) return { bad: typeof o.v === "number" ? "version" : "malformed" };
   const time = typeof o.time === "string" ? Date.parse(o.time) : NaN;
-  if (typeof o.run !== "string" || !UUID.test(o.run) || whole(o.seq) === null || Number.isNaN(time) || typeof o.event !== "string") return { bad: "malformed" };
+  if (typeof o.run !== "string" || !UUID.test(o.run) || whole(o.seq) === null || !Number.isFinite(time) || time <= 0 || typeof o.event !== "string") return { bad: "malformed" };
   return { line: o as JournalLine };
 }
 
