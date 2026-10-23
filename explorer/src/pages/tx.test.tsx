@@ -44,7 +44,7 @@ describe("the transaction page, for a final transaction", () => {
     await open();
     expect(row("Status")).toHaveTextContent("Success");
     expect(row("Status").firstElementChild).toHaveClass("fact-ok");
-    expect(row("Block")).toHaveTextContent("3, final on Canton in update 1220 0303…0303");
+    expect(row("Block")).toHaveTextContent("3, final on Canton in update 12200303…0303");
     expect(within(row("Block")).getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
   });
 
@@ -212,7 +212,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     await tick();
     expect(chip()).toHaveTextContent("Final");
     expect(screen.queryByRole("status")).toBeNull();
-    expect(row("Block")).toHaveTextContent("4, final on Canton in update 1220 0404…0404");
+    expect(row("Block")).toHaveTextContent("4, final on Canton in update 12200404…0404");
     const seen = asked();
     await tick(10_000);
     expect(asked()).toBe(seen);
@@ -449,7 +449,7 @@ describe("the Canton record and the proof of the transaction's block", () => {
   it("shows the update, its time, the synchronizer, the reader's offset, the template and the command id from the producer log, and links to the record and the block", async () => {
     await openFinal();
     await waitFor(() => expect(side("Canton record", "Offset")).toHaveTextContent("52"));
-    expect(side("Canton record", "Update id")).toHaveTextContent("1220 0303…0303");
+    expect(side("Canton record", "Update id")).toHaveTextContent("12200303…0303");
     expect(side("Canton record", "Record time")).toHaveTextContent("2026-10-04T01:37:23.412Z");
     expect(side("Canton record", "Synchronizer")).toHaveTextContent("da::1220");
     expect(side("Canton record", "Offset")).toHaveTextContent("reader's participant");

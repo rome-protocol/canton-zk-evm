@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseFee, bytesOf, count, gwei, party, seconds, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, count, gwei, party, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
 
 describe("numbers", () => {
   it("groups thousands", () => {
@@ -71,5 +71,11 @@ describe("baseFee", () => {
     expect(baseFee("123456789012")).toBe("123 gwei");
     expect(baseFee("7")).toBe("7 wei");
     expect(baseFee("0")).toBe("0 gwei");
+  });
+});
+
+describe("a Canton update id", () => {
+  it("is its first eight characters and its last four, as on the screens", () => {
+    expect(shortUpdate("12204594" + "ab".repeat(26) + "b509")).toBe("12204594…b509");
   });
 });

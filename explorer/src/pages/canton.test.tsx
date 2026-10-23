@@ -34,7 +34,7 @@ describe("the Canton updates page", () => {
     const r = within(rows()[0]!);
     expect(rows()[0]).toHaveTextContent("64");
     expect(rows()[0]).toHaveTextContent("2026-10-04T01:37:14.230583Z");
-    expect(r.getByRole("link", { name: "1220 0404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
+    expect(r.getByRole("link", { name: "12200404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
     expect(r.getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
   });
 
@@ -240,8 +240,8 @@ describe("one Canton update", () => {
     expect(rows[0]).toHaveTextContent("64");
     expect(rows[0]).toHaveTextContent("Zk.Chain:ZkChain · Advance");
     expect(rows[0]).toHaveTextContent("8");
-    expect(within(rows[0]!).getByRole("link", { name: "1220 0404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
-    expect(within(rows[1]!).getByRole("link", { name: "1220 0303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
+    expect(within(rows[0]!).getByRole("link", { name: "12200404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
+    expect(within(rows[1]!).getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(within(rows[0]!).getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
     expect(t.getByText("ordered by record time and update id · offsets on the reader's participant")).toBeInTheDocument();
     expect(t.getByRole("link", { name: "All Canton updates" })).toHaveAttribute("href", "/canton");

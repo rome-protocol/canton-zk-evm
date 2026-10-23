@@ -46,18 +46,20 @@ interface Props {
   full?: boolean;
   /** Ten characters and eight instead of six and four: for the hash a page is about. */
   long?: boolean;
+  /** For a row in a list: the shortened value and nothing else. The copy and expand buttons belong in the header of a detail page, which is the default. */
+  plain?: boolean;
 }
 
 /** A hash or an id, shortened, with a button to copy the whole value and one to read it in full. */
-export function HashLink({ value, to, kind = "hash", full = false, long = false }: Props) {
+export function HashLink({ value, to, kind = "hash", full = false, long = false, plain = false }: Props) {
   const [open, setOpen] = useState(full);
   const text = open ? value : kind === "update" ? shortUpdate(value) : kind === "party" ? party(value) : long ? short(value, 10, 8) : short(value);
   const body = <span className={`mono${open ? " wrap" : ""}`}>{text}</span>;
   return (
     <span className="hl">
       {to ? <Link className="hx" to={to}>{body}</Link> : <span className="hx">{body}</span>}
-      <CopyButton value={value} />
-      {!full && <button type="button" className="copy" aria-label={open ? "Show shortened" : "Show in full"} onClick={() => setOpen(!open)}><Icon name="expand" size={13} /></button>}
+      {!plain && <CopyButton value={value} />}
+      {!plain && !full && <button type="button" className="copy" aria-label={open ? "Show shortened" : "Show in full"} onClick={() => setOpen(!open)}><Icon name="expand" size={13} /></button>}
     </span>
   );
 }
