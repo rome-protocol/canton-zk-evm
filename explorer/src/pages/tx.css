@@ -7,7 +7,7 @@
 .how-steps.way-steps .none .how-dot { border: 1.5px dashed var(--faint); width: 21px; height: 21px; outline: 0; }
 /* Each step's li draws the line that leaves it, so a gap time sits on the line that comes into the step: centred on the segment between the two dots. */
 .way-delta { position: absolute; left: calc(-50% - 6px); transform: translateX(-50%); white-space: nowrap; top: 0; }
-.how-steps.way-steps .how-dot { top: 18px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: #fff; }
+.how-steps.way-steps .how-dot { top: 18px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: var(--btn-ink); }
 .how-steps.way-steps li::before { top: 29px; left: 24px; right: -12px; }
 .way-foot { margin: 14px -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canton-tint); border-radius: 0 0 13px 13px; display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
 .way-foot-r { text-align: right; }

@@ -57,6 +57,9 @@ describe("the way to final: tx.css wins over block.css whichever sheet comes las
     const get = (s: string) => rules(tx).find(([x]) => x === s)?.[1] ?? "";
     expect(get(".how-steps.way-steps li")).toMatch(/padding-top: 40px/);
     expect(get(".how-steps.way-steps .how-dot")).toMatch(/top: 18px/);
+    // The tick is the ink of a filled accent (white in light, dark in dark), not a fixed white that is faint on the pale dark-mode circles.
+    expect(get(".how-steps.way-steps .how-dot")).toMatch(/color: var\(--btn-ink\)/);
+    expect(get(".how-steps.way-steps .how-dot")).not.toMatch(/#fff/i);
     expect(get(".how-steps.way-steps li::before")).toMatch(/top: 29px/);
   });
 });
