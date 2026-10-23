@@ -340,6 +340,9 @@ export interface Holding { token: string; standard: TokenStandard; name: string 
 export interface CoinPoint { block: number; balance: string }
 const of = (a: string, sub = "") => `/api/addresses/${encodeURIComponent(a)}${sub}`;
 export const getAddressList = async (sort: AddressSort, before: string | null, limit = PAGE) => (await call(`/api/addresses?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressListItem>;
+/** What a token is called and counts in, from the token route, which reads no balance from reth. */
+export interface TokenInfo { address: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null }
+export const getTokenInfo = async (a: string) => (await call(`/api/tokens/${encodeURIComponent(a)}`, [200])).body as TokenInfo;
 export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
 export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;

@@ -11,6 +11,7 @@ const derived = <T,>(items: T[], next: string | null = null, d = true) => reply(
 
 async function open(d: AddressDetail = addressDetail(), subs: Subs = {}, path = `/address/${d.address}`, title = "Address") {
   const calls = fakeApi(route({
+    tokens: (a) => reply({ address: a, standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, derived: true }),
     addresses: (a, sub, p) => {
       if (a !== d.address) return reply(addressDetail({ address: a, kind: "contract", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }));
       return sub === "" ? reply(d) : (subs[sub as keyof Subs]?.(p) ?? (sub === "txs" ? reply(page([])) : derived([])));
@@ -171,12 +172,15 @@ describe("the address page: the other tabs", () => {
   it("lists token transfers with the token's symbol, and an NFT by its id", async () => {
     const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, token: addr(0xcb), from: A, to: addr(0x77), amount: "5000000000", tokenId: null };
     const n = { ...t, txHash: hash(0xe2), block: 19, amount: null, tokenId: "3", token: addr(0xcc) };
-    await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([t, n]) });
+    const calls = await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([t, n]) });
     await userEvent.click(tab("Token transfers 2"));
     await waitFor(() => expect(rows()).toHaveLength(2));
     await waitFor(() => expect(rows()[0]).toHaveTextContent("5,000 tUSD"));
     expect(rows()[0]).toHaveTextContent("OUT");
     expect(rows()[1]).toHaveTextContent("#3");
+    // each token is named from the token route, which reads nothing from reth; the address route would read a balance per token
+    expect(calls.some((c) => c.startsWith(`/api/tokens/${addr(0xcb)}`))).toBe(true);
+    expect(calls.some((c) => c === `/api/addresses/${addr(0xcb)}` || c === `/api/addresses/${addr(0xcc)}`)).toBe(false);
     expect(screen.getByText(/read from the Transfer logs of final blocks/)).toBeInTheDocument();
   });
 

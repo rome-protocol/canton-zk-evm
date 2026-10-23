@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { getAddressDetail, getAddressInternal, getAddressTransfers, getAddressTxs, getCoinHistory, getFaucetAddress, type AddressInternalItem, type AddressTransferItem, type ApiStatus, type DerivedPage, type TxListItem } from "../api.ts";
+import { getAddressInternal, getAddressTransfers, getAddressTxs, getCoinHistory, getFaucetAddress, getTokenInfo, type AddressInternalItem, type AddressTransferItem, type ApiStatus, type DerivedPage, type TxListItem } from "../api.ts";
 import { Sender } from "../components/BlockParts.tsx";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Amount } from "../components/Amount.tsx";
@@ -79,7 +79,8 @@ export function TxsTab({ a, st, now }: { a: string; st: ApiStatus; now: number }
 }
 
 function TransferRow({ a, x }: { a: string; x: AddressTransferItem }) {
-  const tok = useQuery({ queryKey: ["address-detail", x.token], queryFn: () => getAddressDetail(x.token), retry: false, staleTime: 60_000 }).data?.token ?? null;
+  // The token route, not the address route: it reads no balance from reth, so a page of transfers across many tokens costs the database only.
+  const tok = useQuery({ queryKey: ["token-info", x.token], queryFn: () => getTokenInfo(x.token), retry: false, staleTime: 60_000 }).data ?? null;
   const sym = tok?.symbol ?? null;
   return (
     <tr>
