@@ -4,11 +4,14 @@
 .way { margin: 14px 0 18px; }
 .how-steps.way-steps { grid-template-columns: repeat(4, 1fr); }
 .how-steps.way-steps li { padding-top: 40px; }
+.how-steps.way-steps .how-dot { display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: #fff; }
+.how-steps.way-steps .none .how-dot { border: 1.5px dashed var(--faint); width: 21px; height: 21px; outline: 0; }
+.how-steps.way-steps li::before { left: 24px; right: -12px; }
 /* Each step's li draws the line that leaves it, so a gap time sits on the line that comes into the step: centred on the segment between the two dots. */
 .way-delta { position: absolute; left: calc(-50% - 6px); transform: translateX(-50%); white-space: nowrap; top: 0; }
-.how-steps.way-steps .how-dot { top: 22px; }
-.how-steps.way-steps li::before { top: 28px; }
-.way-foot { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
+.how-steps.way-steps .how-dot { top: 18px; }
+.how-steps.way-steps li::before { top: 29px; }
+.way-foot { margin: 14px -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canton-tint); border-radius: 0 0 13px 13px; display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
 .way-foot-r { text-align: right; }
 .way-foot-l .ic { vertical-align: -2px; margin-right: 5px; color: var(--muted); }
 .tx-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
@@ -39,8 +42,9 @@
   .way-foot { flex-direction: column; align-items: flex-start; }
   .way-foot-l, .way-foot-r { text-align: left; }
   .way-foot-r { display: flex; flex-direction: column; }
-  .how-steps.way-steps .how-dot { top: 3px; }
-  .how-steps.way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
+  .how-steps.way-steps .how-dot { top: 0; }
+  .how-steps.way-steps li { padding-left: 36px; }
+  .how-steps.way-steps li::before { left: 11px; top: 26px; bottom: -12px; right: auto; width: 2px; height: auto; }
 }
 .tx-h { margin: 0; font-size: 15px; font-weight: 600; }
 .tx-table .arrow { color: var(--muted); width: 28px; text-align: center; }

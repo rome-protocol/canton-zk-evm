@@ -173,6 +173,8 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(steps.map((x) => x.querySelector(".how-n")!.textContent)).toEqual(["Accepted", "In a block", "Proof done", "Final on Canton"]);
     expect(steps[0]).toHaveClass("got");
     expect(steps.slice(1).every((x) => x.classList.contains("none"))).toBe(true);
+    expect(steps[0]!.querySelector(".how-dot svg")).not.toBeNull();
+    expect(steps.slice(1).every((x) => x.querySelector(".how-dot svg") === null)).toBe(true);
   });
 
   it("says a transaction in a block that Canton holds and the indexer has not read is final but not indexed, and keeps looking", async () => {
@@ -435,13 +437,24 @@ describe("the way to final", () => {
     await openFinal();
     await waitFor(() => expect(way().getByText("position 0 of 1")).toBeInTheDocument());
     expect(steps()).toEqual([
-      "Accepted01:37:14.500by Ostia's RPCproducer log",
-      "+1.50 sIn block 301:37:16.000position 0 of 1producer log",
-      "+7.00 sProof done01:37:23.000ZisK, 1,344 bytesproducer log",
+      "Accepted01:37:14.500by Ostia's RPC",
+      "+1.50 sIn block 301:37:16.000position 0 of 1",
+      "+7.00 sProof done01:37:23.000ZisK, 1,344 bytes",
       "+0.41 sFinal on Canton01:37:23.412000Canton record time",
     ]);
     expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
     expect(way().getByText("8.91 s")).toHaveClass("num");
+  });
+
+  it("marks each reached step with a check circle, keeps where a time comes from as its title, and draws no source tag", async () => {
+    await openFinal();
+    await waitFor(() => expect(way().getByText("position 0 of 1")).toBeInTheDocument());
+    const items = way().getAllByRole("listitem");
+    for (const li of items) expect(li.querySelector(".how-dot svg")).not.toBeNull();
+    expect(items[3]).toHaveClass("last");
+    expect(items[0]!.querySelector(".how-t")).toHaveAttribute("title", "producer log");
+    expect(items[3]!.querySelector(".how-t")).toHaveAttribute("title", "Canton record time");
+    expect(document.querySelector(".way .how-src")).toBeNull();
   });
 
   it("adds the median time to final of the last hour, and says it was not refused or left out of any earlier block when the journal shows no earlier attempt", async () => {
