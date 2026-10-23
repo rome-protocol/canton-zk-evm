@@ -10,3 +10,25 @@
 .way-out { color: var(--warn, #8a5a00); background: var(--warn-tint, #fdf3dc); }
 .way-in { color: var(--ok); background: var(--ok-tint, #e6f5ea); }
 .way-self { color: var(--muted); background: var(--surface-2); }
+.chip-made { color: var(--canton); background: var(--canton-tint); border-color: var(--canton-tint); text-decoration: none; }
+.chip-made:hover { border-color: var(--canton); }
+.chip-count { font-weight: 400; }
+.hold-main { min-width: 0; flex: 1 1 0; overflow: hidden; }   /* basis 0: the clipped name gives way before the amount column does */
+.hold-name, .hold-sym, .hold-id { display: inline-block; max-width: 100%; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
+.hold-name { font-weight: 600; color: var(--ink); max-width: min(28ch, 100%); }
+.hold-sym { max-width: min(16ch, 100%); }
+.hold-id { max-width: min(24ch, 100%); }
+.hold-amt { min-width: 0; max-width: 45%; overflow-wrap: anywhere; flex: 0 1 auto; }
+.hold .r .small { margin-top: 2px; }
+.hold-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.card.tab-card { padding: 0; margin-top: 18px; }
+.tab-card .tabs { margin: 0; padding: 0 12px; }
+.tab-card .tab-body { padding: 16px 20px; }
+.tab-card .tab-body .card { box-shadow: none; }
+.list-tools { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.list-tools .seg { min-width: 0; }   /* without these the filter keeps its full width on a phone and the page scrolls sideways */
+.list-tools .seg button { flex: none; }
+@media (max-width: 640px) { .tab-card .tab-body { padding: 12px 14px; } }
+.seg-select { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; background: var(--surface); color: var(--ink); max-width: 100%; }
+.list-tools .seg button { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) { .list-tools .seg { max-width: 100%; overflow-x: auto; } .list-tools .seg button { white-space: nowrap; } }

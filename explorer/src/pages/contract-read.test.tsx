@@ -11,6 +11,19 @@ afterEach(() => vi.unstubAllGlobals());
 const word = (t: string, v: unknown) => encodeAbiParameters([{ type: t }], [v as never]);
 
 describe("the contract page: Read", () => {
+  it("opens with the standard card header, outline buttons, and typed parameters after each name", async () => {
+    await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x15" : word("string", "x") });
+    const card = await screen.findByRole("region", { name: "Read contract" });
+    const h = card.querySelector(".card-head") as HTMLElement;
+    expect(within(h).getByRole("heading", { level: 2, name: "Read contract" }).parentElement!.querySelector(".muted")).not.toBeNull();
+    for (const n of ["Read again", "Expand all"]) { expect(within(h).getByRole("button", { name: new RegExp(n) })).toHaveClass("btn-line"); }
+    const fn = screen.getByRole("region", { name: "allowance" });
+    expect(fn.querySelector(".fn-name")).toHaveTextContent("allowance");
+    expect(fn.querySelector(".fn-args")).toHaveTextContent("(owner (address), spender (address))");
+    await userEvent.click(within(fn).getByRole("button", { name: /allowance/ }));
+    expect(within(fn).getByRole("button", { name: "Query" })).toHaveClass("btn-line");
+  });
+
   it("reads the final block again on Read again, and calls every function at the new block", async () => {
     let head = 0x15;
     const { rpcCalls } = await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x" + (head).toString(16) : word("string", "x") });
@@ -140,5 +153,50 @@ describe("the contract page: Read", () => {
     await userEvent.click(screen.getByRole("tab", { name: /^Read/ }));
     await within(await screen.findByRole("region", { name: "name" })).findByText("answered at block 32");
     expect(rpcCalls.filter((c) => c.method === "eth_blockNumber")).toHaveLength(2);
+  });
+
+  describe("amounts of the contract's own token", () => {
+    const AMOUNTS = [
+      { type: "function", name: "totalSupply", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint256" }] },
+      { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "", type: "uint256" }] },
+      { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
+    ];
+    const rpc = (c: { method: string; params: unknown[] }) => c.method === "eth_blockNumber" ? "0x15" : (c.params[0] as { data: string }).data === "0x313ce567" ? word("uint8", 6) : word("uint256", 1_000_000_000_000n);
+    const sources = { [A]: contractSource(0xcb, { abi: AMOUNTS }) };
+    const token = { name: "Test USD", symbol: "tUSD", decimals: 6 };
+
+    it("writes totalSupply and balanceOf in whole coins beside the raw number, with every digit in the title", async () => {
+      await open("read", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources, token, rpc });
+      const supply = await screen.findByRole("region", { name: "totalSupply" });
+      const unit = await within(supply).findByText("= 1,000,000 tUSD");
+      expect(unit).toHaveAttribute("title", "1,000,000 tUSD");
+      expect(within(supply).getByText("1000000000000")).toBeInTheDocument();
+      const bal = screen.getByRole("region", { name: "balanceOf" });
+      await userEvent.click(within(bal).getByRole("button", { name: /balanceOf/ }));
+      await userEvent.type(within(bal).getByLabelText("account (address)"), ME);
+      await userEvent.click(within(bal).getByRole("button", { name: "Query" }));
+      expect(await within(bal).findByText("= 1,000,000 tUSD")).toBeInTheDocument();
+    });
+
+    it("leaves decimals alone: it is a count of places, not an amount", async () => {
+      await open("read", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources, token, rpc: (c) => c.method === "eth_blockNumber" ? "0x15" : word("uint8", 6) });
+      const d = await screen.findByRole("region", { name: "decimals" });
+      await within(d).findByText("answered at block 21");
+      expect(within(d).queryByText(/^=/)).toBeNull();
+    });
+
+    it("writes no unit when the contract is not an ERC-20 token, since balanceOf of an NFT is a count", async () => {
+      await open("read", { detail: contractDetail(0xcb, { standard: "ERC-721" }), sources, token, rpc });
+      const supply = await screen.findByRole("region", { name: "totalSupply" });
+      await within(supply).findByText("answered at block 21");
+      expect(within(supply).queryByText(/^=/)).toBeNull();
+    });
+
+    it("writes no unit when the explorer does not know the token's decimals", async () => {
+      await open("read", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources, rpc });
+      const supply = await screen.findByRole("region", { name: "totalSupply" });
+      await within(supply).findByText("answered at block 21");
+      expect(within(supply).queryByText(/^=/)).toBeNull();
+    });
   });
 });

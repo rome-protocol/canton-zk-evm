@@ -13,13 +13,13 @@ export const TOKEN_ABI = [
 ];
 interface Rpc { method: string; params: unknown[] }
 /** The explorer's REST API and its /rpc, both faked; `rpcCalls` is every JSON-RPC call the page made, in order. */
-export async function open(tab: string, seen: { detail?: ContractDetail; sources?: Record<string, ContractSource>; rpc?: (c: Rpc) => unknown; events?: (path: string) => unknown } = {}) {
+export async function open(tab: string, seen: { detail?: ContractDetail; sources?: Record<string, ContractSource>; rpc?: (c: Rpc) => unknown; events?: (path: string) => unknown; token?: { name: string; symbol: string; decimals: number } } = {}) {
   const d = seen.detail ?? contractDetail();
   const sources = seen.sources ?? { [A]: contractSource(0xcb, { abi: TOKEN_ABI }) };
   const rpcCalls: Rpc[] = [];
   const calls = fakeApi(route({
     contracts: (a, sub, path) => (sub === "source" ? reply(sources[a] ?? unverifiedSource()) : sub === "events" ? reply((seen.events ?? (() => page([])))(path)) : a === A ? reply(d) : reply({ error: "none" }, 404)),
-    addresses: (_a, sub) => (sub === "" ? reply(addressDetail({ address: A, kind: "contract" })) : derived([])),
+    addresses: (_a, sub) => (sub === "" ? reply(addressDetail({ address: A, kind: seen.token ? "token" : "contract", token: seen.token ?? null })) : derived([])),
   }));
   const rest = globalThis.fetch;
   vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {

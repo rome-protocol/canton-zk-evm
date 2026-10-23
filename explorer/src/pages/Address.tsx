@@ -1,22 +1,17 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { getAddressDetail, getHoldings, type AddressDetail, type ApiStatus, type Holding } from "../api.ts";
-import { Amount } from "../components/Amount.tsx";
+import { getAddressDetail, type AddressDetail, type ApiStatus } from "../api.ts";
 import { unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
-import { Item, Kv } from "../components/Kv.tsx";
-import { Pager, usePaged } from "../components/Pager.tsx";
 import { count, exact, units } from "../format.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
-import { CoinTab, InternalTab, TransfersTab, TxsTab } from "./AddressTabs.tsx";
+import { CoinTab, ContractsTab, InternalTab, TransfersTab, TxsTab } from "./AddressTabs.tsx";
+import { CreatedChip, Holdings, More } from "./AddressParts.tsx";
 import { Contract } from "./Contract.tsx";
-import { NftCount } from "./TokenParts.tsx";
 import "./address.css";
 import "./tx.css";
 
-const Dash = () => <span className="muted">—</span>;
-
 /** The title: an address that holds no code. A contract and a token have their own pages. */
-const Title = () => <div className="ptitle"><h1>Address</h1><span className="chip chip-kind">Account</span></div>;
+const Title = ({ a }: { a: AddressDetail }) => <div className="ptitle"><h1>Address</h1><span className="chip chip-kind">Account</span><CreatedChip a={a} to="?tab=contracts" /></div>;
 
 /** The balance is what reth says at the final block; with no final block yet it is not known, and is never drawn as 0. */
 function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | undefined }) {
@@ -32,61 +27,7 @@ function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | und
   );
 }
 
-function HoldingRow({ h }: { h: Holding }) {
-  const nft = h.standard !== "ERC-20";
-  const name = h.name ?? h.symbol;
-  return (
-    <div className="hold">
-      <div>
-        {name ? <Link to={`/token/${h.token}`}>{name}</Link> : <HashLink value={h.token} to={`/token/${h.token}`} />}
-        <div className="muted small">{h.symbol && <>{h.symbol}{h.standard === "ERC-1155" && ` #${h.tokenId}`} · </>}{h.standard} · as of block {h.updatedBlock}</div>
-      </div>
-      <div className="r">
-        {h.standard === "ERC-721" ? <NftCount n={h.value} />
-          : nft ? <span className="num">{h.value}</span>
-          : h.decimals !== null && h.symbol ? <Amount raw={h.value} decimals={h.decimals} symbol={h.symbol} />
-          : <span className="num" title="The token's decimals are not known, so this is the raw value">{h.value}</span>}
-      </div>
-    </div>
-  );
-}
-
-/** What the address holds, token by token, each as of the block it last moved. The list is the explorer's, so while it is behind it says it may be short. */
-function Holdings({ addr }: { addr: string }) {
-  const p = usePaged(["address-tokens", addr], (after) => getHoldings(addr, after), 5000);
-  const d = p.data;
-  return (
-    <section className="card" aria-label="Token holdings">
-      <h2>Token holdings</h2>
-      {p.error && !d ? <p className="muted">{p.error.message}</p> : !d ? <p className="muted">Reading the token holdings…</p> : (
-        <>
-          {d.items.map((h) => <HoldingRow key={`${h.token}-${h.tokenId}`} h={h} />)}
-          {d.items.length === 0 && d.derived !== false && <p className="muted">This address holds no tokens.</p>}
-          {d.derived === false && <p className="small muted">The explorer is still reading blocks, so this list may be missing tokens.</p>}
-          <Pager p={p} label="Pages of token holdings" />
-        </>
-      )}
-    </section>
-  );
-}
-
-function More({ a }: { a: AddressDetail }) {
-  const blk = (n: number | null) => (n === null ? <Dash /> : <Link className="num" to={`/block/${n}`}>Block {n}</Link>);
-  return (
-    <section className="card" aria-label="More information">
-      <h2>More information</h2>
-      <Kv wide>
-        <Item label="Transactions sent"><span className="num">{count(a.sentCount)}</span></Item>
-        <Item label="Transactions received"><span className="num">{count(a.receivedCount)}</span></Item>
-        <Item label="First seen">{blk(a.firstSeenBlock)}</Item>
-        <Item label="Last active">{blk(a.lastActiveBlock)}</Item>
-      </Kv>
-      {!a.derived && <p className="small muted card-note">The explorer is still reading blocks, so these counts may be short.</p>}
-    </section>
-  );
-}
-
-type TabId = "transactions" | "token-transfers" | "internal" | "coin-history";
+type TabId = "transactions" | "token-transfers" | "nft-transfers" | "internal" | "contracts" | "coin-history";
 
 /**
  * What reth says about an address at the final block, and what the explorer's index holds of it: the balance is reth's, the counts, the lists and the
@@ -103,10 +44,14 @@ export function Address() {
   const a = q.data!;
   // Design section 7: an address that holds code (a token too) is the contract page; a token has its own page at /token.
   if (a.kind !== "account") return <Contract addr={addr} />;
-  const tabs: { id: TabId; label: string; n?: number }[] = [
+  const made = typeof a.createdCount === "number" ? `${count(a.createdCount)}${a.createdCountCapped ? "+" : ""}` : undefined;
+  // The counts of the transfer tabs are not served per standard, so they show none: a count of both together would be wrong for each.
+  const tabs: { id: TabId; label: string; n?: number | string }[] = [
     { id: "transactions", label: "Transactions", n: a.sentCount + a.receivedCount },
-    { id: "token-transfers", label: "Token transfers", n: a.tokenTransferCount },
+    { id: "token-transfers", label: "Token transfers" },
+    { id: "nft-transfers", label: "NFT transfers" },
     { id: "internal", label: "Internal calls", n: a.internalCount },
+    { id: "contracts", label: "Contracts created", n: made },
     { id: "coin-history", label: "Coin history" },
   ];
   const asked = params.get("tab");
@@ -115,26 +60,30 @@ export function Address() {
   return (
     <>
       <nav className="small muted" aria-label="Breadcrumb"><Link to="/addresses">Addresses</Link> / <span className="mono">{a.address.slice(0, 6)}…{a.address.slice(-4)}</span></nav>
-      <Title />
+      <Title a={a} />
       <div className="bighash"><HashLink value={a.address} full /></div>
       <div className="addr-cards">
         <Overview a={a} coin={st?.coin} />
         <Holdings addr={a.address} />
-        <More a={a} />
+        <More a={a} st={st} />
       </div>
-      <div className="tabs" role="tablist" aria-label="Address sections">
-        {tabs.map((t) => (
-          <button key={t.id} type="button" role="tab" id={`tab-${t.id}`} aria-selected={t.id === tab} aria-controls={`panel-${t.id}`} onClick={() => pick(t.id)}>
-            {t.label}{t.n !== undefined && <> <span className="count">{count(t.n)}</span></>}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
-        {!st ? null : tab === "transactions" ? <TxsTab a={a.address} st={st} now={now} />
-          : tab === "token-transfers" ? <TransfersTab a={a.address} />
-          : tab === "internal" ? <InternalTab a={a.address} st={st} />
-          : <CoinTab a={a.address} st={st} />}
-      </div>
+      <section className="card tab-card" aria-label="Activity">
+        <div className="tabs" role="tablist" aria-label="Address sections">
+          {tabs.map((t) => (
+            <button key={t.id} type="button" role="tab" id={`tab-${t.id}`} aria-selected={t.id === tab} aria-controls={`panel-${t.id}`} onClick={() => pick(t.id)}>
+              {t.label}{t.n !== undefined && <> <span className="count">{typeof t.n === "number" ? count(t.n) : t.n}</span></>}
+            </button>
+          ))}
+        </div>
+        <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+          {!st ? null : tab === "transactions" ? <TxsTab a={a.address} st={st} now={now} />
+            : tab === "token-transfers" ? <TransfersTab a={a.address} />
+            : tab === "nft-transfers" ? <TransfersTab a={a.address} nft />
+            : tab === "internal" ? <InternalTab a={a.address} st={st} />
+            : tab === "contracts" ? <ContractsTab a={a.address} now={now} />
+            : <CoinTab a={a.address} st={st} />}
+        </div>
+      </section>
     </>
   );
 }
