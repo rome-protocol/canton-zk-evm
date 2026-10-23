@@ -78,12 +78,12 @@ class EveryOutcome(Lines):
 
     def test_an_unknown_outcome_is_resolved_later_on_the_same_attempt(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         p = self.producer(s)
         p.step()
         self.assertEqual(self.one(s, "answered")["outcome"], "unknown")
         self.assertNotIn("resolved", self.events(s))
-        s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False
+        s.ledger.no_completion, s.ledger.drop_but_commit = False, False
         p.step()
         self.assertEqual(self.one(s, "resolved")["outcome"], "committed")
         self.assertEqual(self.one(s, "resolved")["attempt"], 1)
@@ -91,10 +91,10 @@ class EveryOutcome(Lines):
 
     def test_an_unknown_outcome_that_was_not_committed_is_resolved_as_not_committed(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.commit, s.ledger.head_fails_after_submit = False, True
+        s.ledger.commit, s.ledger.no_completion = False, True
         p = self.producer(s)
         p.step()
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         p.step()
         self.assertEqual(self.one(s, "resolved")["outcome"], "not committed")
         self.assertNotIn("final_seen", self.events(s))
@@ -136,16 +136,50 @@ class EveryOutcome(Lines):
     def test_an_outcome_that_is_unknown_at_a_restart_is_resolved_by_the_next_run(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         first = self.producer(s)
         first.step()
         self.assertEqual(self.one(s, "answered")["outcome"], "unknown")
-        s.ledger.head_fails_after_submit = False
-        second = self.producer(s)   # a new process: the old one's unresolved outcome is gone from memory
+        second = self.producer(s)   # a new process: the old one's unresolved outcome is gone from memory, the command is in the work folder
+        second.load_unresolved()
+        s.ledger.no_completion = False   # its completion shows: Canton failed it
         second.step()
         self.assertNotEqual(first.journal.run_id, second.journal.run_id)
         (line,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
-        self.assertEqual((line["outcome"], line["attempt_run"], line["attempt"]), ("restarted", first.journal.run_id, 1))
+        self.assertEqual((line["outcome"], line["via"], line["attempt_run"], line["attempt"]), ("not committed", "completion", first.journal.run_id, 1))
+
+    def test_an_outcome_that_commits_after_a_restart_is_written_to_the_attempt_that_made_it(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.late = True
+        first = self.producer(s)
+        first.step()
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        (resolved,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
+        (seen,) = [l for l in self.journal(s, "final_seen") if l["run"] == second.journal.run_id]
+        for line in (resolved, seen):
+            self.assertEqual((line["attempt_run"], line["attempt"]), (first.journal.run_id, 1))
+        self.assertEqual((resolved["update_id"], resolved["completion_offset"]), ("u1", 43))
+
+    def test_an_empty_block_in_doubt_across_a_restart_is_written_to_the_attempt_that_made_it(self):
+        s = self.setup({})
+        s.ledger.late = True
+        first = self.producer(s, empty_every=30)
+        self.now[0] += 31
+        first.step()   # the heartbeat's empty block: no transactions, so no kept file names its run and attempt
+        self.assertFalse(b.saved_path(s.cfg).exists())
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        (resolved,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
+        (seen,) = [l for l in self.journal(s, "final_seen") if l["run"] == second.journal.run_id]
+        for line in (resolved, seen):
+            self.assertEqual((line["attempt_run"], line["attempt"]), (first.journal.run_id, 1))
 
     def test_a_pool_with_nothing_that_can_go_in_is_a_skipped_attempt(self):
         t = tx(BOB, 0)
@@ -203,11 +237,11 @@ class CommandIdAndAnswer(Lines):
             with mock.patch.object(b, "post_json", return_value=answer):
                 self.assertEqual(b.Ledger(s.cfg).advance({"contractId": "c"}, {}), {"updateId": None, "completionOffset": None})
 
-    def test_a_lost_reply_that_hid_a_commit_has_no_update_id(self):
+    def test_a_lost_reply_that_hid_a_commit_has_the_update_id_of_its_completion(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
         self.producer(s).step()
         answered = self.one(s, "answered")
-        self.assertEqual((answered["outcome"], answered["update_id"], answered["completion_offset"]), ("committed", None, None))
+        self.assertEqual((answered["outcome"], answered["update_id"], answered["completion_offset"]), ("committed", "u1", 43))
 
 
 class Traffic(Lines):
