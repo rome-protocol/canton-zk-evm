@@ -70,9 +70,9 @@ describe("the stats page", () => {
   it("shows the all-time total beside the window's transactions, with the block it is as of", async () => {
     await open("/stats", { summary: () => reply(summary({ txs: { count: 5899, failed: 16, successRate: 5883 / 5899, accepted: 5903, allTime: { total: 6021, asOfBlock: 901, asOf: "2026-10-15T14:07:00.000Z" } } })) });
     const txs = await tile("Transactions");
-    expect(txs).toHaveTextContent("5,899 6,021 all time");
-    expect(within(txs).getByText("6,021 all time")).toHaveAttribute("title", "All time, as of block 901");
-  });
+    expect(txs).toHaveTextContent("5,899 6,021 final all time");
+    expect(within(txs).getByText("6,021 final all time")).toHaveAttribute("title", "All time, as of block 901");
+    expect(txs).toHaveTextContent("all time as of block 901");  });
 
   it("says the all-time total is not counted yet, never 0, when the server cannot say", async () => {
     await open();

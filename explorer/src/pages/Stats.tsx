@@ -162,7 +162,7 @@ export function Stats() {
             {timeTile("Time to final", s.timeToFinal, "accepted to final on Canton")}
             {timeTile("Proof time", s.proofTime, `per block, ${plural(s.proofTime?.samples ?? 0, "proof")}`)}
             {timeTile("Canton commit", s.commitTime, "sent to record time")}
-            <Tile k="Transactions" v={count(s.txs.count)} small={s.txs.allTime ? <span title={`All time, as of block ${s.txs.allTime.asOfBlock}`}>{count(s.txs.allTime.total)} all time</span> : "total not counted yet"} sub={`in ${plural(s.blocks.count, "block")}${s.txsPerBlock.mean !== null ? ` · ${trim(s.txsPerBlock.mean, 1)} per block` : ""}`} />
+            <Tile k="Transactions" v={count(s.txs.count)} small={s.txs.allTime ? <span title={`All time, as of block ${s.txs.allTime.asOfBlock}`}>{count(s.txs.allTime.total)} final all time</span> : "total not counted yet"} sub={`in ${plural(s.blocks.count, "block")}${s.txsPerBlock.mean !== null ? ` · ${trim(s.txsPerBlock.mean, 1)} per block` : ""}${s.txs.allTime ? ` · all time as of block ${s.txs.allTime.asOfBlock}` : ""}`} />
             <Tile k="Peak rate" v={s.tps.peak !== null && s.txs.count > 0 ? trim(s.tps.peak, 1) : DASH} small={s.tps.peak !== null && s.txs.count > 0 ? "tx/s" : undefined} sub={s.tps.peakAt ? `busiest minute, ${pointTime(s.tps.peakAt, false)}` : "no transaction in this window"} />
             <Tile k="Success rate" v={s.txs.successRate !== null ? pct(s.txs.successRate) : DASH} sub={s.txs.successRate !== null ? `${count(s.txs.failed)} reverted of ${count(s.txs.count)}` : "no transaction in this window"} />
           </div>

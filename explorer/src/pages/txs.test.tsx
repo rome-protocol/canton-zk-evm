@@ -119,7 +119,7 @@ describe("the all-time total", () => {
   const at = "2026-10-04T01:37:58Z";
   const counted = (total: number | null) => ({ ...page([txItem(3), txItem(2)], "2:0"), total, totalAsOfBlock: total === null ? null : 21, totalAsOf: total === null ? null : at });
   const title = () => screen.getByRole("heading", { name: "Transactions" }).parentElement!;
-  const some = () => inFlight({ attempts: [{ ...inFlight().attempts[0]!, txCount: 3 }], poolWaiting: { waiting: 1, at }, transactions: [] });
+  const some = () => inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 1, at }, transactions: [] });
 
   it("says the total, how many are final, being proven and waiting, and the newest rows of the total", async () => {
     await open({ txs: () => reply(counted(1017)), inFlight: () => reply(some()) });
@@ -129,10 +129,34 @@ describe("the all-time total", () => {
 
   it("says not counted yet when the server cannot count, and never writes 0 or a guess", async () => {
     await open({ txs: () => reply(counted(null)), inFlight: () => reply(some()) });
-    await waitFor(() => expect(title()).toHaveTextContent("not counted yet · 3 being proven · 1 waiting"));
+    await waitFor(() => expect(title()).toHaveTextContent("total not counted yet · 3 being proven · 1 waiting"));
     expect(title()).not.toHaveTextContent(/(^|\D)0 in all/);
     expect(title()).not.toHaveTextContent("in all");
     expect(screen.getByText(/Showing the newest 2 on this page · total not counted yet/)).toBeInTheDocument();
+  });
+
+  it("on page 2 and later, tells the page against the final total, or says the total is not counted", async () => {
+    await open({ txs: () => reply(counted(1017)), inFlight: () => reply(some()) });
+    await userEvent.click(await screen.findByRole("button", { name: "Older page" }));
+    expect(await screen.findByText("Showing 2 on page 2 · 1,017 final in all")).toBeInTheDocument();
+  });
+
+  it("on page 2, says the total is not counted yet when the server cannot count", async () => {
+    await open({ txs: () => reply(counted(null)), inFlight: () => reply(some()) });
+    await userEvent.click(await screen.findByRole("button", { name: "Older page" }));
+    expect(await screen.findByText("Showing 2 on page 2 · total not counted yet")).toBeInTheDocument();
+  });
+
+  it("on page 1 with not-final rows, counts them in the rows shown and adds the not-final total to the figure", async () => {
+    await open({ txs: () => reply(counted(1017)), inFlight: () => reply(flight()), tx: byHash("") });
+    expect(await screen.findByText("Showing the newest 4 of 1,018")).toBeInTheDocument();
+  });
+
+  it("does not count twice the transactions of a block the final total already holds", async () => {
+    const seen = inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 21, txCount: 3 }, { ...inFlight().attempts[0]!, number: 22, txCount: 2 }], poolWaiting: { waiting: 1, at }, transactions: [] });
+    await open({ txs: () => reply(counted(1017)), inFlight: () => reply(seen) });
+    await waitFor(() => expect(title()).toHaveTextContent("1,020 in all · 1,017 final · 5 being proven · 1 waiting"));
+    expect(screen.getByText("Showing the newest 2 of 1,020")).toBeInTheDocument();
   });
 
   it("says at least when the pool is not counted, and offers no Last button the server cannot serve", async () => {

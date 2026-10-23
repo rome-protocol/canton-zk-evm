@@ -23,9 +23,9 @@ export function Hero({ tries }: { tries: Array<{ label: string; q: string }> }) 
   );
 }
 
-/** The chain's transactions in all, all time, as of the block the server counted to; "not counted yet" when it cannot say, never 0. */
+/** The final transactions in all, all time, with the block the server counted to in plain sight; "not counted yet" when it cannot say, never 0. */
 const AllTime = ({ t }: { t: StatsSummary["txs"]["allTime"] }) =>
-  t ? <span className="muted small" title={`All time, as of block ${t.asOfBlock}`}>{count(t.total)} in all</span> : <span className="muted small">total not counted yet</span>;
+  t ? <span className="muted small" title={`All time, as of block ${t.asOfBlock}`}>{count(t.total)} final in all · as of block {t.asOfBlock}</span> : <span className="muted small">total not counted yet</span>;
 
 function Stat({ label, note, children, foot, sub }: { label: string; note?: string; children: ReactNode; foot: ReactNode; sub?: ReactNode }) {
   return (

@@ -328,8 +328,8 @@ describe("the numbers, from the stats routes", () => {
 
   it("shows the all-time total under the day's count, with the block it is as of", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, bySize: [] } } })();
-    expect(tile("Transactions · 24 h")).toHaveTextContent("1,0171,021 in allin 21 blocks, each one Canton transaction");
-    expect(screen.getByText("1,021 in all")).toHaveAttribute("title", "All time, as of block 21");
+    expect(tile("Transactions · 24 h")).toHaveTextContent("1,0171,021 final in all · as of block 21in 21 blocks, each one Canton transaction");
+    expect(screen.getByText("1,021 final in all · as of block 21")).toHaveAttribute("title", "All time, as of block 21");
   });
 
   it("says not counted yet, never 0, when the all-time total is not known", async () => {
