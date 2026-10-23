@@ -56,8 +56,8 @@ describe("the way to final: tx.css wins over block.css whichever sheet comes las
   it("puts the step's dot above its name: room above the text, and the dot and the line lower than block.css's", () => {
     const get = (s: string) => rules(tx).find(([x]) => x === s)?.[1] ?? "";
     expect(get(".how-steps.way-steps li")).toMatch(/padding-top: 40px/);
-    expect(get(".how-steps.way-steps .how-dot")).toMatch(/top: 22px/);
-    expect(get(".how-steps.way-steps li::before")).toMatch(/top: 28px/);
+    expect(get(".how-steps.way-steps .how-dot")).toMatch(/top: 18px/);
+    expect(get(".how-steps.way-steps li::before")).toMatch(/top: 29px/);
   });
 });
 

@@ -4,18 +4,17 @@
 .way { margin: 14px 0 18px; }
 .how-steps.way-steps { grid-template-columns: repeat(4, 1fr); }
 .how-steps.way-steps li { padding-top: 40px; }
-.how-steps.way-steps .how-dot { display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: #fff; }
 .how-steps.way-steps .none .how-dot { border: 1.5px dashed var(--faint); width: 21px; height: 21px; outline: 0; }
-.how-steps.way-steps li::before { left: 24px; right: -12px; }
 /* Each step's li draws the line that leaves it, so a gap time sits on the line that comes into the step: centred on the segment between the two dots. */
 .way-delta { position: absolute; left: calc(-50% - 6px); transform: translateX(-50%); white-space: nowrap; top: 0; }
-.how-steps.way-steps .how-dot { top: 18px; }
-.how-steps.way-steps li::before { top: 29px; }
+.how-steps.way-steps .how-dot { top: 18px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: #fff; }
+.how-steps.way-steps li::before { top: 29px; left: 24px; right: -12px; }
 .way-foot { margin: 14px -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canton-tint); border-radius: 0 0 13px 13px; display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
 .way-foot-r { text-align: right; }
 .way-foot-l .ic { vertical-align: -2px; margin-right: 5px; color: var(--muted); }
 .tx-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .tx-main, .tx-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.side-link { font-size: 13px; font-weight: 600; color: var(--link); }
 .side-foot { display: flex; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); margin-top: 8px; }
 .txv { display: flex; flex-direction: column; gap: 8px; }
 .txv-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
@@ -88,3 +87,5 @@
 
 /* Words for a screen reader only. */
 .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.proof.compact .txv { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }

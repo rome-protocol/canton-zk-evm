@@ -43,9 +43,9 @@ export function CantonRecord({ t, block, read }: { t: ApiTx; block: BlockSummary
             <Item label="Block">{n !== undefined ? <><Link className="num" to={`/block/${n}`}>Block {n}</Link>{block && <span className="muted"> · {block.txCount} transaction{block.txCount === 1 ? "" : "s"}, one Canton transaction</span>}</> : "—"}</Item>
           </Kv>
           <div className="side-foot">
-            <Link className="btn-line" to={`/canton/${id}`}>Open the Canton record <Icon name="next" size={13} /></Link>
+            <Link className="side-link" to={`/canton/${id}`}>Open the Canton record →</Link>
             <span className="grow" />
-            {n !== undefined && <Link className="btn-line" to={`/block/${n}`}>Open block {n} <Icon name="next" size={13} /></Link>}
+            {n !== undefined && <Link className="side-link" to={`/block/${n}`}>Open block {n} →</Link>}
           </div>
         </>
       )}
@@ -69,7 +69,7 @@ export function ProofSide({ t, block, st, read }: { t: ApiTx; block: BlockSummar
     );
   }
   return (
-    <ProofCard c={c} pins={st?.pins}>
+    <ProofCard c={c} pins={st?.pins} compactFor={n}>
       {st && <TxVerify number={n} blockHash={block.hash} pins={st.pins} final proofBytes={c.proofBytes} />}
     </ProofCard>
   );

@@ -524,6 +524,8 @@ describe("the Canton record and the proof of the transaction's block", () => {
     expect(side("Canton record", "Command id")).toHaveTextContent("cmd-1 producer log");
     expect(within(side("Canton record", "Block")).getByRole("link", { name: "Block 3" })).toHaveAttribute("href", "/block/3");
     const card = within(screen.getByRole("region", { name: "Canton record" }));
+    expect(card.getByRole("link", { name: "Open the Canton record →" })).toHaveClass("side-link");
+    expect(card.getByRole("link", { name: "Open block 3 →" })).toHaveClass("side-link");
     expect(card.getByRole("link", { name: /Open the Canton record/ })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(card.getByRole("link", { name: /Open block 3/ })).toHaveAttribute("href", "/block/3");
   });
@@ -535,12 +537,28 @@ describe("the Canton record and the proof of the transaction's block", () => {
     expect(side("Canton record", "Command id")).toHaveTextContent("not in the producer's log");
   });
 
-  it("shows the proof's facts, read from its bytes, with the pins", async () => {
+  it("shows the proof in its compact form: Program key, ZisK release and Block hash as rows, no inner box, and Verify inline with the proof's size", async () => {
     await openFinal();
     await screen.findByText("Program key");
+    const region = screen.getByRole("region", { name: "The proof" });
+    const proof = within(region);
+    expect(proof.getAllByText(/./, { selector: "dt" }).map((d) => d.textContent)).toEqual(["Program key", "ZisK release", "Block hash"]);
+    expect(proof.getAllByText(/ours|ZisK 1\.3\.1|block 3/).length).toBeGreaterThanOrEqual(3);
+    expect(region.querySelector(".facts")).toBeNull();
+    expect(proof.queryByText(/proof 768/)).toBeNull();
+    expect(proof.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(region.querySelector(".side-h")).toHaveTextContent("of block 3");
+    const verify = proof.getByRole("button", { name: /Verify block 3 in your browser/ });
+    expect(verify.parentElement).toHaveTextContent("1,344-byte proof");
+  });
+
+  it("says in the compact proof card which fact does not match the explorer's pins, and keeps the status word", async () => {
+    const base = blockSummary();
+    await openFinal(undefined, { blockDetail: () => reply({ ...base, canton: { ...base.canton!, proof: { ...base.canton!.proof!, rootC: { value: hash(9), ok: false } } } }) });
+    await screen.findByText("Program key");
     const proof = within(screen.getByRole("region", { name: "The proof" }));
-    expect(proof.getAllByText(/ours|ZisK 1\.3\.1|this block/).length).toBeGreaterThanOrEqual(3);
-    expect(proof.getByText("1,344 bytes")).toBeInTheDocument();
+    expect(proof.getByText(/does not match this explorer's pin/)).toBeInTheDocument();
+    expect(proof.getByText(/The status word stays Final/)).toBeInTheDocument();
   });
 
   it("says a block that is not on Canton yet has no record and no proof, and greys Verify", async () => {
