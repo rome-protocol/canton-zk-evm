@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -134,7 +136,7 @@ describe("the token page: holders", () => {
     expect(rows()[1]).toHaveTextContent("0.25%");
     expect(rows()[2]).toHaveTextContent("2.5");
     expect(rows()[2]).toHaveTextContent("<0.01%");
-    expect(within(rows()[0]!).getByRole("link", { name: "0xe3e3…e3e3" })).toHaveAttribute("href", `/address/${addr(0xe3)}`);
+    expect(within(rows()[0]!).getByRole("link", { name: "0xe3e3e3e3…e3e3e3" })).toHaveAttribute("href", `/address/${addr(0xe3)}`);
   });
 
   it("says a share too small to show is below it, never 0", async () => {
@@ -243,7 +245,7 @@ describe("the token page: transfers", () => {
     expect(rows("Token transfers")).toHaveLength(2);
     expect(rows("Token transfers")[0]).toHaveTextContent("100 tUSD");
     expect(rows("Token transfers")[1]).toHaveTextContent("2.5 tUSD");
-    expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "0xd1d1…d1d1" })).toHaveAttribute("href", `/tx/${"0x" + "d1".repeat(32)}`);
+    expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "0xd1d1d1d1…d1d1d1" })).toHaveAttribute("href", `/tx/${"0x" + "d1".repeat(32)}`);
     expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "20" })).toHaveAttribute("href", "/block/20");
   });
 
@@ -381,5 +383,38 @@ describe("the token page: one stacked page", () => {
     await tick(5000);
     expect(card("Total supply")).toHaveTextContent("2,000");
     vi.useRealTimers();
+  });
+});
+
+describe("the token page: review fixes", () => {
+  const icons = (el: HTMLElement) => [...within(el).queryAllByRole("button", { name: /Show in full|Copy/ })];
+
+  it("lists plain hashes in the holders and transfers tables and in the information card: no copy or show-in-full icons on a row", async () => {
+    await open(tokenDetail(0xcb, { creator: addr(0xe3), creationBlock: 18 }), { transfers: () => derived([tokenTransfer(0xd1), tokenTransfer(0xd2)]), contract: () => reply(contractDetail(0xcb, { creationTxHash: "0x" + "d7".repeat(32), creationBlock: 18 })) });
+    await screen.findByRole("table", { name: "Token transfers" });
+    expect(icons(screen.getByRole("table", { name: "Token holders" }))).toHaveLength(0);
+    expect(icons(screen.getByRole("table", { name: "Token transfers" }))).toHaveLength(0);
+    const info = screen.getByRole("region", { name: "Token information" });
+    await within(info).findByText("Block 18");
+    expect(icons(info)).toHaveLength(0);
+  });
+
+  it("says in the supply value itself that an ERC-1155 has no total supply", async () => {
+    await open(tokenDetail(0xcb, { standard: "ERC-1155", name: null, symbol: null, decimals: null, totalSupply: null, totalSupplyBlock: null }));
+    const v = card("Total supply").querySelector(".stat-v")!;
+    expect(v.querySelector("[title]")).toHaveAttribute("title", "ERC-1155 has no total supply");
+    expect(v.querySelector("[title]")!.getAttribute("title")).not.toMatch(/not told/);
+  });
+
+  it("keeps a token name of the longest stored length inside the page: the title wraps anywhere", async () => {
+    await open(tokenDetail(0xcb, { name: "N".repeat(256) }));
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("N".repeat(256));
+    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    expect(css).toMatch(/\.ptitle h1\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*min-width:\s*0|\.ptitle h1\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
+  });
+
+  it("does not repeat the contract address under the title: the Contract card carries it", async () => {
+    await open();
+    expect(document.querySelector(".bighash")).toBeNull();
   });
 });

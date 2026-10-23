@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -173,9 +175,48 @@ describe("the tokens page to the screen", () => {
     expect(within(cell).getByTitle(/decimals are not known/)).toBeInTheDocument();
   });
 
-  it("says the feed is empty, honestly, and that it cannot be read when it fails", async () => {
+  it("says the feed is empty, honestly", async () => {
     await open(undefined, () => reply({ ...page([]), derived: true }));
     expect(await screen.findByText("No token transfers yet.")).toBeInTheDocument();
+  });
+
+  it("says the feed cannot be read when the server fails", async () => {
+    await open(undefined, () => reply({ error: "the explorer could not read the transfers" }, 500));
+    const card = screen.getByRole("region", { name: "Latest token transfers" });
+    expect(await within(card).findByText(/could not read the transfers|500/)).toBeInTheDocument();
+    expect(within(card).queryByRole("table")).toBeNull();
+  });
+
+  it("shows the amount in whole tokens, exactly, once the decimals are known", async () => {
+    await open();
+    await screen.findByRole("table", { name: "Latest token transfers" });
+    await vi.waitFor(() => expect(feedRows()[0]!.querySelector("td.r")!.textContent).toBe("100"));
+  });
+
+  it("shows no amount while the decimals are still being read, never the raw count as if it were final", async () => {
+    const base = route({ tokenPages: () => list(LIST) });
+    fakeApi(Object.assign((p: string) => (p.startsWith("/api/token-transfers") ? reply({ ...page(FEED), derived: true }) : base(p)), { routed: true }));
+    const answering = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: string, init?: RequestInit) => (String(input).startsWith("/api/labels") ? new Promise<Response>(() => {}) : answering(input, init))));
+    renderApp("/tokens");
+    await screen.findByRole("table", { name: "Latest token transfers" });
+    const r = feedRows()[0]!;
+    expect(r.querySelector("td.r")!.textContent).toBe("…");
+    expect(within(r).queryByTitle(/decimals are not known/)).toBeNull();
+  });
+
+  it("gives the feed card a header that sits inside the card (a panel card pulls no header out of its edge)", async () => {
+    await open();
+    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    expect(css).toMatch(/\.panel\s*>\s*\.card-head\s*\{[^}]*margin:\s*0/);
+    const card = screen.getByRole("region", { name: "Latest token transfers" });
+    expect(card).toHaveClass("panel");
+    expect(card.querySelector(":scope > .card-head")).not.toBeNull();
+  });
+
+  it("keeps the standard tabs whole on a narrow screen: a label never breaks inside itself", () => {
+    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    expect(css).toMatch(/\.seg button\s*\{[^}]*white-space:\s*nowrap/);
   });
 
   it("shows the two note cards: From Canton and what a token page shows", async () => {

@@ -73,6 +73,7 @@ function listLabel(shown: number, from: number, total: number | undefined, deriv
 function Moved({ x, labels }: { x: AddressTransferItem; labels: Labels }) {
   if (x.tokenId !== null) return <span className="num">{x.amount !== null && x.amount !== "1" ? `${count(x.amount)} × ` : ""}#{x.tokenId.length > 12 ? short(x.tokenId, 6, 4) : x.tokenId}</span>;
   if (x.amount === null) return <span className="muted" title="The amount is not in the logs">—</span>;
+  if (!labels.ready) return <span className="muted" title="Reading the token's decimals">…</span>;
   const decimals = labels.get(x.token)?.decimals ?? null;
   return decimals === null ? <span className="num" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span> : <span className="num" title={`${x.amount} in the token's smallest unit`}>{units(x.amount, decimals)}</span>;
 }

@@ -67,7 +67,7 @@ function HolderRow({ h, n, t, dot }: { h: TokenHolder; n: number; t: TokenDetail
       <td className="muted">{n}</td>
       <td>
         {dot && <span className="dot sq" style={{ background: dot }} aria-hidden="true" />}
-        <HashLink value={h.holder} to={`/address/${h.holder}`} />
+        <HashLink value={h.holder} to={`/address/${h.holder}`} plain />
         {t.creator !== null && h.holder.toLowerCase() === t.creator.toLowerCase() && <span className="tag">creator</span>}
       </td>
       {multi && <td><span className="mono">#{h.tokenId}</span></td>}
@@ -156,7 +156,7 @@ function TransferRow({ x, t, now, labels }: { x: AddressTransferItem; t: TokenDe
   return (
     <tr>
       <td>
-        <HashLink value={x.txHash} to={`/tx/${x.txHash}`} />
+        <HashLink value={x.txHash} to={`/tx/${x.txHash}`} plain />
         <div className="small muted">block <Link className="num" to={`/block/${x.block}`}>{x.block}</Link> · <span title={new Date(x.timestamp * 1000).toISOString()}>{duration(now - x.timestamp * 1000)} ago</span></div>
       </td>
       <td><span className="tag method">{methodOf({ methodId: x.methodId, to: x.creation ? null : x.to, created: x.creation ? x.token : null, value: "0" })}</span></td>
@@ -212,14 +212,14 @@ function Information({ t }: { t: TokenDetail }) {
         <Kv>
           <Item label="Standard">{t.standard}</Item>
           <Item label="Balances">{t.balanceMode === "derived" ? "summed from the Transfer logs" : "read with balanceOf"}</Item>
-          <Item label="Creator">{creator ? <HashLink value={creator} to={`/address/${creator}`} /> : <span className="muted">{genesis ? "no transaction made it" : "—"}</span>}</Item>
+          <Item label="Creator">{creator ? <HashLink value={creator} to={`/address/${creator}`} plain /> : <span className="muted">{genesis ? "no transaction made it" : "—"}</span>}</Item>
         </Kv>
         <Kv>
-          <Item label="Contract"><HashLink value={t.address} to={`/contract/${t.address}`} /></Item>
+          <Item label="Contract"><HashLink value={t.address} to={`/contract/${t.address}`} plain /></Item>
           <Item label="Created">
             {genesis ? <span className="muted" title="A contract of the genesis state, which no transaction made">Genesis state</span>
               : block === null ? <Dash />
-              : <><Link className="num" to={`/block/${block}`}>Block {block}</Link>{c?.creationTxHash && <> · <HashLink value={c.creationTxHash} to={`/tx/${c.creationTxHash}`} lead={8} tail={4} /></>}</>}
+              : <><Link className="num" to={`/block/${block}`}>Block {block}</Link>{c?.creationTxHash && <> · <HashLink value={c.creationTxHash} to={`/tx/${c.creationTxHash}`} plain lead={8} tail={4} /></>}</>}
           </Item>
           <Item label="Source code">{c ? (c.verified ? "verified" : "not verified") : <Dash />}</Item>
         </Kv>
@@ -250,7 +250,6 @@ export function Token() {
         {contract && <span className={`chip ${contract.verified ? "chip-final" : "chip-kind"}`}>{contract.verified && <Icon name="check" size={12} />}{contract.verified ? "Source code verified" : "Source code not verified"}</span>}
         {t.gatewayWrapped && <span className="chip chip-kind" title="The gateway made this wrapped token for a Canton token">From Canton</span>}
       </div>
-      <div className="bighash"><HashLink value={t.address} full /></div>
       {t.metadataStatus !== "read" && (
         <aside className="card note" role="note"><p className="small">{t.metadataStatus === "failed" ? failedNote(t)
           : "The explorer has not read this token's name, symbol or decimals from the contract yet, so amounts are shown raw until it has."}</p></aside>

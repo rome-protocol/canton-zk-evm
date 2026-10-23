@@ -36,7 +36,7 @@ export function NftCount({ n }: { n: string }) {
  */
 export function Supply({ t, bare = false }: { t: Pick<TokenListItem, "standard" | "decimals" | "symbol" | "totalSupply">; bare?: boolean }) {
   const s = t.totalSupply;
-  if (s === null) return <span className="muted" title="The contract has not told its supply">—</span>;
+  if (s === null) return t.standard === "ERC-1155" ? <span className="muted" title="ERC-1155 has no total supply">—</span> : <span className="muted" title="The contract has not told its supply">—</span>;
   if (t.standard === "ERC-721") return <NftCount n={s} />;
   if (t.decimals === null) return <span className="num" title="The token's decimals are not known, so this is the raw count"><Breaks text={count(s)} /></span>;
   if (!t.symbol || bare) return <span className="num" title={`${exact(s, t.decimals)}${t.symbol ? ` ${t.symbol}` : ""}`}><Breaks text={units(s, t.decimals)} /></span>;
