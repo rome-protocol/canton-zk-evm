@@ -62,6 +62,25 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(await plan(/b\.tx_count > 0/)).toMatch(/blocks_with_txs_idx/);
   });
 
+  it("the feed of every token's transfers reads the partial index of its standard, or the primary key, with no sort and no filter on the transfers", async () => {
+    const accounts = createAccountRest(recording());
+    // The route's own query (the key-page CTE, then the joins): the transfers are read through the index that holds exactly the rows of the standard, newest first.
+    // The partial feed index of a partition is named after its columns (so told from the primary key by name, and by the predicate it makes a filter needless).
+    const FEED = /Index Only Scan using token_transfers_p\d+_block_number_log_index_batch_index_idx\d*/;
+    for (const [standard, where, idx] of [
+      [null, "where true", /Index Only Scan Backward using token_transfers_p\d+_pkey/],
+      ["ERC-20", "where x.token_id is null", FEED],
+      ["ERC-721", "where x.amount is null", FEED],
+      ["ERC-1155", "where x.amount is not null and x.token_id is not null", FEED],
+    ] as const) {
+      await accounts.allTransfers(standard, [5, 1, 0], 10);
+      const p = await plan(new RegExp(`with k as \\(select x\\.block_number, x\\.log_index, x\\.batch_index from token_transfers x ${where.replace(/[.\\]/g, "\\$&")}\\s+and`));
+      expect(p, String(standard)).toMatch(idx);
+      expect(p, String(standard)).toMatch(/Index Cond: \(ROW\(block_number, log_index, batch_index\) </);
+      expect(p, String(standard)).not.toMatch(/Sort Key|Seq Scan|^\s*Filter:/m);
+    }
+  });
+
   it("contracts by place, tokens by first transfer, and an address's holdings", async () => {
     const accounts = createAccountRest(recording());
     await accounts.contracts("newest", null, [5, 1, addr], 10);
@@ -69,7 +88,7 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     await accounts.contracts("oldest", null, [5, 1, addr], 10);
     expect(await plan(/coalesce\(c\.creation_block, 0\) asc/)).toMatch(/Index Cond: \(ROW\(COALESCE\(creation_block/);
     await accounts.tokens("newest", [5, addr], 10);
-    expect(await plan(/order by first_transfer_block desc/)).toMatch(/Index Cond: \(ROW\(first_transfer_block, address\) </);
+    expect(await plan(/order by tk\.first_transfer_block desc/)).toMatch(/Index Cond: \(ROW\(first_transfer_block, address\) </);
     await accounts.holdings(addr, [addr, "0"], 10);
     expect(await plan(/b\.holder = \$1/)).toMatch(/token_balances_holdings_idx/);
   });
@@ -107,9 +126,43 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     await accounts.contracts("interactions", null, [5, addr], 10);
     expect(await plan(/order by c\.interaction_count desc, c\.address desc/)).toMatch(/Index Cond: \(ROW\(interaction_count, address\) </);
     await accounts.tokens("holders", [5, addr], 10);
-    expect(await plan(/order by holder_count desc, address desc/)).toMatch(/Index Cond: \(ROW\(holder_count, address\) </);
+    expect(await plan(/order by tk\.holder_count desc, tk\.address desc/)).toMatch(/Index Cond: \(ROW\(holder_count, address\) </);
     await accounts.tokens("transfers", [5, addr], 10);
-    expect(await plan(/order by transfer_count desc, address desc/)).toMatch(/Index Cond: \(ROW\(transfer_count, address\) </);
+    expect(await plan(/order by tk\.transfer_count desc, tk\.address desc/)).toMatch(/Index Cond: \(ROW\(transfer_count, address\) </);
+    // The same lists kept to one standard read the index of that standard, as the real query (with its join to the contract) runs.
+    for (const [sort, col, idx] of [["holders", "holder_count", "tokens_standard_holder_count_idx"], ["transfers", "transfer_count", "tokens_standard_transfer_count_idx"], ["newest", "first_transfer_block", "tokens_standard_first_transfer_idx"]] as const) {
+      await accounts.tokens(sort, [5, addr], 10, "ERC-721");
+      const p = await plan(new RegExp(`tk\\.standard = \\$4 order by tk\\.${col} desc`));
+      expect(p, sort).toContain(idx);
+      expect(p, sort).not.toMatch(/Sort Key|Seq Scan on tokens/);
+    }
+    // Kept to the tokens the gateway wrapped: the partial index of the sort, and with a standard too (its rows are few, so the standard is a filter on them).
+    for (const [sort, col, idx] of [["holders", "holder_count", "tokens_gateway_holder_count_idx"], ["transfers", "transfer_count", "tokens_gateway_transfer_count_idx"], ["newest", "first_transfer_block", "tokens_gateway_first_transfer_idx"]] as const) {
+      await accounts.tokens(sort, [5, addr], 10, null, true);
+      const p = await plan(new RegExp(`and tk\\.gateway_wrapped order by tk\\.${col} desc`));
+      expect(p, sort).toContain(idx);
+      expect(p, sort).not.toMatch(/Sort Key|Seq Scan on tokens|Filter:/);
+      await accounts.tokens(sort, [5, addr], 10, "ERC-20", true);
+      const both = await plan(new RegExp(`tk\\.standard = \\$4 and tk\\.gateway_wrapped order by tk\\.${col} desc`));
+      expect(both, sort).toMatch(/Index Scan using tokens_(gateway|standard)_\w+_idx on tokens/);
+      expect(both, sort).not.toMatch(/Sort Key|Seq Scan on tokens/);
+    }
+    // The last page: the same indexes, read backward, for the list and for each standard and the gateway's.
+    for (const [sort, col, idx, std] of [["holders", "holder_count", "tokens_standard_holder_count_idx", "tokens_gateway_holder_count_idx"], ["transfers", "transfer_count", "tokens_standard_transfer_count_idx", "tokens_gateway_transfer_count_idx"], ["newest", "first_transfer_block", "tokens_standard_first_transfer_idx", "tokens_gateway_first_transfer_idx"]] as const) {
+      await accounts.tokens(sort, [5, addr], 10, null, false, "asc");
+      const all = await plan(new RegExp(`order by tk\\.${col} asc, tk\\.address asc`));
+      expect(all, sort).toMatch(new RegExp(`Index Scan Backward using tokens_\\w*${col === "first_transfer_block" ? "first_transfer" : col}\\w*idx on tokens`));
+      expect(all, sort).toMatch(/Index Cond: \(ROW\(\w+, address\) >/);
+      expect(all, sort).not.toMatch(/Sort Key|Seq Scan on tokens/);
+      await accounts.tokens(sort, [5, addr], 10, "ERC-721", false, "asc");
+      const one = await plan(new RegExp(`tk\\.standard = \\$4 order by tk\\.${col} asc`));
+      expect(one, sort).toContain(idx);
+      expect(one, sort).not.toMatch(/Sort Key|Seq Scan on tokens/);
+      await accounts.tokens(sort, [5, addr], 10, null, true, "asc");
+      const g = await plan(new RegExp(`and tk\\.gateway_wrapped order by tk\\.${col} asc`));
+      expect(g, sort).toContain(std);
+      expect(g, sort).not.toMatch(/Sort Key|Seq Scan on tokens/);
+    }
     await accounts.holders(addr, ["7", addr, "0"], 10);
     expect(await plan(/order by b\.value desc, b\.holder desc, b\.token_id desc/)).toMatch(/Index Cond: .*ROW\(value, holder, token_id\) </s);
   });

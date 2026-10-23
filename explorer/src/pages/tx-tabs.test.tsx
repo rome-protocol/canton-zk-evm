@@ -12,7 +12,7 @@ const H = hash(0xf6);
 const log = (i: number, over: Partial<TxLog> = {}): TxLog => ({ logIndex: i, position: i, address: addr(0xcb), topics: [TRANSFER, "0x" + "0".repeat(24) + "5b".repeat(20)], data: "0x" + "0".repeat(63) + "1", decoded: null, ...over });
 const call = (over: Partial<InternalCall> = {}): InternalCall => ({ traceAddress: [], callType: "call", from: addr(0x5b), to: addr(0xcb), value: "0", gas: 90000, gasUsed: 51000, selector: "0xa9059cbb", inputSize: 68, error: null, ...over });
 const frame = (over: Partial<TraceFrame> = {}): TraceFrame => ({ traceAddress: [], type: "call", callType: "call", from: addr(0x5b), to: addr(0xcb), value: "0", gas: 90000, gasUsed: 51000, input: "0xa9059cbb", inputSize: 4, error: null, created: null, ...over });
-const transfer = (over: Partial<TokenTransfer> = {}): TokenTransfer => ({ logIndex: 0, batchIndex: 0, token: addr(0xcb), from: addr(0x5b), to: addr(0x5a), amount: "10000000000000000000", tokenId: null, ...over });
+const transfer = (over: Partial<TokenTransfer> = {}): TokenTransfer => ({ logIndex: 0, batchIndex: 0, methodId: null, creation: false, timestamp: 1700000000, token: addr(0xcb), standard: "ERC-20", from: addr(0x5b), to: addr(0x5a), amount: "10000000000000000000", tokenId: null, ...over });
 
 type H = Parameters<typeof route>[0];
 async function open(h: H = {}, t: ApiTx = tx(), tab = "") {

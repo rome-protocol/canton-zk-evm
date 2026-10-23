@@ -31,8 +31,17 @@ export interface AddressInternalItem {
 }
 /** A log a contract wrote, with the transaction it is in and that transaction's method (the first 4 bytes of its input, null when it has none). A transaction that creates a contract has no method, because its input is init code; `creation` says so. */
 export interface ContractEventItem { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
-export interface TokenTransferItem { txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
-export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
+/** `methodId` and `timestamp` are the transaction's (the method is null for a creation, whose first four bytes of input are code, and `creation` says so, as a call with no input has a null method too); `standard` is the token's, null when the explorer has no row for it. */
+export interface TokenTransferItem {
+  txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null;
+}
+export const TOKEN_STANDARDS = ["ERC-20", "ERC-721", "ERC-1155"] as const;
+export type TokenStandard = (typeof TOKEN_STANDARDS)[number];
+/** What makes a transfer of a standard, in its columns (the indexer writes only transfers of the standard a token is known by): the predicate of that standard's partial indexes, which a query must repeat to use them. */
+const STANDARD_COLUMNS: Record<TokenStandard, string> = { "ERC-20": "x.token_id is null", "ERC-721": "x.amount is null", "ERC-1155": "x.amount is not null and x.token_id is not null" };
+/** The transfers an address list keeps: those of one token and/or one standard. */
+export interface TransferFilter { token?: string | null; standard?: TokenStandard | null }
+export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 /** Shown with a partial match: the library lets the metadata (the CBOR at the end of the code, and of any contract embedded in it) differ from the compile. */
 export const PARTIAL_MATCH_NOTE = "Partial match: the metadata differs from this compile. Code that reads its own or another contract's code (type(X).creationCode/runtimeCode, codecopy, extcodecopy, address(this).code) may act differently from this source's compile; only a full match is byte-for-byte.";
@@ -59,6 +68,8 @@ export interface SourceDetail {
 export interface TokenItem {
   address: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; holderCount: number; transferCount: number; firstTransferBlock: number;
   gatewayWrapped: boolean; metadataStatus: string;
+  /** Who made the token's contract, in which block and when; none of the three where the explorer saw no creation (a contract of the genesis state). */
+  creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
 }
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
@@ -199,24 +210,43 @@ export function createAccountRest(pool: Pool) {
     }));
   }
 
-  const transferSelect = "x.block_number, x.log_index, x.batch_index, x.tx_index, x.token, x.from_address, x.to_address, x.amount::text as amount, x.token_id::text as token_id, t.hash";
+  const transferSelect = `x.block_number, x.log_index, x.batch_index, x.tx_index, x.token, x.from_address, x.to_address, x.amount::text as amount, x.token_id::text as token_id, t.hash,
+    t.method_id, t.to_address as tx_to, extract(epoch from b.timestamp)::bigint as ts, tk.standard`;
+  // One join each for the transaction, its block and the token, whatever the page's size.
+  const transferJoins = `join transactions t on t.block_number = x.block_number and t.tx_index = x.tx_index join blocks b on b.number = x.block_number left join tokens tk on tk.address = x.token`;
   const transferItem = (r: Row): TokenTransferItem => ({
-    txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, batchIndex: r.batch_index, token: hex(r.token), from: hex(r.from_address), to: hex(r.to_address),
-    amount: r.amount, tokenId: r.token_id,
+    txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, batchIndex: r.batch_index, methodId: r.tx_to === null ? null : hexOrNull(r.method_id), creation: r.tx_to === null, timestamp: Number(r.ts),
+    token: hex(r.token), standard: r.standard, from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id,
   });
 
-  /** The token transfers an address sent or received, newest first, after the key (block, log, batch). */
-  async function addressTransfers(a: string, before: Key | null, limit: number): Promise<TokenTransferItem[]> {
+  /** The token transfers an address sent or received (of one token and/or standard, when asked), newest first, after the key (block, log, batch). */
+  async function addressTransfers(a: string, before: Key | null, limit: number, filter: TransferFilter = {}): Promise<TokenTransferItem[]> {
     const [bn, li, bi] = before ?? [null, null, null];
+    const values: unknown[] = [bytes(a), bn, li, limit + 1, bi];
+    const more = [filter.token ? (values.push(bytes(filter.token)), `and x.token = $${values.length}`) : "", filter.standard ? `and ${STANDARD_COLUMNS[filter.standard]}` : ""].join(" ");
     const side = (column: string) =>
-      `(select block_number, log_index, batch_index from token_transfers where ${column} = $1
-         and ($2::bigint is null or (block_number, log_index, batch_index) < ($2::bigint, $3::int, $5::int)) order by block_number desc, log_index desc, batch_index desc limit $4)`;
+      `(select x.block_number, x.log_index, x.batch_index from token_transfers x where x.${column} = $1 ${more}
+         and ($2::bigint is null or (x.block_number, x.log_index, x.batch_index) < ($2::bigint, $3::int, $5::int)) order by x.block_number desc, x.log_index desc, x.batch_index desc limit $4)`;
     const rows = await query(
       `with k as (${side("from_address")} union ${side("to_address")})
        select ${transferSelect} from k join token_transfers x on x.block_number = k.block_number and x.log_index = k.log_index and x.batch_index = k.batch_index
-         join transactions t on t.block_number = x.block_number and t.tx_index = x.tx_index
+         ${transferJoins}
        order by x.block_number desc, x.log_index desc, x.batch_index desc limit $4`,
-      [bytes(a), bn, li, limit + 1, bi],
+      values,
+    );
+    return rows.map(transferItem);
+  }
+
+  /** The transfers of every token (of one standard, when asked), newest first, after the key (block, log, batch). */
+  async function allTransfers(standard: TokenStandard | null, before: Key | null, limit: number): Promise<TokenTransferItem[]> {
+    const [bn, li, bi] = before ?? [null, null, null];
+    const rows = await query(
+      `with k as (select x.block_number, x.log_index, x.batch_index from token_transfers x where ${standard ? STANDARD_COLUMNS[standard] : "true"}
+         and ($1::bigint is null or (x.block_number, x.log_index, x.batch_index) < ($1::bigint, $2::int, $4::int)) order by x.block_number desc, x.log_index desc, x.batch_index desc limit $3)
+       select ${transferSelect} from k join token_transfers x on x.block_number = k.block_number and x.log_index = k.log_index and x.batch_index = k.batch_index
+         ${transferJoins}
+       order by x.block_number desc, x.log_index desc, x.batch_index desc`,
+      [bn, li, limit + 1, bi],
     );
     return rows.map(transferItem);
   }
@@ -225,12 +255,12 @@ export function createAccountRest(pool: Pool) {
   async function holdings(a: string, after: Key | null, limit: number): Promise<Holding[]> {
     const [token, id] = after ?? [null, null];
     const rows = await query(
-      `select b.token, tk.standard, tk.name, tk.symbol, tk.decimals, b.token_id::text as token_id, b.value::text as value, b.updated_block
+      `select b.token, tk.standard, tk.name, tk.symbol, tk.decimals, tk.total_supply::text as total_supply, b.token_id::text as token_id, b.value::text as value, b.updated_block
        from token_balances b join tokens tk on tk.address = b.token
        where b.holder = $1 and b.value > 0 and ($2::bytea is null or (b.token, b.token_id) > ($2::bytea, $3::numeric)) order by b.token, b.token_id limit $4`,
       [bytes(a), token === null ? null : bytes(token as string), id, limit + 1],
     );
-    return rows.map((r) => ({ token: hex(r.token), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), tokenId: r.token_id, value: r.value, updatedBlock: Number(r.updated_block) }));
+    return rows.map((r) => ({ token: hex(r.token), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), totalSupply: r.total_supply, tokenId: r.token_id, value: r.value, updatedBlock: Number(r.updated_block) }));
   }
 
   /** The balance after each block that moved it, newest first, after the key (block). */
@@ -317,25 +347,44 @@ export function createAccountRest(pool: Pool) {
     };
   }
 
-  const tokenSelect = "address, standard, name, symbol, decimals, total_supply::text as total_supply, total_supply_block, holder_count, transfer_count, first_transfer_block, metadata_status, gateway_wrapped, balance_mode";
+  const tokenSelect = `tk.address, tk.standard, tk.name, tk.symbol, tk.decimals, tk.total_supply::text as total_supply, tk.total_supply_block, tk.holder_count, tk.transfer_count, tk.first_transfer_block, tk.metadata_status, tk.gateway_wrapped, tk.balance_mode,
+    c.creator, c.creation_block, c.verified_source is not null as verified, extract(epoch from cb.timestamp)::bigint as created_ts`;
+  // Every token is a contract (the foreign key), so the first join always has its row; a contract of the genesis state has no creation block, so no block row.
+  const tokenFrom = "from tokens tk join contracts c on c.address = tk.address left join blocks cb on cb.number = c.creation_block";
   const tokenItem = (r: Row): TokenItem => ({
     address: hex(r.address), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), totalSupply: r.total_supply, holderCount: Number(r.holder_count),
     transferCount: Number(r.transfer_count), firstTransferBlock: Number(r.first_transfer_block), gatewayWrapped: r.gateway_wrapped, metadataStatus: r.metadata_status,
+    creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), createdAt: r.created_ts === null || r.created_ts === undefined ? null : new Date(Number(r.created_ts) * 1000).toISOString(), verified: r.verified === true,
   });
 
-  /** The token list: most holders, most transfers, or newest (by the block of its first transfer), then by address, after the key. */
-  async function tokens(sort: TokenSort, before: Key | null, limit: number): Promise<TokenItem[]> {
-    const column = { holders: "holder_count", transfers: "transfer_count", newest: "first_transfer_block" }[sort];
+  /**
+   * The token list: most holders, most transfers, or newest (by the block of its first transfer), then by address, after the key; of one standard and/or only the tokens the gateway wrapped
+   * when asked. `order` "asc" reads the same list from its other end (the key is then the one the page before it left), for the last page: each index is read backward.
+   */
+  async function tokens(sort: TokenSort, before: Key | null, limit: number, standard: TokenStandard | null = null, gateway = false, order: "desc" | "asc" = "desc"): Promise<TokenItem[]> {
+    const column = { holders: "tk.holder_count", transfers: "tk.transfer_count", newest: "tk.first_transfer_block" }[sort];
     const [x, y] = before ?? [null, null];
+    const [past, dir] = order === "desc" ? ["<", "desc"] : [">", "asc"];
+    const values: unknown[] = [x, y === null ? null : bytes(y as string), limit + 1];
+    const more = [standard === null ? "" : (values.push(standard), `and tk.standard = $${values.length}`), gateway ? "and tk.gateway_wrapped" : ""].filter(Boolean).join(" ");
     const rows = await query(
-      `select ${tokenSelect} from tokens where ($1::bigint is null or (${column}, address) < ($1::bigint, $2::bytea)) order by ${column} desc, address desc limit $3`,
-      [x, y === null ? null : bytes(y as string), limit + 1],
+      `select ${tokenSelect} ${tokenFrom} where ($1::bigint is null or (${column}, tk.address) ${past} ($1::bigint, $2::bytea)) ${more} order by ${column} ${dir}, tk.address ${dir} limit $3`,
+      values,
     );
     return rows.map(tokenItem);
   }
 
+  /** How many tokens each standard has, and how many of those the gateway wrapped (a standard with none is 0), from one grouped count of the tokens table, which is small: the list's tabs and totals. */
+  async function tokenCounts(): Promise<{ counts: Record<TokenStandard, number>; gateway: Record<TokenStandard, number> }> {
+    const counts = { "ERC-20": 0, "ERC-721": 0, "ERC-1155": 0 }, gateway = { "ERC-20": 0, "ERC-721": 0, "ERC-1155": 0 };
+    for (const r of await query("select standard, count(*) as n, count(*) filter (where gateway_wrapped) as g from tokens group by standard")) {
+      if (r.standard in counts) { counts[r.standard as TokenStandard] = Number(r.n); gateway[r.standard as TokenStandard] = Number(r.g); }
+    }
+    return { counts, gateway };
+  }
+
   async function token(a: string): Promise<TokenDetail | undefined> {
-    const [r] = await query(`select ${tokenSelect} from tokens where address = $1`, [bytes(a)]);
+    const [r] = await query(`select ${tokenSelect} ${tokenFrom} where tk.address = $1`, [bytes(a)]);
     return r && { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode };
   }
 
@@ -354,7 +403,7 @@ export function createAccountRest(pool: Pool) {
   async function tokenTransfers(a: string, before: Key | null, limit: number): Promise<TokenTransferItem[]> {
     const [bn, li, bi] = before ?? [null, null, null];
     const rows = await query(
-      `select ${transferSelect} from token_transfers x join transactions t on t.block_number = x.block_number and t.tx_index = x.tx_index
+      `select ${transferSelect} from token_transfers x ${transferJoins}
        where x.token = $1 and ($2::bigint is null or (x.block_number, x.log_index, x.batch_index) < ($2::bigint, $3::int, $5::int)) order by x.block_number desc, x.log_index desc, x.batch_index desc limit $4`,
       [bytes(a), bn, li, limit + 1, bi],
     );
@@ -403,6 +452,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
+    derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
   };
 }

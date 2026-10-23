@@ -126,7 +126,7 @@ describe("the API description", () => {
 
   it("documents only the query parameters its routes read: each is refused when it is wrong, before any read", async () => {
     const api = full();
-    const wrong: Record<string, string> = { limit: "0", before: "!!", after: "!!", sort: "nonsense", verified: "nonsense", window: "nonsense", step: "nonsense", metric: "nonsense", direction: "out", addresses: "x", format: "xml" };
+    const wrong: Record<string, string> = { limit: "0", before: "!!", after: "!!", sort: "nonsense", verified: "nonsense", window: "nonsense", step: "nonsense", metric: "nonsense", direction: "out", addresses: "x", order: "nonsense", format: "xml", standard: "nonsense" };
     let checked = 0;
     for (const [path, d] of Object.entries(DOCS)) {
       if (path === "/api/stream" || path === "/api/search" || path === "/rpc" || path === "/api" || path === "/v2/api" /* answers 200 with its own NOTOK: etherscan.test.ts */ || !d.query) continue;
@@ -142,8 +142,9 @@ describe("the API description", () => {
 
   it("lists as paged exactly the routes whose pages say so", () => {
     for (const [path, d] of Object.entries(DOCS)) {
-      const paging = (d.query ?? []).map((q) => q.name).filter((n) => n === "before" || n === "after");
-      expect(paging.length, path).toBe(d.page ? 1 : 0);
+      const names = (d.query ?? []).map((q) => q.name), paging = names.filter((n) => n === "before" || n === "after");
+      // A list that can be read from either end (`order`) takes both keys, one for each way.
+      expect(paging.length, path).toBe(d.page ? (names.includes("order") ? 2 : 1) : 0);
     }
   });
   it("states the limits the server holds, from its own settings: the page size always, the public RPC's rate only where it is on", async () => {

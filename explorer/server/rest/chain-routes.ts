@@ -120,9 +120,17 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     if (!(TX_FILTERS as readonly string[]).includes(f)) throw new BadRequest(`filter is one of ${TX_FILTERS.join(", ")}.`);
     if (format !== null && format !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
     const filter = f as (typeof TX_FILTERS)[number];
-    if (format === "csv") return txsCsv(q, filter);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
-    const [rows, count] = await Promise.all([rest.txs(before, limit, filter), filter === "all" ? rest.txTotal() : null]);
+    const order = q.get("order") ?? "desc";
+    if (order !== "desc" && order !== "asc") throw new BadRequest("order is desc (newest first) or asc (oldest first).");
+    if (format === "csv") {
+      if (order === "asc") throw new BadRequest("the file is the newest transactions: order=asc pages the list, not the file.");
+      return txsCsv(q, filter);
+    }
+    // A key belongs to the way it was given: `before` pages newest first, `after` pages oldest first, and a key of the other way is a mistake, not a page.
+    if (order === "asc" && q.has("before")) throw new BadRequest("before pages the newest first; with order=asc the key is after.");
+    if (order === "desc" && q.has("after")) throw new BadRequest("after pages the oldest first, with order=asc; the key of the newest first is before.");
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get(order === "asc" ? "after" : "before"), ["int", "int4"]);
+    const [rows, count] = await Promise.all([rest.txs(before, limit, filter, true, order), filter === "all" ? rest.txTotal() : null]);
     const p = pageOf(rows, limit, (t) => keyOf(t.block, t.index));
     return cached(ok(pick({ items: p.items.map(pickTx), next: p.next, total: count?.total ?? null, totalAsOfBlock: count?.asOfBlock ?? null, totalAsOf: count ? new Date(count.asOf).toISOString() : null }, F.txPage)), "list");
   }

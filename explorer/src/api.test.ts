@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
-import { ApiError, getBlocks, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTxs, search } from "./api.ts";
-import { account, block, blockItem, inFlight, status, tokenAddress, tx, txItem } from "./test-utils.tsx";
+import {
+  ApiError, addressTransfersCsvPath, blocksCsvPath, getAddressTransfers, getAllTokenTransfers, getBlocks, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
+  getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
+} from "./api.ts";
+import { account, block, blockItem, holding, inFlight, status, tokenAddress, tokenItem, tokenTransfer, tx, txItem } from "./test-utils.tsx";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -71,6 +74,9 @@ describe("the API client", () => {
     const keys = (o: object) => Object.keys(o).sort();
     expect(keys(blockItem(1))).toEqual([...REST_FIELDS.blockItem].sort());
     expect(keys(txItem(1))).toEqual([...REST_FIELDS.txItem].sort());
+    expect(keys(tokenItem(1))).toEqual([...REST_FIELDS.tokenItem].sort());
+    expect(keys(tokenTransfer(1))).toEqual([...REST_FIELDS.tokenTransferItem].sort());
+    expect(keys(holding())).toEqual([...REST_FIELDS.holding].sort());
     const f = inFlight();
     expect(keys(f)).toEqual([...FIELDS.inFlight].sort());
     expect(keys(f.attempts[0]!)).toEqual([...FIELDS.inFlightAttempt].sort());
@@ -103,5 +109,40 @@ describe("the API client", () => {
     const m = { kind: "token", name: "Test USD", symbol: "tUSD", address: "0x" + "ab".repeat(20), path: "/token/0x" + "ab".repeat(20) };
     answer(200, { path: m.path, matches: [m] });
     expect(await search("tusd")).toEqual({ found: true, path: m.path, matches: [m] });
+  });
+
+  it("builds the URLs of the token and last-page routes, and of the CSV files", async () => {
+    const urls = () => vi.mocked(fetch).mock.calls.map((c) => c[0]);
+    const A = "0x" + "a1".repeat(20), T = "0x" + "cb".repeat(20), K = "1:2:3";
+    answer(200, { items: [], next: null });
+    await getTxPage(null, 10);
+    await getTxPage("5:1", 10, "failed");
+    await getTxPageOldest(null, 10);
+    await getTxPageOldest("5:1", 10, "calls");
+    expect(urls()).toEqual(["/api/txs?limit=10", "/api/txs?limit=10&before=5%3A1&filter=failed", "/api/txs?order=asc&limit=10", "/api/txs?order=asc&limit=10&after=5%3A1&filter=calls"]);
+    answer(200, { items: [], next: null });
+    await getAllTokenTransfers(null, 10);
+    await getAllTokenTransfers(K, 10, "ERC-721");
+    expect(urls()).toEqual(["/api/token-transfers?limit=10", "/api/token-transfers?limit=10&before=1%3A2%3A3&standard=ERC-721"]);
+    answer(200, { items: [], next: null });
+    await getAddressTransfers(A, null, 10);
+    await getAddressTransfers(A, K, 10, { token: T, standard: "ERC-20" });
+    await getTokenTransfers(T, null, 10);
+    expect(urls()).toEqual([`/api/addresses/${A}/token-transfers?limit=10`, `/api/addresses/${A}/token-transfers?limit=10&before=1%3A2%3A3&token=${T}&standard=ERC-20`, `/api/tokens/${T}/transfers?limit=10`]);
+    answer(200, { items: [], next: null, total: 0, counts: {}, gatewayCount: 0 });
+    await getTokenList("holders", null, 10);
+    await getTokenList("newest", "7:0xab", 10, "ERC-1155");
+    await getTokenList("transfers", null, 10, undefined, true);
+    await getTokenListOldest("holders", null, 10);
+    await getTokenListOldest("newest", "7:0xab", 10, "ERC-20", true);
+    expect(urls()).toEqual([
+      "/api/tokens?sort=holders&limit=10", "/api/tokens?sort=newest&limit=10&before=7%3A0xab&standard=ERC-1155", "/api/tokens?sort=transfers&limit=10&gateway=true",
+      "/api/tokens?sort=holders&order=asc&limit=10", "/api/tokens?sort=newest&order=asc&limit=10&after=7%3A0xab&standard=ERC-20&gateway=true",
+    ]);
+    expect(txsCsvPath("failed")).toBe("/api/txs?format=csv&filter=failed");
+    expect(blocksCsvPath("transactions")).toBe("/api/blocks?format=csv&filter=transactions");
+    expect(addressTransfersCsvPath(A)).toBe(`/api/addresses/${A}/token-transfers?format=csv`);
+    expect(addressTransfersCsvPath(A, { token: T, standard: "ERC-721" })).toBe(`/api/addresses/${A}/token-transfers?format=csv&token=${T}&standard=ERC-721`);
+    expect(tokenTransfersCsvPath(T)).toBe(`/api/tokens/${T}/transfers?format=csv`);
   });
 });
