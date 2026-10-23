@@ -42,7 +42,7 @@ const after: Query = { name: "after", about: "The `next` of the page before: thi
 const raw: Query = { name: "raw", about: "1 for the rows as the chain wrote them, without what the explorer decodes from them (an immutable answer).", values: ["1"] };
 const sort = (values: readonly string[]): Query => ({ name: "sort", about: `The order of the list; ${values[0]} when left out.`, values });
 const blockFilter: Query = { name: "filter", about: "all blocks, only the blocks with transactions, or only the empty ones (genesis is not one); all when left out.", values: ["all", "transactions", "empty"] };
-const txFilter: Query = { name: "filter", about: "all transactions, only the reverted ones (`failed`), or only the calls into contracts (`calls`, a transaction with input); all when left out.", values: ["all", "failed", "calls"] };
+const txFilter: Query = { name: "filter", about: "all transactions, only the reverted ones (`failed`), or only the calls that name a method (`calls`: sent to an address, with at least 4 bytes of input, which is what names the method; a contract creation and a plain value transfer are left out, and the address may be an account as well as a contract); all when left out.", values: ["all", "failed", "calls"] };
 const txCsv: Query = { name: "format", about: "csv for the newest transactions as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
