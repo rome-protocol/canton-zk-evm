@@ -226,7 +226,7 @@ describe("the stats page", () => {
     });
     const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
     expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("77");
-    expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("same address in 24 h: 40 · same network address in 10 min: 20 · hourly cap: 15 · failed check: 2");
+    await waitFor(() => expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("same address in 24 h: 40 · same network address in 10 min: 20 · hourly cap: 15 · failed check: 2"));
     expect(card).not.toHaveTextContent("[object Object]");
     await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("998,996.99"));
     expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("tROME, as of block 21 · queue now 0");
