@@ -14,10 +14,6 @@
 .side-foot { display: flex; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); margin-top: 8px; }
 .txv { display: flex; flex-direction: column; gap: 8px; }
 .txv-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.tabs { display: flex; gap: 4px; margin: 18px 0 14px; border-bottom: 1px solid var(--line); overflow-x: auto; white-space: nowrap; }
-.tabs [role="tab"] { background: none; border: 0; border-bottom: 2px solid transparent; padding: 10px 14px; font: inherit; color: var(--muted); cursor: pointer; }
-.tabs [aria-selected="true"] { color: var(--canton); font-weight: 600; border-bottom-color: var(--canton); }
-.tabs .count { font-size: 11.5px; background: var(--line); border-radius: 9px; padding: 0 7px; margin-left: 6px; }
 .tx-table { width: 100%; border-collapse: collapse; }
 .tx-table th, .tx-table td { text-align: left; padding: 9px 10px; border-top: 1px solid var(--line); vertical-align: top; }
 .tx-table .r { text-align: right; }
@@ -37,15 +33,9 @@
   .how-steps.way-steps .how-d, .how-steps.way-steps .how-src { grid-column: 1; }
   .how-steps.way-steps .how-src { justify-self: start; }
   .how-steps.way-steps .way-delta { grid-column: 2; grid-row: 2; text-align: right; }
-  .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; }
   .how-steps.way-steps .how-dot { top: 3px; }
   .how-steps.way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
 }
 .tx-h { margin: 0 0 8px; }
-/* The card header: a small title with its words beside it, over a line across the card. */
-.card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 14px; flex-wrap: wrap; margin: -18px -20px 14px; padding: 14px 20px; border-bottom: 1px solid var(--line-2); }
-.card-h h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
-.card-h h2 .muted { font-size: 12.5px; font-weight: 400; margin-left: 8px; }
-.card-h > .muted { font-size: 12.5px; }
 .ev-filter .btn-line { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
 .ev-filter .btn-line[aria-pressed="true"] { border-color: var(--canton-line); background: var(--canton-tint); color: var(--canton); }
