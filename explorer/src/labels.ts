@@ -81,7 +81,7 @@ export function useLabels(addresses: readonly (string | null | undefined)[]): La
       for (const l of parts.flat()) {
         const k = l.address.toLowerCase();
         // A label with a name, and an account (which has none), is kept. "The index holds nothing of it", and a contract not yet named, are true now and may not be once the block is final and indexed.
-        if (labelName(l) !== null || l.kind === "account") client.setQueryData(["label", k], l);
+        if (l.kind !== null && (labelName(l) !== null || l.kind === "account")) client.setQueryData(["label", k], l);
         found.set(k, l);
       }
       return found;
