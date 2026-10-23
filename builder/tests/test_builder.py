@@ -1386,9 +1386,22 @@ class NoAnswer(Case):
             synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
             real(fd)
         with mock.patch.object(os, "fsync", fsync):
-            b.save_unresolved(s.cfg, {"commandId": "c", "hash": "0x1", "begin": 1})
+            b.save_unresolved(s.cfg, {"commandId": "c", "hash": "0x1", "begin": 1, "submittedAt": 1.5})
         self.assertEqual(synced, [False, True])   # the file, then the folder that now holds it
         self.assertEqual(b.load_unresolved(s.cfg)["commandId"], "c")
+
+    def test_a_record_with_no_number_for_submitted_at_is_not_an_unresolved_command(self):
+        s = self.setup({})
+        good = {"commandId": "c", "hash": "0x1", "begin": 1, "submittedAt": 1.5}
+        for bad in ({k: v for k, v in good.items() if k != "submittedAt"}, {**good, "submittedAt": True}, {**good, "submittedAt": "1.5"}, {**good, "submittedAt": None}):
+            b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+            b.unresolved_path(s.cfg).write_text(json.dumps(bad))
+            with self.assertRaises(b.BuilderError, msg=bad) as raised:
+                b.load_unresolved(s.cfg)
+            self.assertIn("is not an unresolved command", str(raised.exception))
+        for ok in (1.5, 1700000000):   # a float, or an integer
+            b.unresolved_path(s.cfg).write_text(json.dumps({**good, "submittedAt": ok}))
+            self.assertEqual(b.load_unresolved(s.cfg)["submittedAt"], ok)
 
     def test_a_record_that_cannot_be_saved_means_nothing_is_submitted(self):
         t = tx(ALICE, 0)

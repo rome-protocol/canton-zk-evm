@@ -221,7 +221,8 @@ def save_unresolved(cfg: Config, resolve: dict) -> None:
 def load_unresolved(cfg: Config) -> dict | None:
     try:
         found = json.loads(unresolved_path(cfg).read_text())
-        if isinstance(found.get("commandId"), str) and isinstance(found.get("hash"), str) and type(found.get("begin")) is int:
+        if isinstance(found.get("commandId"), str) and isinstance(found.get("hash"), str) and type(found.get("begin")) is int \
+                and type(found.get("submittedAt")) in (int, float):   # the window starts there: a record with no time is not one to settle by it
             return found
     except FileNotFoundError:
         return None
@@ -1118,7 +1119,7 @@ def recover_saved(cfg: Config, wait=None) -> dict | None:
                 pairs = read_saved(cfg) or []
             except BuilderError:   # the kept transactions are damaged (moved aside): the command is settled all the same
                 pairs = []
-            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u.get("submittedAt", 0)}, pairs)
+            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u["submittedAt"]}, pairs)
             settled = {"number": u.get("number"), "blockHash": u["hash"], "commandId": u["commandId"], "committed": committed, "resolved": how, **info}
             settled["lostTransactions"] = lost
             break
@@ -1295,7 +1296,7 @@ class Producer:
                 pairs, ref = [], {}
             if isinstance(u.get("run"), str) and type(u.get("attempt")) is int:   # the record names its attempt, also for a block with no transactions
                 ref = {"attempt_run": u["run"], "attempt": u["attempt"]}
-            self.unresolved = {"pairs": pairs, **u, "since": u.get("submittedAt", 0), "number": u.get("number"), **ref}
+            self.unresolved = {"pairs": pairs, **u, "since": u["submittedAt"], "number": u.get("number"), **ref}
         except Exception as e:   # the record cannot be read: step() builds nothing while it exists, and reads it again
             print(f"cannot read the unresolved command: {e}", file=sys.stderr)
 
