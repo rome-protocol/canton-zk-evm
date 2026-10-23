@@ -96,6 +96,15 @@ describe("the stats page", () => {
     expect(card).toHaveTextContent("Empty blocks: 1");
   });
 
+  it("does not add Accepted up to Final: it says Final counts every transaction in a final block, sent through Ostia or not", async () => {
+    await open();
+    const card = (await screen.findByRole("heading", { name: "Reliability" })).closest("section")!;
+    const w = within(card);
+    expect(w.getByText("Final").parentElement).toHaveTextContent("every transaction in a final block, whether or not Ostia accepted it");
+    expect(w.getByText("Accepted").parentElement).toHaveTextContent("only those sent through Ostia's RPC or the faucet");
+    expect(card).not.toHaveTextContent("every transaction Ostia accepted, by what became of it");
+  });
+
   it("gives the lost transactions' hashes the hash font, not the figure font", async () => {
     const hash = "0x" + "ab".repeat(32);
     await open("/stats?window=7d", { summary: () => reply(summary({ lost: { window: 1, total: 1, listed: [{ txHash: hash, state: "lost", reason: "never made final", at: "2026-10-20T10:00:00.000Z" }] } })) });

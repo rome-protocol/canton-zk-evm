@@ -41,11 +41,11 @@ function Reliability({ s }: { s: StatsSummary }) {
   const a = s.acceptedNotFinal, lost = s.lost.total;
   return (
     <section className="card panel">
-      <div className="list-h"><div><h3>Reliability</h3> <span className="muted small">every transaction Ostia accepted, by what became of it · {STEP_NAME[s.window]}</span></div>
+      <div className="list-h"><div><h3>Reliability</h3> <span className="muted small">what became of the transactions Ostia accepted; Final counts the whole chain · {STEP_NAME[s.window]}</span></div>
         <span className={`chip ${lost ? "chip-bad" : "chip-final"}`}>{lost ? `${count(lost)} lost` : "none lost"}</span></div>
       <div className="cells">
-        <Cell k="Accepted" v={count(s.txs.accepted)} sub="by Ostia's RPC or the faucet" />
-        <Cell k="Final" v={count(s.txs.count)} sub="their block is final on Canton" />
+        <Cell k="Accepted" v={count(s.txs.accepted)} sub="only those sent through Ostia's RPC or the faucet" />
+        <Cell k="Final" v={count(s.txs.count)} sub="every transaction in a final block, whether or not Ostia accepted it" />
         <Cell k="Not final yet" v={count(s.waiting.open)} sub={`${count(a.beingProven)} being proven · ${count(a.waiting)} waiting · ${count(a.stuck)} stuck`} />
         <Cell k="Replaced or dropped" v={count(s.replaced.window + s.dropped.window)} sub={`replaced by the sender: ${count(s.replaced.window)} · dropped: ${count(s.dropped.window)}`} />
         <Cell k="Lost" v={count(lost)} tone={lost ? "bad" : "ok"} sub="accepted and never made final, all time" />

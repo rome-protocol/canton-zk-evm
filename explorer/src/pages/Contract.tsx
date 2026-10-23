@@ -6,7 +6,7 @@ import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
-import { count, exact, plural, units } from "../format.ts";
+import { count, dateTime, exact, plural, units } from "../format.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
 import { TransfersTab, TxsTab } from "./AddressTabs.tsx";
 import { CodeTab } from "./ContractCode.tsx";
@@ -21,7 +21,6 @@ import "./contract.css";
 import "./tx.css";
 
 const Dash = () => <span className="muted">—</span>;
-const utcStamp = (iso: string) => `${new Date(iso).toISOString().replace("T", " ").slice(0, 19)} UTC`;
 
 /** The balance is reth's at the final block, from the address route; the counts are the explorer's. */
 function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<AddressDetail> }) {
@@ -87,7 +86,7 @@ function Verification({ c }: { c: ContractDetail }) {
     <section className="card" aria-label="Verification">
       <div className="list-h"><h2>Verification</h2><MatchChip matchType={c.matchType} /></div>
       <Kv>
-        {v ? <Item label="Verified">{utcStamp(v.verifiedAt)}</Item> : <Item label="Verified"><span className="muted">Not verified</span></Item>}
+        {v ? <Item label="Verified">{dateTime(v.verifiedAt)}</Item> : <Item label="Verified"><span className="muted">Not verified</span></Item>}
         {v && <Item label="How">{howVerified(v.method, v.tool)}</Item>}
         <Item label="Proxy"><Proxy c={c} /></Item>
       </Kv>

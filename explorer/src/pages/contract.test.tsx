@@ -75,7 +75,7 @@ describe("the contract page: the head and the cards", () => {
     await open();
     const v = card("Verification");
     expect(v).toHaveTextContent("Full match");
-    expect(row("Verified")).toHaveTextContent("2026-10-20 17:24:10 UTC");
+    expect(row("Verified")).toHaveTextContent("20 Oct 2026, 17:24:10 UTC");
     expect(row("Proxy")).toHaveTextContent("Not a proxy");
   });
 
