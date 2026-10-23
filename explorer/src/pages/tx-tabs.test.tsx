@@ -208,7 +208,7 @@ describe("the Internal calls tab", () => {
     expect(rows[2]).toHaveTextContent("Disperse");
     await waitFor(() => expect(rows[2]).toHaveTextContent(`transferFrom(from ${SENDER.slice(0, 8)}…${SENDER.slice(-4)}, to Disperse, value 5,000 tUSD)`));
     expect(rows[1]).toHaveTextContent("0xc73a2d60");
-    expect(screen.getByText(/2 internal calls under the top-level call/)).toHaveTextContent("traced by reth after block 20 was final");
+    expect(screen.getByText(/2 internal calls under the top-level call/)).toHaveTextContent("traced by reth after block 3 was final");
   });
 
   it("counts the calls under the top level on the tab, and gives no count where the block is not derived", async () => {
