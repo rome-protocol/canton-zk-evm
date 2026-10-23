@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { getStatsSummary, type BlockSummary, type ApiTx } from "../api.ts";
 import { at, clock, secs } from "../block-times.ts";
+import { Icon } from "../components/Icon.tsx";
 import { sec } from "../format.ts";
 import "./block.css";
 
@@ -64,7 +65,7 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
       {l === null && <p className="way-foot muted small">The producer's journal has no row for this transaction, so Accepted, In block and Proof done have no times.</p>}
       {l !== null && (l.timeToFinalMs !== null || l.attempts > 1 || l.leftOutReason || final) && (
         <div className="way-foot small">
-          <span className="way-foot-l">
+          <span className="way-foot-l"><Icon name="clock" size={13} />
             {l.timeToFinalMs !== null && final && <span>Final <b className="num">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
             {median !== null && final && <span className="muted"> The median for the last hour is {sec(median)}.</span>}
           </span>
