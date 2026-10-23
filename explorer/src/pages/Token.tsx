@@ -169,7 +169,7 @@ function TransferRow({ x, t, now, labels }: { x: AddressTransferItem; t: TokenDe
   );
 }
 
-function Transfers({ t }: { t: TokenDetail }) {
+export function Transfers({ t }: { t: TokenDetail }) {
   const p = usePaged(["token-transfers", t.address], (before) => getTokenTransfers(t.address, before, PER), listPoll(false));
   const now = useNow();
   const d = p.data;

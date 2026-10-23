@@ -66,3 +66,17 @@ export function useContractList(f: ListFilter, per: number, refetchInterval: num
   };
   return { data: q.data, items, error: q.error, page, pages, from: (page - 1) * per, go };
 }
+
+const TOOL = { forge: "forge verify-contract", hardhat: "Hardhat", remix: "Remix", unknown: "another tool" } as const;
+
+/** How a source was sent to be verified, as the contract records it: the door it came in by and the tool the submitter named. Forge and Hardhat name none, so no tool is guessed. */
+export function howVerified(method: "etherscan" | "api" | null, tool: keyof typeof TOOL | null): string {
+  if (!method) return "Not recorded";
+  return `${method === "etherscan" ? "Etherscan-compatible API" : "/api/verify"} · ${tool ? TOOL[tool] : "tool not given"}`;
+}
+
+const BEFORE_PRAGUE = ["homestead", "tangerineWhistle", "spuriousDragon", "byzantium", "constantinople", "petersburg", "istanbul", "berlin", "london", "paris", "shanghai", "cancun"];
+
+/** What the compile's EVM version means on this chain: the chain runs Prague rules, so code compiled for an earlier version runs unchanged. Null for prague, for no version, or one not known. */
+export const evmVersionNote = (version: string | null, chain: string): string | null =>
+  version && BEFORE_PRAGUE.includes(version) ? `${chain} runs Prague rules; ${version} code runs unchanged` : null;

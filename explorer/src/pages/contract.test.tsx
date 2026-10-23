@@ -2,19 +2,20 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ContractDetail, ContractSource } from "../api.ts";
-import { addr, addressDetail, contractDetail, contractSource, fakeApi, page, renderApp, reply, route, unverifiedSource } from "../test-utils.tsx";
+import type { AddressTransferItem, ContractDetail, ContractSource, TokenDetail } from "../api.ts";
+import { addr, addressDetail, contractDetail, contractSource, fakeApi, page, renderApp, reply, route, tokenDetail, tokenTransfer, unverifiedSource } from "../test-utils.tsx";
 
 afterEach(() => vi.unstubAllGlobals());
 const A = addr(0xcb);
 const BAD = "Give an address as 0x and 40 hex digits.";
 const derived = <T,>(items: T[]) => reply({ ...page(items), derived: true });
-interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0] }
+interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0]; token?: TokenDetail; transfers?: AddressTransferItem[] }
 async function open(seen: Seen = {}, path = `/contract/${A}?tab=code`) {
   const d = seen.detail ?? contractDetail();
   const calls = fakeApi(route({
     contracts: (a, sub) => (a !== A ? reply({ error: "No contract is held at that address." }, 404) : sub === "source" ? reply(seen.source ?? contractSource()) : reply(d)),
     addresses: (_a, sub) => (sub === "" ? reply(addressDetail({ address: A, kind: "contract", ...seen.account })) : derived([])),
+    tokenPages: (_a, sub) => (sub === "" ? (seen.token ? reply(seen.token) : reply({ error: "No token is held at that address." }, 404)) : derived(sub === "transfers" ? (seen.transfers ?? []) : [])),
   }));
   renderApp(path);
   await screen.findByRole("heading", { name: "Contract" });
@@ -254,5 +255,109 @@ describe("the contract page: the chip and the counts", () => {
     await screen.findByRole("heading", { name: "Contract" });
     expect(screen.getByRole("region", { name: "Overview" })).toHaveTextContent("Reading…");
     expect(screen.getByRole("region", { name: "Overview" })).not.toHaveTextContent("Not known yet");
+  });
+});
+
+describe("the contract page: a token contract", () => {
+  const token = { account: { kind: "token" as const, token: { name: "Test USD", symbol: "tUSD", decimals: 6 }, tokenTransferCount: 6 } };
+
+  it("shows the holder count on the token tracker row, from the token's own page", async () => {
+    await open({ ...token, token: tokenDetail(0xcb, { holderCount: 5 }) });
+    await waitFor(() => expect(row("Token tracker")).toHaveTextContent("5 holders"));
+    expect(row("Token tracker")).toHaveTextContent("Test USD (tUSD)");
+  });
+
+  it("says one holder in the singular, and shows no count while the token page has not answered", async () => {
+    await open({ ...token, token: tokenDetail(0xcb, { holderCount: 1 }) });
+    await waitFor(() => expect(row("Token tracker")).toHaveTextContent("1 holder"));
+    expect(row("Token tracker")).not.toHaveTextContent("1 holders");
+  });
+
+  it("shows no holder count for a token the token route does not know", async () => {
+    await open(token);
+    await within(card("Overview")).findByRole("link", { name: /Test USD/ });
+    expect(row("Token tracker")).not.toHaveTextContent("holder");
+  });
+
+  it("shows the token's own transfers on the Token transfers tab, read from the token's route", async () => {
+    const calls = await open({ ...token, token: tokenDetail(0xcb), transfers: [tokenTransfer(1, { amount: "2500000" })] }, `/contract/${A}?tab=token-transfers`);
+    await screen.findByRole("region", { name: "Transfers" });
+    await waitFor(() => expect(calls.some((c) => c.startsWith(`/api/tokens/${A}/transfers`))).toBe(true));
+    expect(calls.some((c) => c.startsWith(`/api/addresses/${A}/token-transfers`))).toBe(false);
+    expect(await screen.findByText(/2\.5/)).toBeInTheDocument();
+  });
+
+  it("counts the token's own transfers on the tab of a token contract", async () => {
+    await open({ ...token, token: tokenDetail(0xcb, { transferCount: 42 }) });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Token transfers 42" })).toBeInTheDocument());
+  });
+
+  it("keeps the address's own transfers on the Token transfers tab of a contract that is not a token", async () => {
+    const calls = await open({ account: { tokenTransferCount: 2 } }, `/contract/${A}?tab=token-transfers`);
+    await waitFor(() => expect(calls.some((c) => c.startsWith(`/api/addresses/${A}/token-transfers`))).toBe(true));
+    expect(calls.some((c) => c.startsWith(`/api/tokens/${A}/transfers`))).toBe(false);
+  });
+});
+
+describe("the contract page: when and how it was made and verified", () => {
+  it("says how long ago the contract was made, beside its block", async () => {
+    await open({ detail: contractDetail(0xcb, { createdAt: new Date(Date.now() - 35.5 * 60_000).toISOString() }) });
+    expect(row("Created in")).toHaveTextContent("Block 18");
+    expect(row("Created in")).toHaveTextContent("35 min ago");
+  });
+
+  it("gives no age for a genesis contract, and none when the explorer did not see it made", async () => {
+    await open({ detail: contractDetail(0xcb, { createdAt: null }) });
+    expect(row("Created in")).not.toHaveTextContent("ago");
+  });
+
+  const verifiedVia = (method: "etherscan" | "api" | null, tool: "forge" | "hardhat" | "remix" | "unknown" | null) =>
+    contractDetail(0xcb, { verification: { ...contractDetail().verification!, method, tool } });
+
+  it("says how it was verified: the Etherscan-compatible API with the tool the submitter named", async () => {
+    await open({ detail: verifiedVia("etherscan", "forge") });
+    expect(row("How")).toHaveTextContent("Etherscan-compatible API · forge verify-contract");
+  });
+
+  it("says the tool was not given, and never guesses one, when the submitter named none", async () => {
+    await open({ detail: verifiedVia("etherscan", null) });
+    expect(row("How")).toHaveTextContent("Etherscan-compatible API · tool not given");
+    expect(row("How")).not.toHaveTextContent("forge");
+  });
+
+  it("names the explorer's own verify endpoint, and Hardhat, Remix or another tool as given", async () => {
+    await open({ detail: verifiedVia("api", "hardhat") });
+    expect(row("How")).toHaveTextContent("/api/verify · Hardhat");
+  });
+
+  it("says another tool when the tool is none of the three it knows", async () => {
+    await open({ detail: verifiedVia("api", "unknown") });
+    expect(row("How")).toHaveTextContent("/api/verify · another tool");
+  });
+
+  it("says it did not record how a source verified earlier was sent", async () => {
+    await open({ detail: verifiedVia(null, null) });
+    expect(row("How")).toHaveTextContent("Not recorded");
+  });
+
+  it("has no How row for a contract that is not verified", async () => {
+    await open({ detail: contractDetail(0xcb, { verification: null, verified: false, matchType: null }) });
+    expect(screen.queryByText("How", { selector: "dt" })).toBeNull();
+  });
+});
+
+describe("the contract page: the EVM version note on the Code tab", () => {
+  const evm = (v: string | null) => contractSource(0xcb, { evmVersion: v });
+
+  it("says the chain runs Prague rules and an older version's code runs unchanged", async () => {
+    await open({ source: evm("cancun") });
+    await screen.findByRole("region", { name: "Contract source code" });
+    expect(row("EVM version")).toHaveTextContent(/cancun.*Prague rules; cancun code runs unchanged/);
+  });
+
+  it.each([["prague"], [null], ["frontier-next"]])("adds no note for prague itself, for the compiler's default, or for a version it does not know (%s)", async (v) => {
+    await open({ source: evm(v) });
+    await screen.findByRole("region", { name: "Contract source code" });
+    expect(row("EVM version")).not.toHaveTextContent("Prague rules");
   });
 });
