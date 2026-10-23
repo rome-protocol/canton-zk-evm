@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiTx, InternalCall, TokenTransfer, TraceFrame, TxLog } from "../api.ts";
-import { account, addr, fakeApi, hash, labelsOf, page, renderApp, reply, route, tokenAddress, tokenLabel, tx, txDetail, waitingTx } from "../test-utils.tsx";
+import { account, addr, contractSource, fakeApi, hash, labelsOf, page, renderApp, reply, route, tokenAddress, tokenLabel, tx, txDetail, waitingTx } from "../test-utils.tsx";
 
 vi.mock("../verify/verifier.ts", async (orig) => ({ ...(await orig<typeof import("../verify/verifier.ts")>()), fetchVerifier: vi.fn(async () => ({ verify: () => "", bytes: 1 })) }));
 
@@ -79,7 +79,8 @@ describe("the Logs tab", () => {
     await open({ txLogs: () => reply(page([log(0, { topics: ["0x" + "12".repeat(32)], decoded })])) }, tx(), "?tab=logs");
     const one = within(await screen.findByRole("group", { name: "Log 0" }));
     expect(one.getByText("Swap")).toBeInTheDocument();
-    expect(one.getByText("Arguments", { selector: "dt" }).nextElementSibling).toHaveTextContent("uint256 amount = 42");
+    expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent("amount 42");
+    expect(one.getByText("Name", { selector: "dt" }).nextElementSibling).toHaveTextContent("Swap (uint256 amount)");
     expect(screen.queryByText(/needs a verified interface/)).toBeNull();
   });
 
@@ -120,6 +121,62 @@ describe("the Logs tab", () => {
   it("says when there are none", async () => {
     await open({ txLogs: () => reply(page([])) }, tx(), "?tab=logs");
     expect(await screen.findByText("This transaction emitted no logs.")).toBeInTheDocument();
+  });
+});
+
+describe("the Logs tab, decoded", () => {
+  const T = addr(0xcb), FROM = addr(0x5b), TO = addr(0x5a);
+  const pad = (a: string) => "0x" + "0".repeat(24) + a.slice(2);
+  const amount = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
+  const transferLog = (i: number, n: bigint, over: Partial<TxLog> = {}) => log(i, { address: T, topics: [TRANSFER, pad(FROM), pad(TO)], data: amount(n), ...over });
+  const usd = tokenLabel({ address: T, name: "Test USD", symbol: "tUSD", decimals: 18 });
+  const named = (extra: Parameters<typeof route>[0] = {}) => ({ labels: labelsOf([usd]), ...extra });
+
+  it("reads a Transfer with the standard interface: the event with its parameters, each topic by its argument, and the value in whole units after its raw digits", async () => {
+    await open(named({ txLogs: () => reply(page([transferLog(0, 5000n * 10n ** 18n)])) }), tx(), "?tab=logs");
+    const one = within(await screen.findByRole("group", { name: "Log 0" }));
+    expect(await one.findByText("Test USD (tUSD)")).toBeInTheDocument();
+    expect(one.getByText("Name", { selector: "dt" }).nextElementSibling).toHaveTextContent("Transfer (index_topic_1 address from, index_topic_2 address to, uint256 value)");
+    const topics = one.getByText("Topics", { selector: "dt" }).nextElementSibling!;
+    expect(topics).toHaveTextContent("0 " + TRANSFER);
+    expect(topics).toHaveTextContent(`1 from ${FROM}`);
+    expect(topics).toHaveTextContent(`2 to ${TO}`);
+    expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent("value 5000000000000000000000 = 5,000 tUSD");
+    expect(screen.getByText("1 log, 1 with the standard token interface")).toBeInTheDocument();
+  });
+
+  it("says the verified ABI of the one contract that emitted every log, and switches to the raw topics and data with Hex", async () => {
+    const user = userEvent.setup();
+    const abi = [{ type: "event", name: "Transfer", anonymous: false, inputs: [{ name: "from", type: "address", indexed: true }, { name: "to", type: "address", indexed: true }, { name: "value", type: "uint256", indexed: false }] }];
+    await open(named({ txLogs: () => reply(page([transferLog(0, 10n ** 18n), transferLog(1, 2n * 10n ** 18n)])), contracts: (_a, sub) => (sub === "source" ? reply(contractSource(0xcb, { abi })) : reply({ error: "none" }, 404)) }), tx(), "?tab=logs");
+    expect(await screen.findByText("2 logs, decoded with the verified ABI of Test USD (tUSD)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Decoded" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Hex" }));
+    const one = within(screen.getByRole("group", { name: "Log 0" }));
+    const topics = one.getByText("Topics", { selector: "dt" }).nextElementSibling!;
+    expect(topics).toHaveTextContent("1 " + pad(FROM));
+    expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent(amount(10n ** 18n));
+    expect(one.queryByText(/= 1 tUSD/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Decoded" }));
+    expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent("= 1 tUSD");
+  });
+
+  it("shows no switch and no value chip where nothing is decoded, and no whole units where the token's decimals are not known", async () => {
+    await open({ txLogs: () => reply(page([log(0)])) }, tx(), "?tab=logs");
+    await screen.findByRole("group", { name: "Log 0" });
+    expect(screen.queryByRole("button", { name: "Hex" })).toBeNull();
+    cleanup();
+    await open({ labels: labelsOf([tokenLabel({ address: T, decimals: null })]), txLogs: () => reply(page([transferLog(0, 7n)])) }, tx(), "?tab=logs");
+    const one = within(await screen.findByRole("group", { name: "Log 0" }));
+    expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).toHaveTextContent("value 7");
+    expect(one.getByText("Data", { selector: "dt" }).nextElementSibling).not.toHaveTextContent("=");
+  });
+
+  it("asks the names of every address of the page in one request", async () => {
+    const calls = await open(named({ txLogs: () => reply(page([transferLog(0, 1n), transferLog(1, 2n)])) }), tx(), "?tab=logs");
+    await screen.findByRole("group", { name: "Log 1" });
+    await screen.findAllByText("Test USD (tUSD)");
+    expect(used(calls, "/api/labels")).toHaveLength(1);
   });
 });
 

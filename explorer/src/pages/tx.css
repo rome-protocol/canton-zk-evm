@@ -47,3 +47,6 @@
 .fn-name { color: var(--canton); }
 .args-table { border: 1px solid var(--line); border-radius: 0 0 8px 8px; }
 .args-table th { font-size: 12px; font-weight: 600; color: var(--muted); }
+.argchip { display: inline-block; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 7px; margin-right: 4px; background: var(--surface); }
+.ev-name { color: var(--canton); font-weight: 600; }
+.lognum { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 8px; background: var(--ok-tint, var(--canton-tint)); color: var(--ink); }

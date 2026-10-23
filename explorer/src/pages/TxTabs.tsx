@@ -1,12 +1,9 @@
 import type { ReactNode } from "react";
-import { getTxInternal, getTxLogs, type ApiTxSeen, type InternalCall, type Log, type TxLog } from "../api.ts";
+import { getTxInternal, type ApiTxSeen, type InternalCall } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { count } from "../format.ts";
-
-/** The first topic of an ERC-20 Transfer. */
-const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 export type TabId = "overview" | "logs" | "internal" | "tree" | "raw";
 export interface TabSpec { id: TabId; label: string; count?: number | null }
@@ -27,67 +24,6 @@ export function Tabs({ tabs, current, onPick }: { tabs: TabSpec[]; current: TabI
 export const Panel = ({ id, children }: { id: TabId; children: ReactNode }) => (
   <div role="tabpanel" id={`panel-${id}`} aria-labelledby={`tab-${id}`}>{children}</div>
 );
-
-/** `n` is the log's place among the transaction's own logs, counted from 0. */
-type Shown = { n: number; address: string; topics: string[]; data: string; name: string | null; decoded: TxLog["decoded"] };
-
-function LogRow({ log, t }: { log: Shown; t: ApiTxSeen }) {
-  return (
-    <div className="logrow" role="group" aria-label={`Log ${log.n}`}>
-      <span className="mono muted">{log.n}</span>
-      <dl className="log">
-        <dt className="log-k">Address</dt>
-        <dd><HashLink value={log.address} to={`/address/${log.address}`} />{log.address === t.to && t.toToken && <span className="tag">{t.toToken}</span>}</dd>
-        <dt className="log-k">Name</dt>
-        <dd>{log.name ?? <span className="muted">not decoded</span>}</dd>
-        {log.decoded && log.decoded.args.length > 0 && <>
-          <dt className="log-k">Arguments</dt>
-          <dd>{log.decoded.args.map((a, i) => <div key={i}><span className="muted">{a.type}</span> {a.name} <span className="muted">=</span> <span className="mono wrap">{a.value}</span></div>)}</dd>
-        </>}
-        <dt className="log-k">Topics</dt>
-        <dd>{log.topics.map((topic, i) => <div key={i}><span className="muted">{i}</span> <span className="mono wrap">{topic}</span></div>)}</dd>
-        <dt className="log-k">Data</dt>
-        <dd><span className="mono wrap">{log.data}</span></dd>
-      </dl>
-    </div>
-  );
-}
-
-/** The name of a log: the decoded event when the server has one, a Transfer by its first topic, and none otherwise. */
-const nameOf = (topics: string[], decoded: TxLog["decoded"]) => (decoded ? decoded.name : topics[0] === TRANSFER_TOPIC ? "Transfer" : null);
-
-/** Said only when some log on the page is not decoded: a decoded one has its name and arguments shown. */
-const NoDecode = ({ shown }: { shown: boolean }) => !shown ? null : <p className="small muted">Events are shown raw. Decoding them needs a verified interface for the contract that emitted them, and none is held.</p>;
-
-/** The logs of a final transaction, a page at a time. */
-function FinalLogs({ t }: { t: ApiTxSeen }) {
-  const p = usePaged(["tx-logs", t.hash], (after) => getTxLogs(t.hash, after));
-  if (p.error && !p.data) return <div className="alert" role="alert">{p.error.message}</div>;
-  if (!p.data) return <p className="muted" aria-busy="true">Reading the logs…</p>;
-  const items = p.data.items;
-  return (
-    <section className="card" aria-label="Logs">
-      <NoDecode shown={items.some((l) => l.decoded === null)} />
-      {items.length === 0 && <p className="muted">This transaction emitted no logs.</p>}
-      {items.map((l) => <LogRow key={l.logIndex} t={t} log={{ n: l.position, address: l.address, topics: l.topics, data: l.data, name: nameOf(l.topics, l.decoded), decoded: l.decoded }} />)}
-      <Pager p={p} label="Pages of logs" />
-    </section>
-  );
-}
-
-/** The logs of a transaction that is not final: all the page has is what /api/tx gave. */
-function SeenLogs({ t }: { t: ApiTxSeen }) {
-  const logs: Log[] = t.logs;
-  return (
-    <section className="card" aria-label="Logs">
-      <NoDecode shown={logs.length > 0} />
-      {logs.length === 0 && <p className="muted">This transaction has emitted no logs so far.</p>}
-      {logs.map((l, i) => <LogRow key={i} t={t} log={{ n: i, address: l.address, topics: l.topics, data: l.data, name: nameOf(l.topics, null), decoded: null }} />)}
-    </section>
-  );
-}
-
-export const LogsTab = ({ t }: { t: ApiTxSeen }) => (t.status === "final" ? <FinalLogs t={t} /> : <SeenLogs t={t} />);
 
 const callName = (c: InternalCall) => (c.traceAddress.length === 0 ? "top level" : `call ${c.traceAddress.join("-")}`);
 
