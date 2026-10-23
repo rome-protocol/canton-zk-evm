@@ -25,3 +25,9 @@
 .idcell { display: inline-flex; align-items: flex-start; gap: 8px; }
 .idcell .ic { color: var(--muted); flex: none; margin-top: 3px; }
 .moved { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; }
+
+/* transactions: four cards in a row on a wide screen */
+.stats.stats-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 14px; }
+@media (max-width: 900px) { .stats.stats-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .stats.stats-4 { grid-template-columns: minmax(0, 1fr); } }
+.create { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }

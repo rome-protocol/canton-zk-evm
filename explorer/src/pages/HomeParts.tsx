@@ -28,14 +28,14 @@ export function Hero({ tries }: { tries: Array<{ label: string; q: string }> }) 
 }
 
 /** The final transactions in all, all time, with the block the server counted to in plain sight; "not counted yet" when it cannot say, never 0. */
-const AllTime = ({ t }: { t: StatsSummary["txs"]["allTime"] }) =>
-  t ? <span className="muted small" title={`All time, as of block ${t.asOfBlock}`}>{count(t.total)} final in all · as of block {t.asOfBlock}</span> : <span className="muted small">total not counted yet</span>;
+export const AllTime = ({ t }: { t: StatsSummary["txs"]["allTime"] }) =>
+  t ? <span className="muted small" title={`All time, as of block ${t.asOfBlock}; runs marked as tests are counted`}>{count(t.total)} final in all · as of block {t.asOfBlock}<span> · test runs included</span></span> : <span className="muted small">total not counted yet</span>;
 
 type IconName = Parameters<typeof Icon>[0]["name"];
 /** The picture before each card's label, as screen 01 has it. It is decoration: the label says what the card is. */
 const Key = ({ icon, children }: { icon: IconName; children: ReactNode }) => <span className="stat-k"><Icon name={icon} size={14} /><span>{children}</span></span>;
 
-function Stat({ icon, label, note, children, foot, sub, tone }: { icon: IconName; label: string; note?: string; children: ReactNode; foot: ReactNode; sub?: ReactNode; tone?: "ok" }) {
+export function Stat({ icon, label, note, children, foot, sub, tone }: { icon: IconName; label: string; note?: string; children: ReactNode; foot: ReactNode; sub?: ReactNode; tone?: "ok" }) {
   return (
     <div className={`card stat${tone ? ` stat-${tone}` : ""}`}>
       <Key icon={icon}>{label}{note && <span className="faint"> · {note}</span>}</Key>
@@ -53,11 +53,11 @@ function NotFinal({ n, read, stuck }: { n: Summary["notFinal"]; read: Read; stuc
   return <Stat icon="clock" label="Not final yet" foot={`${n.inBlocks} in blocks being made or proven · ${n.waiting === null ? "pool count not known" : `${n.waiting} waiting`}${stuck === null ? "" : ` · ${count(stuck)} stuck`}`}>{n.waiting === null ? n.inBlocks : n.inBlocks + n.waiting}</Stat>;
 }
 
-const DASH_WHY = (read: Read) => (read === "loading" ? "Reading…" : "the stats cannot be read right now");
+export const DASH_WHY = (read: Read) => (read === "loading" ? "Reading…" : "the stats cannot be read right now");
 const ago = (iso: string) => `${iso.slice(11, 16)} UTC`;
 
 /** A time from a summary: the middle and the 95th percentile, "8.5 s p95 8.7 s", or a dash and why. */
-function Time({ icon, label, note, s, read, foot, none }: { icon: IconName; label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string }) {
+export function Time({ icon, label, note, s, read, foot, none }: { icon: IconName; label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string }) {
   if (s === undefined) return <Stat icon={icon} label={label} note={note} foot={DASH_WHY(read)}>—</Stat>;
   return <Stat icon={icon} label={label} note={note} foot={s ? foot : none}>{s ? <>{sec(s.median)} <small>p95 {sec(s.p95)}</small></> : "—"}</Stat>;
 }
@@ -151,7 +151,7 @@ function Parties({ from, to, created, labels, faucet, chain }: { from: string; t
 }
 
 /** What a final transaction moved: the first token move as a chip (with how many more there are), and the coin when any was sent. */
-function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: string; decimals: number }; labels: Labels }) {
+export function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: string; decimals: number }; labels: Labels }) {
   const first = t.tokenMoves?.first ?? null, more = t.tokenMoves ? t.tokenMoves.count - 1 : 0;
   const sent = BigInt(t.value) > 0n;
   if (!first) return <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} />;
