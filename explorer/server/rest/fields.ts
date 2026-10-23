@@ -67,9 +67,10 @@ export const REST_FIELDS = {
   txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId", "tokenMoves"],
   /** What a transaction in a list moved in tokens: how many moves (counted to a cap, `more` past it) and the first; the whole object is null while stage 2 has not reached the block. */
   tokenMoves: ["count", "more", "first"],
-  tokenMove: ["token", "amount", "tokenId", "standard"],
+  /** `amount` is in the token's base units; `decimals` (null where the token's metadata is not held) says how to show it. */
+  tokenMove: ["token", "amount", "tokenId", "standard", "decimals"],
   /** What is known of an address for showing it by name: nothing here is guessed, and an address nothing is known of has a null name and symbol. */
-  label: ["address", "name", "symbol", "kind", "standard", "verified"],
+  label: ["address", "name", "symbol", "kind", "standard", "decimals", "verified"],
   labels: ["items"],
   /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived), its place in its block, and the fee caps the sender signed. */
   txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason", "index", "maxFeePerGas", "maxPriorityFeePerGas"],

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createApi, NOT_FOUND, type Answer } from "../api.ts";
 import { createChainDb } from "../chain-db.ts";
@@ -245,6 +245,9 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     // Without a direction a transaction an address sent to itself is one row, called sent; a receive and a creation are received.
     const both = String(( await get(`/api/addresses/${A}/txs?format=csv`)).body).trim().split("\r\n");
     expect(both.slice(1).map((l) => l.split(",").slice(1, 3).join(":") + ":" + l.split(",")[12])).toEqual(["3:2:sent", "3:1:received", "3:0:received", "2:1:sent", "2:0:sent"]);
+    // With a direction, the column is that direction: a transaction sent to itself is listed under received and reads received.
+    const received = String((await get(`/api/addresses/${A}/txs?format=csv&direction=received`)).body).trim().split("\r\n");
+    expect(received.slice(1).map((l) => l.split(",")[12])).toEqual(["received", "received", "received"]);
     // A limit under the page's cap gives that many rows; the file never holds more than the cap of 1,000 even when asked for more.
     expect((String((await get(`/api/addresses/${A}/txs?format=csv&limit=2`)).body).trim().split("\r\n")).length - 1).toBe(2);
     expect((await get(`/api/addresses/${A}/txs?format=csv&limit=abc`)).status).toBe(400);
@@ -447,12 +450,38 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     for (const l of body(a).items) same(l, F.label);
     // In the order asked, each address once.
     expect(body(a).items).toEqual([
-      { address: T1, name: "Test Token", symbol: "TT", kind: "token", standard: "ERC-20", verified: false },
-      { address: K, name: "Vault", symbol: null, kind: "contract", standard: null, verified: true },
-      { address: T2, name: "Gadget", symbol: "GDG", kind: "token", standard: "ERC-1155", verified: false },
-      { address: nobody, name: null, symbol: null, kind: "account", standard: null, verified: false },
-      { address: C, name: null, symbol: null, kind: "contract", standard: null, verified: false },
+      { address: T1, name: "Test Token", symbol: "TT", kind: "token", standard: "ERC-20", decimals: 6, verified: false },
+      { address: K, name: "Vault", symbol: null, kind: "contract", standard: null, decimals: null, verified: true },
+      { address: T2, name: "Gadget", symbol: "GDG", kind: "token", standard: "ERC-1155", decimals: null, verified: false },
+      { address: nobody, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false },
+      { address: C, name: null, symbol: null, kind: "contract", standard: null, decimals: null, verified: false },
     ]);
+  });
+
+  it("calls an address an account only when the index holds it, and a contract a final creation names even before stage 2 derives it", async () => {
+    const fresh = h(0x78);
+    const [t] = (await pool.query("select block_number, tx_index from transactions where block_number = 3 and tx_index = 5")).rows;
+    await pool.query("update transactions set created_contract = $3 where block_number = $1 and tx_index = $2", [t.block_number, t.tx_index, Buffer.from(fresh.slice(2), "hex")]);
+    try {
+      const items = body(await get(`/api/labels?addresses=${B},${fresh},${h(0x79)}`)).items;
+      expect(items.map((l: { address: string; kind: string | null }) => [l.address, l.kind])).toEqual([[B, "account"], [fresh, "contract"], [h(0x79), null]]);
+    } finally {
+      await pool.query("update transactions set created_contract = null where block_number = $1 and tx_index = $2", [t.block_number, t.tx_index]);
+    }
+  });
+
+  it("leaves the token moves out of an address's CSV, which does not write them", async () => {
+    const reads = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter((c) => /token_transfers/.test(String(typeof c[0] === "string" ? c[0] : (c[0] as { text?: string }).text))).length;
+    const spy = vi.spyOn(pool, "query");
+    try {
+      expect((await get(`/api/addresses/${A}/txs?format=csv`)).status).toBe(200);
+      expect(reads(spy)).toBe(0);
+      spy.mockClear();
+      expect((await get(`/api/addresses/${A}/txs`)).status).toBe(200);
+      expect(reads(spy)).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("takes at most 100 addresses to label, each a lowercase 0x address, and at least one", async () => {
@@ -474,9 +503,9 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       same(t.tokenMoves, F.tokenMoves);
       if (t.tokenMoves.first) same(t.tokenMoves.first, F.tokenMove);
     }
-    expect(at(2, 0).tokenMoves).toEqual({ count: 2, more: false, first: { token: T1, amount: "10", tokenId: null, standard: "ERC-20" } });
+    expect(at(2, 0).tokenMoves).toEqual({ count: 2, more: false, first: { token: T1, amount: "10", tokenId: null, standard: "ERC-20", decimals: 6 } });
     // A batch: two moves of one token, the first with its id.
-    expect(at(3, 1).tokenMoves).toEqual({ count: 2, more: false, first: { token: T2, amount: "7", tokenId: "1", standard: "ERC-1155" } });
+    expect(at(3, 1).tokenMoves).toEqual({ count: 2, more: false, first: { token: T2, amount: "7", tokenId: "1", standard: "ERC-1155", decimals: null } });
     expect(at(2, 1).tokenMoves).toEqual({ count: 0, more: false, first: null });
   });
 

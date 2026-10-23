@@ -115,10 +115,10 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   /** The newest transactions of an address as a file, with the columns of the list and which way each went: a bounded export (the cap of the other CSVs), not a way to walk its history. */
   async function addressTxsCsv(a: string, q: URLSearchParams, direction: TxDirection): Promise<Answer> {
     const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
-    const rows = (await accounts.addressTxs(a, null, limit, direction)).slice(0, limit);
+    const rows = (await accounts.addressTxs(a, null, limit, direction, false)).slice(0, limit);
     const lines = ["hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success,direction"];
     for (const t of rows) {
-      lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false", t.from === a ? "sent" : "received"].map(csvCell).join(","));
+      lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false", direction === "all" ? (t.from === a ? "sent" : "received") : direction].map(csvCell).join(","));
     }
     const answer = ok(lines.join("\r\n") + "\r\n");
     return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="transactions-${a}.csv"` } }, "list");

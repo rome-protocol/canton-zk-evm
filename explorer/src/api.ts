@@ -179,7 +179,10 @@ export interface BlockListItem { number: number; hash: string; timestamp: number
   proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";
 /** What a listed transaction moved in tokens: how many moves (counted to a cap, `more` past it) and the first; the whole object is null while stage 2 has not reached its block. */
-export interface TokenMoves { count: number; more: boolean; first: { token: string; amount: string | null; tokenId: string | null; standard: string | null } | null }
+export interface TokenMove { token: string; amount: string | null; tokenId: string | null; standard: string | null; decimals: number | null }
+export interface TokenMoves { count: number; more: boolean; first: TokenMove | null }
+/** What is known of an address for showing it by name (GET /api/labels): `kind` is null for an address the index holds nothing of; `amount`s of a token are in base units, shown with its `decimals`. */
+export interface Label { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 /** The newest transactions: a page with how many the chain holds (null where the rollups cannot say, and for a filtered list) and when that was counted to. */
 export interface TxsPage extends Page<TxListItem> { total: number | null; totalAsOf: string | null }
 export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null; tokenMoves: TokenMoves | null }

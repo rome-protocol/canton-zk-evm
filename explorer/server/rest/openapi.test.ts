@@ -73,6 +73,19 @@ describe("the API description", () => {
     expect(Object.keys(props("/api/addresses").items.items.properties).sort()).toEqual([...F.addressItem].sort());
     expect(Object.keys(props("/api/tokens/{address}")).sort()).toEqual([...F.tokenDetail].sort());
     expect(Object.keys(props("/api/status")).sort()).toEqual([...FIELDS.status].sort());
+    // The transaction list also says how many the chain holds and as of when; /api/labels is an object whose `items` are labels, not one label.
+    expect(Object.keys(props("/api/txs")).sort()).toEqual([...F.txPage].sort());
+    expect(Object.keys(props("/api/txs").items.items.properties).sort()).toEqual([...F.txItem].sort());
+    expect(Object.keys(props("/api/labels")).sort()).toEqual([...F.labels].sort());
+    expect(Object.keys(props("/api/labels").items.items.properties).sort()).toEqual([...F.label].sort());
+    expect(props("/api/txs").totalAsOf.description).toContain("complete through");
+    const content = (path: string) => Object.keys(doc.paths[path].get.responses["200"].content);
+    expect(content("/api/addresses/{address}/txs")).toContain("text/csv");
+    expect(content("/api/txs")).toContain("text/csv");
+    expect(content("/api/labels")).not.toContain("text/csv");
+    const names = (path: string) => (doc.paths[path].get.parameters as { name: string }[]).map((q) => q.name);
+    expect(names("/api/addresses/{address}/txs")).toEqual(expect.arrayContaining(["direction", "format"]));
+    expect(names("/api/labels")).toEqual(["addresses"]);
     for (const [path, item] of Object.entries(doc.paths as Record<string, any>)) { // eslint-disable-line @typescript-eslint/no-explicit-any
       const named = [...path.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
       if (!item.get) continue;
@@ -109,7 +122,7 @@ describe("the API description", () => {
 
   it("documents only the query parameters its routes read: each is refused when it is wrong, before any read", async () => {
     const api = full();
-    const wrong: Record<string, string> = { limit: "0", before: "!!", after: "!!", sort: "nonsense", verified: "nonsense", window: "nonsense", step: "nonsense", metric: "nonsense" };
+    const wrong: Record<string, string> = { limit: "0", before: "!!", after: "!!", sort: "nonsense", verified: "nonsense", window: "nonsense", step: "nonsense", metric: "nonsense", direction: "out", addresses: "x", format: "xml" };
     let checked = 0;
     for (const [path, d] of Object.entries(DOCS)) {
       if (path === "/api/stream" || path === "/api/search" || path === "/rpc" || path === "/api" || path === "/v2/api" /* answers 200 with its own NOTOK: etherscan.test.ts */ || !d.query) continue;

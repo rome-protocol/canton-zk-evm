@@ -33,7 +33,7 @@ export interface TxListItem {
    */
   tokenMoves: TokenMoves | null;
 }
-export interface TokenMove { token: string; amount: string | null; tokenId: string | null; standard: string | null }
+export interface TokenMove { token: string; amount: string | null; tokenId: string | null; standard: string | null; decimals: number | null }
 export interface TokenMoves { count: number; more: boolean; first: TokenMove | null }
 /** The most token moves counted for one transaction in a list; a transaction with more says `more`. */
 export const TOKEN_MOVES_CAP = 100;
@@ -76,7 +76,7 @@ export async function withTokenMoves(query: (sql: string, values?: unknown[]) =>
   const ready = items.filter((t) => t.block <= cursor);
   if (ready.length === 0) return items;
   const rows = await query(
-    `select m.block_number, m.tx_index, m.n, m.token, m.amount, m.token_id, tk.standard
+    `select m.block_number, m.tx_index, m.n, m.token, m.amount, m.token_id, tk.standard, tk.decimals
      from (select x.block_number, x.tx_index, row_number() over (partition by x.block_number, x.tx_index order by x.log_index, x.batch_index) as n, x.token, x.amount::text as amount, x.token_id::text as token_id
            from token_transfers x join unnest($1::bigint[], $2::int[]) as k(block_number, tx_index) on x.block_number = k.block_number and x.tx_index = k.tx_index) m
        left join tokens tk on tk.address = m.token
@@ -87,7 +87,7 @@ export async function withTokenMoves(query: (sql: string, values?: unknown[]) =>
   for (const r of rows) {
     const key = `${r.block_number}:${r.tx_index}`;
     const n = Number(r.n);
-    if (n === 1) by.set(key, { count: 1, more: false, first: { token: hex(r.token), amount: r.amount, tokenId: r.token_id, standard: r.standard } });
+    if (n === 1) by.set(key, { count: 1, more: false, first: { token: hex(r.token), amount: r.amount, tokenId: r.token_id, standard: r.standard, decimals: r.decimals === null || r.decimals === undefined ? null : Number(r.decimals) } });
     else {
       const m = by.get(key) as TokenMoves;
       m.count = Math.min(n, TOKEN_MOVES_CAP);
@@ -152,8 +152,8 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. */
-  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all"): Promise<TxListItem[]> {
+  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. `moves` false leaves their token moves null: a file that does not write them need not read them. */
+  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all", moves = true): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
     const where = { all: "", failed: "and t.status = 0", calls: "and t.method_id is not null and t.to_address is not null" }[filter];
     const rows = await query(
@@ -161,20 +161,20 @@ export function createChainRest(pool: Pool) {
        where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) ${where} order by t.block_number desc, t.tx_index desc limit $3`,
       [bn, ix, limit + 1],
     );
-    return withTokenMoves(query, rows.map(txItem));
+    return moves ? withTokenMoves(query, rows.map(txItem)) : rows.map(txItem);
   }
 
   /**
-   * How many transactions the chain holds, from the day rollups (a few hundred rows however long the chain is, never a count over the transactions), and when the rollups last ran.
+   * How many transactions the chain holds, from the day rollups (a few hundred rows however long the chain is, never a count over the transactions), and the time (epoch ms) they are complete through.
    * The live transactions and the test runs' are both in it, as the list holds both. Null when the rollups cannot say: none has run, or the first day they hold is after the first
-   * block's day (the days before it are not counted). Transactions in blocks newer than `asOf` are not in the number.
+   * block's day (the days before it are not counted). `asOf` is the rollups' cursor position, the end of the last chunk they finished (during a first run or a rebuild it is that chunk's end, not the time of the run); transactions in blocks newer than it are not in the number.
    */
   async function txTotal(): Promise<{ total: number; asOf: number } | null> {
     const [r] = await query(
       `select (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_day) as n,
               (select extract(epoch from min(bucket))::float8 * 1000 from stats_day) as since,
               (select extract(epoch from min(record_time))::float8 * 1000 from blocks) as first,
-              (select extract(epoch from updated_at)::float8 * 1000 from cursors where stream = 'stats_rollup') as at`);
+              (select position::float8 from cursors where stream = 'stats_rollup') as at`);
     if (!r || r.since === null || r.at === null) return null;
     const first = r.first === null ? Infinity : Number(r.first);
     if (Number(r.since) > Math.floor(first / 86_400_000) * 86_400_000) return null;

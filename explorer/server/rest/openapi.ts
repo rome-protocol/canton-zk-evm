@@ -20,6 +20,8 @@ interface Doc {
   query?: Query[];
   /** The fields of a single object. */
   object?: Fields;
+  /** For an object whose `items` are a list of objects: the fields of each item. */
+  items?: Fields;
   /** A page: the fields of each item, and whether the page says if stage 2 had reached it (`derived`). */
   page?: { items: Fields; derived: boolean; /** Fields of the page beside its items, each with what it says. */ extra?: Record<string, unknown> };
   /** The route can also answer as a CSV file (`format=csv`): the 200 then lists text/csv beside JSON. */
@@ -46,10 +48,10 @@ const csv: Query = { name: "format", about: "csv for the newest blocks as a file
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const topic0: Query = { name: "topic0", about: "Only the logs whose first topic (the event's signature hash) is this: 0x and 64 hex digits." };
 const direction: Query = { name: "direction", about: "all of the address's transactions, only the ones it sent (it is the sender, `sent`), or only the ones it received (it is the recipient or the contract the transaction created, `received`); all when left out.", values: ["all", "sent", "received"] };
-const addressTxCsv: Query = { name: "format", about: "csv for the address's newest transactions as a file with the list's columns and a `direction` column (sent or received; up to 1000, `limit` sets fewer; no paging; `direction` applies); left out for JSON.", values: ["csv"] };
+const addressTxCsv: Query = { name: "format", about: "csv for the address's newest transactions as a file with the list's columns and a `direction` column (the `direction` asked, or sent or received per row when it is all; up to 1000, `limit` sets fewer; no paging; `direction` applies); left out for JSON.", values: ["csv"] };
 const TX_TOTAL = {
-  total: { type: ["integer", "null"], description: "How many transactions the chain holds, read from the day rollups and never counted over the transactions; the live ones and the test runs' together, as the list holds both. Null when the rollups cannot say (none has run, or they begin after the first block's day), and for a filtered list. Transactions in blocks newer than totalAsOf are not in it." },
-  totalAsOf: { type: ["string", "null"], description: "When the rollups behind total last ran (ISO time); null where total is." },
+  total: { type: ["integer", "null"], description: "How many transactions the chain holds, read from the day rollups and never counted over the transactions; the live ones and the test runs' together, as the list holds both. Null when the rollups cannot say (none has run, or they begin after the first block's day), and for a filtered list. Transactions in blocks newer than totalAsOf are not in it. While the rollups are being first built or rebuilt, total is what they hold up to totalAsOf." },
+  totalAsOf: { type: ["string", "null"], description: "The time the rollups behind total are complete through (ISO time; their cursor's position, not the time of their last run); null where total is." },
 };
 const paged = [limit, before], pagedAfter = [limit, after];
 const TOKEN_MOVES = `Each carries \`tokenMoves\`: how many token moves its logs hold (\`count\`, at most ${TOKEN_MOVES_CAP}, with \`more\` true past that) and the first (\`first\`: token, amount or tokenId, standard when the token is known), read from stage 2's transfers. \`tokenMoves\` is null, not empty, for a block stage 2 has not reached.`;
@@ -129,7 +131,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/addresses/{address}/token-transfers": { tag: "Accounts", summary: `The token transfers to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.tokenTransferItem, derived: true } },
   "/api/addresses/{address}/tokens": { tag: "Accounts", summary: `What an address holds, token by token. ${DERIVED}`, param: "A 0x address.", query: pagedAfter, page: { items: F.holding, derived: true } },
   "/api/addresses/{address}/coin-history": { tag: "Accounts", summary: `An address's balance at the blocks where it changed. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.coinPoint, derived: true } },
-  "/api/labels": { tag: "Accounts", summary: `The name of each address asked, for showing a token or a contract by name: its name and symbol (a token's, else a verified contract's name), its kind (token, contract or account), the token standard and whether its source is verified. Up to ${MAX_LABELS} addresses, in the order asked and each once; an address nothing is held for is an account with no name, and nothing is guessed.`, query: [{ name: "addresses", about: `1 to ${MAX_LABELS} lowercase 0x addresses, joined by commas.` }], note: "An object with `items`, each with the fields in the item list of this route.", object: F.label },
+  "/api/labels": { tag: "Accounts", summary: `The name of each address asked, for showing a token or a contract by name: its name and symbol (a token's, else a verified contract's name), its kind (token, contract, or account for an address the index has seen), the token standard and decimals (null where the token's metadata is not held) and whether its source is verified. Up to ${MAX_LABELS} addresses, in the order asked and each once; an address the index holds nothing of has a null kind and no name, and nothing is guessed.`, query: [{ name: "addresses", about: `1 to ${MAX_LABELS} lowercase 0x addresses, joined by commas.` }], note: "An object with `items`, each with the fields in the item list of this route.", object: F.labels, items: F.label },
   "/api/contracts": { tag: "Contracts", summary: `Contracts. The balance and the counters are the database's copy, as of \`balanceBlock\`; reth's balance of one is at /api/addresses/{address}. ${DERIVED}`, query: [sort(SORTS.contracts), { name: "verified", about: "true for the contracts whose source is verified, false for the others.", values: ["true", "false"] }, ...paged], page: { items: F.contractItem, derived: true } },
   "/api/contracts/{address}": { tag: "Contracts", summary: "One contract, with its code, proxy and verification. Its balance and counters are the database's copy, as of `balanceBlock`, not reth's: read the balance at /api/addresses/{address}.", param: "A 0x address.", object: F.contractDetail },
   "/api/contracts/{address}/source": { tag: "Contracts", summary: "The verified source files and ABI of a contract. Every field after `verified` is empty while nothing is verified.", param: "A 0x address.", object: F.source },
@@ -187,6 +189,7 @@ function schemaOf(d: Doc): unknown {
     if (d.page.derived) props.derived = { type: "boolean", description: "True when stage 2 has reached the newest final block." };
     return { type: "object", additionalProperties: false, properties: props, required: Object.keys(props) };
   }
+  if (d.object && d.items) return object(d.object, { properties: { items: { type: "array", items: object(d.items) } } });
   return d.object ? object(d.object) : {};
 }
 

@@ -130,7 +130,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   /** The newest transactions as a file, with the columns of the list: a bounded export, not a way to walk the chain. */
   async function txsCsv(q: URLSearchParams, filter: (typeof TX_FILTERS)[number]): Promise<Answer> {
     const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
-    const rows = (await rest.txs(null, limit, filter)).slice(0, limit);
+    const rows = (await rest.txs(null, limit, filter, false)).slice(0, limit);
     const lines = ["hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success"];
     for (const t of rows) {
       lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false"].map(csvCell).join(","));
