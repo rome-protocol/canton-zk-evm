@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem, StatsSummary, StatsWindow } from "../api.ts";
 import { series, summary } from "./stats-fixtures.ts";
@@ -451,6 +451,42 @@ describe("the numbers, from the stats routes", () => {
     await withStats()();
     expect(tile("Block height")).toHaveTextContent("3final on Canton · block 4 is being proven");
     expect(screen.getByRole("region", { name: "Numbers" })).not.toHaveTextContent(/latest \d+ blocks|producer log|not served yet/);
+  });
+});
+
+describe("the value of a transaction that is not final yet", () => {
+  const at = "2026-10-04T01:37:58Z";
+  const usd = { address: addr(0x9b), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
+  const proving = (over: Parameters<typeof tx>[0] = {}) => tx({ hash: hash(0xb2), status: "proving", state: "proving", block: null, from: addr(0x71), to: addr(0x9b), value: "0", transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" }, ...over });
+  const open = async (t: ReturnType<typeof tx>, labels: unknown[] = [usd]) => {
+    const base = route({ inFlight: () => reply(inFlight({ transactions: [{ hash: hash(0xb2), stage: "proving", at }] })), tx: () => reply(t) });
+    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: labels }) : base(path)), { routed: true }));
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    return (await region.findAllByRole("row"))[1]!;
+  };
+
+  it("shows a proving transfer as the token chip, as screen 01 does, and not as 0 of the coin", async () => {
+    const row = await open(proving());
+    expect(await within(row).findByText("100 tUSD")).toHaveClass("tname");
+    expect(row).not.toHaveTextContent("tROME");
+  });
+
+  it("adds the coin when some is sent with it", async () => {
+    const row = await open(proving({ value: "1000000000000000000" }));
+    expect(await within(row).findByText("100 tUSD")).toBeInTheDocument();
+    expect(row).toHaveTextContent("1 tROME");
+  });
+
+  it("names the token by the symbol the transaction route read when the index does not know it yet", async () => {
+    const row = await open(proving(), []);
+    expect(await within(row).findByText("100 tUSD")).toBeInTheDocument();
+  });
+
+  it("shows the coin alone when the transaction decodes to no transfer", async () => {
+    const row = await open(proving({ transfer: null, value: "1000000000000000000" }));
+    await waitFor(() => expect(row).toHaveTextContent("1 tROME"));
+    expect(row.querySelector(".tchip")).toBeNull();
   });
 });
 

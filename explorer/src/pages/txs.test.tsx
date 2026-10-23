@@ -159,6 +159,10 @@ describe("the all-time total", () => {
     await open({ txs: () => reply(counted(1017)), inFlight: () => reply(seen) });
     await waitFor(() => expect(title()).toHaveTextContent("1,020 in all · 1,017 final · 2 being proven · 1 waiting"));
     expect(screen.getByText("Showing 2 of 1,020")).toBeInTheDocument();
+    // The Not final yet card counts the same attempts as the title: one total, not two.
+    const card = within(screen.getByRole("region", { name: "Numbers" })).getByText("Not final yet").closest(".stat")!;
+    await waitFor(() => expect(card).toHaveTextContent("2 being proven · 1 waiting"));
+    expect(card).not.toHaveTextContent("5 being proven");
   });
 
   it("says at least when the pool is not counted, and offers no Last button the server cannot serve", async () => {
@@ -231,6 +235,21 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     expect(within(row).getByRole("link", { name: "0x5b5b5b…5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
   });
 
+  describe("a transfer that is being proven", () => {
+    const at = "2026-10-04T01:37:58Z";
+    const proving = (value: string) => tx({ hash: hash(0xd2), status: "proving", state: "proving", block: { number: 4, hash: null, updateId: null }, success: null, to: addr(0xcb), value, transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" } });
+    const run = async (value: string) => {
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply(proving(value)) });
+      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      renderApp("/txs");
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("100 tUSD")).toHaveClass("tname");
+      return row;
+    };
+    it("is the token chip, never 0 of the coin", async () => { expect(await run("0")).not.toHaveTextContent("tROME"); });
+    it("has the coin beside the chip when some is sent", async () => { expect(await run("1000000000000000000")).toHaveTextContent("1 tROME"); });
+  });
+
   it("says Create: and what the transaction made, and shows a plain send as the coin", async () => {
     labelled([txItem(3, { to: null, created: addr(0xd1), value: "0" }), txItem(2)]);
     const rows = (await screen.findAllByRole("row")).slice(1);
@@ -260,6 +279,14 @@ describe("the subtitle and the list header add up", () => {
   it("calls the in-all figure about when the pool was read before the final total, since a waiting transaction may be final by then", async () => {
     await open({ txs: () => reply(counted), inFlight: () => reply(pool("2026-10-04T01:37:50Z")) });
     await waitFor(() => expect(title()).toHaveTextContent("about 1,021 in all · 1,017 final · 3 being proven · 1 waiting"));
+  });
+
+  it("says the figure exactly when nothing waits, whenever the pool was read: with none waiting nothing can be counted twice", async () => {
+    const empty = inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 0, at: "2026-10-04T01:37:50Z" }, transactions: [] });
+    await open({ txs: () => reply(counted), inFlight: () => reply(empty) });
+    await waitFor(() => expect(title()).toHaveTextContent("1,020 in all · 1,017 final · 3 being proven · 0 waiting"));
+    expect(title()).not.toHaveTextContent("about");
+    expect(await screen.findByText("Showing 2 of 1,020")).toBeInTheDocument();
   });
 
   it("says the figure exactly when the pool was read at or after the final total", async () => {

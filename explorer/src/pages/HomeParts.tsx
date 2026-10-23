@@ -164,6 +164,26 @@ export function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: stri
   );
 }
 
+/**
+ * What a transaction that is not final yet moves, as far as its own page says: when `to` is a known token and the input is a transfer, the transaction route
+ * decodes it (`transfer`), and that is the chip, with the coin beside it when any is sent. A mint or a transfer of an NFT is not read here: the lists build their
+ * summary from final logs only, and the receipt logs of a block being proven are not decoded in the browser. `d.value` is not null (the caller checks).
+ */
+export function ProvingMoved({ d, coin, labels }: { d: ApiTx & { value: string }; coin: { symbol: string; decimals: number }; labels: Labels }) {
+  const t = d.transfer;
+  if (!t || !d.to) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
+  const move = { token: d.to, amount: t.value, tokenId: null, standard: null, decimals: t.decimals };
+  // The index may not know a token yet that was just made; its own symbol, as the transaction route read it from the contract, then stands in.
+  const known = labels.get(d.to);
+  const label = known?.symbol ? known : { address: d.to, name: known?.name ?? null, symbol: t.symbol, kind: known?.kind ?? "token" as const, standard: known?.standard ?? null, decimals: t.decimals, verified: known?.verified ?? false };
+  return (
+    <span className="moved">
+      <TokenChip move={move} label={label} />
+      {BigInt(d.value) > 0n && <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />}
+    </span>
+  );
+}
+
 /** The cell of a transaction: its icon, its hash cut as the screen cuts it (8 and 4), and how long ago. */
 const TxCell = ({ hash, ago }: { hash: string; ago: string }) => (
   <td><span className="idcell"><Icon name="doc" size={14} /><span><HashLink value={hash} to={`/tx/${hash}`} plain lead={8} tail={4} /><span className="ago">{ago} ago</span></span></span></td>
@@ -200,7 +220,7 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
                     <tr key={p.hash}>
                       <TxCell hash={p.hash} ago={duration(now - Date.parse(p.at))} />
                       <td className="small">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Parties from={d.from} to={d.to} created={d.created} labels={labels} faucet={faucet} chain={chain} />}</td>
-                      <td className="r">{typeof d === "object" && d.value !== null ? <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">—</span>}</td>
+                      <td className="r">{typeof d === "object" && d.value !== null ? <ProvingMoved d={{ ...d, value: d.value }} coin={coin} labels={labels} /> : <span className="muted">—</span>}</td>
                       <td><Chip status={p.stage} /></td>
                     </tr>
                   );

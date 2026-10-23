@@ -15,7 +15,7 @@ import { methodOf } from "../method.ts";
 import { listPoll, notFinalCounts, readOf, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
-import { AllTime, DASH_WHY, Moved, Stat, Time } from "./HomeParts.tsx";
+import { AllTime, DASH_WHY, Moved, ProvingMoved, Stat, Time } from "./HomeParts.tsx";
 import "./home.css";
 
 const PER = 25;
@@ -77,7 +77,7 @@ function NotFinalRow({ f, t, c }: { f: InFlightTx; t: ApiTx | undefined; c: Ctx 
       <td>{t ? <From address={t.from} faucet={c.faucet} chain={c.chain} labels={c.labels} /> : <Dash />}</td>
       <td className="arrow muted" aria-hidden="true">→</td>
       <td>{t ? <To t={t} labels={c.labels} /> : <Dash />}</td>
-      <td className="r">{seen ? <Amount raw={seen.value} decimals={c.coin.decimals} symbol={c.coin.symbol} /> : <Dash />}</td>
+      <td className="r">{seen ? <ProvingMoved d={{ ...seen, value: seen.value! }} coin={c.coin} labels={c.labels} /> : <Dash />}</td>
       <td className="r">{t?.fee ? <Fee raw={t.fee} coin={c.coin} /> : <Dash />}</td>
       <td><Chip status={f.stage} /></td>
     </tr>
@@ -97,7 +97,7 @@ const totalOf = (f: InFlight | undefined, asOfBlock?: number | null, asOf?: stri
   const c = notFinalCounts(f);
   // The final total counts every block up to asOfBlock, so an attempt at or below it (its block was indexed after the in-flight read) is already in that total.
   const inBlocks = typeof asOfBlock === "number" ? f.attempts.reduce((n, a) => n + (a.number > asOfBlock ? (a.txCount ?? 0) : 0), 0) : c.inBlocks;
-  const about = !!asOf && !!f.poolWaiting && c.waiting !== null && Date.parse(f.poolWaiting.at) < Date.parse(asOf);
+  const about = !!asOf && !!f.poolWaiting && c.waiting !== null && c.waiting > 0 && Date.parse(f.poolWaiting.at) < Date.parse(asOf);
   return { total: inBlocks + (c.waiting ?? 0), atLeast: c.waiting === null, inBlocks, about };
 };
 const more = (t: Total) => `${t.atLeast ? "at least " : t.about ? "about " : ""}${count(t.total)}`;
@@ -118,12 +118,13 @@ function headline(finalTotal: number | null | undefined, inAll: Total | null, fl
 }
 
 /** The four cards of screen 04, from the stats routes: the day's transactions, the last hour's time to final, what is not final yet with how many are stuck, and the lost ones. A number the stats cannot give is a dash and says why. */
-function Cards({ live }: { live: boolean }) {
+function Cards({ live, inBlocks }: { live: boolean; inBlocks?: number }) {
   const hour = useQuery({ queryKey: ["stats-summary", "1h"], queryFn: () => getStatsSummary("1h"), refetchInterval: 30_000 });
   const day = useQuery({ queryKey: ["stats-summary", "24h"], queryFn: () => getStatsSummary("24h"), refetchInterval: 30_000 });
   const flight = useInFlight(live);
   const h = hour.data, d = day.data;
-  const n = flight.data ? notFinalCounts(flight.data) : null;
+  // The same count of the blocks being proven as the title's: with the final total known, the attempts it already holds are left out.
+  const n = flight.data ? (({ waiting, inBlocks: raw }) => ({ waiting, inBlocks: inBlocks ?? raw }))(notFinalCounts(flight.data)) : null;
   const stuckOf = (h ?? d)?.acceptedNotFinal;
   const noDay = DASH_WHY(readOf(day));
   return (
@@ -231,7 +232,7 @@ export function Txs() {
         </div>
         {view !== "notfinal" && <DownloadLink href={txsCsvPath(csv)} file="transactions.csv">CSV</DownloadLink>}
       </div>
-      <Cards live={live} />
+      <Cards live={live} inBlocks={inAll && finalTotal != null ? inAll.inBlocks : undefined} />
       {view === "notfinal"
         ? <NotFinalOnly st={st} now={now} faucet={faucet} notFinal={notFinal} all={all} />
         : <FinalRows key={view} view={view === "all" ? "all" : view} st={st} now={now} live={live} faucet={faucet} notFinal={notFinal} all={all} inAll={inAll} finalTotal={finalTotal} />}
