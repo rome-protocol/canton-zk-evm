@@ -1,3 +1,5 @@
+import { STANDARD_ABI } from "./standard-abi.ts";
+
 /** One entry of an ABI as the compiler writes it; only the parts the page reads. */
 export interface AbiParam { name?: string; type: string; indexed?: boolean; components?: AbiParam[] }
 export interface AbiEntry { type?: string; name?: string; stateMutability?: string; inputs?: AbiParam[]; outputs?: AbiParam[]; anonymous?: boolean }
@@ -33,3 +35,13 @@ export function decodeArgs(inputs: AbiParam[], hex: string): DecodedArg[] | null
     return { name: p.name ?? "", type: p.type, value };
   });
 }
+
+/** The verified ABI when the contract has one, else the standard one (tokens, the gateway, proxies), so that no page shows raw bytes for a plain `transfer`. */
+export const abiOrStandard = (verified: AbiEntry[] | null | undefined): AbiEntry[] => (verified && verified.length > 0 ? verified : STANDARD_ABI);
+
+/**
+ * The ABI with only the events a log of this many topics can be (the first topic names the event, each indexed input has one more). ERC-20's and
+ * ERC-721's `Transfer` share a name and a hash and differ only in how many inputs are indexed, so a log is read with the ones that fit.
+ */
+export const eventsFor = (abi: AbiEntry[], topicCount: number): AbiEntry[] =>
+  abi.filter((e) => e.type !== "event" || (e.anonymous ? false : (e.inputs ?? []).filter((i) => i.indexed).length === topicCount - 1));
