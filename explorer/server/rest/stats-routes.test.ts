@@ -681,3 +681,20 @@ describe.skipIf(!TEST_URL)("the stats routes: a day with two busy hours", () => 
     expect((await get("/api/stats/series?metric=busy_ratio&window=24h&step=1m")).status).toBe(400);
   });
 });
+
+describe.skipIf(!TEST_URL)("the stats routes: minutes with blocks and no transaction", () => {
+  let db: TestDatabase, get: ReturnType<typeof apiFor>;
+  beforeAll(async () => {
+    db = await makeDatabase(); await base(db.pool); get = apiFor(db.pool, () => NOW);
+    // Two minutes in the hour in which blocks were cut and none of them carried a transaction.
+    await seed(db.pool, "stats_minute", t(12, 0), { blocks: 1, empty_blocks: 1 });
+    await seed(db.pool, "stats_minute", t(12, 1), { blocks: 2, empty_blocks: 2 });
+  });
+  afterAll(async () => { await db?.drop(); });
+
+  it("has no busiest minute, because none had a transaction: the peak is null, not 0 tx/s at a minute named busiest", async () => {
+    const s = body(await get("/api/stats/summary?window=1h"));
+    expect(s.blocks.count).toBe(3);
+    expect(s.tps).toEqual({ now: 0, peak: null, peakAt: null });
+  });
+});
