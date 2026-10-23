@@ -107,7 +107,7 @@ The explorer is three processes and one database. The server answers the pages a
 | B6 Database size | At most 2.5 GB per million transactions, indexes included | L2, L3 |
 | B7 `/api/health` | p97.5 at most 50 ms, and no answer other than 200 | L2 |
 
-L1 to L5 and W1 are described in [explorer/README.md](../explorer/README.md#the-load-tests-and-the-nightly). L1 and a scaled L2 (3,000,000 transactions, 120 s) run on every explorer pull request (`explorer.yml`). W1 runs in the demo's rehearsal (`demo.yml`) on a pull request that changes the explorer, and with L3, L4, L5 and the full-size L2 in the nightly. A short version of all of them runs on a pull request that changes the nightly's files. The W1 figures come from a CI runner, not from the reference machine, and B1 and B2 were set from W1's slowest run with 25% headroom.
+L1 to L5 and W1 are described in [explorer/README.md](../explorer/README.md#the-load-tests-and-the-nightly). L1 and a scaled L2 (3,000,000 transactions, 120 s) run on every explorer pull request (`explorer.yml`). W1 also runs in the demo's rehearsal (`demo.yml`) on a pull request that changes the explorer. L3, L4, L5, W1 and the full-size L2 run in the nightly. A short version of all of them runs on a pull request that changes the nightly's files. The W1 figures come from a CI runner, not from the reference machine, and B1 and B2 were set from W1's slowest run with 25% headroom.
 
 ## What the demo showed
 
