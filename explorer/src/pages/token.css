@@ -1,6 +1,7 @@
 /* The token page. A card in the grid may shrink below its content, and what is in it wraps, so a long supply or address stays inside. */
 .tok-stats .stat { min-width: 0; overflow: hidden; }
 .tok-stats .stat-v { min-width: 0; overflow-wrap: anywhere; line-height: 1.2; }
+.tok-stats .stat-v:not(.stat-hash) { overflow-wrap: break-word; } /* a figure wraps at its commas (<wbr>), and cuts a group only when one alone is wider than the card */
 @media (max-width: 480px) { .tok-stats .stat-v:not(.stat-hash) { font-size: 24px; } } /* two columns of ~140px: "1,000,000" stays on one line */
 .tok-stats .stat-hash { font-size: 14px; font-weight: 500; line-height: 1.6; padding-top: 6px; }
 .tok-stats .stat-hash .hl { white-space: normal; }

@@ -123,6 +123,11 @@ describe("final polish: the 21-screen check", () => {
     expect(beats(spec(tint[0]), spec(".card"))).toBe(true);
   });
 
+  it("lets a figure break only at its commas (the <wbr> points) unless one group alone is wider than the card, and keeps `anywhere` for the hashes", () => {
+    expect(get(token, ".tok-stats .stat-v:not(.stat-hash)")).toMatch(/overflow-wrap:\s*break-word/);
+    expect(get(token, ".tok-stats .stat-v")).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+
   it("keeps the token page's supply in one piece on a phone: a smaller figure, not a break inside the number", () => {
     expect(get(token, ".tok-stats .stat-v:not(.stat-hash)", true)).toMatch(/font-size:\s*(2[0-4]px|clamp\()/);
   });

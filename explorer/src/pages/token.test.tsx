@@ -55,6 +55,13 @@ describe("the token page: the overview", () => {
     expect(c.closest(".stats")).toHaveClass("tok-stats");
   });
 
+  it("marks a 13-digit supply with a break point after every comma, so it wraps only between groups", async () => {
+    await open(tokenDetail(0xcb, { symbol: "TKA", decimals: 18, totalSupply: "1" + "0".repeat(30) }));
+    const v = card("Total supply").querySelector(".stat-v")!;
+    expect(v).toHaveTextContent(/^1,000,000,000,000$/);
+    expect(v.innerHTML.match(/,<wbr>/g)).toHaveLength(4);
+  });
+
   it("lets the contract address wrap inside its card instead of running out of it", async () => {
     await open();
     const v = card("Contract").querySelector(".stat-v")!;
