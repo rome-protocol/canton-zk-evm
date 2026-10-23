@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { AddressDetail } from "../api.ts";
 import { T0, addr, addressDetail, contractItem, fakeApi, hash, holding, labelsOf, NOT_FOUND, page, renderApp, reply, route, tick, txItem } from "../test-utils.tsx";
@@ -219,7 +220,6 @@ describe("the address page: the other tabs", () => {
     await userEvent.click(tab("Token transfers"));
     await waitFor(() => expect(rows()[0]!.querySelector("[title='5,000']")).not.toBeNull());
     expect(rows()[0]).not.toHaveTextContent("tUSD");
-    await waitFor(() => expect(rows()[0]!.querySelector("[title='5,000']")).not.toBeNull());
     await waitFor(() => expect(rows()[1]!.querySelector("[title*='decimals are not known']")).not.toBeNull());
     expect(rows()[1]).toHaveTextContent("5,000,000,000");
   });
@@ -230,8 +230,8 @@ describe("the address page: the other tabs", () => {
       labels: labelsOf([{ address: addr(0xcb), name: "Test USD", symbol: null, kind: "token", standard: "ERC-20", decimals: 6, verified: false }]),
     });
     await userEvent.click(tab("Token transfers"));
-    await waitFor(() => expect(rows()[0]).toHaveTextContent("5"));
-    await new Promise((r) => setTimeout(r, 100));
+    // the labelled amount (5 units of 6 decimals) only shows once the labels have loaded, so the check below runs on the labelled path
+    await waitFor(() => expect(rows()[0]!.querySelector("[title*='5 Test USD'], [title='5']")).not.toBeNull());
     expect(calls.some((c) => c.startsWith("/api/tokens/"))).toBe(false);
   });
 
@@ -244,7 +244,7 @@ describe("the address page: the other tabs", () => {
     await screen.findByText("2 ERC-20 transfers to or from this address");
     expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&standard=ERC-20`);
     await userEvent.click(await screen.findByRole("button", { name: "Test USD" }));
-    await screen.findByText("1 Test USD transfer to or from this address");
+    await waitFor(() => expect(document.querySelector(".list-h")).toHaveTextContent("1 Test USD transfer to or from this address"));
     expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&token=${addr(0xcb)}&standard=ERC-20`);
     expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&token=${addr(0xcb)}&standard=ERC-20`);
     // the filter keeps offering both tokens while one is chosen
@@ -396,12 +396,17 @@ describe("the address page: the header facts", () => {
   it("does not say it has sent nothing while the counts may be short", async () => {
     const calls = await open(addressDetail({ sentCount: 0, receivedCount: 1, derived: false }), { txs: () => reply(page([txItem(20, { from: A })])) });
     await waitFor(() => expect(row("Last sent")).toHaveTextContent(/Block 20/));
-    expect(row("Last sent")).not.toHaveTextContent("Has sent nothing");
+    expect(row("Last sent")).not.toHaveTextContent("never");
     expect(calls.some((c) => c.includes("direction=sent"))).toBe(true);
+  });
+  it("does not sit on a loading mark when the counts may be short and nothing was sent", async () => {
+    await open(addressDetail({ sentCount: 0, receivedCount: 1, derived: false }), { txs: () => reply(page([])) });
+    await waitFor(() => expect(row("Last sent")).toHaveTextContent("none counted yet"));
+    expect(row("Last sent")).not.toHaveTextContent("never");
   });
   it("says it has sent nothing without asking", async () => {
     const calls = await open(addressDetail({ sentCount: 0, receivedCount: 1 }));
-    expect(row("Last sent")).toHaveTextContent("Has sent nothing");
+    expect(row("Last sent")).toHaveTextContent("never");
     expect(calls.some((c) => c.includes("direction=sent"))).toBe(false);
   });
 });
@@ -475,5 +480,64 @@ describe("the address page: the holdings' amounts", () => {
   it("shows no share when the supply is not known", async () => {
     await open(addressDetail(), holds({ totalSupply: null }));
     expect(await card()).not.toHaveTextContent("of supply");
+  });
+});
+
+describe("the address page: hostile token text", () => {
+  const RLO = "\u202E";
+  const T = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: null, creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: A, to: addr(0x77), amount: "5", tokenId: null };
+  const label = (name: string) => labelsOf([{ address: addr(0xcb), name, symbol: null, kind: "token", standard: "ERC-20", decimals: 6, verified: false }]);
+
+  it("keeps a 256-character name, a U+202E symbol, a 78-digit id and a 77-digit value inside the holdings card", async () => {
+    const name = "W".repeat(256), id = "9".repeat(78), value = "8".repeat(77), symbol = `${RLO}${"X".repeat(63)}`;
+    await open(addressDetail(), { tokens: () => derived([holding({ standard: "ERC-1155", name, symbol, decimals: null, tokenId: id, value })]) });
+    const card = await screen.findByRole("region", { name: "Token holdings" });
+    const link = await within(card).findByRole("link", { name });
+    expect(link).toHaveClass("hold-name");
+    expect(link).toHaveAttribute("title", name);
+    expect(link.querySelector("bdi")).not.toBeNull();
+    const sym = card.querySelector(".hold-sym")!;
+    expect(sym.tagName).toBe("BDI");
+    expect(sym).toHaveAttribute("title", symbol);
+    expect(card.querySelector(".hold-id")).toHaveAttribute("title", `#${id}`);
+    expect(card.querySelector(".hold-amt")).not.toBeNull();
+    expect(card.querySelector(".hold-main")).not.toBeNull();
+    // the bounds themselves are in the stylesheet that the page loads
+    const css = readFileSync("src/pages/address.css", "utf8");
+    expect(css).toMatch(/\.hold-name[^{]*\{[^}]*max-width[^}]*text-overflow: ellipsis[^}]*unicode-bidi: isolate/);
+    expect(css).toMatch(/\.hold-main \{[^}]*min-width: 0/);
+    expect(css).toMatch(/\.hold-amt \{[^}]*overflow-wrap: anywhere/);
+  });
+
+  it("isolates and shortens a token name in the filtered header, the buttons and the options", async () => {
+    const name = `${RLO}${"A".repeat(39)}`;
+    await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([T]) }, `/address/${A}`, "Address", { labels: label(name) });
+    await userEvent.click(tab("Token transfers"));
+    const btn = await screen.findByRole("button", { name: /^A+…$/ });
+    expect(btn.textContent).toBe(`${"A".repeat(23)}…`);
+    expect(btn).toHaveAttribute("title", "A".repeat(39));
+    expect(btn.querySelector("bdi")).not.toBeNull();
+    await userEvent.click(btn);
+    const head = await screen.findByText(/transfer to or from this address/);
+    const b = head.querySelector("bdi")!;
+    expect(b).toHaveTextContent(`${"A".repeat(23)}…`);
+    expect(b).toHaveAttribute("title", "A".repeat(39));
+    expect(head.textContent).not.toMatch(/[\u202A-\u202E]/);
+  });
+
+  it("puts a long name in the filter's options with the full name in the title, when there are more than three tokens", async () => {
+    const name = "B".repeat(40);
+    const tx = [0xcb, 0xcc, 0xcd, 0xce].map((n, i) => ({ ...T, txHash: hash(0xe0 + i), token: addr(n) }));
+    await open(addressDetail({ tokenTransferCount: 4 }), { "token-transfers": () => derived(tx) }, `/address/${A}`, "Address", { labels: label(name) });
+    await userEvent.click(tab("Token transfers"));
+    const opt = await screen.findByRole("option", { name: `${"B".repeat(23)}…` });
+    expect(opt).toHaveAttribute("title", name);
+  });
+
+  it("does not state a whole count while the explorer is still reading blocks", async () => {
+    await open(addressDetail({ tokenTransferCount: 1 }), { "token-transfers": () => derived([T], null, false) });
+    await userEvent.click(tab("Token transfers"));
+    await screen.findByText("Showing 1 on this page, newest first");
+    expect(screen.queryByText(/ERC-20 transfer to or from this address/)).toBeNull();
   });
 });

@@ -41,8 +41,8 @@ function Gap({ page, none }: { page: DerivedPage<unknown>; none: string }) {
 }
 
 function Frame({ label, error, ready, children }: { label: string; error: Error | null; ready: boolean; children: React.ReactNode }) {
-  if (error && !ready) return <ErrorCard message={error.message} retrying />;
-  if (!ready) return <LoadingCard>{`Reading the ${label}…`}</LoadingCard>;
+  if (error && !ready) return <section className="tab-body" aria-label={label}><ErrorCard message={error.message} retrying /></section>;
+  if (!ready) return <section className="tab-body" aria-label={label}><LoadingCard>{`Reading the ${label}…`}</LoadingCard></section>;
   return <section className="tab-body" aria-label={label}>{children}</section>;
 }
 
@@ -183,15 +183,17 @@ export function TransfersTab({ a, nft = false }: { a: string; nft?: boolean }) {
   const labels = useLabels([...(d?.items ?? []).flatMap((x) => [x.from, x.to, x.token]), ...known]);
   const whole = !p.hasPrev && !p.hasNext;
   const n = d?.items.length ?? 0;
-  const l = (t: string) => labels.get(t), name = (t: string) => { const w = l(t)?.name ?? l(t)?.symbol ?? short(t, 8, 4); return w.length > 24 ? `${w.slice(0, 23)}…` : w; }, full = (t: string) => l(t)?.name ?? l(t)?.symbol ?? t;
+  // A token's name is the token's own text: bidi controls are stripped from it, and it is cut to a short form with the full name in the title.
+  const l = (t: string) => labels.get(t), clean = (w: string) => w.replace(/[\u202A-\u202E\u2066-\u2069]/g, ""), name = (t: string) => { const w = clean(l(t)?.name ?? l(t)?.symbol ?? short(t, 8, 4)); return w.length > 24 ? `${w.slice(0, 23)}…` : w; }, full = (t: string) => clean(l(t)?.name ?? l(t)?.symbol ?? t);
+  const total = whole && d?.derived !== false;
   return (
     <Frame label={kind} error={p.error} ready={!!d}>
       <div className="list-h">
-        <span className="muted">{n ? (whole ? `${count(n)} ${tok ? name(tok) : nft ? "NFT" : "ERC-20"} transfer${n === 1 ? "" : "s"} to or from this address` : `Showing ${count(n)} on this page, newest first`) : ""}</span>
+        <span className="muted">{n ? (total ? <>{count(n)} {tok ? <bdi title={full(tok)}>{name(tok)}</bdi> : nft ? "NFT" : "ERC-20"} transfer{n === 1 ? "" : "s"} to or from this address</> : `Showing ${count(n)} on this page, newest first`) : ""}</span>
         <span className="list-tools">
           <Pager p={p} label={`Pages of ${kind.toLowerCase()}`} />
           {known.length > 0 && (known.length <= 3
-            ? <Seg label="Show tokens" value={tok ?? "all"} options={[{ id: "all", text: "All tokens" }, ...known.map((t) => ({ id: t, text: name(t) }))]} onPick={(id) => setTok(id === "all" ? null : id)} />
+            ? <Seg label="Show tokens" value={tok ?? "all"} options={[{ id: "all", text: "All tokens" }, ...known.map((t) => ({ id: t, text: <bdi>{name(t)}</bdi>, title: full(t) }))]} onPick={(id) => setTok(id === "all" ? null : id)} />
             : <select className="seg-select" aria-label="Show tokens" value={tok ?? "all"} onChange={(e) => setTok(e.target.value === "all" ? null : e.target.value)}>
                 <option value="all">All tokens</option>{known.map((t) => <option key={t} value={t} title={full(t)}>{name(t)}</option>)}
               </select>)}

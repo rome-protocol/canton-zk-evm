@@ -57,12 +57,12 @@ function HoldingRow({ h, labels }: { h: Holding; labels: Labels }) {
   const share = h.standard === "ERC-20" ? shareOf(h.value, h.totalSupply) : null;
   return (
     <div className="hold">
-      <div>
-        {name ? <Link className="hold-name" to={`/token/${h.token}`}><bdi>{name}</bdi></Link> : <HashLink value={h.token} to={`/token/${h.token}`} />}
-        {h.symbol && h.name && h.symbol !== h.name && <> <bdi className="muted small">{h.symbol}</bdi></>}
-        <div className="muted small hold-line">{h.standard}{h.standard === "ERC-1155" && ` · #${h.tokenId}`} · <AddressCell address={h.token} label={known?.kind === "token" ? known : asLabel(h)} to={`/token/${h.token}`} /></div>
+      <div className="hold-main">
+        {name ? <Link className="hold-name" to={`/token/${h.token}`} title={name}><bdi>{name}</bdi></Link> : <HashLink value={h.token} to={`/token/${h.token}`} />}
+        {h.symbol && h.name && h.symbol !== h.name && <> <bdi className="muted small hold-sym" title={h.symbol}>{h.symbol}</bdi></>}
+        <div className="muted small hold-line">{h.standard}{h.standard === "ERC-1155" && <> · <bdi className="hold-id" title={`#${h.tokenId}`}>#{h.tokenId}</bdi></>} · <AddressCell address={h.token} label={known?.kind === "token" ? known : asLabel(h)} to={`/token/${h.token}`} /></div>
       </div>
-      <div className="r" title={`Last moved in block ${h.updatedBlock}`}>
+      <div className="r hold-amt" title={`Last moved in block ${h.updatedBlock}`}>
         <HoldingAmount h={h} />
         {share && <div className="muted small">{share} of supply</div>}
       </div>
@@ -98,9 +98,10 @@ const Ago = ({ ts, now }: { ts: number | null; now: number }) => (ts == null ? n
 /** When it last sent a transaction: read from its newest sent one, as "last active" counts what it received too. */
 function LastSent({ a, now }: { a: AddressDetail; now: number }) {
   const q = useQuery({ queryKey: ["address-last-sent", a.address], queryFn: () => getAddressTxs(a.address, null, 1, "sent"), enabled: a.sentCount > 0 || !a.derived, refetchInterval: 5000, retry: false });
-  if (a.sentCount === 0 && a.derived && !q.data?.items[0]) return <span className="muted">Has sent nothing</span>;
   const t = q.data?.items[0];
-  if (!t) return q.error ? <span className="muted">Not known</span> : <span className="muted">…</span>;
+  if (!t && a.sentCount === 0 && a.derived) return <span className="muted">never</span>;
+  // The sent list is read from final blocks, so a loaded answer with no row is an answer; only the counters lag.
+  if (!t) return q.error ? <span className="muted">Not known</span> : q.data ? <span className="muted" title="The explorer is still reading blocks">{a.derived ? "Not known" : "none counted yet"}</span> : <span className="muted">…</span>;
   return <><Link className="num" to={`/block/${t.block}`}>Block {t.block}</Link><Ago ts={t.timestamp} now={now} /></>;
 }
 

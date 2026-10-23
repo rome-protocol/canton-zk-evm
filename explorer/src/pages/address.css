@@ -13,7 +13,13 @@
 .chip-made { color: var(--canton); background: var(--canton-tint); border-color: var(--canton-tint); text-decoration: none; }
 .chip-made:hover { border-color: var(--canton); }
 .chip-count { font-weight: 400; }
-.hold-name { font-weight: 600; color: var(--ink); }
+.hold-main { min-width: 0; flex: 1 1 auto; }
+.hold-name, .hold-sym, .hold-id { display: inline-block; max-width: 100%; vertical-align: bottom; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
+.hold-name { font-weight: 600; color: var(--ink); max-width: 28ch; }
+.hold-sym { max-width: 16ch; }
+.hold-id { max-width: 24ch; }
+.hold-amt { min-width: 0; max-width: 45%; overflow-wrap: anywhere; flex: 0 1 auto; }
+.hold-line { min-width: 0; }
 .hold .r .small { margin-top: 2px; }
 .hold-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .card.tab-card { padding: 0; margin-top: 18px; }
