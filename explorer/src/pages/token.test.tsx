@@ -5,18 +5,19 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenDetail } from "../api.ts";
-import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
+import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, status, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
 
 afterEach(() => { vi.useRealTimers(); });
 const A = addr(0xcb);
 const derived = <T,>(items: T[], next: string | null = null, d = true) => reply({ ...page(items, next), derived: d });
 const HOLDERS = [tokenHolder(0xe3, "995000000000"), tokenHolder(0xa1, "2500000000"), tokenHolder(0xa2, "2500000"), tokenHolder(0xa3, "1")];
 
-type Subs = { holders?: (path: string) => ReturnType<typeof reply>; transfers?: (path: string) => ReturnType<typeof reply>; contract?: () => ReturnType<typeof reply> };
+type Subs = { holders?: (path: string) => ReturnType<typeof reply>; transfers?: (path: string) => ReturnType<typeof reply>; contract?: () => ReturnType<typeof reply>; status?: () => ReturnType<typeof reply> };
 async function open(t: TokenDetail = tokenDetail(), subs: Subs = {}, path = `/token/${A}`) {
   const calls = fakeApi(route({
     tokenPages: (_a, sub, p) => (sub === "" ? reply(t) : sub === "holders" ? (subs.holders?.(p) ?? derived(HOLDERS)) : (subs.transfers?.(p) ?? derived([]))),
     contracts: () => subs.contract?.() ?? reply(contractDetail(0xcb)),
+    ...(subs.status ? { status: subs.status } : {}),
   }));
   renderApp(path);
   await screen.findByRole("heading", { level: 1 });
@@ -167,6 +168,13 @@ describe("the token page: holders", () => {
     await open();
     await screen.findByRole("table", { name: "Token holders" });
     expect(screen.getByRole("region", { name: "Holder distribution" })).toHaveTextContent("as of final block 3");
+  });
+
+  it("names the block the balances are summed through, as the Tokens list does, when the index is behind Canton's final head", async () => {
+    await open(tokenDetail(), { status: () => reply(status({ indexHead: 5, indexLag: 4, deriveCursor: 5 })) });
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("region", { name: "Holder distribution" })).toHaveTextContent("as of final block 5");
+    expect(screen.getByRole("region", { name: "Holder distribution" })).not.toHaveTextContent("as of final block 3");
   });
 
   it("names no block while the explorer is still reading, because the list is then short of the newest rows", async () => {

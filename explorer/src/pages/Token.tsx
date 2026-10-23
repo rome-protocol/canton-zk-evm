@@ -111,7 +111,7 @@ function Holders({ t }: { t: TokenDetail }) {
   if (p.error && !d) return <ErrorCard message={p.error.message} retrying />;
   if (!d) return <LoadingCard>Reading the holders…</LoadingCard>;
   // Summed balances are as of the final block only while the explorer has read up to it; a balance read with balanceOf is as of the block that last moved it.
-  const final = !read && d.derived !== false ? (status?.final?.number ?? null) : null;
+  const final = !read && d.derived !== false ? (status?.deriveCursor ?? null) : null;
   const dist = fungible && t.totalSupply !== null && p.page === 1 && d.derived !== false ? distribution(d.items, t) : null;
   const how = read ? "each balance is read at the last block that moved it" : final !== null ? `as of final block ${final}` : null;
   const foot = read ? "Balances are read from the contract with balanceOf, each at the last block that moved it." : "Balances are summed from the Transfer logs of final blocks.";
