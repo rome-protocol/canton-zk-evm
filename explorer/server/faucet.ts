@@ -4,7 +4,7 @@ import { keccak256, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { ConfigError } from "./config.ts";
 import { alwaysLeader, type Leader } from "./leader.ts";
-import { fileFaucetStore, type ClaimRefusal, type FaucetState, type FaucetStore } from "./faucet-store.ts";
+import { fileFaucetStore, type ClaimRefusal, type FaucetState, type FaucetStore, type Refused } from "./faucet-store.ts";
 import { RethError, type Reth } from "./reth.ts";
 import type { Tracker } from "./tracker.ts";
 
@@ -37,11 +37,13 @@ export interface FaucetOptions {
   clientKeyHash?: (clientKey: string) => string;
   /** The human check, or null for none. */
   captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
-  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc">>;
+  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc" | "balanceAt">>;
   /** Takes each sent transfer, and says where it is. Without one, a ticket never gets past "sent". */
   tracker?: Pick<Tracker, "track" | "state"> & Partial<Pick<Tracker, "admit">>;
   /** How often the worker looks at the queue. */
   tickMs?: number;
+  /** How long the refusal counts are held in memory before they are written (milliseconds). Default 5000. */
+  refusalFlushMs?: number;
   /** For the human check's call. A test gives its own. */
   fetch?: typeof fetch;
   /** The time in milliseconds. A test sets its own. */
@@ -52,9 +54,20 @@ export interface FaucetAnswer { status: number; body: unknown; headers?: Record<
 
 /** What the faucet page shows about the faucet itself. */
 export interface FaucetInfo {
-  on: boolean; address: string | null; balance: string | null; amount: string; perAddressSeconds: number; perIpSeconds: number; maxPerHour: number;
+  on: boolean; address: string | null; balance: string | null;
+  /** The final head the balance was read at; null when reth cannot name one, and then the balance is the newest block's, which may not be final. */
+  balanceBlock: number | null;
+  amount: string; perAddressSeconds: number; perIpSeconds: number; maxPerHour: number;
   /** How many requests are waiting for a batch. */
   queue: number;
+  /** The most payouts that go in one block (the faucet's batch size). */
+  batch: number;
+  /** Payouts sent since the start of the UTC day, or null when the faucet's store cannot count them (a file keeps no send times). */
+  sentToday: number | null;
+  /** Of those, how many are final (null as for `sentToday`). */
+  finalToday: number | null;
+  /** Payouts sent and now in a block being proven, whatever day they went out: not the ones still waiting in reth's pool, and not tickets the faucet gave up on (null as for `sentToday`). */
+  beingProven: number | null;
   captcha: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
 }
 
@@ -677,6 +690,22 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }
   }
 
+  /** Counts a refusal that is a limit or a failed human check, once, and hands the answer back. Only the reason is counted, in memory: the answer never waits for the database, and a timer writes the counts. */
+  let refusalTimer: ReturnType<typeof setTimeout> | undefined;
+  function counted(a: FaucetAnswer): FaucetAnswer {
+    const reason = (a.body as { reason?: string }).reason;
+    if ((reason === "address" || reason === "ip" || reason === "hour" || reason === "captcha") && store?.refused && store.flushRefusals) {
+      store.refused(reason satisfies Refused, now());
+      refusalTimer ??= setTimeout(() => { refusalTimer = undefined; void store.flushRefusals!(); }, o.refusalFlushMs ?? 5000).unref();
+    }
+    return a;
+  }
+  /** Writes the refusal counts held in memory now (at close, and when the caller flushes). */
+  async function writeRefusals() {
+    if (refusalTimer) { clearTimeout(refusalTimer); refusalTimer = undefined; }
+    await store?.flushRefusals?.();
+  }
+
   function viewOf(t: Ticket): TicketView {
     refresh(t);
     const s = t.status === "sent" && t.hash ? o.tracker?.state(t.hash) : undefined;
@@ -708,20 +737,32 @@ export function createFaucet(o: FaucetOptions): Faucet {
       timer = undefined; started = false;
       await running?.catch(() => {});
       await save();
+      await writeRefusals();
       await leader.release();
     },
     /** Waits for the batch in hand to end, then writes everything as it stands. */
     flush: async () => {
       await running?.catch(() => {});
       await save();
+      await writeRefusals();
     },
 
     async info() {
-      let balance: string | null = null;
-      if (address) balance = await o.reth.balance(address).then((b) => b.toString(), () => null);
+      const t = now();
+      // The count and the chain are read together, so the answer waits for the slowest and not for the sum.
+      const payouts = store?.payouts ? store.payouts(t - (t % 86400_000)).catch(() => null) : Promise.resolve(null);
+      let balance: string | null = null, balanceBlock: number | null = null;
+      if (address) {
+        // Read at the final head (reth's finalized block is Canton's head), named by its number: the number is read first and the balance at that number, so the two belong together.
+        const at = o.reth.block && o.reth.balanceAt ? await o.reth.block("finalized").then((b) => b?.number ?? null, () => null) : null;
+        if (at !== null) balance = await o.reth.balanceAt!(address, at).then((b) => (balanceBlock = at, b.toString()), () => null);
+        if (balance === null) balance = await o.reth.balance(address).then((b) => b.toString(), () => null);
+      }
+      const p = await payouts;
       return {
-        on: account !== null, address, balance, amount: o.amountWei.toString(), perAddressSeconds: o.perAddressSeconds, perIpSeconds: o.perIpSeconds,
-        maxPerHour: o.maxPerHour, queue: queue.length, captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
+        on: account !== null, address, balance, balanceBlock, amount: o.amountWei.toString(), perAddressSeconds: o.perAddressSeconds, perIpSeconds: o.perIpSeconds,
+        maxPerHour: o.maxPerHour, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
+        captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
       };
     },
 
@@ -750,14 +791,14 @@ export function createFaucet(o: FaucetOptions): Faucet {
       if (!ADDRESS.test(to)) return answer(400, "That is not an address. An address is 0x and 40 hex digits.");
       const ip = hashed(clientKey(caller.ip));
       const early = limited(to, ip, now());
-      if (early) return early;
+      if (early) return counted(early);
       const refused = await human(caller.captcha, caller.ip);
-      if (refused) return refused;
+      if (refused) return counted(refused);
       const seen = await chain();
       // Time has passed while the check and the balance were read: the limits are looked at again, and nothing awaits between that look and the ticket.
       const t = now();
       const late = limited(to, ip, t);
-      if (late) return late;
+      if (late) return counted(late);
       if (seen && seen.balance < BigInt(queue.length + open.size + 1) * cost(seen.gasPrice)) return answer(503, "The faucet is empty.", undefined, "empty");
       const ticket: Ticket = { id: randomBytes(12).toString("hex"), to, ip: ip ?? null, at: t, status: "queued", hash: null, block: null, reason: null, tries: 0 };
       tickets.set(ticket.id, ticket);
@@ -780,7 +821,7 @@ export function createFaucet(o: FaucetOptions): Faucet {
         ticket.claiming = false;
         if (turned) {
           unqueue(ticket);
-          return turnedAway(turned, turned === "address" ? addressMs : turned === "ip" ? ipMs : HOUR);
+          return counted(turnedAway(turned, turned === "address" ? addressMs : turned === "ip" ? ipMs : HOUR));
         }
       }
       trim();

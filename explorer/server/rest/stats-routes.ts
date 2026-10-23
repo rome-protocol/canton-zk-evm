@@ -197,9 +197,13 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       dropped: pick({ window: sum(rows, "dropped"), total: lost.dropped.total, listed: lost.dropped.items.map((i) => pick(i, F.statsLostItem)) }, F.statsLost),
       replaced: pick({ window: sum(rows, "replaced"), total: lost.replaced }, F.statsReplaced),
       cutting: cutting && pick({ strategy: cutting.strategy, since: iso(cutting.since) }, F.statsCutting),
-      // Refusals by a limit are not stored anywhere, so there is no number to give.
+      // The refusals are counted from `turnedAwaySince` on. A window that starts before that has no count (a part of it would read as all of it).
       faucet: pick({
-        requests: faucet.requests, sent: faucet.sent, final: faucet.final, failed: faucet.failed, timeToFinal: (() => { const x = spread(faucet.hist); return x && pick(x, F.statsSpread); })(), turnedAway: null,
+        requests: faucet.requests, sent: faucet.sent, final: faucet.final, failed: faucet.failed, timeToFinal: (() => { const x = spread(faucet.hist); return x && pick(x, F.statsSpread); })(),
+        turnedAway: faucet.turnedAway.since !== null && from >= faucet.turnedAway.since
+          ? pick({ total: Object.values(faucet.turnedAway.byReason).reduce((a, b) => a + b, 0), byReason: pick(faucet.turnedAway.byReason, F.statsTurnedAwayReasons) }, F.statsTurnedAway)
+          : null,
+        turnedAwaySince: iso(faucet.turnedAway.since),
       }, F.statsFaucet),
     };
     return cached(ok(pick(body, F.statsSummary)), "list");
