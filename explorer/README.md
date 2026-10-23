@@ -312,7 +312,7 @@ A wallet's speed-up or cancel puts a new transaction on the same nonce. While th
 
 The tracker is bounded by count and by size. `TRACKER_MAX_BYTES` limits the signed bytes it holds for open entries, and `TRACKER_PER_SENDER` limits the open entries of one sender, so a few funded accounts cannot fill it with transactions that cannot be mined. A transaction that pays less than the base fee is refused before it reaches the tracker (see `eth_sendRawTransaction` above), so it cannot take a place at all. `eth_sendRawTransaction` asks the tracker before it forwards a transaction, and refuses it when the tracker is full, so a transaction is never accepted and then not followed. `TRACKER_MAX_PENDING_MINUTES` limits how long an open entry may stay without a block: after that it is marked `dropped`, with the reason, and no longer followed, so a transaction that reth keeps without mining cannot hold a slot for ever. `TRACKER_MAX` limits all entries. When it is reached, settled entries go first, oldest first. If the list is still too long, the oldest open entry is marked `dropped`, with the reason, and the server's log names it. It is never forgotten without a word, and the chain may still mine it.
 
-The tracker keeps its list in the database (`tx_lifecycle`), so a restart, or another API instance, finds it. A burst of sends is one write, a second or so after the last change, and nothing is written when nothing changed. On SIGTERM or SIGINT the server stops, writes the list and then exits, so the transactions accepted just before a restart are in the database. `run.sh` mounts `<state>/explorer` as the only writable folder of the read-only container. It holds the old `tracker.json` and `faucet.json` until they are imported (see [The database](#the-database)).
+The tracker keeps its list in the database (`tracked_transactions`), so a restart, or another API instance, finds it. A burst of sends is one write, a second or so after the last change, and nothing is written when nothing changed. On SIGTERM or SIGINT the server stops, writes the list and then exits, so the transactions accepted just before a restart are in the database. `run.sh` mounts `<state>/explorer` as the only writable folder of the read-only container. It holds the old `tracker.json` and `faucet.json` until they are imported (see [The database](#the-database)).
 
 The Canton update id of a final transaction is filled in when the database holds the block, which can be a poll after reth's finalized number passes it.
 
@@ -381,11 +381,18 @@ Each payout is a plain transfer of 21,000 gas, an EIP-1559 transaction signed wi
 
 To run the server directly, use Node 22.18 or newer and the Rust toolchain in `rust-toolchain.toml`. From the repository root:
 
+To run the processes yourself, start the chain and the database from the repository root, and run the builder once as in [Running it](#running-it):
+
 ```sh
 (cd explorer && npm ci)
 explorer/faucet-setup.sh
 CZE_GENESIS_FILE=state/faucet/genesis.json network/up.sh
 network/explorer-db.sh start                       # the explorer's database; its password is in state/explorer-db.env
+```
+
+In a first terminal, in `explorer/`, build the pages, apply the migrations and run the indexer. `npm run index` does not return, and it never restarts by itself:
+
+```sh
 cd explorer
 rustup target add wasm32-unknown-unknown
 npm run build:verify
@@ -395,10 +402,17 @@ export READER_PARTY=$(sed -n 's/^READER_PARTY=//p' ../state/canton/parties.env)
 export PINS_FILE=../state/net/guest.txt
 node server/db/cli.ts migrate
 (umask 077; [ -f ../state/faucet/client-key ] || openssl rand -hex 32 > ../state/faucet/client-key)   # the faucet's hash key, made once
-# In a second terminal (same exports): the indexer, which fills the database. It never restarts by itself.
 GATEWAY_ADDRESS=$(sed -n 's/^GATEWAY_ADDRESS=//p' ../PINS) GENESIS_FILE=../state/genesis.json \
   JOURNAL_DIR=../state/builder/journal PRODUCER_STATUS_FILE=../state/builder/status.json npm run index
-# In this one: the explorer.
+```
+
+In a second terminal, in `explorer/`, run the explorer with the same three exports. Add `PUBLIC_RPC=1` for the Contract page's Read calls and the Etherscan `proxy` module:
+
+```sh
+cd explorer
+export EXPLORER_DB_PASSWORD_FILE=../state/explorer-db.env
+export READER_PARTY=$(sed -n 's/^READER_PARTY=//p' ../state/canton/parties.env)
+export PINS_FILE=../state/net/guest.txt
 FAUCET_KEY_FILE=../state/faucet/key FAUCET_CLIENT_KEY_FILE=../state/faucet/client-key npm start
 ```
 
@@ -410,7 +424,7 @@ The server reads the key only when `FAUCET_KEY_FILE` is set; without it the fauc
 
 ## The database
 
-The explorer keeps its data in a PostgreSQL of its own, apart from the one Canton uses, so that a heavy query never slows Canton down. `network/explorer-db.sh` starts it for a persistent network (see [network/README.md](../network/README.md)). The schema is a set of numbered SQL files in `db/migrations/` (`0001_bookkeeping.sql` upward). There is no ORM, and a migration that has been applied is never edited: a change is a new file.
+The explorer keeps its data in a PostgreSQL server of its own, apart from the one Canton uses, so that the explorer's heavy queries do not share Canton's connections, locks or cache. Both servers run on the same host and share its CPU, memory and disk: `network/explorer-db.sh` sets no limits, and no test measures how one affects the other. `network/explorer-db.sh` starts it for a persistent network (see [network/README.md](../network/README.md)). The schema is a set of numbered SQL files in `db/migrations/` (`0001_bookkeeping.sql` upward). There is no ORM, and a migration that has been applied is never edited: a change is a new file.
 
 The tables, by what writes and reads them:
 
