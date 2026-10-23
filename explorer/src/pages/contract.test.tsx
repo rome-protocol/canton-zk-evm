@@ -9,13 +9,13 @@ afterEach(() => vi.unstubAllGlobals());
 const A = addr(0xcb);
 const BAD = "Give an address as 0x and 40 hex digits.";
 const derived = <T,>(items: T[]) => reply({ ...page(items), derived: true });
-interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0]; token?: TokenDetail; transfers?: AddressTransferItem[] }
+interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0]; token?: TokenDetail; tokenError?: number; transfers?: AddressTransferItem[] }
 async function open(seen: Seen = {}, path = `/contract/${A}?tab=code`) {
   const d = seen.detail ?? contractDetail();
   const calls = fakeApi(route({
     contracts: (a, sub) => (a !== A ? reply({ error: "No contract is held at that address." }, 404) : sub === "source" ? reply(seen.source ?? contractSource()) : reply(d)),
     addresses: (_a, sub) => (sub === "" ? reply(addressDetail({ address: A, kind: "contract", ...seen.account })) : derived([])),
-    tokenPages: (_a, sub) => (sub === "" ? (seen.token ? reply(seen.token) : reply({ error: "No token is held at that address." }, 404)) : derived(sub === "transfers" ? (seen.transfers ?? []) : [])),
+    tokenPages: (_a, sub) => (sub === "" ? (seen.tokenError ? reply({ error: "Try again shortly." }, seen.tokenError) : seen.token ? reply(seen.token) : reply({ error: "No token is held at that address." }, 404)) : derived(sub === "transfers" ? (seen.transfers ?? []) : [])),
   }));
   renderApp(path);
   await screen.findByRole("heading", { name: "Contract" });
@@ -290,6 +290,28 @@ describe("the contract page: a token contract", () => {
   it("counts the token's own transfers on the tab of a token contract", async () => {
     await open({ ...token, token: tokenDetail(0xcb, { transferCount: 42 }) });
     await waitFor(() => expect(screen.getByRole("tab", { name: "Token transfers 42" })).toBeInTheDocument());
+  });
+
+  it.each([429, 503])("shows neither a count nor the address's list on a token's Token transfers tab when the token route answers %i", async (code) => {
+    const calls = await open({ account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 }, tokenTransferCount: 0 }, tokenError: code }, `/contract/${A}?tab=token-transfers`);
+    expect(await screen.findByText("Cannot read the chain")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Token transfers" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Token transfers 0" })).toBeNull();
+    expect(calls.some((c) => c.startsWith(`/api/addresses/${A}/token-transfers`))).toBe(false);
+  });
+
+  it("falls back to the address's own transfers and count when the token route answers 404 for a token-kind contract", async () => {
+    const calls = await open({ account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 }, tokenTransferCount: 2 } }, `/contract/${A}?tab=token-transfers`);
+    await waitFor(() => expect(calls.some((c) => c.startsWith(`/api/addresses/${A}/token-transfers`))).toBe(true));
+    expect(screen.getByRole("tab", { name: "Token transfers 2" })).toBeInTheDocument();
+  });
+
+  it("mounts no transfers list before the address has answered", async () => {
+    const calls = await open({ account: { tokenTransferCount: 2 } }, `/contract/${A}?tab=token-transfers`);
+    await waitFor(() => expect(calls.some((c) => c.includes("/token-transfers"))).toBe(true));
+    const detail = calls.findIndex((c) => c === `/api/addresses/${A}`);
+    expect(detail).toBeGreaterThanOrEqual(0);
+    expect(calls.findIndex((c) => c.includes("/token-transfers"))).toBeGreaterThan(detail);
   });
 
   it("keeps the address's own transfers on the Token transfers tab of a contract that is not a token", async () => {
