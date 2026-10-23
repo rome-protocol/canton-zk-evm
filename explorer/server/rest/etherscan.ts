@@ -480,7 +480,7 @@ const proxy: Record<string, Handler> = {
   eth_getCode: plain("eth_getCode", ["address", "tag"]),
   eth_getStorageAt: plain("eth_getStorageAt", ["address", "position", "tag"]),
   eth_gasPrice: plain("eth_gasPrice", []),
-  /** The call as the node gets it: the fields that were sent, and no block, as `/rpc` has it. */
+  /** The call as the node gets it: the fields that were sent, and no block, so the public RPC reads it at the final block. */
   async eth_estimateGas(c) {
     const tx: Record<string, string> = {};
     for (const n of ["to", "data", "value", "gasPrice", "gas"]) { const v = c.p.get(n); if (v !== null) tx[n] = v; }
