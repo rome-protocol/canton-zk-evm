@@ -8,6 +8,8 @@ import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
 import { MAX_VERIFY_BODY, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
+import { MODULES } from "./etherscan.ts";
+import { MAX_PAGE_BYTES } from "./etherscan-rest.ts";
 import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
 
 type Fields = readonly string[];
@@ -41,6 +43,45 @@ const csv: Query = { name: "format", about: "csv for the newest blocks as a file
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const paged = [limit, before], pagedAfter = [limit, after];
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
+
+/** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
+const ETHERSCAN_QUERY: Query[] = [
+  { name: "module", about: "account, transaction, block, logs, token, stats, proxy or gastracker (the contract module follows).", values: ["account", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"] },
+  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs. token: tokeninfo, tokenholdercount, tokenholderlist. stats: ethsupply, tokensupply, ethprice. proxy: eth_blockNumber, eth_getBlockByNumber, eth_getBlockTransactionCountByNumber, eth_getTransactionByHash, eth_getTransactionByBlockNumberAndIndex, eth_getTransactionCount, eth_sendRawTransaction, eth_getTransactionReceipt, eth_call, eth_getCode, eth_getStorageAt, eth_gasPrice, eth_estimateGas, eth_getUncleByBlockNumberAndIndex (JSON-RPC answers in hex, final blocks only, as /rpc gives them). gastracker: gasoracle, gasestimate." },
+  { name: "chainid", about: "Optional, and this chain's when given." },
+  { name: "apikey", about: "Accepted and ignored." },
+  { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs)." },
+  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
+  { name: "txhash", about: "A transaction's 0x hash (getstatus, gettxreceiptstatus, txlistinternal)." },
+  { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same); the proxy also takes a hex block number (0x...) that is final." },
+  { name: "startblock", about: "The first block of a list (txlist, txlistinternal, tokentx and the like)." },
+  { name: "endblock", about: "The last block of a list; latest is the newest final block." },
+  { name: "page", about: "The page of a list, from 1. page x offset is at most 10,000." },
+  { name: "offset", about: "Rows to a page (getLogs: at most 1,000)." },
+  { name: "gasprice", about: "In wei (gasestimate); the estimate is the median time to final, whatever the price." },
+  { name: "boolean", about: "proxy eth_getBlockByNumber: true for the full transactions, false for their hashes.", values: ["true", "false"] },
+  { name: "index", about: "proxy eth_getTransactionByBlockNumberAndIndex and eth_getUncleByBlockNumberAndIndex: the position in the block, hex (0x0)." },
+  { name: "hex", about: "proxy eth_sendRawTransaction: the signed transaction, 0x hex (send it by POST when it is long, up to 256 KB)." },
+  { name: "to", about: "proxy eth_call and eth_estimateGas: the 0x address called." },
+  { name: "from", about: "proxy eth_call and eth_estimateGas: the 0x address the call is from." },
+  { name: "data", about: "proxy eth_call and eth_estimateGas: the call's 0x data." },
+  { name: "value", about: "proxy eth_call and eth_estimateGas: the value sent, hex." },
+  { name: "gas", about: "proxy eth_call and eth_estimateGas: the gas of the call, hex (gasLimit is the same)." },
+  { name: "gasLimit", about: "proxy eth_call and eth_estimateGas: the same as gas." },
+  { name: "gasPrice", about: "proxy eth_call and eth_estimateGas: the gas price, hex." },
+  { name: "maxFeePerGas", about: "proxy eth_call and eth_estimateGas: the fee cap, hex." },
+  { name: "maxPriorityFeePerGas", about: "proxy eth_call and eth_estimateGas: the tip cap, hex." },
+  { name: "position", about: "proxy eth_getStorageAt: the storage slot, hex." },
+  { name: "sort", about: "asc or desc.", values: ["asc", "desc"] },
+  { name: "blockno", about: "A block number (getblockreward, getblockcountdown)." },
+  { name: "timestamp", about: "Unix seconds (getblocknobytime)." },
+  { name: "closest", about: "before or after (getblocknobytime).", values: ["before", "after"] },
+  { name: "fromBlock", about: "getLogs: the first block (0 when left out)." },
+  { name: "toBlock", about: "getLogs: the last block, or latest. Without an address or a topic0, the range is at most 10,000 blocks." },
+  { name: "topic0", about: "getLogs: a 0x topic of 32 bytes. topic1, topic2 and topic3 are the same." },
+  { name: "topic0_1_opr", about: "getLogs: and or or between two topics; topicX_Y_opr for any pair (and when left out).", values: ["and", "or"] },
+];
+const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. The proxy answers are JSON-RPC {jsonrpc, id, result|error} in hex, as Etherscan's proxy gives them, and final only as on /rpc. Balances are reth's at the newest final block; nothing that is not final is served. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
 
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },
@@ -98,6 +139,8 @@ export const DOCS: Record<string, Doc> = {
   "/api/verify/{guid}": { tag: "Verification", summary: "Where a verification is: pending, running, or its result (Pass, Fail or Already Verified, with the reason).", param: "The GUID a submission was answered with.", object: FIELDS.verifyJob },
   "/healthz": { tag: "Status", summary: "The same answer as /api/status, for a load balancer: 503 when the explorer is not serving.", object: FIELDS.status },
   "/rpc": { tag: "RPC", method: "post", summary: "The public JSON-RPC: what a wallet or a script sees of the chain, final blocks only. A body is one call or a batch (at most 20 calls, 256 KiB).", note: "JSON-RPC 2.0" },
+  "/api": { tag: "Etherscan", summary: "The Etherscan-compatible API: GET or POST (a query or a form). Foundry, Hardhat and ethers can be pointed at it as they are at Etherscan.", query: ETHERSCAN_QUERY, note: ETHERSCAN_NOTE },
+  "/v2/api": { tag: "Etherscan", summary: "The same door at Etherscan's v2 path, with `chainid`.", query: ETHERSCAN_QUERY, note: ETHERSCAN_NOTE },
   "/api/openapi.json": { tag: "Status", summary: "This description.", note: "An OpenAPI 3.1 document." },
   "/api/stream": {
     tag: "Live", summary: `A server-sent event stream. Events: \`block\` and \`txs\` (the first ${TXS_MAX} hashes of a new final block's transactions), whose id is the block number, \`derived\` (stage 2 has reached a block), \`inflight\` (an attempt changed step) and \`stats\` (every 5 s). A comment line every 15 s keeps proxies from closing it. A client that reconnects with the \`Last-Event-ID\` header gets the blocks it missed, up to ${BUFFER_BLOCKS}. ${PER_CLIENT} streams a client; a fifth is answered with 429.`,
@@ -140,6 +183,15 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
         responses: { 200: { description: d.note ?? "The answer.", content: { "application/json": { schema: {} } } }, 413: fail("The body is too big."), 429: fail("Too many requests; Retry-After says when to try again.") } } };
       continue;
     }
+    if (path === "/api" || path === "/v2/api") {
+      const answer = { description: d.note ?? "The answer.", content: { "application/json": { schema: object(["status", "message", "result"]) } } };
+      out[path] = {
+        // `x-modules` is what the API page lists for this door; it is built from the same table the door answers from, so it cannot drift. /v2/api is the same door at another path.
+        get: { tags: [d.tag], summary: d.summary, parameters, responses: { 200: answer }, ...(path === "/api" ? { "x-modules": Object.fromEntries(Object.entries(MODULES).map(([m, a]) => [m, Object.keys(a)])) } : {}) },
+        post: { tags: [d.tag], summary: d.summary, requestBody: { required: false, content: { "application/x-www-form-urlencoded": { schema: { type: "object" } } } }, parameters, responses: { 200: answer } },
+      };
+      continue;
+    }
     const type = path === "/api/stream" ? "text/event-stream" : "application/json";
     const get: Record<string, unknown> = {
       tags: [d.tag], summary: d.summary, parameters,
@@ -161,7 +213,7 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
       "x-limits": {
         pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}),
         rest: { perSecond: RULES.rest[0].perSecond, burst: RULES.rest[0].capacity },
-        etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity },
+        etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity, maxPageBytes: MAX_PAGE_BYTES },
         verification: { perHour: RULES.verification[0].capacity, maxBodyKb: MAX_VERIFY_BODY / 1024 },
         streams: { perClient: PER_CLIENT },
       },

@@ -8,6 +8,7 @@ import { migrate } from "../db/migrate.ts";
 import { makeDatabase, TEST_URL, checkRequired } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { IndexerStop } from "./errors.ts";
+import { genesisSupply } from "./genesis.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { exportRecords, exportRecordsToFile, readRecords } from "./records.ts";
 import { REINDEX_KEY, reindexRange } from "./reindex.ts";
@@ -478,6 +479,8 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
       expect(`0x${(code.code as Buffer).toString("hex")}`).toBe(GATEWAY_CODE);
       expect(code.size).toBe(7);
       expect((await pool.query("select value from meta where key = 'genesis_seeded'")).rows[0].value).toBe("2");
+      // The coins the genesis allocates, for the Etherscan `ethsupply`: the one account with a balance has 5.
+      expect((await pool.query("select value from meta where key = 'genesis_supply'")).rows[0].value).toBe("5");
 
       // Once: a later start reads nothing from reth and writes nothing.
       await opened.pop()!.close();
@@ -485,8 +488,20 @@ describe.skipIf(!TEST_URL)("reindex, export, rebuild and the genesis contracts, 
       await open(pool, chain, file);
       expect(chain.reads.calls.code ?? 0).toBe(0);
       expect((await pool.query("select count(*) as n from contracts")).rows[0].n).toBe("2");
+
+      // A database seeded before the supply was kept gets it at its next start, and a value that is there is left alone.
+      await opened.pop()!.close();
+      await pool.query("delete from meta where key = 'genesis_supply'");
+      await open(pool, chain, file);
+      expect((await pool.query("select value from meta where key = 'genesis_supply'")).rows[0].value).toBe("5");
     });
   }, 30_000);
+
+  it("adds up the genesis allocation from hex and decimal balances, and refuses a balance that is no number", () => {
+    expect(genesisSupply(genesisFile({ [GATEWAY]: { balance: "0x10" }, ["0x" + "dd".repeat(20)]: { balance: "1000" }, ["0x" + "cc".repeat(20)]: { code: "0x60" } }))).toBe(1016n);
+    expect(genesisSupply(genesisFile({}))).toBe(0n);
+    expect(() => genesisSupply(genesisFile({ [GATEWAY]: { balance: "lots" } }))).toThrow(/not a number/);
+  });
 
   it("stops at first start when the genesis file is not what reth holds, or has no gateway", async () => {
     await inDb(async () => {

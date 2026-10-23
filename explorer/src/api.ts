@@ -233,7 +233,7 @@ export interface StatsSeries { metric: string; unit: string; window: StatsWindow
 export interface ApiLimits {
   pageSize?: number; rpcPerMinute?: number;
   rest?: { perSecond: number; burst: number };
-  etherscan?: { perSecond: number; perMinute: number };
+  etherscan?: { perSecond: number; perMinute: number; maxPageBytes?: number };
   verification?: { perHour: number; maxBodyKb: number };
   streams?: { perClient: number };
 }

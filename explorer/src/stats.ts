@@ -43,17 +43,17 @@ export const readOf = (q: { isError: boolean; data: unknown }): Read => (q.isErr
 /** How the lists are asked for: every few seconds, and not at all while the live stream is up (it says when to ask again). */
 export const listPoll = (live: boolean) => (live ? false : 5000);
 
-export const useBlocks = (limit: number, live: boolean) => useQuery({ queryKey: ["blocks", limit], queryFn: () => getBlocks(limit), refetchInterval: listPoll(live) });
+export const useBlocks = (limit: number, live: boolean, enabled = true) => useQuery({ queryKey: ["blocks", limit], queryFn: () => getBlocks(limit), refetchInterval: listPoll(live), enabled });
 export const useInFlight = (live: boolean, enabled = true) => useQuery({ queryKey: ["in-flight"], queryFn: getInFlight, refetchInterval: listPoll(live), enabled });
 
 /** The faucet's address, the one address the explorer knows by name; null when it has none or cannot be asked. */
-export const useFaucetAddress = () => useQuery({ queryKey: ["faucet-address"], queryFn: getFaucetAddress, staleTime: 60_000, retry: false }).data ?? null;
+export const useFaucetAddress = (enabled = true) => useQuery({ queryKey: ["faucet-address"], queryFn: getFaucetAddress, staleTime: 60_000, retry: false, enabled }).data ?? null;
 
 /** The hour and the day of the stats the home page's cards show, and the median time to final by the hour of the last 72 of them (the series route's 7-day window, cut). */
-export const useHomeStats = () => {
+export const useHomeStats = (painted = true) => {
   const hour = useQuery({ queryKey: ["stats-summary", "1h"], queryFn: () => getStatsSummary("1h"), refetchInterval: 30_000 });
-  const day = useQuery({ queryKey: ["stats-summary", "24h"], queryFn: () => getStatsSummary("24h"), refetchInterval: 30_000 });
-  const spark = useQuery({ queryKey: ["stats-series", "time_to_final_p50", "7d", "1h"], queryFn: () => getStatsSeries("time_to_final_p50", "7d", "1h"), refetchInterval: 60_000 });
+  const day = useQuery({ queryKey: ["stats-summary", "24h"], queryFn: () => getStatsSummary("24h"), refetchInterval: 30_000, enabled: painted });
+  const spark = useQuery({ queryKey: ["stats-series", "time_to_final_p50", "7d", "1h"], queryFn: () => getStatsSeries("time_to_final_p50", "7d", "1h"), refetchInterval: 60_000, enabled: painted });
   return { hour: fetched<StatsSummary>(hour), day: fetched<StatsSummary>(day), spark: fetched<StatsSeries>(spark) };
 };
 /** An answer and how it stands: the data is there when read, and kept while a later read fails or is under way. */

@@ -6,7 +6,8 @@ import { fakeApi, renderApp, reply, route, status, type Reply } from "../test-ut
 
 const LIMITS = { pageSize: 100, rpcPerMinute: 300, rest: { perSecond: 20, burst: 60 }, etherscan: { perSecond: 10, perMinute: 600 }, verification: { perHour: 30, maxBodyKb: 500 }, streams: { perClient: 4 } };
 const door = { "/api": { get: { summary: "Etherscan-compatible: the module and the action are in the query.", "x-modules": {
-  account: ["balance", "txlist"], contract: ["getabi", "verifysourcecode"], proxy: ["eth_blockNumber"] } } } };
+  account: ["balance", "txlist"], contract: ["getabi", "verifysourcecode"], proxy: ["eth_blockNumber"] } } },
+  "/v2/api": { get: { summary: "The same door at Etherscan's v2 path." }, post: { summary: "The same door at Etherscan's v2 path." } } };
 const doc = (over: Record<string, unknown> = {}) => ({
   openapi: "3.1.0", info: { title: "Ostia explorer API", version: "1", "x-limits": LIMITS },
   paths: {
@@ -59,6 +60,7 @@ describe("the API page", () => {
     expect(document.body.textContent).not.toMatch(/E8a|coming with/);
     // The /api door is not a REST route.
     expect(within(screen.getByRole("table", { name: "REST routes" })).queryByText("/api")).toBeNull();
+    expect(within(screen.getByRole("table", { name: "REST routes" })).queryByText("/v2/api")).toBeNull();
   });
 
   it("gives Foundry and Hardhat blocks with the explorer's own address and chain id, each with a Copy button that copies its text", async () => {

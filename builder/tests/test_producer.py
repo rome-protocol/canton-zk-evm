@@ -1,6 +1,8 @@
 """The always-on loop (`builder.py run`), against the same fakes as test_builder.py. The tests drive `Producer.step()` by hand with a
 fake clock and a recording `wait`, so no test sleeps; one test runs the real command and signals it."""
+from datetime import datetime, timezone
 import json, os, signal, subprocess, sys, tempfile, threading, time, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -246,15 +248,15 @@ class Refusals(Loop):
 
     def test_an_unknown_outcome_that_canton_did_commit_is_counted_and_the_chain_goes_on(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         p = self.producer(s)
         p.step()
         self.assertIsNone(self.reports[0]["committed"])
         self.assertEqual(self.status()["blocksUnknown"], 1)
-        self.assertEqual(self.status()["waitingToBeResolved"], {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"]})
-        s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False
+        self.assertEqual({k: v for k, v in self.status()["waitingToBeResolved"].items() if k != "why"}, {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"], "commandId": self.reports[0]["commandId"]})
+        s.ledger.no_completion, s.ledger.drop_but_commit = False, False
         p.step()   # finds out
-        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
+        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"], "updateId": "u1", "completionOffset": 43})
         self.assertEqual((self.status()["blocksCommitted"], self.status()["lastCommitted"]["number"]), (1, HEAD_NUMBER + 1))
         s.reth.pool[ALICE] = [tx(ALICE, 1)]
         p.step()
@@ -263,31 +265,171 @@ class Refusals(Loop):
     def test_an_unknown_outcome_that_canton_did_not_commit_puts_the_transactions_back_and_they_go_in_later(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         p = self.producer(s)
         p.step()
         self.assertIsNone(self.reports[0]["committed"])
         self.assertEqual(self.in_pool(s), set())   # reth holds them as mined and its head is the block that never committed
-        p.step()   # Canton's head cannot be read yet: nothing is built, and the loop backs off
+        p.step()   # the command has no completion yet: nothing is built, reth is not moved, and the loop waits
         self.assertEqual(len(self.built(s)), 1)
-        self.assertIn("error", self.reports[1])
-        self.assertEqual(self.waits[-1], 1)
-        s.ledger.head_fails_after_submit = False
+        self.assertEqual(len(self.reports), 1)
+        self.assertEqual(self.waits[-1], 1.0)
+        self.assertEqual(self.in_pool(s), set())
+        s.ledger.no_completion = False   # its completion shows: it failed
         p.step()
-        self.assertEqual(self.reports[2], {"resolved": "not committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
+        self.assertEqual(self.reports[1], {"resolved": "not committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
         self.assertEqual(self.in_pool(s), {t["hash"]})
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], tb.HEAD_HASH)   # reth is back on Canton's head
         s.ledger.garbage_reply, s.ledger.commit = False, True
         p.step()
         self.assertEqual((self.reports[-1]["committed"], self.reports[-1]["transactions"]), (True, [t["hash"]]))
 
+    def test_a_timeout_that_commits_later_is_waited_for_and_the_next_block_goes_on_top_of_it(self):
+        a, c = tx(ALICE, 0), tx(BOB, 0, price=5)
+        s = self.setup({ALICE: [a]})
+        s.ledger.late = True   # the Advance times out (a 503) and commits only later
+        p = self.producer(s)
+        p.step()
+        first = self.reports[0]
+        self.assertIsNone(first["committed"])
+        s.reth.pool[BOB] = [c]   # more work arrives while the command is in progress
+        for _ in range(3):
+            p.step()   # nothing is built, reth is not rewound, and the status says what it waits for
+        self.assertEqual((len(self.built(s)), len(s.ledger.submitted), len(self.reports)), (1, 1, 1))
+        self.assertEqual(self.waits, [1.0] * 3)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], first["blockHash"])
+        self.assertEqual({k: v for k, v in self.status()["waitingToBeResolved"].items() if k != "why"}, {"number": HEAD_NUMBER + 1, "hash": first["blockHash"], "commandId": first["commandId"]})
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        p.step()
+        self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": first["blockHash"], "updateId": "u1", "completionOffset": 43})
+        self.assertIsNone(self.status()["waitingToBeResolved"])
+        p.step()
+        self.assertEqual((self.reports[2]["committed"], self.reports[2]["number"], self.reports[2]["transactions"]), (True, HEAD_NUMBER + 2, [c["hash"]]))
+        self.assertEqual([int(x["commandId"].split("-")[2]) for x in s.ledger.submitted], [HEAD_NUMBER + 1, HEAD_NUMBER + 2])   # one block at each height
+
+    def test_a_timeout_that_is_rejected_later_syncs_reth_to_canton_head_before_the_next_block(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.late = True
+        p = self.producer(s)
+        p.step()
+        p.step()
+        s.ledger.land(ok=False, message="UNKNOWN_CONTRACT_SYNCHRONIZERS")
+        s.ledger.late = False
+        p.step()
+        self.assertEqual(self.reports[1]["resolved"], "not committed")
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], tb.HEAD_HASH)   # reth is on Canton's head
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+        p.step()   # the transactions go in a new block 1 above Canton's head
+        self.assertEqual((self.reports[2]["committed"], self.reports[2]["number"]), (True, HEAD_NUMBER + 1))
+
+    def test_with_no_completion_the_head_decides_only_when_canton_time_is_past_the_window(self):
+        for commit in (True, False):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+            s.ledger.no_completion, s.ledger.commit = True, commit
+            p = self.producer(s)
+            p.step()
+            if not commit:
+                self.now[0] += 10_000   # the builder's clock is far past the window: it decides nothing
+                p.step()
+                self.assertEqual(len(self.reports), 1)   # still waiting
+                self.assertEqual(self.status()["waitingToBeResolved"]["number"], HEAD_NUMBER + 1)
+                s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's checkpoints are past it
+            with mock.patch.object(b, "builder_now", lambda: 4102444800.0):   # and the builder's clock agrees with them
+                p.step()
+            self.assertEqual(self.reports[1]["resolved"], "committed" if commit else "not committed")
+
+    def test_a_canton_clock_far_ahead_of_the_builders_is_named_in_the_status(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, False
+        p = self.producer(s)
+        p.step()
+        s.ledger.record_time = datetime.fromtimestamp(time.time() + 10_000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")   # past the window by Canton's time, an hour ahead of ours
+        self.now[0] += 10_000
+        p.step()
+        self.assertEqual(len(self.reports), 1)   # still waiting: nothing is settled by the window
+        why = self.status()["waitingToBeResolved"]["why"]
+        self.assertIn("clock", why)
+        self.assertIn("ahead", why)
+
+    def test_an_advance_with_no_answer_is_still_settled_by_its_command_after_a_restart(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.late = True
+        first = self.producer(s)
+        first.step()
+        block = self.reports[0]["blockHash"]
+        second = self.producer(s)   # a new process: it knows the command from the work folder
+        second.load_unresolved()
+        second.step()   # no completion yet: reth stays where it is, nothing is built
+        self.assertEqual(len(self.built(s)), 1)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], block)
+        self.assertEqual(self.status()["waitingToBeResolved"]["hash"], block)
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        self.assertEqual(self.reports[-1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": block, "updateId": "u1", "completionOffset": 43})
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], block)
+
+    def test_a_damaged_kept_file_does_not_let_a_block_be_built_while_a_command_is_in_doubt(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.late = True
+        first = self.producer(s)
+        first.step()
+        block = self.reports[0]["blockHash"]
+        b.saved_path(s.cfg).write_text("this is not json")   # the kept transactions cannot be read
+        second = self.producer(s)
+        second.load_unresolved()
+        s.reth.pool[BOB] = [tx(BOB, 0, price=5)]   # more work: it must wait
+        second.step()
+        second.step()
+        self.assertEqual(len(s.ledger.submitted), 1)   # never a second block at that height
+        self.assertEqual(self.status()["waitingToBeResolved"]["hash"], block)
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        self.assertEqual(self.reports[-1]["resolved"], "committed")
+
+    def test_a_record_that_cannot_be_read_stops_the_building(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        b.unresolved_path(s.cfg).write_text("{ this is not json")
+        p = self.producer(s)
+        p.step()
+        p.step()
+        self.assertEqual((s.ledger.submitted, self.built(s)), ([], []))
+        self.assertTrue(self.waits)   # it backs off and tries to read again
+
+    def test_a_submit_cut_short_in_this_process_is_waited_for_by_the_next_step(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.ledger.late = True
+        p = self.producer(s)
+        real = b.Ledger.advance
+        def advance(ledger, chain, argument, command_id=None):
+            try:
+                real(ledger, chain, argument, command_id)
+            except Exception:
+                pass
+            raise KeyboardInterrupt
+        with mock.patch.object(b.Ledger, "advance", advance), self.assertRaises(KeyboardInterrupt):
+            p.step()
+        block = b.load_unresolved(s.cfg)["hash"]
+        p.step()   # the record is on disk: the producer reads it and waits for the command instead of building
+        self.assertEqual(len(s.ledger.submitted), 1)
+        self.assertEqual(self.status()["waitingToBeResolved"]["hash"], block)
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        p.step()
+        self.assertEqual(self.reports[-1]["resolved"], "committed")
+
     def test_a_transaction_that_cannot_be_put_back_is_listed_in_the_status(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         p = self.producer(s)
         p.step()
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         s.reth.refuse_resend = True
         p.step()
         self.assertEqual(self.reports[-1]["lostTransactions"], [{"transaction": t["hash"], "error": self.reports[-1]["lostTransactions"][0]["error"]}])
@@ -746,11 +888,11 @@ class SavedBlock(Loop):
     def test_a_block_whose_outcome_is_not_known_keeps_them_until_it_is_settled(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         p = self.producer(s)
         p.step()
         self.assertTrue(self.saved(s).exists())
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         p.step()
         self.assertFalse(self.saved(s).exists())
         self.assertEqual(self.in_pool(s), {t["hash"]})

@@ -1,6 +1,6 @@
 """The builder, against fakes only: a fake reth (builder-only WebSocket port and Engine port), a fake Canton JSON
 Ledger API and a fake prover. No real Canton, GPU or reth. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
+import base64, contextlib, stat, time, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
 from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
@@ -218,15 +218,16 @@ class OneBlock(Case):
         self.assertIs(result["committed"], False)
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
 
-    def test_a_lost_reply_and_an_unreadable_head_is_unknown_and_reth_stays_where_it_is(self):
-        for commit in (True, False):   # whether or not Canton committed, the builder cannot tell
+    def test_a_lost_reply_with_no_completion_yet_is_unknown_and_reth_stays_where_it_is(self):
+        for commit in (True, False):   # whether or not Canton commits, the builder cannot tell yet
             s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-            s.ledger.commit, s.ledger.head_fails_after_submit = commit, True
+            s.ledger.commit, s.ledger.no_completion = commit, True
             result = b.build_block(s.cfg)
             self.assertIsNone(result["committed"], result)
             self.assertEqual(result["number"], HEAD_NUMBER + 1)
             self.assertIn("no usable reply from Canton", result["reason"])
-            self.assertIn("Canton's head", result["reason"])
+            self.assertIn("no completion yet", result["reason"])
+            self.assertEqual(result["resolve"]["begin"], 42)   # the ledger end read before the submit
             self.assertEqual(len(s.ledger.submitted), 1)
             # reth is not moved: the last forkchoice is the one that made the new block its head
             n_hash = result["blockHash"]
@@ -234,10 +235,10 @@ class OneBlock(Case):
 
     def test_the_next_run_after_an_unknown_outcome_starts_from_canton_head(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         first = b.build_block(s.cfg)
         self.assertIsNone(first["committed"])
-        s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False   # Canton is reachable again; it had committed
+        s.ledger.no_completion, s.ledger.drop_but_commit = False, False   # Canton is reachable again; it had committed
         second = b.build_block(s.cfg)
         self.assertEqual(second["number"], HEAD_NUMBER + 2)
         h = first["blockHash"]
@@ -746,7 +747,7 @@ class Rebuilding(LegCase):
     def test_an_unknown_outcome_lists_the_legs_too(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]}, terms=[TERMS], drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         s.reth.tx_legs[t["hash"]] = [PAY]
         result = b.build_block(s.cfg)
         self.assertIsNone(result["committed"])
@@ -1011,12 +1012,25 @@ class CommandLine(Case):
 
     def test_unknown_outcome_exits_2_with_committed_null(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
-        code, out = self.run_main(s)
+        s.ledger.no_completion, s.ledger.head_fails_after_submit = True, True   # no completion, and the window over with no head to read
+        s.ledger.record_time = "2100-01-01T00:00:00.000000Z"
+        with mock.patch.object(b, "builder_now", lambda: YEAR_2100):
+            code, out = self.run_main(s)
         self.assertEqual(code, 2)
         self.assertIn("committed", out)
         self.assertIsNone(out["committed"])
-        self.assertIn("reason", out)
+        self.assertIn("could not be settled", out["reason"])
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], HEAD_HASH)   # reth is left where it is
+
+    def test_once_settles_an_advance_with_no_answer_by_the_head_when_the_window_is_over(self):
+        for commit in (True, False):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+            s.ledger.no_completion, s.ledger.commit = True, commit
+            s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's time is past the window
+            with mock.patch.object(b, "builder_now", lambda: YEAR_2100):   # the builder's clock agrees with Canton's
+                code, out = self.run_main(s)
+            self.assertEqual((code, out["committed"], out["resolved"]), (0 if commit else 2, commit, "head" if commit else "window"))
+            self.assertNotIn("resolve", out)
 
     def test_exit_status_says_failed_when_reth_is_unreachable(self):
         s = self.setup({})
@@ -1092,6 +1106,21 @@ class CommandLine(Case):
     def test_a_reply_that_is_not_json_is_one_json_line(self):
         self.assert_failure(self.run_main(self.setup({}, bad_json=True)))
 
+    def test_once_reports_what_became_of_an_earlier_unanswered_block(self):
+        for ok in (True, False):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            s.ledger.late = True
+            earlier = b.build_block(s.cfg)
+            self.assertIsNone(earlier["committed"])
+            s.ledger.land(ok=ok)
+            s.ledger.late = False
+            with mock.patch.dict(os.environ, {"CZE_WORK_DIR": s.cfg.work_dir}):   # the work folder the first block was made in
+                code, out = self.run_main(s)
+            settled = out["settledEarlier"]
+            self.assertEqual((settled["number"], settled["blockHash"], settled["committed"], settled["resolved"]), (HEAD_NUMBER + 1, earlier["blockHash"], ok, "completion"))
+            self.assertEqual(out["number"], HEAD_NUMBER + (2 if ok else 1))   # a committed block is built upon; a failed one is built again
+
     def test_a_failing_prover_is_one_json_line(self):
         self.assert_failure(self.run_main(self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)), "prove")
 
@@ -1111,6 +1140,399 @@ class CommandLine(Case):
         self.assertIn("wrong program key", out["reason"])
         self.assertNotIn("no state found", out["reason"])
         self.assertIn("no state found", out["rewindError"])
+
+
+YEAR_2100 = 4102444800.0
+
+
+class NoAnswer(Case):
+    """An Advance whose answer did not arrive is settled by its own command id before anything else happens (README.md, "Outcomes")."""
+
+    def first(self, s):
+        """A block whose Advance timed out (a 503) and is still in progress at Canton: nothing is decided."""
+        s.ledger.late = True
+        result = b.build_block(s.cfg)
+        self.assertIsNone(result["committed"], result)
+        return result
+
+    def settle(self, s, result, pairs=None):
+        u = {**result["resolve"], "since": result["resolve"]["submittedAt"]}
+        return b.resolve_unknown(s.cfg, u, pairs if pairs is not None else b.read_saved(s.cfg) or [])
+
+    def canton_time(self, s, result, after_window: float):
+        """Canton's time (the record time of the checkpoints it shows) is `after_window` seconds after the end of the command's window."""
+        at = result["resolve"]["submittedAt"] + s.cfg.resolve_seconds + after_window
+        s.ledger.record_time = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        patch = mock.patch.object(b, "builder_now", lambda: at)   # the clocks agree: only the skew test lets them differ
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_submit_that_times_out_but_commits_later_is_not_rewound_and_the_next_block_goes_on_top(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        self.assertEqual(result["resolve"]["begin"], 42)   # the ledger end before the submit
+        self.assertEqual(s.ledger.head["headHash"], HEAD_HASH[2:])   # Canton's head is still the old one: reading it now would say "not committed"
+        # reth stays on the block it built: no move back, the transactions are not given to the pool again
+        self.assertEqual(s.forkchoices()[-1], {"headBlockHash": result["blockHash"], "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH})
+        self.assertEqual(self.in_pool(s), set())
+        with self.assertRaises(b.Unresolved):   # no completion yet, and the window is not over: still nothing decided
+            self.settle(s, result)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        s.ledger.land(ok=True)   # the command commits
+        committed, lost, how, info = self.settle(s, result)
+        self.assertEqual((committed, lost, how, info), (True, [], "completion", {"updateId": "u1", "completionOffset": 43}))
+        h = result["blockHash"]
+        self.assertEqual(s.forkchoices()[-1], {"headBlockHash": h, "safeBlockHash": h, "finalizedBlockHash": h})
+        self.assertFalse(b.unresolved_path(s.cfg).exists() or b.saved_path(s.cfg).exists())
+        s.ledger.late = False
+        s.reth.pool[ALICE] = [tx(ALICE, 1)]
+        second = b.build_block(s.cfg)
+        self.assertEqual((second["committed"], second["number"]), (True, HEAD_NUMBER + 2))
+        numbers = [int(x["commandId"].split("-")[2]) for x in s.ledger.submitted]
+        self.assertEqual(numbers, [HEAD_NUMBER + 1, HEAD_NUMBER + 2])   # never two different blocks at one height
+
+    def test_a_submit_that_times_out_and_is_rejected_later_is_refused_and_reth_goes_to_canton_head(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        s.ledger.land(ok=False, message="UNKNOWN_CONTRACT_SYNCHRONIZERS")
+        committed, lost, how, info = self.settle(s, result)
+        self.assertEqual((committed, lost, how), (False, [], "completion"))
+        self.assertEqual(s.forkchoices()[-1], {"headBlockHash": HEAD_HASH, "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH})
+        self.assertEqual(self.in_pool(s), {t["hash"]})   # the transactions go in a later block
+        self.assertFalse(b.unresolved_path(s.cfg).exists() or b.saved_path(s.cfg).exists())
+
+    def test_the_window_passing_by_canton_time_with_no_completion_lets_the_head_decide(self):
+        for commit in (True, False):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+            s.ledger.no_completion, s.ledger.commit = True, commit
+            result = b.build_block(s.cfg)
+            if not commit:
+                with self.assertRaises(b.Unresolved):   # Canton's time is still before the end of the window: the head says nothing
+                    self.settle(s, result)
+                self.canton_time(s, result, -1)
+                with self.assertRaises(b.Unresolved):
+                    self.settle(s, result)
+                self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])   # reth is untouched
+                self.assertTrue(b.unresolved_path(s.cfg).exists())
+            self.canton_time(s, result, 1)
+            committed, lost, how, info = self.settle(s, result)
+            self.assertEqual((committed, how), (commit, "head" if commit else "window"))
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"] if commit else HEAD_HASH)
+
+    def test_the_builders_clock_past_the_window_decides_nothing_while_canton_time_is_before_it(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        result["resolve"]["submittedAt"] -= 10 * s.cfg.resolve_seconds   # our clock says the window ended long ago
+        self.canton_time(s, result, -1)   # Canton's checkpoints say the participant has not got there (it lags, or it reconnected)
+        with self.assertRaises(b.Unresolved):
+            self.settle(s, result)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])   # reth is untouched
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        s.ledger.land(ok=True)   # the command commits after all
+        committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (True, "completion"))
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], result["blockHash"])
+
+    def test_canton_time_far_ahead_of_the_builders_clock_does_not_settle_by_the_window_and_says_why(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, False
+        result = self.first(s)
+        s.ledger.record_time = datetime.fromtimestamp(time.time() + s.cfg.resolve_seconds + 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with self.assertRaises(b.Unresolved) as raised:   # past the window by Canton's time, but Canton's clock is an hour ahead of ours
+            self.settle(s, result)
+        self.assertIn("clock", str(raised.exception))
+        self.assertIn("ahead", str(raised.exception))
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])   # reth is untouched
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        reached = time.time() + s.cfg.resolve_seconds + 3600
+        with mock.patch.object(b, "builder_now", lambda: reached):   # the clocks agree again: the window decides
+            committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (False, "window"))
+
+    def test_canton_time_a_few_seconds_ahead_of_the_builders_clock_still_settles_by_the_window(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, False
+        result = self.first(s)
+        at = result["resolve"]["submittedAt"] + s.cfg.resolve_seconds + 1
+        s.ledger.record_time = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with mock.patch.object(b, "builder_now", lambda: at - 10):   # Canton is 10 s ahead: inside the minute the README assumes
+            committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (False, "window"))
+
+    def test_the_head_showing_the_block_settles_it_before_the_window_is_over(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, True
+        result = b.build_block(s.cfg)
+        committed, _, how, _ = self.settle(s, result)   # Canton's time is long before the end of the window
+        self.assertEqual((committed, how), (True, "head"))
+
+    def test_completions_that_cannot_be_read_leave_everything_as_it_is_while_the_head_does_not_show_the_block(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.completions_fail, s.ledger.commit = True, False
+        result = b.build_block(s.cfg)
+        self.assertIsNone(result["committed"])
+        self.assertIn("could not be read", result["reason"])
+        self.canton_time(s, result, 1)   # unread completions say nothing about Canton's time, whatever the checkpoints would show
+        with self.assertRaises(b.Unresolved):
+            self.settle(s, result)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
+        s.ledger.head = {"headNumber": str(HEAD_NUMBER + 1), "headHash": result["blockHash"][2:]}   # the head shows the block
+        committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (True, "head"))
+
+    def test_the_record_names_its_chain_and_a_record_from_another_chain_is_refused(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        self.assertEqual(result["resolve"]["genesis"], s.reth.genesis)
+        self.assertEqual(json.loads(b.unresolved_path(s.cfg).read_text())["genesis"], s.reth.genesis)
+        s.ledger.land(ok=True)
+        before = len(s.forkchoices())
+        s.reth.genesis = "0x" + "77" * 32   # a new chain was started on this machine, and the old record was left behind
+        for settle in (lambda: self.settle(s, result), lambda: b.recover_saved(s.cfg)):
+            with self.assertRaises(b.BuilderError) as e:
+                settle()
+            self.assertNotIsInstance(e.exception, b.Unresolved)
+            self.assertIn("another chain", str(e.exception))
+            self.assertIn(str(b.unresolved_path(s.cfg)), str(e.exception))
+        self.assertEqual(len(s.forkchoices()), before)   # reth is not moved
+        self.assertTrue(b.unresolved_path(s.cfg).exists() and b.saved_path(s.cfg).exists())   # and nothing is removed
+        s.reth.genesis = result["resolve"]["genesis"]
+        self.assertEqual(self.settle(s, result)[0], True)
+
+    def test_a_restart_settles_the_command_before_it_moves_reth(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        with self.assertRaises(b.Unresolved):   # a new process: the command has no completion yet, so reth is not moved to Canton's head
+            b.recover_saved(s.cfg)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
+        self.assertEqual(self.in_pool(s), set())
+        s.ledger.land(ok=True)
+        found = b.recover_saved(s.cfg)   # settled as committed: nothing to give back
+        self.assertEqual((found["recovered"], found["settled"]["committed"]), (0, True))
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], result["blockHash"])
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_a_restart_after_a_failed_command_gives_the_transactions_back(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        self.first(s)
+        s.ledger.land(ok=False)
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["recovered"], found["settled"]["committed"]), (0, False))
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
+
+    def test_once_waits_for_the_command_and_reports_it_as_if_canton_had_answered(self):
+        for ok in (True, False):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            result = self.first(s)
+            waited = []
+            def sleep(seconds):   # Canton decides while `once` waits
+                waited.append(seconds)
+                s.ledger.land(ok=ok)
+            settled = b.settle_once(s.cfg, result, sleep)
+            self.assertEqual(waited, [2])
+            self.assertEqual((settled["committed"], settled["resolved"]), (ok, "completion"))
+            self.assertNotIn("resolve", settled)
+            if ok:
+                self.assertEqual((settled["transactions"], settled["updateId"]), ([t["hash"]], "u1"))
+            else:
+                self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def interrupted_after_the_post(self):
+        """advance() as a process killed during the submit sees it: the POST went out, no answer comes, and the call is cut short."""
+        real = b.Ledger.advance
+        def advance(ledger, chain, argument, command_id=None):
+            try:
+                real(ledger, chain, argument, command_id)
+            except Exception:
+                pass
+            raise KeyboardInterrupt
+        return mock.patch.object(b.Ledger, "advance", advance)
+
+    def test_the_command_is_recorded_before_it_is_submitted_so_an_interrupt_during_the_submit_leaves_it(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        s.ledger.late = True
+        with self.interrupted_after_the_post(), self.assertRaises(KeyboardInterrupt):
+            b.build_block(s.cfg)
+        (sent,) = s.ledger.submitted
+        record = b.load_unresolved(s.cfg)
+        self.assertEqual((record["commandId"], record["begin"], record["number"]), (sent["commandId"], 42, HEAD_NUMBER + 1))
+        self.assertIsInstance(record["submittedAt"], float)
+        # no move back and no put back: the command is in doubt, reth stays on the block it built
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], record["hash"])
+        self.assertEqual(self.in_pool(s), set())
+        with self.assertRaises(b.Unresolved):   # the restart settles it first: no completion yet, so nothing is rewound or built
+            b.recover_saved(s.cfg)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], record["hash"])
+        s.ledger.land(ok=True)
+        found = b.recover_saved(s.cfg)
+        self.assertEqual((found["settled"]["committed"], found["settled"]["number"]), (True, HEAD_NUMBER + 1))
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], record["hash"])
+        self.assertEqual(len(s.ledger.submitted), 1)   # never a second block at that height
+
+    def test_the_record_is_written_to_disk_and_so_is_its_name_in_the_work_folder(self):
+        s = self.setup({})
+        synced = []
+        real = os.fsync
+        def fsync(fd):
+            synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+            real(fd)
+        with mock.patch.object(os, "fsync", fsync):
+            b.save_unresolved(s.cfg, {"commandId": "c", "hash": "0x1", "begin": 1, "submittedAt": 1.5})
+        self.assertEqual(synced, [False, True])   # the file, then the folder that now holds it
+        self.assertEqual(b.load_unresolved(s.cfg)["commandId"], "c")
+
+    def test_a_record_with_no_number_for_submitted_at_is_not_an_unresolved_command(self):
+        s = self.setup({})
+        good = {"commandId": "c", "hash": "0x1", "begin": 1, "submittedAt": 1.5}
+        for bad in ({k: v for k, v in good.items() if k != "submittedAt"}, {**good, "submittedAt": True}, {**good, "submittedAt": "1.5"}, {**good, "submittedAt": None}):
+            b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+            b.unresolved_path(s.cfg).write_text(json.dumps(bad))
+            with self.assertRaises(b.BuilderError, msg=bad) as raised:
+                b.load_unresolved(s.cfg)
+            self.assertIn("is not an unresolved command", str(raised.exception))
+        for ok in (1.5, 1700000000):   # a float, or an integer
+            b.unresolved_path(s.cfg).write_text(json.dumps({**good, "submittedAt": ok}))
+            self.assertEqual(b.load_unresolved(s.cfg)["submittedAt"], ok)
+
+    def test_a_record_that_cannot_be_saved_means_nothing_is_submitted(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        with mock.patch.object(b, "save_unresolved", side_effect=b.BuilderError("disk full")), self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertEqual(s.ledger.submitted, [])
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)   # nothing was sent: the usual move back
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_the_record_is_cleared_by_every_definite_answer(self):
+        for kwargs in ({}, {"refuse": "wrong program key"}):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, **kwargs)
+            result = b.build_block(s.cfg)
+            self.assertEqual(result["committed"], not kwargs)
+            self.assertFalse(b.unresolved_path(s.cfg).exists())
+
+    def test_the_ledger_end_is_read_before_the_submitted_line_is_written(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        events = []
+        attempt = b.Attempt(None, 1)
+        attempt.event = lambda name, **kw: events.append(name)
+        with mock.patch.object(b.Ledger, "end", side_effect=OSError("the ledger end cannot be read")), self.assertRaises(OSError):
+            b.build_block(s.cfg, journal=attempt)
+        self.assertNotIn("submitted", events)
+        self.assertEqual(s.ledger.submitted, [])
+
+    def test_a_submit_that_plainly_never_reached_the_command_service_is_settled_at_once_as_not_taken(self):
+        refused_connection = [("refused", ConnectionRefusedError(61, "Connection refused")),
+                              ("refused inside urllib", urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")))]
+        for name, error in refused_connection:
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            with mock.patch.object(b.Ledger, "advance", side_effect=error), mock.patch.object(b.Ledger, "completion", side_effect=AssertionError("waited")):
+                result = b.build_block(s.cfg)
+            self.assertEqual((result["committed"], result["rejected"]), (False, False), name)
+            self.assertNotIn("resolve", result)
+            self.assertFalse(b.unresolved_path(s.cfg).exists(), name)
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH, name)
+            self.assertEqual(self.in_pool(s), {t["hash"]}, name)
+        for status in (401, 403, 429):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            s.ledger.reply_status = status
+            result = b.build_block(s.cfg)
+            self.assertEqual((result["committed"], result["rejected"]), (False, False), status)
+            self.assertNotIn("resolve", result)
+            self.assertFalse(b.unresolved_path(s.cfg).exists(), status)
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH, status)
+            self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_a_408_or_a_server_error_still_waits_for_the_completion_and_a_dropped_reply_reads_it(self):
+        for status in (408, 500, 502, 503):
+            s = self.setup({ALICE: [tx(ALICE, 0)]})
+            s.ledger.reply_status = status
+            result = b.build_block(s.cfg)
+            self.assertIsNone(result["committed"], status)   # the command may have been taken: nothing is decided
+            self.assertIn("resolve", result, status)
+            self.assertTrue(b.unresolved_path(s.cfg).exists(), status)
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        self.assertTrue(b.build_block(s.cfg)["committed"])   # the connection was dropped after the commit: its completion says so
+
+    def test_a_command_that_is_a_duplicate_or_already_in_flight_is_no_answer(self):
+        for code, refused in (("DUPLICATE_COMMAND", False), ("SUBMISSION_ALREADY_IN_FLIGHT", False), ("INTERPRETATION_ERROR", True)):
+            self.assertEqual(b.definite_rejection(409, json.dumps({"code": code, "cause": "x"})), refused, code)
+
+    def test_a_completion_of_the_same_id_from_before_the_submit_is_ignored(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        s.ledger.earlier = [{"commandId": result["commandId"], "offset": 10, "status": {"code": 9, "message": "another run's"}}]
+        with self.assertRaises(b.Unresolved):   # it is before `begin`: not this command's
+            self.settle(s, result)
+        s.ledger.land(ok=True)
+        self.assertEqual(self.settle(s, result)[0], True)
+
+    def test_a_full_page_of_other_completions_is_followed_to_the_commands_own(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        s.ledger.others = [{"commandId": f"other-{i}", "offset": 100 + i} for i in range(5)]
+        s.ledger.land_offset = 200
+        s.ledger.land(ok=True)
+        before = len(s.ledger.completion_queries)
+        with mock.patch.object(b, "COMPLETION_LIMIT", 2):
+            self.assertEqual(self.settle(s, result)[:3], (True, [], "completion"))
+        self.assertEqual(len(s.ledger.completion_queries) - before, 4)   # the checkpoint at 44 is one more item than the completions alone
+
+    def test_the_completions_are_read_from_the_ledger_end_before_the_submit_for_the_builder_user(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        s.ledger.land(ok=True)
+        self.settle(s, result)
+        path, body = s.ledger.completion_queries[-1]
+        self.assertEqual((body["beginExclusive"], body["userId"], body["parties"]), (42, "builder-user", [BUILDER]))
+
+
+class CompletionReading(unittest.TestCase):
+    def test_a_completion_is_committed_without_a_status_or_with_code_0_and_failed_otherwise(self):
+        done = lambda **v: {"completionResponse": {"Completion": {"value": {"commandId": "c", "offset": 7, **v}}}}
+        self.assertEqual(b.completion_in([done(status={}, updateId="u")], "c"), ({"committed": True, "updateId": "u", "completionOffset": 7}, 7, None))
+        self.assertEqual(b.completion_in([done(status={"code": 0})], "c")[0]["committed"], True)
+        found, last, _ = b.completion_in([done(status={"code": 14, "message": "UNAVAILABLE"})], "c")
+        self.assertEqual((found["committed"], "14" in found["reason"], "UNAVAILABLE" in found["reason"]), (False, True, True))
+        self.assertEqual(b.completion_in([done()], "other"), (None, 7, None))   # the offset reached, with no completion of this command
+        self.assertEqual(b.completion_in([{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9}}}}, "nonsense"], "c"), (None, 9, None))
+        checkpoint = lambda offset, *times: {"completionResponse": {"OffsetCheckpoint": {"value": {"offset": offset, "synchronizerTimes": [{"synchronizerId": "s", "recordTime": t} for t in times]}}}}
+        self.assertEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:00.5Z")], "c")[2], 1792749600.5)   # Canton's time, in epoch seconds
+        self.assertAlmostEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:00.123456789Z")], "c")[2], 1792749600.123457, places=5)
+        self.assertEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:05Z"), checkpoint(10, "2026-10-23T10:00:01Z")], "c")[2], 1792749605)   # the latest checkpoint
+        self.assertEqual(b.completion_in([checkpoint(9, "2026-10-23T10:00:05Z", "2026-10-23T10:00:02Z")], "c")[2], 1792749602)   # every synchronizer must have got there
+        for bad in ("yesterday", "2026-10-23T10:00:00+03:00", 5, None):
+            self.assertIsNone(b.completion_in([checkpoint(9, bad)], "c")[2], bad)
+        self.assertIsNone(b.completion_in([checkpoint(9)], "c")[2])
+
+
+class ResolveSeconds(unittest.TestCase):
+    def config(self, seconds):
+        with tempfile.TemporaryDirectory() as state:
+            (Path(state) / "jwt.hex").write_text("ab" * 32)
+            env = {"CZE_STATE_DIR": state, "CZE_LEDGER_USER": "u", "CZE_BUILDER_PARTY": "p", "CZE_FEE_RECIPIENT": "0x" + "11" * 20}
+            if seconds is not None:
+                env["CZE_RESOLVE_SECONDS"] = seconds
+            with mock.patch.dict(os.environ, env, clear=True):
+                return b.Config.from_env()
+
+    def test_a_window_below_120_seconds_is_refused(self):
+        for seconds in ("0", "119.9", "-5"):
+            with self.assertRaises(b.BuilderError, msg=seconds) as raised:
+                self.config(seconds)
+            self.assertIn("CZE_RESOLVE_SECONDS", str(raised.exception))
+        self.assertEqual(self.config("120").resolve_seconds, 120)
+        self.assertEqual(self.config(None).resolve_seconds, 300)
 
 
 class Pieces(unittest.TestCase):

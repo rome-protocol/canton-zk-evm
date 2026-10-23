@@ -28,10 +28,13 @@ fresh() {   # a copy of the scripts and a state folder of a persistent chain mad
   printf 'CZE_PERSIST=1\nCANTON_VERSION=x\nCHAIN_ID=1\nCZE_PG_CONTAINER=mypg\nCZE_PG_PORT=5999\nCZE_EXPLORER_DB_CONTAINER=myexp\nCZE_EXPLORER_DB_PORT=5998\nRETH_CONTAINER=myreth\nRETH_HTTP_PORT=18545\nRETH_WS_PORT=18546\nRETH_ENGINE_PORT=18551\n' > "$WORK/state/persist.env"
   : > "$FAKE_DOCKER_LOG"
 }
+record() {   # the builder's in-doubt command and kept transactions, and a file of the builder's that is not theirs
+  mkdir -p "$WORK/state/builder"; echo '{}' > "$WORK/state/builder/unresolved.json"; echo '[]' > "$WORK/state/builder/kept-transactions.json"; echo '{}' > "$WORK/state/builder/status.json"
+}
 run() { env PATH="$WORK/bin:$PATH" CZE_STATE_DIR="$WORK/state" "$@"; }
 
 # 1. down.sh --wipe acts on the recorded containers, and says "wiped" only after a real wipe.
-fresh
+fresh; record
 out=$(run "$WORK/repo/network/down.sh" --wipe 2>&1) || fail "down.sh --wipe failed: $out"
 grep -q "wiped" <<<"$out" || fail "down.sh --wipe did not say it wiped: $out"
 grep -q -- "rm -f mypg" "$FAKE_DOCKER_LOG" || fail "the recorded database container was not removed"
@@ -43,10 +46,32 @@ grep -q "the explorer's database" <<<"$out" || fail "down.sh --wipe does not say
 ! grep -q "cze-postgres\|cze-explorer-db\|cze-reth" "$FAKE_DOCKER_LOG" || fail "down.sh touched a default container: $(cat "$FAKE_DOCKER_LOG")"
 [ ! -e "$WORK/state/persist.env" ] || fail "persist.env is still there after a wipe"
 echo "ok: down.sh --wipe wipes what persist.env names"
+[ ! -e "$WORK/state/builder/unresolved.json" ] || fail "the builder's record of the wiped chain is still there"
+[ ! -e "$WORK/state/builder/kept-transactions.json" ] || fail "the builder's record of the wiped chain is still there"
+[ -e "$WORK/state/builder/status.json" ] || fail "down.sh --wipe removed a file of the builder's that is not its record"
+echo "ok: down.sh --wipe removes the builder's in-doubt record and kept transactions, and only them"
+# The builder keeps them in CZE_WORK_DIR when that is set: down.sh --wipe removes those two files there, and the folder at the default place stays as it is.
+fresh; record
+mkdir "$WORK/custom"; echo '{}' > "$WORK/custom/unresolved.json"; echo '[]' > "$WORK/custom/kept-transactions.json"; echo '{}' > "$WORK/custom/status.json"
+run env CZE_WORK_DIR="$WORK/custom" "$WORK/repo/network/down.sh" --wipe > /dev/null 2>&1 || fail "down.sh --wipe with CZE_WORK_DIR failed"
+[ ! -e "$WORK/custom/unresolved.json" ] || fail "the record in CZE_WORK_DIR is still there after a wipe"
+[ ! -e "$WORK/custom/kept-transactions.json" ] || fail "the kept transactions in CZE_WORK_DIR are still there after a wipe"
+[ -e "$WORK/custom/status.json" ] || fail "down.sh --wipe removed a file of CZE_WORK_DIR that is not the record"
+[ -e "$WORK/state/builder/unresolved.json" ] || fail "down.sh --wipe removed the default folder's record when CZE_WORK_DIR names another"
+[ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh --wipe removed the default folder's kept transactions when CZE_WORK_DIR names another"
+rm -rf "$WORK/custom"
+echo "ok: down.sh --wipe removes the record where CZE_WORK_DIR says the builder keeps it"
+# A persistent chain that is only stopped keeps them.
+fresh; record
+run "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh of a persistent chain failed"
+[ -e "$WORK/state/builder/unresolved.json" ] || fail "down.sh without --wipe removed the builder's record of a chain that is kept"
+[ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh without --wipe removed the builder's record of a chain that is kept"
+echo "ok: a persistent chain that is stopped keeps the builder's record"
 
 # 2. A wipe that fails says so, exits non-zero, and keeps persist.env so that it can be run again.
-fresh
+fresh; record
 if out=$(run FAKE_DOCKER_FAIL=rm "$WORK/repo/network/down.sh" --wipe 2>&1); then fail "down.sh --wipe succeeded although the database could not be removed"; fi
+[ -e "$WORK/state/builder/unresolved.json" ] || fail "the builder's record was removed although the chain is still there"
 ! grep -q "chain is wiped" <<<"$out" || fail "down.sh says wiped after a failed wipe: $out"
 grep -q "NOT wiped" <<<"$out" || fail "down.sh does not say what is left: $out"
 [ -e "$WORK/state/persist.env" ] || fail "persist.env was removed after a failed wipe"
@@ -155,8 +180,11 @@ grep -q "CZE_USER_PREFIX is 'ostia-' here, but the chain.*was made with 'team-'"
 echo "ok: the Ledger API users' prefix is recorded, used, and not overridden"
 # 5. A network that is not persistent takes the explorer's default database with it: down.sh removes the container and the volume (explorer/run.sh
 # stop does the same, see tests/demo_explorer_static.sh), so a new chain from the same genesis does not meet the old chain's rows. A failed removal is reported.
-fresh; rm -f "$WORK/state/persist.env"; echo 'POSTGRES_PASSWORD=x' > "$WORK/state/explorer-db.env"
+fresh; record; rm -f "$WORK/state/persist.env"; echo 'POSTGRES_PASSWORD=x' > "$WORK/state/explorer-db.env"
 out=$(run "$WORK/repo/network/down.sh" 2>&1) || fail "down.sh of a network that is not persistent failed: $out"
+[ ! -e "$WORK/state/builder/unresolved.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
+[ ! -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
+[ -e "$WORK/state/builder/status.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
 grep -q -- "rm -f cze-explorer-db" "$FAKE_DOCKER_LOG" || fail "down.sh left the explorer's container of a network that is not persistent: $(cat "$FAKE_DOCKER_LOG")"
 grep -q -- "volume rm -f cze-explorer-db-data" "$FAKE_DOCKER_LOG" || fail "down.sh left the explorer's database volume of a network that is not persistent"
 grep -q "explorer's database is removed" <<<"$out" || fail "down.sh does not say that the explorer's database is removed: $out"

@@ -31,7 +31,7 @@ const firstSentence = (s: string) => /^.*?[.!?](?=\s|$)/s.exec(s)?.[0] ?? s;
 
 /** One row for each method of each route in the description, in the order the description gives; `{id}` is drawn `:id`. */
 function routes(doc: OpenApiDoc): { method: string; path: string; about: string }[] {
-  return Object.entries(doc.paths ?? {}).filter(([path]) => path !== "/api").flatMap(([path, ops]) =>
+  return Object.entries(doc.paths ?? {}).filter(([path]) => path !== "/api" && path !== "/v2/api").flatMap(([path, ops]) =>
     (["get", "post"] as const).filter((m) => ops[m]).map((m) => ({ method: m.toUpperCase(), path: path.replace(/\{(\w+)\}/g, ":$1"), about: firstSentence(ops[m]!.summary ?? "") })));
 }
 

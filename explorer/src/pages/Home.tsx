@@ -7,6 +7,7 @@ import { InFlightPanel } from "../components/InFlight.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { commitTime, duration, short, utc } from "../format.ts";
 import { listPoll, readOf, summarize, useBlocks, useFaucetAddress, useHomeStats, useInFlight, usualProof } from "../stats.ts";
+import { usePainted } from "../painted.tsx";
 import { useLiveState } from "../useLive.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { type Details, Hero, LatestBlocks, LatestTxs, Stats } from "./HomeParts.tsx";
@@ -86,13 +87,15 @@ export function Home() {
   const { data, error } = useStatus();
   const stream = useLiveState(["blocks", "txs", "inflight", "stats"]);
   const live = stream === "live";
-  const blocks = useBlocks(10, live);
-  const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live) });
-  const flight = useInFlight(live);
-  const homeStats = useHomeStats();
+  // What the first view needs is the status and the hour of stats; the lists and the rest are read once the first frame is drawn.
+  const painted = usePainted();
+  const blocks = useBlocks(10, live, painted);
+  const txs = useQuery({ queryKey: ["txs", 10], queryFn: () => getTxs(10), refetchInterval: listPoll(live), enabled: painted });
+  const flight = useInFlight(live, painted);
+  const homeStats = useHomeStats(painted);
   const flightRead = readOf(flight);
   // The details of a transaction that is not final (who, to whom, how much) do not change while it waits, so each is read once.
-  const faucet = useFaucetAddress();
+  const faucet = useFaucetAddress(painted);
   const pending = flight.data?.transactions ?? [];
   const detail = useQueries({ queries: pending.map((p) => ({ queryKey: ["tx", p.hash], queryFn: () => getTx(p.hash), staleTime: Infinity, retry: false })) });
   const details: Record<string, Details> = Object.fromEntries(pending.map((p, i) => [p.hash, detail[i]!.data ?? (detail[i]!.isError ? "error" : "reading")]));

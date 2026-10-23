@@ -154,7 +154,7 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       await indexer.runOnce();
       await indexer.deriveOnce(); // derives the block that makes the tokens and then the one with the sweep, which is the one timed
       if (process.env.LOAD_HOLDERS) console.log("stage 2 ms", stage2Ms());
-      expect(stage2Ms()).toBeLessThan(B1_MS);
+      expect(stage2Ms()).toBeLessThan(B2_MS);
       expect(await tok(pool, ERC20)).toEqual({ h: 2, t: 2 * N + 1 }); // the sink and the first holder, which keeps what is left of the supply
       await reindexAgainstBudget(pool, chain);
       expect(await tok(pool, ERC20)).toEqual({ h: 2, t: 2 * N + 1 });

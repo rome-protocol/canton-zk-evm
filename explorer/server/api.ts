@@ -13,6 +13,9 @@ import { accountRoutes } from "./rest/account-routes.ts";
 import { statsRoutes } from "./rest/stats-routes.ts";
 import type { StatsRest } from "./rest/stats-rest.ts";
 import type { AccountRest } from "./rest/account-rest.ts";
+import type { PublicRpc } from "./public-rpc.ts";
+import { etherscan } from "./rest/etherscan.ts";
+import type { EtherscanRest } from "./rest/etherscan-rest.ts";
 import { BadRequest } from "./rest/paging.ts";
 import { buildOpenApi } from "./rest/openapi.ts";
 import { router } from "./rest/router.ts";
@@ -40,6 +43,10 @@ export interface ApiDeps { config: Config; reth: Reth; ledger: Ledger; chain: Ch
   rest?: ChainRest;
   /** The reads behind the REST routes of addresses, contracts, tokens and legs, and the search by name; without them those routes are off. */
   accounts?: AccountRest;
+  /** The reads behind the Etherscan-compatible `/api` and `/v2/api`; without them that door is off. */
+  etherscanRest?: EtherscanRest;
+  /** The public RPC, which the `proxy` module of the Etherscan door asks, so that it keeps the rules of `/rpc`; without it that module answers "not supported on Ostia". */
+  rpc?: PublicRpc;
   /** The reads behind `/api/stats/summary` and `/api/stats/series`; without them those routes are off. */
   stats?: StatsRest;
   /** True when the server in front of this API also serves `GET /api/stream` (live updates), which the description then lists. */
@@ -62,7 +69,7 @@ const dec = (n: bigint | number) => n.toString();
 const TOKENS_KEPT = 1000;
 const TOKENS_KEPT_MS = 60_000;
 
-export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, stats, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
+export function createApi({ config, reth, ledger, chain, tracker, rest, accounts, etherscanRest, rpc, stats, live, verify, health: apiHealth, faucet = createFaucet({ ...config.faucet, captcha: null, key: null, chainId: config.chainId, reth }), now = Date.now }: ApiDeps): RoutedApi {
   // What reth said about an address as a token, as the promise, so that the transfers of one block share one set of calls. An address without code is no token and is
   // not asked about it. An entry is dropped after TOKENS_KEPT_MS (a new chain on the same database can put something else at an address) and the oldest goes first when
   // the cache is full. A failed read is asked again next time.
@@ -286,6 +293,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return a.status === 200 ? { ...a, body: pick(a.body as { guid: string; status: string; result: string }, FIELDS.verifyJob) } : a;
   }
 
+  const etherscanDoor = etherscanRest && etherscan({ rest: etherscanRest, reth, chainId: config.chainId, ...(rpc ? { rpc } : {}) });
   const restRoutes = rest && chainRoutes({ rest, reth, block: (id) => block(id, false, true), transaction });
   const accountRestRoutes = accounts && accountRoutes({ accounts, reth, search });
   const statsRestRoutes = stats && statsRoutes({ stats, now });
@@ -304,7 +312,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     ["/api/openapi.json", async () => ok(openapi)],
   ]);
   // Every route this API answers. `/api/faucet` has two methods and its own code; `/api/stream` is answered by the server in front, when there is one.
-  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
+  const routes = [...new Set([...(restRoutes?.paths ?? []), ...(accountRestRoutes?.paths ?? []), ...(statsRestRoutes?.paths ?? []), ...legacy.paths, "/api/faucet", ...(verify ? ["/api/verify"] : []), "/healthz", ...(etherscanDoor ? ["/api", "/v2/api"] : []), ...(live ? ["/api/stream"] : []), ...(config.publicRpc.on ? ["/rpc"] : [])])];
   const openapi = buildOpenApi(routes, { title: `${config.chainName} explorer API`, limits: config.publicRpc.on ? { rpcPerMinute: config.publicRpc.ratePerMinute } : undefined });
 
   const api: Api = async (method, target, body, ip) => {
@@ -319,6 +327,12 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     const [root, name] = parts;
     try {
       if (url.pathname === "/healthz") return method === "GET" ? await status() : fail(405, "Use GET.");
+      // Etherscan's door, at `/api` and at `/v2/api`: GET and POST, and always HTTP 200, as its answers are.
+      if (url.pathname === "/api" || url.pathname === "/v2/api") {
+        if (!etherscanDoor) return fail(404, "The Etherscan-compatible API is off on this explorer.");
+        if (method !== "GET" && method !== "POST") return fail(405, "Use GET or POST.");
+        return await etherscanDoor(url.searchParams, method === "POST" ? body : undefined, ip);
+      }
       if (root !== "api") return fail(404, "No such route.");
       const served = restRoutes?.(parts, url.searchParams) ?? accountRestRoutes?.(parts, url.searchParams) ?? statsRestRoutes?.(parts, url.searchParams);
       if (served) return method === "GET" ? await served() : fail(405, "Use GET.");
