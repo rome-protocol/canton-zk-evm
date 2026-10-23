@@ -154,6 +154,23 @@ describe("phone width", () => {
     expect(phone).toMatch(/\.tb-wide \{ display: none; \}/);
   });
 
+  it("puts every phone rule after all the base rules: no plain rule with the same selector follows a phone rule", () => {
+    const late = all.filter((r) => r.phone).flatMap((p) => all.filter((b) => !b.phone && b.sel === p.sel && b.order > p.order).map((b) => b.sel));
+    expect(late).toEqual([]);
+    // and the phone blocks are the last thing in the file, so no media block sits between base rules
+    const firstPhone = css.indexOf("@media (max-width: 720px)");
+    expect(css.slice(firstPhone).replace(/\/\*[\s\S]*?\*\//g, "").replace(/@media \(max-width: 720px\) \{(?:[^{}]|\{[^{}]*\})*\}/g, "").trim()).toBe("");
+  });
+
+  it("makes the phone top bar one line whatever the base rule says: no wrap, the narrow gap and the 16 px sides", () => {
+    expect(winner(all, [".topbar"], "flex-wrap", true)).toBe("nowrap");
+    expect(winner(all, [".topbar"], "flex-wrap", false)).toBe("wrap");
+    expect(winner(all, [".topbar"], "gap", true)).toBe("0 14px");
+    expect(winner(all, [".topbar"], "padding", true)).toBe("7px 16px");
+    expect(winner(all, [".stats.six"], "grid-template-columns", true)).toBe("repeat(2, minmax(0, 1fr))");
+    expect(winner(all, [".cells"], "grid-template-columns", true)).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
   it("gives every grid of the home page columns that may shrink, so that a phone does not scroll sideways", () => {
     const every = css.split("@media (max-width: 720px)").slice(1).join("\n");
     expect(every).toMatch(/\.cols \{ grid-template-columns: minmax\(0, 1fr\);/);
