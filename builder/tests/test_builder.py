@@ -1,6 +1,6 @@
 """The builder, against fakes only: a fake reth (builder-only WebSocket port and Engine port), a fake Canton JSON
 Ledger API and a fake prover. No real Canton, GPU or reth. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
+import base64, contextlib, stat, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
 from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
@@ -1289,6 +1289,18 @@ class NoAnswer(Case):
         self.assertEqual((found["settled"]["committed"], found["settled"]["number"]), (True, HEAD_NUMBER + 1))
         self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], record["hash"])
         self.assertEqual(len(s.ledger.submitted), 1)   # never a second block at that height
+
+    def test_the_record_is_written_to_disk_and_so_is_its_name_in_the_work_folder(self):
+        s = self.setup({})
+        synced = []
+        real = os.fsync
+        def fsync(fd):
+            synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+            real(fd)
+        with mock.patch.object(os, "fsync", fsync):
+            b.save_unresolved(s.cfg, {"commandId": "c", "hash": "0x1", "begin": 1})
+        self.assertEqual(synced, [False, True])   # the file, then the folder that now holds it
+        self.assertEqual(b.load_unresolved(s.cfg)["commandId"], "c")
 
     def test_a_record_that_cannot_be_saved_means_nothing_is_submitted(self):
         t = tx(ALICE, 0)

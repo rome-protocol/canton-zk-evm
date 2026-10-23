@@ -164,6 +164,23 @@ class EveryOutcome(Lines):
             self.assertEqual((line["attempt_run"], line["attempt"]), (first.journal.run_id, 1))
         self.assertEqual((resolved["update_id"], resolved["completion_offset"]), ("u1", 43))
 
+    def test_an_empty_block_in_doubt_across_a_restart_is_written_to_the_attempt_that_made_it(self):
+        s = self.setup({})
+        s.ledger.late = True
+        first = self.producer(s, empty_every=30)
+        self.now[0] += 31
+        first.step()   # the heartbeat's empty block: no transactions, so no kept file names its run and attempt
+        self.assertFalse(b.saved_path(s.cfg).exists())
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=True)
+        s.ledger.late = False
+        second.step()
+        (resolved,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
+        (seen,) = [l for l in self.journal(s, "final_seen") if l["run"] == second.journal.run_id]
+        for line in (resolved, seen):
+            self.assertEqual((line["attempt_run"], line["attempt"]), (first.journal.run_id, 1))
+
     def test_a_pool_with_nothing_that_can_go_in_is_a_skipped_attempt(self):
         t = tx(BOB, 0)
         s = self.setup({BOB: [t]})

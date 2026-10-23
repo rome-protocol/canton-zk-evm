@@ -203,6 +203,11 @@ def save_unresolved(cfg: Config, resolve: dict) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        fd = os.open(path.parent, os.O_RDONLY)   # the new name has to survive a crash too, as the journal's does
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     except OSError as e:
         raise BuilderError(f"cannot save the unresolved command to {path}: {e}") from e
 
@@ -866,7 +871,8 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
     # that makes the next start wait for the command instead of rewinding a block that may commit. Only a definite answer clears it.
     resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time()}
-    save_unresolved(cfg, resolve)
+    ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt.journal is not None else {}   # as save_kept: an empty block has no kept file to say whose it is
+    save_unresolved(cfg, {**resolve, **ref})
     attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()))
     # The participant's traffic is read around the Advance only for a block that is alone in flight: with another one, whose bytes are whose is not known.
     watch = attempt.journal is not None and attempt.in_flight == 0
@@ -1223,6 +1229,8 @@ class Producer:
             except BuilderError as e:   # the kept transactions are damaged: the command is still in doubt, and it is still waited for
                 print(f"cannot read the kept transactions of the unresolved command: {e}", file=sys.stderr)
                 pairs, ref = [], {}
+            if isinstance(u.get("run"), str) and type(u.get("attempt")) is int:   # the record names its attempt, also for a block with no transactions
+                ref = {"attempt_run": u["run"], "attempt": u["attempt"]}
             self.unresolved = {"pairs": pairs, **u, "since": u.get("submittedAt", 0), "number": u.get("number"), **ref}
         except Exception as e:   # the record cannot be read: step() builds nothing while it exists, and reads it again
             print(f"cannot read the unresolved command: {e}", file=sys.stderr)
