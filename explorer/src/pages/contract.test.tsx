@@ -9,14 +9,16 @@ afterEach(() => vi.unstubAllGlobals());
 const A = addr(0xcb);
 const BAD = "Give an address as 0x and 40 hex digits.";
 const derived = <T,>(items: T[]) => reply({ ...page(items), derived: true });
-interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0]; token?: TokenDetail; tokenError?: number; transfers?: AddressTransferItem[] }
+interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0]; token?: TokenDetail; tokenError?: number; transfers?: AddressTransferItem[]; addressError?: number; hold?: Promise<unknown> }
 async function open(seen: Seen = {}, path = `/contract/${A}?tab=code`) {
   const d = seen.detail ?? contractDetail();
   const calls = fakeApi(route({
     contracts: (a, sub) => (a !== A ? reply({ error: "No contract is held at that address." }, 404) : sub === "source" ? reply(seen.source ?? contractSource()) : reply(d)),
-    addresses: (_a, sub) => (sub === "" ? reply(addressDetail({ address: A, kind: "contract", ...seen.account })) : derived([])),
+    addresses: (_a, sub) => (sub === "" ? (seen.addressError ? reply({ error: "Try again shortly." }, seen.addressError) : reply(addressDetail({ address: A, kind: "contract", ...seen.account }))) : derived([])),
     tokenPages: (_a, sub) => (sub === "" ? (seen.tokenError ? reply({ error: "Try again shortly." }, seen.tokenError) : seen.token ? reply(seen.token) : reply({ error: "No token is held at that address." }, 404)) : derived(sub === "transfers" ? (seen.transfers ?? []) : [])),
   }));
+  // A held reply: the address-detail request is sent at once but answered only when the test lets it go.
+  if (seen.hold) { const answer = globalThis.fetch; vi.stubGlobal("fetch", async (input: string) => { if (input === `/api/addresses/${A}`) { calls.push(`sent ${input}`); await seen.hold; } return answer(input); }); }
   renderApp(path);
   await screen.findByRole("heading", { name: "Contract" });
   return calls;
@@ -306,12 +308,25 @@ describe("the contract page: a token contract", () => {
     expect(screen.getByRole("tab", { name: "Token transfers 2" })).toBeInTheDocument();
   });
 
-  it("mounts no transfers list before the address has answered", async () => {
-    const calls = await open({ account: { tokenTransferCount: 2 } }, `/contract/${A}?tab=token-transfers`);
-    await waitFor(() => expect(calls.some((c) => c.includes("/token-transfers"))).toBe(true));
-    const detail = calls.findIndex((c) => c === `/api/addresses/${A}`);
-    expect(detail).toBeGreaterThanOrEqual(0);
-    expect(calls.findIndex((c) => c.includes("/token-transfers"))).toBeGreaterThan(detail);
+  it("mounts no transfers list while the address-detail reply is held, and the right one when it comes", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => { release = r; });
+    const calls = await open({ account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 }, tokenTransferCount: 0 }, token: tokenDetail(), hold }, `/contract/${A}?tab=token-transfers`);
+    expect(await screen.findByText("Reading the transfers…")).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls).toContain(`sent /api/addresses/${A}`);
+    expect(calls.some((c) => c.includes("/token-transfers") || c.includes("/transfers"))).toBe(false);
+    release();
+    await waitFor(() => expect(calls.some((c) => c.startsWith(`/api/tokens/${A}/transfers`))).toBe(true));
+    await waitFor(() => expect(screen.queryByText("Reading the transfers…")).toBeNull());
+    expect(calls.some((c) => c.startsWith(`/api/addresses/${A}/token-transfers`))).toBe(false);
+  });
+
+  it("shows the error card, not an endless 'Reading the transfers…', when address-detail fails", async () => {
+    await open({ addressError: 503 }, `/contract/${A}?tab=token-transfers`);
+    expect(await screen.findByText("Cannot read the chain")).toBeInTheDocument();
+    expect(screen.getByText("The page tries again in a few seconds.")).toBeInTheDocument();
+    expect(screen.queryByText("Reading the transfers…")).toBeNull();
   });
 
   it("keeps the address's own transfers on the Token transfers tab of a contract that is not a token", async () => {

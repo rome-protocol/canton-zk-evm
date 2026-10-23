@@ -120,7 +120,7 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
   const st = useStatus().data;
   const now = useNow();
   const q = useFollowing(["contract", addr], () => getContract(addr), (d) => d.derived);
-  const read = useQuery({ queryKey: ["address-detail", addr], queryFn: () => getAddressDetail(addr) });
+  const read = useQuery({ queryKey: ["address-detail", addr], queryFn: () => getAddressDetail(addr), refetchInterval: (q) => (q.state.status === "error" ? 5000 : false) });
   const tokq = useTokenDetail(addr, !!read.data?.token);
   const tok = tokq.data;
   const wait = unready(q, "Reading the contract…");
@@ -162,7 +162,7 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
           : tab === "read" ? <ReadTab detail={c} />
           : tab === "write" ? <WriteTab detail={c} />
           : tab === "events" ? <EventsTab detail={c} />
-          : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : !a ? <LoadingCard>Reading the transfers…</LoadingCard> : a.token ? <TokenTransfers address={c.address} /> : <TransfersTab a={c.address} />}
+          : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : read.isError ? <ErrorCard message={read.error instanceof Error ? read.error.message : "The explorer cannot read the chain right now."} retrying /> : !a ? <LoadingCard>Reading the transfers…</LoadingCard> : a.token ? <TokenTransfers address={c.address} /> : <TransfersTab a={c.address} />}
       </div>
     </>
   );
