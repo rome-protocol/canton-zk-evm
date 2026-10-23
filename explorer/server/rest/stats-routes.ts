@@ -51,10 +51,12 @@ export const BUSY_WINDOW_MS = 10 * MINUTE, BUSY_LOADED = 0.6;
 
 /**
  * The prover's busy time over the ten-minute windows of [from, to) that have ended by `t`: the largest ratio, and how many windows are above 0.6, from minute rows
- * (test runs apart). A day that was busy for two hours has about a dozen such windows, though its mean is 0.083.
+ * (test runs apart), counted from `since` (the first day with a record) when that is inside the range. A day that was busy for two hours has about a dozen such windows, though its mean is 0.083.
  */
-export function busyWindows(minutes: readonly StatsRow[], from: number, t: number) {
-  const W = BUSY_WINDOW_MS, first = Math.ceil(from / W) * W, last = Math.floor(t / W) * W;
+export function busyWindows(minutes: readonly StatsRow[], from: number, t: number, since: number | null = null) {
+  // A window before the first day with a record (`since`) is left out of the count and of the days: nothing was recorded then, and "0 of 144 over" would say the prover
+  // was idle. With no `since` (no day recorded yet) the range is counted whole.
+  const W = BUSY_WINDOW_MS, last = Math.floor(t / W) * W, first = Math.max(Math.ceil(from / W) * W, since === null ? -Infinity : Math.ceil(since / W) * W);
   const counted = Math.max(0, Math.round((last - first) / W)), by = new Map<number, number>();
   for (const r of minutes) {
     const k = Math.floor(r.bucket / W) * W;
@@ -178,7 +180,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const open = await stats.open(t, timeToFinal ? 2 * timeToFinal.p95 : null);
     const stuck = open.stuck > 0 ? await stats.stuck(t) : [];
     const day = today[0];
-    const busy = busyWindows(busyMinutes, from, t), hourly = slowHours(endedHours ?? rows, from, t);
+    const busy = busyWindows(busyMinutes, from, t, state.since), hourly = slowHours(endedHours ?? rows, from, t);
     const body = {
       window: name, rows: w.rows, from: iso(from), to: iso(to), asOf: iso(state.asOf), dataSince: iso(state.since),
       tps: pick({ now: lastMinute / 60, peak: peak ? peak.txs / 60 : null, peakAt: iso(peak?.at ?? null) }, F.statsTps),

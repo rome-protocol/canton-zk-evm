@@ -756,7 +756,30 @@ describe.skipIf(!TEST_URL)("the stats routes: the switching rule's two numbers b
   });
 });
 
+describe.skipIf(!TEST_URL)("the stats routes: days before the first record", () => {
+  it("lists no day, and counts no window, before dataSince: 'idle' is for a day that was recorded", async () => {
+    const e = await makeDatabase();
+    try {
+      await base(e.pool);
+      await seed(e.pool, "stats_day", Date.UTC(2026, 9, 20), { txs: 5 }); // the first (and only) day with a record: the 20th, and it is 12:30 on it
+      const s = body(await apiFor(e.pool, () => NOW)("/api/stats/summary?window=30d"));
+      expect(s.dataSince).toBe(new Date(Date.UTC(2026, 9, 20)).toISOString());
+      expect(s.rule.windowsOverByDay).toEqual([{ day: "2026-10-20", windowsOver: 0, windowsCounted: 75 }]); // 00:00 to 12:20; the 30 days before it are not 'idle'
+      expect(s.prover.windowsCounted).toBe(75);
+    } finally { await e.drop(); }
+  });
+});
+
 describe("busyWindows by day", () => {
+  it("leaves out the windows before the first day with a record: nothing was recorded then, so 'idle' would be a claim", () => {
+    const d0 = Date.UTC(2026, 9, 19), since = d0 + DAY; // data from the 20th; the range starts on the 19th
+    const r = busyWindows([], d0 + 5 * HOUR, since + 3 * HOUR, since);
+    expect(r.byDay).toEqual([{ day: since, over: 0, counted: 18 }]);
+    expect(r.counted).toBe(18);
+    expect(busyWindows([], d0 + 5 * HOUR, since + 3 * HOUR).counted).toBe(18 + 114); // with no known start the range is counted whole, as before
+    expect(busyWindows([], d0, d0 + DAY, since)).toMatchObject({ counted: 0, maxRatio: null, over: null, byDay: [] }); // a range wholly before the record
+  });
+
   it("lists a day with none above 0.6 with its count of windows", () => {
     const W = 10 * MINUTE, d0 = Date.UTC(2026, 9, 19), rows = [{ bucket: d0 + DAY + 3 * HOUR, proof_busy_ms: 600000 }]; // one full ten-minute stretch, from 03:00 on the 20th (a minute row of 10 min is enough here)
     const r = busyWindows(rows, d0, d0 + 2 * DAY);
