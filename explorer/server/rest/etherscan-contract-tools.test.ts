@@ -165,6 +165,10 @@ describe.skipIf(!ready || !(FORGE || HARDHAT))("Foundry and Hardhat against the 
       project = join(dir, "forge");
       mkdirSync(join(project, "src"), { recursive: true });
       mkdirSync(join(project, "home"));
+      // `--flatten` compiles the flattened file once itself, with the compiler that svm keeps for the version: this one, so that nothing is downloaded (a downloaded
+      // glibc build does not run in the alpine Node image).
+      mkdirSync(join(project, "home/.svm/0.8.28"), { recursive: true });
+      symlinkSync(TOOLS_SOLC, join(project, "home/.svm/0.8.28/solc-0.8.28"));
       writeFileSync(join(project, "src/Box.sol"), BOX);
       writeFileSync(join(project, "foundry.toml"), [
         "[profile.default]", 'src = "src"', 'out = "out"', "libs = []", `solc = "${TOOLS_SOLC}"`, "auto_detect_solc = false", "optimizer = true", "optimizer_runs = 200", 'evm_version = "cancun"',
