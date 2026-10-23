@@ -95,6 +95,11 @@ describe("the blocks page", () => {
     expect(within(r).getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
   });
 
+  it("writes a block's transaction count with a thousands separator", async () => {
+    await open({ blocks: () => reply(page([blockItem(3, { txCount: 1408 })])) });
+    expect(within(rows()[1]!).getAllByRole("cell")[2]).toHaveTextContent(/^1,408$/);
+  });
+
   it("flags a slow proof, and writes minutes past one", async () => {
     await open({ blocks: () => reply(page([blockItem(3, { proofSeconds: 88.4, finalSeconds: 89.3 }), blockItem(2, { proofSeconds: 7.1 })])) });
     expect(rows()[1]).toHaveTextContent("1 min 28 s");

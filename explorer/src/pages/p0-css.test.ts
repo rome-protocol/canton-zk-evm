@@ -112,3 +112,31 @@ describe("the transaction page on a phone, as screen 14 has it", () => {
     expect(body(phone, ".args-table td:nth-child(4)")).toMatch(/grid-column:\s*1 \/ -1/);
   });
 });
+
+describe("final polish: the 21-screen check", () => {
+  const home = read("home.css"), api = read("api-docs.css");
+  const get = (css: string, sel: string, media = false) => rules(css, media).find(([x]) => x === sel)?.[1] ?? "";
+
+  it("tints the Lost card green with a rule that beats the shared .card, whichever sheet comes last", () => {
+    const tint = rules(home).find(([s]) => s.includes("stat-ok"))!;
+    expect(tint[1]).toMatch(/background:\s*var\(--ok-tint\)/);
+    expect(beats(spec(tint[0]), spec(".card"))).toBe(true);
+  });
+
+  it("keeps the token page's supply in one piece on a phone: a smaller figure, not a break inside the number", () => {
+    expect(get(token, ".tok-stats .stat-v:not(.stat-hash)", true)).toMatch(/font-size:\s*(2[0-4]px|clamp\()/);
+  });
+
+  it("wraps the API page's method chips on a phone instead of cutting them", () => {
+    expect(get(api, ".mchip")).toMatch(/max-width:\s*100%/);
+    expect(get(api, ".mchip")).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(get(api, ".api-table td")).toMatch(/min-width:\s*0/);
+    expect(get(api, ".api-eth-main .api-table td", true)).toMatch(/display:\s*block/);
+  });
+
+  it("breaks the wallet table's addresses only where a line cannot hold them, never in the middle of a word on desktop", () => {
+    expect(get(api, ".api-details td")).not.toMatch(/overflow-wrap:\s*anywhere/);
+    expect(get(api, ".api-details td")).toMatch(/overflow-wrap:\s*break-word/);
+    expect(get(api, ".api-details td", true)).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});
