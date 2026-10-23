@@ -199,9 +199,38 @@ describe("the list of latest transactions", () => {
     expect(rows).toHaveLength(2);
     expect(within(rows[0]!).getByRole("link", { name: "0xa3a3a3…a3a3" })).toHaveAttribute("href", `/tx/${txItem(3).hash}`);
     expect(rows[0]).toHaveTextContent("0.25 tROME");
-    expect(within(rows[0]!).getByRole("link", { name: "0x5b5b5b…b5b5b" })).toHaveAttribute("href", `/address/${txItem(3).from}`);
+    expect(within(rows[0]!).getByRole("link", { name: "0x5b5b5b…5b5b" })).toHaveAttribute("href", `/address/${txItem(3).from}`);
     expect(within(rows[0]!).getByText("Final")).toHaveClass("chip-final");
     expect(region.getByRole("link", { name: "View all transactions →" })).toHaveAttribute("href", "/txs");
+  });
+});
+
+describe("the list of latest transactions, with names and token moves", () => {
+  const usd = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
+  const moved = { count: 3, more: false, first: { token: addr(0xcb), amount: "100000000", tokenId: null, standard: "ERC-20", decimals: 6 } };
+  const withLabels = (items: unknown[]) => {
+    const base = route({ txs: () => reply(page(items as never[])) });
+    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+  };
+
+  it("shows the token a transaction moved as a chip, how many more it moved, and the receiver by name", async () => {
+    withLabels([txItem(3, { value: "0", tokenMoves: moved }), txItem(2, { to: null, created: addr(0xd1) })]);
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    const rows = (await region.findAllByRole("row")).slice(1);
+    expect(await within(rows[0]!).findByText("100 tUSD")).toHaveClass("tname");
+    expect(rows[0]).toHaveTextContent("+2");
+    expect(await within(rows[0]!).findByRole("link", { name: "Test USD (tUSD)" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
+  });
+
+  it("says Create: and the new contract's short address for a creation, and cuts the hash 8 and 4", async () => {
+    withLabels([txItem(3, { to: null, created: addr(0xd1) })]);
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    const row = (await region.findAllByRole("row"))[1]!;
+    expect(row).toHaveTextContent("Create:");
+    expect(within(row).getByRole("link", { name: "0xd1d1d1…d1d1" })).toHaveAttribute("href", `/address/${addr(0xd1)}`);
+    expect(within(row).getByRole("link", { name: /^0xa3a3a3…a3a3$/ })).toBeInTheDocument();
   });
 });
 
@@ -219,7 +248,7 @@ describe("the list of latest transactions, with the faucet", () => {
     const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
     await region.findAllByRole("row");
     expect(region.queryByRole("link", { name: "Ostia faucet" })).toBeNull();
-    expect(region.getAllByRole("link", { name: "0x5b5b5b…b5b5b" }).length).toBeGreaterThan(0);
+    expect(region.getAllByRole("link", { name: "0x5b5b5b…5b5b" }).length).toBeGreaterThan(0);
   });
 });
 
@@ -248,7 +277,7 @@ describe("the list of latest transactions, with those not final yet", () => {
     expect(within(rows[0]!).getByText("Waiting")).toHaveClass("chip-waiting");
     expect(rows[0]).toHaveTextContent("4 s ago");
     expect(rows[0]).toHaveTextContent("0.25 tROME");
-    expect(within(rows[0]!).getByRole("link", { name: "0x717171…17171" })).toHaveAttribute("href", `/address/${addr(0x71)}`);
+    expect(within(rows[0]!).getByRole("link", { name: "0x717171…7171" })).toHaveAttribute("href", `/address/${addr(0x71)}`);
     expect(within(rows[1]!).getByText("Being proven")).toHaveClass("chip-proving");
     expect(rows[1]).toHaveTextContent("1 tROME");
     expect(within(rows[2]!).getByText("Final")).toHaveClass("chip-final");

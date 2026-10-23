@@ -1,12 +1,15 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { ApiTx, BlockListItem, InFlightTx, StatsSeries, StatsSpread, StatsSummary, TxListItem } from "../api.ts";
+import { AddressCell } from "../components/AddressCell.tsx";
+import { Amount, TokenChip } from "../components/Amount.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Spark } from "../components/Spark.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { SearchBox } from "../components/SearchBox.tsx";
-import { count, duration, exact, pct, plural, sec, short, span, trim, units } from "../format.ts";
+import { count, duration, pct, plural, sec, span, trim } from "../format.ts";
+import { useLabels, type Labels } from "../labels.ts";
 import type { Fetched, Read, Summary } from "../stats.ts";
 import { useNow } from "../useStatus.ts";
 
@@ -136,19 +139,40 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
 /** What is known of a transaction that is not final yet: its details from the transaction route, or that they are being read or cannot be. */
 export type Details = ApiTx | "reading" | "error";
 
-function Who({ from, to, created, label, faucet, chain }: { from: string; to: string | null; created: string | null; label?: string; faucet?: string | null; chain?: string }) {
+/** Who sent a transaction and to whom: the faucet by its name, a contract or token by its name, anything else by its short address; a creation names what it made. */
+function Parties({ from, to, created, labels, faucet, chain }: { from: string; to: string | null; created: string | null; labels: Labels; faucet?: string | null; chain?: string }) {
   const named = !!faucet && faucet.toLowerCase() === from.toLowerCase();
   return (
     <>
-      <Link className="who" to={`/address/${from}`} title={named ? from : undefined}>{named ? `${chain ?? "Ostia"} faucet` : short(from, 8, 5)}</Link>
-      {to ? <span className="who muted">to <Link to={`/address/${to}`}>{short(to, 8, 5)}</Link></span> : created ? <span className="who muted">creates <Link to={`/address/${created}`}>{short(created, 8, 5)}</Link></span> : label ? <span className="who muted">{label}</span> : null}
+      <span className="who">{named ? <Link className="hx" to={`/address/${from}`} title={from}>{chain ?? "Ostia"} faucet</Link> : <AddressCell address={from} label={labels.get(from)} />}</span>
+      {to ? <span className="who muted">to <AddressCell address={to} label={labels.get(to)} /></span> : created ? <span className="who muted">Create: <AddressCell address={created} label={labels.get(created)} /></span> : null}
     </>
   );
 }
 
+/** What a final transaction moved: the first token move as a chip (with how many more there are), and the coin when any was sent. */
+function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: string; decimals: number }; labels: Labels }) {
+  const first = t.tokenMoves?.first ?? null, more = t.tokenMoves ? t.tokenMoves.count - 1 : 0;
+  const sent = BigInt(t.value) > 0n;
+  if (!first) return <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} />;
+  return (
+    <span className="moved">
+      <TokenChip move={first} label={labels.get(first.token)} />
+      {more > 0 && <span className="muted small" title={`${more}${t.tokenMoves!.more ? " or more" : ""} more token moves in this transaction`}>+{more}{t.tokenMoves!.more ? "+" : ""}</span>}
+      {sent && <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} />}
+    </span>
+  );
+}
+
+/** The cell of a transaction: its icon, its hash cut as the screen cuts it (8 and 4), and how long ago. */
+const TxCell = ({ hash, ago }: { hash: string; ago: string }) => (
+  <td><span className="idcell"><Icon name="doc" size={14} /><span><HashLink value={hash} to={`/tx/${hash}`} plain lead={8} tail={4} /><span className="ago">{ago} ago</span></span></span></td>
+);
+
 /**
  * The newest transactions: those that are not final yet come first, each with the stage the journal gives it, then the final ones. A transaction
  * that is not final can still change, so what is shown of it is what reth holds; where that cannot be read, the row says so and keeps its stage.
+ * Names and token moves come from the labels route, read once for the whole list; without them a row shows the short address and the coin.
  */
 export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", details = {}, faucet = null, chain }: {
   txs: TxListItem[] | undefined; coin: { symbol: string; decimals: number }; error?: string; pending?: InFlightTx[]; pendingRead?: Read; details?: Record<string, Details>; faucet?: string | null; chain?: string;
@@ -156,6 +180,10 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
   const now = useNow();
   const waiting = pending.filter((p) => !txs?.some((t) => t.hash === p.hash));
   const final = txs ?? [];
+  const labels = useLabels([
+    ...final.flatMap((t) => [t.from, t.to, t.created, t.tokenMoves?.first?.token]),
+    ...waiting.flatMap((p) => { const d = details[p.hash]; return typeof d === "object" ? [d.from, d.to, d.created] : []; }),
+  ]);
   return (
     <section className="card" aria-labelledby="txs-h">
       <div className="sec-h"><h3 id="txs-h">Latest transactions</h3><span className="muted small">Including those not final yet</span></div>
@@ -170,18 +198,18 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
                   const d = details[p.hash] ?? "reading";
                   return (
                     <tr key={p.hash}>
-                      <td><Link className="mono" to={`/tx/${p.hash}`}>{short(p.hash, 8, 4)}</Link><span className="ago">{duration(now - Date.parse(p.at))} ago</span></td>
-                      <td className="mono small">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Who from={d.from} to={d.to} created={d.created} faucet={faucet} chain={chain} />}</td>
-                      <td className="r">{typeof d === "object" && d.value !== null ? <span title={`${exact(d.value, coin.decimals)} ${coin.symbol}`}>{units(d.value, coin.decimals)} {coin.symbol}</span> : <span className="muted">—</span>}</td>
+                      <TxCell hash={p.hash} ago={duration(now - Date.parse(p.at))} />
+                      <td className="small">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Parties from={d.from} to={d.to} created={d.created} labels={labels} faucet={faucet} chain={chain} />}</td>
+                      <td className="r">{typeof d === "object" && d.value !== null ? <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">—</span>}</td>
                       <td><Chip status={p.stage} /></td>
                     </tr>
                   );
                 })}
                 {final.map((t) => (
                   <tr key={t.hash}>
-                    <td><Link className="mono" to={`/tx/${t.hash}`}>{short(t.hash, 8, 4)}</Link><span className="ago">{duration(now - t.timestamp * 1000)} ago</span></td>
-                    <td className="mono small"><Who from={t.from} to={t.to} created={t.created} faucet={faucet} chain={chain} /></td>
-                    <td className="r" title={`${exact(t.value, coin.decimals)} ${coin.symbol}`}>{units(t.value, coin.decimals)} {coin.symbol}</td>
+                    <TxCell hash={t.hash} ago={duration(now - t.timestamp * 1000)} />
+                    <td className="small"><Parties from={t.from} to={t.to} created={t.created} labels={labels} faucet={faucet} chain={chain} /></td>
+                    <td className="r"><Moved t={t} coin={coin} labels={labels} /></td>
                     <td><Chip status="final" /></td>
                   </tr>
                 ))}
