@@ -218,13 +218,30 @@ describe("the stats page", () => {
   it("gives the number turned away when the server counts it, and the balance and queue when the faucet is on", async () => {
     await open("/stats?window=7d", {
       faucetOn: true,
-      summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: 77 } })),
+      summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: { total: 77, byReason: { address: 40, ip: 20, hour: 15, captcha: 2 } } } })),
       faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "998996990000000000000000", amount: "1000000000000000000", perAddressSeconds: 86400, queue: 0 }),
     });
     const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
     expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("77");
+    expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent("40 same address · 20 same network · 15 hourly cap · 2 failed check");
+    expect(card).not.toHaveTextContent("[object Object]");
     await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("998,996.99"));
     expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("queue now 0");
+  });
+
+  it("says not recorded before the minute the counting began for a window that starts earlier, and plain not recorded where it never began", async () => {
+    await open("/stats?window=7d", { summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: null, turnedAwaySince: "2026-10-23T12:01:00.000Z" } })) });
+    const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    const cell = within(card).getByText("Turned away by the limits").parentElement!;
+    expect(cell).toHaveTextContent("Not recorded");
+    expect(cell).toHaveTextContent("not recorded before 2026-10-23 12:01 UTC");
+    expect(card).not.toHaveTextContent("[object Object]");
+  });
+
+  it("says not recorded, with no date, when the server never counted", async () => {
+    await open("/stats?window=7d", { summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: null, turnedAwaySince: null } })) });
+    const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    expect(within(card).getByText("Turned away by the limits").parentElement).toHaveTextContent(/Not recorded.*not recorded$/);
   });
 
   it("shows a dash, not a zero or NaN, for what a window with no block cannot say", async () => {
@@ -233,7 +250,7 @@ describe("the stats page", () => {
         window: "1h", rows: "minute", timeToFinal: null, proofTime: null, commitTime: null, blockTime: null, served: null,
         txsPerBlock: { mean: null, median: null, max: null, nonEmptyMean: null, nonEmptyMedian: null },
         blocks: { count: 0, empty: 0, busy: 0, bySize: [] }, txs: { count: 0, failed: 0, successRate: null, accepted: 0, allTime: null }, tps: { now: 0, peak: null, peakAt: null },
-        attempts: { total: 0, refused: 0, failed: 0, notTaken: 0, refusedShare: null, failedShare: null, notTakenShare: null }, faucet: { requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null },
+        attempts: { total: 0, refused: 0, failed: 0, notTaken: 0, refusedShare: null, failedShare: null, notTakenShare: null }, faucet: { requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null, turnedAwaySince: null },
       })),
     });
     expect(await tile("Time to final")).toHaveTextContent("—");

@@ -30,7 +30,7 @@ export function summary(over: Partial<StatsSummary> = {}): StatsSummary {
     acceptedNotFinal: { normal: 4, slow: 0, stuck: 0, beingProven: 3, waiting: 1, noAcceptanceTime: 0, slowAfterSeconds: 161.2, stuckAfterSeconds: 120, listed: [] },
     lost: { window: 0, total: 0, listed: [] }, dropped: { window: 0, total: 0, listed: [] }, replaced: { window: 0, total: 0 },
     cutting: { strategy: "on_demand", since: "2026-10-12T09:00:00.000Z" },
-    faucet: { requests: 1388, sent: 1311, final: 1311, failed: 0, timeToFinal: sp(45.8, 120, 1311), turnedAway: null },
+    faucet: { requests: 1388, sent: 1311, final: 1311, failed: 0, timeToFinal: sp(45.8, 120, 1311), turnedAway: null, turnedAwaySince: null },
     ...over,
   };
 }

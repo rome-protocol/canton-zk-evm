@@ -20,7 +20,7 @@ export const FIELDS = {
   signers: ["operator", "confirmer"],
   faucet: ["on"],
   /** What the faucet shows about itself, and what it answers a request with. */
-  faucetInfo: ["on", "address", "balance", "amount", "perAddressSeconds", "perIpSeconds", "maxPerHour", "queue", "captcha"],
+  faucetInfo: ["on", "address", "balance", "balanceBlock", "amount", "perAddressSeconds", "perIpSeconds", "maxPerHour", "queue", "batch", "sentToday", "finalToday", "beingProven", "captcha"],
   faucetCaptcha: ["siteKey", "scriptUrl", "widgetClass"],
   /** What a request is answered with: a ticket, and its place in line. */
   faucetQueued: ["ticket", "position", "to", "amount"],
@@ -164,7 +164,10 @@ export const REST_FIELDS = {
   statsLostItem: ["txHash", "state", "reason", "at"],
   statsReplaced: ["window", "total"],
   statsCutting: ["strategy", "since"],
-  statsFaucet: ["requests", "sent", "final", "failed", "timeToFinal", "turnedAway"],
+  statsFaucet: ["requests", "sent", "final", "failed", "timeToFinal", "turnedAway", "turnedAwaySince"],
+  /** The requests the faucet turned away in the window, and the reasons that add up to it. */
+  statsTurnedAway: ["total", "byReason"],
+  statsTurnedAwayReasons: ["address", "ip", "hour", "captcha"],
   /** /api/stats/series: one metric, one point for each step of the window. */
   statsSeries: ["metric", "unit", "window", "step", "from", "to", "asOf", "points"],
   statsPoint: ["at", "value"],

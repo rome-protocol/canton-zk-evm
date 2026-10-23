@@ -12,7 +12,7 @@ const SNAPSHOT = new URL("../../db/schema.snapshot.txt", import.meta.url);
 const TABLES = [
   "abi_fragments", "addresses", "attempt_transactions", "block_attempts", "block_records", "blocks", "bytecodes", "canton_participants",
   "canton_parties", "canton_synchronizers", "canton_templates", "canton_updates", "coin_balance_history", "contracts", "cursors",
-  "faucet_batches", "faucet_daily_counts", "faucet_requests", "gateway_legs", "health_checks", "internal_calls", "logs", "meta", "nft_owners", "pool_samples",
+  "faucet_batches", "faucet_daily_counts", "faucet_refusals", "faucet_refusals_since", "faucet_requests", "gateway_legs", "health_checks", "internal_calls", "logs", "meta", "nft_owners", "pool_samples",
   "producer_runs", "proofs", "proxies", "schema_migrations", "stats_day", "stats_dirty", "stats_hour", "stats_minute", "token_balances",
   "token_transfers", "tokens", "tracked_transactions", "transactions", "tx_hashes", "tx_lifecycle", "tx_traces", "verification_jobs",
   "verified_sources",

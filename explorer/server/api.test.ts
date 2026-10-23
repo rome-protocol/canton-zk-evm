@@ -44,6 +44,7 @@ function handlers(chain: FakeChain, finalized: () => number) {
     eth_getBlockByHash: (p: unknown[]) => read(chain.blocks.find((b) => b.hash === p[0]) as never, p[1]),
     eth_getTransactionByHash: (p: unknown[]) => { const f = find(p[0] as string); return f ? tx(...f) : p[0] === POOL_TX ? pool : null; },
     eth_getTransactionReceipt: (p: unknown[]) => { const f = find(p[0] as string); return f ? chain.receipts[f[0]]![f[1]] : null; },
+    eth_blockNumber: () => "0x" + (chain.blocks.length - 1).toString(16),
     eth_getBalance: (p: unknown[]) => "0x" + (p[0] === FAUCET_ADDRESS ? 1000n * 10n ** 18n : 5n * 10n ** 17n).toString(16),
     eth_gasPrice: "0x3b9aca07",
     eth_maxPriorityFeePerGas: "0x3b9aca00",
@@ -540,13 +541,37 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
   });
 
   it("shows, on GET, whether it is on, its address and balance, and what it gives, with exactly its fields", async () => {
-    const on = await (await boot(chain(), { faucet: true })).get("/api/faucet");
+    const c = chain();
+    expect(c.blocks.length - 1).toBeGreaterThan(2); // the newest block is not the final one below
+    const on = await (await boot(c, { faucet: true, finalized: 2 })).get("/api/faucet");
     expect(on.status).toBe(200);
     same(on.body, FIELDS.faucetInfo);
-    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, captcha: null });
+    // The balance is named by the block it was read at: the final head (reth's finalized block, 2 here), not the newest block. With no database store (the file's way) no count of today's payouts is possible: null, not 0.
+    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: 2, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null });
     await reth?.close(); await ledger?.close();
     const off = await (await boot(chain())).get("/api/faucet");
-    expect(off.body).toEqual({ on: false, address: null, balance: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, captcha: null });
+    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null });
+  });
+
+  it("says no block, and the newest block's balance, when reth cannot name the final block", async () => {
+    const { get } = await boot(chain(), { faucet: true, finalized: "unreadable" });
+    expect((await get("/api/faucet")).body).toMatchObject({ on: true, balance: (1000n * 10n ** 18n).toString(), balanceBlock: null });
+  });
+
+  it("says how many payouts were sent today, how many are final, and how many are being proven, from the store", async () => {
+    const asked: number[] = [];
+    const store: FaucetStore = { load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => true, payouts: async (from) => { asked.push(from); return { sent: 42, final: 40, beingProven: 2 }; } };
+    const { get } = await boot(chain(), { faucet: true, store });
+    expect(await get("/api/faucet")).toMatchObject({ status: 200, body: { sentToday: 42, finalToday: 40, beingProven: 2, batch: 100 } });
+    // asked from 00:00 UTC of today
+    expect(asked[0]! % 86400_000).toBe(0);
+    expect(Date.now() - asked[0]!).toBeLessThan(86400_000);
+  });
+
+  it("gives a faucet that cannot read its balance no balance and no block, and still answers", async () => {
+    const { get } = await boot(chain(), { faucet: true });
+    await reth?.close();
+    expect((await get("/api/faucet")).body).toMatchObject({ on: true, balance: null, balanceBlock: null, batch: 100 });
   });
 
   it("says in the status whether the faucet is on", async () => {
