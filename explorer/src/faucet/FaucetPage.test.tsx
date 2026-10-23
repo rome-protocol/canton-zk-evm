@@ -5,7 +5,7 @@ import { userEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FaucetPage } from "./FaucetPage.tsx";
-import type { CoinResult, FaucetClient, FaucetInfo, RecentSend, Ticket, TicketResult } from "./faucet-client.ts";
+import type { CoinResult, FaucetClient, FaucetInfo, RecentSend, Ticket, TicketResult, TxTimes } from "./faucet-client.ts";
 
 afterEach(cleanup);
 
@@ -437,5 +437,76 @@ describe("your request", () => {
     await ask(user);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Not sent"));
     expect(screen.getByRole("status").textContent!.length).toBeLessThan(1200);
+  });
+});
+
+describe("the times of a request", () => {
+  const times = (over: Partial<TxTimes> = {}): TxTimes => ({ nonce: 1004, acceptedAt: "2026-10-23T17:57:31.428Z", proofStartedAt: "2026-10-23T17:57:31.832Z", finalAt: null, ...over });
+  const withTimes = (t: Ticket["status"], state: string | null, tx: TxTimes | null, usual: { lowMs: number; highMs: number } | null = { lowMs: 7000, highMs: 7700 }, over: Partial<Ticket> = {}) => {
+    const client = fake({ tickets: [view({ status: t, position: null, hash: HASH, state, block: 22, ...over })] });
+    return Object.assign(client, { txTimes: vi.fn(async (_h: string) => tx), usualProof: vi.fn(async () => usual) });
+  };
+  const step = (name: string) => within(screen.getByRole("status")).getAllByRole("listitem").find((li) => li.querySelector("b")?.textContent?.startsWith(name))!;
+
+  it("puts the pool time and the nonce on Sent, and the proof's start on Being proven", async () => {
+    const user = await open(withTimes("sent", "proving", times()));
+    await ask(user);
+    await waitFor(() => expect(step("Sent")).toHaveTextContent("17:57:31.428"));
+    expect(step("Sent")).toHaveTextContent("nonce 1004");
+    expect(step("Being proven")).toHaveTextContent("17:57:31.832");
+    expect(step("Final on Canton")).not.toHaveTextContent("17:57:31");
+  });
+
+  it("says how long a proof usually takes, with a bar drawn from when the proof began, while it is being proven", async () => {
+    const started = new Date(Date.now() - 4200).toISOString();
+    const user = await open(withTimes("sent", "proving", times({ proofStartedAt: started })));
+    await ask(user);
+    await waitFor(() => expect(step("Being proven")).toHaveTextContent("A proof usually takes 7.0–7.7 s"));
+    expect(step("Being proven")).toHaveTextContent(/\d\.\d s so far/);
+    const bar = within(step("Being proven")).getByRole("progressbar");
+    expect(Number(bar.getAttribute("aria-valuenow"))).toBeGreaterThan(40);
+    expect(Number(bar.getAttribute("aria-valuenow"))).toBeLessThanOrEqual(100);
+    expect(step("Final on Canton")).toHaveTextContent(/about \d\d:\d\d:\d\d/);
+  });
+
+  it("shows no usual time, no bar and no 'about' when too few blocks have a proof time", async () => {
+    const user = await open(withTimes("sent", "proving", times(), null));
+    await ask(user);
+    await waitFor(() => expect(step("Sent")).toHaveTextContent("nonce 1004"));
+    expect(screen.queryByText(/usually takes/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByText(/about \d\d:/)).not.toBeInTheDocument();
+  });
+
+  it("shows no time and no nonce where the transaction route does not serve them", async () => {
+    const user = await open(withTimes("sent", "pending", times({ nonce: null, acceptedAt: null, proofStartedAt: null })));
+    await ask(user);
+    await waitFor(() => expect(step("Sent")).toHaveTextContent("is in the pool"));
+    expect(step("Sent")).not.toHaveTextContent("nonce");
+    for (const name of ["Sent", "Being proven", "Final on Canton"]) expect(step(name)).not.toHaveTextContent(/\d\d:\d\d:\d\d/);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("keeps the steps as they are when the transaction cannot be read at all", async () => {
+    const user = await open(withTimes("sent", "proving", null));
+    await ask(user);
+    await waitFor(() => expect(screen.getByText("Being proven in block 22")).toBeInTheDocument());
+    expect(screen.queryByText(/nonce/)).not.toBeInTheDocument();
+  });
+
+  it("puts the final time on Final on Canton as a fact, not 'about', and no bar", async () => {
+    const user = await open(withTimes("final", null, times({ finalAt: "2026-10-23T17:57:39.101Z" })));
+    await ask(user);
+    await waitFor(() => expect(step("Final on Canton")).toHaveTextContent("17:57:39.101"));
+    expect(step("Final on Canton")).not.toHaveTextContent("about");
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+
+  it("does not ask for times before the transfer has a hash", async () => {
+    const client = withTimes("queued", null, times(), undefined, { hash: null });
+    const user = await open(client);
+    await ask(user);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Queued"));
+    expect(client.txTimes).not.toHaveBeenCalled();
   });
 });

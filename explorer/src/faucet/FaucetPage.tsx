@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { createFaucetClient, type CoinResult, type FaucetClient, type FaucetInfo, type RecentSend, type Ticket } from "./faucet-client.ts";
+import { at as instant, clock, secs } from "../block-times.ts";
+import { createFaucetClient, type CoinResult, type FaucetClient, type FaucetInfo, type RecentSend, type Ticket, type TxTimes } from "./faucet-client.ts";
 import { formatAgo, formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
 import "./faucet.css";
 
@@ -85,6 +86,9 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
   /** The faucet's newest final payouts; null while unread or when they cannot be read. */
   const [recent, setRecent] = useState<RecentSend[] | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [times, setTimes] = useState<TxTimes | null>(null);
+  const [usual, setUsual] = useState<{ lowMs: number; highMs: number } | null>(null);
+  const [second, setSecond] = useState(() => Date.now());
   const alive = useRef(true);
   const field = useId(), notice = useId();
 
@@ -111,6 +115,16 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     const timer = setInterval(() => setNow(Date.now()), 5000);
     return () => clearInterval(timer);
   }, []);
+
+  // While a request is being proven, how far the proof has got is drawn every second, and how long a proof usually takes is read once.
+  const proving = watch?.ticket?.status === "sent" && watch.ticket.state === "proving" && !!watch.ticket.hash;
+  useEffect(() => {
+    if (!proving) return;
+    let stop = false;
+    client.usualProof?.().then((u) => !stop && setUsual(u), () => {});
+    const timer = setInterval(() => setSecond(Date.now()), 1000);
+    return () => { stop = true; clearInterval(timer); };
+  }, [proving, client]);
 
   // After "another request is being sent", the button waits out the time the faucet named.
   useEffect(() => {
@@ -142,6 +156,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
       if (r.kind === "unknown") { setWatch((w) => w && { ...w, gone: true }); return; }
       if (r.kind === "ticket") {
         setWatch((w) => w && { ...w, ticket: r.ticket, reachable: true });
+        if (r.ticket.hash) client.txTimes?.(r.ticket.hash).then((t) => !stop && setTimes(t), () => {});
         if (r.ticket.status === "final" || r.ticket.status === "failed") {
           client.info().then((info) => !stop && setLoaded({ state: "ready", info }), () => {});
           setReads((n) => n + 1);
@@ -164,6 +179,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     // The check's script puts its answer in a field of the form whose name ends in -response.
     const token = (event.currentTarget.querySelector('[name$="-response"]') as HTMLInputElement | null)?.value || undefined;
     setWatch(null);
+    setTimes(null);
     const answer = await client.request(typed, token);
     if (!alive.current) return;
     setSending(false);
@@ -364,23 +380,35 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     const tx = t?.hash ? <> Transaction <Link className="hx" to={`/tx/${t.hash}`} title={t.hash}><span className="mono">{shortHash(t.hash)}</span></Link><CopyButton value={t.hash} what="transaction hash" /></> : null;
     const place = t?.position ?? watch.asked.position;
     const block = t?.block !== null && t?.block !== undefined ? ` in block ${formatCount(t.block)}` : "";
-    type Step = { state: "done" | "active" | "todo" | "bad"; title: string; detail: ReactNode };
+    type Step = { state: "done" | "active" | "todo" | "bad"; title: string; detail: ReactNode; at?: string | null; extra?: ReactNode };
+    // The times are the explorer's own, from the transaction route; a time it does not serve is not drawn.
+    const stamp = (iso: string | null | undefined) => (iso ? clock(iso, 3) : null);
+    const askedIso = askedAt !== null && (!times?.acceptedAt || askedAt <= instant(times.acceptedAt)) ? new Date(askedAt).toISOString() : null;
+    const startedAt = times?.proofStartedAt ?? null;
+    const elapsed = startedAt ? Math.max(0, second - instant(startedAt)) : null;
+    const range = usual ? `${(usual.lowMs / 1000).toFixed(1)}–${(usual.highMs / 1000).toFixed(1)} s` : null;
+    const expected = proving && startedAt && usual ? new Date(instant(startedAt) + (usual.lowMs + usual.highMs) / 2).toISOString() : null;
+    const nonce = times?.nonce !== null && times?.nonce !== undefined ? `, nonce ${times.nonce},` : "";
     const steps: Step[] = [
       status === "queued"
-        ? { state: "active", title: "Queued", detail: place <= 1 ? "Taken by the faucet. No one is ahead of you." : `You are number ${formatCount(place)} in line. The faucet sends in batches.` }
-        : { state: "done", title: "Queued", detail: "Taken by the faucet." },
+        ? { at: stamp(askedIso), state: "active", title: "Queued", detail: place <= 1 ? "Taken by the faucet. No one is ahead of you." : `You are number ${formatCount(place)} in line. The faucet sends in batches.` }
+        : { at: stamp(askedIso), state: "done", title: "Queued", detail: "Taken by the faucet." },
       failed
         ? { state: "bad", title: "Not sent", detail: <>{(t?.reason ?? "The transfer did not happen.").slice(0, REASON_MAX)} Nothing was taken from you, and you may ask again.</> }
         : dropped
           ? { state: "active", title: "Sent, not followed", detail: <>The explorer stopped following it, and the chain may still take it.{tx} Look at the address's balance in a few minutes. Your turn is used until then.</> }
           : sent
-            ? { state: "done", title: "Sent", detail: <>{tx ?? "The transfer"} {status === "final" || proving ? "went to the chain." : "is in the pool, waiting for the next block."}</> }
+            ? { at: stamp(times?.acceptedAt), state: "done", title: "Sent", detail: <>{tx ?? "The transfer"}{nonce} {status === "final" || proving ? "went to the chain." : "is in the pool, waiting for the next block."}</> }
             : { state: "todo", title: "Sent", detail: "The transfer goes to the chain in the next batch." },
       status === "final" ? { state: "done", title: `Proven${block}`, detail: "The proof was checked and the block was committed." }
-        : proving ? { state: "active", title: `Being proven${block}`, detail: "A proof of the block is being made. It is not final until Canton has committed it." }
+        : proving ? {
+          at: stamp(startedAt), state: "active", title: `Being proven${block}`,
+          detail: <>A proof of the block is being made. It is not final until Canton has committed it.{elapsed !== null && ` ${secs(elapsed, 1)} so far.`}{range && ` A proof usually takes ${range}.`}</>,
+          extra: elapsed !== null && usual ? <i className="pbar" role="progressbar" aria-label="How far the proof has got, against how long a proof usually takes" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round((elapsed / Math.max(1, usual.highMs)) * 100))}><b style={{ width: `${Math.min(100, (elapsed / Math.max(1, usual.highMs)) * 100)}%` }} /></i> : null,
+        }
         : { state: "todo", title: "Being proven", detail: "The block holding the transfer is proven." },
-      status === "final" ? { state: "done", title: "Final on Canton", detail: <>{amount} is final on Canton{block}. The coins are yours, and the balance shown everywhere includes them.</> }
-        : { state: "todo", title: "Final on Canton", detail: "Then the coins are yours, and the balance shown everywhere includes them." },
+      status === "final" ? { at: stamp(times?.finalAt), state: "done", title: "Final on Canton", detail: <>{amount} is final on Canton{block}. The coins are yours, and the balance shown everywhere includes them.</> }
+        : { at: expected ? `about ${clock(expected, 3).slice(0, 8)}` : null, state: "todo", title: "Final on Canton", detail: "Then the coins are yours, and the balance shown everywhere includes them." },
     ];
     if (watch.gone) {
       return (
@@ -401,7 +429,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
           {steps.map((st, i) => (
             <li key={i} className={`step step-${st.state}`}>
               <i className="smark" aria-hidden="true">{st.state === "done" ? <Icon name="ok" size={12} /> : st.state === "bad" ? <Icon name="bad" size={12} /> : st.state === "active" ? <Icon name="clock" size={12} /> : null}</i>
-              <div><b>{st.title}</b><span className="small muted">{st.detail}</span></div>
+              <div><div className="srow"><b>{st.title}</b>{st.at && <time className="stime mono">{st.at}</time>}</div><span className="small muted">{st.detail}</span>{st.extra}</div>
             </li>
           ))}
         </ol>
