@@ -226,6 +226,14 @@ cut_block() {
   # The nightly's L3 times a block from the offset the commit answered with.
   [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
 }
+# Canton's head: what the chain's state contract holds, as one JSON line {"headNumber", "headHash"}. L3 reads it after a cut that failed, to tell a chain that forked
+# (Canton and reth hold different heads) from a block that Canton has.
+canton_head() {
+  CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+    "$PY" -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import builder as b
+cfg = b.Config.from_env(); cfg.read_as = tuple(sys.argv[2:])
+head = b.Ledger(cfg).head(); print(json.dumps({"headNumber": int(head["headNumber"]), "headHash": head["headHash"]}))' "$ROOT/builder" "$OPERATOR_PARTY" "$GATEWAY_PARTY"
+}
 receipt_of() { "$PY" "$ROOT/demo/evm.py" receipt "$1"; }
 "$ROOT/tests/build_w1_fixtures.sh" "$WORK/w1"
 reverts_tx=$(w1py deploy "$WORK/w1/Reverts.bin"); stress_tx=$(w1py deploy "$WORK/w1/Stress.bin")

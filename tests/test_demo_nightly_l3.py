@@ -116,6 +116,37 @@ class Poller(unittest.TestCase):
         self.assertIsNotNone(clock.reached(9))
 
 
+class FailedCut(unittest.TestCase):
+    """A cut that failed is never made again: Canton's head and reth's say what L3 does next."""
+    def test_a_fork_stops_l3_and_names_both_heads(self):
+        why = l3.after_failed_cut((7, "0xaa"), (8, "0xbb"), 7, "cut_block exited 1: late")
+        self.assertIn("the chain forked at block 8: Canton holds 7 (0xaa), reth holds 8 (0xbb)", why)
+
+    def test_the_same_number_with_two_hashes_is_a_fork_at_that_number(self):
+        self.assertIn("forked at block 8:", l3.after_failed_cut((8, "0xaa"), (8, "0xbb"), 7, "late"))
+
+    def test_canton_holding_the_block_reth_holds_carries_on(self):
+        self.assertIsNone(l3.after_failed_cut((8, "0xaa"), (8, "0xaa"), 7, "late"))
+
+    def test_no_new_block_anywhere_fails_with_the_builders_reason(self):
+        self.assertEqual(l3.after_failed_cut((7, "0xaa"), (7, "0xaa"), 7, "cut_block exited 1: the pool is empty"), "cut_block exited 1: the pool is empty")
+
+    def test_it_is_never_cut_again(self):
+        self.assertFalse(hasattr(l3, "CUT_RETRIES"))
+        self.assertNotIn("CUT_RETRIES", Path(l3.__file__).read_text())
+
+
+class HashLists(unittest.TestCase):
+    def test_lists_of_hashes_are_cut_out(self):
+        text = 'lost ["0x' + "a" * 64 + '", "0x' + "b" * 64 + '"] and [] done'
+        self.assertEqual(l3.HASH_LISTS.sub("[...]", text), "lost [...] and [...] done")
+
+    def test_an_unclosed_list_is_not_slow(self):
+        start = time.monotonic()
+        l3.HASH_LISTS.sub("[...]", "[" + ' "0x' + "a" * 40 + '"' * 1 + (' "0x' + "b" * 40 + '"') * 60)
+        self.assertLess(time.monotonic() - start, 1.0)
+
+
 class Judge(unittest.TestCase):
     ok = dict(growth=1.2e9, txs_added=50_000)
 

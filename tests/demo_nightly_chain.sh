@@ -16,7 +16,7 @@ mkdir -p "$NIGHTLY_OUT"
 nightly_failed=()
 
 # What cut_block (run by `bash -c cut_block` from L3) needs: itself, `fail`, and the variables it reads. The Canton and reth variables are exported already.
-export -f cut_block fail
+export -f cut_block canton_head fail
 export PY ROOT BUILDER_PARTY OPERATOR_PARTY GATEWAY_PARTY EXPLORER RETH_HTTP_PORT="${RETH_HTTP_PORT:-8545}"
 export L3_PY=$PY L3_DB=cze-rehearsal-explorer-db
 
@@ -99,7 +99,7 @@ fi
   echo
   echo "| | result |"
   echo "|---|---|"
-  jq -r '"| L3 flood | \(.blocks // 0) blocks (\(.blocks_per_minute // "n/a") a minute\(if ((.cut_retries // []) | length) > 0 then ", \(.cut_retries | length) cuts retried" else "" end)), \(.transactions // 0) transactions; index lag p95 \(.served_p95_s // "n/a") s (budget 1.0), stream p95 \(.sse_p95_s // "n/a") s (budget 0.5), time to final p95 \(.final_p95_s // "n/a") s (reported), database \(if .growth_bytes_per_million then ((.growth_bytes_per_million / 1e7 | round) / 100) else "n/a" end) GB per million transactions (budget 2.5)\(if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) |"' "$NIGHTLY_OUT/l3.json"
+  jq -r '"| L3 flood | \(.blocks // 0) blocks (\(.blocks_per_minute // "n/a") a minute\(if ((.cuts_failed_but_committed // []) | length) > 0 then ", \(.cuts_failed_but_committed | length) cuts that failed but committed" else "" end)), \(.transactions // 0) transactions; index lag p95 \(.served_p95_s // "n/a") s (budget 1.0), stream p95 \(.sse_p95_s // "n/a") s (budget 0.5), time to final p95 \(.final_p95_s // "n/a") s (reported), database \(if .growth_bytes_per_million then ((.growth_bytes_per_million / 1e7 | round) / 100) else "n/a" end) GB per million transactions (budget 2.5)\(if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) |"' "$NIGHTLY_OUT/l3.json"
   jq -r '"| L4 pages | " + ([.pages[] | "\(.name) LCP \(if .median.lcpMs then (.median.lcpMs | round) else "n/a" end) ms\(if .held then "" else " (not held)" end)"] | join(", ")) + (if (.failures | length) > 0 then " **FAILED: \(.failures | join("; "))**" else "" end) + " |"' "$NIGHTLY_OUT/l4.json"
   jq -r '"| L5 contract tools | \(if .reason then .reason else (.status | ascii_upcase) end)\(if (.failures | length) > 0 then " **\(.failures | join("; ") | gsub("\n"; " "))**" else "" end) |"' "$NIGHTLY_OUT/l5.json"
   echo
