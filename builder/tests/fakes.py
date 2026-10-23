@@ -74,6 +74,7 @@ class FakeReth:
 
     def __init__(self, pool: dict, gas_limit: int = 30_000_000):
         self.pool, self.gas_limit = pool, gas_limit
+        self.genesis = "0x" + "66" * 32   # the hash of block 0
         self.mined: dict = {}   # hash -> transaction, for every transaction the pool lost when a block holding it became head
         self.engine_calls: list = []   # (method, params)
         self.ws_calls: list = []       # (method, params)
@@ -166,6 +167,8 @@ class FakeReth:
             return self._build(*params)
         if method == "debug_getRawBlock":
             return self.raw_blocks[int(params[0], 16)]
+        if method == "eth_getBlockByNumber" and int(params[0], 16) == 0:
+            return {"number": "0x0", "hash": self.genesis, "transactions": []}
         if method == "eth_getBlockByNumber":
             return {"number": params[0], "hash": self.by_number.get(int(params[0], 16)),
                     "transactions": [{"hash": t} for t in self.block_txs.get(self.by_number.get(int(params[0], 16)), [])]}

@@ -4,7 +4,7 @@ Used by network/restart.sh after a restart, when reth may be behind Canton, ahea
 
 First, the builder's in-doubt record (unresolved.json in its work folder): when the builder was stopped with an Advance that had no answer, that
 command may still commit, so Canton's head says nothing yet. It is settled the builder's own way (builder.recover_saved: its completion, or Canton's
-head once its window is over; this waits for it), and only then is reth compared with Canton's head. The work folder's lock is held for the whole
+head once Canton's own time is past its window; this waits for it), and only then is reth compared with Canton's head. The work folder's lock is held for the whole
 run, so a running producer is refused with a message.
 
   ahead of Canton   reth's blocks after Canton's head were never committed on Canton (and no in-doubt command is left that could commit one):

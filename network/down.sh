@@ -4,11 +4,16 @@
 #                    databases, reth's data and the secrets, so network/restart.sh brings the same chain back. The explorer's database that
 #                    explorer/run.sh made for a network that is not persistent goes with the chain.
 #   down.sh --wipe   removes a persistent network's data as well: the databases (the explorer's too), reth's data, the passwords and the party list. The chain is gone.
+# A chain that goes (--wipe, or a network that is not persistent) also loses the builder's in-doubt command and kept transactions
+# ($STATE/builder/unresolved.json and kept-transactions.json); a persistent chain that is only stopped keeps them.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 STATE=${CZE_STATE_DIR:-$ROOT/state}
 NET=$STATE/net
 PROVER=${CZE_PROVER_STATE:-$STATE/prover}
+# The builder's in-doubt command and the transactions it kept belong to one chain. When that chain goes, they go with it (their exact paths, nothing else
+# in the builder's folder): a new chain must not meet them, and the builder refuses a record made on another chain.
+forget_builder_record() { rm -f "$STATE/builder/unresolved.json" "$STATE/builder/kept-transactions.json"; }
 WIPE=0
 case ${1:-} in
   "") ;;
@@ -59,6 +64,7 @@ if [ "$PERSISTENT" = 1 ]; then
       echo "NOT wiped: ${left[*]} could not be removed and is still there (see above). persist.env is kept: fix the cause and run network/down.sh --wipe again." >&2
       exit 1
     fi
+    forget_builder_record
     rm -f "$STATE/persist.env"
     echo "stopped; the persistent chain is wiped, and so is the explorer's database"
     [ "$EXTERNAL" = 0 ] || echo "the participant still holds the chain's contracts: they stay until its operator removes them"
@@ -69,6 +75,7 @@ if [ "$PERSISTENT" = 1 ]; then
 else
   [ "$WIPE" = 0 ] || echo "this network is not persistent: its data goes with it"
   "$ROOT/network/reth/stop.sh"
+  forget_builder_record
   # The explorer's default database (started by explorer/run.sh) belongs to this chain: a new chain from the same genesis must not meet its rows.
   if [ -f "$STATE/explorer-db.env" ]; then
     CZE_STATE_DIR=$STATE "$ROOT/network/explorer-db.sh" wipe || { echo "NOT wiped: the explorer's database could not be removed and is still there (see above): run network/explorer-db.sh wipe before the next network." >&2; exit 1; }

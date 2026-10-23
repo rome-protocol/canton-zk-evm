@@ -1251,6 +1251,26 @@ class NoAnswer(Case):
         committed, _, how, _ = self.settle(s, result)
         self.assertEqual((committed, how), (True, "head"))
 
+    def test_the_record_names_its_chain_and_a_record_from_another_chain_is_refused(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        self.assertEqual(result["resolve"]["genesis"], s.reth.genesis)
+        self.assertEqual(json.loads(b.unresolved_path(s.cfg).read_text())["genesis"], s.reth.genesis)
+        s.ledger.land(ok=True)
+        before = len(s.forkchoices())
+        s.reth.genesis = "0x" + "77" * 32   # a new chain was started on this machine, and the old record was left behind
+        for settle in (lambda: self.settle(s, result), lambda: b.recover_saved(s.cfg)):
+            with self.assertRaises(b.BuilderError) as e:
+                settle()
+            self.assertNotIsInstance(e.exception, b.Unresolved)
+            self.assertIn("another chain", str(e.exception))
+            self.assertIn(str(b.unresolved_path(s.cfg)), str(e.exception))
+        self.assertEqual(len(s.forkchoices()), before)   # reth is not moved
+        self.assertTrue(b.unresolved_path(s.cfg).exists() and b.saved_path(s.cfg).exists())   # and nothing is removed
+        s.reth.genesis = result["resolve"]["genesis"]
+        self.assertEqual(self.settle(s, result)[0], True)
+
     def test_a_restart_settles_the_command_before_it_moves_reth(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})

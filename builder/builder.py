@@ -231,6 +231,22 @@ def clear_unresolved(cfg: Config) -> None:
         pass
 
 
+def genesis_hash(reth: Reth) -> str:
+    """The hash of the chain's block 0 on this reth."""
+    found = reth.call("eth_getBlockByNumber", ["0x0", False])
+    if not isinstance(found, dict) or not isinstance(found.get("hash"), str):
+        raise BuilderError("reth did not answer with its genesis block")
+    return found["hash"]
+
+
+def check_chain(reth: Reth, u: dict) -> None:
+    """The in-doubt record names the chain it was made on (the genesis hash). A record from another chain, left behind when that chain was
+    taken down and a new one was started, is not this chain's command: it is refused, and the person who runs the builder removes it."""
+    if isinstance(u.get("genesis"), str) and u["genesis"] != genesis_hash(reth):
+        raise BuilderError(f"the in-doubt command {u['commandId']} in {unresolved_path(reth.cfg)} was made on another chain (genesis {u['genesis']}, "
+                           f"this reth's is {genesis_hash(reth)}): if that chain is gone, remove that file and {saved_path(reth.cfg)}")
+
+
 def put_back(reth: Reth) -> list:
     """reth does not return an unwound block's transactions to its pool, so the builder sends them again. A transaction the pool already
     has, or one whose nonce is used, is not a problem. Returns [{transaction, error}] for the ones reth refused for another reason: they
@@ -895,7 +911,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     begin = Ledger(cfg).end()
     # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
     # that makes the next start wait for the command instead of rewinding a block that may commit. Only a definite answer clears it.
-    resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time()}
+    resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time(), "genesis": genesis_hash(reth)}
     ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt.journal is not None else {}   # as save_kept: an empty block has no kept file to say whose it is
     save_unresolved(cfg, {**resolve, **ref})
     attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()))
@@ -1038,14 +1054,15 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
     ahead. Then it is settled as not committed and the head is where reth goes. Raises too while the head cannot be read. Returns
     (committed, the transactions reth refused, how it was settled, {"updateId", "completionOffset"} when known)."""
     bound = u["since"] + cfg.resolve_seconds
-    try:
-        found, reached = Ledger(cfg).completion_and_time(u["commandId"], u["begin"])
-    except (OSError, ValueError, http.client.HTTPException) as e:
-        found, reached, unread = None, None, e   # the head can still show the block
-    else:
-        unread = None
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
+        check_chain(reth, u)
+        try:
+            found, reached = Ledger(cfg).completion_and_time(u["commandId"], u["begin"])
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            found, reached, unread = None, None, e   # the head can still show the block
+        else:
+            unread = None
         if found is not None and found["committed"]:
             committed, how = True, "completion"
         else:
