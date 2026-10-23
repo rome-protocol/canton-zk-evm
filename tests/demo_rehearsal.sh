@@ -110,7 +110,8 @@ EXPLORER=http://127.0.0.1:${EXPLORER_PORT:-8088}
 background ledger-calls python3 "$ROOT/tests/demo_call_log.py" 7597 http://127.0.0.1:7577 "$WORK/ledger-calls"
 background reth-calls python3 "$ROOT/tests/demo_call_log.py" 8595 "http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$WORK/reth-calls"
 # The indexer asks reth for trace_ methods as well, so it reads reth directly; the explorer's own calls to reth are logged. Both read Canton through the log. The Etherscan door's proxy asks the public RPC, so it is on (PUBLIC_RPC=1).
-PUBLIC_RPC=1 LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 INDEXER_RETH_RPC_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$ROOT/explorer/run.sh" start
+# The verifier role is on (EXPLORER_VERIFIER=1): it compiles what the Etherscan door's contract module is given, in a sandbox, with a compiler it downloads from the list at SOLC_LIST_URL.
+EXPLORER_VERIFIER=1 SOLC_LIST_URL=${SOLC_LIST_URL:-https://binaries.soliditylang.org/linux-amd64/list.json} PUBLIC_RPC=1 LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 INDEXER_RETH_RPC_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$ROOT/explorer/run.sh" start
 # Healthy means the indexer has started and its checks are fresh; the blocks follow as it writes them.
 for _ in $(seq 1 120); do curl -sf "$EXPLORER/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -sf "$EXPLORER/healthz" >/dev/null || fail "the explorer is not healthy: $(curl -s "$EXPLORER/healthz" | cut -c1-600)"
@@ -271,6 +272,30 @@ cut_block
 [ "$(receipt_of "$lab_kill" | jq -r .status)" = 1 ] || fail "Lab.kill() did not succeed: $(receipt_of "$lab_kill")"
 LAB_KILL_BLOCK=$(receipt_of "$lab_kill" | jq -r .block)
 echo "Lab $LAB: build in block $LAB_BUILD_BLOCK, the undone call in $LAB_UNDONE_BLOCK, the self-destruct in $LAB_KILL_BLOCK"
+echo "== the Etherscan door's contract module: forge verify-contract (both formats), cast source and cast interface, against Box built and deployed here"
+# Box is built twice by the script (the pinned Foundry, checked against its SHA-256; the solc of PINS' image, copied out of it, is the compiler forge runs) and deployed twice with
+# the argument 42; the explorer's verifier compiles it again, in its sandbox, with the solc it downloads from the compiler list.
+SOLC_COPY=cze-rehearsal-solc-$$
+docker create --name "$SOLC_COPY" "$SOLC_IMAGE" > /dev/null
+docker cp "$SOLC_COPY:/usr/bin/solc" "$WORK/solc"
+docker rm -f -v "$SOLC_COPY" > /dev/null
+SOLC=$WORK/solc "$ROOT/tests/demo_etherscan_contract.sh" build "$WORK/box" || fail "the contract script could not build Box"
+box_standard_tx=$(w1py deploy "$WORK/box/standard.deploy"); box_flat_tx=$(w1py deploy "$WORK/box/flat.deploy")
+cut_block
+BOX_STANDARD=$(receipt_of "$box_standard_tx" | jq -r .contract); BOX_FLAT=$(receipt_of "$box_flat_tx" | jq -r .contract)
+[[ $BOX_STANDARD =~ ^0x[0-9a-fA-F]{40}$ && $BOX_FLAT =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "Box was not deployed: $BOX_STANDARD $BOX_FLAT"
+# The door knows a contract once the indexer has written it.
+for box in "$BOX_STANDARD" "$BOX_FLAT"; do
+  for _ in $(seq 1 120); do
+    [ "$(curl -sf "$EXPLORER/api?module=contract&action=getcontractcreation&contractaddresses=$box" | jq -r .status)" = 1 ] && break
+    sleep 1
+  done
+  [ "$(curl -sf "$EXPLORER/api?module=contract&action=getcontractcreation&contractaddresses=$box" | jq -r .status)" = 1 ] \
+    || fail "the explorer does not know $box after the indexer had time to write it; indexer: $(docker logs --tail 10 "$EXPLORER_INDEXER_CONTAINER" 2>&1 | cut -c1-300)"
+done
+docker ps --format '{{.Names}}' | grep -qx "${EXPLORER_VERIFIER_CONTAINER:-cze-explorer-verifier}" || fail "the verifier is not running"
+EXPLORER=$EXPLORER CHAIN_ID=$chain_id BOX_STANDARD=$BOX_STANDARD BOX_FLAT=$BOX_FLAT SOLC=$WORK/solc "$ROOT/tests/demo_etherscan_contract.sh" verify \
+  || fail "forge, cast and the Etherscan door's contract module disagree; verifier: $(docker logs --tail 10 "${EXPLORER_VERIFIER_CONTAINER:-cze-explorer-verifier}" 2>&1 | cut -c1-300)"
 echo "revert block $REVERT_BLOCK, W1 block $W1_BLOCK: $(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$W1_BLOCK")\",false" | jq -c '{transactions: (.result.transactions | length), gasUsed: .result.gasUsed}')"
 
 PGPW=$(openssl rand -hex 16)
