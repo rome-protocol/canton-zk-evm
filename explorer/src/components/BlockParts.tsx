@@ -48,7 +48,7 @@ export function PagedTransactions({ id, total, coin, chain }: { id: string; tota
                     <td className="arrow muted" aria-hidden="true">→</td>
                     <td>{t.to ? <HashLink value={t.to} to={`/address/${t.to}`} /> : t.created ? <span className="muted">creates <Link className="mono" to={`/address/${t.created}`}>contract</Link></span> : <span className="muted">—</span>}</td>
                     <td className="r">{units(t.value, coin.decimals)} {coin.symbol}</td>
-                    <td className="r mono">{units(fee(t), coin.decimals)} {coin.symbol}</td>
+                    <td className="r num">{units(fee(t), coin.decimals)} {coin.symbol}</td>
                     <td><Result success={t.success} /></td>
                   </tr>
                 ))}
@@ -83,7 +83,7 @@ export function BlockLegs({ id }: { id: string }) {
                 <td><span className="tag">{l.kind}</span></td>
                 <td><HashLink value={l.token} to={`/token/${l.token}`} /></td>
                 <td><HashLink value={l.account} to={`/address/${l.account}`} /></td>
-                <td className="r mono">{l.amount}</td>
+                <td className="r num">{l.amount}</td>
                 <td className="r">{l.txIndex}</td>
               </tr>
             ))}

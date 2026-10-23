@@ -42,9 +42,9 @@ describe("the contract page: Events", () => {
   it("opens with the standard card header: the title with its words inline, and the Filter by topic button in outline style", async () => {
     await open("events", { sources: verified, events: () => page([log(1)]) });
     const card = screen.getByRole("region", { name: "Events" });
-    const h = card.querySelector(".card-h")!;
+    const h = card.querySelector(".card-head")!;
     expect(h).not.toBeNull();
-    expect(within(h as HTMLElement).getByRole("heading", { level: 2, name: /^Events/ }).querySelector(".muted")).not.toBeNull();
+    expect(within(h as HTMLElement).getByRole("heading", { level: 2, name: "Events" }).parentElement!.querySelector(".muted")).not.toBeNull();
     const filter = screen.getByRole("button", { name: /Filter by topic/ });
     expect(filter).toHaveClass("btn-line");
     expect(filter).not.toHaveClass("btn");

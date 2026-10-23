@@ -37,7 +37,7 @@ export function CantonUpdates() {
               <tbody>
                 {items.map((u: UpdateItem) => (
                   <tr key={u.updateId}>
-                    <td className="r mono">{u.offset}</td>
+                    <td className="r num">{u.offset}</td>
                     <td><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} /></td>
                     <td className="mono">{u.recordTime}</td>
                     <td><HashLink value={u.synchronizer} /></td>
@@ -66,7 +66,7 @@ function OnCanton({ u, now }: { u: UpdateDetail; now: number }) {
         <Item label="Update id"><HashLink value={u.updateId} full /></Item>
         <Item label="Record time"><span className="mono">{u.recordTime}</span> <span className="muted">· {duration(now - Date.parse(u.recordTime))} ago</span></Item>
         <Item label="Synchronizer id"><HashLink value={u.synchronizer} full /></Item>
-        <Item label="Offset"><span className="mono">{count(u.offset)}</span> <span className="tag">{READER}</span></Item>
+        <Item label="Offset"><span className="num">{count(u.offset)}</span> <span className="tag">{READER}</span></Item>
         <Item label="Template">{pr?.template ? <><span className="mono">{pr.template}</span> {PRODUCER}</> : NOT_LOGGED}</Item>
         <Item label="Choice">{pr?.choice ? <><span className="mono">{pr.choice}</span> <span className="muted">· exercised on the chain's head contract</span> {PRODUCER}</> : NOT_LOGGED}</Item>
         <Item label="Created">
@@ -89,7 +89,7 @@ function Transactions({ b }: { b: ApiBlock }) {
   const first = b.transactions[0];
   const coin = useStatus().data?.coin;
   const tx = useQuery({ queryKey: ["tx", first?.hash], queryFn: () => getTx(first!.hash), enabled: !!first, retry: false, staleTime: 60_000 });
-  if (!first) return <span className="mono">{count(b.txCount)}</span>;
+  if (!first) return <span className="num">{count(b.txCount)}</span>;
   const value = tx.data?.value;
   const carried = tx.isError || value === null ? <span className="muted">cannot be read right now</span>
     : value === undefined || !coin ? <span className="muted">reading…</span>
@@ -97,7 +97,7 @@ function Transactions({ b }: { b: ApiBlock }) {
   const person = (a: string) => <Link className="mono" to={`/address/${a}`}>{short(a)}</Link>;
   return (
     <>
-      <span className="mono">{count(b.txCount)}</span> <span className="muted">·</span> <Link className="mono" to={`/tx/${first.hash}`}>{short(first.hash, 10, 6)}</Link>{" "}
+      <span className="num">{count(b.txCount)}</span> <span className="muted">·</span> <Link className="mono" to={`/tx/${first.hash}`}>{short(first.hash, 10, 6)}</Link>{" "}
       {carried}<span className="muted">,</span> {person(first.from)} <span className="muted">{first.to ? "to" : "creating a contract"}</span> {first.to && person(first.to)}
       {b.txCount > 1 && <span className="muted"> and {count(b.txCount - 1)} more</span>}
     </>
@@ -109,7 +109,7 @@ function ProofFacts({ c }: { c: NonNullable<ApiBlock["canton"]> }) {
   const f = c.proof;
   return (
     <>
-      <span className="mono">{count(c.proofBytes)} bytes</span>{" "}
+      <span className="num">{count(c.proofBytes)} bytes</span>{" "}
       {!f ? <span className="muted">its facts cannot be read</span> : (
         <>
           {f.programVK.ok ? <Good>ours</Good> : <Bad>program key is not ours</Bad>} <span className="muted">·</span>{" "}
@@ -136,7 +136,7 @@ function OnEvm({ u, b, failed }: { u: UpdateDetail; b: ApiBlock | undefined; fai
             <Item label="Parent">{b.number > 0 ? <><Link className="num" to={`/block/${b.number - 1}`}>Block {b.number - 1}</Link> · <HashLink value={b.parentHash} to={`/block/${b.parentHash}`} /></> : "none"}</Item>
             <Item label="Block time"><span className="mono">{utc(b.timestamp * 1000)}</span> <span className="muted">· {utcDate(b.timestamp * 1000)}{c ? ` · made ${seconds(b.timestamp, c.recordTime)} before the record time` : ""}</span></Item>
             <Item label="Transactions"><Transactions b={b} /></Item>
-            <Item label="Gas used"><span className="mono">{count(b.gasUsed)}</span> <span className="muted">of {count(b.gasLimit)}</span></Item>
+            <Item label="Gas used"><span className="num">{count(b.gasUsed)}</span> <span className="muted">of {count(b.gasLimit)}</span></Item>
             <Item label="State root"><HashLink value={b.stateRoot} /></Item>
             {c && <Item label="Proof"><ProofFacts c={c} /></Item>}
             {c && <Item label="Hashes">{c.hashesMatch ? <Good>reth, the record and the record's header give the same hash</Good> : <Bad>reth, the record and the record's header do not all give the same hash</Bad>}</Item>}
@@ -238,12 +238,12 @@ function Around({ id }: { id: string }) {
               <tbody>
                 {items.map((x) => (
                   <tr key={x.updateId} aria-current={x.updateId === id ? "true" : undefined} className={x.updateId === id ? "here" : undefined}>
-                    <td className="mono">{x.offset}</td>
+                    <td className="num">{x.offset}</td>
                     <td><HashLink value={x.updateId} kind="update" to={`/canton/${x.updateId}`} /></td>
                     <td className="mono">{x.recordTime}</td>
                     <td className="mono">{x.submittedTemplate ? `${x.submittedTemplate}${x.submittedChoice ? ` · ${x.submittedChoice}` : ""}` : NOT_LOGGED}</td>
                     <td>{x.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${x.block}`}>Block {x.block}</Link>}</td>
-                    <td className="r mono">{x.txCount === null ? <span className="muted">—</span> : count(x.txCount)}</td>
+                    <td className="r num">{x.txCount === null ? <span className="muted">—</span> : count(x.txCount)}</td>
                   </tr>
                 ))}
               </tbody>

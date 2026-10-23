@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const read = (f: string) => readFileSync(join(import.meta.dirname, f), "utf8");
-const tx = read("tx.css"), block = read("block.css"), token = read("token.css");
+const tx = read("tx.css"), block = read("block.css"), token = read("token.css"), styles = read("../styles.css");
 
 /** The rules of a sheet outside any @media block: [selector, body]. A comma list is split into its selectors. */
 function rules(css: string, media = false): [string, string][] {
@@ -70,10 +70,11 @@ describe("the token page's cards", () => {
 });
 
 describe("the card header", () => {
-  it("is small: the title at 15px, the words beside it at 12.5px, over a line", () => {
-    const get = (s: string) => rules(tx).find(([x]) => x === s)?.[1] ?? "";
-    expect(get(".card-h h2")).toMatch(/font-size: 15px/);
-    expect(get(".card-h h2 .muted")).toMatch(/font-size: 12.5px/);
-    expect(get(".card-h")).toMatch(/border-bottom: 1px solid/);
+  it("is small, in the shared sheet only: the title at 15px, the words beside it at 12.5px, over a line; tx.css keeps no copy", () => {
+    const get = (s: string) => rules(styles).find(([x]) => x === s)?.[1] ?? "";
+    expect(get(".card-title h2")).toMatch(/font-size: 15px/);
+    expect(get(".card-title .muted")).toMatch(/font-size: 12.5px/);
+    expect(get(".card-head")).toMatch(/border-bottom: 1px solid/);
+    expect(tx).not.toMatch(/\.card-h\b/);
   });
 });

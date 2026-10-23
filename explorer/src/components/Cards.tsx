@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../api.ts";
 import { short } from "../format.ts";
+import { Icon } from "./Icon.tsx";
 
 /** The answer when the server cannot read the chain. A page that polls tries again by itself. */
 export function ErrorCard({ message, retrying = false }: { message: string; retrying?: boolean }) {
@@ -45,4 +46,19 @@ export function unready(q: { data?: unknown; error: Error | null }, loading: str
   if (e instanceof ApiError && (e.status === 404 || e.status === 400)) return <NotFound message={e.message} />;
   if (q.data) return null;
   return e ? <ErrorCard message={e.message} retrying /> : <LoadingCard>{loading}</LoadingCard>;
+}
+
+/** The head of a card: a bold title with a grey subtitle on the same line, and an action (a button, a link) at the end. */
+export function CardHead({ title, sub, action, as: H = "h3" }: { title: ReactNode; sub?: ReactNode; action?: ReactNode; as?: "h1" | "h2" | "h3" }) {
+  return (
+    <div className="card-head">
+      <div className="card-title"><H>{title}</H>{sub ? <span className="muted small">{sub}</span> : null}</div>
+      {action}
+    </div>
+  );
+}
+
+/** The button for data: a link to a file the browser saves (with `file`) or shows, with the download icon before its label. */
+export function DownloadLink({ href, file, children }: { href: string; file?: string; children: ReactNode }) {
+  return <a className="csv" href={href} download={file}><Icon name="download" size={13} />{children}</a>;
 }

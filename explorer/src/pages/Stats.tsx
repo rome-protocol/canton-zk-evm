@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type StatsMetric, type StatsSeries, type StatsSpread, type StatsSummary, type StatsWindow } from "../api.ts";
-import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { count, pct, plural, sec, short, span, trim, units } from "../format.ts";
@@ -151,7 +151,7 @@ export function Stats() {
         <div><h1>Stats</h1> <span className="muted stats-sub">{s ? heading(s) : ""}</span></div>
         <div className="row">
           <span className="seg" role="group" aria-label="Window">{BUTTONS.map(([w, label]) => <button key={w} type="button" aria-pressed={w === window} onClick={() => setParams({ window: w }, { replace: true })}>{label}</button>)}</span>
-          {" "}<a className="csv" href={`/api/stats/summary?window=${window}`}>Data</a>
+          {" "}<DownloadLink href={`/api/stats/summary?window=${window}`}>Data</DownloadLink>
         </div>
       </div>
       <p className="note">Every number is computed from stored facts: Canton's record time for "final", the producer's log for its own steps. Medians and p95 over more than an hour are read from histograms: a figure is at most 5% above the truth. Blocks are cut only when transactions wait, so a step with no transactions has no block and shows as a gap.</p>

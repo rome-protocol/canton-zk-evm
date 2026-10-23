@@ -26,8 +26,8 @@ function Row({ t, n }: { t: TokenListItem; n: number }) {
       </td>
       <td><span className="chip chip-kind">{t.standard}</span></td>
       <td className="r"><Supply t={t} /></td>
-      <td className="r"><span className="mono">{count(t.holderCount)}</span></td>
-      <td className="r"><span className="mono">{count(t.transferCount)}</span></td>
+      <td className="r"><span className="num">{count(t.holderCount)}</span></td>
+      <td className="r"><span className="num">{count(t.transferCount)}</span></td>
       <td><Link className="num" to={`/block/${t.firstTransferBlock}`}>Block {t.firstTransferBlock}</Link></td>
     </tr>
   );

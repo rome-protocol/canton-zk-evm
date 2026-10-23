@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { getContract, getToken, getTokenHolders, getTokenTransfers, type TokenDetail, type TokenHolder } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
-import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
+import { CardHead, ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -12,7 +12,6 @@ import { count, exact, units } from "../format.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { failedNote, NftCount, noName, Supply } from "./TokenParts.tsx";
 import "./token.css";
-import "./tx.css";
 
 const PER = 25;
 const ZERO = "0x" + "00".repeat(20);
@@ -59,10 +58,10 @@ function HolderRow({ h, n, t }: { h: TokenHolder; n: number; t: TokenDetail }) {
       <td><HashLink value={h.holder} to={`/address/${h.holder}`} /></td>
       {multi && <td><span className="mono">#{h.tokenId}</span></td>}
       <td className="r">{fungible && t.decimals !== null && t.symbol ? <Amount raw={h.value} decimals={t.decimals} symbol={t.symbol} />
-        : fungible && t.decimals !== null ? <span className="mono" title={exact(h.value, t.decimals)}>{units(h.value, t.decimals)}</span>
+        : fungible && t.decimals !== null ? <span className="num" title={exact(h.value, t.decimals)}>{units(h.value, t.decimals)}</span>
         : t.standard === "ERC-721" ? <NftCount n={h.value} />
-        : <span className="mono" title={fungible ? "The token's decimals are not known, so this is the raw balance" : undefined}>{count(h.value)}</span>}</td>
-      {fungible && <td className="r"><span className="mono">{s ? s.text : "—"}</span></td>}
+        : <span className="num" title={fungible ? "The token's decimals are not known, so this is the raw balance" : undefined}>{count(h.value)}</span>}</td>
+      {fungible && <td className="r"><span className="num">{s ? s.text : "—"}</span></td>}
       {fungible && <td><div className="share" aria-hidden="true"><span style={{ width: `${s ? Math.max(s.bp / 100, s.bp > 0 ? 1 : 0) : 0}%` }} /></div></td>}
     </tr>
   );
@@ -78,7 +77,7 @@ function Distribution({ items, t, final }: { items: TokenHolder[]; t: TokenDetai
   if (!lead) return null;
   return (
     <section className="card holds" aria-label="Holder distribution">
-      <div className="card-h"><h2>Holder distribution{final !== null && <span className="muted">as of final block {final}</span>}</h2></div>
+      <CardHead as="h2" title="Holder distribution" sub={final !== null ? `as of final block ${final}` : undefined} />
       <div>
         <span className="muted small">Share held by the top holder</span>
         <div className="stat-v">{lead.text}</div>
@@ -144,8 +143,8 @@ function TransfersTab({ t }: { t: TokenDetail }) {
                   {x.tokenId !== null ? <span className="mono">{x.amount !== null ? `${count(x.amount)} · ` : ""}#{x.tokenId}</span>
                     : x.amount === null ? <Dash />
                     : t.decimals !== null && t.symbol ? <Amount raw={x.amount} decimals={t.decimals} symbol={t.symbol} />
-                    : t.decimals !== null ? <span className="mono" title={exact(x.amount, t.decimals)}>{units(x.amount, t.decimals)}</span>
-                    : <span className="mono" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span>}
+                    : t.decimals !== null ? <span className="num" title={exact(x.amount, t.decimals)}>{units(x.amount, t.decimals)}</span>
+                    : <span className="num" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span>}
                 </td>
                 <td><Chip status="final" /></td>
               </tr>
@@ -162,7 +161,7 @@ function TransfersTab({ t }: { t: TokenDetail }) {
 function Information({ t }: { t: TokenDetail }) {
   return (
     <section className="card" aria-label="Token information">
-      <div className="card-h"><h2>Token information <span className="muted">read from the contract</span></h2></div>
+      <CardHead as="h2" title="Token information" sub="read from the contract" />
       <Kv>
         <Item label="Name">{t.name ?? <span className="muted">{noName(t)}</span>}</Item>
         <Item label="Symbol">{t.symbol ?? <Dash />}</Item>

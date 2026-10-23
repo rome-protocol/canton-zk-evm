@@ -63,9 +63,9 @@ describe("the token page: the overview", () => {
     await open();
     await screen.findByRole("region", { name: "Holder distribution" });
     for (const [region, title] of [["Holder distribution", "Holder distribution"], ["Token information", "Token information"]] as const) {
-      const h = screen.getByRole("region", { name: region }).querySelector(".card-h")!;
+      const h = screen.getByRole("region", { name: region }).querySelector(".card-head")!;
       expect(h, region).not.toBeNull();
-      expect(within(h as HTMLElement).getByRole("heading", { level: 2, name: new RegExp(`^${title}`) })).toBeInTheDocument();
+      expect(within(h as HTMLElement).getByRole("heading", { level: 2, name: title })).toBeInTheDocument();
     }
   });
 

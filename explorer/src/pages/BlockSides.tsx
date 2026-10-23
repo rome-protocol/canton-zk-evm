@@ -34,7 +34,7 @@ export function EvmSide({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
     <section className="card side evm" aria-labelledby="evm-h">
       <div className="side-h"><span className="side-l" id="evm-h">On the EVM</span><span className="muted small">from reth{b.status === "final" ? ", at the final head" : ""}</span></div>
       <Kv wide>
-        <Item label="Block height"><span className="mono">{b.number}</span></Item>
+        <Item label="Block height"><span className="num">{b.number}</span></Item>
         <Item label="Stage"><Stage b={b} /></Item>
         <Item label="Time"><span className="mono">{longUtc(b.timestamp * 1000)}</span> <span className="muted">· block timestamp, whole seconds</span></Item>
         <Item label="Transactions"><a className="num" href="#transactions">{count(b.txCount)} transaction{b.txCount === 1 ? "" : "s"}</a></Item>
@@ -42,14 +42,14 @@ export function EvmSide({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
         <Item label="Parent hash">
           {b.number > 0 ? <><HashLink value={b.parentHash} to={`/block/${b.parentHash}`} long /> <span className="muted">block {b.number - 1}</span></> : <span className="muted">none</span>}
         </Item>
-        <Item label="Gas used"><span className="mono">{count(b.gasUsed)}</span> <span className="muted">({share(b.gasUsed, b.gasLimit)} of {count(b.gasLimit)})</span></Item>
-        <Item label="Base fee">{b.baseFee === null ? "none" : <span className="mono" title={`${b.baseFee} wei`}>{exact(b.baseFee, 9)} gwei</span>}</Item>
-        <Item label="Burnt fees">{burnt === null || !coin ? "—" : <span className="mono" title={`${exact(burnt, coin.decimals)} ${coin.symbol}`}>{units(burnt, coin.decimals)} {coin.symbol}</span>}</Item>
+        <Item label="Gas used"><span className="num">{count(b.gasUsed)}</span> <span className="muted">({share(b.gasUsed, b.gasLimit)} of {count(b.gasLimit)})</span></Item>
+        <Item label="Base fee">{b.baseFee === null ? "none" : <span className="num" title={`${b.baseFee} wei`}>{exact(b.baseFee, 9)} gwei</span>}</Item>
+        <Item label="Burnt fees">{burnt === null || !coin ? "—" : <span className="num" title={`${exact(burnt, coin.decimals)} ${coin.symbol}`}>{units(burnt, coin.decimals)} {coin.symbol}</span>}</Item>
         <Item label="Fee recipient"><HashLink value={b.miner} to={`/address/${b.miner}`} />{b.baseFee !== null && <span className="muted"> · priority fees only</span>}</Item>
         <Item label="State root"><HashLink value={b.stateRoot} long /></Item>
         {sizes && (
           <Item label="Record data">
-            <span className="mono">{count(sizes.reduce((n, [, h]) => n + h.length / 2, 0))} bytes</span>{" "}
+            <span className="num">{count(sizes.reduce((n, [, h]) => n + h.length / 2, 0))} bytes</span>{" "}
             <span className="muted">· {sizes.map(([name, h]) => `${name} ${count(h.length / 2)}`).join(", ")}</span>
           </Item>
         )}

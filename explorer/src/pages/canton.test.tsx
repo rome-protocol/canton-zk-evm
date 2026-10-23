@@ -144,7 +144,7 @@ describe("one Canton update", () => {
     expect(row(e, "Gas used")).toHaveTextContent("51,698 of 30,000,000");
     expect(row(e, "State root")).toHaveTextContent(hash(0x10).slice(0, 6));
     expect(row(e, "Hashes")).toHaveTextContent("reth, the record and the record's header give the same hash");
-    expect(screen.queryByText("Base fee")).toBeNull();
+    expect(within(screen.getByRole("main")).queryByText("Base fee")).toBeNull();
   });
 
   it("summarises the block's transaction: its hash, what it carried and from whom to whom", async () => {

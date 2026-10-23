@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { getBlocks, getFaucetAddress, getTx, getTxPage, txsCsvPath, type ApiStatus, type ApiTx, type InFlight, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
 import { Sender } from "../components/BlockParts.tsx";
-import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -28,7 +28,7 @@ function Value({ raw, coin }: { raw: string; coin: Coin }) {
   return <span title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{units(raw, coin.decimals)} {coin.symbol}</span>;
 }
 function Fee({ raw, coin }: { raw: string; coin: Coin }) {
-  return <span className="mono" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{exact(raw, coin.decimals)}</span>;
+  return <span className="num" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{exact(raw, coin.decimals)}</span>;
 }
 const To = ({ t }: { t: { to: string | null; created: string | null } }) =>
   t.to ? <HashLink value={t.to} to={`/address/${t.to}`} /> : t.created ? <span className="muted">Create: <Link className="mono" to={`/address/${t.created}`}>contract</Link></span> : <span className="muted">creates a contract</span>;
@@ -165,7 +165,7 @@ export function Txs() {
         <div className="seg" role="group" aria-label="Show transactions">
           {VIEWS.map((v) => <button key={v.id} type="button" aria-pressed={view === v.id} onClick={() => setView(v.id)}>{v.label}</button>)}
         </div>
-        {view !== "notfinal" && <a className="csv" href={txsCsvPath(csv)} download="transactions.csv">CSV</a>}
+        {view !== "notfinal" && <DownloadLink href={txsCsvPath(csv)} file="transactions.csv">CSV</DownloadLink>}
       </div>
       <Cards st={st} live={live} />
       {view === "notfinal"

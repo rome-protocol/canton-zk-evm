@@ -20,7 +20,7 @@ function Row({ a, coin }: { a: AddressListItem; coin: { symbol: string; decimals
       <td><span className="chip chip-kind">{KIND[a.kind]}</span></td>
       <td className="r">{a.balance === null ? <span className="muted" title="The explorer has not read this balance yet">—</span> : coin ? <Amount raw={a.balance} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>}</td>
       <td>{a.balanceBlock === null ? <span className="muted">—</span> : <Link className="num" to={`/block/${a.balanceBlock}`}>block {a.balanceBlock}</Link>}</td>
-      <td className="r"><span className="mono">{count(a.txCount)}</span></td>
+      <td className="r"><span className="num">{count(a.txCount)}</span></td>
     </tr>
   );
 }

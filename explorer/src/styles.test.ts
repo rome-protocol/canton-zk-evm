@@ -34,25 +34,152 @@ describe("themes", () => {
 describe("fonts and outside requests", () => {
   it("serves IBM Plex from the explorer: every font file the styles name is in public/fonts, with its licence", () => {
     const files = [...css.matchAll(/url\((\/fonts\/[^)]+)\)/g)].map((m) => m[1]!);
-    expect(files.length).toBe(5);
+    expect(files.length).toBe(7);
     for (const f of files) expect(existsSync(join(root, "public", f)), f).toBe(true);
     expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Sans.txt"))).toBe(true);
     expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Mono.txt"))).toBe(true);
+    expect(readFileSync(join(root, "public/fonts/OFL-IBM-Plex-Serif.txt"), "utf8")).toMatch(/SIL Open Font License, Version 1\.1/);
+  });
+
+  it("sets the wordmark and every h1 in IBM Plex Serif, and numbers in tabular figures", () => {
+    expect(css).toMatch(/@font-face \{ font-family: "IBM Plex Serif"; font-weight: 500;/);
+    expect(css).toMatch(/\nh1, \.name \{ font-family: "IBM Plex Serif", /);
+    expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain("font-variant-numeric: tabular-nums");
+  });
+
+  it("sets numbers in the text face with figures of equal width, and only hashes and ids in IBM Plex Mono", () => {
+    const rules = rulesOf(css);
+    expect(winner(rules, [".num"], "font-family", false)).toBeUndefined();
+    expect(winner(rules, [".num"], "font-variant-numeric", false)).toBe("tabular-nums");
+    expect(winner(rules, [".mono"], "font-family", false)).toMatch(/IBM Plex Mono/);
+  });
+
+  it("keeps IBM Plex Mono off the numbers in the pages' tables: a right-aligned cell is a number, and is set in the text face", () => {
+    for (const f of sources(join(root, "src")).filter((x) => /\.tsx$/.test(x))) expect(readFileSync(f, "utf8"), f).not.toMatch(/className="r mono"/);
+  });
+
+  it("lays the footer's sentence on the left and its links on the right in the muted colour, and stacks them on a phone", () => {
+    const rules = rulesOf(css);
+    expect(winner(rules, [".foot"], "flex-direction", false)).toBe("row");
+    expect(winner(rules, [".foot"], "justify-content", false)).toBe("space-between");
+    expect(winner(rules, [".foot-links a"], "color", false)).toBe("var(--muted)");
+    expect(winner(rules, [".foot"], "flex-direction", true)).toBe("column");
+  });
+
+  it("lines the header, the top bar and the footer up with the page's column", () => {
+    const column = "max(32px, calc((100% - 1280px) / 2))";
+    expect(/\.main \{[^}]*max-width: 1344px[^}]*padding: 26px 32px/.exec(css)).not.toBeNull();
+    for (const sel of [".top", ".topbar", ".foot"]) expect(new RegExp(`\\n\\${sel} \\{[^}]*${column.replace(/[\\()*/+]/g, "\\$&")}`).test(css), sel).toBe(true);
+  });
+
+  it("draws the network as a filled pill in the brand's purple on pink", () => {
+    const pill = /\n\.pill \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(pill).toContain("background: var(--pill)");
+    expect(pill).toContain("color: var(--canton)");
+    expect(pill).not.toContain("border:");
   });
 
   it("loads nothing from another host: no web address in the pages' styles, markup or code", () => {
     for (const f of [...sources(join(root, "src")), join(root, "index.html")]) {
-      expect(readFileSync(f, "utf8").replace(/http:\/\/www\.w3\.org\/2000\/svg/g, ""), f).not.toMatch(/https?:\/\/|\/\/fonts\.|@import/);
+      // The one other address is the link to the source, which a person may follow: nothing is loaded from it.
+      expect(readFileSync(f, "utf8").replace(/http:\/\/www\.w3\.org\/2000\/svg/g, "").replace(/https:\/\/github\.com\/rome-protocol\/canton-zk-evm"/g, '"'), f).not.toMatch(/https?:\/\/|\/\/fonts\.|@import/);
     }
   });
 });
 
+type Rule = { sel: string; decls: Record<string, string>; order: number; phone: boolean };
+
+/** The rules of the styles in file order, flat; only the plain rules and the 720 px phone rules (the font faces and the dark colours are not the cascade this test is about). */
+function rulesOf(text: string): Rule[] {
+  const out: Rule[] = [];
+  const src = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  let order = 0;
+  const walk = (block: string, phone: boolean) => {
+    let i = 0;
+    while (i < block.length) {
+      const open = block.indexOf("{", i);
+      if (open < 0) break;
+      const head = block.slice(i, open).trim();
+      let depth = 1, j = open + 1;
+      while (depth && j < block.length) { if (block[j] === "{") depth++; else if (block[j] === "}") depth--; j++; }
+      const body = block.slice(open + 1, j - 1);
+      if (head.startsWith("@")) { if (head === "@media (max-width: 720px)") walk(body, true); }
+      else {
+        const decls: Record<string, string> = {};
+        for (const d of body.split(";")) { const k = d.indexOf(":"); if (k > 0) decls[d.slice(0, k).trim()] = d.slice(k + 1).trim(); }
+        for (const sel of head.split(",")) out.push({ sel: sel.trim().replace(/\s+/g, " "), decls, order: order++, phone });
+      }
+      i = j;
+    }
+  };
+  walk(src, false);
+  return out;
+}
+const specificity = (sel: string) => (sel.match(/[.:](?!:)[\w-]+/g) ?? []).length;
+
+/** What the browser uses for a property of an element that the given selectors match: the most specific rule, the later one among equals. */
+function winner(rules: Rule[], selectors: string[], prop: string, phone: boolean): string | undefined {
+  const hits = rules.filter((r) => selectors.includes(r.sel) && prop in r.decls && (phone || !r.phone));
+  hits.sort((a, b) => specificity(a.sel) - specificity(b.sel) || a.order - b.order);
+  return hits.at(-1)?.decls[prop];
+}
+
 describe("phone width", () => {
   const phone = /@media \(max-width: 720px\) \{([\s\S]*)\n\}/.exec(css)?.[1] ?? "";
 
-  it("keeps the name and Faucet on the top row, drops the chain id and puts the search box under them", () => {
-    expect(phone).toMatch(/\.pill \{ display: none; \}/);
-    expect(phone).toMatch(/\.search \{[^}]*flex-basis: 100%/);
+  it("keeps the name and the network pill on the top row with a menu button, and puts the search box under them at full width", () => {
+    expect(phone).not.toMatch(/\.pill \{ display: none; \}/);
+    expect(css).toMatch(/\n\.menu \{[^}]*display: none/);
+    expect(phone).toMatch(/\.menu \{[^}]*display: (inline-)?flex/);
+  });
+
+  it("folds the pages away behind the menu button, and shows them when it is open", () => {
+    expect(phone).toMatch(/\.nav \{[^}]*display: none/);
+    expect(phone).toMatch(/\.nav\.open \{[^}]*display: flex/);
+  });
+
+  // The rules above only read the text. These decide which rule the browser uses, as the first version of this header was broken by a base rule that came later in the file.
+  const all = rulesOf(css);
+  const NAV = [".nav", ".top .nav"], NAV_OPEN = [...NAV, ".nav.open", ".top .nav.open"], SEARCH = [".search", ".top .search"];
+
+  it("keeps the phone rules in force: the pages are folded away, and the search box takes the whole row, whichever rule comes later in the file", () => {
+    expect(winner(all, NAV, "display", false)).toBe("flex");
+    expect(winner(all, NAV, "display", true)).toBe("none");
+    expect(winner(all, NAV_OPEN, "display", true)).toBe("flex");
+    expect(winner(all, NAV, "flex", true)).toBe("1 1 100%");
+    expect(winner(all, SEARCH, "flex", true)).toBe("1 1 100%");
+    expect(winner(all, SEARCH, "max-width", true)).toBe("none");
+    expect(winner(all, SEARCH, "margin-left", true)).toBe("0");
+    expect(winner(all, SEARCH, "flex", false)).toBe("0 1 380px");
+  });
+
+  it("holds the top bar to one line: the checks and the final block, with the rest left for wide screens", () => {
+    expect(phone).toMatch(/\.topbar \{[^}]*flex-wrap: nowrap/);
+    expect(phone).toMatch(/\.tb-wide \{ display: none; \}/);
+  });
+
+  it("puts every phone rule after all the base rules: no plain rule with the same selector follows a phone rule", () => {
+    const late = all.filter((r) => r.phone).flatMap((p) => all.filter((b) => !b.phone && b.sel === p.sel && b.order > p.order).map((b) => b.sel));
+    expect(late).toEqual([]);
+    // and the phone blocks are the last thing in the file, so no media block sits between base rules
+    const firstPhone = css.indexOf("@media (max-width: 720px)");
+    expect(css.slice(firstPhone).replace(/\/\*[\s\S]*?\*\//g, "").replace(/@media \(max-width: 720px\) \{(?:[^{}]|\{[^{}]*\})*\}/g, "").trim()).toBe("");
+  });
+
+  it("makes the phone top bar one line whatever the base rule says: no wrap, the narrow gap and the 16 px sides", () => {
+    expect(winner(all, [".topbar"], "flex-wrap", true)).toBe("nowrap");
+    expect(winner(all, [".topbar"], "flex-wrap", false)).toBe("wrap");
+    expect(winner(all, [".topbar"], "gap", true)).toBe("0 14px");
+    expect(winner(all, [".topbar"], "padding", true)).toBe("7px 16px");
+    expect(winner(all, [".stats.six"], "grid-template-columns", true)).toBe("repeat(2, minmax(0, 1fr))");
+    expect(winner(all, [".cells"], "grid-template-columns", true)).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
+  it("gives every grid of the home page columns that may shrink, so that a phone does not scroll sideways", () => {
+    const every = css.split("@media (max-width: 720px)").slice(1).join("\n");
+    expect(every).toMatch(/\.cols \{ grid-template-columns: minmax\(0, 1fr\);/);
+    expect(every).toMatch(/\.stats, \.stats\.six, \.cells \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+    expect(css).toMatch(/\.foot-links \{[^}]*flex-wrap: wrap/);
   });
 
   it("lays the block page out in one column, EVM side first and Canton second, with each value under its label", () => {

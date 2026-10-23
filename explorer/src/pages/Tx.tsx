@@ -76,7 +76,7 @@ function CallsItem({ t, detail }: { t: ApiTxSeen; detail: Detail }) {
   const d = detail.data;
   return (
     <Item label="Calls made">
-      {d ? (d.derived && d.callCount !== null ? <span className="mono">{d.callCount}</span> : <span className="muted">not derived yet</span>)
+      {d ? (d.derived && d.callCount !== null ? <span className="num">{d.callCount}</span> : <span className="muted">not derived yet</span>)
         : detail.failed ? <span className="muted">cannot be read right now</span> : <span className="muted">reading…</span>}
     </Item>
   );
@@ -112,9 +112,9 @@ function FeeFacts({ t, coin, block, detail }: { t: ApiTxSeen; coin: Coin | undef
       {(base !== null || capsKnown || caps) && (
         <Item label="Fees">
           {caps ?? <>
-            {base !== null && <>Base <span className="mono">{gwei(base)}</span></>}
-            {d?.maxFeePerGas != null && <>{base !== null && <span className="muted"> · </span>}Max <span className="mono">{gwei(d.maxFeePerGas)}</span></>}
-            {d?.maxPriorityFeePerGas != null && <><span className="muted"> · </span>Max priority <span className="mono">{gwei(d.maxPriorityFeePerGas)}</span></>}
+            {base !== null && <>Base <span className="num">{gwei(base)}</span></>}
+            {d?.maxFeePerGas != null && <>{base !== null && <span className="muted"> · </span>}Max <span className="num">{gwei(d.maxFeePerGas)}</span></>}
+            {d?.maxPriorityFeePerGas != null && <><span className="muted"> · </span>Max priority <span className="num">{gwei(d.maxPriorityFeePerGas)}</span></>}
           </>}
         </Item>
       )}
@@ -145,13 +145,13 @@ function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coi
         <Item label="Transaction fee">
           {t.fee !== null ? <InCoin raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}
         </Item>
-        {t.gasPrice !== null && <Item label="Gas price"><span className="mono">{gwei(t.gasPrice)}</span></Item>}
-        {t.gasUsed === null ? <Item label="Gas limit"><span className="mono">{count(t.gas)}</span></Item>
-          : <Item label="Gas used"><span className="mono">{count(t.gasUsed)}</span> <span className="muted">of {count(t.gas)}{t.gas > 0 && ` (${((t.gasUsed / t.gas) * 100).toFixed(2)}%)`}</span></Item>}
+        {t.gasPrice !== null && <Item label="Gas price"><span className="num">{gwei(t.gasPrice)}</span></Item>}
+        {t.gasUsed === null ? <Item label="Gas limit"><span className="num">{count(t.gas)}</span></Item>
+          : <Item label="Gas used"><span className="num">{count(t.gasUsed)}</span> <span className="muted">of {count(t.gas)}{t.gas > 0 && ` (${((t.gasUsed / t.gas) * 100).toFixed(2)}%)`}</span></Item>}
         <FeeFacts t={t} coin={coin} block={block} detail={detail} />
         <CallsItem t={t} detail={detail} />
         <Item label="Nonce and position">
-          <span className="mono">{t.nonce}</span>
+          <span className="num">{t.nonce}</span>
           {t.block && (index !== null ? <span className="muted"> · position {index} in block {t.block.number}</span>
             : t.status === "final" ? <span className="muted"> · {detail.failed ? "position cannot be read right now" : "reading the position…"}</span> : null)}
         </Item>
@@ -210,7 +210,7 @@ function Unseen({ t }: { t: ApiTxUnseen }) {
     <section className="card" aria-label="Transaction">
       <Kv wide>
         <Item label="From"><HashLink value={t.from} to={`/address/${t.from}`} full /></Item>
-        <Item label="Nonce"><span className="mono">{t.nonce}</span></Item>
+        <Item label="Nonce"><span className="num">{t.nonce}</span></Item>
         {t.reason && t.state !== "dropped" && <Item label="Note">{t.reason}</Item>}
       </Kv>
     </section>

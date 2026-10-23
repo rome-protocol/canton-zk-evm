@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { decodeEventOf, eventKinds, methodNames, type AbiEntry, type Decoded } from "../abi-call.ts";
 import { getContractEvents, type ContractDetail, type ContractEvent } from "../api.ts";
-import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { CardHead, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
@@ -52,8 +52,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
   const typed = topic !== null && !kinds.some((k) => k.topic0 === topic);
   return (
     <section className="card" aria-label="Events">
-      <div className="card-h">
-        <h2>Events <span className="muted thin">from final blocks, {kinds.length > 0 || abi.length > 0 ? "decoded with the verified ABI" : "shown raw while the source is not verified"}, newest first</span></h2>
+      <CardHead as="h2" title="Events" sub={`from final blocks, ${kinds.length > 0 || abi.length > 0 ? "decoded with the verified ABI" : "shown raw while the source is not verified"}, newest first`} action={
         <div className="ev-filter">
           <div className="seg" role="group" aria-label="Event kind">
             <button type="button" aria-pressed={topic === null} onClick={() => { setTopic(null); setTyping(false); }}>All events</button>
@@ -61,7 +60,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
           </div>
           <button type="button" className="btn-line" aria-pressed={typing || typed} onClick={() => setTyping((t) => !t)}><Icon name="search" size={13} /> Filter by topic</button>
         </div>
-      </div>
+      } />
       {typing && (
         <form className="fn-q" onSubmit={(ev) => { ev.preventDefault(); apply(); }}>
           <label htmlFor="ev-topic" className="muted small">First topic</label>

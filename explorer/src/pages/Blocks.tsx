@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { blocksCsvPath, getBlock, getBlockPage, type ApiStatus, type BlockFilter, type BlockListItem } from "../api.ts";
-import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { NumberedPager, useNumbered } from "../components/Numbered.tsx";
@@ -29,7 +29,7 @@ function Row({ b, now }: { b: BlockListItem; now: number }) {
       <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link></td>
       <td title={new Date(b.timestamp * 1000).toISOString()}>{duration(now - b.timestamp * 1000)} ago</td>
       <td className="r">{b.txCount}</td>
-      <td className="r mono"><Gas used={b.gasUsed} limit={b.gasLimit} /></td>
+      <td className="r num"><Gas used={b.gasUsed} limit={b.gasLimit} /></td>
       <td className="r">{b.proofSeconds === null ? <span className="muted">—</span> : <>{span(b.proofSeconds)}{b.proofSeconds > SLOW_PROOF_SECONDS && <span className="tag"> slow proof</span>}</>}</td>
       <td className="r">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
       <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /></td>
@@ -50,7 +50,7 @@ function ProvingRow({ proving, now, live }: { proving: NonNullable<ApiStatus["pr
       <td><Link className="num" to={`/block/${proving.number}`}>{proving.number}</Link></td>
       <td>cut {duration(now - proving.timestamp * 1000)} ago</td>
       <td className="r">{b ? b.txCount : attempt?.txCount ?? "—"}</td>
-      <td className="r mono">{b ? <Gas used={b.gasUsed} limit={b.gasLimit} /> : "—"}</td>
+      <td className="r num">{b ? <Gas used={b.gasUsed} limit={b.gasLimit} /> : "—"}</td>
       <td className="r amber">{started === null ? "—" : ended !== null ? span(Math.max(0, ended - started) / 1000) : `${(Math.max(0, now - started) / 1000).toFixed(1)} s so far`}</td>
       <td className="r muted">—</td>
       <td className="muted">not on Canton yet</td>
@@ -67,7 +67,7 @@ function GenesisRow() {
       <td><Link className="num" to="/block/0">0</Link></td>
       <td className="muted">genesis</td>
       <td className="r">{g ? g.txCount : "—"}</td>
-      <td className="r mono">{g ? count(g.gasUsed) : "—"}</td>
+      <td className="r num">{g ? count(g.gasUsed) : "—"}</td>
       <td className="r muted">—</td>
       <td className="r muted">—</td>
       <td className="muted">{g?.genesisReferenced ? "no record; block 1's record names it as parent" : "no record"}</td>
@@ -136,7 +136,7 @@ export function Blocks() {
         <div className="seg" role="group" aria-label="Show blocks">
           {FILTERS.map((f) => <button key={f.id} type="button" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</button>)}
         </div>
-        <a className="csv" href={blocksCsvPath(filter)} download="blocks.csv">CSV</a>
+        <DownloadLink href={blocksCsvPath(filter)} file="blocks.csv">CSV</DownloadLink>
       </div>
       <div className="note">
         Blocks are cut on demand: when transactions wait and the last block is final. The producer's setting decides whether empty blocks are also made.{" "}

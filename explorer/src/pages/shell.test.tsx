@@ -2,9 +2,9 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { addr, fakeApi, renderApp, status } from "../test-utils.tsx";
+import { addr, fakeApi, renderApp, route, status } from "../test-utils.tsx";
 
-const FOOTER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton.";
+const FOOTER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton. Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";
 const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
 describe("the shell", () => {
@@ -18,17 +18,68 @@ describe("the shell", () => {
     expect(await within(header).findByText("DevNet")).toBeInTheDocument();
     expect(within(home).getByText("DevNet")).toBeInTheDocument();
     expect(within(header).getByRole("link", { name: "Faucet" })).toHaveAttribute("href", "/faucet");
-    expect(within(header).getByRole("searchbox", { name: "Search" })).toHaveAttribute("placeholder", "Block number, transaction or block hash, address, or Canton update id");
+    expect(within(header).getByRole("searchbox", { name: "Search" })).toHaveAttribute("placeholder", "Block, transaction, address or Canton update id");
+    expect(within(header).getByText("/", { selector: "kbd" })).toBeInTheDocument();
   });
 
-  it("gives the search box a shorter hint at phone width", async () => {
+  it("gives the home page's big search box a shorter hint at phone width", async () => {
     const wide = window.matchMedia;
     window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 720px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     try {
       fakeApi(() => ({ status: 200, body: status() }));
-      renderApp("/faucet");
+      renderApp("/");
       expect(screen.getByRole("searchbox", { name: "Search" })).toHaveAttribute("placeholder", "Block, transaction, address or Canton update");
     } finally { window.matchMedia = wide; }
+  });
+
+  it("focuses the search box on the / key, unless the key is typed into a field", async () => {
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const box = screen.getByRole("searchbox", { name: "Search" });
+    expect(box).not.toHaveFocus();
+    await userEvent.keyboard("/");
+    expect(box).toHaveFocus();
+    expect(box).toHaveValue("");
+    await userEvent.keyboard("0/1");
+    expect(box).toHaveValue("0/1");
+  });
+
+  it("keeps / for other fields and for key combinations", async () => {
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const other = document.createElement("input");
+    document.body.append(other);
+    other.focus();
+    await userEvent.keyboard("/");
+    expect(other).toHaveFocus();
+    expect(other).toHaveValue("/");
+    other.remove();
+    await userEvent.keyboard("{Control>}/{/Control}");
+    expect(screen.getByRole("searchbox", { name: "Search" })).not.toHaveFocus();
+  });
+
+  it("keeps the parent page lit on a detail page, and lights nothing where no page of the header owns the route", async () => {
+    const lit = (route: string) => {
+      fakeApi((p) => (p.startsWith("/api/status") ? { status: 200, body: status() } : { status: 404, body: { error: "not found" } }));
+      const { unmount } = renderApp(route);
+      const on = within(screen.getByRole("navigation", { name: "Pages" })).queryAllByRole("link").filter((a) => a.getAttribute("aria-current") === "page").map((a) => a.textContent);
+      unmount();
+      return on;
+    };
+    const A = "0x" + "ab".repeat(20);
+    expect(lit("/")).toEqual(["Home"]);
+    expect(lit("/blocks")).toEqual(["Blocks"]);
+    expect(lit("/block/1")).toEqual(["Blocks"]);
+    expect(lit("/txs")).toEqual(["Transactions"]);
+    expect(lit("/tx/0x" + "cd".repeat(32))).toEqual(["Transactions"]);
+    expect(lit("/contract/" + A)).toEqual(["Contracts"]);
+    expect(lit("/token/" + A)).toEqual(["Tokens"]);
+    expect(lit("/canton")).toEqual(["Canton"]);
+    expect(lit("/canton/1220ab")).toEqual(["Canton"]);
+    expect(lit("/docs/api")).toEqual(["API"]);
+    expect(lit("/address/" + A)).toEqual([]);
+    expect(lit("/leg/abc")).toEqual([]);
+    expect(lit("/blocks-nowhere")).toEqual([]);
   });
 
   it("uses the name the server gives, and Ostia until it has answered", async () => {
@@ -38,13 +89,59 @@ describe("the shell", () => {
     expect(await within(screen.getByRole("banner")).findByRole("link", { name: /Another/ })).toBeInTheDocument();
   });
 
-  it("ends every page with the reader-party line", async () => {
+  it("ends every page with the reader-party line and the four links: API, Health, the wallet and the source", async () => {
     fakeApi(() => ({ status: 200, body: status() }));
     for (const route of ["/", "/faucet", "/nowhere"]) {
       const { unmount } = renderApp(route);
-      expect(within(screen.getByRole("contentinfo")).getByText(FOOTER)).toBeInTheDocument();
+      const foot = within(screen.getByRole("contentinfo"));
+      expect(foot.getByText(FOOTER)).toBeInTheDocument();
+      expect(foot.getByRole("link", { name: "API" })).toHaveAttribute("href", "/docs/api");
+      expect(foot.getByRole("link", { name: "Health" })).toHaveAttribute("href", "/api/health");
+      expect(foot.getByRole("link", { name: "Source code" })).toHaveAttribute("href", "https://github.com/rome-protocol/canton-zk-evm");
+      expect(await foot.findByRole("link", { name: "Add Ostia to your wallet" })).toHaveAttribute("href", "/docs/api#rpc-h");
+      expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["API", "Health", "Add Ostia to your wallet", "Source code"]);
       unmount();
     }
+  });
+
+  it("scrolls to the wallet card when the page is opened at #rpc-h, and again when a section above it has been drawn later", async () => {
+    const scrolled: Array<string | null> = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.id); };
+    try {
+      fakeApi(route({}));
+      renderApp("/docs/api#rpc-h");
+      await screen.findByRole("heading", { name: /to your wallet/ });
+      await waitFor(() => expect(scrolled).toContain("rpc-h"));
+      const before = scrolled.length;
+      // a section drawn above the card, after the first scroll, moves the card: the page scrolls to it again
+      const late = document.createElement("section");
+      document.querySelector("main")!.prepend(late);
+      await waitFor(() => expect(scrolled.length).toBeGreaterThan(before));
+    } finally { Element.prototype.scrollIntoView = original; }
+  });
+
+  it("leaves the wallet link out when the explorer serves no public RPC, because the page would have no card to show", async () => {
+    fakeApi(() => ({ status: 200, body: status({ publicRpc: false }) }));
+    renderApp("/faucet");
+    await within(screen.getByRole("banner")).findByText("DevNet");
+    expect(within(screen.getByRole("contentinfo")).queryByRole("link", { name: /wallet/ })).toBeNull();
+  });
+
+  it("has a menu button for phones that shows and hides the pages, and closes when a page is chosen", async () => {
+    const user = userEvent.setup();
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const nav = screen.getByRole("navigation", { name: "Pages" });
+    const menu = within(screen.getByRole("banner")).getByRole("button", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(nav).not.toHaveClass("open");
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(nav).toHaveClass("open");
+    await user.click(within(nav).getByRole("link", { name: "Blocks" }));
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(nav).not.toHaveClass("open");
   });
 
   it("sends what was typed to the search page, which opens what the server finds", async () => {

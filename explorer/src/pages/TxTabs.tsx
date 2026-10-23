@@ -114,7 +114,7 @@ export function InternalTab({ t, coin }: { t: ApiTxSeen; coin: { symbol: string;
                   <td>{c.to ? <HashLink value={c.to} to={`/address/${c.to}`} /> : <span className="muted">none</span>}</td>
                   <td>{c.selector ? <span className="mono">{c.selector}</span> : <span className="muted">none</span>}</td>
                   <td className="r">{coin ? <Amount raw={c.value} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>}</td>
-                  <td className="r">{c.gasUsed === null ? <span className="muted">not given</span> : <span className="mono">{count(c.gasUsed)}</span>}</td>
+                  <td className="r">{c.gasUsed === null ? <span className="muted">not given</span> : <span className="num">{count(c.gasUsed)}</span>}</td>
                   <td>{c.error ? <span className="fact-bad">{c.error}</span> : <span className="fact-ok">true</span>}</td>
                 </tr>
               ))}

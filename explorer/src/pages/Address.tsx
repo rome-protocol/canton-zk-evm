@@ -27,7 +27,7 @@ function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | und
       {a.balance === null ? <div className="addr-bal muted">Not known yet</div> : coin ? <div className="addr-bal" title={`${exact(a.balance, coin.decimals)} ${coin.symbol}`}>{units(a.balance, coin.decimals)} <small>{coin.symbol}</small></div> : <div className="addr-bal muted">…</div>}
       {a.balance === null
         ? <p className="small muted">There is no final block to read it at yet.</p>
-        : <p className="small muted">as of final block {a.balanceBlock}, read from reth{coin && <> · exact: <span className="mono">{exact(a.balance, coin.decimals)} {coin.symbol}</span></>}</p>}
+        : <p className="small muted">as of final block {a.balanceBlock}, read from reth{coin && <> · exact: <span className="num">{exact(a.balance, coin.decimals)} {coin.symbol}</span></>}</p>}
     </section>
   );
 }
@@ -43,9 +43,9 @@ function HoldingRow({ h }: { h: Holding }) {
       </div>
       <div className="r">
         {h.standard === "ERC-721" ? <NftCount n={h.value} />
-          : nft ? <span className="mono">{h.value}</span>
+          : nft ? <span className="num">{h.value}</span>
           : h.decimals !== null && h.symbol ? <Amount raw={h.value} decimals={h.decimals} symbol={h.symbol} />
-          : <span className="mono" title="The token's decimals are not known, so this is the raw value">{h.value}</span>}
+          : <span className="num" title="The token's decimals are not known, so this is the raw value">{h.value}</span>}
       </div>
     </div>
   );
@@ -76,8 +76,8 @@ function More({ a }: { a: AddressDetail }) {
     <section className="card" aria-label="More information">
       <h2>More information</h2>
       <Kv wide>
-        <Item label="Transactions sent"><span className="mono">{count(a.sentCount)}</span></Item>
-        <Item label="Transactions received"><span className="mono">{count(a.receivedCount)}</span></Item>
+        <Item label="Transactions sent"><span className="num">{count(a.sentCount)}</span></Item>
+        <Item label="Transactions received"><span className="num">{count(a.receivedCount)}</span></Item>
         <Item label="First seen">{blk(a.firstSeenBlock)}</Item>
         <Item label="Last active">{blk(a.lastActiveBlock)}</Item>
       </Kv>

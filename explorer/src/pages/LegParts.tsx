@@ -15,8 +15,8 @@ export function useLegToken(token: string) {
 export function LegAmount({ l }: { l: Pick<LegListItem, "token" | "amount"> }) {
   const t = useLegToken(l.token);
   if (t?.decimals != null && t.symbol) return <Amount raw={l.amount} decimals={t.decimals} symbol={t.symbol} />;
-  if (t?.decimals != null) return <span className="mono" title={exact(l.amount, t.decimals)}>{units(l.amount, t.decimals)}</span>;
-  return <span className="mono" title="The token's decimals are not known, so this is the raw amount">{count(l.amount)}</span>;
+  if (t?.decimals != null) return <span className="num" title={exact(l.amount, t.decimals)}>{units(l.amount, t.decimals)}</span>;
+  return <span className="num" title="The token's decimals are not known, so this is the raw amount">{count(l.amount)}</span>;
 }
 
 /** The token of a leg: its address as a link, with its symbol when the token has told it. */

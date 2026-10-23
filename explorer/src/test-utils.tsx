@@ -30,6 +30,12 @@ export function status(over: Partial<ApiStatus> = {}): ApiStatus {
   };
 }
 
+/** What /api/health answers with `n` checks, the first `bad` of them with the given word. */
+export function health(n = 16, bad = 0, word: "degraded" | "down" = "degraded") {
+  const checks = Array.from({ length: n }, (_, i) => ({ id: `check-${i}`, role: "indexer", status: i < bad ? word : "ok", detail: null }));
+  return { status: bad ? word : "ok", instance: "api-1", starting: false, problems: [], checks };
+}
+
 export const addr = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(20);
 export const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
@@ -120,7 +126,7 @@ export function route(h: {
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
-  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
+  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -138,6 +144,7 @@ export function route(h: {
     if (kind === "tokens") return h.tokenPages ? h.tokenPages(decodeURIComponent(arg), sub, path) : gone();
     if (kind === "contracts") return h.contracts ? h.contracts(decodeURIComponent(arg), sub, path) : gone();
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
+    if (kind === "health") return h.health ? h.health() : gone();
     if (kind === "txs" && arg) {
       const [x, p] = [decodeURIComponent(arg), path];
       if (p.includes("raw=1")) return h.txRaw ? h.txRaw(x) : gone();
@@ -169,6 +176,8 @@ export function fakeApi(answer: ((path: string) => { status: number; body: unkno
 
 /** Renders the whole app at a route. The status is polled every few seconds, so a test of the pages gives it a polling query client with no retries. */
 export function renderApp(route = "/") {
+  // jsdom does not scroll: the shell scrolls to the top on a new page, and a test that wants to see it spies on this
+  if (!vi.isMockFunction(window.scrollTo)) window.scrollTo = () => {};
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[route]}><App /></MemoryRouter></QueryClientProvider>);
 }

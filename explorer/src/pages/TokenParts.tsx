@@ -11,7 +11,7 @@ export function noName(t: Pick<TokenListItem, "standard" | "metadataStatus">): s
 
 /** A count of NFTs: an ERC-721 holder's balance, and its supply. */
 export function NftCount({ n }: { n: string }) {
-  return <span><span className="mono">{count(n)}</span> {n === "1" ? "token" : "tokens"}</span>;
+  return <span><span className="num">{count(n)}</span> {n === "1" ? "token" : "tokens"}</span>;
 }
 
 /**
@@ -22,8 +22,8 @@ export function Supply({ t, bare = false }: { t: Pick<TokenListItem, "standard" 
   const s = t.totalSupply;
   if (s === null) return <span className="muted" title="The contract has not told its supply">—</span>;
   if (t.standard === "ERC-721") return <NftCount n={s} />;
-  if (t.decimals === null) return <span className="mono" title="The token's decimals are not known, so this is the raw count">{count(s)}</span>;
-  if (!t.symbol || bare) return <span className="mono" title={`${exact(s, t.decimals)}${t.symbol ? ` ${t.symbol}` : ""}`}>{units(s, t.decimals)}</span>;
+  if (t.decimals === null) return <span className="num" title="The token's decimals are not known, so this is the raw count">{count(s)}</span>;
+  if (!t.symbol || bare) return <span className="num" title={`${exact(s, t.decimals)}${t.symbol ? ` ${t.symbol}` : ""}`}>{units(s, t.decimals)}</span>;
   return <Amount raw={s} decimals={t.decimals} symbol={t.symbol} />;
 }
 
