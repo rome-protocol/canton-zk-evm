@@ -56,6 +56,16 @@ describe("the addresses page", () => {
     await waitFor(() => expect(rows()[0]).toHaveTextContent("0x3333…3333"));
   });
 
+  it("opens the first page of a new sort after paging forward", async () => {
+    const calls = await open((p) => reply({ ...page([item(0x11)], p.includes("before=") ? null : "5:0x11"), derived: true }));
+    await userEvent.click(screen.getByRole("button", { name: "Older page" }));
+    await waitFor(() => expect(screen.getByText("Page 2")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Transactions" }));
+    await waitFor(() => expect(calls.some((c) => c.includes("sort=txs") && !c.includes("before="))).toBe(true));
+    expect(calls.some((c) => c.includes("sort=txs") && c.includes("before="))).toBe(false);
+    await waitFor(() => expect(screen.getByText("Page 1")).toBeInTheDocument());
+  });
+
   it("says when the explorer has not read every block yet", async () => {
     await open(() => reply({ ...page([item(0x11)]), derived: false }));
     expect(screen.getByText(/still reading blocks/)).toBeInTheDocument();

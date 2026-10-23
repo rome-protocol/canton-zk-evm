@@ -44,6 +44,17 @@ describe("the contract page: Events", () => {
     expect(paths.some((p) => p.includes(`topic0=${toEventSelector(SIG)}`))).toBe(true);
   });
 
+  it("opens the first page of a new kind of event after paging forward", async () => {
+    const paths: string[] = [];
+    await open("events", { sources: verified, events: (p) => { paths.push(p); return page([log(1)], p.includes("before=") ? null : "19:0:1"); } });
+    await userEvent.click(await screen.findByRole("button", { name: "Older page" }));
+    await waitFor(() => expect(screen.getByText("Page 2")).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "Transfer" }));
+    await waitFor(() => expect(paths.some((p) => p.includes("topic0=") && !p.includes("before="))).toBe(true));
+    expect(paths.some((p) => p.includes("topic0=") && p.includes("before="))).toBe(false);
+    await waitFor(() => expect(screen.getByText("Page 1")).toBeInTheDocument());
+  });
+
   it("filters by a typed topic, and refuses one that is not 0x and 64 hex digits", async () => {
     const paths: string[] = [];
     await open("events", { sources: verified, events: (p) => { paths.push(p); return page([]); } });

@@ -8,13 +8,17 @@ import type { Page } from "../api.ts";
  */
 export function usePaged<P extends Page<unknown>>(key: readonly unknown[], read: (cursor: string | null) => Promise<P>, refetchInterval: number | false = false) {
   const [cursors, setCursors] = useState<Array<string | null>>([null]);
-  const at = cursors[cursors.length - 1] ?? null;
+  // A new list (another kind, sort, filter or address) starts at its first page, never at the old list's cursor.
+  const listKey = JSON.stringify(key);
+  const [seen, setSeen] = useState(listKey);
+  if (seen !== listKey) { setSeen(listKey); setCursors([null]); }
+  const at = seen !== listKey ? null : (cursors[cursors.length - 1] ?? null);
   const q = useQuery({ queryKey: [...key, at], queryFn: () => read(at), placeholderData: keepPreviousData, refetchInterval });
   const next = q.data?.next ?? null;
   return {
     data: q.data, error: q.error, isLoading: q.isLoading,
-    page: cursors.length,
-    hasPrev: cursors.length > 1,
+    page: seen !== listKey ? 1 : cursors.length,
+    hasPrev: seen === listKey && cursors.length > 1,
     hasNext: next !== null,
     first: () => setCursors([null]),
     prev: () => setCursors((c) => (c.length > 1 ? c.slice(0, -1) : c)),
