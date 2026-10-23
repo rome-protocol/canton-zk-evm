@@ -13,3 +13,5 @@ create table faucet_refusals_since (
 insert into faucet_refusals_since (since) values (date_trunc('minute', now()) + interval '1 minute');
 comment on table faucet_refusals is 'counts of faucet requests turned away, per UTC minute and reason; no address or client is stored';
 comment on column faucet_refusals.reason is 'address: the same address within its window. ip: the same network address within its window. hour: the hourly cap for everyone. captcha: the human check failed';
+-- The day's payout count (GET /api/faucet, polled by the faucet page and the stats page, and read at each health tick) counts rows by send time. Without an index it read every request kept (90 days).
+create index faucet_requests_sent_at_idx on faucet_requests (sent_at) where sent_at is not null;

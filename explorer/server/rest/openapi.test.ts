@@ -152,11 +152,11 @@ describe("the API description", () => {
   it("documents the faucet's facts and the turned-away counts it reads", async () => {
     const doc = await body(full(), "/api/openapi.json");
     const info = doc.paths["/api/faucet"].get;
-    for (const f of ["sentToday", "balanceBlock", "batch"]) expect(info.summary, f).toContain(f);
+    for (const f of ["sentToday", "finalToday", "beingProven", "balanceBlock", "batch", "final head"]) expect(info.summary, f).toContain(f);
     const stats = doc.paths["/api/stats/summary"].get.summary as string;
-    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded"]) expect(stats, f).toContain(f);
+    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded", "cool-down"]) expect(stats, f).toContain(f);
     // the field lists of both answers carry the new fields
-    expect(Object.keys(info.responses["200"].content["application/json"].schema.properties)).toEqual(expect.arrayContaining(["sentToday", "balanceBlock", "batch"]));
+    expect(Object.keys(info.responses["200"].content["application/json"].schema.properties)).toEqual(expect.arrayContaining(["sentToday", "finalToday", "beingProven", "balanceBlock", "batch"]));
   });
   it("lists as paged exactly the routes whose pages say so", () => {
     for (const [path, d] of Object.entries(DOCS)) {

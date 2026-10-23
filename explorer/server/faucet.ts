@@ -37,11 +37,13 @@ export interface FaucetOptions {
   clientKeyHash?: (clientKey: string) => string;
   /** The human check, or null for none. */
   captcha: { secret: string; verifyUrl: string; scriptUrl: string; siteKey: string; widgetClass: string } | null;
-  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc" | "blockNumber" | "balanceAt">>;
+  reth: Pick<Reth, "balance" | "nonce" | "gasPrice" | "priorityFee" | "sendRaw" | "transaction"> & Partial<Pick<Reth, "block" | "rpc" | "balanceAt">>;
   /** Takes each sent transfer, and says where it is. Without one, a ticket never gets past "sent". */
   tracker?: Pick<Tracker, "track" | "state"> & Partial<Pick<Tracker, "admit">>;
   /** How often the worker looks at the queue. */
   tickMs?: number;
+  /** How long the refusal counts are held in memory before they are written (milliseconds). Default 5000. */
+  refusalFlushMs?: number;
   /** For the human check's call. A test gives its own. */
   fetch?: typeof fetch;
   /** The time in milliseconds. A test sets its own. */
@@ -62,6 +64,10 @@ export interface FaucetInfo {
   batch: number;
   /** Payouts sent since the start of the UTC day, or null when the faucet's store cannot count them (a file keeps no send times). */
   sentToday: number | null;
+  /** Of those, how many are final (null as for `sentToday`). */
+  finalToday: number | null;
+  /** Payouts sent and not yet final, whatever day they went out (null as for `sentToday`). */
+  beingProven: number | null;
   captcha: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
 }
 
@@ -684,11 +690,20 @@ export function createFaucet(o: FaucetOptions): Faucet {
     }
   }
 
-  /** Counts a refusal that is a limit or a failed human check, once, and hands the answer back. Only the reason is counted. The count never delays or changes the answer. */
-  async function counted(a: FaucetAnswer): Promise<FaucetAnswer> {
+  /** Counts a refusal that is a limit or a failed human check, once, and hands the answer back. Only the reason is counted, in memory: the answer never waits for the database, and a timer writes the counts. */
+  let refusalTimer: ReturnType<typeof setTimeout> | undefined;
+  function counted(a: FaucetAnswer): FaucetAnswer {
     const reason = (a.body as { reason?: string }).reason;
-    if (reason === "address" || reason === "ip" || reason === "hour" || reason === "captcha") await store?.refused?.(reason satisfies Refused, now()).catch(() => undefined);
+    if ((reason === "address" || reason === "ip" || reason === "hour" || reason === "captcha") && store?.refused && store.flushRefusals) {
+      store.refused(reason satisfies Refused, now());
+      refusalTimer ??= setTimeout(() => { refusalTimer = undefined; void store.flushRefusals!(); }, o.refusalFlushMs ?? 5000).unref();
+    }
     return a;
+  }
+  /** Writes the refusal counts held in memory now (at close, and when the caller flushes). */
+  async function writeRefusals() {
+    if (refusalTimer) { clearTimeout(refusalTimer); refusalTimer = undefined; }
+    await store?.flushRefusals?.();
   }
 
   function viewOf(t: Ticket): TicketView {
@@ -722,27 +737,32 @@ export function createFaucet(o: FaucetOptions): Faucet {
       timer = undefined; started = false;
       await running?.catch(() => {});
       await save();
+      await writeRefusals();
       await leader.release();
     },
     /** Waits for the batch in hand to end, then writes everything as it stands. */
     flush: async () => {
       await running?.catch(() => {});
       await save();
+      await writeRefusals();
     },
 
     async info() {
+      const t = now();
+      // The count and the chain are read together, so the answer waits for the slowest and not for the sum.
+      const payouts = store?.payouts ? store.payouts(t - (t % 86400_000)).catch(() => null) : Promise.resolve(null);
       let balance: string | null = null, balanceBlock: number | null = null;
       if (address) {
-        // Named by the block it is read at, when reth can say: the number is read first and the balance is read at that number, so the two belong together.
-        const at = o.reth.blockNumber && o.reth.balanceAt ? await o.reth.blockNumber().then((n) => n, () => null) : null;
+        // Read at the final head (reth's finalized block is Canton's head), named by its number: the number is read first and the balance at that number, so the two belong together.
+        const at = o.reth.block && o.reth.balanceAt ? await o.reth.block("finalized").then((b) => b?.number ?? null, () => null) : null;
         if (at !== null) balance = await o.reth.balanceAt!(address, at).then((b) => (balanceBlock = at, b.toString()), () => null);
         if (balance === null) balance = await o.reth.balance(address).then((b) => b.toString(), () => null);
       }
-      const t = now();
-      const sentToday = store?.sentSince ? await store.sentSince(t - (t % 86400_000)).catch(() => null) : null;
+      const p = await payouts;
       return {
         on: account !== null, address, balance, balanceBlock, amount: o.amountWei.toString(), perAddressSeconds: o.perAddressSeconds, perIpSeconds: o.perIpSeconds,
-        maxPerHour: o.maxPerHour, queue: queue.length, batch: o.batch, sentToday, captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
+        maxPerHour: o.maxPerHour, queue: queue.length, batch: o.batch, sentToday: p?.sent ?? null, finalToday: p?.final ?? null, beingProven: p?.beingProven ?? null,
+        captcha: o.captcha && { siteKey: o.captcha.siteKey, scriptUrl: o.captcha.scriptUrl, widgetClass: o.captcha.widgetClass },
       };
     },
 

@@ -311,6 +311,7 @@ table faucet_requests
   CREATE INDEX faucet_requests_address_requested_at_idx ON public.faucet_requests USING btree (address, requested_at DESC)
   CREATE INDEX faucet_requests_client_key_requested_at_idx ON public.faucet_requests USING btree (client_key, requested_at DESC)
   CREATE INDEX faucet_requests_requested_at_idx ON public.faucet_requests USING btree (requested_at)
+  CREATE INDEX faucet_requests_sent_at_idx ON public.faucet_requests USING btree (sent_at) WHERE (sent_at IS NOT NULL)
   CREATE INDEX faucet_requests_state_requested_at_idx ON public.faucet_requests USING btree (state, requested_at) WHERE (state = ANY (ARRAY['queued'::text, 'sent'::text]))
   CREATE INDEX faucet_requests_updated_at_idx ON public.faucet_requests USING btree (updated_at)
   CREATE UNIQUE INDEX faucet_requests_pkey ON public.faucet_requests USING btree (ticket)

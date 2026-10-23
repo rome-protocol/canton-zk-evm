@@ -542,21 +542,27 @@ describe.skipIf(!TEST_URL)("the faucet routes", () => {
 
   it("shows, on GET, whether it is on, its address and balance, and what it gives, with exactly its fields", async () => {
     const c = chain();
-    const on = await (await boot(c, { faucet: true })).get("/api/faucet");
+    expect(c.blocks.length - 1).toBeGreaterThan(2); // the newest block is not the final one below
+    const on = await (await boot(c, { faucet: true, finalized: 2 })).get("/api/faucet");
     expect(on.status).toBe(200);
     same(on.body, FIELDS.faucetInfo);
-    // The balance is named by the block it was read at (reth's newest). With no database store (the file's way) no count of today's payouts is possible: null, not 0.
-    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: c.blocks.length - 1, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, captcha: null });
+    // The balance is named by the block it was read at: the final head (reth's finalized block, 2 here), not the newest block. With no database store (the file's way) no count of today's payouts is possible: null, not 0.
+    expect(on.body).toEqual({ on: true, address: FAUCET_ADDRESS, balance: (1000n * 10n ** 18n).toString(), balanceBlock: 2, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null });
     await reth?.close(); await ledger?.close();
     const off = await (await boot(chain())).get("/api/faucet");
-    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, captcha: null });
+    expect(off.body).toEqual({ on: false, address: null, balance: null, balanceBlock: null, amount: (10n ** 18n).toString(), perAddressSeconds: 86400, perIpSeconds: 600, maxPerHour: 5000, queue: 0, batch: 100, sentToday: null, finalToday: null, beingProven: null, captcha: null });
   });
 
-  it("says how many payouts were sent today, and the queue, from the store", async () => {
+  it("says no block, and the newest block's balance, when reth cannot name the final block", async () => {
+    const { get } = await boot(chain(), { faucet: true, finalized: "unreadable" });
+    expect((await get("/api/faucet")).body).toMatchObject({ on: true, balance: (1000n * 10n ** 18n).toString(), balanceBlock: null });
+  });
+
+  it("says how many payouts were sent today, how many are final, and how many are being proven, from the store", async () => {
     const asked: number[] = [];
-    const store: FaucetStore = { load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => true, sentSince: async (from) => { asked.push(from); return 42; } };
+    const store: FaucetStore = { load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => true, payouts: async (from) => { asked.push(from); return { sent: 42, final: 40, beingProven: 2 }; } };
     const { get } = await boot(chain(), { faucet: true, store });
-    expect(await get("/api/faucet")).toMatchObject({ status: 200, body: { sentToday: 42, batch: 100 } });
+    expect(await get("/api/faucet")).toMatchObject({ status: 200, body: { sentToday: 42, finalToday: 40, beingProven: 2, batch: 100 } });
     // asked from 00:00 UTC of today
     expect(asked[0]! % 86400_000).toBe(0);
     expect(Date.now() - asked[0]!).toBeLessThan(86400_000);

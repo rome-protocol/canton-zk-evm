@@ -106,8 +106,8 @@ describe("the API client", () => {
   });
 
   it("reads the faucet's block, batch and today's payouts, and says nothing when the faucet cannot be read", async () => {
-    answer(200, { on: true, balanceBlock: 812, batch: 100, sentToday: 4 });
-    expect(await getFaucetFacts()).toMatchObject({ balanceBlock: 812, batch: 100, sentToday: 4 });
+    answer(200, { on: true, balanceBlock: 812, batch: 100, sentToday: 4, finalToday: 3, beingProven: 1 });
+    expect(await getFaucetFacts()).toMatchObject({ balanceBlock: 812, batch: 100, sentToday: 4, finalToday: 3, beingProven: 1 });
     answer(503, { error: "x" });
     expect(await getFaucetFacts()).toBeNull();
   });

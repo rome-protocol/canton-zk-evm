@@ -6,7 +6,7 @@
  *   B = 120: 3.4896 s   A = 142: 10.2125 s   C = 160: 24.5519 s
  */
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createApi, type Answer } from "../api.ts";
 import { createChainRest } from "./chain-rest.ts";
@@ -295,6 +295,17 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.blocks.bySize).toEqual([{ size: "0", count: 2 }, { size: "1-10", count: 4 }, { size: "11-100", count: 2 }, { size: "101-1000", count: 0 }, { size: "over 1000", count: 0 }]);
     expect(s.blocks.bySize.reduce((a: number, x: { count: number }) => a + x.count, 0)).toBe(s.blocks.count);
     expect(s.proofTime.bySize.map((x: { samples: number }) => x.samples)).toEqual([0, 1, 1, 0, 0]);
+  });
+
+  it("sums the refusals only for a window the counting covers: a longer window reads when the counting began and nothing more", async () => {
+    const spy = vi.spyOn(pool, "query");
+    const sums = () => spy.mock.calls.filter(([q]) => String(typeof q === "string" ? q : (q as { text: string }).text).includes("from faucet_refusals where")).length;
+    await get("/api/stats/summary?window=30d");
+    await get("/api/stats/summary?window=6h");
+    expect(sums()).toBe(0);
+    await get("/api/stats/summary?window=1h");
+    expect(sums()).toBe(1);
+    spy.mockRestore();
   });
 
   it("names the cutting strategy of the newest ordinary run, and reads the faucet's requests of the window", async () => {
