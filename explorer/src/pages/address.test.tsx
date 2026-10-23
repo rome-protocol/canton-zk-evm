@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AddressDetail } from "../api.ts";
-import { T0, addr, addressDetail, contractItem, fakeApi, hash, holding, NOT_FOUND, page, renderApp, reply, route, tick, txItem } from "../test-utils.tsx";
+import { T0, addr, addressDetail, contractItem, fakeApi, hash, holding, labelsOf, NOT_FOUND, page, renderApp, reply, route, tick, txItem } from "../test-utils.tsx";
 
 const A = addr(0x5b);
 type Subs = Partial<Record<"txs" | "contracts" | "internal" | "token-transfers" | "tokens" | "coin-history", (path: string) => ReturnType<typeof reply>>>;
@@ -11,12 +11,12 @@ const derived = <T,>(items: T[], next: string | null = null, d = true) => reply(
 
 async function open(d: AddressDetail = addressDetail(), subs: Subs = {}, path = `/address/${d.address}`, title = "Address", extra: Parameters<typeof route>[0] = {}) {
   const calls = fakeApi(route({
-    ...extra,
     tokens: (a) => reply({ address: a, standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, derived: true }),
     addresses: (a, sub, p) => {
       if (a !== d.address) return reply(addressDetail({ address: a, kind: "contract", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }));
       return sub === "" ? reply(d) : (subs[sub as keyof Subs]?.(p) ?? (sub === "txs" ? reply(page([])) : derived([])));
     },
+    ...extra,
   }));
   renderApp(path);
   await screen.findByRole("heading", { name: title });
@@ -164,19 +164,83 @@ describe("the address page: the transactions tab", () => {
 });
 
 describe("the address page: the other tabs", () => {
-  it("lists token transfers with the token's symbol, and an NFT by its id", async () => {
-    const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, token: addr(0xcb), from: A, to: addr(0x77), amount: "5000000000", tokenId: null };
-    const n = { ...t, txHash: hash(0xe2), block: 19, amount: null, tokenId: "3", token: addr(0xcc) };
-    const calls = await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([t, n]) });
+  it("lists token transfers with method, age and the token by its name, and an NFT by its id", async () => {
+    const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: "0xa9059cbb", creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: A, to: addr(0x77), amount: "5000000000", tokenId: null };
+    const n = { ...t, txHash: hash(0xe2), block: 19, amount: null, tokenId: "3", token: addr(0xcc), standard: "ERC-721" };
+    const calls = await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([t, n]) }, `/address/${A}`, "Address", {
+      labels: labelsOf([{ address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true }]),
+    });
     await userEvent.click(tab("Token transfers"));
     await waitFor(() => expect(rows()).toHaveLength(2));
     await waitFor(() => expect(rows()[0]).toHaveTextContent("5,000 tUSD"));
+    const head = within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent);
+    expect(head).toEqual(["Transaction hash", "Method", "Block", "Age", "From", "To", "Amount", "Token", "Stage"]);
+    expect(rows()[0]).toHaveTextContent("transfer");
+    expect(rows()[0]).toHaveTextContent("ago");
     expect(rows()[0]).toHaveTextContent("OUT");
+    expect(rows()[0]).toHaveTextContent("Test USD");
+    expect(rows()[0]).toHaveTextContent(`${hash(0xe1).slice(0, 10)}…${hash(0xe1).slice(-6)}`);
     expect(rows()[1]).toHaveTextContent("#3");
-    // each token is named from the token route, which reads nothing from reth; the address route would read a balance per token
-    expect(calls.some((c) => c.startsWith(`/api/tokens/${addr(0xcb)}`))).toBe(true);
+    // the token's decimals come from the labels, so no token route and no address route (which reads a balance from reth) is asked
     expect(calls.some((c) => c === `/api/addresses/${addr(0xcb)}` || c === `/api/addresses/${addr(0xcc)}`)).toBe(false);
     expect(screen.getByText(/read from the Transfer logs of final blocks/)).toBeInTheDocument();
+  });
+
+  it("tags a transfer from the zero address as a mint", async () => {
+    const ZERO = "0x" + "00".repeat(20);
+    const t = { txHash: hash(0xe1), block: 19, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: "0x40c10f19", creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: ZERO, to: A, amount: "1000000", tokenId: null };
+    await open(addressDetail({ tokenTransferCount: 1 }), { "token-transfers": () => derived([t, { ...t, txHash: hash(0xe2), methodId: null, from: A, to: ZERO }]) });
+    await userEvent.click(tab("Token transfers"));
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(rows()[0]).toHaveTextContent("mint");
+    expect(rows()[0]).toHaveTextContent("IN");
+    expect(rows()[1]).toHaveTextContent("burn");
+    expect(rows()[1]).not.toHaveTextContent("mint");
+  });
+
+  it("falls back to the token route for the decimals, and says when they are not known", async () => {
+    const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: null, creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: A, to: addr(0x77), amount: "5000000000", tokenId: null };
+    // the label does not describe the token; the token route does, with its decimals but no symbol
+    await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([t, { ...t, txHash: hash(0xe2), token: addr(0xcc) }]) }, `/address/${A}`, "Address", {
+      tokens: (a) => reply(a === addr(0xcb) ? { address: a, standard: "ERC-20", name: null, symbol: null, decimals: 6 } : { address: a, standard: "ERC-20", name: null, symbol: null, decimals: null }),
+    });
+    await userEvent.click(tab("Token transfers"));
+    await waitFor(() => expect(rows()[0]).toHaveTextContent("5,000"));
+    expect(rows()[0]).not.toHaveTextContent("tUSD");
+    expect(rows()[0]!.querySelector("[title='5,000']")).not.toBeNull();
+    await waitFor(() => expect(rows()[1]!.querySelector("[title*='decimals are not known']")).not.toBeNull());
+    expect(rows()[1]).toHaveTextContent("5,000,000,000");
+  });
+
+  it("filters the token transfers by token and keeps the CSV to the filter", async () => {
+    const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: null, creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: A, to: addr(0x77), amount: "5", tokenId: null };
+    const calls = await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": (p) => derived(p.includes(`token=${addr(0xcb)}`) ? [t] : [t, { ...t, txHash: hash(0xe2), token: addr(0xcc) }]) }, `/address/${A}`, "Address", {
+      labels: labelsOf([{ address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: false }]),
+    });
+    await userEvent.click(tab("Token transfers"));
+    await screen.findByText("2 ERC-20 transfers to or from this address");
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&standard=ERC-20`);
+    await userEvent.click(await screen.findByRole("button", { name: "Test USD" }));
+    await screen.findByText("1 ERC-20 transfer to or from this address");
+    expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&token=${addr(0xcb)}&standard=ERC-20`);
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&token=${addr(0xcb)}&standard=ERC-20`);
+    // the filter keeps offering both tokens while one is chosen
+    expect(screen.getByRole("button", { name: "All tokens" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "All tokens" }));
+    await screen.findByText("2 ERC-20 transfers to or from this address");
+  });
+
+  it("lists the NFT transfers with method, age and an ERC-1155 count before its id", async () => {
+    const n = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: "0xa1448194", creation: false, timestamp: T0, token: addr(0xcc), standard: "ERC-1155", from: "0x" + "00".repeat(20), to: A, amount: "1500", tokenId: "7" };
+    const calls = await open(addressDetail(), { "token-transfers": () => derived([n]) });
+    await userEvent.click(tab("NFT transfers"));
+    await waitFor(() => expect(rows()).toHaveLength(1));
+    expect(rows()[0]).toHaveTextContent("safeMint");
+    expect(rows()[0]).toHaveTextContent("ago");
+    expect(rows()[0]).toHaveTextContent("mint");
+    expect(rows()[0]).toHaveTextContent("1,500 · #7");
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&standard=nft`);
+    expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&standard=nft`);
   });
 
   it("lists the internal calls that moved value, with the calling transaction", async () => {

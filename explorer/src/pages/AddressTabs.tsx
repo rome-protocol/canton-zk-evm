@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { addressTxsCsvPath, getAddressContracts, getAddressInternal, getAddressTransfers, getAddressTxs, getCoinHistory, getFaucetAddress, getTokenInfo, type AddressInternalItem, type AddressTransferItem, type ApiStatus, type ContractListItem, type DerivedPage, type TxDirection, type TxListItem } from "../api.ts";
+import { addressTransfersCsvPath, addressTxsCsvPath, getAddressContracts, getAddressInternal, getAddressTransfers, getAddressTxs, getCoinHistory, getFaucetAddress, getTokenInfo, type AddressInternalItem, type AddressTransferItem, type ApiStatus, type ContractListItem, type DerivedPage, type Label, type TxDirection, type TxListItem } from "../api.ts";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Amount } from "../components/Amount.tsx";
@@ -10,8 +10,9 @@ import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { Seg } from "../components/Seg.tsx";
-import { count, duration, exact, feeOf, units } from "../format.ts";
+import { count, duration, exact, feeOf, short, units } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
+import { useNow } from "../useStatus.ts";
 import { methodOf } from "../method.ts";
 import { Moved } from "./HomeParts.tsx";
 import { Who } from "./AddressParts.tsx";
@@ -130,23 +131,37 @@ export function ContractsTab({ a, now }: { a: string; now: number }) {
   );
 }
 
-function TransferRow({ a, x }: { a: string; x: AddressTransferItem }) {
-  // The token route, not the address route: it reads no balance from reth, so a page of transfers across many tokens costs the database only.
-  const tok = useQuery({ queryKey: ["token-info", x.token], queryFn: () => getTokenInfo(x.token), retry: false, staleTime: 60_000 }).data ?? null;
-  const sym = tok?.symbol ?? null;
+const ZERO = "0x" + "00".repeat(20);
+
+/** What moved, in the token's own units: the amount with its symbol where the decimals and the symbol are known, whole units (exact in the title) where only the decimals are, the raw count (and said so) where they are not; `#id` for an NFT, with an ERC-1155's count before it. */
+function TransferAmount({ x, label }: { x: AddressTransferItem; label: Label | undefined }) {
+  // The labels carry what the token has told; the token route (which reads no balance from reth) is asked only for one they do not describe.
+  const need = x.amount !== null && x.tokenId === null && label?.decimals == null;
+  const info = useQuery({ queryKey: ["token-info", x.token], queryFn: () => getTokenInfo(x.token), retry: false, staleTime: 60_000, enabled: need }).data ?? null;
+  if (x.tokenId !== null) return <span className="num">{x.amount !== null ? `${count(x.amount)} · ` : ""}#{x.tokenId}</span>;
+  if (x.amount === null) return <Dash />;
+  const decimals = label?.decimals ?? info?.decimals ?? null, symbol = label?.symbol ?? info?.symbol ?? null;
+  if (decimals !== null && symbol) return <Amount raw={x.amount} decimals={decimals} symbol={symbol} />;
+  if (decimals !== null) return <span className="num" title={exact(x.amount, decimals)}>{units(x.amount, decimals)}</span>;
+  return <span className="num" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span>;
+}
+
+const Party = ({ address, labels }: { address: string; labels: Labels }) =>
+  address === ZERO ? <span className="mono">{short(ZERO, 6, 6)}</span> : <AddressCell address={address} label={labels.get(address)} />;
+
+function TransferRow({ a, x, now, labels }: { a: string; x: AddressTransferItem; now: number; labels: Labels }) {
+  const token = labels.get(x.token);
   return (
     <tr>
-      <td><HashLink value={x.txHash} to={`/tx/${x.txHash}`} /></td>
+      <td className="c-hash"><HashLink value={x.txHash} to={`/tx/${x.txHash}`} plain /></td>
+      <td><span className="tag method">{methodOf({ methodId: x.methodId, to: x.creation ? null : x.to, created: x.creation ? x.token : null, value: "0" })}</span></td>
       <td><Link className="num" to={`/block/${x.block}`}>{x.block}</Link></td>
-      <td><HashLink value={x.from} to={`/address/${x.from}`} /></td>
+      <td title={new Date(x.timestamp * 1000).toISOString()}>{duration(now - x.timestamp * 1000)} ago</td>
+      <td><Party address={x.from} labels={labels} />{x.from === ZERO && <span className="tag">mint</span>}</td>
       <td><Way me={a} from={x.from} to={x.to} /></td>
-      <td><HashLink value={x.to} to={`/address/${x.to}`} /></td>
-      <td className="r">
-        {x.amount === null ? <span className="num">{sym ? `${sym} ` : ""}{x.tokenId === null ? "—" : `#${x.tokenId}`}</span>
-          : tok?.decimals != null && sym ? <Amount raw={x.amount} decimals={tok.decimals} symbol={sym} />
-          : <span className="num" title="The token's decimals cannot be read, so this is the raw amount">{x.amount}</span>}
-      </td>
-      <td><HashLink value={x.token} to={`/token/${x.token}`} />{sym && <span className="tag">{sym}</span>}{x.tokenId !== null && x.amount !== null && <span className="muted"> id {x.tokenId}</span>}</td>
+      <td><Party address={x.to} labels={labels} />{x.to === ZERO && <span className="tag">burn</span>}</td>
+      <td className="r"><TransferAmount x={x} label={token} /></td>
+      <td><AddressCell address={x.token} label={token} to={`/token/${x.token}`} /></td>
       <td><Chip status="final" /></td>
     </tr>
   );
@@ -155,16 +170,39 @@ function TransferRow({ a, x }: { a: string; x: AddressTransferItem }) {
 /** The token transfers of an address: the ERC-20 ones, or the NFT ones (ERC-721 and ERC-1155) in their own list. */
 export function TransfersTab({ a, nft = false }: { a: string; nft?: boolean }) {
   const kind = nft ? "NFT transfers" : "Token transfers";
-  const p = usePaged(["address-transfers", a, nft ? "nft" : "ERC-20"], (before) => getAddressTransfers(a, before, undefined, { standard: nft ? "nft" : "ERC-20" }), 5000);
+  const standard = nft ? "nft" : "ERC-20";
+  const [tok, setTok] = useState<string | null>(null);
+  const [known, setKnown] = useState<string[]>([]);
+  const now = useNow();
+  const p = usePaged(["address-transfers", a, standard, tok], (before) => getAddressTransfers(a, before, undefined, { standard, token: tok ?? undefined }), 5000);
   const d = p.data;
+  // The tokens to filter by are the ones this address's unfiltered list has shown; a filtered list could only ever show its own.
+  const seen = tok === null && d ? d.items.map((x) => x.token) : [];
+  const fresh = seen.filter((t) => !known.includes(t));
+  useEffect(() => { if (fresh.length > 0) setKnown((k) => [...k, ...fresh.filter((t) => !k.includes(t))]); }, [fresh.join()]);
+  const labels = useLabels([...(d?.items ?? []).flatMap((x) => [x.from, x.to, x.token]), ...known]);
+  const whole = !p.hasPrev && !p.hasNext;
+  const n = d?.items.length ?? 0;
+  const l = (t: string) => labels.get(t), name = (t: string) => l(t)?.name ?? l(t)?.symbol ?? short(t, 8, 4);
   return (
     <Frame label={kind} error={p.error} ready={!!d}>
-      <div className="list-h"><span className="muted">{d?.items.length ? `Showing ${count(d.items.length)} on this page, newest first` : ""}</span><Pager p={p} label={`Pages of ${kind.toLowerCase()}`} /></div>
+      <div className="list-h">
+        <span className="muted">{n ? (whole ? `${count(n)} ${nft ? "NFT" : "ERC-20"} transfer${n === 1 ? "" : "s"} to or from this address` : `Showing ${count(n)} on this page, newest first`) : ""}</span>
+        <span className="list-tools">
+          <Pager p={p} label={`Pages of ${kind.toLowerCase()}`} />
+          {known.length > 0 && (known.length <= 3
+            ? <Seg label="Show tokens" value={tok ?? "all"} options={[{ id: "all", text: "All tokens" }, ...known.map((t) => ({ id: t, text: name(t) }))]} onPick={(id) => setTok(id === "all" ? null : id)} />
+            : <select className="seg-select" aria-label="Show tokens" value={tok ?? "all"} onChange={(e) => setTok(e.target.value === "all" ? null : e.target.value)}>
+                <option value="all">All tokens</option>{known.map((t) => <option key={t} value={t}>{name(t)}</option>)}
+              </select>)}
+          <DownloadLink href={addressTransfersCsvPath(a, { standard, token: tok ?? undefined })} file={`${nft ? "nft" : "token"}-transfers-${a}.csv`}>CSV</DownloadLink>
+        </span>
+      </div>
       {d && d.items.length > 0 && (
         <div className="scroll">
-          <table className="tbl">
-            <thead><tr><th>Transaction hash</th><th>Block</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Amount</th><th>Token</th><th>Stage</th></tr></thead>
-            <tbody>{d.items.map((x) => <TransferRow key={`${x.txHash}-${x.logIndex}-${x.batchIndex}`} a={a} x={x} />)}</tbody>
+          <table className="tbl txs">
+            <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Amount</th><th>Token</th><th>Stage</th></tr></thead>
+            <tbody>{d.items.map((x) => <TransferRow key={`${x.txHash}-${x.logIndex}-${x.batchIndex}`} a={a} x={x} now={now} labels={labels} />)}</tbody>
           </table>
         </div>
       )}

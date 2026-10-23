@@ -22,3 +22,4 @@
 .tab-card .tab-body .card { box-shadow: none; }
 .list-tools { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 @media (max-width: 640px) { .tab-card .tab-body { padding: 12px 14px; } }
+.seg-select { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; background: var(--surface); color: var(--ink); max-width: 100%; }
