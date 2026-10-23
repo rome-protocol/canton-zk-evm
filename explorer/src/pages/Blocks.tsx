@@ -32,7 +32,7 @@ function Row({ b, now }: { b: BlockListItem; now: number }) {
       <td className="r num"><Gas used={b.gasUsed} limit={b.gasLimit} /></td>
       <td className="r">{b.proofSeconds === null ? <span className="muted">—</span> : <>{span(b.proofSeconds)}{b.proofSeconds > SLOW_PROOF_SECONDS && <span className="tag"> slow proof</span>}</>}</td>
       <td className="r">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
-      <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /></td>
+      <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} plain /></td>
       <td><Chip status="final" /></td>
     </tr>
   );

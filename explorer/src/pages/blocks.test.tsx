@@ -32,6 +32,14 @@ describe("the blocks page", () => {
     expect(within(r[3]!).getByRole("link", { name: "0" })).toHaveAttribute("href", "/block/0");
   });
 
+  it("shows the Canton update of a row as a plain hash, with no copy or expand button", async () => {
+    await open();
+    for (const r of rows()) {
+      expect(within(r).queryByRole("button", { name: "Copy" })).toBeNull();
+      expect(within(r).queryByRole("button", { name: /full/i })).toBeNull();
+    }
+  });
+
   it("ends the last page of All with the genesis row: no record, named as parent by block 1's record, the Genesis chip", async () => {
     await open();
     const g = (await screen.findByText("genesis")).closest("tr")!;
