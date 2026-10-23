@@ -71,7 +71,7 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
           <span className="way-foot-r muted">
             {l.attempts > 1 && <span>It took {l.attempts} attempts.</span>}
             {l.leftOutReason && <span> Left out of an earlier block: {l.leftOutReason}.</span>}
-            {final && l.attempts <= 1 && !l.leftOutReason && <span>Not refused or left out of any earlier block.</span>}
+            {final && l.attempts === 1 && !l.leftOutReason && <span>Not refused or left out of any earlier block.</span>}
           </span>
         </div>
       )}

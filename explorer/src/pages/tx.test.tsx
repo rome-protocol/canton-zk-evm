@@ -321,6 +321,18 @@ describe("the stage, in plain words", () => {
     expect(screen.queryByText("Final on Canton in block 3")).toBeNull();
   });
 
+  it("keeps one polite live region in the page whatever the state, so a change to final is announced, with words only for the ear once it is final", async () => {
+    await open(waitingTx({ state: "pending" }));
+    expect(document.querySelectorAll("[aria-live=polite]")).toHaveLength(1);
+    expect(document.querySelector("[aria-live=polite] .stage")).toHaveTextContent("Waiting to go into a block");
+    cleanup();
+    await open(tx({ state: "final" }));
+    const live = document.querySelectorAll("[aria-live=polite]");
+    expect(live).toHaveLength(1);
+    expect(live[0]).toHaveTextContent("This transaction is now final on Canton.");
+    expect(live[0]!.querySelector(".sr-only")).not.toBeNull();
+  });
+
   it("says nothing under the title for a final one with no block, and a dropped one without a reason", async () => {
     await open(tx({ state: "final", block: null }));
     expect(stage()).toBeNull();
@@ -447,6 +459,12 @@ describe("the way to final", () => {
     await openFinal(tx({ lifecycle: journal({ attempts: 3 }) }), { stats: () => reply({ error: "down" }, 503) });
     await waitFor(() => expect(way().getByText(/It took 3 attempts\./)).toBeInTheDocument());
     expect(way().queryByText(/median/i)).toBeNull();
+    expect(way().queryByText(/Not refused/)).toBeNull();
+  });
+
+  it("says nothing of 'not refused' when the journal counts no attempt at all: that is no evidence", async () => {
+    await openFinal(tx({ lifecycle: journal({ attempts: 0 }) }));
+    await waitFor(() => expect(way().getByText(/after Ostia accepted it/)).toBeInTheDocument());
     expect(way().queryByText(/Not refused/)).toBeNull();
   });
 

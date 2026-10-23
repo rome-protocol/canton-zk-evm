@@ -202,10 +202,16 @@ export function stageText(t: ApiTx): string {
 
 const settled = (t: ApiTx) => t.state === "final" || t.state === "replaced" || t.state === "dropped";
 
-/** A final transaction says so in the chip beside the title, and the page does not say it twice. */
+/**
+ * A final transaction says so in the chip beside the title, and the page does not say it twice in sight. The live region stays in the page across
+ * the change, so a screen reader hears a pending transaction become final: the words it holds then are only for the ear.
+ */
 function Stage({ t }: { t: ApiTx }) {
-  if (t.state === "final") return null;
-  return <p className={`stage s-${t.state}`} aria-live="polite" data-state={t.state}>{stageText(t)}</p>;
+  return (
+    <div className="stage-live" aria-live="polite">
+      {t.state === "final" ? <span className="sr-only">This transaction is now final on Canton.</span> : <p className={`stage s-${t.state}`} data-state={t.state}>{stageText(t)}</p>}
+    </div>
+  );
 }
 
 /** A transaction that reth no longer holds: all that is known is who sent it, and its nonce. */
