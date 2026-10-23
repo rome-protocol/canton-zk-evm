@@ -468,6 +468,7 @@ const proxy: Record<string, Handler> = {
     if (b instanceof Raw) return b;
     return rpcResult(b.block === null ? null : "0x" + (b.block.transactions?.length ?? 0).toString(16));
   },
+  eth_getTransactionByHash: plain("eth_getTransactionByHash", ["txhash"]),
   async eth_getTransactionByBlockNumberAndIndex(c) {
     const index = c.p.get("index");
     if (index === null) return rpcError(-32602, "missing value for required argument 1");
@@ -477,7 +478,6 @@ const proxy: Record<string, Handler> = {
     const at = BigInt(index);
     return rpcResult(b.block?.transactions?.[at > 0xffffffffn ? -1 : Number(at)] ?? null);
   },
-  eth_getTransactionByHash: plain("eth_getTransactionByHash", ["txhash"]),
   eth_getTransactionCount: plain("eth_getTransactionCount", ["address", "tag"]),
   eth_sendRawTransaction: plain("eth_sendRawTransaction", ["hex"]),
   eth_getTransactionReceipt: plain("eth_getTransactionReceipt", ["txhash"]),
