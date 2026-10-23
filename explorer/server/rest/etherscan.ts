@@ -10,6 +10,7 @@
  * partly written. The texts of the answers are Etherscan's where the module's documentation and its answers give one, and are held by tests with recorded answers.
  */
 import type { Answer } from "../api.ts";
+import type { PublicRpc } from "../public-rpc.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
 import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
@@ -67,10 +68,12 @@ export class NotOk extends Error {
 /** A list that has no rows, with its module's own words: Etherscan's `logs` module says "No records found" where its account lists say "No transactions found". */
 export class Empty extends Error {}
 /** What a handler gives back; a list with no rows is Etherscan's "No transactions found". */
-type Result = string | object[] | object;
+type Result = string | object[] | object | Raw;
+/** A JSON-RPC answer passed through as it is: the `proxy` module has no `status` and `message`, as Etherscan's has none. */
+export class Raw { readonly body: object; constructor(body: object) { this.body = body; } }
 const answer = (body: unknown): Answer => ({ status: 200, body });
 const okBody = (result: Result): Answer =>
-  answer(Array.isArray(result) && result.length === 0 ? { status: "0", message: TEXTS.noRows, result: [] } : { status: "1", message: "OK", result });
+  result instanceof Raw ? answer(result.body) : answer(Array.isArray(result) && result.length === 0 ? { status: "0", message: TEXTS.noRows, result: [] } : { status: "1", message: "OK", result });
 const empty = (e: Empty): Answer => answer({ status: "0", message: e.message, result: [] });
 const notOk = (e: NotOk): Answer => answer(e.inMessage ? { status: "0", message: e.reason, result: null } : { status: "0", message: "NOTOK", result: e.reason });
 
@@ -87,7 +90,7 @@ export class Params {
   }
 }
 
-interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; heads: () => Promise<{ head: number | null; cursor: number }> }
+interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; rpc: PublicRpc | undefined; ip: string; heads: () => Promise<{ head: number | null; cursor: number }> }
 type Handler = (c: Ctx) => Promise<Result>;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/, HASH = /^0x[0-9a-fA-F]{64}$/, WHOLE = /^[0-9]{1,15}$/;
@@ -404,6 +407,89 @@ export function gwei(wei: bigint | string): string {
 }
 const ratio = (n: number): string => n.toFixed(15).replace(/\.?0+$/, "");
 
+/** What Etherscan's `proxy` module gives for an argument that is missing: the node's own words, as a JSON-RPC error. */
+const rpcError = (code: number, message: string): Raw => new Raw({ jsonrpc: "2.0", id: 1, error: { code, message } });
+const rpcResult = (result: unknown): Raw => new Raw({ jsonrpc: "2.0", id: 1, result });
+type Up = { result?: unknown; error?: unknown };
+const isUp = (v: unknown): v is Up => typeof v === "object" && v !== null;
+
+/** One call of the public RPC: its rules (final only, the tracker for a send, the limits of a client) are the proxy's. The JSON-RPC answer is given back as it is. */
+async function viaRpc(c: Ctx, method: string, params: unknown[]): Promise<Up> {
+  if (!c.rpc) throw new NotOk(TEXTS.unsupported);
+  const a = await c.rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), c.ip);
+  if (!isUp(a.body)) throw new NotOk(TEXTS.broken);
+  return a.body;
+}
+/** The named parameters in order, or the JSON-RPC error of the first one missing. */
+function need(c: Ctx, names: string[]): string[] | Raw {
+  const out: string[] = [];
+  for (const [i, n] of names.entries()) {
+    const v = c.p.get(n);
+    if (v === null) return rpcError(-32602, `missing value for required argument ${i}`);
+    out.push(v);
+  }
+  return out;
+}
+/** A call whose parameters are the named ones, as strings. */
+const plain = (method: string, names: string[]): Handler => async (c) => {
+  const a = need(c, names);
+  if (a instanceof Raw) return a;
+  return new Raw(await viaRpc(c, method, a));
+};
+/** The block the public RPC gives for a tag, whose transactions the two block actions below count and pick from. A block that is not final is null, as it is on `/rpc`. */
+async function blockOf(c: Ctx, full: boolean): Promise<Raw | { block: { transactions?: unknown[] } | null }> {
+  const a = need(c, ["tag"]);
+  if (a instanceof Raw) return a;
+  const r = await viaRpc(c, "eth_getBlockByNumber", [a[0], full]);
+  if (r.error !== undefined || !("result" in r)) return new Raw(r);
+  return { block: typeof r.result === "object" ? (r.result as { transactions?: unknown[] } | null) : null };
+}
+
+const proxy: Record<string, Handler> = {
+  eth_blockNumber: plain("eth_blockNumber", []),
+  async eth_getBlockByNumber(c) {
+    const a = need(c, ["tag", "boolean"]);
+    if (a instanceof Raw) return a;
+    if (a[1] !== "true" && a[1] !== "false") return rpcError(-32602, "invalid argument 1: boolean must be true or false");
+    return new Raw(await viaRpc(c, "eth_getBlockByNumber", [a[0], a[1] === "true"]));
+  },
+  /** The count is the length of the block's list, so it follows the final-only rule of the block. */
+  async eth_getBlockTransactionCountByNumber(c) {
+    const b = await blockOf(c, false);
+    if (b instanceof Raw) return b;
+    return rpcResult(b.block === null ? null : "0x" + (b.block.transactions?.length ?? 0).toString(16));
+  },
+  async eth_getTransactionByBlockNumberAndIndex(c) {
+    const index = c.p.get("index");
+    if (index === null) return rpcError(-32602, "missing value for required argument 1");
+    if (!/^0x[0-9a-f]+$/i.test(index)) return rpcError(-32602, "invalid argument 1: hex string without 0x prefix");
+    const b = await blockOf(c, true);
+    if (b instanceof Raw) return b;
+    const at = BigInt(index);
+    return rpcResult(b.block?.transactions?.[at > 0xffffffffn ? -1 : Number(at)] ?? null);
+  },
+  eth_getTransactionByHash: plain("eth_getTransactionByHash", ["txhash"]),
+  eth_getTransactionCount: plain("eth_getTransactionCount", ["address", "tag"]),
+  eth_sendRawTransaction: plain("eth_sendRawTransaction", ["hex"]),
+  eth_getTransactionReceipt: plain("eth_getTransactionReceipt", ["txhash"]),
+  async eth_call(c) {
+    const a = need(c, ["to", "data", "tag"]);
+    if (a instanceof Raw) return a;
+    return new Raw(await viaRpc(c, "eth_call", [{ to: a[0], data: a[1] }, a[2]]));
+  },
+  eth_getCode: plain("eth_getCode", ["address", "tag"]),
+  eth_getStorageAt: plain("eth_getStorageAt", ["address", "position", "tag"]),
+  eth_gasPrice: plain("eth_gasPrice", []),
+  /** The call as the node gets it: the fields that were sent, and no block, as `/rpc` has it. */
+  async eth_estimateGas(c) {
+    const tx: Record<string, string> = {};
+    for (const n of ["to", "data", "value", "gasPrice", "gas"]) { const v = c.p.get(n); if (v !== null) tx[n] = v; }
+    return new Raw(await viaRpc(c, "eth_estimateGas", [tx]));
+  },
+  /** There are no uncles on Ostia. */
+  async eth_getUncleByBlockNumberAndIndex() { return rpcResult(null); },
+};
+
 const gastracker: Record<string, Handler> = {
   /** Three prices over the base fee of the newest final block: it plus the 25th, the 50th and the 75th percentile of the priority fees paid in the last 20 blocks. */
   async gasoracle(c) {
@@ -429,7 +515,7 @@ const gastracker: Record<string, Handler> = {
 const MAX_TIMESTAMP = 253_402_300_799;
 
 /** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
-export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs, token, stats, gastracker };
+export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs, token, stats, proxy, gastracker };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
   account: ["balancehistory", "addresstokenbalance", "addresstokennftbalance", "addresstokennftinventory", "fundedby", "txnbridge"],
@@ -441,14 +527,18 @@ const UNSUPPORTED: Record<string, readonly string[]> = {
   gastracker: ["dailyavggaslimit", "dailygasused", "dailyavggasprice"],
 };
 
-export interface EtherscanDeps { rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; chainId: number }
+export interface EtherscanDeps {
+  rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; chainId: number;
+  /** The public RPC, which the `proxy` module asks, so that it keeps the rules of `/rpc`. Without it the module answers "not supported on Ostia". */
+  rpc?: PublicRpc;
+}
 
 /** The door: a request's parameters in, Etherscan's answer out. */
-export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
-  return async (query: URLSearchParams, body?: string): Promise<Answer> => {
+export function etherscan({ rest, reth, chainId, rpc }: EtherscanDeps) {
+  return async (query: URLSearchParams, body?: string, ip = "unknown"): Promise<Answer> => {
     const p = new Params(query, body);
     let heads: ReturnType<EtherscanRest["heads"]> | undefined;
-    const ctx: Ctx = { p, rest, reth, heads: () => (heads ??= rest.heads()) };
+    const ctx: Ctx = { p, rest, reth, rpc, ip, heads: () => (heads ??= rest.heads()) };
     try {
       const id = p.get("chainid");
       if (id !== null && id !== String(chainId)) throw new NotOk(TEXTS.chainid);
