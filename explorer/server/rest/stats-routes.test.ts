@@ -96,7 +96,7 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.tps).toEqual({ now: 0, peak: null, peakAt: null });
     for (const k of ["blockTime", "timeToFinal", "proofTime", "commitTime", "served", "fullness", "today"]) expect(s[k], k).toBeNull();
     expect(s.txsPerBlock).toEqual({ mean: null, median: null, max: null, nonEmptyMean: null, nonEmptyMedian: null });
-    expect(s.txs).toEqual({ count: 0, failed: 0, successRate: null, accepted: 0 });
+    expect(s.txs).toEqual({ count: 0, failed: 0, successRate: null, accepted: 0, allTime: null });
     expect(s.attempts).toMatchObject({ total: 0, refusedShare: null, failedShare: null, notTakenShare: null });
     expect(s.canton).toEqual({ argumentBytesPerBlock: null, argumentBytesPerTx: null, trafficBytesPerBlock: null, trafficReported: 0 });
     expect(s.prover).toEqual({ maxBusyRatio10m: 0, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0, busyMs: 0 });
@@ -204,7 +204,13 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.tps).toEqual({ now: 6 / 60, peak: 30 / 60, peakAt: new Date(t(12, 29)).toISOString() });
     // blocks 2+2+3+1 = 8, empty 1+1 = 2, busy 1+1+3 = 5, transactions 4+6+30+2 = 42, failed 1+3 = 4
     expect(s.blocks).toMatchObject({ count: 8, empty: 2, busy: 5 });
-    expect(s.txs).toEqual({ count: 42, failed: 4, successRate: 38 / 42, accepted: 35 });
+    expect(s.txs).toMatchObject({ count: 42, failed: 4, successRate: 38 / 42, accepted: 35 });
+    same(s.txs, F.statsTxs);
+    // All time, whatever the window: the day rows (500 + 70 + 1046) up to the cursor at 12:30:00, plus the blocks from then on: a test run's 100 and the 13 at NOW + 5 s, the newest.
+    same(s.txs.allTime, F.statsAllTime);
+    expect(s.txs.allTime).toEqual({ total: 1616 + 100 + 13, asOfBlock: expect.any(Number), asOf: new Date(NOW + 5000).toISOString() });
+    expect((await pool.query("select number from blocks where record_time = $1", [at(NOW + 5000)])).rows[0].number).toBe(String(s.txs.allTime.asOfBlock));
+    expect(body(await get("/api/stats/summary?window=7d")).txs.allTime).toEqual(s.txs.allTime);
     // per block: 0, 0, 2, 4, 6, 6, 12, 12 -> mean 5.25, the 4th of 8 is 4; without the empty ones 2, 4, 6, 6, 12, 12 -> mean 7, the 3rd of 6 is 6
     expect(s.txsPerBlock).toEqual({ mean: 5.25, median: 4, max: 12, nonEmptyMean: 7, nonEmptyMedian: 6 });
     // busy gaps A and A: both A. Time to final B x5 (4 + 1) and C x1: the 3rd of 6 is B, the 6th is C.
@@ -479,6 +485,16 @@ describe.skipIf(!TEST_URL)("the stats routes over the real rollup", () => {
       const s = body(await apiFor(pool, () => NOW)("/api/stats/summary?window=1h"));
       expect(s.asOf).toBe(new Date(NOW).toISOString());
       expect(s.txs.count).toBe(5);
+      // The rollups reach 12:30:00 and hold both blocks (5 + 7, the test run's too); a block made after that is counted from the blocks, not the rollups, and is the one the total is as of.
+      expect(s.txs.allTime).toMatchObject({ total: 12, asOf: new Date(t(12, 29, 30)).toISOString() });
+      await block(pool, t(12, 30, 10), 3);
+      const late = body(await apiFor(pool, () => NOW + 1000)("/api/stats/summary?window=1h")).txs.allTime;
+      expect(late.total).toBe(15);
+      expect(late.total).toBe(Number((await pool.query("select sum(tx_count) as n from blocks")).rows[0].n));
+      expect(late.asOf).toBe(new Date(t(12, 30, 10)).toISOString());
+      expect(late.asOfBlock).toBe(Number((await pool.query("select max(number) as n from blocks")).rows[0].n));
+      await pool.query("delete from stats_day");
+      expect(body(await apiFor(pool, () => NOW + 1000)("/api/stats/summary?window=1h")).txs.allTime).toBeNull();
       expect(s.blocks.count).toBe(1);
       expect(s.test).toMatchObject({ blocks: 1, txs: 7, attempts: 1, proverBusyMs: 2000 });
       expect(s.tps.peak).toBe(5 / 60);

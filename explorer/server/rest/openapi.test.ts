@@ -80,6 +80,9 @@ describe("the API description", () => {
     expect(Object.keys(props("/api/labels").items.items.properties).sort()).toEqual([...F.label].sort());
     expect(props("/api/txs").totalAsOf.description).toContain("record time");
     expect(props("/api/txs").totalAsOfBlock.description).toContain("newest final block");
+    const summary = (path: string) => doc.paths[path].get.summary as string;
+    expect(summary("/api/stats/summary")).toContain("txs.allTime");
+    for (const path of ["/api/txs", "/api/blocks/{id}/transactions", "/api/addresses/{address}/txs"]) expect(summary(path), path).toMatch(/decimals.*\/api\/labels/);
     const content = (path: string) => Object.keys(doc.paths[path].get.responses["200"].content);
     expect(content("/api/addresses/{address}/txs")).toContain("text/csv");
     expect(content("/api/txs")).toContain("text/csv");

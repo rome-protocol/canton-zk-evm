@@ -55,7 +55,7 @@ const TX_TOTAL = {
   totalAsOf: { type: ["string", "null"], description: "The record time of that block (ISO time); null where total is." },
 };
 const paged = [limit, before], pagedAfter = [limit, after];
-const TOKEN_MOVES = `Each carries \`tokenMoves\`: how many token moves its logs hold (\`count\`, at most ${TOKEN_MOVES_CAP}, with \`more\` true past that) and the first (\`first\`: token, amount or tokenId, standard when the token is known), read from stage 2's transfers. \`tokenMoves\` is null, not empty, for a block stage 2 has not reached.`;
+const TOKEN_MOVES = `Each carries \`tokenMoves\`: how many token moves its logs hold (\`count\`, at most ${TOKEN_MOVES_CAP}, with \`more\` true past that) and the first (\`first\`: token, amount or tokenId, standard when the token is known), read from stage 2's transfers. A move carries the token's \`decimals\` (null where the token's metadata is not held), which say how to show its amount; its symbol is not in the move, ask /api/labels for it. \`tokenMoves\` is null, not empty, for a block stage 2 has not reached.`;
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
