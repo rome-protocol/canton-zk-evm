@@ -324,7 +324,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
                     <tr className="live">
                       <td><Link className="mono hx" to={`/tx/${own.hash}`} title={own.hash!}>{shortHash(own.hash!)}</Link></td>
                       <td><Link className="mono hx" to={`/address/${own.to}`} title={own.to}>{shortHash(own.to)}</Link></td>
-                      <td className="r mono">{own.block ?? "—"}</td>
+                      <td className="r">{own.block ?? "—"}</td>
                       <td>{chip(own)}</td>
                     </tr>
                   )}
@@ -332,7 +332,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
                     <tr key={r.hash}>
                       <td><Link className="mono hx" to={`/tx/${r.hash}`} title={r.hash}>{shortHash(r.hash)}</Link><span className="ago">{formatAgo(now - r.timestamp * 1000)}</span></td>
                       <td><Link className="mono hx" to={`/address/${r.to}`} title={r.to}>{shortHash(r.to)}</Link></td>
-                      <td className="r"><Link className="mono" to={`/block/${r.block}`}>{r.block}</Link></td>
+                      <td className="r"><Link to={`/block/${r.block}`}>{r.block}</Link></td>
                       <td><span className="chip chip-final"><i className="dot" />Final</span></td>
                     </tr>
                   ))}
