@@ -73,6 +73,21 @@ describe("ethers' EtherscanProvider against the door", () => {
     expect(sent.hash).toBe(keccak256(raw));
     expect(tracked.map((t) => t[1])).toContain(keccak256(raw));
   });
+
+  it("ethers: sends a contract creation over 8 KB (a POST body), and the tracker follows it; a proxy body over 256 KB is a JSON-RPC error", async () => {
+    const { generatePrivateKey, privateKeyToAccount } = await import("viem/accounts");
+    const account = privateKeyToAccount(generatePrivateKey());
+    const data = ("0x" + "60".repeat(5000)) as Hex;
+    const raw = await account.signTransaction({ type: "eip1559", chainId: CHAIN, nonce: 0, data, gas: 3_000_000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+    expect(raw.length).toBeGreaterThan(8192);
+    const sent = await ostiaProvider({ url, chainId: CHAIN }).broadcastTransaction(raw);
+    expect(sent.hash).toBe(keccak256(raw));
+    expect(tracked.map((t) => t[1])).toContain(keccak256(raw));
+    // Over the public RPC's limit, the answer is a JSON-RPC error with a true size text, which ethers can read.
+    await new Promise((ok) => setTimeout(ok, 1100)); // the door's rate: 10 a second for each client
+    const huge = await fetch(`${url}/api`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: `module=proxy&action=eth_sendRawTransaction&hex=0x${"ab".repeat(140 * 1024)}` });
+    expect(await huge.json()).toEqual({ jsonrpc: "2.0", id: 1, error: { code: -32600, message: "The request is too big: a proxy request is at most 256 KB." } });
+  });
 });
 
 // cast has no call of the Etherscan proxy: its Etherscan reads are the contract module's (cast source, interface and creation-code, which come with the contract module).

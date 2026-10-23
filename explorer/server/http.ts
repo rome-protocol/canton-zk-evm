@@ -9,7 +9,7 @@ import { extname, resolve, sep } from "node:path";
 import type { Api } from "./api.ts";
 import { MAX_BODY as RPC_MAX_BODY, type PublicRpc } from "./public-rpc.ts";
 import { lastIdOf, topicsOf, type StreamHub } from "./rest/stream.ts";
-import { ETHERSCAN_REFUSED, MAX_VERIFY_BODY, REST_REFUSED, createLimits, isVerification, retryAfter, verificationRefused, verificationTooBig, type Limits } from "./limits.ts";
+import { ETHERSCAN_REFUSED, MAX_PROXY_BODY, MAX_VERIFY_BODY, REST_REFUSED, createLimits, isProxy, isVerification, proxyTooBig, retryAfter, verificationRefused, verificationTooBig, type Limits } from "./limits.ts";
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml",
@@ -159,9 +159,15 @@ export function createHttpServer(api: Api, dist: string, rpc?: RpcDoor, ipHeader
         let sent: string | undefined;
         if (method === "POST") {
           // The action may be in the form, so a body is read up to a verification's 500 KB; one that is not a verification may be no bigger than the other routes' bodies.
-          if (Number(req.headers["content-length"] ?? 0) > MAX_VERIFY_BODY) return await send(200, verificationTooBig(), { connection: "close" });
+          const big = () => send(200, isProxy(query, undefined) ? proxyTooBig() : verificationTooBig(), { connection: "close" });
+          if (Number(req.headers["content-length"] ?? 0) > MAX_VERIFY_BODY) return await big();
           const body = await readBody(req, MAX_VERIFY_BODY);
-          if (body === null || (body.length > MAX_BODY && !isVerification(query, body))) return await send(200, verificationTooBig(), { connection: "close" });
+          if (body === null) return await big();
+          if (body.length > MAX_BODY && !isVerification(query, body)) {
+            // A proxy request may carry a contract creation (ethers sends eth_sendRawTransaction, eth_call and eth_estimateGas by POST), up to the public RPC's body limit; its refusal is a JSON-RPC error.
+            if (!isProxy(query, body)) return await send(200, verificationTooBig(), { connection: "close" });
+            if (body.length > MAX_PROXY_BODY) return await send(200, proxyTooBig(), { connection: "close" });
+          }
           sent = body;
         }
         if (isVerification(query, sent)) {
