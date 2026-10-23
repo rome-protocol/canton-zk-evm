@@ -584,9 +584,11 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     });
 
     it("refuses an order it does not know, before with order=asc, after without it, and a key that is not one", async () => {
-      for (const path of ["/api/txs?order=up", "/api/txs?order=ASC", "/api/txs?order=asc&before=3:1", "/api/txs?after=2:1", "/api/txs?order=asc&after=x", "/api/txs?order=asc&after=1"]) {
+      for (const path of ["/api/txs?order=up", "/api/txs?order=ASC", "/api/txs?order=asc&before=3:1", "/api/txs?after=2:1", "/api/txs?order=asc&after=x", "/api/txs?order=asc&after=1", "/api/txs?format=csv&order=bogus", "/api/txs?format=csv&order=asc"]) {
         expect((await get(path)).status, path).toBe(400);
       }
+      // The file is newest first, and says so by taking order=desc as it does the list.
+      expect((await get("/api/txs?format=csv&order=desc")).status).toBe(200);
     });
 
     it("reads from the primary key in order, with no sort", async () => {
