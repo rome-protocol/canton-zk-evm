@@ -36,6 +36,8 @@ export const matchNote = (matchType: string | null): string | null => (matchType
 export interface ContractItem {
   address: string; name: string | null; origin: string; creator: string | null; creationBlock: number | null; creationTxIndex: number | null; interactionCount: number; verified: boolean; matchType: string | null; codeSize: number;
   destroyedBlock: number | null;
+  /** The token standard when the contract is a token. The balance and the counts are the explorer's copy, as of `balanceBlock`; a contract it has not seen move has none. */
+  standard: string | null; balance: string | null; balanceBlock: number | null; txCount: number; internalCount: number;
 }
 export interface ContractDetail extends ContractItem {
   creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
@@ -192,10 +194,13 @@ export function createAccountRest(pool: Pool) {
     return rows.map((r) => ({ block: Number(r.block_number), balance: r.value }));
   }
 
-  const contractSelect = `c.address, c.name, c.origin, c.creator, c.creation_block, c.creation_tx_index, c.interaction_count, c.verified_source, c.match_type, c.destroyed_block, c.last_interaction_block, c.runtime_code_hash, bc.size`;
+  const contractSelect = `c.address, c.name, c.origin, c.creator, c.creation_block, c.creation_tx_index, c.interaction_count, c.verified_source, c.match_type, c.destroyed_block, c.last_interaction_block, c.runtime_code_hash, bc.size,
+    tk.standard, a.coin_balance::text as balance, a.coin_balance_block, coalesce(a.sent_count + a.received_count, 0) as tx_count, coalesce(a.internal_count, 0) as internal_count`;
+  const withAccount = "left join addresses a on a.address = c.address left join tokens tk on tk.address = c.address";
   const contractItem = (r: Row): ContractItem => ({
     address: hex(r.address), name: r.name, origin: r.origin, creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), creationTxIndex: num(r.creation_tx_index), interactionCount: Number(r.interaction_count),
     verified: r.verified_source !== null, matchType: r.match_type, codeSize: r.size, destroyedBlock: num(r.destroyed_block),
+    standard: r.standard, balance: r.balance, balanceBlock: num(r.coin_balance_block), txCount: Number(r.tx_count), internalCount: Number(r.internal_count),
   });
 
   /**
@@ -203,7 +208,7 @@ export function createAccountRest(pool: Pool) {
    * the sort's own parts and then the address, so that two contracts of one place keep their order.
    */
   async function contracts(sort: ContractSort, verified: boolean | null, before: Key | null, limit: number): Promise<ContractItem[]> {
-    const from = "from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash";
+    const from = `from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash ${withAccount}`;
     const filter = (n: number) => `($${n}::boolean is null or (c.verified_source is not null) = $${n})`;
     const [x, y, z] = before ?? [null, null, null];
     if (sort === "interactions") {
@@ -229,7 +234,7 @@ export function createAccountRest(pool: Pool) {
       `select ${contractSelect}, encode(bc.code, 'hex') as code, (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx,
          p.kind as proxy_kind, p.implementation, p.beacon, p.checked_block, v.match_type as source_match_type, v.language, v.compiler_version, v.code_format, v.contract_path, v.contract_name, v.optimizer_enabled, v.optimizer_runs,
          v.evm_version, v.license, ${MS("v.verified_at")} as verified_at
-       from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash left join proxies p on p.proxy = c.address and p.checked_block >= coalesce(c.creation_block, 0) left join verified_sources v on v.id = c.verified_source where c.address = $1`,
+       from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash ${withAccount} left join proxies p on p.proxy = c.address and p.checked_block >= coalesce(c.creation_block, 0) left join verified_sources v on v.id = c.verified_source where c.address = $1`,
       [bytes(a)],
     );
     if (!r) return undefined;

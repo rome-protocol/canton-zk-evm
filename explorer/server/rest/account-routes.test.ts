@@ -237,6 +237,14 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(all.find((c) => c.address === C)).toMatchObject({ verified: false, matchType: null });
   });
 
+  it("gives each contract in the list its token standard, its balance and its counts, and none for what the index has not seen", async () => {
+    const all = body(await get("/api/contracts?sort=interactions")).items as { address: string }[];
+    expect(all.find((c) => c.address === C)).toMatchObject({ standard: null, balance: "3000000000000000000000000", balanceBlock: 3, txCount: 1009, internalCount: 0 });
+    expect(all.find((c) => c.address === T1)).toMatchObject({ standard: "ERC-20" });
+    expect(all.find((c) => c.address === K)).toMatchObject({ standard: null, balance: null, balanceBlock: null, txCount: 0, internalCount: 0 });
+    expect(body(await get(`/api/contracts/${C}`))).toMatchObject({ balance: "3000000000000000000000000", txCount: 1009 });
+  });
+
   it("answers a contract with its code, proxy and verification, and its source with every file", async () => {
     const vault = body(await get(`/api/contracts/${K}`));
     expect(vault).toMatchObject({

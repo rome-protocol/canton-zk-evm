@@ -213,11 +213,12 @@ export function txDetail(over: Partial<ApiTxDetail> = {}): ApiTxDetail {
 
 /** A verified contract made by a transaction in block 18, as the list gives it. */
 export const contractItem = (n: number, over: Partial<ContractListItem> = {}): ContractListItem => ({
-  address: addr(n), name: "TestUSD", origin: "create", creator: addr(0xe3), creationBlock: 18, interactionCount: 9, verified: true, matchType: "full", codeSize: 3318, destroyedBlock: null, ...over,
+  address: addr(n), name: "TestUSD", origin: "create", creator: addr(0xe3), creationBlock: 18, interactionCount: 9, verified: true, matchType: "full", codeSize: 3318, destroyedBlock: null,
+  standard: "ERC-20", balance: "0", balanceBlock: 21, txCount: 5, internalCount: 4, ...over,
 });
 /** A contract of the chain's genesis: no creator, no creation block, no creation transaction. */
 export const genesisContract = (n: number, over: Partial<ContractListItem> = {}): ContractListItem =>
-  contractItem(n, { name: null, origin: "genesis", creator: null, creationBlock: null, interactionCount: 0, verified: false, matchType: null, codeSize: 100, ...over });
+  contractItem(n, { name: null, origin: "genesis", creator: null, creationBlock: null, interactionCount: 0, verified: false, matchType: null, codeSize: 100, standard: null, balance: null, balanceBlock: null, txCount: 0, internalCount: 0, ...over });
 
 const COMPILE = { language: "Solidity", compilerVersion: "v0.8.28+commit.7893614a", codeFormat: "solidity-standard-json-input", contractPath: "src/TestUSD.sol", contractName: "TestUSD", optimizerEnabled: true, optimizerRuns: 200, evmVersion: "cancun", license: "MIT" };
 export function contractDetail(n = 0xcb, over: Partial<ContractDetail> = {}): ContractDetail {

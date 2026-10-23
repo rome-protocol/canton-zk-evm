@@ -90,9 +90,9 @@ export const REST_FIELDS = {
   /** What an address holds of one token (or of one id of an ERC-1155), as of the block it last moved. */
   holding: ["token", "standard", "name", "symbol", "decimals", "tokenId", "value", "updatedBlock"],
   coinPoint: ["block", "balance"],
-  contractItem: ["address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock"],
+  contractItem: ["address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount"],
   contractDetail: [
-    "address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock",
+    "address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount",
     "creationTxHash", "lastInteractionBlock", "codeHash", "code", "proxy", "verification", "derived",
   ],
   proxy: ["kind", "implementation", "beacon", "checkedBlock"],

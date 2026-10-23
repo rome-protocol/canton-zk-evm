@@ -4,8 +4,9 @@ import { getContractList, type ContractListItem, type ContractSort } from "../ap
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
-import { count } from "../format.ts";
+import { count, exact, plural, units } from "../format.ts";
 import { listPoll } from "../stats.ts";
+import { useStatus } from "../useStatus.ts";
 import { MatchChip, PARTIAL_MATCH_NOTE } from "./ContractParts.tsx";
 
 const PER = 25;
@@ -13,7 +14,7 @@ const SORTS: { id: ContractSort; label: string }[] = [{ id: "interactions", labe
 const FILTERS: { id: "all" | "yes" | "no"; label: string; value: boolean | null }[] = [{ id: "all", label: "All", value: null }, { id: "yes", label: "Verified", value: true }, { id: "no", label: "Not verified", value: false }];
 const Dash = () => <span className="muted">—</span>;
 
-function Row({ c }: { c: ContractListItem }) {
+function Row({ c, coin }: { c: ContractListItem; coin: { symbol: string; decimals: number } | undefined }) {
   const to = `/contract/${c.address}`;
   return (
     <tr>
@@ -22,7 +23,12 @@ function Row({ c }: { c: ContractListItem }) {
         <div>{c.name ? <HashLink value={c.address} /> : <HashLink value={c.address} to={to} />}</div>
       </td>
       <td><MatchChip matchType={c.matchType} /></td>
-      <td className="r"><span className="mono">{count(c.interactionCount)}</span></td>
+      <td><span className="chip chip-kind">{c.standard ?? "Contract"}</span></td>
+      <td className="r">
+        <span className="mono">{count(c.interactionCount)}</span>
+        {c.interactionCount === 0 && c.txCount === 0 && c.internalCount === 0 ? <div className="muted small">no calls yet</div>
+          : c.txCount + c.internalCount > 0 && <div className="muted small">{plural(c.txCount, "transaction")} · {plural(c.internalCount, "internal call")}</div>}
+      </td>
       <td>
         {c.origin === "genesis"
           ? <><span>genesis</span><div className="muted small">set by the chain, no creation</div></>
@@ -31,6 +37,7 @@ function Row({ c }: { c: ContractListItem }) {
       </td>
       <td>{c.creator ? <HashLink value={c.creator} to={`/address/${c.creator}`} /> : <Dash />}</td>
       <td className="r"><span className="mono">{count(c.codeSize)} B</span></td>
+      <td className="r">{c.balance === null ? <span className="muted" title="The explorer has not read this balance yet">—</span> : coin ? <span className="mono" title={`${exact(c.balance, coin.decimals)} ${coin.symbol}`}>{units(c.balance, coin.decimals)}</span> : <span className="muted">…</span>}</td>
     </tr>
   );
 }
@@ -40,6 +47,7 @@ export function Contracts() {
   const [sort, setSort] = useState<ContractSort>("interactions");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>(FILTERS[0]!);
   const p = usePaged(["contracts", sort, filter.id], (before) => getContractList(sort, filter.value, before, PER), listPoll(false));
+  const coin = useStatus().data?.coin;
   const items = p.data?.items;
   return (
     <>
@@ -65,11 +73,12 @@ export function Contracts() {
           {items.length > 0 && (
             <div className="scroll">
               <table className="tbl">
-                <thead><tr><th>Contract</th><th>Verified</th><th className="r">Interactions</th><th>Created</th><th>Creator</th><th className="r">Code size</th></tr></thead>
-                <tbody>{items.map((c) => <Row key={c.address} c={c} />)}</tbody>
+                <thead><tr><th>Contract</th><th>Verified</th><th>Kind</th><th className="r">Interactions</th><th>Created</th><th>Creator</th><th className="r">Code size</th><th className="r">Balance ({coin?.symbol ?? "coin"})</th></tr></thead>
+                <tbody>{items.map((c) => <Row key={c.address} c={c} coin={coin} />)}</tbody>
               </table>
             </div>
           )}
+          <p className="muted small">Balances and counts here are the explorer's copy, as of the block each was last read at. A contract's own page reads reth at the final block.</p>
           {items.some((c) => c.origin === "genesis") && <p className="muted small">A contract in the genesis allocation has no creator and no creation transaction: the chain set it.</p>}
           {items.some((c) => c.matchType === "partial") && <p className="muted small">{PARTIAL_MATCH_NOTE}</p>}
           {p.data?.derived === false && <p className="muted small">The explorer is still reading blocks, so this list may be missing the newest contracts and their counts.</p>}

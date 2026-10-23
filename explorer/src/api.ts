@@ -349,6 +349,8 @@ export const getCoinHistory = async (a: string, before: string | null, limit = P
 export interface ContractListItem {
   address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null; interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
   codeSize: number; destroyedBlock: number | null;
+  /** The token standard when the contract is a token. The balance and the counts are the explorer's copy, as of `balanceBlock`; null or 0 for a contract it has not seen move. */
+  standard: string | null; balance: string | null; balanceBlock: number | null; txCount: number; internalCount: number;
 }
 export type ContractSort = "interactions" | "newest" | "oldest";
 export interface ContractDetail extends ContractListItem {

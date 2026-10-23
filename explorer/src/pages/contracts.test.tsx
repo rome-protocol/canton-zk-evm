@@ -26,6 +26,28 @@ describe("the contracts page", () => {
     expect(rows()[0]).toHaveTextContent("3,318 B");
   });
 
+  it("shows what kind of contract it is: a token by its standard, any other as a contract", async () => {
+    await open(() => reply({ ...page([contractItem(0xb1), contractItem(0xb2, { standard: "ERC-721" }), contractItem(0xb3, { standard: null })]), derived: true }));
+    expect(rows()[0]).toHaveTextContent("ERC-20");
+    expect(rows()[1]).toHaveTextContent("ERC-721");
+    expect(within(rows()[2]!).getAllByText("Contract").length).toBeGreaterThan(0);
+  });
+
+  it("splits the interactions into transactions and internal calls, and says a contract nobody has called has no calls yet", async () => {
+    await open(() => reply({ ...page([contractItem(0xb1, { txCount: 5, internalCount: 4 }), contractItem(0xb2, { interactionCount: 0, txCount: 0, internalCount: 0 }), contractItem(0xb3, { interactionCount: 1, txCount: 1, internalCount: 0 })]), derived: true }));
+    expect(rows()[0]).toHaveTextContent("5 transactions · 4 internal calls");
+    expect(rows()[1]).toHaveTextContent("no calls yet");
+    expect(rows()[2]).toHaveTextContent("1 transaction · 0 internal calls");
+  });
+
+  it("shows the balance in the chain's coin as the explorer's copy, and a balance it has not read as unknown, never as 0", async () => {
+    await open(() => reply({ ...page([contractItem(0xb1, { balance: "1500000000000000000", balanceBlock: 20 }), contractItem(0xb2, { balance: null, balanceBlock: null })]), derived: true }));
+    expect(screen.getByRole("columnheader", { name: "Balance (tROME)" })).toBeInTheDocument();
+    expect(rows()[0]).toHaveTextContent("1.5");
+    expect(rows()[1]!.querySelectorAll("td")[7]).toHaveTextContent("—");
+    expect(screen.getByText(/the explorer's copy/)).toBeInTheDocument();
+  });
+
   it("shows the match kind of a verified contract and says an unverified one is not verified", async () => {
     await open();
     expect(rows()[0]).toHaveTextContent("Full match");
