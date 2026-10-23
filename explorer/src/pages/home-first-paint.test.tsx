@@ -22,21 +22,21 @@ describe("Home's first paint", () => {
     const paint = holdPaint();
     const calls = fakeApi(route({}));
     renderApp("/");
-    await screen.findByText("Final on Canton");
+    await screen.findByRole("region", { name: "Chain status" });
     await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
     const before = [...calls];
     expect(before.length).toBeLessThanOrEqual(BUDGET);
     expect(paths(before)).toContain("/api/status");
-    for (const late of ["/api/txs", "/api/in-flight", "/api/faucet", "/api/stats/series"]) expect(paths(before)).not.toContain(late);
+    for (const late of ["/api/txs", "/api/in-flight", "/api/faucet", "/api/stats/series", "/api/tokens", "/api/health"]) expect(paths(before)).not.toContain(late);
     await paint();
-    await waitFor(() => expect(paths(calls)).toEqual(expect.arrayContaining(["/api/status", "/api/blocks", "/api/txs", "/api/in-flight", "/api/faucet", "/api/stats/summary", "/api/stats/series"])));
+    await waitFor(() => expect(paths(calls)).toEqual(expect.arrayContaining(["/api/status", "/api/blocks", "/api/txs", "/api/in-flight", "/api/faucet", "/api/stats/summary", "/api/stats/series", "/api/tokens"])));
   });
 
   it("reads every one of them once the first frame is drawn, as the page did before", async () => {
     const paint = holdPaint();
     const calls = fakeApi(route({}));
     renderApp("/");
-    await screen.findByText("Final on Canton");
+    await screen.findByRole("region", { name: "Chain status" });
     await paint();
     await waitFor(() => expect(calls.some((c) => c.startsWith("/api/in-flight"))).toBe(true));
     expect(calls.filter((c) => c.startsWith("/api/stats/summary"))).toEqual(expect.arrayContaining(["/api/stats/summary?window=1h", "/api/stats/summary?window=24h"]));

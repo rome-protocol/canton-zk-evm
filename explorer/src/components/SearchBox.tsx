@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Icon } from "./Icon.tsx";
 
 const PHONE = "(max-width: 720px)";
-const HINT = "Block number, transaction or block hash, address, or Canton update id";
+const HINT = "Search by block number, transaction or block hash, address, or Canton update id";
 const SHORT_HINT = "Block, transaction, address or Canton update";
 /** The header's box is narrower than the home page's, and says the same in fewer words. */
 const HEADER_HINT = "Block, transaction, address or Canton update id";
