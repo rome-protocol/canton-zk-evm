@@ -24,8 +24,8 @@ const A = (n: number) => "0x" + n.toString(16).padStart(40, "0");
 const W = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
 const T = (n: number) => "0x" + W(n);
 const ERC20 = 0xa1, ERC721 = 0xa2, ERC1155 = 0xa3, FAT = 0xa4;
-/** What the fat-return token (test/fixtures/Flood.sol, FatReturn) answers to every read: 680 KB, far over the 4 KB an answer may carry. */
-const FAT_ANSWER = "0x" + "ab".repeat(340_000);
+/** What the fat-return token (test/fixtures/Flood.sol, FatReturn) answers to every read: 180 KB, far over the 4 KB an answer may carry, and as much as a read's gas can pay for. */
+const FAT_ANSWER = "0x" + "ab".repeat(180_000);
 const create = (path: number[], address: number): TraceFrame => ({
   traceAddress: path, type: "create", callType: "create", from: A(1), to: A(address), value: 0n, gas: 1000, gasUsed: 10, input: "0x6080", error: null, created: { address: A(address), code: "0x6001" },
 });
