@@ -76,4 +76,11 @@ describe("the addresses page", () => {
     renderApp("/addresses");
     expect(await screen.findByText("No addresses yet.")).toBeInTheDocument();
   });
+
+  it("never calls the list empty while the explorer has not read every block", async () => {
+    fakeApi(route({ addresses: () => reply({ ...page([]), derived: false }) }));
+    renderApp("/addresses");
+    expect(await screen.findByText(/still reading blocks/)).toBeInTheDocument();
+    expect(screen.queryByText("No addresses yet.")).toBeNull();
+  });
 });

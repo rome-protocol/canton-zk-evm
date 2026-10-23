@@ -42,7 +42,7 @@ export function Addresses() {
       </div>
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the addresses…</LoadingCard> : (
         <section className="card" aria-label="Addresses">
-          <div className="list-h"><span className="muted">{items.length ? `Showing ${count(items.length)} on this page, ${sort === "balance" ? "largest balance" : "most transactions"} first` : "No addresses yet."}</span><Pager p={p} label="Pages of addresses" /></div>
+          <div className="list-h"><span className="muted">{items.length ? `Showing ${count(items.length)} on this page, ${sort === "balance" ? "largest balance" : "most transactions"} first` : (p.data?.derived === false ? "The explorer has not read this far yet." : "No addresses yet.")}</span><Pager p={p} label="Pages of addresses" /></div>
           {items.length > 0 && (
             <div className="scroll">
               <table className="tbl">

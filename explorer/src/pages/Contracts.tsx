@@ -69,7 +69,7 @@ export function Contracts() {
       </aside>
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the contracts…</LoadingCard> : (
         <section className="card" aria-label="Contracts">
-          <div className="list-h"><span className="muted">{items.length ? `Showing ${count(items.length)} on this page` : "No contracts yet."}</span><Pager p={p} label="Pages of contracts" /></div>
+          <div className="list-h"><span className="muted">{items.length ? `Showing ${count(items.length)} on this page` : (p.data?.derived === false ? "The explorer has not read this far yet." : "No contracts yet.")}</span><Pager p={p} label="Pages of contracts" /></div>
           {items.length > 0 && (
             <div className="scroll">
               <table className="tbl">

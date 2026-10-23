@@ -134,4 +134,11 @@ describe("the contracts page", () => {
     renderApp("/contracts");
     expect(await screen.findByText("No contracts yet.")).toBeInTheDocument();
   });
+
+  it("never calls the list empty while the explorer has not read every block", async () => {
+    fakeApi(route({ contracts: () => reply({ ...page([]), derived: false }) }));
+    renderApp("/contracts");
+    expect(await screen.findByText(/still reading blocks/)).toBeInTheDocument();
+    expect(screen.queryByText("No contracts yet.")).toBeNull();
+  });
 });
