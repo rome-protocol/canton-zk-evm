@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
         with:
-          images: RETH_IMAGE BUSYBOX_IMAGE EXPLORER_NODE_IMAGE EXPLORER_RUST_IMAGE POSTGRES_IMAGE SOLC_IMAGE
+          images: RETH_IMAGE BUSYBOX_IMAGE EXPLORER_NODE_IMAGE EXPLORER_RUST_IMAGE POSTGRES_IMAGE SOLC_IMAGE SOLC_SANDBOX_IMAGE
       - uses: ./.github/actions/pinned-images
         with:
           images: EXPLORER_BROWSER_IMAGE
