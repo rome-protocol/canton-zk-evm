@@ -54,7 +54,7 @@ describe("the call a field set makes", () => {
     expect(decodeOutputs(erc20[1]!, encodeAbiParameters([{ type: "string" }], ["Test USD"]))[0]!.value).toBe("Test USD");
   });
   it("says so when the answer is not what the ABI says", () => {
-    expect(() => decodeOutputs(erc20[0]!, "0x")).toThrow(/no answer|empty/i);
+    expect(() => decodeOutputs(erc20[0]!, "0x")).toThrow(/returned no data/);
   });
   it("shows a nested value as JSON, with its numbers as text", () => {
     expect(shown([1n, [2n, ME]])).toBe(`[1,[2,"${ME}"]]`);
