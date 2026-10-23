@@ -81,6 +81,8 @@ export const utcMs = (iso: string) => `${new Date(Date.parse(iso)).toISOString()
 
 /** The date of a time, in UTC. */
 export const utcDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+/** The date and the minute, as '2026-10-23 12:01 UTC'. */
+export const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 /** How long after the block was made Canton recorded it, to a tenth of a second. A long time is told the way `duration` tells it. */
 export function seconds(timestampSeconds: number, recordTime: string): string {

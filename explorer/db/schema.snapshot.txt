@@ -272,6 +272,20 @@ table faucet_daily_counts
   constraint faucet_daily_counts_pkey PRIMARY KEY (day)
   CREATE UNIQUE INDEX faucet_daily_counts_pkey ON public.faucet_daily_counts USING btree (day)
 
+table faucet_refusals
+  column minute timestamp with time zone not null
+  column reason text not null
+  column n integer not null
+  constraint faucet_refusals_n_check CHECK ((n > 0))
+  constraint faucet_refusals_pkey PRIMARY KEY (minute, reason)
+  constraint faucet_refusals_reason_check CHECK ((reason = ANY (ARRAY['address'::text, 'ip'::text, 'hour'::text, 'captcha'::text])))
+  CREATE UNIQUE INDEX faucet_refusals_pkey ON public.faucet_refusals USING btree (minute, reason)
+
+table faucet_refusals_since
+  column since timestamp with time zone not null
+  constraint faucet_refusals_since_pkey PRIMARY KEY (since)
+  CREATE UNIQUE INDEX faucet_refusals_since_pkey ON public.faucet_refusals_since USING btree (since)
+
 table faucet_requests
   column ticket uuid not null
   column address bytea not null
@@ -297,6 +311,7 @@ table faucet_requests
   CREATE INDEX faucet_requests_address_requested_at_idx ON public.faucet_requests USING btree (address, requested_at DESC)
   CREATE INDEX faucet_requests_client_key_requested_at_idx ON public.faucet_requests USING btree (client_key, requested_at DESC)
   CREATE INDEX faucet_requests_requested_at_idx ON public.faucet_requests USING btree (requested_at)
+  CREATE INDEX faucet_requests_sent_at_idx ON public.faucet_requests USING btree (sent_at) WHERE (sent_at IS NOT NULL)
   CREATE INDEX faucet_requests_state_requested_at_idx ON public.faucet_requests USING btree (state, requested_at) WHERE (state = ANY (ARRAY['queued'::text, 'sent'::text]))
   CREATE INDEX faucet_requests_updated_at_idx ON public.faucet_requests USING btree (updated_at)
   CREATE UNIQUE INDEX faucet_requests_pkey ON public.faucet_requests USING btree (ticket)

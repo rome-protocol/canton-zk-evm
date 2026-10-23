@@ -243,7 +243,7 @@ export interface StatsSummary {
   dropped: { window: number; total: number; listed: StatsLostItem[] };
   replaced: { window: number; total: number };
   cutting: { strategy: string; since: string } | null;
-  faucet: { requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null; turnedAway: number | null };
+  faucet: StatsSummaryFaucet;
 }
 export type StatsMetric = "txs" | "tps" | "busiest_minute_tps" | "blocks" | "empty_blocks" | "txs_per_block" | "success_rate" | "time_to_final_p50" | "time_to_final_p95" | "proof_time_p50" | "proof_time_p95" | "busy_ratio";
 export interface StatsSeries { metric: string; unit: string; window: StatsWindow; step: "1m" | "10m" | "1h" | "1d"; from: string; to: string; asOf: string | null; points: { at: string; value: number | null }[] }
@@ -476,3 +476,14 @@ export const getContractSource = async (a: string) => (await call(at(a, "/source
 export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds; absent from a server that does not send it yet. */ timestamp?: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
 export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
   (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;
+
+/** What the faucet turned away in a summary window, and why. Only the reason is counted, never who asked. */
+export interface StatsTurnedAway { total: number; byReason: { address: number; ip: number; hour: number; captcha: number } }
+/** The faucet block of `/api/stats/summary` as the server now serves it. `turnedAway` is null for a window that starts before `turnedAwaySince` (shown as not recorded before that time); both are null where the counting never began. */
+export interface StatsSummaryFaucet {
+  requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null;
+  turnedAway: StatsTurnedAway | null; turnedAwaySince: string | null;
+}
+/** What `GET /api/faucet` adds to `FaucetInfo`: the block its balance is of, how many payouts go in one block, how many were sent since 00:00 UTC, how many of those are final, and how many are being proven now (each null where the faucet cannot count them). `balanceBlock` is the final head. */
+export interface FaucetFacts { balanceBlock: number | null; batch: number; sentToday: number | null; finalToday: number | null; beingProven: number | null }
+export const getFaucetFacts = async () => { try { return (await call("/api/faucet", [200])).body as FaucetFacts; } catch { return null; } };

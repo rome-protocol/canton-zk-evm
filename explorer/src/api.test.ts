@@ -3,7 +3,7 @@ import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
 import {
   ApiError, addressTransfersCsvPath, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getContractList, getContractListOldest, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
-  getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
+  getFaucetFacts, getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
 } from "./api.ts";
 import { account, block, blockItem, holding, inFlight, status, tokenAddress, tokenItem, tokenTransfer, tx, txItem } from "./test-utils.tsx";
 
@@ -103,6 +103,13 @@ describe("the API client", () => {
     expect(vi.mocked(fetch).mock.calls[0]![0]).toBe("/api/stats/series?metric=tps&window=24h");
     await getStatsSeries("busy_ratio", "6h", "10m");
     expect(vi.mocked(fetch).mock.calls[1]![0]).toBe("/api/stats/series?metric=busy_ratio&window=6h&step=10m");
+  });
+
+  it("reads the faucet's block, batch and today's payouts, and says nothing when the faucet cannot be read", async () => {
+    answer(200, { on: true, balanceBlock: 812, batch: 100, sentToday: 4, finalToday: 3, beingProven: 1 });
+    expect(await getFaucetFacts()).toMatchObject({ balanceBlock: 812, batch: 100, sentToday: 4, finalToday: 3, beingProven: 1 });
+    answer(503, { error: "x" });
+    expect(await getFaucetFacts()).toBeNull();
   });
 
   it("keeps the matches of a name search", async () => {
