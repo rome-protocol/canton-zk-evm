@@ -1,7 +1,8 @@
 .code-tab { display: grid; gap: 14px; }
 .code-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
 .code-cols { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: 20px; align-items: start; }
-@media (max-width: 800px) { .code-cols { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .code-cols { grid-template-columns: minmax(0, 1fr); } }
+.code-cols > * { min-width: 0; overflow-wrap: anywhere; }
 .code-tab h2, .code-tab h3 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
 .code-tab h3 { margin-top: 16px; }
 .code-tab h2 .chip { margin-left: 8px; vertical-align: 1px; }
@@ -37,3 +38,5 @@ pre.dark.wrap { white-space: pre-wrap; word-break: break-all; }
 .ct-ic { display: inline-flex; margin-top: 2px; color: var(--muted); }
 
 .out .unit { margin-left: 6px; }
+.code-tab, .code-tab > *, .code-pair > * { min-width: 0; }
+.code-tab .card-note, .code-tab .list-h { overflow-wrap: anywhere; }
