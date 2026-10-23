@@ -39,10 +39,10 @@ export function parentPath(pathname: string): string {
 function checksText(s: ApiStatus, checks: ReadonlyArray<{ status: string }> | undefined): ReactNode {
   if (s.starting && !s.problems.length) return "Starting";
   const bad = checks?.filter((c) => c.status !== "ok").length ?? 0;
-  if (checks && bad) return <><b>{bad}</b> of <b>{checks.length}</b> checks not ok</>;
+  if (checks && bad) return <b>{bad} of {checks.length} checks not ok</b>;
   if (s.problems.length) return "A check failed";
   if (!s.ok) return "Checks not complete";
-  return checks ? <>All <b>{checks.length}</b> checks ok</> : "All checks ok";
+  return checks ? <b>All {checks.length} checks ok</b> : "All checks ok";
 }
 
 /** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. The values are bold; on a phone only the first two stay. */
@@ -58,7 +58,7 @@ function TopBar({ status: s }: { status: ApiStatus }) {
     <section className="topbar" aria-label="Chain at a glance">
       <span className={`sd ${tone}`}><i />{checksText(s, health?.checks)}</span>
       {s.final && <span>Final block <b><Link className="num" to={`/block/${s.final.number}`}>{s.final.number}</Link></b> · {duration(now - Date.parse(s.final.recordTime))} ago</span>}
-      {s.proving && <span className="tb-wide">Being proven <b><Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></b></span>}
+      {s.proving && <span className="sd warn tb-wide"><i /><span>Being proven <b><Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></b></span></span>}
       <span className="tb-wide">{fee}</span>
       <span className="tb-wide">Chain <b>{s.chainId}</b> · coin <b>{s.coin.symbol}</b></span>
       {s.networkName && <span className="topbar-end tb-wide">{s.coin.symbol} is a test coin. It has no value.</span>}
@@ -79,8 +79,20 @@ function ShellBody({ children }: { children: ReactNode }) {
   // The menu button is for phones, where the pages are folded away; choosing a page closes it.
   const [menu, setMenu] = useState(false);
   useEffect(() => setMenu(false), [pathname]);
-  // A link to a part of a page (the footer's wallet link) scrolls there once the page has drawn it.
-  useEffect(() => { if (hash) document.getElementById(hash.slice(1))?.scrollIntoView?.(); }, [pathname, hash]);
+  // A link to a part of a page (the footer's wallet link) scrolls there once the page has drawn it, and again as the sections above it fill in
+  // during the next two seconds, unless the reader has started to scroll.
+  useEffect(() => {
+    if (!hash) return;
+    const id = hash.slice(1);
+    const go = () => document.getElementById(id)?.scrollIntoView?.();
+    go();
+    const watch = new MutationObserver(go);
+    watch.observe(document.body, { childList: true, subtree: true });
+    const stop = () => watch.disconnect();
+    const timer = setTimeout(stop, 2000);
+    for (const ev of ["wheel", "touchstart", "keydown"]) window.addEventListener(ev, stop, { once: true, passive: true });
+    return () => { stop(); clearTimeout(timer); for (const ev of ["wheel", "touchstart", "keydown"]) window.removeEventListener(ev, stop); };
+  }, [pathname, hash]);
   const name = status?.chainName ?? DEFAULT_NAME;
   return (
     <div className="page">

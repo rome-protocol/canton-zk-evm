@@ -93,25 +93,33 @@ describe("the header", () => {
 
   const checksOf = async () => (await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText(/checks? (ok|not ok)|check failed|Starting/)).closest(".sd")!;
 
-  it("counts the checks the server runs: 'All 16 checks ok', with the count in bold", async () => {
+  it("counts the checks the server runs: 'All 16 checks ok', the whole phrase in bold, in one piece beside the dot", async () => {
     fakeApi(route({ health: () => reply(health(16)) }));
     renderApp("/blocks");
     const bar = within(await screen.findByRole("region", { name: "Chain at a glance" }));
-    const sd = await waitFor(async () => { const e = (await bar.findByText("16", { selector: "b" })).closest(".sd"); expect(e).toHaveTextContent("All 16 checks ok"); return e!; });
+    const sd = await waitFor(async () => { const e = (await bar.findByText("All 16 checks ok", { selector: "b" })).closest(".sd"); expect(e).toHaveTextContent("All 16 checks ok"); return e!; });
     expect(sd).toHaveClass("ok");
+    // the dot and one element: the words are no flex items of their own, which would set a gap between them
+    expect(Array.from(sd.childNodes).map((n) => n.nodeName)).toEqual(["I", "B"]);
   });
 
   it("says how many checks are not ok when some are, and counts a check that is down the same", async () => {
     fakeApi(route({ status: () => reply(status({ ok: false, problems: ["x"] }), 503), health: () => reply(health(16, 2, "down"), 503) }));
     renderApp("/blocks");
-    const sd = await waitFor(async () => { const e = (await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("16", { selector: "b" })).closest(".sd")!; expect(e).toHaveTextContent("2 of 16 checks not ok"); return e; });
+    const sd = await waitFor(async () => { const e = (await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("2 of 16 checks not ok", { selector: "b" })).closest(".sd")!; expect(e).toHaveTextContent("2 of 16 checks not ok"); return e; });
     expect(sd).toHaveClass("bad");
   });
 
   it("says no count when the checks cannot be read, and never makes one up", async () => {
-    fakeApi(route({ health: () => reply({ error: "no" }, 500) }));
+    const asked: string[] = [];
+    fakeApi(route({ health: () => { asked.push("health"); return reply({ error: "no" }, 500); } }));
     renderApp("/blocks");
-    expect(await checksOf()).toHaveTextContent(/^All checks ok$/);
+    // the route has been asked and has answered with an error before the words are read
+    await waitFor(() => expect(asked.length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    const sd = await checksOf();
+    expect(sd).toHaveTextContent(/^All checks ok$/);
+    expect(sd.querySelector("b")).toBeNull();
   });
 
   it("says 'Starting' while the index starts, whatever the count", async () => {

@@ -2,7 +2,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { addr, fakeApi, renderApp, status } from "../test-utils.tsx";
+import { addr, fakeApi, renderApp, route, status } from "../test-utils.tsx";
 
 const FOOTER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton. Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";
 const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
@@ -102,6 +102,23 @@ describe("the shell", () => {
       expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["API", "Health", "Add Ostia to your wallet", "Source code"]);
       unmount();
     }
+  });
+
+  it("scrolls to the wallet card when the page is opened at #rpc-h, and again when a section above it has been drawn later", async () => {
+    const scrolled: Array<string | null> = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this.id); };
+    try {
+      fakeApi(route({}));
+      renderApp("/docs/api#rpc-h");
+      await screen.findByRole("heading", { name: /to your wallet/ });
+      await waitFor(() => expect(scrolled).toContain("rpc-h"));
+      const before = scrolled.length;
+      // a section drawn above the card, after the first scroll, moves the card: the page scrolls to it again
+      const late = document.createElement("section");
+      document.querySelector("main")!.prepend(late);
+      await waitFor(() => expect(scrolled.length).toBeGreaterThan(before));
+    } finally { Element.prototype.scrollIntoView = original; }
   });
 
   it("leaves the wallet link out when the explorer serves no public RPC, because the page would have no card to show", async () => {
