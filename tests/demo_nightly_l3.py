@@ -9,6 +9,9 @@ own is no use); the clock starts at the last poll that could not read it, so a l
            of the size of the answer (/api/block/N lists all 1,428 transactions) or of the polls before it. B1's index lag. The first answer of the API from its database
            (status final, with the Canton record; one from reth alone says nothing of the indexer) is still waited for, polled every 60 ms, and its delay after `served`
            is reported (api_answer_after_served_s).
+  record   how long after the block's Canton record time (canton_updates.record_time, the time the synchronizer gave the update) the block was served: reported
+           beside B1 as an observed number (record_time_to_served_p50_s, _p95_s), as the design's section 9 asks; it is not held to a budget. The record time and the
+           database's clock are both this machine's wall clock in the rehearsal.
   sse      how long after the block was readable in the database (the last tick that could not see it, an upper bound) a live-stream client receives the block's
            `block` event (B4); every block must reach the client. It is not clamped: an event that came before the tick shows as a negative number, within the error.
 and, over the whole flood, the growth of the explorer's database per million transactions (B6). l3.json reports the measurement error (measurement_error_s): the
@@ -16,7 +19,7 @@ lag is an upper bound, over by at most one ledger poll plus one database tick.
 Time to final is NOT measured: the flood's transactions go straight to reth (not through the explorer's RPC, so tx_lifecycle has no accepted_at for them), and
 without a GPU there is no proof to wait for; a block's `final` and `served` would be the same moment.
 Held to B1 (p95 <= 2.75 s, the lead's ruling of 2026-10-23: on the shared runner the project's W1-derived B1 of explorer/test/budgets.ts; the design's 1.0 s for a block of
-at most 1,428 transactions is checked on the reference machine, devnet-ostia), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions).
+at most 1,428 transactions is checked on the reference machine, the explorer's DevNet host), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions).
 
   demo_nightly_l3.py run <seconds> <transactions per block> <results.json>
 
@@ -41,7 +44,7 @@ from pathlib import Path
 
 # B1 as the lead ruled for L3 (2026-10-23, docs/METRICS.md): L3 runs on a shared GitHub runner (Canton, reth, the builder, PostgreSQL and the explorer share its CPU), so its index
 # lag is held to the W1-derived provisional B1 of explorer/test/budgets.ts (B1_MS = 2750), now that the measurement is precise; the design's 1.0 s is checked on the reference
-# machine (devnet-ostia). test_demo_nightly_l3.py checks that the two files agree.
+# machine (the explorer's DevNet host). test_demo_nightly_l3.py checks that the two files agree.
 B1_S = 2.75
 B4_S = 0.5
 B6_BYTES = 2.5e9
@@ -84,9 +87,11 @@ def judge(blocks, growth, txs_added, database_clock_error=None):
         failures.append(f"B1: the clock of blocks {clockless} could not start from the reader's ledger end (the offset was not read), so their lag is not measured")
     served = [b["served_s"] for b in blocks if b["served_s"] is not None]
     sse = [b["sse_after_served_s"] for b in blocks if b["sse_after_served_s"] is not None]
+    since_record = [b["record_time_to_served_s"] for b in blocks if b.get("record_time_to_served_s") is not None]   # observed, never held
     summary = {
         "blocks": len(blocks), "transactions": sum(b["txs"] for b in blocks), "largest_block_txs": max(b["txs"] for b in blocks),
         "served_p50_s": percentile(served, 50), "served_p95_s": percentile(served, 95), "served_max_s": max(served, default=None),
+        "record_time_to_served_p50_s": percentile(since_record, 50), "record_time_to_served_p95_s": percentile(since_record, 95), "record_time_blocks": len(since_record),
         "final_measured": False,
         "final_note": "time to final is not measured: the flood goes straight to reth (tx_lifecycle has no accepted_at for it) and a stand-in proof is no wait",
         "sse_p50_s": percentile(sse, 50), "sse_p95_s": percentile(sse, 95), "sse_received": len(sse),
@@ -142,6 +147,14 @@ def reader_offsets(update_ids):
     if not ids or not all(u.isalnum() for u in ids):   # an update id is hex; anything else does not go into a query
         return {}
     return {row[0]: int(row[1]) for row in sql_rows("select update_id, reader_offset from canton_updates where update_id in (" + ",".join(f"'{u}'" for u in ids) + ")")}
+
+
+def record_times(update_ids):
+    """The Canton record time of each update as the indexer stored it (canton_updates.record_time), in wall-clock seconds: update id -> epoch seconds."""
+    ids = [u for u in update_ids if u]
+    if not ids or not all(u.isalnum() for u in ids):
+        return {}
+    return {row[0]: float(row[1]) for row in sql_rows("select update_id, extract(epoch from record_time) from canton_updates where update_id in (" + ",".join(f"'{u}'" for u in ids) + ")")}
 
 
 def block_updates(numbers):
@@ -424,6 +437,7 @@ def run(seconds, per_block, results):
     tables1 = table_sizes()
     update_ids = block_updates([n for n, *_ in cut])   # the block's update by its number in the database, not from what cut_block printed
     offsets = reader_offsets([update_ids.get(n) or u for n, u, _, _ in cut])
+    record_at = record_times([update_ids.get(n) or u for n, u, _, _ in cut])
     blocks = []
     for number, printed_id, returned, count in cut:
         update_id = update_ids.get(number) or printed_id
@@ -437,6 +451,7 @@ def run(seconds, per_block, results):
         answered = mark.get("api_answered")
         blocks.append({"number": number, "txs": count, "update_id": update_id, "reader_offset": offset, "t0_from": t0_from,
                        "served_s": None if first is None else max(0.0, first - t0),
+                       "record_time_to_served_s": None if first is None or record_at.get(update_id) is None else first - record_at[update_id],
                        "database_tick_gap_s": None if first is None or before is None else first - before,
                        "api_answer_after_served_s": None if first is None or answered is None else answered + WALL_OFFSET - first,
                        "sse_after_served_s": None if got is None or (before is None and first is None) else got - (first if before is None else before)})

@@ -81,6 +81,8 @@ class Clock(unittest.TestCase):
     def test_an_update_id_that_is_not_hex_never_reaches_a_query(self):
         self.assertEqual(l3.reader_offsets(["12'; drop table blocks; --"]), {})
         self.assertEqual(l3.reader_offsets([None, ""]), {})
+        self.assertEqual(l3.record_times(["12'; drop table blocks; --"]), {})
+        self.assertEqual(l3.record_times([None, ""]), {})
 
 
 class DatabaseClock(unittest.TestCase):
@@ -226,6 +228,21 @@ class Judge(unittest.TestCase):
         # B4 can fail: a late event shows its delay, and an early one a negative number inside the measurement error
         summary, _ = l3.judge([block(i, sse=-0.01) for i in range(10)] + [block(10 + i, sse=0.8) for i in range(10)], **self.ok)
         self.assertEqual(summary["sse_p95_s"], 0.8)
+
+    def test_the_record_time_to_served_is_reported_and_not_held(self):
+        # design section 9: the Canton record time to served is an observed number beside B1; even a very long one breaks no budget
+        blocks = [dict(block(i), record_time_to_served_s=0.5 + i / 100) for i in range(20)] + [dict(block(20), record_time_to_served_s=30.0)]
+        summary, failures = l3.judge(blocks, **self.ok)
+        self.assertEqual(failures, [])
+        self.assertEqual(summary["record_time_to_served_p50_s"], 0.6)
+        self.assertEqual(summary["record_time_to_served_p95_s"], 0.69)
+        self.assertEqual(summary["record_time_blocks"], 21)
+
+    def test_a_block_with_no_record_time_is_left_out_of_that_number(self):
+        summary, failures = l3.judge([dict(block(1), record_time_to_served_s=0.4), dict(block(2), record_time_to_served_s=None), block(3)], **self.ok)
+        self.assertEqual(summary["record_time_blocks"], 1)
+        self.assertEqual(summary["record_time_to_served_p95_s"], 0.4)
+        self.assertFalse(any("record" in f for f in failures))
 
     def test_b6_over_budget_fails(self):
         _, failures = l3.judge([block(i) for i in range(20)], growth=3.0e9, txs_added=50_000)

@@ -2,8 +2,8 @@
 # L5 of the nightly load test: the tools developers verify and read contracts with, pointed at the explorer's Etherscan-compatible API. The steps, in the order
 # tests/demo_nightly_chain.sh runs them (probe, tools and prepare on the runner; build and verify in the pinned browser image, which has glibc and Node 24):
 #   l5.sh probe                     whether the Etherscan-compatible API is there, from GET /api/openapi.json (paths['/api'].get['x-modules'], never a live call to the API):
-#                                   exit 0 and the modules in it on stdout (L5 runs), 3 no /api door in the description (a skip), 4 the description cannot be read, or has the door without its x-modules (a failure) (EXPLORER)
-#   l5.sh skipped                   the JSON of a skip
+#                                   exit 0 and the modules in it on stdout (L5 runs), 3 no /api door in the description, 4 the description cannot be read, or has the door without its x-modules (3 and 4 both fail the job: the door is in the explorer) (EXPLORER)
+#   l5.sh no-door                   the JSON of the failure for exit 3 (no /api door in the description)
 #   l5.sh tools <folder>            Foundry, the release and SHA-256 of tests/FOUNDRY, into <folder>
 #   l5.sh prepare <folder>          this directory, with foundry.toml filled in for the chain, into <folder> (L5_EXPLORER, L5_CHAIN_ID)
 #   l5.sh build                     in <folder>/project: npm ci, forge build, and the creation code of three builds (optimizer runs 200, 201, 202) to <folder>/creation-<runs>.hex
@@ -47,9 +47,9 @@ case "${1:-}" in
     echo "$modules"
     exit 0
     ;;
-  skipped)
-    # The results of a skip. It is not a pass: the status says "skipped" and the reason says what is missing.
-    jq -n '{status: "skipped", reason: "SKIPPED: /api/openapi.json has no Etherscan-compatible /api door (paths[\"/api\"].get[\"x-modules\"])", checks: [], failures: []}'
+  no-door)
+    # The results when the explorer's description has no /api door: a failure, as the door is in the explorer.
+    jq -n '{status: "failed", checks: [], failures: ["L5: /api/openapi.json has no Etherscan-compatible /api door (paths[\"/api\"].get[\"x-modules\"]), and the door is in the explorer"]}'
     ;;
   tools)
     dir=${2:?the folder for Foundry}
@@ -98,6 +98,6 @@ case "${1:-}" in
     node ../l5.mjs
     ;;
   *)
-    fail "usage: l5.sh probe | skipped | tools <folder> | prepare <folder> | build | verify"
+    fail "usage: l5.sh probe | no-door | tools <folder> | prepare <folder> | build | verify"
     ;;
 esac

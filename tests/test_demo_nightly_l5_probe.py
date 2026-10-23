@@ -62,7 +62,7 @@ class Probe(unittest.TestCase):
         code, out, _ = self.probe(200, self.spec({**self.MODULES, "contract": ["getabi"]}))
         self.assertEqual((code, out), (0, "account,transaction,proxy,contract"))
 
-    def test_no_door_in_the_description_is_a_skip(self):
+    def test_no_door_in_the_description_is_exit_3(self):
         self.assertEqual(self.probe(200, self.spec(door=False))[0], 3)
 
     def test_the_door_without_its_modules_is_a_failure(self):
@@ -77,11 +77,24 @@ class Probe(unittest.TestCase):
     def test_a_door_with_no_modules_is_a_failure(self):
         self.assertEqual(self.probe(200, self.spec({}))[0], 4)
 
-    def test_the_skip_is_not_a_pass(self):
-        out = json.loads(subprocess.run(["bash", str(L5 / "l5.sh"), "skipped"], capture_output=True, text=True, check=True).stdout)
-        self.assertEqual(out["status"], "skipped")
-        self.assertTrue(out["reason"].startswith("SKIPPED"))
-        self.assertEqual(out["failures"], [])
+    def test_the_no_door_results_are_a_failure(self):
+        out = json.loads(subprocess.run(["bash", str(L5 / "l5.sh"), "no-door"], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["status"], "failed")
+        self.assertEqual(len(out["failures"]), 1)
+        self.assertIn("no Etherscan-compatible /api door", out["failures"][0])
+
+    def test_the_nightly_fails_on_a_description_with_no_door(self):
+        # Runs the very branch of tests/demo_nightly_chain.sh that handles probe exit 3, with the real l5.sh, and reads back what it leaves.
+        chain = (Path(__file__).resolve().parent / "demo_nightly_chain.sh").read_text()
+        start = chain.index('if [ "$probe_rc" = 3 ]; then')
+        end = chain.index("elif", start)
+        branch = chain[start:end] + "fi\n"
+        with tempfile.TemporaryDirectory() as out_dir:
+            script = f'nightly_failed=()\nL5={L5}\nNIGHTLY_OUT={out_dir}\nprobe_rc=3\n{branch}echo "FAILED=${{nightly_failed[*]}}"\n'
+            run = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=60)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertIn("FAILED=L5 (no /api door)", run.stdout)
+            self.assertEqual(json.loads((Path(out_dir) / "l5.json").read_text())["status"], "failed")
 
 
 if __name__ == "__main__":
