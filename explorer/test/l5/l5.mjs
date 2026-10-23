@@ -82,7 +82,7 @@ const forgeVerify = (address, arg, runs, extra) => {
         "--etherscan-api-key", "rome", "--constructor-args", encoded, "--compiler-version", process.env.L5_SOLC_VERSION ?? "0.8.28", "--num-of-optimizations", runs,
         "--evm-version", "cancun", "--watch", "--retries", RETRIES, "--delay", "5", ...extra,
       ],
-      { FOUNDRY_OPTIMIZER_RUNS: runs }, // the source's settings come from the config, not from the flag: the contract was built with these runs
+      { FOUNDRY_OPTIMIZER_RUNS: runs, FOUNDRY_OUT: `out-${runs}`, FOUNDRY_CACHE_PATH: `cache-${runs}` }, // the compiler input is the build of these runs, made by l5.sh build
     ),
     "forge verify-contract",
   );
@@ -103,7 +103,16 @@ const equal = (what, got, want) => {
 /** One call of the explorer's Etherscan-compatible API, the way a client asks Etherscan: a GET with module, action and the action's parameters. */
 async function door(module, action, params = {}) {
   const url = `${API}?${new URLSearchParams({ module, action, ...params, apikey: "rome" })}`;
-  const res = await fetch(url, { headers: { "user-agent": "Rome Protocol rome@romeprotocol.com" }, signal: AbortSignal.timeout(30_000) });
+  // A connection the server closed while it was idle (Node's keep-alive is 5 s, and a forge run can take longer between two calls) fails the next fetch: ask again.
+  let res;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      res = await fetch(url, { headers: { "user-agent": "Rome Protocol rome@romeprotocol.com" }, signal: AbortSignal.timeout(30_000) });
+      break;
+    } catch (e) {
+      if (attempt >= 3) throw new Error(`GET ${module}&action=${action}: ${e.message} (${e.cause?.code ?? e.cause?.message ?? "no cause"})`);
+    }
+  }
   if (!res.ok) throw new Error(`GET ${module}&action=${action}: HTTP ${res.status}`);
   const body = await res.json();
   if (body.error) throw new Error(`${module}&action=${action}: ${JSON.stringify(body.error)}`);

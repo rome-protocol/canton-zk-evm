@@ -73,16 +73,22 @@ case "${1:-}" in
     ;;
   build)
     npm ci --ignore-scripts --no-audit --no-fund
-    forge build
+    # One build for each optimizer runs, each in its own out and cache folders: `forge verify-contract` takes the compiler input from the last build in `out`, not from the
+    # settings it runs with, so one folder would send the explorer the settings of whichever build came last (run 39928946884: the contract built with 200 was submitted as 202).
     # three different runtime codes (the optimizer runs 200, 201 and 202 change the metadata hash at the end of the code), so that verifying one contract is never a "similar match" for the other two
     for runs in 200 201 202; do
-      FOUNDRY_OPTIMIZER_RUNS=$runs forge inspect Counter bytecode | sed 's/^0x//' > "../creation-$runs.hex"
+      export FOUNDRY_OPTIMIZER_RUNS=$runs FOUNDRY_OUT="out-$runs" FOUNDRY_CACHE_PATH="cache-$runs"
+      forge build
+      forge inspect Counter bytecode | sed 's/^0x//' > "../creation-$runs.hex"
       [ -s "../creation-$runs.hex" ] || fail "forge produced no creation code for runs $runs"
     done
     cmp -s ../creation-200.hex ../creation-201.hex && fail "the creation codes of runs 200 and 201 are the same"
     cmp -s ../creation-201.hex ../creation-202.hex && fail "the creation codes of runs 201 and 202 are the same"
     cmp -s ../creation-200.hex ../creation-202.hex && fail "the creation codes of runs 200 and 202 are the same"
     echo "Counter's creation code: $(($(wc -c < ../creation-200.hex) / 2)) bytes, three builds"
+    unset FOUNDRY_OPTIMIZER_RUNS FOUNDRY_OUT FOUNDRY_CACHE_PATH
+    # Hardhat compiles with the runs of the third contract (202) now, so that `hardhat verify` finds its artifact: on its own it did not compile ("its bytecode doesn't match any of your local contracts")
+    L5_HARDHAT_RUNS=202 npx hardhat compile
     ;;
   verify)
     node ../l5.mjs
