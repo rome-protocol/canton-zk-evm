@@ -81,6 +81,21 @@ const totalOf = (f: InFlight | undefined): Total | null => {
 };
 const more = (t: Total) => `${t.atLeast ? "at least " : ""}${count(t.total)}`;
 
+/** The title's counts: the final transactions the server counted, those in blocks being proven and those waiting. The total is final only, so "in all" adds the two that are not final yet; null from the server is said as not counted, never as 0. */
+function headline(finalTotal: number | null | undefined, flight: InFlight | undefined): string | null {
+  const nf = flight ? notFinalCounts(flight) : null;
+  const parts: string[] = [];
+  if (finalTotal !== undefined) {
+    if (finalTotal === null) parts.push("not counted yet");
+    else {
+      if (nf) parts.push(`${nf.waiting === null ? "at least " : ""}${count(finalTotal + nf.inBlocks + (nf.waiting ?? 0))} in all`);
+      parts.push(`${count(finalTotal)} final`);
+    }
+  }
+  if (nf) parts.push(`${count(nf.inBlocks)} being proven`, nf.waiting === null ? "the pool is not counted" : `${count(nf.waiting)} waiting`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 function Cards({ st, live }: { st: ApiStatus | undefined; live: boolean }) {
   const blocks = useQuery({ queryKey: ["blocks", 10], queryFn: () => getBlocks(10), refetchInterval: listPoll(live) }).data;
   const flight = useInFlight(live).data ?? null;
@@ -104,16 +119,23 @@ function Cards({ st, live }: { st: ApiStatus | undefined; live: boolean }) {
   );
 }
 
-function FinalRows({ view, st, now, live, faucet, notFinal, all }: { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null }) {
+function FinalRows({ view, st, now, live, faucet, notFinal, all, finalTotal }: { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null; finalTotal: number | null | undefined }) {
   const p = usePaged(["txs", "page", view], (before) => getTxPage(before, PER, view), listPoll(live));
   const items = p.data?.items;
   if (p.error && !items) return <ErrorCard message={p.error.message} retrying />;
   if (!items || !st) return <LoadingCard>Reading the transactions…</LoadingCard>;
   const showNotFinal = view === "all" && p.page === 1;
   const shown = showNotFinal ? notFinal.slice(0, NOT_FINAL_SHOWN) : [];
+  const n = shown.length + items.length;
+  // Only the list of all is totalled; the rows of page 1 include the ones not final yet, so they are told against the total with those added.
+  const of = view !== "all" || finalTotal === undefined ? "" : finalTotal === null ? " · total not counted yet"
+    : p.page === 1 ? "" : ` · ${count(finalTotal)} final in all`;
+  const label = !n ? "No transactions yet."
+    : view === "all" && finalTotal !== undefined && finalTotal !== null && p.page === 1 ? `Showing the newest ${count(n)} of ${all?.atLeast ? "at least " : ""}${count(finalTotal + (all ? all.total : 0))}`
+    : p.page === 1 ? `Showing the newest ${count(n)} on this page${of}` : `Showing ${count(n)} on page ${p.page}${of}`;
   return (
     <section className="card" aria-label="Transactions">
-      <div className="list-h"><span className="muted">{items.length || shown.length ? `Showing the newest ${count(shown.length + items.length)} on this page` : "No transactions yet."}</span><Pager p={p} label="Pages of transactions" /></div>
+      <div className="list-h"><span className="muted">{label}</span><Pager p={p} label="Pages of transactions" /></div>
       <div className="scroll">
         <table className="tbl txs">
           {head(st.coin)}
@@ -155,12 +177,16 @@ export function Txs() {
   const faucet = useQuery({ queryKey: ["faucet-address"], queryFn: getFaucetAddress, staleTime: 60_000, retry: false }).data;
   const notFinal = flight.data?.transactions ?? [];
   const all = totalOf(flight.data);
+  // The total comes with the first page of all; the list below shares this read when it shows that page.
+  const first = useQuery({ queryKey: ["txs", "page", "all", null], queryFn: () => getTxPage(null, PER, "all"), refetchInterval: listPoll(live) }).data;
+  const finalTotal = first ? (first.total ?? null) : undefined;
+  const counts = headline(finalTotal, flight.data);
   const csv: TxFilter = view === "failed" || view === "calls" ? view : "all";
   return (
     <>
       <div className="ptitle">
         <h1>Transactions</h1>
-        {all && <span className="muted">{more(all)} not final yet</span>}
+        {counts && <span className="muted">{counts}</span>}
         <span className="grow" />
         <div className="seg" role="group" aria-label="Show transactions">
           {VIEWS.map((v) => <button key={v.id} type="button" aria-pressed={view === v.id} onClick={() => setView(v.id)}>{v.label}</button>)}
@@ -170,7 +196,7 @@ export function Txs() {
       <Cards st={st} live={live} />
       {view === "notfinal"
         ? <NotFinalOnly st={st} now={now} faucet={faucet} notFinal={notFinal} all={all} />
-        : <FinalRows key={view} view={view === "all" ? "all" : view} st={st} now={now} live={live} faucet={faucet} notFinal={notFinal} all={all} />}
+        : <FinalRows key={view} view={view === "all" ? "all" : view} st={st} now={now} live={live} faucet={faucet} notFinal={notFinal} all={all} finalTotal={finalTotal} />}
     </>
   );
 }
