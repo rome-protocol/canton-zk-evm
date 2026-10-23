@@ -139,7 +139,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     const coins = body(await get(`/api/addresses/${A}/coin-history`));
     for (const x of coins.items) same(x, F.coinPoint);
     const contracts = body(await get("/api/contracts"));
-    same(contracts, F.derivedPage);
+    same(contracts, F.contractPage);
     for (const c of contracts.items) same(c, F.contractItem);
     const vault = body(await get(`/api/contracts/${K}`));
     same(vault, F.contractDetail);
@@ -949,6 +949,86 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       const csv = String((await get(`/api/addresses/${A}/token-transfers?format=csv`)).body).split("\r\n");
       const json = body(await get(`/api/addresses/${A}/token-transfers`)).items as { creation: boolean }[];
       expect(csv.slice(1, -1).map((l) => l.split(",")[6])).toEqual(json.map((t) => String(t.creation)));
+    });
+  });
+
+  describe("contract facts: the event count and times, the list's totals and who made each, and how a source was verified", () => {
+    const ts = async (block: number) => Number((await sql("select extract(epoch from timestamp)::bigint as ts from blocks where number = $1", [block])).rows[0].ts);
+    const count = async (where = "true") => Number((await sql(`select count(*) as n from contracts where ${where}`)).rows[0].n);
+
+    it("tells the list's total and the count of each filter, which a filter does not change, and keeps to the filter asked", async () => {
+      const all = await count(), verified = await count("verified_source is not null");
+      expect(all).toBeGreaterThanOrEqual(4);
+      expect(verified).toBe(1);
+      const first = body(await get("/api/contracts"));
+      same(first, F.contractPage);
+      expect(first).toMatchObject({ total: all, counts: { all, verified, notVerified: all - verified } });
+      expect(body(await get("/api/contracts?verified=true"))).toMatchObject({ total: verified, counts: { all, verified, notVerified: all - verified } });
+      expect(body(await get("/api/contracts?verified=false"))).toMatchObject({ total: all - verified, counts: { all, verified, notVerified: all - verified } });
+      // Each sort says the same, and the count comes from the table whole, not from the page.
+      for (const sort of ["interactions", "newest", "oldest"]) expect(body(await get(`/api/contracts?sort=${sort}&limit=1`))).toMatchObject({ total: all, counts: { all } });
+    });
+
+    it("gives each contract in the list the compiler of its source and when it was made, and neither for what has none", async () => {
+      const items = body(await get("/api/contracts?sort=interactions")).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const c of items) same(c, F.contractItem);
+      const at = (a: string) => items.find((c) => c.address === a)!;
+      expect(at(K)).toMatchObject({ compilerVersion: "v0.8.30+commit.73712a01", creationBlock: 3 });
+      expect(at(K).createdAt).toBe(new Date((await ts(3)) * 1000).toISOString());
+      expect(at(C)).toMatchObject({ compilerVersion: null, creationBlock: 2 });
+      expect(at(C).createdAt).toBe(new Date((await ts(2)) * 1000).toISOString());
+      // A contract of the genesis state was made by nothing the explorer saw.
+      expect(at(h(0xb2))).toMatchObject({ compilerVersion: null, creationBlock: null, createdAt: null });
+      expect(body(await get(`/api/addresses/${A}/contracts`)).items.every((c: Record<string, unknown>) => "createdAt" in c && "compilerVersion" in c)).toBe(true);
+    });
+
+    it("counts a contract's events, and times each", async () => {
+      const txs = (await sql("select block_number, tx_index from transactions order by block_number, tx_index")).rows;
+      expect(new Set(txs.map((t) => t.block_number)).size).toBeGreaterThan(1);
+      const topic = Buffer.alloc(32, 0x79), W = who(0xc1);
+      try {
+        for (const [i, t] of [txs[0], txs[txs.length - 1], txs[txs.length - 1]].entries()) {
+          await sql("insert into logs (block_number, log_index, tx_index, address, topic0, data) values ($1, $2, $3, $4, $5, ''::bytea)", [t.block_number, 3000 + i, t.tx_index, W, topic]);
+        }
+        const detail = body(await get(`/api/contracts/${K}`));
+        expect(detail).toMatchObject({ eventCount: 3, eventCountCapped: false });
+        same(detail, F.contractDetail);
+        expect(body(await get(`/api/contracts/${C}`))).toMatchObject({ eventCount: 0, eventCountCapped: false });
+        const items = body(await get(`/api/contracts/${K}/events`)).items as { block: number; timestamp: number }[];
+        expect(items).toHaveLength(3);
+        expect(new Set(items.map((e) => e.block)).size).toBe(2);
+        for (const e of items) expect(e.timestamp).toBe(await ts(e.block));
+      } finally { await sql("delete from logs where address = $1 and topic0 = $2", [W, topic]); }
+    });
+
+    it("stops counting a contract's events at a ceiling, and says so", async () => {
+      const W = Buffer.alloc(20, 0x5f), topic = Buffer.alloc(32, 0x78);
+      const [tx] = (await sql("select block_number, tx_index from transactions order by block_number, tx_index limit 1")).rows;
+      await sql("insert into bytecodes (code_hash, code, size) values ($1, $2, 2) on conflict do nothing", [Buffer.alloc(32, 1), Buffer.from("6080", "hex")]);
+      await sql("insert into contracts (address, origin, runtime_code_hash, interaction_count) values ($1, 'genesis', $2, 0)", [W, Buffer.alloc(32, 1)]);
+      try {
+        await sql("insert into logs (block_number, log_index, tx_index, address, topic0, data) select $2, 2000 + g, $3, $1, $4, ''::bytea from generate_series(1, 5) g", [W, tx.block_number, tx.tx_index, topic]);
+        expect(body(await get(`/api/contracts/0x${W.toString("hex")}`))).toMatchObject({ eventCount: 5, eventCountCapped: false });
+        const capped = createAccountRest(pool);
+        expect(await capped.eventCountOf(`0x${W.toString("hex")}`, 3)).toEqual({ count: 3, capped: true });
+        expect(await capped.eventCountOf(`0x${W.toString("hex")}`, 5)).toEqual({ count: 5, capped: false });
+      } finally {
+        await sql("delete from logs where address = $1", [W]);
+        await sql("delete from contracts where address = $1", [W]);
+      }
+    });
+
+    it("serves how a source was verified and the tool named, and null for a source from before it was kept", async () => {
+      expect(body(await get(`/api/contracts/${K}`)).verification).toMatchObject({ method: null, tool: null });
+      expect(body(await get(`/api/contracts/${K}/source`))).toMatchObject({ method: null, tool: null });
+      await sql("update verified_sources set method = 'etherscan', tool = 'forge' where address = $1", [who(0xc1)]);
+      try {
+        expect(body(await get(`/api/contracts/${K}`)).verification).toMatchObject({ method: "etherscan", tool: "forge" });
+        expect(body(await get(`/api/contracts/${K}/source`))).toMatchObject({ method: "etherscan", tool: "forge" });
+        same(body(await get(`/api/contracts/${K}/source`)), F.source);
+        await sql("update verified_sources set method = 'api', tool = null where address = $1", [who(0xc1)]);
+        expect(body(await get(`/api/contracts/${K}`)).verification).toMatchObject({ method: "api", tool: null });
+      } finally { await sql("update verified_sources set method = null, tool = null where address = $1", [who(0xc1)]); }
     });
   });
 });

@@ -229,9 +229,10 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   async function contractList(q: URLSearchParams): Promise<Answer> {
     const by = sort<ContractSort>(q, SORTS.contracts), limit = limitOf(q.get("limit")), verified = verifiedOf(q.get("verified"));
     const before = cursorOf(q.get("before"), by === "interactions" ? ["int", "addr"] : ["int", "int4", "addr"]);
-    const rows = await accounts.contracts(by, verified, before, limit);
+    const [rows, counts] = await Promise.all([accounts.contracts(by, verified, before, limit), accounts.contractCounts()]);
     const key = (c: (typeof rows)[number]) => (by === "interactions" ? keyOf(c.interactionCount, c.address) : keyOf(c.creationBlock ?? 0, c.creationTxIndex ?? 0, c.address));
-    return cached(ok(page(rows, limit, key, F.contractItem, await isDerived())), "list");
+    const total = verified === null ? counts.all : verified ? counts.verified : counts.notVerified;
+    return cached(ok(pick({ ...page(rows, limit, key, F.contractItem, await isDerived()), total, counts }, F.contractPage)), "list");
   }
 
   async function oneContract(a: string): Promise<Answer> {
@@ -245,7 +246,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     addressOf(a);
     const { held, source } = await accounts.source(a);
     if (!held) return missing(NO_CONTRACT);
-    const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, matchNote: null, libraries: null, verifiedAt: null };
+    const empty = { address: a, verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null, evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, matchNote: null, libraries: null, verifiedAt: null, method: null, tool: null };
     const body = source ? { ...source, address: a, verified: true, files: source.files.map((f) => pick(f, F.sourceFile)) } : empty;
     return cached(ok(pick(body, F.source)), "composite");
   }

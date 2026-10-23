@@ -425,18 +425,29 @@ export const getCoinHistory = async (a: string, before: string | null, limit = P
 
 /** A contract in the list. `origin` is "genesis" for a contract the chain's genesis holds (made by no transaction, so no creator and no creation block) or "create". `matchType` is full, partial, or similar (the same code verified at another address). */
 export interface ContractListItem {
-  address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null; interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
+  address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null;
+  /** When its creation's block was made (ISO), null for a contract the explorer did not see made; `compilerVersion` is its verified source's, null while it has none. */
+  createdAt: string | null; compilerVersion: string | null;
+  interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
   codeSize: number; destroyedBlock: number | null;
   /** The token standard when the contract is a token. The balance and the counts are the explorer's copy, as of `balanceBlock`; null or 0 for a contract it has not seen move. */
   standard: string | null; balance: string | null; balanceBlock: number | null; txCount: number; internalCount: number;
 }
+export type VerificationMethod = "etherscan" | "api";
+export type VerificationTool = "forge" | "hardhat" | "remix" | "unknown";
+/** The contract list's page: `total` is the list's own count (of the `verified` filter asked, or of all), `counts` is each filter's, whatever is asked. */
+export interface ContractListPage extends DerivedPage<ContractListItem> { total: number; counts: { all: number; verified: number; notVerified: number } }
 export type ContractSort = "interactions" | "newest" | "oldest";
 export interface ContractDetail extends ContractListItem {
   creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
+  /** How many logs it wrote, counted up to a ceiling; `eventCountCapped` says the count stopped there. */
+  eventCount: number; eventCountCapped: boolean;
   proxy: { kind: string; implementation: string | null; beacon: string | null; checkedBlock: number } | null;
   verification: {
     language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null;
     license: string | null; verifiedAt: string; matchNote: string | null;
+    /** How it was verified and the tool its submitter named; null for a source verified before this was kept. */
+    method: VerificationMethod | null; tool: VerificationTool | null;
   } | null;
   derived: boolean;
 }
@@ -444,15 +455,15 @@ export interface ContractDetail extends ContractListItem {
 export interface ContractSource {
   address: string; verified: boolean; matchType: "full" | "partial" | null; language: string | null; compilerVersion: string | null; codeFormat: string | null; contractPath: string | null; contractName: string | null;
   optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null; license: string | null; settings: unknown; files: { path: string; content: string }[]; abi: unknown;
-  constructorArgs: string | null; libraries: unknown; verifiedAt: string | null; matchNote: string | null;
+  constructorArgs: string | null; libraries: unknown; verifiedAt: string | null; matchNote: string | null; method: VerificationMethod | null; tool: VerificationTool | null;
 }
 const at = (a: string, sub = "") => `/api/contracts/${encodeURIComponent(a)}${sub}`;
 export const getContractList = async (sort: ContractSort, verified: boolean | null, before: string | null, limit = PAGE) =>
-  (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as DerivedPage<ContractListItem>;
+  (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as ContractListPage;
 export const getContract = async (a: string) => (await call(at(a), [200])).body as ContractDetail;
 export const getContractSource = async (a: string) => (await call(at(a, "/source"), [200])).body as ContractSource;
 
 /** A log a contract wrote, with the transaction it is in and that transaction's method id (null when its input is empty). */
-export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
+export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds. */ timestamp: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
 export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
   (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;

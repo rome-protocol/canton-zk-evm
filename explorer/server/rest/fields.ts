@@ -101,23 +101,25 @@ export const REST_FIELDS = {
   /** An address's internal calls: the call, and the transaction it is in. */
   addressInternal: ["txHash", "block", "txIndex", "traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
   /** A log a contract wrote: the log, the transaction it is in, and that transaction's method id. */
-  contractEvent: ["txHash", "block", "txIndex", "logIndex", "address", "topics", "data", "method", "creation"],
+  contractEvent: ["txHash", "block", "txIndex", "logIndex", "timestamp", "address", "topics", "data", "method", "creation"],
   /** A token transfer of an address or of a token, with the transaction it is in. */
   tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "methodId", "creation", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
   /** What an address holds of one token (or of one id of an ERC-1155), as of the block it last moved. */
   holding: ["token", "standard", "name", "symbol", "decimals", "totalSupply", "tokenId", "value", "updatedBlock"],
   coinPoint: ["block", "balance"],
-  contractItem: ["address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount"],
+  /** The contract list: the page, the list's own total and the count of each filter (all, verified, not verified), whatever is asked. */
+  contractPage: ["derived", "items", "next", "total", "counts"],
+  contractItem: ["address", "name", "origin", "creator", "creationBlock", "createdAt", "compilerVersion", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount"],
   contractDetail: [
-    "address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount",
-    "creationTxHash", "lastInteractionBlock", "codeHash", "code", "proxy", "verification", "derived",
+    "address", "name", "origin", "creator", "creationBlock", "createdAt", "compilerVersion", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount",
+    "creationTxHash", "lastInteractionBlock", "eventCount", "eventCountCapped", "codeHash", "code", "proxy", "verification", "derived",
   ],
   proxy: ["kind", "implementation", "beacon", "checkedBlock"],
-  verification: ["language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion", "license", "verifiedAt", "matchNote"],
+  verification: ["language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion", "license", "verifiedAt", "matchNote", "method", "tool"],
   /** The verified source and ABI; every field after `verified` is empty (null, or an empty list) while nothing is verified. */
   source: [
     "address", "verified", "matchType", "language", "compilerVersion", "codeFormat", "contractPath", "contractName", "optimizerEnabled", "optimizerRuns", "evmVersion",
-    "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt", "matchNote",
+    "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt", "matchNote", "method", "tool",
   ],
   sourceFile: ["path", "content"],
   tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified"],
