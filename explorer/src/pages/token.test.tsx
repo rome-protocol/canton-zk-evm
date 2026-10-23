@@ -43,6 +43,32 @@ describe("the token page: the overview", () => {
     expect(await within(card("Contract")).findByText("created in block 18")).toBeInTheDocument();
   });
 
+  it("keeps a long supply inside its card: the number alone is the value, and the symbol is in the line under it", async () => {
+    await open(tokenDetail(0xcb, { symbol: "TKA", decimals: 18, totalSupply: "1" + "0".repeat(24) }));
+    const c = card("Total supply");
+    expect(c.querySelector(".stat-v")).toHaveTextContent(/^1,000,000$/);
+    expect(c).toHaveTextContent("TKA · as of block 21");
+    expect(c.closest(".stats")).toHaveClass("tok-stats");
+  });
+
+  it("lets the contract address wrap inside its card instead of running out of it", async () => {
+    await open();
+    const v = card("Contract").querySelector(".stat-v")!;
+    expect(v).toHaveClass("stat-hash");
+    await userEvent.click(within(v as HTMLElement).getByRole("button", { name: "Show in full" }));
+    expect(v).toHaveTextContent(A);
+  });
+
+  it("titles the holder, transfer and information cards in the small card-header style, not a large heading", async () => {
+    await open();
+    await screen.findByRole("region", { name: "Holder distribution" });
+    for (const [region, title] of [["Holder distribution", "Holder distribution"], ["Token information", "Token information"]] as const) {
+      const h = screen.getByRole("region", { name: region }).querySelector(".card-h")!;
+      expect(h, region).not.toBeNull();
+      expect(within(h as HTMLElement).getByRole("heading", { level: 2, name: new RegExp(`^${title}`) })).toBeInTheDocument();
+    }
+  });
+
   it("says a token whose source is not verified is not verified, and still shows the token", async () => {
     await open(tokenDetail(), { contract: () => reply(contractDetail(0xcb, { verified: false, matchType: null, verification: null })) });
     expect(await screen.findByText("Source code not verified")).toBeInTheDocument();

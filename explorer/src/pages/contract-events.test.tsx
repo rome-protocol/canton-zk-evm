@@ -13,7 +13,7 @@ const ABI = [...TOKEN_ABI, { type: "event", name: "Transfer", inputs: [{ name: "
 const pad = (a: string) => "0x" + a.slice(2).padStart(64, "0");
 const log = (n: number, over: Partial<ContractEvent> = {}): ContractEvent => ({
   txHash: hash(n), block: 20 - n, txIndex: 0, logIndex: n, address: A, topics: [toEventSelector(SIG), pad(ME), pad(YOU)],
-  data: encodeAbiParameters([{ type: "uint256" }], [BigInt(n) * 100n]), method: "0xa9059cbb", ...over,
+  data: encodeAbiParameters([{ type: "uint256" }], [BigInt(n) * 100n]), method: "0xa9059cbb", creation: false, ...over,
 });
 const verified = { [A]: contractSource(0xcb, { abi: ABI }) };
 afterEach(() => vi.unstubAllGlobals());
@@ -27,6 +27,27 @@ describe("the contract page: Events", () => {
     expect(within(row).getByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).toHaveAttribute("href", `/address/${ME}`);
     expect(within(row).getByText("100")).toBeInTheDocument();
     expect(within(row).getByRole("link", { name: "19" })).toHaveAttribute("href", "/block/19");
+  });
+
+  it("names a contract-creation transaction \"Create contract\", not the first bytes of its init code", async () => {
+    await open("events", { sources: verified, events: () => page([log(3, { method: null, creation: true }), log(4, { method: "0xa9059cbb" })]) });
+    const rows = await screen.findAllByRole("row");
+    const created = rows.find((r) => within(r).queryByText("Create contract"))!;
+    expect(created).toBeDefined();
+    expect(within(created).getByText("Create contract")).toHaveClass("tag", "method");
+    expect(within(created).queryByText("—")).toBeNull();
+    expect(screen.getAllByText("Create contract")).toHaveLength(1);
+  });
+
+  it("opens with the standard card header: the title with its words inline, and the Filter by topic button in outline style", async () => {
+    await open("events", { sources: verified, events: () => page([log(1)]) });
+    const card = screen.getByRole("region", { name: "Events" });
+    const h = card.querySelector(".card-h")!;
+    expect(h).not.toBeNull();
+    expect(within(h as HTMLElement).getByRole("heading", { level: 2, name: /^Events/ }).querySelector(".muted")).not.toBeNull();
+    const filter = screen.getByRole("button", { name: /Filter by topic/ });
+    expect(filter).toHaveClass("btn-line");
+    expect(filter).not.toHaveClass("btn");
   });
 
   it("says a log is not decoded while the source is not verified, and shows the raw topics and data", async () => {
