@@ -37,6 +37,7 @@
   .how-steps.way-steps .how-dot { top: 3px; }
   .how-steps.way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
 }
-.tx-h { margin: 0 0 8px; }
+.tx-h { margin: 0; font-size: 15px; font-weight: 600; }
+.tx-table .arrow { color: var(--muted); width: 28px; text-align: center; }
 .ev-filter .btn-line { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
 .ev-filter .btn-line[aria-pressed="true"] { border-color: var(--canton-line); background: var(--canton-tint); color: var(--canton); }

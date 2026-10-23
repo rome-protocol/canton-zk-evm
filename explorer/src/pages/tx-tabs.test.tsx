@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ApiTx, InternalCall, TokenTransfer, TraceFrame, TxLog } from "../api.ts";
-import { account, addr, fakeApi, hash, page, renderApp, reply, route, tokenAddress, tx, txDetail, waitingTx } from "../test-utils.tsx";
+import { account, addr, fakeApi, hash, labelsOf, page, renderApp, reply, route, tokenAddress, tokenLabel, tx, txDetail, waitingTx } from "../test-utils.tsx";
 
 vi.mock("../verify/verifier.ts", async (orig) => ({ ...(await orig<typeof import("../verify/verifier.ts")>()), fetchVerifier: vi.fn(async () => ({ verify: () => "", bytes: 1 })) }));
 
@@ -180,21 +180,37 @@ describe("the Call tree and Raw tabs", () => {
 });
 
 describe("the token transfers and the input on Overview", () => {
-  it("lists each transfer with the token's symbol and amount in whole units", async () => {
-    await open({ txTransfers: () => reply({ items: [transfer()], next: null, derived: true }) });
-    const card = within(await screen.findByRole("region", { name: "Token transfers" }));
-    const row = (await card.findAllByRole("row"))[1]!;
-    expect(row).toHaveTextContent("0x5b5b…5b5b");
-    expect(row).toHaveTextContent("0x5a5a…5a5a");
-    expect(row).toHaveTextContent("10 TKA");
+  it("lists each transfer with names and the amount in whole units, and says in its header how many and where they were read from", async () => {
+    const calls = await open({ txTransfers: () => reply({ items: [transfer(), transfer({ logIndex: 1, from: addr(0x5a), to: addr(0x5b), amount: "2500000000000000000" })], next: null, derived: true }), labels: labelsOf([tokenLabel(), tokenLabel({ address: addr(0x5a), name: "Disperse", symbol: null, kind: "contract", decimals: null })]) });
+    const region = await screen.findByRole("region", { name: "Token transfers" });
+    const card = within(region);
+    expect(card.getByRole("heading", { name: "Token transfers" })).toBeInTheDocument();
+    expect(region).toHaveTextContent("2 ERC-20 transfers, read from the logs");
+    await waitFor(() => expect(card.getAllByRole("link", { name: "Test token A (TKA)" })).toHaveLength(2));
+    const rows = card.getAllByRole("row");
+    expect(rows[1]).toHaveTextContent("0x5b5b5b…5b5b");
+    expect(within(rows[1]!).getByRole("link", { name: "Disperse" })).toHaveAttribute("href", `/contract/${addr(0x5a)}`);
+    expect(within(rows[1]!).getByText("10")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("2.5")).toBeInTheDocument();
+    expect(card.getAllByRole("img", { name: "Verified" }).length).toBeGreaterThan(0);
+    // One request for the names of the whole card, not one per row; and none to the address route.
+    expect(used(calls, "/api/labels")).toHaveLength(1);
+    expect(used(calls, "/api/address/")).toHaveLength(0);
   });
 
-  it("shows the token id where an NFT transfer has no amount, and no id beside an amount", async () => {
-    await open({ txTransfers: () => reply({ items: [transfer({ amount: null, tokenId: "3" }), transfer({ logIndex: 1, amount: "5", tokenId: "7" })], next: null, derived: true }), address: () => reply(tokenAddress()) });
+  it("says one transfer in the singular, and 'token transfers' where a row moves an NFT", async () => {
+    await open({ txTransfers: () => reply({ items: [transfer()], next: null, derived: true }), labels: labelsOf([tokenLabel()]) });
+    expect(await screen.findByRole("region", { name: "Token transfers" })).toHaveTextContent("1 ERC-20 transfer, read from the logs");
+    cleanup();
+    await open({ txTransfers: () => reply({ items: [transfer({ amount: null, tokenId: "3" })], next: null, derived: true }), labels: labelsOf([tokenLabel({ standard: "ERC-721", decimals: null })]) });
+    expect(await screen.findByRole("region", { name: "Token transfers" })).toHaveTextContent("1 token transfer, read from the logs");
+  });
+
+  it("shows the token id where an NFT transfer has no amount, and the count with the id beside an amount", async () => {
+    await open({ txTransfers: () => reply({ items: [transfer({ amount: null, tokenId: "3" }), transfer({ logIndex: 1, amount: "5", tokenId: "7" })], next: null, derived: true }), labels: labelsOf([tokenLabel({ standard: "ERC-1155", decimals: null })]) });
     const card = within(await screen.findByRole("region", { name: "Token transfers" }));
     await waitFor(() => expect(card.getAllByRole("row")[1]).toHaveTextContent("TKA #3"));
-    expect(card.getAllByRole("row")[1]).not.toHaveTextContent("id 3");
-    expect(card.getAllByRole("row")[2]).toHaveTextContent("id 7");
+    expect(card.getAllByRole("row")[2]).toHaveTextContent("5 × TKA #7");
   });
 
   it("puts both cards full width after the facts and the side cards, so a phone reads Overview, Canton record, The proof, Token transfers, Input", async () => {
@@ -208,7 +224,7 @@ describe("the token transfers and the input on Overview", () => {
   });
 
   it("falls back to the raw amount when the token cannot be read", async () => {
-    await open({ txTransfers: () => reply({ items: [transfer()], next: null, derived: true }), address: () => reply(account()) });
+    await open({ txTransfers: () => reply({ items: [transfer()], next: null, derived: true }), labels: labelsOf([tokenLabel({ decimals: null })]) });
     const card = within(await screen.findByRole("region", { name: "Token transfers" }));
     expect(await card.findByText("10000000000000000000")).toBeInTheDocument();
   });
