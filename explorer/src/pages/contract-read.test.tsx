@@ -11,6 +11,17 @@ afterEach(() => vi.unstubAllGlobals());
 const word = (t: string, v: unknown) => encodeAbiParameters([{ type: t }], [v as never]);
 
 describe("the contract page: Read", () => {
+  it("reads the final block again on Read again, and calls every function at the new block", async () => {
+    let head = 0x15;
+    const { rpcCalls } = await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x" + (head).toString(16) : word("string", "x") });
+    await within(await screen.findByRole("region", { name: "name" })).findByText("answered at block 21");
+    head = 0x16;
+    await userEvent.click(screen.getByRole("button", { name: "Read again" }));
+    await within(screen.getByRole("region", { name: "name" })).findByText("answered at block 22");
+    expect(rpcCalls.filter((c) => c.method === "eth_blockNumber")).toHaveLength(2);
+    expect(rpcCalls.filter((c) => c.method === "eth_call" && (c.params[1] as string) === "0x16")).toHaveLength(2);
+  });
+
   it("calls the functions that take nothing at once, through /rpc at the final block, and shows the decoded answers", async () => {
     const { rpcCalls } = await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x15" : (c.params[0] as { data: string }).data === "0x06fdde03" ? word("string", "Test USD") : word("address", ME) });
     const name = await screen.findByRole("region", { name: "name" });
@@ -20,6 +31,7 @@ describe("the contract page: Read", () => {
     expect(await within(owner).findByRole("link", { name: ME })).toHaveAttribute("href", `/address/${ME}`);
     const calls = rpcCalls.filter((c) => c.method === "eth_call");
     expect(calls.length).toBe(2);
+    expect(rpcCalls.filter((c) => c.method === "eth_blockNumber")).toHaveLength(1); // the final block is read once for the whole tab
     for (const c of calls) expect(c.params).toEqual([{ to: A, data: expect.stringMatching(/^0x[0-9a-f]{8}$/) }, "0x15"]);
     expect(screen.queryByRole("region", { name: "transfer" })).toBeNull(); // a write is on the Write tab
     expect(screen.getByText(/Nothing is signed and nothing is sent/)).toBeInTheDocument();

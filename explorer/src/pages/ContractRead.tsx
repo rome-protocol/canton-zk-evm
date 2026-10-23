@@ -4,18 +4,22 @@ import { callable, decodeOutputs, encodeCall, type AbiEntry } from "../abi-call.
 import type { ContractDetail } from "../api.ts";
 import { ErrorCard } from "../components/Cards.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { ethCall, rpc } from "../rpc.ts";
+import { ethCall, finalBlock } from "../rpc.ts";
 import { Fields, Gate, headline, Out, useChoice, type Abis } from "./ContractCall.tsx";
 import { useAbi } from "./useAbi.ts";
 
+/** The final block of one reading of the tab, asked once and shared by every call on it. */
+interface Head { block: number | undefined; error: string | null; tick: number }
+
 /** What a view function answered, or why it did not: the call is data from the ABI and the fields, made through /rpc at the final block. */
-function Answer({ address, e, fields, tick }: { address: string; e: AbiEntry; fields: string[]; tick: number }) {
+function Answer({ address, e, fields, head }: { address: string; e: AbiEntry; fields: string[]; head: Head }) {
   const q = useQuery({
-    queryKey: ["read", address, e.name, JSON.stringify(e.inputs), fields, tick],
-    queryFn: async () => { const r = await ethCall(address, encodeCall(e, fields)); return { out: decodeOutputs(e, r.result), block: r.block }; },
-    retry: false, staleTime: Infinity,
+    queryKey: ["read", address, e.name, JSON.stringify(e.inputs), fields, head.block, head.tick],
+    queryFn: async () => { const r = await ethCall(address, encodeCall(e, fields), head.block!); return { out: decodeOutputs(e, r.result), block: r.block }; },
+    enabled: head.block !== undefined, retry: false, staleTime: Infinity,
   });
-  if (q.isLoading) return <p className="muted small" aria-busy="true">Reading…</p>;
+  if (head.error) return <p className="muted small">Not read: the final block is not known.</p>;
+  if (q.isLoading || head.block === undefined) return <p className="muted small" aria-busy="true">Reading…</p>;
   if (q.error) return <p className="fact-bad small" role="alert">{q.error.message}</p>;
   const { out, block } = q.data!;
   return (
@@ -26,7 +30,7 @@ function Answer({ address, e, fields, tick }: { address: string; e: AbiEntry; fi
   );
 }
 
-function ReadItem({ n, address, e, tick, open }: { n: number; address: string; e: AbiEntry; tick: number; open: boolean | null }) {
+function ReadItem({ n, address, e, head, open }: { n: number; address: string; e: AbiEntry; head: Head; open: boolean | null }) {
   const inputs = e.inputs ?? [];
   const [toggled, setToggled] = useState(false);
   const [values, setValues] = useState<string[]>([]);
@@ -46,13 +50,13 @@ function ReadItem({ n, address, e, tick, open }: { n: number; address: string; e
         <span className="muted small">{inputs.length ? `returns ${returns || "nothing"}` : returns}</span>
         {inputs.length > 0 && <Icon name="down" size={14} />}
       </button>
-      {inputs.length === 0 ? <div className="fn-b"><Answer address={address} e={e} fields={[]} tick={tick} /></div>
+      {inputs.length === 0 ? <div className="fn-b"><Answer address={address} e={e} fields={[]} head={head} /></div>
         : !shut && (
           <div className="fn-b">
             <Fields e={e} values={values} onChange={(i, v) => setValues((a) => { const b = [...a]; b[i] = v; return b; })} />
             <div className="fn-q"><button type="button" className="btn" onClick={query}>Query</button></div>
             {problem && <p className="fact-bad small" role="alert">{problem}</p>}
-            {ran && <Answer key={ran.n} address={address} e={e} fields={ran.fields} tick={tick} />}
+            {ran && <Answer key={ran.n} address={address} e={e} fields={ran.fields} head={head} />}
           </div>
         )}
     </section>
@@ -65,7 +69,8 @@ export function ReadTab({ detail }: { detail: ContractDetail }) {
   const { entries, note, switcher } = useChoice(abis);
   const [tick, setTick] = useState(0);
   const [open, setOpen] = useState<boolean | null>(null);
-  const head = useQuery({ queryKey: ["rpc-final-block", tick], queryFn: async () => Number(BigInt(await rpc<string>("eth_blockNumber"))), retry: false });
+  const head = useQuery({ queryKey: ["rpc-final-block", tick], queryFn: finalBlock, retry: false, staleTime: Infinity });
+  const shared: Head = { block: head.data, error: head.error ? head.error.message : null, tick };
   const fns = entries ? callable(entries, "read") : [];
   return (
     <Gate abis={abis} entries={entries} what="Read contract">
@@ -81,7 +86,7 @@ export function ReadTab({ detail }: { detail: ContractDetail }) {
         {note && <p className="small muted card-note">{note}</p>}
         {head.error && <ErrorCard message={head.error.message} retrying />}
         {fns.length === 0 ? <p className="muted">This contract has no functions that only read.</p>
-          : <div className="fn-cols">{fns.map((e, i) => <ReadItem key={`${e.name}-${i}`} n={i + 1} address={detail.address} e={e} tick={tick} open={open} />)}</div>}
+          : <div className="fn-cols">{fns.map((e, i) => <ReadItem key={`${e.name}-${i}`} n={i + 1} address={detail.address} e={e} head={shared} open={open} />)}</div>}
       </section>
     </Gate>
   );
