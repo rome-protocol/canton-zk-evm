@@ -20,19 +20,42 @@ export function shown(v: unknown): string {
 const bad = (type: string, why: string) => new Error(`${type}: ${why}`);
 const BITS = /^(u?int)(\d*)$/, FIXED = /^bytes([1-9]|[12]\d|3[0-2])$/, ARRAY = /^(.*)\[(\d*)\]$/;
 
+/**
+ * Typed JSON with every bare whole number turned into its own digits as text, before JSON reads it: JSON.parse would round a number
+ * above 2^53 to a double and the wallet would be asked to send an amount other than the one typed. A number with a fraction or an
+ * exponent is refused, since no ABI integer takes one.
+ */
+function digitsKept(text: string, type: string): string {
+  let out = "";
+  for (let i = 0; i < text.length;) {
+    const c = text[i]!;
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1); i = j + 1;
+    } else if (c === "-" || (c >= "0" && c <= "9")) {
+      const m = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(text.slice(i));
+      if (!m) { out += c; i++; continue; }
+      if (m[1] || m[2]) throw bad(type, "type each number as whole digits, with no fraction or exponent");
+      out += `"${m[0]}"`; i += m[0].length;
+    } else { out += c; i++; }
+  }
+  return out;
+}
+
 /** What was typed in a field, as the value the ABI coder takes. A list or a tuple is typed as JSON. Throws a plain message that names the type. */
 export function parseArg(p: AbiParam, text: string): unknown {
   const a = ARRAY.exec(p.type);
   if (a) {
     let list: unknown;
-    try { list = JSON.parse(text); } catch { throw bad(p.type, "type a list as JSON, like [1, 2]"); }
+    try { list = JSON.parse(digitsKept(text, p.type)); } catch (e) { throw e instanceof Error && e.message.startsWith(p.type) ? e : bad(p.type, "type a list as JSON, like [1, 2]"); }
     if (!Array.isArray(list)) throw bad(p.type, "type a list as JSON, like [1, 2]");
     if (a[2] && list.length !== Number(a[2])) throw bad(p.type, `the list has ${list.length} values, not ${a[2]}`);
     return list.map((x) => parseArg({ ...p, type: a[1]! }, typeof x === "string" ? x : shown(x)));
   }
   if (p.type === "tuple") {
     let list: unknown;
-    try { list = JSON.parse(text); } catch { throw bad(p.type, "type a tuple as a JSON list of its parts"); }
+    try { list = JSON.parse(digitsKept(text, p.type)); } catch (e) { throw e instanceof Error && e.message.startsWith(p.type) ? e : bad(p.type, "type a tuple as a JSON list of its parts"); }
     const parts = p.components ?? [];
     if (!Array.isArray(list) || list.length !== parts.length) throw bad(p.type, `type a JSON list of its ${parts.length} parts`);
     return parts.map((c, i) => parseArg(c, typeof list[i] === "string" ? (list[i] as string) : shown(list[i])));
