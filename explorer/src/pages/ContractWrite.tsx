@@ -23,7 +23,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
   const ready = wallet.canSend;
   const send = async () => {
     const w = injected();
-    if (!w || !wallet.account) return;
+    if (!w || !wallet.account || !wallet.canSend || wallet.chainId === null) return;
     let data: string, wei: bigint | null = null;
     try { data = encodeCall(e, values); } catch (x) { return setProblem((x as Error).message); }
     if (payable && value.trim() !== "") {
@@ -31,7 +31,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
     }
     setProblem(null); setSent(null); setBusy(true);
     try {
-      const tx: Record<string, string> = { from: wallet.account, to: address, data, chainId: "0x" + (wallet.chainId ?? 0).toString(16) };
+      const tx: Record<string, string> = { from: wallet.account, to: address, data, chainId: "0x" + wallet.chainId.toString(16) };
       if (wei !== null) tx.value = "0x" + wei.toString(16);
       setSent(String(await w.request({ method: "eth_sendTransaction", params: [tx] })));
     } catch (x) { setProblem(walletWords(x)); } finally { setBusy(false); }

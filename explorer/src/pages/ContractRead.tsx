@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { callable, decodeOutputs, encodeCall, type AbiEntry } from "../abi-call.ts";
 import type { ContractDetail } from "../api.ts";
 import { ErrorCard } from "../components/Cards.tsx";
@@ -37,7 +37,9 @@ function ReadItem({ n, address, e, head, open }: { n: number; address: string; e
   const [ran, setRan] = useState<{ fields: string[]; n: number } | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const returns = (e.outputs ?? []).map((o) => o.type).join(", ");
-  const shut = inputs.length > 0 && (open === null ? !toggled : !open);
+  // Expand all and Collapse all set every function; a function's own header then flips it from there, until the next press.
+  useEffect(() => setToggled(false), [open]);
+  const shut = inputs.length > 0 && ((open === null ? true : !open) !== toggled);
   const query = () => {
     try { encodeCall(e, values); } catch (x) { return setProblem((x as Error).message); }
     setProblem(null);
@@ -69,7 +71,7 @@ export function ReadTab({ detail }: { detail: ContractDetail }) {
   const { entries, note, switcher } = useChoice(abis);
   const [tick, setTick] = useState(0);
   const [open, setOpen] = useState<boolean | null>(null);
-  const head = useQuery({ queryKey: ["rpc-final-block", tick], queryFn: finalBlock, retry: false, staleTime: Infinity });
+  const head = useQuery({ queryKey: ["rpc-final-block", detail.address, tick], queryFn: finalBlock, retry: false, staleTime: Infinity, gcTime: 0 });
   const shared: Head = { block: head.data, error: head.error ? head.error.message : null, tick };
   const fns = entries ? callable(entries, "read") : [];
   return (

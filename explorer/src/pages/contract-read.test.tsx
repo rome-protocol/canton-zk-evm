@@ -117,4 +117,28 @@ describe("the contract page: Read", () => {
     await userEvent.click(screen.getByRole("button", { name: "Expand all" }));
     await waitFor(() => expect(screen.getByLabelText("owner (address)")).toBeInTheDocument());
   });
+  it("lets a function's own header open and close it after Expand all", async () => {
+    await open("read");
+    await userEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    await waitFor(() => expect(screen.getByLabelText("owner (address)")).toBeInTheDocument());
+    const header = within(screen.getByRole("region", { name: "allowance" })).getByRole("button", { name: /allowance/ });
+    await userEvent.click(header);
+    expect(screen.queryByLabelText("owner (address)")).toBeNull();
+    await userEvent.click(header);
+    expect(screen.getByLabelText("owner (address)")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    expect(screen.queryByLabelText("owner (address)")).toBeNull();
+  });
+
+  it("reads the final block again when the tab is opened again, never the block from the last visit", async () => {
+    let head = 0x15;
+    const { rpcCalls } = await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x" + head.toString(16) : word("string", "x") });
+    await within(await screen.findByRole("region", { name: "name" })).findByText("answered at block 21");
+    await userEvent.click(screen.getByRole("tab", { name: /^Write/ }));
+    await screen.findByRole("region", { name: "Write contract" });
+    head = 0x20;
+    await userEvent.click(screen.getByRole("tab", { name: /^Read/ }));
+    await within(await screen.findByRole("region", { name: "name" })).findByText("answered at block 32");
+    expect(rpcCalls.filter((c) => c.method === "eth_blockNumber")).toHaveLength(2);
+  });
 });
