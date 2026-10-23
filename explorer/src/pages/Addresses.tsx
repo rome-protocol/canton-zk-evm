@@ -16,7 +16,7 @@ const KIND = { account: "Account", contract: "Contract", token: "Token" } as con
 function Row({ a, coin }: { a: AddressListItem; coin: { symbol: string; decimals: number } | undefined }) {
   return (
     <tr>
-      <td><HashLink value={a.address} to={`/${a.kind === "token" ? "token" : "address"}/${a.address}`} /></td>
+      <td><HashLink value={a.address} to={`/${a.kind === "token" ? "token" : a.kind === "contract" ? "contract" : "address"}/${a.address}`} /></td>
       <td><span className="chip chip-kind">{KIND[a.kind]}</span></td>
       <td className="r">{a.balance === null ? <span className="muted" title="The explorer has not read this balance yet">—</span> : coin ? <Amount raw={a.balance} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>}</td>
       <td>{a.balanceBlock === null ? <span className="muted">—</span> : <Link className="num" to={`/block/${a.balanceBlock}`}>block {a.balanceBlock}</Link>}</td>

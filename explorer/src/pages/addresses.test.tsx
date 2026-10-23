@@ -27,6 +27,11 @@ describe("the addresses page", () => {
     expect(rows()[1]).toHaveTextContent("Contract");
   });
 
+  it("sends a contract to its contract page", async () => {
+    await open();
+    expect(within(rows()[1]!).getByRole("link", { name: "0x2222…2222" })).toHaveAttribute("href", `/contract/${addr(0x22)}`);
+  });
+
   it("shows a balance the index has not read as unknown, never as 0", async () => {
     await open();
     expect(rows()[1]!.querySelectorAll("td")[2]).toHaveTextContent("—");
