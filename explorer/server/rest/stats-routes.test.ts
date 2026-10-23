@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { createApi, type Answer } from "../api.ts";
+import { createChainRest } from "./chain-rest.ts";
 import { createChainDb } from "../chain-db.ts";
 import { loadConfig } from "../config.ts";
 import { migrate } from "../db/migrate.ts";
@@ -69,6 +70,16 @@ async function block(pool: Pool, rt: number, txs: number, attemptId: number | nu
 }
 const attempt = async (pool: Pool, runId: string, o: Record<string, unknown>) =>
   Number((await ins(pool, "block_attempts", { run_id: runId, attempt_seq: ++seq, number: seq, strategy: "t", cut_reason: "timer", ...o })).attempt_id);
+/** A block as `block` makes it, with a row in `transactions` for each of its transactions: what the total must equal, counted over the rows. */
+async function blockWithTxs(pool: Pool, rt: number, txs: number) {
+  await block(pool, rt, txs);
+  for (let i = 0; i < txs; i++) {
+    await ins(pool, "transactions", {
+      block_number: bn, tx_index: i, hash: `\\x${bn.toString(16).padStart(8, "0")}${i.toString(16).padStart(8, "0")}`, type: 2, from_address: hex(1), nonce: i, value: 0, gas_limit: 21000,
+      effective_gas_price: 0, gas_used: 21000, cumulative_gas_used: 21000 * (i + 1), status: 1, input: hex(0), log_count: 0,
+    });
+  }
+}
 async function base(pool: Pool) {
   await migrate(pool);
   await ensurePartitions(pool, { head: 0 });
@@ -76,6 +87,11 @@ async function base(pool: Pool) {
   await pool.query("insert into canton_synchronizers (synchronizer_id, first_seen) values ('s', now())");
   await pool.query("insert into canton_templates (package_id, module, entity) values ('k', 'm', 'e')");
 }
+/** The chain's REST routes too, for /api/txs. */
+const listApiFor = (pool: Pool, now: () => number) => {
+  const api = createApi({ config, reth: {} as never, ledger: {} as never, chain: createChainDb(pool), rest: createChainRest(pool), now });
+  return (target: string) => api("GET", target);
+};
 const apiFor = (pool: Pool, now: () => number) => {
   const api = createApi({ config, reth: {} as never, ledger: {} as never, chain: createChainDb(pool), stats: createStatsRest(pool), now });
   return (target: string, method = "GET") => api(method, target);
@@ -206,9 +222,9 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.blocks).toMatchObject({ count: 8, empty: 2, busy: 5 });
     expect(s.txs).toMatchObject({ count: 42, failed: 4, successRate: 38 / 42, accepted: 35 });
     same(s.txs, F.statsTxs);
-    // All time, whatever the window: the day rows (500 + 70 + 1046), less the 2 of the minute row at the cursor (12:30:00, which the blocks from the cursor on count), plus those blocks: a test run's 100 and the 13 at NOW + 5 s, the newest.
+    // All time, whatever the window. These rows are seeded by hand and are not a rollup's output, so the number only shows the arithmetic: the day rows (500 + 70 + 1046), less the minute rows from a minute before the cursor on (12:29 with 30 and 12:30 with 2), plus the blocks from the same instant (6, 11, 17, 100 and 13).
     same(s.txs.allTime, F.statsAllTime);
-    expect(s.txs.allTime).toEqual({ total: 1616 - 2 + 100 + 13, asOfBlock: expect.any(Number), asOf: new Date(NOW + 5000).toISOString() });
+    expect(s.txs.allTime).toEqual({ total: 1616 - 32 + 147, asOfBlock: expect.any(Number), asOf: new Date(NOW + 5000).toISOString() });
     expect((await pool.query("select number from blocks where record_time = $1", [at(NOW + 5000)])).rows[0].number).toBe(String(s.txs.allTime.asOfBlock));
     expect(body(await get("/api/stats/summary?window=7d")).txs.allTime).toEqual(s.txs.allTime);
     // per block: 0, 0, 2, 4, 6, 6, 12, 12 -> mean 5.25, the 4th of 8 is 4; without the empty ones 2, 4, 6, 6, 12, 12 -> mean 7, the 3rd of 6 is 6
@@ -508,18 +524,19 @@ describe.skipIf(!TEST_URL)("the stats routes over the real rollup", () => {
     } finally { await db.drop(); }
   });
 
-  // The all-time total against the real rollup: each case must equal the direct sum of the indexed blocks' transactions (this fixture gives blocks a tx_count and no transaction rows).
+  // The all-time total against the real rollup: each case must equal `select count(*) from transactions`, on the stats summary and on /api/txs (the fixture gives every block its transaction rows).
   describe("the all-time total, exact whatever the rollup has written", () => {
-    const direct = async (pool: Pool) => Number((await pool.query("select coalesce(sum(tx_count), 0) as n from blocks")).rows[0].n);
+    const direct = async (pool: Pool) => Number((await pool.query("select count(*) as n from transactions")).rows[0].n);
     const total = async (pool: Pool, now: number) => body(await apiFor(pool, () => now)("/api/stats/summary?window=1h")).txs.allTime;
+    const listTotal = async (pool: Pool, now: number) => body(await listApiFor(pool, () => now)("/api/txs")).total;
     const withDb = async (fn: (pool: Pool) => Promise<void>) => {
       const db = await makeDatabase();
       try { await base(db.pool); await fn(db.pool); } finally { await db.drop(); }
     };
 
     it("a block in the open minute when the rollup runs is counted once", () => withDb(async (pool) => {
-      await block(pool, t(12, 29, 12), 5);
-      await block(pool, t(12, 30, 10), 3);
+      await blockWithTxs(pool, t(12, 29, 12), 5);
+      await blockWithTxs(pool, t(12, 30, 10), 3);
       await rollupStats(pool, { now: () => NOW });
       // the rollup holds both blocks, the open minute's too, and leaves its cursor at the start of that minute
       expect(Number((await pool.query("select sum(txs) as n from stats_day")).rows[0].n)).toBe(8);
@@ -527,17 +544,18 @@ describe.skipIf(!TEST_URL)("the stats routes over the real rollup", () => {
       const a = await total(pool, NOW + 1000);
       expect(a.total).toBe(8);
       expect(a.total).toBe(await direct(pool));
+      expect(await listTotal(pool, NOW + 1000)).toBe(8);
     }));
 
     it("a new block after a rollup, then a rollup run again, is counted once at each step", () => withDb(async (pool) => {
-      await block(pool, t(12, 29, 12), 5);
+      await blockWithTxs(pool, t(12, 29, 12), 5);
       await rollupStats(pool, { now: () => NOW });
       expect((await total(pool, NOW + 1000)).total).toBe(5);
-      await block(pool, t(12, 30, 10), 3);
+      await blockWithTxs(pool, t(12, 30, 10), 3);
       expect((await total(pool, NOW + 1000)).total).toBe(8);
       await rollupStats(pool, { now: () => NOW + 5000 });
       expect((await total(pool, NOW + 6000)).total).toBe(8);
-      await block(pool, t(12, 30, 40), 4);
+      await blockWithTxs(pool, t(12, 30, 40), 4);
       await rollupStats(pool, { now: () => NOW + 25_000 });
       await rollupStats(pool, { now: () => NOW + 35_000 });
       const c = await total(pool, NOW + 36_000);
@@ -547,15 +565,15 @@ describe.skipIf(!TEST_URL)("the stats routes over the real rollup", () => {
     }));
 
     it("a late block whose minute the repair run remakes is counted once, before and after the repair", () => withDb(async (pool) => {
-      await block(pool, t(12, 20, 12), 5);
-      await block(pool, t(12, 29, 12), 2);
-      await block(pool, t(12, 30, 10), 3);
+      await blockWithTxs(pool, t(12, 20, 12), 5);
+      await blockWithTxs(pool, t(12, 29, 12), 2);
+      await blockWithTxs(pool, t(12, 30, 10), 3);
       await rollupStats(pool, { now: () => NOW });
       expect((await total(pool, NOW + 1000)).total).toBe(10);
       // a block caught up late, in a minute the cursor has passed: the writer leaves the minute dirty for the next run
-      await block(pool, t(12, 25, 30), 7);
+      await blockWithTxs(pool, t(12, 25, 30), 7);
       expect(Number((await pool.query("select count(*) as n from stats_dirty")).rows[0].n)).toBeGreaterThan(0);
-      // until that run the late block is in no rollup and is before the cursor: not yet in the total, and nothing is counted twice
+      // until that run the late block is in no rollup and is before the cut: not yet in the total, and nothing is counted twice
       expect((await total(pool, NOW + 1000)).total).toBe(10);
       await rollupStats(pool, { now: () => NOW + 10_000 });
       const after = await total(pool, NOW + 11_000);
@@ -563,6 +581,25 @@ describe.skipIf(!TEST_URL)("the stats routes over the real rollup", () => {
       expect(after.total).toBe(await direct(pool));
       await rollupStats(pool, { now: () => NOW + 20_000 });
       expect((await total(pool, NOW + 21_000)).total).toBe(17);
+    }));
+
+    it("a block indexed just after a minute boundary, with a record time in the minute before it, is counted at once", () => withDb(async (pool) => {
+      await blockWithTxs(pool, t(12, 30, 10), 3);
+      // the first run of the new minute moves the cursor to 12:32:00
+      const run2 = t(12, 32, 2);
+      await rollupStats(pool, { now: () => run2 });
+      expect(Number((await pool.query("select position from cursors where stream = 'stats_rollup'")).rows[0].position)).toBe(t(12, 32));
+      // then a block with a record time of 12:31:59.5 is indexed: in no rollup yet, and in the minute before the cursor
+      await blockWithTxs(pool, t(12, 31, 59) + 500, 2);
+      const a = await total(pool, run2 + 1000);
+      expect(a.total).toBe(5);
+      expect(a.total).toBe(await direct(pool));
+      expect(a.asOf).toBe(new Date(t(12, 31, 59) + 500).toISOString());
+      expect(await listTotal(pool, run2 + 1000)).toBe(5);
+      // and the run after it holds the block, still once
+      await rollupStats(pool, { now: () => run2 + 10_000 });
+      expect((await total(pool, run2 + 11_000)).total).toBe(5);
+      expect(await listTotal(pool, run2 + 11_000)).toBe(5);
     }));
   });
 });

@@ -188,7 +188,7 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(lines.length - 1).toBe(calls.length);
   });
 
-  it("gives the total of the transactions exact through the newest final block: the rollups' sum plus the blocks after their cursor, and null where the rollups cannot say", async () => {
+  it("gives the total of the transactions exact through the newest final block, and null where the rollups cannot say", async () => {
     const day = 86_400_000;
     const { rows: [b] } = await pool.query(
       `select (extract(epoch from min(record_time)) * 1000)::float8 as first, max(number) as newest, (select (extract(epoch from record_time) * 1000)::float8 from blocks order by number desc limit 1) as newest_at,
@@ -202,9 +202,9 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
        values ($1, 0, 0, 0, $2, 0, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', $3)`, [new Date(bucket), txs, test]);
     const reset = async () => { await pool.query("delete from stats_day"); await pool.query("delete from cursors where stream = 'stats_rollup'"); };
     const cursor = (at: number) => pool.query("insert into cursors (stream, position, detail, updated_at) values ('stats_rollup', $1, '{}', $2)", [at, new Date(at + 60_000)]);
-    /** The rollups as the indexer leaves them: the transactions of the blocks before the cursor, the test runs' two of them, in the first block's day. */
+    /** Day rows seeded by hand (no minute rows), holding the blocks before a minute ahead of the cursor, the cut the total reads from; the test runs' two of them, in the first block's day. The real rollup is tested in stats-routes.test.ts. */
     const rolled = async (at: number) => {
-      const { rows: [r] } = await pool.query("select coalesce(sum(tx_count), 0)::int as n from blocks where record_time < $1", [new Date(at)]);
+      const { rows: [r] } = await pool.query("select coalesce(sum(tx_count), 0)::int as n from blocks where record_time < $1", [new Date(at - 60_000)]);
       await seed(dayOf, r.n - Math.min(2, r.n), Math.min(2, r.n));
       await cursor(at);
       return r.n as number;
@@ -221,8 +221,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
       p = body(await get("/api/txs"));
       expect([p.total, p.totalAsOfBlock, p.totalAsOf]).toEqual([null, null, null]);
       await reset();
-      // The cursor at the newest block's own time (the rollups hold the blocks before it, the tail that block, once): the rollups' sum plus the tail is the direct count of the transactions, as of the newest block.
-      const cut = newestAt;
+      // The cursor a minute after the newest block (the day rows hold the blocks before the newest, the tail that block, once): the sum plus the tail is the direct count of the transactions, as of the newest block.
+      const cut = newestAt + 60_000;
       const rollupSum = await rolled(cut);
       expect(rollupSum).toBeLessThan(b.direct);
       expect(rollupSum).toBeGreaterThan(0);
@@ -235,9 +235,9 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
       await reset();
       await rolled(newestAt - 3000);
       expect(body(await get("/api/txs")).total).toBe(b.direct);
-      // A cursor past the newest block: nothing is left to count after it.
+      // A cursor two minutes past the newest block: nothing is left in the tail.
       await reset();
-      await rolled(newestAt + 60_000);
+      await rolled(newestAt + 120_000);
       p = body(await get("/api/txs"));
       expect([p.total, p.totalAsOfBlock]).toEqual([b.direct, Number(b.newest)]);
       // Rollups that trail the newest block by more than the bound (a first build, a rebuild) cannot say: the total is null, not a total through the cursor.

@@ -1,6 +1,7 @@
 /**
- * How many transactions the chain holds: the day rollups' sum, less the minute rows from the cursor on, plus the transactions of the final blocks from the cursor on.
- * The cursor means "recompute from here", not "complete through here": a run writes the open minute (and a repair the minutes it remakes) into the minute, hour and day rows and leaves the cursor at the start of them, so the day sum already holds the blocks from the cursor on that the tail counts again. The minute rows from the cursor on (a key range of a few rows, the cursor is minute-aligned) are taken off, so each transaction is counted once.
+ * How many transactions the chain holds: the day rollups' sum, less the minute rows from one minute before the cursor on, plus the transactions of the final blocks from one minute before the cursor on.
+ * The cursor means "recompute from here", not "complete through here": a run writes the open minute (and a repair the minutes it remakes) into the minute, hour and day rows and leaves the cursor at the start of them, so the day sum already holds the blocks from the cursor on that the tail counts again. The minute rows from the cut on (a key range of a few rows) are taken off, so each transaction is counted once.
+ * The cut is a minute before the cursor, not the cursor: a block indexed late, with a record time in the minute just before a cursor that a run has just moved, is in no rollup yet (the writer marks its minute dirty for the next run), so the tail must reach back over that minute to count it. A block older than that is in a minute the repair run remakes, and the total takes it in with that run. Both halves are cut at the same instant, so a transaction is never in both or in neither.
  * The newest block is the one of the latest record time, the axis the rollups and the tail are cut on (the number rises with it on a real chain). One statement, so the two halves come from one snapshot. Neither half is a count over the transactions: the rollups are a few hundred rows however long the chain
  * is, and the tail is a range of the record-time index, a few minutes of blocks while the rollups run.
  */
@@ -19,7 +20,7 @@ export interface TxTotal { total: number; asOfBlock: number; asOf: number }
  */
 export async function txTotal(query: TxTotalQuery): Promise<TxTotal | null> {
   const [r] = await query(
-    `with cur as (select position::bigint as p from cursors where stream = 'stats_rollup'),
+    `with cur as (select position::bigint - 60000 as p from cursors where stream = 'stats_rollup'),
           newest as (select number, record_time from blocks order by record_time desc, number desc limit 1)
      select (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_day)
             - (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_minute where bucket >= timestamptz 'epoch' + (select p from cur) * interval '1 millisecond') as n,
@@ -28,7 +29,7 @@ export async function txTotal(query: TxTotalQuery): Promise<TxTotal | null> {
             (select p::float8 from cur) as at,
             (select number::float8 from newest) as newest_number,
             (select extract(epoch from record_time)::float8 * 1000 from newest) as newest_at,
-            case when (select extract(epoch from record_time)::float8 * 1000 from newest) - (select p from cur) <= ${TAIL_MAX_MS}
+            case when (select extract(epoch from record_time)::float8 * 1000 from newest) - ((select p from cur) + 60000) <= ${TAIL_MAX_MS}
                  then (select coalesce(sum(tx_count), 0)::float8 from blocks where record_time >= timestamptz 'epoch' + (select p from cur) * interval '1 millisecond')
             end as tail`);
   if (!r || r.since === null || r.at === null || r.newest_number === null || r.tail === null) return null;
