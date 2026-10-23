@@ -78,8 +78,11 @@ suite("the verifier role", () => {
     stub.fail = new SandboxError("unavailable", "no docker");
     const q = queue();
     const guid = await q.submit(req(A), key);
-    expect(await worker(new Verifier(db.pool, stub)).step()).toBe("again");
+    const lines: string[] = [];
+    expect(await worker(new Verifier(db.pool, stub), { log: (l) => lines.push(l) }).step()).toBe("again");
     expect(await q.status(guid)).toMatchObject({ status: "pending" });
+    // The operator can see why a job waits: the log says it, with the reason.
+    expect(lines.join("\n")).toMatch(new RegExp(`job ${guid} is put back.*no docker`));
     await db.pool.query("update verification_jobs set not_before = null");
     expect(await worker(new Verifier(db.pool, stub), { giveUpMs: 0 }).step()).toBe("ended");
     expect(await q.status(guid)).toMatchObject({ status: "fail", result: expect.stringContaining("sandbox is not available") });
