@@ -69,7 +69,7 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     await accounts.contracts("oldest", null, [5, 1, addr], 10);
     expect(await plan(/coalesce\(c\.creation_block, 0\) asc/)).toMatch(/Index Cond: \(ROW\(COALESCE\(creation_block/);
     await accounts.tokens("newest", [5, addr], 10);
-    expect(await plan(/order by first_transfer_block desc/)).toMatch(/Index Cond: \(ROW\(first_transfer_block, address\) </);
+    expect(await plan(/order by tk\.first_transfer_block desc/)).toMatch(/Index Cond: \(ROW\(first_transfer_block, address\) </);
     await accounts.holdings(addr, [addr, "0"], 10);
     expect(await plan(/b\.holder = \$1/)).toMatch(/token_balances_holdings_idx/);
   });
@@ -107,9 +107,16 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     await accounts.contracts("interactions", null, [5, addr], 10);
     expect(await plan(/order by c\.interaction_count desc, c\.address desc/)).toMatch(/Index Cond: \(ROW\(interaction_count, address\) </);
     await accounts.tokens("holders", [5, addr], 10);
-    expect(await plan(/order by holder_count desc, address desc/)).toMatch(/Index Cond: \(ROW\(holder_count, address\) </);
+    expect(await plan(/order by tk\.holder_count desc, tk\.address desc/)).toMatch(/Index Cond: \(ROW\(holder_count, address\) </);
     await accounts.tokens("transfers", [5, addr], 10);
-    expect(await plan(/order by transfer_count desc, address desc/)).toMatch(/Index Cond: \(ROW\(transfer_count, address\) </);
+    expect(await plan(/order by tk\.transfer_count desc, tk\.address desc/)).toMatch(/Index Cond: \(ROW\(transfer_count, address\) </);
+    // The same lists kept to one standard read the index of that standard, as the real query (with its join to the contract) runs.
+    for (const [sort, col, idx] of [["holders", "holder_count", "tokens_standard_holder_count_idx"], ["transfers", "transfer_count", "tokens_standard_transfer_count_idx"], ["newest", "first_transfer_block", "tokens_standard_first_transfer_idx"]] as const) {
+      await accounts.tokens(sort, [5, addr], 10, "ERC-721");
+      const p = await plan(new RegExp(`tk\\.standard = \\$4 order by tk\\.${col} desc`));
+      expect(p, sort).toContain(idx);
+      expect(p, sort).not.toMatch(/Sort Key|Seq Scan on tokens/);
+    }
     await accounts.holders(addr, ["7", addr, "0"], 10);
     expect(await plan(/order by b\.value desc, b\.holder desc, b\.token_id desc/)).toMatch(/Index Cond: .*ROW\(value, holder, token_id\) </s);
   });

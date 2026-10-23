@@ -8,7 +8,7 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TokenStandard, type TxDirection } from "./account-rest.ts";
+import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TokenStandard, type TokenTransferItem, type TxDirection } from "./account-rest.ts";
 import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
@@ -150,10 +150,37 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function addressTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]), standard = standardOf(q), token = q.get("token");
+    const format = formatOf(q), standard = standardOf(q), token = q.get("token");
     if (token !== null) addressOf(token);
+    if (format === "csv") return transfersCsv(`token-transfers-${a}.csv`, csvLimitOf(q), (limit) => accounts.addressTransfers(a, null, limit, { token, standard }));
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]);
     const rows = await accounts.addressTransfers(a, before, limit, { token, standard });
     return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
+  }
+
+  /** The most rows of a file: the limit asked up to the cap of the CSVs, the cap when none is. */
+  const csvLimitOf = (q: URLSearchParams): number => {
+    const raw = q.get("limit");
+    return raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
+  };
+  const formatOf = (q: URLSearchParams): "csv" | null => {
+    const f = q.get("format");
+    if (f !== null && f !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
+    return f;
+  };
+
+  /**
+   * Token transfers as a file, newest first, with the columns of the list: a bounded export (the cap of the other CSVs), not a way to walk the history. Transfers are
+   * stage 2's, and a file has no `derived` field, so the header `x-derived` says whether stage 2 had caught up: when it says false, the file may lack the newest rows.
+   */
+  async function transfersCsv(name: string, limit: number, read: (limit: number) => Promise<TokenTransferItem[]>): Promise<Answer> {
+    const [rows, derived] = [(await read(limit)).slice(0, limit), await isDerived()];
+    const lines = ["tx_hash,block,log_index,batch_index,time,method_id,token,standard,from,to,amount,token_id"];
+    for (const t of rows) {
+      lines.push([t.txHash, t.block, t.logIndex, t.batchIndex, new Date(t.timestamp * 1000).toISOString(), t.methodId, t.token, t.standard, t.from, t.to, t.amount, t.tokenId].map(csvCell).join(","));
+    }
+    const answer = ok(lines.join("\r\n") + "\r\n");
+    return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="${name}"`, "x-derived": String(derived) } }, "list");
   }
 
   /** The transfers of every token, newest first. */
@@ -202,10 +229,12 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   }
 
   async function tokenList(q: URLSearchParams): Promise<Answer> {
-    const by = sort<TokenSort>(q, SORTS.tokens), limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "addr"]);
-    const rows = await accounts.tokens(by, before, limit);
+    const by = sort<TokenSort>(q, SORTS.tokens), limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "addr"]), standard = standardOf(q);
+    const [rows, counts] = await Promise.all([accounts.tokens(by, before, limit, standard), accounts.tokenCounts()]);
     const key = (t: (typeof rows)[number]) => keyOf(by === "holders" ? t.holderCount : by === "transfers" ? t.transferCount : t.firstTransferBlock, t.address);
-    return cached(ok(page(rows, limit, key, F.tokenItem, await isDerived())), "list");
+    // `counts` are every standard's, whatever is asked (they label the tabs); `total` is the list's own.
+    const total = standard === null ? counts["ERC-20"] + counts["ERC-721"] + counts["ERC-1155"] : counts[standard];
+    return cached(ok(pick({ ...page(rows, limit, key, F.tokenItem, await isDerived()), total, counts }, F.tokenPage)), "list");
   }
 
   async function oneToken(a: string): Promise<Answer> {
@@ -225,8 +254,9 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function tokenTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]);
+    const csv = formatOf(q) === "csv", limit = csv ? csvLimitOf(q) : limitOf(q.get("limit")), before = csv ? null : cursorOf(q.get("before"), ["int", "int4", "int4"]);
     if (!(await accounts.token(a))) return missing(NO_TOKEN);
+    if (csv) return transfersCsv(`token-transfers-${a}.csv`, limit, (n) => accounts.tokenTransfers(a, null, n));
     const rows = await accounts.tokenTransfers(a, before, limit);
     return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
   }

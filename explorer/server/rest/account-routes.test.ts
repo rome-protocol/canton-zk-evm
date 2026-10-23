@@ -149,7 +149,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     same(source, F.source);
     for (const f of source.files) same(f, F.sourceFile);
     const tokens = body(await get("/api/tokens"));
-    same(tokens, F.derivedPage);
+    same(tokens, F.tokenPage);
     for (const t of tokens.items) same(t, F.tokenItem);
     same(body(await get(`/api/tokens/${T1}`)), F.tokenDetail);
     const holders = body(await get(`/api/tokens/${T2}/holders`));
@@ -698,6 +698,120 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
         const side = (extra: string) => `select x.block_number from token_transfers x where x.from_address = $1 ${extra} and (x.block_number, x.log_index, x.batch_index) < (3, 501, 0) order by x.block_number desc, x.log_index desc, x.batch_index desc limit 51`;
         expect(await plan(side("and x.token = $2"), [who(0xa1), who(0xb1)])).toMatch(/from_address_token/);
         // (An address's transfers of one standard are the 0028 indexes' shape, which that migration's own queries use.)
+        await client.query("rollback");
+      } finally { client.release(); }
+    });
+  });
+  describe("tokens: the standard filter, the counts, who made each, and the supply of a holding; token transfers as CSV", () => {
+    const tokenKeys = [...F.derivedPage, "total", "counts"];
+    const ts = async (block: number) => Number((await sql("select extract(epoch from timestamp)::bigint as ts from blocks where number = $1", [block])).rows[0].ts);
+
+    it("tells the list's total and each standard's count, which a filter does not change, and keeps to the standard asked", async () => {
+      const all = body(await get("/api/tokens"));
+      same(all, tokenKeys);
+      expect(all.counts).toEqual({ "ERC-20": 1, "ERC-721": 0, "ERC-1155": 1 });
+      expect(all.total).toBe(2);
+      const only = body(await get("/api/tokens?standard=ERC-1155"));
+      same(only, tokenKeys);
+      expect(only.items.map((t: { address: string }) => NAMES[t.address])).toEqual(["T2"]);
+      expect(only.total).toBe(1);
+      expect(only.counts).toEqual(all.counts);
+      const none = body(await get("/api/tokens?standard=ERC-721"));
+      expect(none.items).toEqual([]);
+      expect(none.total).toBe(0);
+      expect(none.counts).toEqual(all.counts);
+      expect((await get("/api/tokens?standard=ERC-99")).status).toBe(400);
+      expect((await get("/api/tokens?standard=erc-20")).status).toBe(400);
+    });
+
+    it("pages a filtered list by keyset in each order, without a repeat or a gap", async () => {
+      for (const sort of ["holders", "transfers", "newest"]) {
+        for (const standard of ["ERC-20", "ERC-1155"]) {
+          const got = await walk(`/api/tokens?sort=${sort}&standard=${standard}`, "before", 1);
+          expect(mine(got), `${sort} ${standard}`).toEqual([standard === "ERC-20" ? "T1" : "T2"]);
+        }
+      }
+    });
+
+    it("gives each token who made it, in which block and when, and whether its source is verified", async () => {
+      const items = body(await get("/api/tokens")).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const t of items) same(t, F.tokenItem);
+      const t1 = items.find((t) => NAMES[t.address] === "T1")!, t2 = items.find((t) => NAMES[t.address] === "T2")!;
+      expect(t1).toMatchObject({ creator: A, creationBlock: 2, verified: false });
+      expect(t1.createdAt).toBe(new Date((await ts(2)) * 1000).toISOString());
+      // A token of the genesis state was made by nothing the explorer saw: none of the three is made up.
+      expect(t2).toMatchObject({ creator: null, creationBlock: null, createdAt: null, verified: false });
+      const [was] = (await sql("select verified_source from contracts where address = $1", [who(0xb2)])).rows;
+      const [src] = (await sql("select verified_source from contracts where address = $1", [who(0xc1)])).rows;
+      await sql("update contracts set verified_source = $1 where address = $2", [src.verified_source, who(0xb2)]);
+      try {
+        const now = body(await get(`/api/tokens?standard=ERC-1155`)).items[0];
+        expect(now.verified).toBe(true);
+        same(body(await get(`/api/tokens/${T2}`)), F.tokenDetail);
+        expect(body(await get(`/api/tokens/${T2}`))).toMatchObject({ verified: true, creator: null });
+      } finally { await sql("update contracts set verified_source = $1 where address = $2", [was.verified_source, who(0xb2)]); }
+    });
+
+    it("gives each holding the token's total supply and decimals, null where the token has none", async () => {
+      const items = body(await get(`/api/addresses/${A}/tokens`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(items).toHaveLength(3);
+      for (const x of items) same(x, F.holding);
+      expect(items.filter((x) => x.token === T1).map((x) => [x.totalSupply, x.decimals])).toEqual([["1000", 6]]);
+      expect(items.filter((x) => x.token === T2).map((x) => [x.totalSupply, x.decimals])).toEqual([[null, null], [null, null]]);
+    });
+
+    it("gives an address's token transfers and a token's as a bounded CSV, with the columns of the list", async () => {
+      const header = "tx_hash,block,log_index,batch_index,time,method_id,token,standard,from,to,amount,token_id";
+      const mineCsv = await get(`/api/addresses/${A}/token-transfers?format=csv`);
+      expect(mineCsv.status).toBe(200);
+      expect(mineCsv.headers?.["content-type"]).toBe("text/csv; charset=utf-8");
+      expect(mineCsv.headers?.["content-disposition"]).toBe(`attachment; filename="token-transfers-${A}.csv"`);
+      const lines = String(mineCsv.body).split("\r\n");
+      expect(lines[0]).toBe(header);
+      expect(lines.at(-1)).toBe("");
+      const json = (body(await get(`/api/addresses/${A}/token-transfers`)).items) as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(lines.length - 2).toBe(json.length);
+      const j0 = json[0]!, first = lines[1]!.split(",");
+      expect(first.slice(0, 4)).toEqual([j0.txHash, String(j0.block), String(j0.logIndex), String(j0.batchIndex)]);
+      expect(first[4]).toBe(new Date(j0.timestamp * 1000).toISOString());
+      expect(first.slice(6, 12)).toEqual([j0.token, j0.standard, j0.from, j0.to, j0.amount ?? "", j0.tokenId ?? ""]);
+      // The filters of the list apply to the file.
+      const t1 = String((await get(`/api/addresses/${A}/token-transfers?format=csv&token=${T1}`)).body).split("\r\n");
+      expect(t1.length - 2).toBe(json.filter((t) => t.token === T1).length);
+      const erc = String((await get(`/api/addresses/${A}/token-transfers?format=csv&standard=ERC-1155`)).body).split("\r\n");
+      expect(erc.length - 2).toBe(json.filter((t) => t.standard === "ERC-1155").length);
+      // A token's own file, up to the limit asked and not past the cap, with no paging.
+      const tokenCsv = await get(`/api/tokens/${T1}/transfers?format=csv&limit=2`);
+      expect(tokenCsv.headers?.["content-disposition"]).toBe(`attachment; filename="token-transfers-${T1}.csv"`);
+      expect(String(tokenCsv.body).split("\r\n")).toHaveLength(4);
+      expect(String(tokenCsv.body).split("\r\n").slice(1, 3).every((l) => l.split(",")[6] === T1)).toBe(true);
+      expect(String((await get(`/api/tokens/${T1}/transfers?format=csv`)).body).split("\r\n")).toHaveLength(5);
+      // What it cannot say stays honest: a file has no `derived` flag, so it carries one in a header.
+      expect(mineCsv.headers?.["x-derived"]).toBe("true");
+    });
+
+    it("refuses a CSV format it does not know, a token it does not hold, and a limit that is not a count", async () => {
+      expect((await get(`/api/addresses/${A}/token-transfers?format=xml`)).status).toBe(400);
+      expect((await get(`/api/tokens/${T1}/transfers?format=xml`)).status).toBe(400);
+      expect((await get(`/api/tokens/${h(0xee)}/transfers?format=csv`)).status).toBe(404);
+      expect((await get(`/api/addresses/${A}/token-transfers?format=csv&standard=nope`)).status).toBe(400);
+      expect((await get(`/api/addresses/${A}/token-transfers?format=csv&limit=0`)).status).toBe(400);
+    });
+
+    it("answers the standard filter from an index of its own, in order, without filtering rows after the read", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local enable_seqscan = off");
+        const plan = async (text: string, values: unknown[]) => (await client.query("explain " + text, values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
+        const list = (col: string) => `select address from tokens where standard = $1 and ($2::bigint is null or (${col}, address) < ($2::bigint, $3::bytea)) order by ${col} desc, address desc limit 26`;
+        for (const col of ["holder_count", "transfer_count", "first_transfer_block"]) {
+          for (const key of [[null, null], [5, who(0xb1)]]) {
+            const p = await plan(list(col), ["ERC-20", ...key]);
+            expect(p, col).toMatch(/Index (Only )?Scan/);
+            expect(p, col).not.toMatch(/Seq Scan|Sort Key|Filter:/);
+          }
+        }
         await client.query("rollback");
       } finally { client.release(); }
     });

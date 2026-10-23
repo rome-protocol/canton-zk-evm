@@ -41,7 +41,7 @@ export type TokenStandard = (typeof TOKEN_STANDARDS)[number];
 const STANDARD_COLUMNS: Record<TokenStandard, string> = { "ERC-20": "x.token_id is null", "ERC-721": "x.amount is null", "ERC-1155": "x.amount is not null and x.token_id is not null" };
 /** The transfers an address list keeps: those of one token and/or one standard. */
 export interface TransferFilter { token?: string | null; standard?: TokenStandard | null }
-export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
+export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 /** Shown with a partial match: the library lets the metadata (the CBOR at the end of the code, and of any contract embedded in it) differ from the compile. */
 export const PARTIAL_MATCH_NOTE = "Partial match: the metadata differs from this compile. Code that reads its own or another contract's code (type(X).creationCode/runtimeCode, codecopy, extcodecopy, address(this).code) may act differently from this source's compile; only a full match is byte-for-byte.";
@@ -68,6 +68,8 @@ export interface SourceDetail {
 export interface TokenItem {
   address: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; holderCount: number; transferCount: number; firstTransferBlock: number;
   gatewayWrapped: boolean; metadataStatus: string;
+  /** Who made the token's contract, in which block and when; none of the three where the explorer saw no creation (a contract of the genesis state). */
+  creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
 }
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
@@ -253,12 +255,12 @@ export function createAccountRest(pool: Pool) {
   async function holdings(a: string, after: Key | null, limit: number): Promise<Holding[]> {
     const [token, id] = after ?? [null, null];
     const rows = await query(
-      `select b.token, tk.standard, tk.name, tk.symbol, tk.decimals, b.token_id::text as token_id, b.value::text as value, b.updated_block
+      `select b.token, tk.standard, tk.name, tk.symbol, tk.decimals, tk.total_supply::text as total_supply, b.token_id::text as token_id, b.value::text as value, b.updated_block
        from token_balances b join tokens tk on tk.address = b.token
        where b.holder = $1 and b.value > 0 and ($2::bytea is null or (b.token, b.token_id) > ($2::bytea, $3::numeric)) order by b.token, b.token_id limit $4`,
       [bytes(a), token === null ? null : bytes(token as string), id, limit + 1],
     );
-    return rows.map((r) => ({ token: hex(r.token), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), tokenId: r.token_id, value: r.value, updatedBlock: Number(r.updated_block) }));
+    return rows.map((r) => ({ token: hex(r.token), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), totalSupply: r.total_supply, tokenId: r.token_id, value: r.value, updatedBlock: Number(r.updated_block) }));
   }
 
   /** The balance after each block that moved it, newest first, after the key (block). */
@@ -345,25 +347,36 @@ export function createAccountRest(pool: Pool) {
     };
   }
 
-  const tokenSelect = "address, standard, name, symbol, decimals, total_supply::text as total_supply, total_supply_block, holder_count, transfer_count, first_transfer_block, metadata_status, gateway_wrapped, balance_mode";
+  const tokenSelect = `tk.address, tk.standard, tk.name, tk.symbol, tk.decimals, tk.total_supply::text as total_supply, tk.total_supply_block, tk.holder_count, tk.transfer_count, tk.first_transfer_block, tk.metadata_status, tk.gateway_wrapped, tk.balance_mode,
+    c.creator, c.creation_block, c.verified_source is not null as verified, extract(epoch from cb.timestamp)::bigint as created_ts`;
+  // Every token is a contract (the foreign key), so the first join always has its row; a contract of the genesis state has no creation block, so no block row.
+  const tokenFrom = "from tokens tk join contracts c on c.address = tk.address left join blocks cb on cb.number = c.creation_block";
   const tokenItem = (r: Row): TokenItem => ({
     address: hex(r.address), standard: r.standard, name: r.name, symbol: r.symbol, decimals: num(r.decimals), totalSupply: r.total_supply, holderCount: Number(r.holder_count),
     transferCount: Number(r.transfer_count), firstTransferBlock: Number(r.first_transfer_block), gatewayWrapped: r.gateway_wrapped, metadataStatus: r.metadata_status,
+    creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), createdAt: r.created_ts === null || r.created_ts === undefined ? null : new Date(Number(r.created_ts) * 1000).toISOString(), verified: r.verified === true,
   });
 
-  /** The token list: most holders, most transfers, or newest (by the block of its first transfer), then by address, after the key. */
-  async function tokens(sort: TokenSort, before: Key | null, limit: number): Promise<TokenItem[]> {
-    const column = { holders: "holder_count", transfers: "transfer_count", newest: "first_transfer_block" }[sort];
+  /** The token list: most holders, most transfers, or newest (by the block of its first transfer), then by address, after the key; of one standard when it is given. */
+  async function tokens(sort: TokenSort, before: Key | null, limit: number, standard: TokenStandard | null = null): Promise<TokenItem[]> {
+    const column = { holders: "tk.holder_count", transfers: "tk.transfer_count", newest: "tk.first_transfer_block" }[sort];
     const [x, y] = before ?? [null, null];
     const rows = await query(
-      `select ${tokenSelect} from tokens where ($1::bigint is null or (${column}, address) < ($1::bigint, $2::bytea)) order by ${column} desc, address desc limit $3`,
-      [x, y === null ? null : bytes(y as string), limit + 1],
+      `select ${tokenSelect} ${tokenFrom} where ($1::bigint is null or (${column}, tk.address) < ($1::bigint, $2::bytea)) ${standard === null ? "" : "and tk.standard = $4"} order by ${column} desc, tk.address desc limit $3`,
+      [x, y === null ? null : bytes(y as string), limit + 1, ...(standard === null ? [] : [standard])],
     );
     return rows.map(tokenItem);
   }
 
+  /** How many tokens each standard has (a standard with none is 0), from one grouped count of the tokens table, which is small: the list's tabs and total. */
+  async function tokenCounts(): Promise<Record<TokenStandard, number>> {
+    const counts = { "ERC-20": 0, "ERC-721": 0, "ERC-1155": 0 };
+    for (const r of await query("select standard, count(*) as n from tokens group by standard")) if (r.standard in counts) counts[r.standard as TokenStandard] = Number(r.n);
+    return counts;
+  }
+
   async function token(a: string): Promise<TokenDetail | undefined> {
-    const [r] = await query(`select ${tokenSelect} from tokens where address = $1`, [bytes(a)]);
+    const [r] = await query(`select ${tokenSelect} ${tokenFrom} where tk.address = $1`, [bytes(a)]);
     return r && { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode };
   }
 
@@ -431,6 +444,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
+    derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
   };
 }
