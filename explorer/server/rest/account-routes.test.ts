@@ -952,9 +952,23 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     });
 
     it("tells a creation from a call with no input in the CSV of token transfers", async () => {
-      const csv = String((await get(`/api/addresses/${A}/token-transfers?format=csv`)).body).split("\r\n");
-      const json = body(await get(`/api/addresses/${A}/token-transfers`)).items as { creation: boolean }[];
-      expect(csv.slice(1, -1).map((l) => l.split(",")[6])).toEqual(json.map((t) => String(t.creation)));
+      const rowsOf = async () => String((await get(`/api/addresses/${A}/token-transfers?format=csv`)).body).split("\r\n").slice(1, -1).map((l) => l.split(","));
+      const [was] = (await sql("select to_address, created_contract from transactions where block_number = 2 and tx_index = 0")).rows;
+      // A call: every row says false.
+      expect((await rowsOf()).map((c) => c[6])).toEqual((await rowsOf()).map(() => "false"));
+      // A transaction that created a contract: its transfers say true, and only those, as the JSON's `creation` does.
+      await sql("update transactions set to_address = null, created_contract = $1 where block_number = 2 and tx_index = 0", [who(0xc2)]);
+      try {
+        const csv = await rowsOf();
+        const json = body(await get(`/api/addresses/${A}/token-transfers`)).items as { block: number; logIndex: number; batchIndex: number; creation: boolean }[];
+        expect(csv.map((c) => c[6])).toEqual(json.map((t) => String(t.creation)));
+        const made = csv.filter((c) => c[1] === "2" && c[2] === "500");
+        expect(made.length).toBeGreaterThan(0);
+        for (const c of made) expect(c[6]).toBe("true");
+        expect(csv.filter((c) => c[6] === "true").length).toBe(json.filter((t) => t.creation).length);
+      } finally {
+        await sql("update transactions set to_address = $1, created_contract = $2 where block_number = 2 and tx_index = 0", [was.to_address, was.created_contract]);
+      }
     });
   });
 
