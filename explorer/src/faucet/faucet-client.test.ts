@@ -106,7 +106,7 @@ describe("recent", () => {
   });
   it("shows at most the number asked for, and skips rows that are not whole", async () => {
     const { faucet } = client(() => json(200, { items: [tx({ to: null }), tx({ hash: "0x1" }), tx({ hash: "0x2" }), tx({ hash: "0x3" })], next: null }));
-    expect((await faucet.recent!(FAUCET, 2)).map((s) => s.hash)).toEqual(["0x1", "0x2"]);
+    expect((await faucet.recent!(FAUCET, 2))!.map((s) => s.hash)).toEqual(["0x1", "0x2"]);
   });
   it("says null, and never throws, when the answer cannot be read", async () => {
     expect(await client(() => json(502, { error: "x" })).faucet.recent!(FAUCET, 6)).toBeNull();

@@ -8,5 +8,5 @@ export function Faucet() {
   const st = useStatus();
   const wait = unready(st, "Looking up the faucet…");
   if (wait) return wait;
-  return <><FaucetPage coin={st.data!.coin} /><AddToWallet status={st.data!} /></>;
+  return <><FaucetPage coin={st.data!.coin} chain={{ name: st.data!.networkName, id: st.data!.chainId }} /><AddToWallet status={st.data!} /></>;
 }
