@@ -1,7 +1,8 @@
 .code-tab { display: grid; gap: 14px; }
 .code-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; align-items: start; }
 .code-cols { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: 20px; align-items: start; }
-@media (max-width: 800px) { .code-cols { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .code-cols { grid-template-columns: minmax(0, 1fr); } }
+.code-cols > * { min-width: 0; overflow-wrap: anywhere; }
 .code-tab h2, .code-tab h3 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
 .code-tab h3 { margin-top: 16px; }
 .code-tab h2 .chip { margin-left: 8px; vertical-align: 1px; }
@@ -15,21 +16,38 @@ pre.src .ln { display: inline-block; width: 3em; padding-right: 1em; text-align:
 pre.dark { margin: 0; padding: 14px 16px; background: #1b1620; color: #e9e3ef; border-radius: 10px; overflow: auto; max-height: 420px; font-size: 12.5px; line-height: 1.55; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
 pre.dark.wrap { white-space: pre-wrap; word-break: break-all; }
 .row-gap { display: inline-flex; align-items: center; gap: 8px; }
-.btn { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 500; color: var(--ink); text-decoration: none; }
-.btn:hover { background: var(--surface-2); }
+a.btn-line, .code-tab a.btn { text-decoration: none; }
+.btn-line { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
+.btn-line:disabled { cursor: default; color: var(--muted); }
+.fn .btn-line { padding: 4px 12px; font-weight: 500; }
+.wallet-bar .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; font-size: 13.5px; }
 .ctor { background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; overflow-x: auto; }
 .fn-cols { columns: 2 340px; column-gap: 14px; }
 .fn { break-inside: avoid; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 14px; background: var(--surface); overflow: hidden; }
 .fn-h { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: var(--surface-2); border: 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer; }
 .fn-h:disabled { cursor: default; }
 .fn-h .small { margin-left: auto; }
-.fn-name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+.fn .fn-name { font-weight: 600; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+.fn-args { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .fn-b { padding: 12px 14px; display: grid; gap: 10px; }
 .field { display: grid; gap: 4px; }
 .inp { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font-size: 13px; }
 .fn-q { display: flex; align-items: center; gap: 10px; }
-.answer, .out { display: grid; gap: 4px; }
-.answer { overflow-wrap: anywhere; }
-.wallet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+.answer { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; overflow-wrap: anywhere; }
+.out { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; overflow-wrap: anywhere; }
+.fn-q ~ .answer .out::before { content: "\21B3"; color: var(--faint); }
+.wallet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px; margin-bottom: 14px; padding: 14px 16px; border: 1px dashed var(--canton-line); border-radius: 10px; background: var(--canton-tint); }
+.wallet-bar > div { flex: 1 1 280px; min-width: 0; }
+.wallet-bar > .ic { flex: none; align-self: flex-start; margin-top: 3px; }
 .ev-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .ev-args > div { overflow-wrap: anywhere; }
+.ct-cell { display: flex; align-items: flex-start; gap: 10px; }
+.ct-ic { display: inline-flex; margin-top: 2px; color: var(--muted); }
+
+.out .unit { margin-left: 0; }
+.code-tab, .code-tab > *, .code-pair > * { min-width: 0; }
+.code-tab .card-note, .code-tab .list-h { overflow-wrap: anywhere; }
+.ev-foot { margin: 0 -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line-2); }
+.ev-filter { max-width: 100%; min-width: 0; }
+.ev-filter .seg { max-width: 100%; overflow-x: auto; }
+.ev-filter .seg button { white-space: nowrap; }

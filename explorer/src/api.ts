@@ -463,11 +463,17 @@ export interface ContractSource {
 const at = (a: string, sub = "") => `/api/contracts/${encodeURIComponent(a)}${sub}`;
 export const getContractList = async (sort: ContractSort, verified: boolean | null, before: string | null, limit = PAGE) =>
   (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as ContractListPage;
+/**
+ * The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. Open it with `limit` = `total` % size || size so that the last
+ * page does not repeat rows of the page before; then page on with `after` and the normal size. The page is in the order the server gives it, the reverse of the list's.
+ */
+export const getContractListOldest = async (sort: ContractSort, verified: boolean | null, after: string | null, limit = PAGE) =>
+  (await call(`/api/contracts?sort=${sort}&order=asc&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("after", after)}`, [200])).body as ContractListPage;
 export const getContract = async (a: string) => (await call(at(a), [200])).body as ContractDetail;
 export const getContractSource = async (a: string) => (await call(at(a, "/source"), [200])).body as ContractSource;
 
 /** A log a contract wrote, with the transaction it is in and that transaction's method id (null when its input is empty). */
-export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds. */ timestamp: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
+export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds; absent from a server that does not send it yet. */ timestamp?: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
 export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
   (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;
 
