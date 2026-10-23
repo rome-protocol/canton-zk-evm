@@ -19,6 +19,9 @@ export function voidedFrames(frames: readonly TraceFrame[], succeeded: boolean):
   });
 }
 
-/** Whether a frame moved coin: a plain call (a delegatecall, callcode or staticcall shows its caller's value) or a creation, with a value, that took effect. */
+/**
+ * Whether a frame moved coin: a plain call (a delegatecall, callcode or staticcall shows its caller's value), a creation or a self-destruct (its value is
+ * the balance sent to the refund address), with a value, that took effect. The same split the server makes when it derives the internal-call rows.
+ */
 export const movesCoin = (f: TraceFrame, voided: boolean): boolean =>
-  !voided && f.value !== "0" && (f.type === "call" ? f.callType === "call" : f.type === "create");
+  !voided && f.value !== "0" && (f.type === "call" ? f.callType === "call" : true);

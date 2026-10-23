@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { decodeInputOf, methodNames, type Decoded } from "../abi-call.ts";
 import { abiOrStandard, type AbiEntry } from "../abi.ts";
@@ -20,11 +20,17 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const argAddresses = (d: Decoded | null) => (d ? d.args.flatMap((a) => (a.type === "address" ? [a.value] : [])) : []);
 
 /** An argument in a call's text: an address by its name or its short form, an amount of the token in whole units, a list by its name alone, anything else as it is. */
-function argText(a: Decoded["args"][number], labels: Labels, token: Label | undefined): string {
-  if (a.type === "address" && ADDRESS.test(a.value)) return `${a.name ? `${a.name} ` : ""}${labelName(labels.get(a.value)) ?? short(a.value, 8, 4)}`;
-  if (a.type.endsWith("]") || a.type === "bytes" || a.type === "string") return a.name || a.type;
-  const units = /^(value|amount|wad)$/i.test(a.name) && a.type === "uint256" ? inUnits(a.value, token) : null;
-  return `${a.name ? `${a.name} ` : ""}${units ?? a.value}`;
+function ArgText({ a, labels, token }: { a: Decoded["args"][number]; labels: Labels; token: Label | undefined }) {
+  // Names and symbols come from the chain, so each stands in a <bdi>: a right-to-left mark in one cannot turn the text around it.
+  const name = a.name ? `${a.name} ` : "";
+  if (a.type === "address" && ADDRESS.test(a.value)) { const n = labelName(labels.get(a.value)); return <>{name}{n ? <bdi>{n}</bdi> : short(a.value, 8, 4)}</>; }
+  if (a.type.endsWith("]") || a.type === "bytes" || a.type === "string") return <>{a.name || a.type}</>;
+  const isAmount = /^(value|amount|wad)$/i.test(a.name) && a.type === "uint256";
+  const whole = isAmount ? inUnits(a.value, token) : null;
+  if (!whole) return <>{name}{a.value}</>;
+  const symbol = token?.symbol ?? "";
+  // inUnits writes the symbol last, so the amount is what comes before it.
+  return <>{name}{symbol ? <>{whole.slice(0, whole.length - symbol.length - 1)} <bdi>{symbol}</bdi></> : whole}</>;
 }
 
 /** The function of a call. Read with the verified ABI of the contract called, or the standard one; a call whose input was served cut short is read by its selector alone. */
@@ -43,7 +49,7 @@ function FunctionCell({ f, abis, labels }: { f: TraceFrame; abis: Map<string, Ab
   const named = d.args.find((a) => a.type === "address" && /token/i.test(a.name));
   const token = labels.get(named?.value) ?? labels.get(to);
   const tokenLabel = labelName(token) ? token : undefined;
-  return <span className="mono wrap" title={d.signature}>{d.name}({d.args.map((a) => argText(a, labels, tokenLabel)).join(", ")})</span>;
+  return <span className="mono wrap" title={d.signature}>{d.name}({d.args.map((a, i) => <Fragment key={i}>{i > 0 && ", "}<ArgText a={a} labels={labels} token={tokenLabel} /></Fragment>)})</span>;
 }
 
 /** The labels of two reads laid over each other: the second where it has an answer. */
@@ -54,8 +60,9 @@ type Why = "parent" | "kind" | null;
 /** The value of a call: the amount where it moved coin, a dash (with the reason in its tooltip) where it did not, though the trace gives it a value. */
 function ValueCell({ f, moved, voided, coin }: { f: TraceFrame; moved: boolean; voided: boolean; coin: Coin | undefined }) {
   if (f.value === "0" || moved) return coin ? <Amount raw={f.value} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>;
-  const why: Why = voided ? "parent" : "kind";
-  return <span className="muted" title={why === "parent" ? "No coin moved: this call, or a call above it, failed" : "No coin moved: a delegatecall, callcode or staticcall shows its caller's value in the trace, and moves none"}>—</span>;
+  const why: Why = voided ? "parent" : f.type === "call" ? "kind" : null;
+  const title = why === "parent" ? "No coin moved: this call, or a call above it, failed" : why === "kind" ? "No coin moved: a delegatecall, callcode or staticcall shows its caller's value in the trace, and moves none" : undefined;
+  return <span className="muted" title={title}>—</span>;
 }
 
 function Row({ f, n, voided, moved, coin, abis, labels }: { f: TraceFrame; n: number; voided: boolean; moved: boolean; coin: Coin | undefined; abis: Map<string, AbiEntry[] | null>; labels: Labels }) {
@@ -130,7 +137,7 @@ export function InternalTab({ t, coin, callCount }: { t: ApiTxSeen; coin: Coin |
         </div>
       )}
       {rest > 0 && <p className="small"><button type="button" className="btn" onClick={() => setLimit(limit + PAGE)}>Show {Math.min(rest, PAGE)} more</button> <span className="muted">{count(rest)} more {rest === 1 ? "call" : "calls"} not shown yet</span></p>}
-      {state.moving === 0 && frames.length > 0 && !truncated && <p className="small muted">None of these calls moved {sym}, so the address pages list no internal transfers for this transaction. The token moves are on the Token transfers list and in the logs.</p>}
+      {state.moving === 0 && frames.length > 0 && !truncated && <p className="small muted">None of these calls moved {sym}. The token moves are on the Token transfers list and in the logs.</p>}
     </section>
   );
 }

@@ -240,7 +240,8 @@ describe("the Internal calls tab", () => {
     await open({ txTrace: () => reply({ frames: [frame()], truncated: false }) }, tx(), "?tab=internal");
     await screen.findAllByRole("row");
     expect(screen.getByRole("button", { name: "Only those moving tROME (0)" })).toBeInTheDocument();
-    expect(screen.getByText(/None of these calls moved tROME, so the address pages list no internal transfers/)).toBeInTheDocument();
+    expect(screen.getByText(/None of these calls moved tROME\. The token moves are on the Token transfers list/)).toBeInTheDocument();
+    expect(screen.queryByText(/address pages/)).toBeNull();
     expect(screen.getByText(/No call under the top-level call/)).toBeInTheDocument();
   });
 
@@ -293,6 +294,46 @@ describe("the Internal calls tab", () => {
     expect(rows[2]).toHaveTextContent("DELEGATECALL");
     expect(rows[2]).not.toHaveTextContent("tROME");
     expect(rows[3]).not.toHaveTextContent("tROME");
+  });
+
+  it("counts a self-destruct that sent its balance as moving coin, shows its value, and gives the closing note no room", async () => {
+    const user = userEvent.setup();
+    await open({ labels, txTrace: () => reply({ frames: [
+      frame({ from: SENDER, to: DISPERSE }),
+      frame({ traceAddress: [0], type: "suicide", callType: "", from: DISPERSE, to: TO, value: "5000000000000000000", input: "0x", inputSize: 0 }),
+    ], truncated: false }) }, tx(), "?tab=internal");
+    const rows = await screen.findAllByRole("row");
+    expect(rows[2]).toHaveTextContent("SUICIDE");
+    expect(rows[2]).toHaveTextContent("5 tROME");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (1)" })).toBeInTheDocument();
+    expect(screen.queryByText(/None of these calls moved/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Only those moving tROME (1)" }));
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    cleanup();
+    // One that sent nothing, or sat under a failed call, counts for nothing.
+    await open({ labels, txTrace: () => reply({ frames: [
+      frame({ from: SENDER, to: DISPERSE }),
+      frame({ traceAddress: [0], from: DISPERSE, to: T, error: "execution reverted" }),
+      frame({ traceAddress: [0, 0], type: "suicide", callType: "", from: T, to: TO, value: "5000000000000000000", input: "0x", inputSize: 0 }),
+    ], truncated: false }) }, tx(), "?tab=internal");
+    const failed = await screen.findAllByRole("row");
+    expect(failed[3]).toHaveTextContent("parent call failed");
+    expect(failed[3]).not.toHaveTextContent("tROME");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (0)" })).toBeInTheDocument();
+  });
+
+  it("keeps a token's name and symbol inside <bdi>, so a right-to-left mark in one cannot turn the amount around", async () => {
+    const evil = tokenLabel({ address: T, name: "Evil\u202e", symbol: "tUS\u202eD", decimals: 18 });
+    const dest = tokenLabel({ address: DISPERSE, name: "Dis\u202eperse", symbol: null, kind: "contract", standard: null, decimals: null });
+    await open({ labels: labelsOf([evil, dest]), txTrace: () => reply(trace()) }, tx(), "?tab=internal");
+    const rows = await screen.findAllByRole("row");
+    await waitFor(() => expect(rows[2]!.querySelector("bdi")).not.toBeNull());
+    const cell = rows[2]!.querySelector(".mono.wrap")!;
+    const bdis = [...cell.querySelectorAll("bdi")];
+    expect(bdis.map((b) => b.textContent)).toContain("tUS\u202eD");
+    expect(bdis.map((b) => b.textContent)).toContain("Dis\u202eperse");
+    for (const b of bdis) expect(b.textContent).not.toMatch(/5,000/);
+    expect(cell.textContent).toContain("value 5,000 ");
   });
 
   it("reads the source of a bounded number of verified contracts, and none for an unverified one", async () => {
