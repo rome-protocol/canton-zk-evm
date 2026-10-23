@@ -12,6 +12,7 @@ import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { setHealth } from "./health.ts";
+import { isHexBytes } from "../hex.ts";
 
 export const JOURNAL_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const CHUNK_LINES = 2000, READ_BYTES = 8 * 1024 * 1024, GAP_SHOWN_MS = 3_600_000, POOL_KEPT_DAYS = 30;
@@ -38,7 +39,7 @@ interface Cursor {
   orphans: number; unknownVersion: number; malformed: number; oddAt: string | null;
 }
 
-const bytes = (h: unknown): Buffer | null => (typeof h === "string" && /^(0x)?([0-9a-fA-F]{2})+$/.test(h) ? Buffer.from(h.replace(/^0x/, ""), "hex") : null);
+const bytes = (h: unknown): Buffer | null => (typeof h === "string" && isHexBytes(h, { prefix: "optional", upper: true, empty: false }) ? Buffer.from(h.replace(/^0x/, ""), "hex") : null);
 const whole = (n: unknown): number | null => (typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : typeof n === "string" && /^\d{1,15}$/.test(n) ? Number(n) : null);
 const text = (s: unknown, max = 600): string | null => (typeof s === "string" ? s.slice(0, max) : null);
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);

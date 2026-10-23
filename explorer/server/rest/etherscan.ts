@@ -17,6 +17,7 @@ import type { VerifyApi } from "../verifier/api.ts";
 import { toolOf } from "../verifier/request.ts";
 import { NOT_VERIFIED, sourceCodeFields } from "./etherscan-contract-rest.ts";
 import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
+import { isHexBytes } from "../hex.ts";
 
 /** `page × offset` may be no more than this, as Etherscan's window is. */
 export const RESULT_WINDOW = 10_000;
@@ -573,7 +574,7 @@ function verifyRequest(c: Ctx) {
   const codeFormat = c.p.get("codeformat") ?? "solidity-single-file";
   if (codeFormat !== "solidity-single-file" && codeFormat !== "solidity-standard-json-input") throw new NotOk(TEXTS.unsupported);
   const args = c.p.get("constructorArguements") ?? c.p.get("constructorArguments") ?? "";
-  if (!/^(0x)?([0-9a-fA-F]{2})*$/.test(args)) throw new NotOk("Missing or invalid constructorArguements");
+  if (!isHexBytes(args, { prefix: "optional", upper: true })) throw new NotOk("Missing or invalid constructorArguements");
   const libraries: { name: string; address: string }[] = [];
   for (let i = 1; i <= MAX_LIBRARIES; i++) {
     const name = c.p.get(`libraryname${i}`), at = c.p.get(`libraryaddress${i}`);

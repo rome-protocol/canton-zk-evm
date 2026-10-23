@@ -1,4 +1,5 @@
 import { decodeAbiParameters } from "viem";
+import { isHexBytes } from "./hex.ts";
 
 /**
  * The explorer's whole view of reth: its HTTP RPC, and only the methods below. reth's HTTP port serves the eth, net and
@@ -101,7 +102,6 @@ type Json = Record<string, unknown>;
 const QUANTITY = /^0x(0|[1-9a-f][0-9a-f]*)$/;
 const HASH = /^0x[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
-const DATA = /^0x([0-9a-f]{2})*$/;
 
 function bad(what: string): never {
   throw new RethError(`reth sent a value that is not a valid ${what}`);
@@ -109,7 +109,7 @@ function bad(what: string): never {
 const hex = (re: RegExp, what: string) => (v: unknown): string => (typeof v === "string" && re.test(v) ? v : bad(what));
 const hash = hex(HASH, "hash");
 const address = hex(ADDRESS, "address");
-const data = hex(DATA, "byte string");
+const data = (v: unknown): string => (typeof v === "string" && isHexBytes(v) ? v : bad("byte string"));
 const big = (v: unknown): bigint => BigInt(hex(QUANTITY, "quantity")(v));
 const num = (v: unknown): number => Number(big(v));
 const orNull = <T>(v: unknown, f: (x: unknown) => T): T | null => (v === null || v === undefined ? null : f(v));

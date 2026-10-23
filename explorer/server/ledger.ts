@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { isHexBytes } from "./hex.ts";
 
 /**
  * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, two calls only, both reads.
@@ -81,9 +82,9 @@ function whole(args: Json, name: string, update: string): number {
   return n;
 }
 const HASH = (s: string) => /^(0x)?[0-9a-f]{64}$/.test(s);
-const HEX = (s: string) => /^([0-9a-f]{2})+$/.test(s);
+const HEX = (s: string) => isHexBytes(s, { prefix: "none", empty: false });
 /** Hex that may be empty: a block with no transactions has a txsHex of "", which Daml accepts and the record keeps. */
-const HEX_OR_EMPTY = (s: string) => /^([0-9a-f]{2})*$/.test(s);
+const HEX_OR_EMPTY = (s: string) => isHexBytes(s, { prefix: "none" });
 
 function record(tx: Json, event: Json): BlockRecord {
   const updateId = text(tx, "updateId", "?"), recordTime = text(tx, "recordTime", updateId, (s) => Number.isFinite(Date.parse(s)));
