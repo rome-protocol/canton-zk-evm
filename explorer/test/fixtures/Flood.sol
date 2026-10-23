@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /// The token traffic of the W1 block (design section 9), as costly as the gas cap allows: a contract can emit a Transfer log for about 2k gas, so one
 /// block holds thousands of them. `Flood` sends ERC-20 transfers, each to a holder no block has seen, and spawns new tokens that each need their metadata
-/// read; `Multi` sends ERC-1155 batches of 4,096 ids, in logs that share one array for ids and values, from a holder that holds the ids, `Burner` is a token whose reads spend all their gas, and `FatReturn` one whose reads answer 180 KB. The holders are derived from a seed, so every call names new ones.
+/// read; `Multi` sends ERC-1155 batches of 4,096 ids, in logs that share one array for ids and values, from a holder that holds the ids, `Burner` is a token whose reads spend all their gas, and `FatReturn` one whose reads answer 170 KB. The holders are derived from a seed, so every call names new ones.
 contract Flood {
     event Transfer(address indexed from, address indexed to, uint256 value);
 
@@ -14,7 +14,7 @@ contract Flood {
     }
 
     function spawn(uint256 n) external {
-        // Every third token is a Burner, which spends all the gas a read gives it, and every tenth (the ninth of ten) is a FatReturn, whose reads answer 180 KB.
+        // Every third token is a Burner, which spends all the gas a read gives it, and every tenth (the ninth of ten) is a FatReturn, whose reads answer 170 KB.
         for (uint256 i = 0; i < n; i++) {
             if (i % 3 == 2) new Burner();
             else if (i % 10 == 9) new FatReturn();
@@ -88,7 +88,7 @@ contract Burner {
     }
 }
 
-/// A token whose every read answers 180 KB (its runtime code is PUSH3 <size> PUSH1 0 RETURN, which returns that many bytes of zeroed memory): the indexer's read of it
+/// A token whose every read answers 170 KB (its runtime code is PUSH3 <size> PUSH1 0 RETURN, which returns that many bytes of zeroed memory): the indexer's read of it
 /// must treat an answer longer than 4 KB as no answer, without decoding it, so its metadata is `failed`. The constructor makes one Transfer, then installs that runtime code.
 contract FatReturn {
     event Transfer(address indexed from, address indexed to, uint256 value);
@@ -96,9 +96,9 @@ contract FatReturn {
     constructor() {
         emit Transfer(address(0), msg.sender, 1000);
         assembly {
-            // 0x62 PUSH3, 0x02bf20 (180,000 bytes), 0x60 0x00 PUSH1 0, 0xf3 RETURN: seven bytes, left-aligned in a word. Memory expansion for 180,000 bytes costs about 79,000 gas, inside
+            // 0x62 PUSH3, 0x029810 (170,000 bytes), 0x60 0x00 PUSH1 0, 0xf3 RETURN: seven bytes, left-aligned in a word. Memory expansion for 170,000 bytes costs about 71,000 gas; with the 21,000 of intrinsic gas and the calldata of the longest read (balanceOf, 36 bytes) that is about 92,500, inside
             // the 100,000 of a read: a larger size ran out of gas (700,000 bytes cost about 1 Mgas), and the read failed for that reason, never meeting the 4 KB bound it is here to meet.
-            mstore(0, shl(200, 0x6202bf206000f3))
+            mstore(0, shl(200, 0x620298106000f3))
             return(0, 7)
         }
     }
