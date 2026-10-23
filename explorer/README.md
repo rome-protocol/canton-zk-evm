@@ -121,7 +121,13 @@ The indexer reads the settings above that it shares with the server (`RETH_RPC_U
 
 ## What it reads from reth
 
-Only the methods listed in `server/reth.ts`: `eth_` reads, `eth_sendRawTransaction` for the faucet and the public RPC, and `trace_transaction` for one transaction's call tree. reth's HTTP port serves `eth`, `net` and `web3`, so the explorer cannot list the pool of waiting transactions. It never uses the builder's WebSocket port or the Engine port, and it never starts a node. The reader refuses any method that is not on its list, before it makes a call.
+Three fixed lists of methods reach reth, and each reader refuses any method that is not on its list before it makes a call.
+
+- `ALLOWED_METHODS` in `server/reth.ts` is the server's own list: `eth_` reads, `eth_sendRawTransaction` and the fee reads for the faucet, and `trace_transaction` for one transaction's call tree.
+- `PUBLIC_METHODS` in `server/public-rpc.ts` is the list for `/rpc`, 20 methods. It includes `net_version`, `web3_clientVersion`, `eth_syncing`, `eth_estimateGas`, `eth_feeHistory` and `eth_getLogs`, which are not on the server's own list. `/rpc` exists only with `PUBLIC_RPC=1`.
+- `FINAL_READ_METHODS` in `server/indexer/reads.ts` is the indexer's list: `eth_getBlockByNumber`, `eth_getBlockReceipts`, `trace_replayBlockTransactions` and the reads of state and code.
+
+reth's HTTP port serves `eth`, `net`, `web3` and `trace` (`network/reth/launch.sh`), and no `txpool`, so the explorer cannot list the pool of waiting transactions. It never uses the builder's WebSocket port or the Engine port, and it never starts a node.
 
 ## What it reads from Canton
 
@@ -131,7 +137,7 @@ Three calls on the JSON Ledger API of the participant that holds the reader part
 
 ## What a proof says
 
-`server/proof.ts` reads three facts from the bytes of a block's proof: the program key, the ZisK release and the block hash its public values commit to. It compares each with this explorer's pins and with the block the record is for. Reading a value is not verifying the proof. Canton's confirmers verified it when the block committed, and the Verify button runs that check again, in the visitor's browser (see below).
+`server/proof.ts` reads three facts from the bytes of a block's proof: the program key, the ZisK release and the block hash its public values commit to. It compares the program key and the ZisK release with this explorer's pins, and the block hash with the hash of the block the record is for. Reading a value is not verifying the proof. Canton's confirmers verified it when the block committed, and the Verify button runs that check again, in the visitor's browser (see below).
 
 ## Final blocks, from the database
 
@@ -160,13 +166,13 @@ The indexer is the only writer of the chain's tables. It never restarts by itsel
 | C1 | reth's hash for the block, the record's hash and the Keccak of the record's header |
 | C2 | The records come in order, and block 1 follows reth's genesis |
 | C3 | The record's transaction list against reth's transactions, in order, each with its receipt, and then the block's counts against the rows written |
-| C7 | The three facts in the proof (program key, ZisK release, block hash) against this explorer's pins |
+| C7 | The program key and the ZisK release in the proof against this explorer's pins. The block hash the proof commits to is recorded (`proofs.matches_block`) and shown on the block page. It does not stop the indexer: C1 is the check that stops a wrong block |
 
-**Stage 2** works out what has to be derived from the block's traces (`server/indexer/stage2.ts`). It writes `tx_traces` (the call count of a transaction and the decoded revert data of a failed one), `internal_calls` (calls that move value, creations and self-destructs), and the contracts, bytecodes, proxies, tokens and token transfers the block made. It runs behind its own cursor (`cursors.stream = 'derive'`). A route that returns something stage 2 writes says it is not derived yet (`derived: false`, with nulls or an empty list) until the cursor has passed the block, and the pages show that.
+**Stage 2** processes the block's traces (`server/indexer/stage2.ts`) to populate the internal calls, contracts, tokens and token transfers. It writes `tx_traces` (the call count of a transaction and the decoded revert data of a failed one), `internal_calls` (calls that move value, creations and self-destructs), and the contracts, bytecodes, proxies, tokens and token transfers the block made. It runs behind its own cursor (`cursors.stream = 'derive'`). A route that returns something stage 2 writes says it is not derived yet (`derived: false`, with nulls or an empty list) until the cursor has passed the block, and the pages show that.
 
 Each commit sends a `NOTIFY` inside its own transaction, so a listener hears it only for a transaction that committed. The server listens and passes the events to the clients of `GET /api/stream`.
 
-The indexer reads reth with `eth_` and `trace_` methods and Canton with the Ledger API calls listed in [What it reads from Canton](#what-it-reads-from-canton). Every `eth_call` it makes runs with `READ_CALL_GAS`.
+The indexer reads reth with the methods in `FINAL_READ_METHODS` (`eth_` and `trace_`) and Canton with the Ledger API calls listed in [What it reads from Canton](#what-it-reads-from-canton). Every `eth_call` it makes runs with `READ_CALL_GAS`.
 
 The indexer's other work:
 
