@@ -221,6 +221,36 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(mine(await walk("/api/tokens?sort=newest", "before", 1))).toEqual(["T2", "T1"]);
   });
 
+  it("keeps an address's transactions to the ones it sent or the ones it received, and gives them as a bounded CSV", async () => {
+    const at = async (target: string) => (body(await get(target)).items as { block: number; index: number }[]).map((t) => [t.block, t.index]);
+    expect(await at(`/api/addresses/${A}/txs?direction=sent`)).toEqual([[3, 2], [2, 1], [2, 0]]);
+    // Received is what it was the recipient of, and the contract creations that made it.
+    expect(await at(`/api/addresses/${A}/txs?direction=received`)).toEqual([[3, 2], [3, 1], [3, 0]]);
+    expect(await at(`/api/addresses/${A}/txs?direction=all`)).toEqual(await at(`/api/addresses/${A}/txs`));
+    // The filter pages like the list: by the same key, from the same cursor.
+    const first = body(await get(`/api/addresses/${A}/txs?direction=sent&limit=2`));
+    expect(first.items).toHaveLength(2);
+    expect(await at(`/api/addresses/${A}/txs?direction=sent&limit=2&before=${first.next}`)).toEqual([[2, 0]]);
+    expect(await at(`/api/addresses/${B}/txs?direction=sent`)).toEqual([]);
+    for (const bad of ["direction=out", "direction=", "direction=SENT", "format=json"]) expect((await get(`/api/addresses/${A}/txs?${bad}`)).status, bad).toBe(400);
+    const csv = await get(`/api/addresses/${A}/txs?format=csv&direction=sent`);
+    expect(csv.status).toBe(200);
+    expect(csv.headers?.["content-type"]).toMatch(/^text\/csv/);
+    expect(csv.headers?.["content-disposition"]).toBe(`attachment; filename="transactions-${A}.csv"`);
+    expect(csv.headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+    const lines = String(csv.body).trim().split("\r\n");
+    expect(lines[0]).toBe("hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success,direction");
+    expect(lines.slice(1).map((l) => l.split(",").slice(1, 3))).toEqual([["3", "2"], ["2", "1"], ["2", "0"]]);
+    expect(lines.slice(1).map((l) => l.split(",")[12])).toEqual(["sent", "sent", "sent"]);
+    // Without a direction a transaction an address sent to itself is one row, called sent; a receive and a creation are received.
+    const both = String(( await get(`/api/addresses/${A}/txs?format=csv`)).body).trim().split("\r\n");
+    expect(both.slice(1).map((l) => l.split(",").slice(1, 3).join(":") + ":" + l.split(",")[12])).toEqual(["3:2:sent", "3:1:received", "3:0:received", "2:1:sent", "2:0:sent"]);
+    // A limit under the page's cap gives that many rows; the file never holds more than the cap of 1,000 even when asked for more.
+    expect((String((await get(`/api/addresses/${A}/txs?format=csv&limit=2`)).body).trim().split("\r\n")).length - 1).toBe(2);
+    expect((await get(`/api/addresses/${A}/txs?format=csv&limit=abc`)).status).toBe(400);
+    expect((await get(`/api/addresses/0x12/txs?format=csv`)).status).toBe(400);
+  });
+
   it("refuses a key that is not the list's, a limit that is not a count, and a sort or filter it does not know", async () => {
     for (const bad of [`/api/addresses/${A}/txs?before=5`, `/api/addresses/${A}/txs?before=a:b`, `/api/addresses/${A}/internal?before=2:2:0`, "/api/contracts?sort=interactions&before=1:2:3", "/api/legs?before=x",
       `/api/addresses/${A}/txs?limit=0`, "/api/contracts?sort=popular", "/api/contracts?verified=maybe", "/api/tokens?sort=newest&limit=-1", `/api/addresses/${A}/tokens?after=1`]) {

@@ -179,6 +179,43 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     expect(lines.length - 1).toBe(calls.length);
   });
 
+  it("gives the total of the transactions from the day rollups, with when they were last made, and null where they cannot say", async () => {
+    const day = 86_400_000, [{ first }] = (await pool.query("select (extract(epoch from min(record_time)) * 1000)::float8 as first from blocks")).rows;
+    const dayOf = Math.floor(Number(first) / day) * day;
+    const seed = (bucket: number, txs: number, test: number) => pool.query(
+      `insert into stats_day (bucket, blocks, empty_blocks, busy_blocks, txs, txs_failed, gas_used, argument_bytes, accepted, lost, attempts_refused, attempts_failed, busy_gap_hist, time_to_final_hist, proof_hist, commit_hist, test_txs)
+       values ($1, 0, 0, 0, $2, 0, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', $3)`, [new Date(bucket), txs, test]);
+    const reset = async () => { await pool.query("delete from stats_day"); await pool.query("delete from cursors where stream = 'stats_rollup'"); };
+    const asOf = Date.UTC(2026, 9, 20, 12, 30, 0);
+    const cursor = () => pool.query("insert into cursors (stream, position, detail, updated_at) values ('stats_rollup', $1, '{}', $2)", [asOf, new Date(asOf)]);
+    try {
+      await reset();
+      // No rollup has run: the total is not known, and the page says so rather than counting.
+      let p = body(await get("/api/txs"));
+      same(p, F.txPage);
+      expect([p.total, p.totalAsOf]).toEqual([null, null]);
+      // Rollups that begin after the first block leave the early days uncounted: not a total.
+      await seed(dayOf + day, 9, 0);
+      await cursor();
+      p = body(await get("/api/txs"));
+      expect([p.total, p.totalAsOf]).toEqual([null, null]);
+      // Rollups from the first block's day on: the live transactions and the test runs' together, as far as the rollups reached.
+      await seed(dayOf, 10, 2);
+      p = body(await get("/api/txs"));
+      expect(p.total).toBe(21);
+      expect(p.totalAsOf).toBe(new Date(asOf).toISOString());
+      expect(body(await get("/api/txs?limit=1&before=3:0")).total).toBe(21);
+      // The same rows without the cursor that says how far they reach cannot be called a total.
+      await pool.query("delete from cursors where stream = 'stats_rollup'");
+      expect(body(await get("/api/txs")).total).toBeNull();
+      await cursor();
+      // A filtered list has no rolled-up count (the failed ones of a test run are not kept apart), so it has no total.
+      for (const f of ["failed", "calls"]) expect([body(await get(`/api/txs?filter=${f}`)).total, body(await get(`/api/txs?filter=${f}`)).totalAsOf], f).toEqual([null, null]);
+    } finally {
+      await reset();
+    }
+  });
+
   it("lists blocks with the proof time and the time to final, filtered, and as a bounded CSV", async () => {
     await pool.query("insert into producer_runs (run_id, started_at, strategy, settings, source_commit) values ('00000000-0000-0000-0000-000000000009', now(), 'rhythm', '{}', 'x') on conflict do nothing");
     const [a] = (await pool.query(

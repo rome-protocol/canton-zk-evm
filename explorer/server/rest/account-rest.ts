@@ -17,6 +17,9 @@ export type AddressSort = "balance" | "txs";
 export type ContractSort = "interactions" | "newest" | "oldest";
 export type TokenSort = "holders" | "transfers" | "newest";
 
+/** Which of an address's transactions a list keeps: all, the ones it sent, or the ones it received (as recipient or as the contract a transaction created). */
+export type TxDirection = "all" | "sent" | "received";
+export const TX_DIRECTIONS: readonly TxDirection[] = ["all", "sent", "received"];
 export interface AddressItem { address: string; kind: string; balance: string | null; balanceBlock: number | null; txCount: number }
 export interface AddressDetail {
   address: string; kind: string; sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
@@ -136,13 +139,17 @@ export function createAccountRest(pool: Pool) {
     };
   }
 
-  /** The transactions an address sent, received or was made by, newest first, after the key (block, index). */
-  async function addressTxs(a: string, before: Key | null, limit: number): Promise<TxListItem[]> {
+  /**
+   * The transactions an address sent, received or was made by, newest first, after the key (block, index). `direction` keeps the ones it sent (it is the sender), or the ones it
+   * received (it is the recipient, or the contract the transaction created); "all" is every one of them.
+   */
+  async function addressTxs(a: string, before: Key | null, limit: number, direction: TxDirection = "all"): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
     const side = (column: string) =>
       `(select block_number, tx_index from transactions where ${column} = $1 and ($2::bigint is null or (block_number, tx_index) < ($2::bigint, $3::int)) order by block_number desc, tx_index desc limit $4)`;
+    const columns = { all: ["from_address", "to_address", "created_contract"], sent: ["from_address"], received: ["to_address", "created_contract"] }[direction];
     const rows = await query(
-      `with k as (${side("from_address")} union ${side("to_address")} union ${side("created_contract")})
+      `with k as (${columns.map(side).join(" union ")})
        select ${txSelect} from k join transactions t on t.block_number = k.block_number and t.tx_index = k.tx_index join blocks b on b.number = t.block_number
        order by t.block_number desc, t.tx_index desc limit $4`,
       [bytes(a), bn, ix, limit + 1],

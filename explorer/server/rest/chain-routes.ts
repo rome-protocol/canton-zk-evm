@@ -122,7 +122,9 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     const filter = f as (typeof TX_FILTERS)[number];
     if (format === "csv") return txsCsv(q, filter);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
-    return cached(ok(txPage(await rest.txs(before, limit, filter), limit, (t) => keyOf(t.block, t.index))), "list");
+    const [rows, count] = await Promise.all([rest.txs(before, limit, filter), filter === "all" ? rest.txTotal() : null]);
+    const p = pageOf(rows, limit, (t) => keyOf(t.block, t.index));
+    return cached(ok(pick({ items: p.items.map(pickTx), next: p.next, total: count?.total ?? null, totalAsOf: count ? new Date(count.asOf).toISOString() : null }, F.txPage)), "list");
   }
 
   /** The newest transactions as a file, with the columns of the list: a bounded export, not a way to walk the chain. */

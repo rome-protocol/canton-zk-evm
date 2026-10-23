@@ -164,6 +164,23 @@ export function createChainRest(pool: Pool) {
     return withTokenMoves(query, rows.map(txItem));
   }
 
+  /**
+   * How many transactions the chain holds, from the day rollups (a few hundred rows however long the chain is, never a count over the transactions), and when the rollups last ran.
+   * The live transactions and the test runs' are both in it, as the list holds both. Null when the rollups cannot say: none has run, or the first day they hold is after the first
+   * block's day (the days before it are not counted). Transactions in blocks newer than `asOf` are not in the number.
+   */
+  async function txTotal(): Promise<{ total: number; asOf: number } | null> {
+    const [r] = await query(
+      `select (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_day) as n,
+              (select extract(epoch from min(bucket))::float8 * 1000 from stats_day) as since,
+              (select extract(epoch from min(record_time))::float8 * 1000 from blocks) as first,
+              (select extract(epoch from updated_at)::float8 * 1000 from cursors where stream = 'stats_rollup') as at`);
+    if (!r || r.since === null || r.at === null) return null;
+    const first = r.first === null ? Infinity : Number(r.first);
+    if (Number(r.since) > Math.floor(first / 86_400_000) * 86_400_000) return null;
+    return { total: Number(r.n), asOf: Number(r.at) };
+  }
+
   /** One block's transactions in order, after the index when one is given. */
   async function blockTxs(number: number, after: number | null, limit: number): Promise<TxListItem[]> {
     const rows = await query(
@@ -304,5 +321,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, txTotal, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
 }

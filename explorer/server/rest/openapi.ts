@@ -21,7 +21,9 @@ interface Doc {
   /** The fields of a single object. */
   object?: Fields;
   /** A page: the fields of each item, and whether the page says if stage 2 had reached it (`derived`). */
-  page?: { items: Fields; derived: boolean };
+  page?: { items: Fields; derived: boolean; /** Fields of the page beside its items, each with what it says. */ extra?: Record<string, unknown> };
+  /** The route can also answer as a CSV file (`format=csv`): the 200 then lists text/csv beside JSON. */
+  csv?: boolean;
   /** For an answer that is not a list of fields. */
   note?: string;
   /** What `{param}` is. */
@@ -43,6 +45,12 @@ const txCsv: Query = { name: "format", about: "csv for the newest transactions a
 const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const topic0: Query = { name: "topic0", about: "Only the logs whose first topic (the event's signature hash) is this: 0x and 64 hex digits." };
+const direction: Query = { name: "direction", about: "all of the address's transactions, only the ones it sent (it is the sender, `sent`), or only the ones it received (it is the recipient or the contract the transaction created, `received`); all when left out.", values: ["all", "sent", "received"] };
+const addressTxCsv: Query = { name: "format", about: "csv for the address's newest transactions as a file with the list's columns and a `direction` column (sent or received; up to 1000, `limit` sets fewer; no paging; `direction` applies); left out for JSON.", values: ["csv"] };
+const TX_TOTAL = {
+  total: { type: ["integer", "null"], description: "How many transactions the chain holds, read from the day rollups and never counted over the transactions; the live ones and the test runs' together, as the list holds both. Null when the rollups cannot say (none has run, or they begin after the first block's day), and for a filtered list. Transactions in blocks newer than totalAsOf are not in it." },
+  totalAsOf: { type: ["string", "null"], description: "When the rollups behind total last ran (ISO time); null where total is." },
+};
 const paged = [limit, before], pagedAfter = [limit, after];
 const TOKEN_MOVES = `Each carries \`tokenMoves\`: how many token moves its logs hold (\`count\`, at most ${TOKEN_MOVES_CAP}, with \`more\` true past that) and the first (\`first\`: token, amount or tokenId, standard when the token is known), read from stage 2's transfers. \`tokenMoves\` is null, not empty, for a block stage 2 has not reached.`;
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
@@ -105,7 +113,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/blocks/{id}/transactions": { tag: "Blocks", summary: `The transactions of a block, in order. ${TOKEN_MOVES}`, param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
   "/api/blocks/{id}/legs": { tag: "Blocks", summary: "The gateway legs a block recorded, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.leg, derived: false } },
   "/api/blocks/{id}/record": { tag: "Blocks", summary: "The Canton record of a block: header, transactions and proof, as hex.", param: "The block's number or its 0x hash.", object: F.record },
-  "/api/txs": { tag: "Transactions", summary: `The newest final transactions. ${TOKEN_MOVES}`, query: [...paged, txFilter, txCsv], page: { items: F.txItem, derived: false } },
+  "/api/txs": { tag: "Transactions", summary: `The newest final transactions. ${TOKEN_MOVES}`, query: [...paged, txFilter, txCsv], csv: true, page: { items: F.txItem, derived: false, extra: TX_TOTAL } },
   "/api/txs/{hash}": { tag: "Transactions", summary: "One transaction. Its stage 2 fields are null until its block is derived. `raw=1` is the receipt of a final transaction as reth gave it, which never changes.", param: "The transaction's 0x hash.", query: [raw], object: F.txDetail },
   "/api/txs/{hash}/logs": { tag: "Transactions", summary: "The logs of a transaction, with the events that can be decoded.", param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.log, derived: false } },
   "/api/txs/{hash}/internal": { tag: "Transactions", summary: `The internal calls that moved value. ${DERIVED}`, param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.internal, derived: true } },
@@ -116,7 +124,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/canton/updates/{updateId}/around": { tag: "Canton", summary: "The Canton updates around one, newest first: up to n newer, the update itself and up to n older, by the list's own key (record time, update id). `submittedTemplate`, `submittedChoice` and `txCount` are the producer log's and the block's; null where the log or the block does not hold them.", param: "The update id (1220 and 64 hex digits).", query: [around], note: "An object with `items`, each with the fields in the item list of this route.", object: F.updateAround },
   "/api/addresses": { tag: "Accounts", summary: `Addresses by balance or by transactions. The balance is the database's copy, as of its \`balanceBlock\`. ${DERIVED}`, query: [sort(SORTS.addresses), ...paged], page: { items: F.addressItem, derived: true } },
   "/api/addresses/{address}": { tag: "Accounts", summary: "One address. Its balance is reth's at the newest final block; the counters are the database's. A token's address says so.", param: "A 0x address.", object: F.addressDetail },
-  "/api/addresses/{address}/txs": { tag: "Accounts", summary: `The transactions that an address sent, received or created. ${TOKEN_MOVES}`, param: "A 0x address.", query: paged, page: { items: F.txItem, derived: false } },
+  "/api/addresses/{address}/txs": { tag: "Accounts", summary: `The transactions that an address sent, received or created. ${TOKEN_MOVES}`, param: "A 0x address.", query: [...paged, direction, addressTxCsv], csv: true, page: { items: F.txItem, derived: false } },
   "/api/addresses/{address}/internal": { tag: "Accounts", summary: `The internal calls that moved value to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.addressInternal, derived: true } },
   "/api/addresses/{address}/token-transfers": { tag: "Accounts", summary: `The token transfers to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.tokenTransferItem, derived: true } },
   "/api/addresses/{address}/tokens": { tag: "Accounts", summary: `What an address holds, token by token. ${DERIVED}`, param: "A 0x address.", query: pagedAfter, page: { items: F.holding, derived: true } },
@@ -175,6 +183,7 @@ const fail = (description: string) => ({ description, content: { "application/js
 function schemaOf(d: Doc): unknown {
   if (d.page) {
     const props: Record<string, unknown> = { items: { type: "array", items: object(d.page.items) }, next: { type: ["string", "null"], description: "The key to pass as the next page's cursor; null on the last page." } };
+    Object.assign(props, d.page.extra);
     if (d.page.derived) props.derived = { type: "boolean", description: "True when stage 2 has reached the newest final block." };
     return { type: "object", additionalProperties: false, properties: props, required: Object.keys(props) };
   }
@@ -214,7 +223,7 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
     const get: Record<string, unknown> = {
       tags: [d.tag], summary: d.summary, parameters,
       responses: {
-        200: { description: d.note ?? "The answer.", content: { [type]: { schema: schemaOf(d) } } },
+        200: { description: d.note ?? "The answer.", content: { [type]: { schema: schemaOf(d) }, ...(d.csv ? { "text/csv": { schema: { type: "string", description: "One header row, then a row for each transaction, CRLF-ended." } } } : {}) } },
         ...(parameters.length ? { 400: fail("The request is wrong; the message says how.") } : {}),
         ...(d.param ? { 404: fail("Nothing is held for that.") } : {}),
         429: fail("Too many requests; Retry-After says when to try again."),

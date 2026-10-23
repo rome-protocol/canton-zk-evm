@@ -8,7 +8,7 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import type { AccountRest, AddressSort, ContractSort, TokenSort } from "./account-rest.ts";
+import { TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TxDirection } from "./account-rest.ts";
 import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
@@ -93,12 +93,35 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return cached(ok(pick(body, F.addressDetail)), "composite");
   }
 
+  const CSV_MAX = 1000;
+  const csvCell = (v: string | number | null) => (v === null ? "" : String(v));
+  const directionOf = (q: URLSearchParams): TxDirection => {
+    const d = q.get("direction") ?? "all";
+    if (!(TX_DIRECTIONS as readonly string[]).includes(d)) throw new BadRequest(`direction is one of ${TX_DIRECTIONS.join(", ")}.`);
+    return d as TxDirection;
+  };
+
   async function addressTxs(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
+    const direction = directionOf(q), format = q.get("format");
+    if (format !== null && format !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
+    if (format === "csv") return addressTxsCsv(a, q, direction);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
-    const rows = await accounts.addressTxs(a, before, limit);
+    const rows = await accounts.addressTxs(a, before, limit, direction);
     const p = pageOf(rows, limit, (t) => keyOf(t.block, t.index));
     return cached(ok(pick({ items: p.items.map(pickTx), next: p.next }, F.page)), "list");
+  }
+
+  /** The newest transactions of an address as a file, with the columns of the list and which way each went: a bounded export (the cap of the other CSVs), not a way to walk its history. */
+  async function addressTxsCsv(a: string, q: URLSearchParams, direction: TxDirection): Promise<Answer> {
+    const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
+    const rows = (await accounts.addressTxs(a, null, limit, direction)).slice(0, limit);
+    const lines = ["hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success,direction"];
+    for (const t of rows) {
+      lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false", t.from === a ? "sent" : "received"].map(csvCell).join(","));
+    }
+    const answer = ok(lines.join("\r\n") + "\r\n");
+    return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="transactions-${a}.csv"` } }, "list");
   }
 
   async function addressInternal(a: string, q: URLSearchParams): Promise<Answer> {
