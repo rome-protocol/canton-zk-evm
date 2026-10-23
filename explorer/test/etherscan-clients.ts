@@ -41,7 +41,14 @@ export function ethersChecks(t: ClientTarget): void {
   /** Made when a check runs: the explorer may be started after the checks are declared. */
   const made: { p?: EtherscanProvider } = {};
   const provider = new Proxy({} as EtherscanProvider, { get: (_, k) => { const p = (made.p ??= ostiaProvider(t)); const v = Reflect.get(p, k, p); return typeof v === "function" ? v.bind(p) : v; } });
-  const door = async (query: string): Promise<any> => (await fetch(`${t.url}/api?${query}`)).json(); // eslint-disable-line @typescript-eslint/no-explicit-any
+  /** One GET of the door; a client over its limit is told to wait, and waits. */
+  const door = async (query: string): Promise<any> => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(`${t.url}/api?${query}`);
+      if (!res.headers.has("retry-after") || attempt >= 10) return res.json(); // a refusal is HTTP 200 with Retry-After, as Etherscan's is
+      await new Promise((ok) => setTimeout(ok, Math.max(1, Number(res.headers.get("retry-after") ?? "1")) * 1000));
+    }
+  };
   const head = async (): Promise<number> => provider.getBlockNumber();
 
   it("ethers: the block number and the blocks, in the shapes ethers reads", async () => {
