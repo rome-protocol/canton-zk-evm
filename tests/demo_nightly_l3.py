@@ -33,7 +33,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-B1_S = 1.0
+# B1 as the project holds it since W1 re-set it (2026-10-22, docs/METRICS.md, explorer/test/budgets.ts: B1_MS = 2750): the design's 1.0 s was provisional. L3's index lag is
+# the whole way from the ledger to the database's answer, so it is held to the same number; test_demo_nightly_l3.py checks that the two files agree.
+B1_S = 2.75
 B4_S = 0.5
 B6_BYTES = 2.5e9
 MIN_TXS_FOR_B6 = 5_000

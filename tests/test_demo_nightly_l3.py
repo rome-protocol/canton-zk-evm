@@ -147,6 +147,13 @@ class HashLists(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1.0)
 
 
+class Budgets(unittest.TestCase):
+    def test_b1_is_the_one_budgets_ts_holds(self):
+        import re
+        src = (Path(__file__).resolve().parent.parent / "explorer" / "test" / "budgets.ts").read_text()
+        self.assertEqual(l3.B1_S * 1000, int(re.search(r"B1_MS\s*=\s*([0-9_]+)", src).group(1).replace("_", "")))
+
+
 class Judge(unittest.TestCase):
     ok = dict(growth=1.2e9, txs_added=50_000)
 
@@ -155,8 +162,8 @@ class Judge(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(summary["blocks"], 20)
 
-    def test_b1_p95_over_one_second_fails(self):
-        blocks = [block(i, served=0.2) for i in range(18)] + [block(18, served=1.4), block(19, served=1.5)]
+    def test_b1_p95_over_its_budget_fails(self):
+        blocks = [block(i, served=0.2) for i in range(18)] + [block(18, served=2.9), block(19, served=3.0)]
         _, failures = l3.judge(blocks, **self.ok)
         self.assertTrue(any(f.startswith("B1") for f in failures), failures)
 
