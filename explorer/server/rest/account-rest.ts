@@ -48,6 +48,7 @@ const STANDARD_COLUMNS: Record<TokenStandard | NftGroup, string> = { "ERC-20": "
 export interface TransferFilter { token?: string | null; standard?: TokenStandard | NftGroup | null }
 /** The two NFT standards as one filter of an address's transfers: a transfer with a token id, whichever of them it is. */
 export type NftGroup = "nft";
+/** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
 export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 /** Shown with a partial match: the library lets the metadata (the CBOR at the end of the code, and of any contract embedded in it) differ from the compile. */
