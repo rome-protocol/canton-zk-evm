@@ -1,15 +1,17 @@
 import { useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { getFaucetAddress, getStatsSummary, getTx, getTxPage, txsCsvPath, type ApiStatus, type ApiTx, type InFlight, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
+import { getFaucetAddress, getStatsSummary, getTx, getTxPage, getTxPageOldest, txsCsvPath, type ApiStatus, type ApiTx, type InFlight, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { Amount } from "../components/Amount.tsx";
 import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { useBothEnds } from "../components/Ends.tsx";
+import { NumberedPager } from "../components/Numbered.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
-import { count, duration, exact } from "../format.ts";
+import { count, duration, exact, feeOf } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
 import { methodOf } from "../method.ts";
 import { listPoll, notFinalCounts, readOf, useInFlight } from "../stats.ts";
@@ -25,11 +27,12 @@ type View = "all" | "notfinal" | TxFilter;
 const VIEWS: { id: View; label: string }[] = [{ id: "all", label: "All" }, { id: "notfinal", label: "Not final yet" }, { id: "failed", label: "Failed" }, { id: "calls", label: "Contract calls" }];
 type Coin = ApiStatus["coin"];
 
+/** gas used times the gas price, in the coin's smallest unit. */
 const fee = (gasUsed: number, gasPrice: string) => (BigInt(gasUsed) * BigInt(gasPrice)).toString();
 const Dash = () => <span className="muted">—</span>;
 
 function Fee({ raw, coin }: { raw: string; coin: Coin }) {
-  return <span className="num" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{exact(raw, coin.decimals)}</span>;
+  return <span className="num" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{feeOf(raw, coin.decimals)}</span>;
 }
 /** The sender: the faucet by its name, anything else by its short address, or by its name when the index knows one. */
 function From({ address, faucet, chain, labels }: { address: string; faucet: string | null | undefined; chain: string; labels: Labels }) {
@@ -151,9 +154,24 @@ function Cards({ live, inBlocks }: { live: boolean; inBlocks?: number }) {
   );
 }
 
-function FinalRows({ view, st, now, live, faucet, notFinal, all, inAll, finalTotal }: { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null; inAll: Total | null; finalTotal: number | null | undefined }) {
-  const p = usePaged(["txs", "page", view], (before) => getTxPage(before, PER, view), listPoll(live));
-  const items = p.data?.items;
+type Rows = { items: TxListItem[] | undefined; error: Error | null; page: number };
+type RowsProps = { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null; inAll: Total | null; finalTotal: number | null | undefined };
+
+/** The list of All with a counted total: Page x of y, First and Last, the last page read from the other end (`order=asc`). */
+function NumberedRows(props: RowsProps) {
+  const p = useBothEnds(["txs", "page", "all"], PER, (before, n) => getTxPage(before, n, "all"), (after, n) => getTxPageOldest(after, n, "all"), listPoll(props.live));
+  return <FinalList {...props} rows={{ items: p.items, error: p.error, page: p.page }} pager={<NumberedPager p={p} label="Pages of transactions" />} />;
+}
+/** The filtered lists, and All while the server cannot count: the server totals only All, so these have no page count and no Last, only newer and older. */
+function PagedRows(props: RowsProps) {
+  const p = usePaged(["txs", "page", props.view], (before) => getTxPage(before, PER, props.view), listPoll(props.live));
+  return <FinalList {...props} rows={{ items: p.data?.items, error: p.error, page: p.page }} pager={<Pager p={p} label="Pages of transactions" />} />;
+}
+const FinalRows = (props: RowsProps) => (props.view === "all" && typeof props.finalTotal === "number" ? <NumberedRows {...props} /> : <PagedRows {...props} />);
+
+function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, rows, pager }: RowsProps & { rows: Rows; pager: React.ReactNode }) {
+  const p = rows;
+  const items = p.items;
   const showNotFinal = view === "all" && p.page === 1;
   const shown = showNotFinal ? notFinal.slice(0, NOT_FINAL_SHOWN) : [];
   const details = useDetails(shown);
@@ -176,7 +194,7 @@ function FinalRows({ view, st, now, live, faucet, notFinal, all, inAll, finalTot
     : p.page === 1 ? `Showing the newest ${count(n)} on this page${of}` : `Showing ${count(n)} on page ${p.page}${of}`;
   return (
     <section className="card" aria-label="Transactions">
-      <div className="list-h"><span className="muted">{label}</span><Pager p={p} label="Pages of transactions" /></div>
+      <div className="list-h"><span className="muted">{label}</span>{pager}</div>
       <div className="scroll">
         <table className="tbl txs">
           {head(st.coin)}

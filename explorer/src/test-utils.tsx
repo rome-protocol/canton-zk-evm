@@ -123,7 +123,7 @@ export function inFlight(over: Partial<InFlight> = {}): InFlight {
 /** What the fake chain answers to each path of the API. The status is always well; anything not given is not found. */
 export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
-  blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
+  blocks?: (path: string) => Reply; txs?: (path: string) => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
   legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
@@ -151,7 +151,7 @@ export function route(h: {
       const pick = { "": h.txDetail && (() => h.txDetail!(x)), logs: h.txLogs && (() => h.txLogs!(x, p)), internal: h.txInternal && (() => h.txInternal!(x, p)), "token-transfers": h.txTransfers && (() => h.txTransfers!(x, p)), trace: h.txTrace && (() => h.txTrace!(x, p)) }[sub];
       return pick ? pick() : gone();
     }
-    if (kind === "txs") return h.txs ? h.txs() : reply(page([txItem(3), txItem(2)]));
+    if (kind === "txs") return h.txs ? h.txs(path) : reply(page([txItem(3), txItem(2)]));
     if (kind === "openapi.json") return h.openapi ? h.openapi() : gone();
     if (kind === "stats") return h.stats ? h.stats(path) : gone();
     if (kind === "in-flight") return h.inFlight ? h.inFlight() : reply(inFlight({ attempts: [], poolWaiting: null }));
