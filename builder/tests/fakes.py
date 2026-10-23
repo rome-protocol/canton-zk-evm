@@ -289,6 +289,7 @@ class FakeLedger:
         self.completions_fail = False   # the completions read is answered with HTTP 500
         self.outcomes: dict = {}   # command id -> the completion the participant shows for it (None: none yet)
         self.no_completion = False   # a command that gets no answer has no completion either (it is still in progress)
+        self.reply_status = None   # Advance is answered with this HTTP status and nothing else: no command is taken, no completion comes
         self.late = False   # Advance is answered with a 503 (a timeout), and the command commits or fails only when `land` is called
         self.pending: list = []   # (command id, header) of the commands `late` holds back
         self.land_offset = 43   # the offset `land` gives a decided command's completion
@@ -436,6 +437,8 @@ class FakeLedger:
                     if ledger.refuse and not ledger.fail_but_commit:
                         ledger.outcomes[command_id] = failed
                         return self._reply(409, {"code": "INTERPRETATION_ERROR", "cause": ledger.refuse})
+                    if ledger.reply_status:
+                        return self._reply(ledger.reply_status, {"cause": "x"})
                     arg = body["commands"][0]["ExerciseCommand"]["choiceArgument"]
                     header = bytes.fromhex(arg["headerHex"])
                     if ledger.late:

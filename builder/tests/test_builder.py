@@ -1,6 +1,6 @@
 """The builder, against fakes only: a fake reth (builder-only WebSocket port and Engine port), a fake Canton JSON
 Ledger API and a fake prover. No real Canton, GPU or reth. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
+import base64, contextlib, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
 from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
@@ -1315,6 +1315,41 @@ class NoAnswer(Case):
             b.build_block(s.cfg, journal=attempt)
         self.assertNotIn("submitted", events)
         self.assertEqual(s.ledger.submitted, [])
+
+    def test_a_submit_that_plainly_never_reached_the_command_service_is_settled_at_once_as_not_taken(self):
+        refused_connection = [("refused", ConnectionRefusedError(61, "Connection refused")),
+                              ("refused inside urllib", urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")))]
+        for name, error in refused_connection:
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            with mock.patch.object(b.Ledger, "advance", side_effect=error), mock.patch.object(b.Ledger, "completion", side_effect=AssertionError("waited")):
+                result = b.build_block(s.cfg)
+            self.assertEqual((result["committed"], result["rejected"]), (False, False), name)
+            self.assertNotIn("resolve", result)
+            self.assertFalse(b.unresolved_path(s.cfg).exists(), name)
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH, name)
+            self.assertEqual(self.in_pool(s), {t["hash"]}, name)
+        for status in (401, 403, 429):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            s.ledger.reply_status = status
+            result = b.build_block(s.cfg)
+            self.assertEqual((result["committed"], result["rejected"]), (False, False), status)
+            self.assertNotIn("resolve", result)
+            self.assertFalse(b.unresolved_path(s.cfg).exists(), status)
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH, status)
+            self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_a_408_or_a_server_error_still_waits_for_the_completion_and_a_dropped_reply_reads_it(self):
+        for status in (408, 500, 502, 503):
+            s = self.setup({ALICE: [tx(ALICE, 0)]})
+            s.ledger.reply_status = status
+            result = b.build_block(s.cfg)
+            self.assertIsNone(result["committed"], status)   # the command may have been taken: nothing is decided
+            self.assertIn("resolve", result, status)
+            self.assertTrue(b.unresolved_path(s.cfg).exists(), status)
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        self.assertTrue(b.build_block(s.cfg)["committed"])   # the connection was dropped after the commit: its completion says so
 
     def test_a_command_that_is_a_duplicate_or_already_in_flight_is_no_answer(self):
         for code, refused in (("DUPLICATE_COMMAND", False), ("SUBMISSION_ALREADY_IN_FLIGHT", False), ("INTERPRETATION_ERROR", True)):

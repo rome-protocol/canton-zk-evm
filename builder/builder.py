@@ -860,7 +860,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     if lost:
         report["lostTransactions"] = lost
 
-    reason, rejected, answer = None, False, {}
+    reason, rejected, not_taken, answer = None, False, False, {}
     # The ledger end before the submit: the command's own completion, whenever it comes, is after it.
     begin = Ledger(cfg).end()
     # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
@@ -877,9 +877,10 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     except urllib.error.HTTPError as e:
         with e:
             text = e.read().decode(errors="replace")
-        reason, rejected = text[:600], definite_rejection(e.code, text)
+        reason, rejected, not_taken = text[:600], definite_rejection(e.code, text), e.code in NEVER_TAKEN_CODES
     except (OSError, ValueError, http.client.HTTPException) as e:   # a dropped connection, a timeout, a reply that is not HTTP or not JSON: the reply is lost
         reason = f"no usable reply from Canton: {e}"
+        not_taken = isinstance(e, ConnectionRefusedError) or isinstance(getattr(e, "reason", None), ConnectionRefusedError)
     report["advanceSeconds"] = round(time.monotonic() - advancing, 3)
     answered_at = attempt.now()   # when Canton answered: the reads below take time that is not part of the answer
     traffic_after = read_traffic(cfg) if watch else None
@@ -888,7 +889,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     def answered(outcome: str, **more) -> None:
         attempt.event("answered", at=answered_at, outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, traffic_before=traffic_before, traffic_after=traffic_after, **more)
 
-    if reason is not None and not rejected:
+    if reason is not None and not rejected and not not_taken:
         # No answer: the command may still commit, so neither Canton's head nor reth's own head says anything yet. Its own completion
         # does, and until that shows (or the window it can commit in has passed) nothing is built and reth stays where it is.
         try:
@@ -906,7 +907,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
             answer, reason = found, None   # it committed: the rest is as after a normal answer
         else:
             reason = f"{reason}; {found['reason']}"
-    if reason is not None:   # Canton refused the command (its own answer, or its failed completion): the block is not committed
+    if reason is not None:   # Canton refused the command (its own answer, or its failed completion), or it never reached the service: not committed
         clear_unresolved(cfg)    # a definite answer: the command cannot commit any more
         rewind_error = None
         try:
@@ -958,9 +959,13 @@ def committed_hash(proof: str) -> str | None:
     return "0x" + bytes(words[1:33]).hex()
 
 
+NEVER_TAKEN_CODES = (401, 403, 429)   # the token, or back-pressure, refused the call before the participant took the command: no completion will ever come
+
+
 def definite_rejection(code: int, body: str) -> bool:
-    """Whether an HTTP error from submit-and-wait is Canton rejecting the command (a 4xx that carries an error code). A 5xx, a 429
-    (back-pressure), a 401 or 403 (token), a 408 or an answer with no error code is the service failing: the block may be fine. A command id
+    """Whether an HTTP error from submit-and-wait is Canton rejecting the command (a 4xx that carries an error code). A 5xx, a 408
+    or an answer with no error code is the service failing: the block may be fine and its completion says. A 429 (back-pressure), a 401 or 403
+    (token) is no rejection of the command either, but the command was not taken (see NEVER_TAKEN_CODES). A command id
     that Canton already knows (DUPLICATE_COMMAND: committed or in progress; SUBMISSION_ALREADY_IN_FLIGHT) is no refusal either: the same
     command is, or may be, committed, and its own completion says which."""
     if not 400 <= code < 500 or code in (401, 403, 408, 429):
