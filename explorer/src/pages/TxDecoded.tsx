@@ -7,15 +7,15 @@ import { useAbi } from "./useAbi.ts";
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
-function MethodId({ id, note }: { id: string; note: boolean }) {
-  return <Item label="Method id"><span className="mono">{id}</span>{note && <> <span className="muted">The verified interface is not held, so the input is not decoded.</span></>}</Item>;
+function MethodId({ id, note, held = false }: { id: string; note: boolean; held?: boolean }) {
+  return <Item label="Method id"><span className="mono">{id}</span>{note && <> <span className="muted">{held ? "The input is not one of the functions of the verified interface, so it is not decoded." : "The verified interface is not held, so the input is not decoded."}</span></>}</Item>;
 }
 
 /** The call by name, each argument beside its name, an address as a link. Every value is text. */
 function Call({ detail, input, id }: { detail: ContractDetail; input: string; id: string }) {
   const abi = useAbi(detail);
   const d = decodeInputOf(abi.all, input);
-  if (!d) return <MethodId id={id} note={abi.ready} />;
+  if (!d) return <MethodId id={id} note={abi.ready} held={abi.all.length > 0} />;
   return (
     <>
       <Item label="Decoded">

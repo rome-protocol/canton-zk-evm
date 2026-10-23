@@ -42,4 +42,10 @@ describe("the transaction page: decoded input", () => {
     const card = await open({}, {});
     expect(await within(card).findByText(/is not decoded/)).toBeInTheDocument();
   });
+
+  it("says the call is not in the verified ABI, not that the ABI is missing, when the input matches none of its functions", async () => {
+    const card = await open({ [A]: contractSource(0xcb, { abi: TOKEN_ABI.filter((e) => e.name !== "transfer") }) });
+    expect(await within(card).findByText(/not one of the functions of the verified interface/)).toBeInTheDocument();
+    expect(within(card).queryByText(/interface is not held/)).toBeNull();
+  });
 });
