@@ -16,7 +16,7 @@ const num = (c: HealthCheck | undefined, field: string): number | null => {
 };
 
 /**
- * The checks the indexer writes, as the top bar counts them: the API's own rows (each instance's reads, the faucet, the tracker) are left out,
+ * The checks that are not the API's own, as the top bar counts them: the API's own rows (each instance's reads, the faucet, the tracker) are left out,
  * so that the bar and the home page never give two counts.
  */
 export const indexerChecks = (h: ApiHealth | undefined) => h?.checks.filter((c) => c.role !== "api");

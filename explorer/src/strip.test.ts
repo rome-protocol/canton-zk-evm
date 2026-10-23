@@ -41,8 +41,8 @@ describe("the health strip's names", () => {
 });
 
 describe("the strip's count of checks", () => {
-  it("counts the indexer's rows only, as the top bar does", () => {
-    expect(checksWord(status(), full)).toEqual({ dot: "ok", text: "All 5 checks ok" });
+  it("counts every row but the API's own, as the top bar does", () => {
+    expect(checksWord(status(), full)).toEqual({ dot: "ok", text: "All 7 checks ok" });
   });
   it("counts the ones that are not ok, and names a failed check, and starting", () => {
     expect(checksWord(status(), list([row("C5", { status: "degraded" }), row("C9")]))).toEqual({ dot: "bad", text: "1 of 2 checks not ok" });
