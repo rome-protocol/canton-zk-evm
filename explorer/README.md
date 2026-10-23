@@ -211,7 +211,7 @@ The routes above are the first ones. The pages read these too, and every one of 
 | `/api/txs`, `/api/txs/{hash}`, `/api/txs/{hash}/logs`, `/api/txs/{hash}/internal`, `/api/txs/{hash}/token-transfers`, `/api/txs/{hash}/trace` | Transactions (newest first, or oldest first with `order=asc`), one transaction, and what stage 2 worked out for it |
 | `/api/addresses`, `/api/addresses/{address}`, and under it `/txs`, `/internal`, `/token-transfers`, `/tokens`, `/coin-history` | Addresses and what one address did and holds. The balance is reth's at the newest final block |
 | `/api/contracts`, `/api/contracts/{address}`, and under it `/source` and `/events` | Contracts, one contract with its verification, its verified source and its events |
-| `/api/tokens`, `/api/tokens/{address}`, and under it `/holders` and `/transfers`; `/api/token-transfers` | Tokens (by standard, with the totals and who made each), one token, its holders and its transfers; the transfers of every token. Token transfers also come as a CSV (`format=csv`) |
+| `/api/tokens`, `/api/tokens/{address}`, and under it `/holders` and `/transfers`; `/api/token-transfers` | Tokens (by standard, or only those the gateway wrapped, newest first or from the other end with `order=asc`, with the totals, the gateway count and who made each), one token, its holders and its transfers; the transfers of every token. Token transfers also come as a CSV (`format=csv`) |
 | `/api/legs`, `/api/legs/{id}` | The gateway's legs |
 | `/api/canton/updates`, `/api/canton/updates/{updateId}`, `/api/canton/updates/{updateId}/around` | The Canton updates that carry a block, as the reader party sees them, and the updates next to one |
 | `/api/stats/summary`, `/api/stats/series` | See [Stats](#stats) |
