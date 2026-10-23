@@ -23,6 +23,25 @@ export interface VerifyRequest {
   libraries?: { name: string; address: string }[] | undefined;
 }
 
+/** How a verification came in: through the Etherscan-compatible API (`etherscan`) or `POST /api/verify` (`api`). */
+export type VerifyMethod = "etherscan" | "api";
+export const VERIFY_METHODS: readonly VerifyMethod[] = ["etherscan", "api"];
+/** The tool the submitter says it used, when it says: `unknown` for a tool that is none of the three. */
+export type VerifyTool = "forge" | "hardhat" | "remix" | "unknown";
+export const VERIFY_TOOLS: readonly VerifyTool[] = ["forge", "hardhat", "remix", "unknown"];
+/** Where a verification came from, as the job records it and the contract serves it. `tool` is null when the submitter did not say. */
+export interface Via { method: VerifyMethod; tool: VerifyTool | null }
+
+/** The tool a submission names (a `tool` field, as text): null when it names none, and `unknown` when it names one that is not forge (or foundry), hardhat or remix. */
+export function toolOf(v: unknown): VerifyTool | null {
+  if (typeof v !== "string" || v.trim() === "") return null;
+  const t = v.trim().toLowerCase();
+  if (/^(forge|foundry)\b/.test(t)) return "forge";
+  if (/^hardhat\b/.test(t)) return "hardhat";
+  if (/^remix\b/.test(t)) return "remix";
+  return "unknown";
+}
+
 export const MAX_SOURCE_BYTES = 500 * 1024;
 
 export interface Prepared {
