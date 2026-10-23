@@ -145,7 +145,7 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       await indexer.deriveOnce();
       const took = stage2Ms();
       if (process.env.LOAD_HOLDERS) console.log("stage 2 ms", took);
-      heldB1(took, "the reindex rebuild");
+      heldB1(took, "stage 2");
       expect(await tok(pool, ERC20)).toEqual({ h: N + 1, t: N + 1 });
       await fatFailed(pool); // the fat-return token's reads are bounded, read as failed, and stage 2 went on
       await reindexAgainstBudget(pool, chain);
