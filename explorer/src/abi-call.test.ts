@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encodeFunctionData, encodeAbiParameters, toEventSelector } from "viem";
-import { callable, decodeEventOf, decodeInputOf, decodeOutputs, encodeCall, parseArg, shown, type AbiEntry } from "./abi-call.ts";
+import { callable, decodeEventOf, eventKinds, methodNames, decodeInputOf, decodeOutputs, encodeCall, parseArg, shown, type AbiEntry } from "./abi-call.ts";
 
 const ME = "0xe320e2a3c7cd875ef139c442f006e2400aef19de", OTHER = "0xe6adf865cfaa8c66134a71dae5dcd8e028a91f2a";
 const erc20: AbiEntry[] = [
@@ -78,5 +78,15 @@ describe("decoding what is on chain with a contract's ABI", () => {
     expect(d.name).toBe("Transfer");
     expect(d.args.map((a) => [a.name, a.value])).toEqual([["from", ME], ["to", OTHER], ["value", "400"]]);
     expect(decodeEventOf(erc20, ["0x" + "11".repeat(32)], "0x")).toBeNull();
+  });
+});
+
+describe("the names an ABI gives", () => {
+  it("names a method by its 4-byte id, and an event kind by the topic its logs carry", () => {
+    const m = methodNames(erc20);
+    expect(m.get("0xa9059cbb")).toBe("transfer");
+    expect(m.get("0x70a08231")).toBe("balanceOf");
+    expect(m.has("0xdeadbeef")).toBe(false);
+    expect(eventKinds([...erc20, erc20[4]!])).toEqual([{ name: "Transfer", signature: "Transfer(address,address,uint256)", topic0: toEventSelector("Transfer(address,address,uint256)") }]);
   });
 });

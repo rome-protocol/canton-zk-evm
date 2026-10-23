@@ -1,4 +1,4 @@
-import { decodeEventLog, decodeFunctionData, decodeFunctionResult, encodeFunctionData, toFunctionSelector, type Abi } from "viem";
+import { decodeEventLog, decodeFunctionData, decodeFunctionResult, encodeFunctionData, toEventSelector, toFunctionSelector, type Abi } from "viem";
 import { typeOf, type AbiEntry, type AbiParam } from "./abi.ts";
 
 export type { AbiEntry, AbiParam };
@@ -109,4 +109,16 @@ export function decodeEventOf(abi: AbiEntry[], topics: string[], data: string): 
     const vals = (e.inputs ?? []).map((p, i) => (Array.isArray(a) ? a[i] : (a as Record<string, unknown> | undefined)?.[p.name ?? ""]));
     return { name: e.name!, signature: sig(e), args: list(e.inputs, vals) };
   } catch { return null; }
+}
+
+/** The 4-byte id of each function in the ABIs, to its name: what names a transaction's method. */
+export function methodNames(abi: AbiEntry[]): Map<string, string> {
+  return new Map(abi.filter((e) => e.type === "function" && e.name).map((e) => [toFunctionSelector(sig(e)), e.name!]));
+}
+
+/** The events in the ABIs, each once, with the topic its logs carry first. */
+export function eventKinds(abi: AbiEntry[]): { name: string; signature: string; topic0: string }[] {
+  const seen = new Map<string, { name: string; signature: string; topic0: string }>();
+  for (const e of abi) if (e.type === "event" && e.name && !e.anonymous) seen.set(toEventSelector(sig(e)), { name: e.name, signature: sig(e), topic0: toEventSelector(sig(e)) });
+  return [...seen.values()];
 }
