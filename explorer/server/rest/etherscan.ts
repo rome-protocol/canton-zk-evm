@@ -420,15 +420,24 @@ async function viaRpc(c: Ctx, method: string, params: unknown[]): Promise<Up> {
   if (!isUp(a.body)) throw new NotOk(TEXTS.broken);
   return a.body;
 }
-/** The named parameters in order, or the JSON-RPC error of the first one missing. */
+/** The named parameters in order, or the JSON-RPC error of the first one missing. A `tag` that is left out is the newest, as Etherscan has it (ethers leaves it out of a call). */
 function need(c: Ctx, names: string[]): string[] | Raw {
   const out: string[] = [];
   for (const [i, n] of names.entries()) {
-    const v = c.p.get(n);
+    const v = c.p.get(n) ?? (n === "tag" ? "latest" : null);
     if (v === null) return rpcError(-32602, `missing value for required argument ${i}`);
     out.push(v);
   }
   return out;
+}
+/** The call a client describes, in Etherscan's names (`gas`) and in ethers' (`gasLimit`), with the fields that were sent and no others. */
+function callObject(c: Ctx): Record<string, string> {
+  const call: Record<string, string> = {};
+  for (const [param, field] of [["to", "to"], ["from", "from"], ["data", "data"], ["value", "value"], ["gasPrice", "gasPrice"], ["gas", "gas"], ["gasLimit", "gas"], ["maxFeePerGas", "maxFeePerGas"], ["maxPriorityFeePerGas", "maxPriorityFeePerGas"]] as const) {
+    const v = c.p.get(param);
+    if (v !== null && !(field in call)) call[field] = v;
+  }
+  return call;
 }
 /** A call whose parameters are the named ones, as strings. */
 const plain = (method: string, names: string[]): Handler => async (c) => {
@@ -475,16 +484,14 @@ const proxy: Record<string, Handler> = {
   async eth_call(c) {
     const a = need(c, ["to", "data", "tag"]);
     if (a instanceof Raw) return a;
-    return new Raw(await viaRpc(c, "eth_call", [{ to: a[0], data: a[1] }, a[2]]));
+    return new Raw(await viaRpc(c, "eth_call", [callObject(c), a[2]]));
   },
   eth_getCode: plain("eth_getCode", ["address", "tag"]),
   eth_getStorageAt: plain("eth_getStorageAt", ["address", "position", "tag"]),
   eth_gasPrice: plain("eth_gasPrice", []),
   /** The call as the node gets it: the fields that were sent, and no block, so the public RPC reads it at the final block. */
   async eth_estimateGas(c) {
-    const tx: Record<string, string> = {};
-    for (const n of ["to", "data", "value", "gasPrice", "gas"]) { const v = c.p.get(n); if (v !== null) tx[n] = v; }
-    return new Raw(await viaRpc(c, "eth_estimateGas", [tx]));
+    return new Raw(await viaRpc(c, "eth_estimateGas", [callObject(c)]));
   },
   /** There are no uncles on Ostia. */
   async eth_getUncleByBlockNumberAndIndex() { return rpcResult(null); },

@@ -8,7 +8,7 @@ import { MODULES, TEXTS, etherscan } from "./etherscan.ts";
 const CHAIN = 770101, FINAL = 5, HEAD = 6;
 const hx = (n: number) => "0x" + n.toString(16);
 const hashOf = (n: number) => "0x" + n.toString(16).padStart(2, "0").repeat(32);
-const ADDR = "0x" + "ab".repeat(20);
+const ADDR = "0x" + "ab".repeat(20), FROM = "0x" + "cd".repeat(20);
 const TX_FINAL = "0x" + "f1".repeat(32), TX_PROVING = "0x" + "f2".repeat(32);
 const tx = (h: string, n: number, i: number) => ({ hash: h, blockNumber: hx(n), blockHash: hashOf(n), transactionIndex: hx(i), nonce: "0x1" });
 const TXS = [tx(TX_FINAL, 4, 0), tx("0x" + "f3".repeat(32), 4, 1)];
@@ -100,6 +100,13 @@ describe("the proxy module, as Etherscan's: a JSON-RPC answer, in hex, as the pu
     expect((await b.get({ action: "eth_getCode", address: ADDR, tag: "0x6" })).error.message).toMatch(/not final/);
   });
 
+  it("a tag that is left out is the newest, and a call keeps the fields a client sends (ethers leaves the tag out and writes gasLimit)", async () => {
+    const b = await boot();
+    expect(await b.get({ action: "eth_getCode", address: ADDR })).toEqual(rpcOk("0x6080"));
+    expect((await b.get({ action: "eth_call", to: ADDR, data: "0x", from: FROM, gasLimit: "0x5208" })).result).toMatch(/^0x/);
+    expect(b.asked.eth_call?.[0]).toEqual([{ to: ADDR, data: "0x", from: FROM, gas: "0x5208" }, "0x5"]);
+  });
+
   it("eth_gasPrice and eth_estimateGas answer in hex", async () => {
     const b = await boot();
     expect(await b.get({ action: "eth_gasPrice" })).toEqual(rpcOk("0x3b9aca00"));
@@ -122,7 +129,8 @@ describe("the proxy module, as Etherscan's: a JSON-RPC answer, in hex, as the pu
 
   it("a missing argument is the node's own error, an unknown action is Etherscan's, and without the public RPC the module is not supported", async () => {
     const b = await boot();
-    expect(await b.get({ action: "eth_getCode", address: ADDR })).toEqual({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "missing value for required argument 1" } });
+    expect(await b.get({ action: "eth_getStorageAt", address: ADDR })).toEqual({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "missing value for required argument 1" } });
+    expect((await b.get({ action: "eth_getCode", tag: "latest" })).error.message).toBe("missing value for required argument 0");
     expect(await b.get({ action: "eth_getLogs" })).toEqual({ status: "0", message: "NOTOK", result: TEXTS.action });
     await reth?.close();
     expect(await (await boot(false)).get({ action: "eth_blockNumber" })).toEqual({ status: "0", message: "NOTOK", result: TEXTS.unsupported });
