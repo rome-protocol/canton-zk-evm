@@ -499,3 +499,37 @@ describe("the token transfers and the input on Overview", () => {
     expect(await card.findByText(/verified interface is not held/)).toBeInTheDocument();
   });
 });
+
+describe("the Logs tab waits for the labels and sources before it says how it read", () => {
+  const vlabel = (n: number) => tokenLabel({ address: addr(n), name: `V${n}`, symbol: null, kind: "contract", standard: null, decimals: null, verified: true });
+  const odd = (i: number, address: string) => log(i, { address, topics: ["0x" + "12".repeat(32)], data: "0x" });
+  async function openSlow(h: H, delay: number) {
+    fakeApi(route({ tx: () => reply(tx()), txDetail: () => reply(txDetail()), address: () => reply(tokenAddress()), ...h }));
+    const f = fetch;
+    vi.stubGlobal("fetch", async (u: string) => { if (/\/source/.test(u)) await new Promise((r) => setTimeout(r, delay)); return f(u); });
+    renderApp(`/tx/${tx().hash}?tab=logs`);
+    await screen.findByRole("heading", { name: "Transaction" });
+  }
+
+  it("says neither 'standard token interface' nor 'none is held' while a verified emitter's source is being read", async () => {
+    const v = vlabel(0xcb);
+    await openSlow({ labels: labelsOf([v]), txLogs: () => reply(page([log(0), odd(1, addr(0xcb))])), contracts: () => reply(contractSource(0xcb, { verified: false, abi: null })) }, 200);
+    await screen.findByRole("group", { name: "Log 1" });
+    expect(screen.queryByText(/standard token interface/)).toBeNull();
+    expect(screen.queryByText(/needs a verified interface/)).toBeNull();
+    expect(await screen.findByText(/needs a verified interface/)).toBeInTheDocument();
+  });
+
+  it("says a verified emitter's source was not read, rather than that none is held, when the read fails", async () => {
+    const v = vlabel(0xcb);
+    await openSlow({ labels: labelsOf([v]), txLogs: () => reply(page([odd(0, addr(0xcb))])), contracts: () => reply({ error: "boom" }, 500) }, 0);
+    expect(await screen.findByText(/their source was not read here/)).toBeInTheDocument();
+    expect(screen.queryByText(/none is held/)).toBeNull();
+  });
+
+  it("says the same for a verified emitter beyond the cap of sources one view reads", async () => {
+    const many = Array.from({ length: 21 }, (_, i) => vlabel(0x80 + i));
+    await openSlow({ labels: labelsOf(many), txLogs: () => reply(page(many.map((l, i) => odd(i, l.address)))), contracts: () => reply(contractSource(0x80, { verified: false, abi: null })) }, 0);
+    expect(await screen.findByText(/their source was not read here/)).toBeInTheDocument();
+  });
+});

@@ -10,7 +10,7 @@ import { Seg } from "../components/Seg.tsx";
 import { plural } from "../format.ts";
 import { labelName, useLabels, type Labels } from "../labels.ts";
 import { inUnits } from "./txValues.ts";
-import { MAX_SOURCES, useSources } from "./useSources.ts";
+import { MAX_SOURCES, useSourceReads } from "./useSources.ts";
 
 /** The first topic of an ERC-20 Transfer. */
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
@@ -88,8 +88,13 @@ function LogRow({ log, t, labels, mode }: { log: Shown; t: ApiTxSeen; labels: La
   );
 }
 
-/** Said only when some log on the page is not decoded: a decoded one has its name and arguments shown. */
-const NoDecode = ({ shown }: { shown: boolean }) => !shown ? null : <p className="small muted">Events are shown raw. Decoding them needs a verified interface for the contract that emitted them, and none is held.</p>;
+/**
+ * Said only when some log on the page is not decoded and the labels and sources are read: a decoded one has its name and arguments shown. Where the emitter
+ * is verified but its source was not read (past the cap of sources one view reads, or the read failed), it says so rather than that none is held.
+ */
+const NoDecode = ({ shown, unread }: { shown: boolean; unread: boolean }) => !shown ? null : unread
+  ? <p className="small muted">Events are shown raw. Some of the contracts that emitted them are verified, but their source was not read here, so those events are not decoded.</p>
+  : <p className="small muted">Events are shown raw. Decoding them needs a verified interface for the contract that emitted them, and none is held.</p>;
 
 /** What the card says of how its logs were read. */
 function readWith(logs: Shown[], labels: Labels): string {
@@ -108,7 +113,8 @@ function LogList({ raws, t, extra, foot }: { raws: Raw[]; t: ApiTxSeen; extra?: 
   const labels = useLabels(raws.flatMap((l) => [l.address, ...l.topics.map(topicAddress)]));
   // The verified source is read only for emitters the labels say are verified, and for the first few of them.
   const contracts = [...new Set(raws.map((l) => l.address.toLowerCase()).filter((a) => { const l = labels.get(a); return l?.verified && (l.kind === "contract" || l.kind === "token"); }))].slice(0, MAX_SOURCES);
-  const sources = useSources(contracts);
+  const { sources, ready: read, failed } = useSourceReads(contracts);
+  const ready = labels.ready && read;
   const logs = useMemo<Shown[]>(() => raws.map((l) => {
     if (l.decoded) return { ...l, how: "verified" as const };
     const verified = sources.get(l.address.toLowerCase())?.abi ?? null;
@@ -118,13 +124,15 @@ function LogList({ raws, t, extra, foot }: { raws: Raw[]; t: ApiTxSeen; extra?: 
     return std ? { ...l, decoded: std, how: "standard" as const } : { ...l, how: null };
   }), [raws, sources]);
   const any = logs.some((l) => l.decoded);
+  // A log that is not decoded, whose emitter is verified though its source was not read.
+  const unread = logs.some((l) => { const a = l.address.toLowerCase(), lab = labels.get(a); return l.decoded === null && !!lab?.verified && (lab.kind === "contract" || lab.kind === "token") && (!contracts.includes(a) || failed.has(a)); });
   return (
     <section className="card" aria-label="Logs">
       <div className="sec-h">
-        <span className="small muted">{logs.length > 0 ? (any ? readWith(logs, labels) : plural(logs.length, "log")) : ""}</span>
+        <span className="small muted">{logs.length > 0 ? (any && ready ? readWith(logs, labels) : plural(logs.length, "log")) : ""}</span>
         {any && <span className="sec-r"><Seg label="Logs view" value={mode} options={[{ id: "decoded", text: "Decoded" }, { id: "hex", text: "Hex" }]} onPick={setMode} /></span>}
       </div>
-      <NoDecode shown={logs.some((l) => l.decoded === null)} />
+      <NoDecode shown={ready && logs.some((l) => l.decoded === null)} unread={unread} />
       {extra}
       {logs.map((l) => <LogRow key={l.n} t={t} log={l} labels={labels} mode={mode} />)}
       {foot}
