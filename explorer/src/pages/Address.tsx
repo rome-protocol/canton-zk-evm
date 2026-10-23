@@ -96,7 +96,7 @@ type TabId = "transactions" | "token-transfers" | "internal" | "coin-history";
  * What reth says about an address at the final block, and what the explorer's index holds of it: the balance is reth's, the counts, the lists and the
  * holdings are the index's, complete as far as the explorer has read. The tab is in the link.
  */
-export function Address({ tracker = false }: { tracker?: boolean } = {}) {
+export function Address() {
   const { addr = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const st = useStatus().data;
@@ -105,8 +105,8 @@ export function Address({ tracker = false }: { tracker?: boolean } = {}) {
   const wait = unready(q, "Reading the address…");
   if (wait) return wait;
   const a = q.data!;
-  // Design section 7: an address that holds code is the contract page. A token's own route keeps the tracker view.
-  if (!tracker && a.kind !== "account") return <Contract addr={addr} />;
+  // Design section 7: an address that holds code (a token too) is the contract page; a token has its own page at /token.
+  if (a.kind !== "account") return <Contract addr={addr} />;
   const tabs: { id: TabId; label: string; n?: number }[] = [
     { id: "transactions", label: "Transactions", n: a.sentCount + a.receivedCount },
     { id: "token-transfers", label: "Token transfers", n: a.tokenTransferCount },

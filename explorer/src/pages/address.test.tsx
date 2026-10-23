@@ -72,19 +72,6 @@ describe("the address page: the head and the overview", () => {
     expect(within(more).getByText("First seen", { selector: "dt" }).nextElementSibling).toHaveTextContent("—");
   });
 
-  it("names the transaction and the block that created a contract", async () => {
-    await open(addressDetail({ kind: "contract", createdBy: { txHash: hash(0xf5), block: 2 } }), {}, `/token/${addressDetail().address}`);
-    expect(kind()).toHaveTextContent("Contract");
-    expect(row("Created by")).toHaveTextContent("0xf5f5…f5f5 in block 2");
-    expect(within(row("Created by")).getByRole("link", { name: "0xf5f5…f5f5" })).toHaveAttribute("href", `/tx/${hash(0xf5)}`);
-  });
-
-  it("names a token by its own name and symbol, and shows them as text", async () => {
-    await open(addressDetail({ address: addr(0xcb), kind: "token", token: { name: "<img src=x onerror=alert(1)>", symbol: "TKA", decimals: 18 } }), {}, `/token/${addr(0xcb)}`, "<img src=x onerror=alert(1)> (TKA)");
-    expect(kind()).toHaveTextContent("Token");
-    expect(document.querySelector("img[src='x']")).toBeNull();
-  });
-
   it("says a count is partial while the explorer has not read every block", async () => {
     await open(addressDetail({ derived: false }));
     expect(screen.getByText(/still reading blocks/)).toBeInTheDocument();

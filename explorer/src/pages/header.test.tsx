@@ -19,7 +19,7 @@ describe("the header", () => {
     fakeApi(route({}));
     renderApp("/");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
-    for (const gone of ["Tokens"]) expect(nav.queryByRole("link", { name: gone })).toBeNull();
+    expect(nav.getByRole("link", { name: "Tokens" })).toHaveAttribute("href", "/tokens");
   });
 
   it("has the search box in the header on every page but the home page, where the big one is", async () => {

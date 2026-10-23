@@ -343,6 +343,19 @@ export const getAddressList = async (sort: AddressSort, before: string | null, l
 /** What a token is called and counts in, from the token route, which reads no balance from reth. */
 export interface TokenInfo { address: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null }
 export const getTokenInfo = async (a: string) => (await call(`/api/tokens/${encodeURIComponent(a)}`, [200])).body as TokenInfo;
+/** A token of the list: counts are the explorer's, complete as far as `derived`. `metadataStatus` is read, pending or failed; name, symbol, decimals and supply are null until the contract has answered. */
+export interface TokenListItem extends TokenInfo {
+  totalSupply: string | null; holderCount: number; transferCount: number; firstTransferBlock: number; gatewayWrapped: boolean; metadataStatus: "read" | "pending" | "failed";
+}
+export type TokenSort = "holders" | "transfers" | "newest";
+/** One token: `balanceMode` says whether its balances are summed from the Transfer logs ("derived") or read with balanceOf. */
+export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean }
+export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
+const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;
+export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenListItem>;
+export const getToken = async (a: string) => (await call(tk(a), [200])).body as TokenDetail;
+export const getTokenHolders = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/holders")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenHolder>;
+export const getTokenTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
 export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
