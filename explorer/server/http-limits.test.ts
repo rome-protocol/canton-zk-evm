@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -177,13 +178,36 @@ describe("the verification limit: 30 an hour, 500 KB a request", () => {
     expect(await (await at("/api?module=contract&action=getabi&address=0x1")).json()).toEqual({ ok: true });
   });
 
-  it("takes a verification of 500 KB, and refuses 500 KB and a byte, without calling the API", async () => {
+  it("takes a body of the raw cap (three times the source, and room for the other fields), and refuses it and a byte, without calling the API", async () => {
     await start();
     const head = "module=contract&action=verifysourcecode&sourceCode=";
     const ok = await at("/api", { method: "POST", body: head + "a".repeat(MAX_VERIFY_BODY - head.length) });
     expect(await ok.json()).toEqual({ ok: true });
-    const big = await at("/api", { method: "POST", body: head + "a".repeat(MAX_VERIFY_BODY - head.length + 1) });
-    expect(await big.json()).toMatchObject({ status: "0", message: "NOTOK", result: expect.stringMatching(/at most 500 KB/) });
+    // A body over the cap is refused from its Content-Length, before it is read: the request sends the header and no body (a client that sent 1.5 MB would see the connection closed).
+    const big = await new Promise<{ status: number; text: string }>((ok, fail) => {
+      const req = request({ host: "127.0.0.1", port: (server.address() as AddressInfo).port, path: "/api", method: "POST", headers: { "content-length": String(MAX_VERIFY_BODY + 1), "content-type": "application/x-www-form-urlencoded" } }, (res) => {
+        let text = "";
+        res.on("data", (c: Buffer) => { text += c.toString(); });
+        res.on("end", () => ok({ status: res.statusCode ?? 0, text }));
+      });
+      req.on("error", fail);
+      req.flushHeaders();
+    });
+    expect(JSON.parse(big.text)).toMatchObject({ status: "0", message: "NOTOK", result: expect.stringMatching(/at most 500 KB/) });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("reads a verification form whose source is just under 500 KB although the encoded form is longer than 500 KB", async () => {
+    await start();
+    // Solidity grows when a form encodes it: spaces, braces, semicolons and newlines are three bytes each.
+    const line = "contract A { function f(uint256 x) public pure returns (uint256) { return x + 1; } }\n";
+    const source = line.repeat(Math.floor((500 * 1024 - 100) / line.length));
+    expect(Buffer.byteLength(source)).toBeLessThan(500 * 1024);
+    const body = new URLSearchParams({ module: "contract", action: "verifysourcecode", sourceCode: source }).toString();
+    expect(body.length).toBeGreaterThan(500 * 1024);
+    expect(body.length).toBeLessThan(MAX_VERIFY_BODY);
+    const ok = await at("/api", { method: "POST", body });
+    expect(await ok.json()).toEqual({ ok: true });
     expect(calls).toHaveLength(1);
   });
 

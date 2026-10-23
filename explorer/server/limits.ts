@@ -19,8 +19,13 @@ export const RULES = {
   verification: [{ capacity: 30, perSecond: 30 / 3600 }],
 } as const satisfies Record<string, readonly Bucket[]>;
 
-/** The biggest body of a verification request (a contract's source and its settings). */
-export const MAX_VERIFY_BODY = 500 * 1024;
+/** The biggest source a verification request may carry (the queue checks the decoded source against it). */
+export const MAX_VERIFY_SOURCE = 500 * 1024;
+/**
+ * The biggest raw body of a verification request. A form encodes the source (each byte that is not a letter, a digit or one of `-._~` becomes `%XX`, three bytes; Solidity grows
+ * about 1.3 times), so the body is read up to three times the source, and the other fields' room; the source's own 500 KB is checked after decoding.
+ */
+export const MAX_VERIFY_BODY = 3 * MAX_VERIFY_SOURCE + 64 * 1024;
 
 /** How many clients a limiter remembers. A client that has been quiet long enough to hold a full bucket is forgotten first. */
 const MAX_CLIENTS = 10_000;
@@ -69,7 +74,7 @@ export const REST_REFUSED = (seconds: number): string => `Too many requests. Try
 /** Etherscan's own answer to a client over its rate: `status` "0", HTTP 200. */
 export const ETHERSCAN_REFUSED = { status: "0", message: "NOTOK", result: "Max rate limit reached" } as const;
 export const verificationRefused = (seconds: number) => ({ status: "0", message: "NOTOK", result: `Verification limit reached: 30 requests an hour for each client. Try again in ${seconds} s.` });
-export const verificationTooBig = () => ({ status: "0", message: "NOTOK", result: `The request is too big: a verification request is at most ${MAX_VERIFY_BODY / 1024} KB.` });
+export const verificationTooBig = () => ({ status: "0", message: "NOTOK", result: `The request is too big: the source of a verification request is at most ${MAX_VERIFY_SOURCE / 1024} KB.` });
 
 /** What an Etherscan proxy request may weigh: the public RPC's own body limit (a contract creation sent with ethers goes by POST). */
 export const MAX_PROXY_BODY = 256 * 1024;
