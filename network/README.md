@@ -82,7 +82,7 @@ What persistent mode changes, and what it does not:
 
 - **Canton** keeps the synchronizer, the sequencer, the mediator and the three participants in PostgreSQL, one database each (`canton/canton-persistent.conf`, added as a second `-c`). The ZkChain contract, every block record and every Canton holding are in those databases. The Daml package, the parties and the Ledger API users are too.
 - **The database** is one PostgreSQL, started by `postgres.sh`. Its image is pinned by digest in `PINS` (`POSTGRES_IMAGE`). It listens on 127.0.0.1 only (port 5432, or `CZE_PG_PORT`), and its data is in the Docker volume `cze-postgres-data`. Its password is made on the machine, once, into `$CZE_STATE_DIR/postgres.env` (mode 0600). It is never printed and never committed. Docker reads it from that file, and Canton gets it through its environment.
-- **The explorer's database** is a second PostgreSQL, started by `explorer-db.sh` (by `up.sh` and `restart.sh`, and stopped by `down.sh`), in its own container with its own volume and password. It holds nothing of Canton's. See [The explorer's database](#the-explorers-database).
+- **The explorer's database** is a second PostgreSQL, started by `explorer-db.sh` (by `up.sh` and `restart.sh`, and stopped by `down.sh`), in its own container with its own volume and password. This database stores explorer data; Canton keeps its own. See [The explorer's database](#the-explorers-database).
 - **reth** keeps its data in `$CZE_STATE_DIR/reth-data` instead of the Docker volume that a normal stop removes. It also writes every block to disk as soon as it imports it (`--engine.persistence-threshold 0` and `--engine.memory-block-buffer-target 0`, which `launch.sh` requires in this mode). reth's default keeps the newest seven blocks in memory, and a hard kill, an out-of-memory kill or a power loss would then leave it behind Canton, which has already committed those blocks. The builder imports a block about 7 s before Canton commits it, so this costs no block time. `reth/launch.sh` is still the only way reth is started: peer discovery is off, there are no peers and no published p2p port, and every check in `launch.sh` and `check.sh` runs on a restart as on the first start.
 - **The Engine secret and the genesis** stay in `$CZE_STATE_DIR` (`jwt.hex`, `genesis.json`), and a restart reuses them. `persist.env` there records the Canton version, the chain id, and the names and ports of the database container and of reth's container (`persist-settings.sh`). `restart.sh` and `down.sh` use those, so they act on the same containers as the run that made the chain, and refuse an environment variable that names another. It marks the folder as a persistent chain: `up.sh` will not start a new chain over it, with or without `CZE_PERSIST`.
 
@@ -105,7 +105,7 @@ The chain's history is as safe as the machine's disk. Back up the databases (`pg
 
 ### The explorer's database
 
-The explorer and its indexer keep their data in a PostgreSQL of their own. It is not Canton's database: the explorer's heavy queries (long lists, stats rollups, a rebuild of the index) must never compete with Canton's commits for the same server, and a block is only final once Canton has committed it. `explorer-db.sh` runs it, with one database (`explorer`) and one user (`explorer`).
+The explorer and its indexer keep their data in a PostgreSQL of their own. It is not Canton's database. The explorer's heavy queries (long lists, stats rollups, a rebuild of the index) run on a server of their own, so they do not share Canton's connections, locks or cache. Both servers run on the same host and share its CPU, memory and disk: `explorer-db.sh` sets no limits, and no test measures how one affects the other. `explorer-db.sh` runs it, with one database (`explorer`) and one user (`explorer`).
 
 | What | Value |
 |---|---|
@@ -124,7 +124,7 @@ network/explorer-db.sh wipe    # removes the container, the volume and the passw
 
 `up.sh` (with `CZE_PERSIST=1`) and `restart.sh` call `start`, and `down.sh` calls `stop`. If it does not start, they print a warning and go on: the chain does not depend on the explorer. `down.sh --wipe` calls `wipe` and keeps `persist.env` if it fails, so the next run still knows there is something to remove. For a network that is not persistent, `explorer/run.sh start` starts the same database, and `down.sh` and `explorer/run.sh stop` wipe it with the chain. A database that the caller names (`EXPLORER_DATABASE_URL` or `EXPLORER_DB_PASSWORD_FILE`) is never started or wiped by these scripts.
 
-A wipe loses everything in it, including what exists nowhere else: the transaction tracker's rows and the faucet's requests. A new chain started from the same genesis needs an empty database, because the indexer stops on the old chain's rows (see "A new chain, and a moved reader" in [explorer/README.md](../explorer/README.md)).
+A wipe loses everything in it, including what exists nowhere else: the transaction tracker's rows, the faucet's requests and the verified contract sources. A new chain started from the same genesis needs an empty database, because the indexer stops on the old chain's rows (see "A new chain, and a moved reader" in [explorer/README.md](../explorer/README.md)).
 
 ## Running on an existing participant (the Canton Network)
 
