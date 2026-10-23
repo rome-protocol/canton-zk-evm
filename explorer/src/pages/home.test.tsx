@@ -526,6 +526,35 @@ describe("the value of a transaction that is not final yet", () => {
     expect(await within(row).findByText("tNFT #3")).toHaveClass("tname");
   });
 
+  const topic = (b: number) => "0x" + "0".repeat(24) + b.toString(16).padStart(2, "0").repeat(20);
+  const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
+  const done = { block: { number: 4, hash: null, updateId: null }, success: true };
+
+  it("asks the labels route for the token of the receipt's Transfer when it is not the token the transaction was sent to", async () => {
+    const other = { address: addr(0xa5), name: "Other USD", symbol: "tOTH", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
+    const logs = [{ address: addr(0xa5), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(2_000_000n) }];
+    const row = await open(proving({ ...done, to: addr(0x77), logs, transfer: null }), [other]);
+    expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+  });
+
+  it("takes only the log shapes the indexer takes: 3 topics with one 32-byte word, 4 topics with no data", async () => {
+    const logs = [
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: "0x" },
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(1n) + "00" },
+      { address: addr(0x9c), topics: [TRANSFER, topic(0x71), topic(0x72), word(3n)], data: word(1n) },
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(5_000_000n) },
+    ];
+    const row = await open(proving({ ...done, logs }));
+    expect(await within(row).findByText("5 tUSD")).toBeInTheDocument();
+  });
+
+  it("shows no chip for a receipt whose only Transfer is not shaped as the standards say", async () => {
+    const logs = [{ address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: "0x" }];
+    const row = await open(proving({ ...done, logs, transfer: null, value: "1000000000000000000" }));
+    await waitFor(() => expect(row).toHaveTextContent("1 tROME"));
+    expect(row.querySelector(".tchip")).toBeNull();
+  });
+
   it("shows the coin alone when the transaction decodes to no transfer", async () => {
     const row = await open(proving({ transfer: null, value: "1000000000000000000" }));
     await waitFor(() => expect(row).toHaveTextContent("1 tROME"));

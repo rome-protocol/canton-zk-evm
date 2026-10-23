@@ -267,6 +267,15 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
       expect(await within(row).findByText("7 tUSD")).toHaveClass("tname");
       expect(row).not.toHaveTextContent("100 tUSD");
     });
+    it("names the token of the receipt's Transfer when it is another token than the one the transaction was sent to", async () => {
+      const other = { ...usd, address: addr(0xa5), name: "Other USD", symbol: "tOTH" };
+      const logs = [{ address: addr(0xa5), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (2_000_000n).toString(16).padStart(64, "0") }];
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs, transfer: null }) });
+      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [other] }) : base(path)), { routed: true }));
+      renderApp("/txs");
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+    });
   });
 
   it("says Create: and what the transaction made, and shows a plain send as the coin", async () => {

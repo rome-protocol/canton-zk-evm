@@ -17,7 +17,7 @@ import { methodOf } from "../method.ts";
 import { listPoll, notFinalCounts, readOf, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
-import { AllTime, DASH_WHY, Moved, ProvingMoved, Stat, Time } from "./HomeParts.tsx";
+import { AllTime, DASH_WHY, Moved, ProvingMoved, provingToken, Stat, Time } from "./HomeParts.tsx";
 import "./home.css";
 
 const PER = 25;
@@ -92,7 +92,8 @@ const head = (coin: Coin) => <thead><tr><th>Transaction hash</th><th>Method</th>
 /**
  * How many are not final yet in all, from the attempts and the pool; the in-flight list is capped by the server and is not the count. `atLeast` when the pool is
  * not counted. `inBlocks` is the part in blocks being proven that the final total does not hold already. The pool is a count with no hashes, so a transaction
- * waiting when it was read may be final by the time of the final total: `about` says so when the pool was read before that total.
+ * waiting when it was read may be final by the time of the final total, and an attempt whose block the final total already holds is left out of the blocks being proven: `about`
+ * says so when the pool was read before that total, and when an attempt's block is at or below the block the total reaches.
  */
 type Total = { total: number; atLeast: boolean; inBlocks: number; about: boolean };
 const totalOf = (f: InFlight | undefined, asOfBlock?: number | null, asOf?: string | null): Total | null => {
@@ -177,7 +178,7 @@ function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, ro
   const details = useDetails(shown);
   const labels = useLabels([
     ...(items ?? []).flatMap((t) => [t.from, t.to, t.created, t.tokenMoves?.first?.token]),
-    ...details.flatMap((t) => (t ? [t.from, t.to, t.created] : [])),
+    ...details.flatMap((t) => (t ? [t.from, t.to, t.created, provingToken(t)] : [])),
   ]);
   if (p.error && !items) return <ErrorCard message={p.error.message} retrying />;
   if (!items || !st) return <LoadingCard>Reading the transactions…</LoadingCard>;
@@ -213,7 +214,7 @@ function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, ro
 function NotFinalOnly({ st, now, faucet, notFinal, all }: { st: ApiStatus | undefined; now: number; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null }) {
   const shown = notFinal.slice(0, NOT_FINAL_SHOWN);
   const details = useDetails(shown);
-  const labels = useLabels(details.flatMap((t) => (t ? [t.from, t.to, t.created] : [])));
+  const labels = useLabels(details.flatMap((t) => (t ? [t.from, t.to, t.created, provingToken(t)] : [])));
   if (!all || !st) return <LoadingCard>Reading what is not final yet…</LoadingCard>;
   const c: Ctx = { now, coin: st.coin, faucet, chain: st.chainName, labels };
   const unlisted = all.total - shown.length;
