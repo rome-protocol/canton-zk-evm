@@ -225,6 +225,16 @@ cut_block() {
   out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
     "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $out"
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
+  # The nightly's L3 reads the block's update id here when it can; it times a block from the update's offset on the reader's participant (canton_updates.reader_offset, found by update id).
+  [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
+}
+# Canton's head: what the chain's state contract holds, as one JSON line {"headNumber", "headHash"}. L3 reads it after a cut that failed, to tell a chain that forked
+# (Canton and reth hold different heads) from a block that Canton has.
+canton_head() {
+  CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+    "$PY" -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import builder as b
+cfg = b.Config.from_env(); cfg.read_as = tuple(sys.argv[2:])
+head = b.Ledger(cfg).head(); print(json.dumps({"headNumber": int(head["headNumber"]), "headHash": head["headHash"]}))' "$ROOT/builder" "$OPERATOR_PARTY" "$GATEWAY_PARTY"
 }
 receipt_of() { "$PY" "$ROOT/demo/evm.py" receipt "$1"; }
 "$ROOT/tests/build_w1_fixtures.sh" "$WORK/w1"
@@ -317,5 +327,13 @@ docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp \
   | tee "$WORK/w1.log"
 grep -q 'W1 inline:' "$WORK/w1.log" || fail "the W1 test did not run"
 grep -E '^W1 ' "$WORK/w1.log" || true
+
+# The nightly load test (.github/workflows/explorer-nightly.yml) runs L3 to L5 on this chain, with this script's functions and variables, before it is taken down.
+# REHEARSAL_NIGHTLY names a script of this repository; without it the rehearsal is what every demo change runs.
+if [ -n "${REHEARSAL_NIGHTLY:-}" ]; then
+  echo "== the nightly load test: $REHEARSAL_NIGHTLY"
+  # shellcheck disable=SC1090
+  . "$ROOT/$REHEARSAL_NIGHTLY"
+fi
 
 echo "demo rehearsal passed"

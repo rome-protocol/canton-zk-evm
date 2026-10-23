@@ -2,12 +2,12 @@
 .crumbs a { color: inherit; }
 .ptitle { flex-wrap: wrap; }
 .way { margin: 14px 0 18px; }
-.way-steps { grid-template-columns: repeat(4, 1fr); }
-.way-steps li { padding-top: 40px; }
+.how-steps.way-steps { grid-template-columns: repeat(4, 1fr); }
+.how-steps.way-steps li { padding-top: 40px; }
 /* Each step's li draws the line that leaves it, so a gap time sits on the line that comes into the step: centred on the segment between the two dots. */
 .way-delta { position: absolute; left: calc(-50% - 6px); transform: translateX(-50%); white-space: nowrap; top: 0; }
-.way-steps .how-dot { top: 22px; }
-.way-steps li::before { top: 28px; }
+.how-steps.way-steps .how-dot { top: 22px; }
+.how-steps.way-steps li::before { top: 28px; }
 .way-foot { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
 .tx-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .tx-main, .tx-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
@@ -28,17 +28,24 @@
 .raw-json { overflow-x: auto; max-height: 520px; font-size: 12.5px; }
 @media (max-width: 900px) {
   .tx-grid { grid-template-columns: 1fr; }
-  .way-steps { grid-template-columns: 1fr; }
-  .way-steps li { padding: 0 0 0 26px; }
+  .how-steps.way-steps { grid-template-columns: 1fr; }
+  .how-steps.way-steps li { padding: 0 0 0 26px; }
   .way-delta { position: static; transform: none; white-space: normal; }
-  .way-steps li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 2px; }
-  .way-steps .how-n { grid-column: 1; }
-  .way-steps .how-t { grid-column: 2; grid-row: 1; align-self: baseline; }
-  .way-steps .how-d, .way-steps .how-src { grid-column: 1; }
-  .way-steps .how-src { justify-self: start; }
-  .way-steps .way-delta { grid-column: 2; grid-row: 2; text-align: right; }
+  .how-steps.way-steps li { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 2px; }
+  .how-steps.way-steps .how-n { grid-column: 1; }
+  .how-steps.way-steps .how-t { grid-column: 2; grid-row: 1; align-self: baseline; }
+  .how-steps.way-steps .how-d, .how-steps.way-steps .how-src { grid-column: 1; }
+  .how-steps.way-steps .how-src { justify-self: start; }
+  .how-steps.way-steps .way-delta { grid-column: 2; grid-row: 2; text-align: right; }
   .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; }
-  .way-steps .how-dot { top: 3px; }
-  .way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
+  .how-steps.way-steps .how-dot { top: 3px; }
+  .how-steps.way-steps li::before { left: 6px; top: 16px; bottom: -14px; right: auto; width: 2px; height: auto; }
 }
 .tx-h { margin: 0 0 8px; }
+/* The card header: a small title with its words beside it, over a line across the card. */
+.card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 14px; flex-wrap: wrap; margin: -18px -20px 14px; padding: 14px 20px; border-bottom: 1px solid var(--line-2); }
+.card-h h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
+.card-h h2 .muted { font-size: 12.5px; font-weight: 400; margin-left: 8px; }
+.card-h > .muted { font-size: 12.5px; }
+.ev-filter .btn-line { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
+.ev-filter .btn-line[aria-pressed="true"] { border-color: var(--canton-line); background: var(--canton-tint); color: var(--canton); }

@@ -5,6 +5,7 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { RethError } from "../reth.ts";
 import { createIndexer, type DeriveShape, type Indexer, type Timing } from "./indexer.ts";
+import { reindexRange } from "./reindex.ts";
 
 // Every indexer a test opens is closed when the test ends, pass or fail: an open one holds the advisory lock, and the database cannot be dropped
 // until it is released, so a failed assertion would otherwise end as a timeout with its message lost.
@@ -408,4 +409,22 @@ describe.skipIf(!TEST_URL)("L1: synthetic blocks within the ingestion budgets", 
       });
     }, 60_000);
   }
+
+  // B2: a re-index runs at 2,500 transactions a second or more. The rate is of the whole range: the reads, the checks and the rewrite of every row.
+  it("L1: re-indexes at 2,500 transactions a second or more (B2)", async () => {
+    await inDb(async (pool) => {
+      const txs = 5000;
+      const { chain, indexer } = await setup(pool, [{ txs, leg: 1 }], "behind");
+      expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 1 });
+      expect(await indexer.deriveOnce()).toEqual({ state: "caught-up", indexed: 1 });
+      await indexer.close();
+      const before = await counts(pool);
+      const started = performance.now();
+      expect(await reindexRange({ pool, reads: chain.reads, gateway: GATEWAY }, 1, null)).toEqual({ from: 1, to: 1, blocks: 1 });
+      const seconds = (performance.now() - started) / 1000;
+      console.log(`L1 re-index ${txs} txs: ${Math.round(seconds * 1000)} ms, ${Math.round(txs / seconds)} txs/s`);
+      expect(await counts(pool)).toEqual(before);
+      expect(txs / seconds).toBeGreaterThanOrEqual(2500);
+    });
+  }, 60_000);
 });

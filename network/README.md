@@ -7,7 +7,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `genesis.json`, `make-state.sh` | The chain's genesis, and the per-run state (the Engine secret, and the genesis that reth reads: the chain's genesis, or the one `CZE_GENESIS_FILE` names, plus the gateway contract from `gateway/` at `GATEWAY_ADDRESS`) |
 | `reth/` | `launch.sh` is the only way reth is started. Peer discovery is always off. `check.sh` proves it is off, `stop.sh` stops it |
 | `canton/canton.conf` | One synchronizer and three participants, all in memory, all on localhost |
-| `explorer-db.sh` | The explorer's own PostgreSQL, beside Canton's (see [Keeping the chain across restarts](#keeping-the-chain-across-restarts)) |
+| `explorer-db.sh` | The explorer's own PostgreSQL, beside Canton's (see [The explorer's database](#the-explorers-database)) |
 | `canton/canton-persistent.conf`, `postgres.sh` | The persistent mode: the same nodes in PostgreSQL, and the database that holds them (see [Keeping the chain across restarts](#keeping-the-chain-across-restarts)) |
 | `canton/bootstrap.canton` | Starts the nodes, connects the participants, creates the parties (the gateway party among them) and Ledger API users, uploads and vets the Daml package |
 | `canton/run.sh`, `canton/resume.canton` | Start Canton and wait until it is ready: `run.sh bootstrap` runs `bootstrap.canton`, and `run.sh resume` (persistent mode only) starts the nodes on the databases they kept and runs `resume.canton`, which creates nothing |
@@ -82,7 +82,7 @@ What persistent mode changes, and what it does not:
 
 - **Canton** keeps the synchronizer, the sequencer, the mediator and the three participants in PostgreSQL, one database each (`canton/canton-persistent.conf`, added as a second `-c`). The ZkChain contract, every block record and every Canton holding are in those databases. The Daml package, the parties and the Ledger API users are too.
 - **The database** is one PostgreSQL, started by `postgres.sh`. Its image is pinned by digest in `PINS` (`POSTGRES_IMAGE`). It listens on 127.0.0.1 only (port 5432, or `CZE_PG_PORT`), and its data is in the Docker volume `cze-postgres-data`. Its password is made on the machine, once, into `$CZE_STATE_DIR/postgres.env` (mode 0600). It is never printed and never committed. Docker reads it from that file, and Canton gets it through its environment.
-- **The explorer's database** is a second PostgreSQL, started by `explorer-db.sh` (by `up.sh` and `restart.sh`, and stopped by `down.sh`). It is the same pinned image, in its own container (`cze-explorer-db`, or `CZE_EXPLORER_DB_CONTAINER`) with its own volume, on 127.0.0.1 only (port 5433, or `CZE_EXPLORER_DB_PORT`), and its own password in `$CZE_STATE_DIR/explorer-db.env` (mode 0600). The explorer makes its schema itself (`explorer/server/db/cli.ts migrate`). `down.sh --wipe` removes it too, and says so; if it cannot be removed, the message names it. A network that is not persistent takes the explorer's database with it too: `down.sh` removes it when `explorer/run.sh` made one (`$CZE_STATE_DIR/explorer-db.env` is there), so the next chain, from the same genesis, does not meet the old chain's rows.
+- **The explorer's database** is a second PostgreSQL, started by `explorer-db.sh` (by `up.sh` and `restart.sh`, and stopped by `down.sh`), in its own container with its own volume and password. This database stores explorer data; Canton keeps its own. See [The explorer's database](#the-explorers-database).
 - **reth** keeps its data in `$CZE_STATE_DIR/reth-data` instead of the Docker volume that a normal stop removes. It also writes every block to disk as soon as it imports it (`--engine.persistence-threshold 0` and `--engine.memory-block-buffer-target 0`, which `launch.sh` requires in this mode). reth's default keeps the newest seven blocks in memory, and a hard kill, an out-of-memory kill or a power loss would then leave it behind Canton, which has already committed those blocks. The builder imports a block about 7 s before Canton commits it, so this costs no block time. `reth/launch.sh` is still the only way reth is started: peer discovery is off, there are no peers and no published p2p port, and every check in `launch.sh` and `check.sh` runs on a restart as on the first start.
 - **The Engine secret and the genesis** stay in `$CZE_STATE_DIR` (`jwt.hex`, `genesis.json`), and a restart reuses them. `persist.env` there records the Canton version, the chain id, and the names and ports of the database container and of reth's container (`persist-settings.sh`). `restart.sh` and `down.sh` use those, so they act on the same containers as the run that made the chain, and refuse an environment variable that names another. It marks the folder as a persistent chain: `up.sh` will not start a new chain over it, with or without `CZE_PERSIST`.
 
@@ -102,6 +102,29 @@ When the builder fails and then cannot move reth back either, its report keeps t
 The chain's history is as safe as the machine's disk. Back up the databases (`pg_dump` of the five) and `$CZE_STATE_DIR/reth-data` together, taken while the network is stopped, if you need a copy.
 
 `tests/canton_persist.sh` runs this on the real Canton: one Advance, then Canton killed (`kill -9`) and the database stopped, both started again the way `restart.sh` does, and the chain must be the same contract at the same head with the same block hash, with the block record still visible to the reader, the party list unchanged, and no second bootstrap.
+
+### The explorer's database
+
+The explorer and its indexer keep their data in a PostgreSQL of their own. It is not Canton's database. The explorer's heavy queries (long lists, stats rollups, a rebuild of the index) run on a server of their own, so they do not share Canton's connections, locks or cache. Both servers run on the same host and share its CPU, memory and disk: `explorer-db.sh` sets no limits, and no test measures how one affects the other. `explorer-db.sh` runs it, with one database (`explorer`) and one user (`explorer`).
+
+| What | Value |
+|---|---|
+| Image | The one `PINS` names as `POSTGRES_IMAGE`, the same digest as Canton's database |
+| Container and volume | `cze-explorer-db` (or `CZE_EXPLORER_DB_CONTAINER`), with the Docker volume `<container>-data`, so the data outlives the container |
+| Address | `127.0.0.1:5433` (or `CZE_EXPLORER_DB_PORT`), never a public address. The explorer containers run with `--network host` and reach it there |
+| Password | Made once on the machine with `openssl rand -hex 24`, into `$CZE_STATE_DIR/explorer-db.env` (mode 0600, as the line `POSTGRES_PASSWORD=...`). It is never printed and never committed. Docker reads it from the file (`--env-file`), and the explorer reads it through `EXPLORER_DB_PASSWORD_FILE` |
+| Settings | `fsync` stays on, so a crash cannot lose a committed block. `max_connections=100`. The container runs with `no-new-privileges` |
+| Schema | Not made here. The explorer applies its own migrations (`node server/db/cli.ts migrate`), which `explorer/run.sh start` runs first |
+
+```sh
+network/explorer-db.sh start   # starts it, or starts the stopped one, waits for three answers in a row, makes the database if the volume lacks it
+network/explorer-db.sh stop    # stops it and keeps the data
+network/explorer-db.sh wipe    # removes the container, the volume and the password file; fails, and says what is left, if any of them stays
+```
+
+`up.sh` (with `CZE_PERSIST=1`) and `restart.sh` call `start`, and `down.sh` calls `stop`. If it does not start, they print a warning and go on: the chain does not depend on the explorer. `down.sh --wipe` calls `wipe` and keeps `persist.env` if it fails, so the next run still knows there is something to remove. For a network that is not persistent, `explorer/run.sh start` starts the same database, and `down.sh` and `explorer/run.sh stop` wipe it with the chain. A database that the caller names (`EXPLORER_DATABASE_URL` or `EXPLORER_DB_PASSWORD_FILE`) is never started or wiped by these scripts.
+
+A wipe loses everything in it, including what exists nowhere else: the transaction tracker's rows, the faucet's requests and the verified contract sources. A new chain started from the same genesis needs an empty database, because the indexer stops on the old chain's rows (see "A new chain, and a moved reader" in [explorer/README.md](../explorer/README.md)).
 
 ## Running on an existing participant (the Canton Network)
 
