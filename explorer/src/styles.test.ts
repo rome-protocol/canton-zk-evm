@@ -62,7 +62,8 @@ describe("fonts and outside requests", () => {
 
   it("loads nothing from another host: no web address in the pages' styles, markup or code", () => {
     for (const f of [...sources(join(root, "src")), join(root, "index.html")]) {
-      expect(readFileSync(f, "utf8").replace(/http:\/\/www\.w3\.org\/2000\/svg/g, ""), f).not.toMatch(/https?:\/\/|\/\/fonts\.|@import/);
+      // The one other address is the link to the source, which a person may follow: nothing is loaded from it.
+      expect(readFileSync(f, "utf8").replace(/http:\/\/www\.w3\.org\/2000\/svg/g, "").replace(/https:\/\/github\.com\/rome-protocol\/canton-zk-evm"/g, '"'), f).not.toMatch(/https?:\/\/|\/\/fonts\.|@import/);
     }
   });
 });
@@ -70,9 +71,28 @@ describe("fonts and outside requests", () => {
 describe("phone width", () => {
   const phone = /@media \(max-width: 720px\) \{([\s\S]*)\n\}/.exec(css)?.[1] ?? "";
 
-  it("keeps the name and Faucet on the top row, drops the chain id and puts the search box under them", () => {
-    expect(phone).toMatch(/\.pill \{ display: none; \}/);
+  it("keeps the name and the network pill on the top row with a menu button, and puts the search box under them at full width", () => {
+    expect(phone).not.toMatch(/\.pill \{ display: none; \}/);
+    expect(css).toMatch(/\n\.menu \{[^}]*display: none/);
+    expect(phone).toMatch(/\.menu \{[^}]*display: (inline-)?flex/);
     expect(phone).toMatch(/\.search \{[^}]*flex-basis: 100%/);
+  });
+
+  it("folds the pages away behind the menu button, and shows them when it is open", () => {
+    expect(phone).toMatch(/\.nav \{[^}]*display: none/);
+    expect(phone).toMatch(/\.nav\.open \{[^}]*display: flex/);
+  });
+
+  it("holds the top bar to one line: the checks and the final block, with the rest left for wide screens", () => {
+    expect(phone).toMatch(/\.topbar \{[^}]*flex-wrap: nowrap/);
+    expect(phone).toMatch(/\.tb-wide \{ display: none; \}/);
+  });
+
+  it("gives every grid of the home page columns that may shrink, so that a phone does not scroll sideways", () => {
+    const every = css.split("@media (max-width: 720px)").slice(1).join("\n");
+    expect(every).toMatch(/\.cols \{ grid-template-columns: minmax\(0, 1fr\);/);
+    expect(every).toMatch(/\.stats, \.stats\.six, \.cells \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+    expect(css).toMatch(/\.foot-links \{[^}]*flex-wrap: wrap/);
   });
 
   it("lays the block page out in one column, EVM side first and Canton second, with each value under its label", () => {

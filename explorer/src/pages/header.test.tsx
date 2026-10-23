@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { blockItem, fakeApi, page, renderApp, route, T0, status, reply } from "../test-utils.tsx";
+import { blockItem, fakeApi, health, page, renderApp, route, T0, status, reply } from "../test-utils.tsx";
 
 describe("the header", () => {
   it("links only the pages that exist, in the order of the approved screens, and marks the one that is open; the API link opens the API page", async () => {
@@ -53,7 +53,7 @@ describe("the header", () => {
     expect(bar.getByText("All checks ok")).toBeInTheDocument();
     expect(bar.getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
     expect(bar.getByRole("link", { name: "block 4" })).toHaveAttribute("href", "/block/4");
-    expect(bar.getByText("Chain 770101 · coin tROME")).toBeInTheDocument();
+    expect(bar.getByText("770101").parentElement).toHaveTextContent("Chain 770101 · coin tROME");
   });
 
   it("names the network in a pill, and says that the coin is a test coin, when the status names a network", async () => {
@@ -76,7 +76,7 @@ describe("the header", () => {
   it("reads the base fee from the newest final block, to three digits, and says so when it cannot be read", async () => {
     fakeApi(route({ blocks: () => reply(page([blockItem(3, { baseFee: "67300000" })])) }));
     renderApp("/blocks");
-    expect(await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("Base fee 0.0673 gwei")).toBeInTheDocument();
+    expect((await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("0.0673 gwei")).parentElement).toHaveTextContent("Base fee 0.0673 gwei");
   });
 
   it("says the base fee cannot be read when the blocks cannot be, and that none is known for a chain with no block", async () => {
@@ -89,5 +89,43 @@ describe("the header", () => {
     fakeApi(route({ status: () => reply(status({ ok: false, problems: ["block 3: a hash differs"] }), 503) }));
     renderApp("/blocks");
     expect(await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("A check failed")).toBeInTheDocument();
+  });
+
+  const checksOf = async () => (await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText(/checks? (ok|not ok)|check failed|Starting/)).closest(".sd")!;
+
+  it("counts the checks the server runs: 'All 16 checks ok', with the count in bold", async () => {
+    fakeApi(route({ health: () => reply(health(16)) }));
+    renderApp("/blocks");
+    const bar = within(await screen.findByRole("region", { name: "Chain at a glance" }));
+    const sd = await waitFor(async () => { const e = (await bar.findByText("16", { selector: "b" })).closest(".sd"); expect(e).toHaveTextContent("All 16 checks ok"); return e!; });
+    expect(sd).toHaveClass("ok");
+  });
+
+  it("says how many checks are not ok when some are, and counts a check that is down the same", async () => {
+    fakeApi(route({ status: () => reply(status({ ok: false, problems: ["x"] }), 503), health: () => reply(health(16, 2, "down"), 503) }));
+    renderApp("/blocks");
+    const sd = await waitFor(async () => { const e = (await within(await screen.findByRole("region", { name: "Chain at a glance" })).findByText("16", { selector: "b" })).closest(".sd")!; expect(e).toHaveTextContent("2 of 16 checks not ok"); return e; });
+    expect(sd).toHaveClass("bad");
+  });
+
+  it("says no count when the checks cannot be read, and never makes one up", async () => {
+    fakeApi(route({ health: () => reply({ error: "no" }, 500) }));
+    renderApp("/blocks");
+    expect(await checksOf()).toHaveTextContent(/^All checks ok$/);
+  });
+
+  it("says 'Starting' while the index starts, whatever the count", async () => {
+    fakeApi(route({ status: () => reply(status({ ok: false, starting: true }), 503), health: () => reply({ ...health(16), starting: true }) }));
+    renderApp("/blocks");
+    expect(await checksOf()).toHaveTextContent("Starting");
+  });
+
+  it("puts the values of the bar in bold: the block numbers, the fee and the chain", async () => {
+    fakeApi(route({ blocks: () => reply(page([blockItem(3, { baseFee: "67300000" })])) }));
+    renderApp("/blocks");
+    const bar = within(await screen.findByRole("region", { name: "Chain at a glance" }));
+    expect(await bar.findByText("0.0673 gwei", { selector: "b" })).toBeInTheDocument();
+    expect(bar.getByRole("link", { name: "3" }).closest("b")).not.toBeNull();
+    expect(bar.getByText("770101", { selector: "b" })).toBeInTheDocument();
   });
 });

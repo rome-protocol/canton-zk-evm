@@ -155,6 +155,18 @@ export async function getStatus(): Promise<ApiStatus> {
   return body as ApiStatus;
 }
 
+/** One check of /api/health: the word it counts for (`ok`, `degraded` or `down`). */
+export interface HealthCheck { id: string; role: string; status: "ok" | "degraded" | "down"; detail: string | null }
+/** What /api/health says: the overall word, whether the index is still starting, and every check it runs. */
+export interface ApiHealth { status: "ok" | "degraded" | "down"; starting: boolean; problems: string[]; checks: HealthCheck[] }
+
+/** The health. The server answers 503 with the same fields when a check is down, so that is an answer here too. A body without the list of checks is not one. */
+export async function getHealth(): Promise<ApiHealth> {
+  const { body } = await call("/api/health", [200, 503]);
+  if (!body || typeof body !== "object" || !("checks" in body) || !Array.isArray(body.checks)) throw new ApiError(UNREADABLE, 503);
+  return body as ApiHealth;
+}
+
 /** A token or verified contract whose name starts with what was typed. */
 export interface SearchMatch { kind: "token" | "contract"; name: string; symbol: string | null; address: string; path: string }
 /** What the search found: the page to open (the first match, for a name), and every match when a name matched more than one. */

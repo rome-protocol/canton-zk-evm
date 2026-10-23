@@ -1,14 +1,15 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
 import { PaintedProvider, usePainted } from "../painted.tsx";
-import { useNow, useStatus } from "../useStatus.ts";
+import { useHealth, useNow, useStatus } from "../useStatus.ts";
+import { FOOTER_LINE, SOURCE_URL } from "../copy.ts";
 import { baseFee, duration } from "../format.ts";
 import { useBlocks } from "../stats.ts";
 import { Icon } from "./Icon.tsx";
 import { SearchBox } from "./SearchBox.tsx";
 
-export const FOOTER_LINE = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton.";
+export { FOOTER_LINE };
 /** Shown until the server has said what the chain is called. */
 const DEFAULT_NAME = "Ostia";
 
@@ -31,22 +32,35 @@ export function parentPath(pathname: string): string {
   return PARENT[first] ?? "";
 }
 
-/** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. */
+/**
+ * The words for the checks. With the list /api/health serves, the count is that list's: "All 16 checks ok", or how many of them are not ok. Without it (the route
+ * did not answer) the status's own word stands, with no count, because none is known.
+ */
+function checksText(s: ApiStatus, checks: ReadonlyArray<{ status: string }> | undefined): ReactNode {
+  if (s.starting && !s.problems.length) return "Starting";
+  const bad = checks?.filter((c) => c.status !== "ok").length ?? 0;
+  if (checks && bad) return <><b>{bad}</b> of <b>{checks.length}</b> checks not ok</>;
+  if (s.problems.length) return "A check failed";
+  if (!s.ok) return "Checks not complete";
+  return checks ? <>All <b>{checks.length}</b> checks ok</> : "All checks ok";
+}
+
+/** The thin bar at the top: whether the checks pass, the newest final block, the block being proven, and the chain. It says only what the status says. The values are bold; on a phone only the first two stay. */
 function TopBar({ status: s }: { status: ApiStatus }) {
   const now = useNow();
-  const checks = s.starting && !s.problems.length ? "Starting" : s.problems.length ? "A check failed" : s.ok ? "All checks ok" : "Checks not complete";
+  const health = useHealth().data;
   // The base fee is the newest final block's: the list route carries it, so the bar reads one block.
   const newest = useBlocks(1, false, usePainted());
-  const fee = newest.isError ? "Base fee cannot be read right now" : newest.data ? (newest.data.items[0] ? `Base fee ${baseFee(newest.data.items[0].baseFee)}` : "Base fee: no block yet") : "Base fee reading…";
-  const tone = s.ok ? "ok" : s.starting && !s.problems.length ? "off" : "bad";
+  const fee = newest.isError ? "Base fee cannot be read right now" : newest.data ? (newest.data.items[0] ? <>Base fee <b>{baseFee(newest.data.items[0].baseFee)}</b></> : "Base fee: no block yet") : "Base fee reading…";
+  const tone = s.ok && !health?.checks.some((c) => c.status !== "ok") ? "ok" : s.ok ? "bad" : s.starting && !s.problems.length ? "off" : "bad";
   return (
     <section className="topbar" aria-label="Chain at a glance">
-      <span className={`sd ${tone}`}><i />{checks}</span>
-      {s.final && <span>Final block <Link className="num" to={`/block/${s.final.number}`}>{s.final.number}</Link> · {duration(now - Date.parse(s.final.recordTime))} ago</span>}
-      {s.proving && <span>Being proven <Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></span>}
-      <span>{fee}</span>
-      <span>Chain {s.chainId} · coin {s.coin.symbol}</span>
-      {s.networkName && <span className="topbar-end">{s.coin.symbol} is a test coin. It has no value.</span>}
+      <span className={`sd ${tone}`}><i />{checksText(s, health?.checks)}</span>
+      {s.final && <span>Final block <b><Link className="num" to={`/block/${s.final.number}`}>{s.final.number}</Link></b> · {duration(now - Date.parse(s.final.recordTime))} ago</span>}
+      {s.proving && <span className="tb-wide">Being proven <b><Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></b></span>}
+      <span className="tb-wide">{fee}</span>
+      <span className="tb-wide">Chain <b>{s.chainId}</b> · coin <b>{s.coin.symbol}</b></span>
+      {s.networkName && <span className="topbar-end tb-wide">{s.coin.symbol} is a test coin. It has no value.</span>}
     </section>
   );
 }
@@ -58,26 +72,41 @@ export function Shell({ children }: { children: ReactNode }) {
 
 function ShellBody({ children }: { children: ReactNode }) {
   const status = useStatus().data;
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const home = pathname === "/";
   const parent = parentPath(pathname);
+  // The menu button is for phones, where the pages are folded away; choosing a page closes it.
+  const [menu, setMenu] = useState(false);
+  useEffect(() => setMenu(false), [pathname]);
+  // A link to a part of a page (the footer's wallet link) scrolls there once the page has drawn it.
+  useEffect(() => { if (hash) document.getElementById(hash.slice(1))?.scrollIntoView?.(); }, [pathname, hash]);
+  const name = status?.chainName ?? DEFAULT_NAME;
   return (
     <div className="page">
       {status && <TopBar status={status} />}
       <header className="top">
         <Link className="brand" to="/">
           <span className="mark" role="img" aria-label="Rome" />
-          <span className="name">{status?.chainName ?? DEFAULT_NAME}</span>
+          <span className="name">{name}</span>
           {status?.networkName && <span className="pill">{status.networkName}</span>}
         </Link>
-        <nav className="nav" aria-label="Pages">
+        <button type="button" className="menu" aria-label="Menu" aria-expanded={menu} aria-controls="pages" onClick={() => setMenu((m) => !m)}><Icon name={menu ? "cross" : "menu"} size={18} /></button>
+        <nav id="pages" className={`nav${menu ? " open" : ""}`} aria-label="Pages">
           {NAV.filter(([, , built]) => built).map(([to, label]) => <Link key={to} to={to} className={`navlink${to === parent ? " active" : ""}`} aria-current={to === parent ? "page" : undefined}>{label}</Link>)}
         </nav>
         {!home && <SearchBox />}
       </header>
       <div className="thread" />
       <main className="main">{children}</main>
-      <footer className="foot"><Icon name="lock" size={13} /><span>{FOOTER_LINE}</span></footer>
+      <footer className="foot">
+        <p className="foot-text"><Icon name="lock" size={13} /><span>{FOOTER_LINE}</span></p>
+        <nav className="foot-links" aria-label="Footer">
+          <Link to="/docs/api">API</Link>
+          <a href="/api/health">Health</a>
+          {status?.publicRpc && <Link to="/docs/api#rpc-h">Add {name} to your wallet</Link>}
+          <a href={SOURCE_URL}>Source code</a>
+        </nav>
+      </footer>
     </div>
   );
 }

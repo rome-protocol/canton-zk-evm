@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ApiError, getStatus } from "./api.ts";
+import { ApiError, getHealth, getStatus } from "./api.ts";
 
 /** How often the pages ask the server for the status: the same as the server's own look at the chain. */
 export const POLL_MS = 2000;
@@ -8,6 +8,11 @@ export const POLL_MS = 2000;
 /** The one shared read of /api/status. The header, the home page and the faucet page all read through it, so they cannot disagree. */
 export function useStatus() {
   return useQuery({ queryKey: ["status"], queryFn: getStatus, refetchInterval: POLL_MS });
+}
+
+/** The checks the server runs, read as often as the status. The top bar counts them; a page that cannot read them says nothing of the count. */
+export function useHealth() {
+  return useQuery({ queryKey: ["health"], queryFn: getHealth, refetchInterval: POLL_MS, retry: false });
 }
 
 /** The time now, drawn again every second. The "ago" texts read it, so they keep counting while the status answer stays the same. */

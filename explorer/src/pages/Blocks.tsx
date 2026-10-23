@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { blocksCsvPath, getBlock, getBlockPage, type ApiStatus, type BlockFilter, type BlockListItem } from "../api.ts";
-import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { NumberedPager, useNumbered } from "../components/Numbered.tsx";
@@ -136,7 +136,7 @@ export function Blocks() {
         <div className="seg" role="group" aria-label="Show blocks">
           {FILTERS.map((f) => <button key={f.id} type="button" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</button>)}
         </div>
-        <a className="csv" href={blocksCsvPath(filter)} download="blocks.csv">CSV</a>
+        <DownloadLink href={blocksCsvPath(filter)} file="blocks.csv">CSV</DownloadLink>
       </div>
       <div className="note">
         Blocks are cut on demand: when transactions wait and the last block is final. The producer's setting decides whether empty blocks are also made.{" "}

@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { addr, fakeApi, renderApp, status } from "../test-utils.tsx";
 
-const FOOTER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton.";
+const FOOTER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton. Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";
 const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
 describe("the shell", () => {
@@ -89,13 +89,42 @@ describe("the shell", () => {
     expect(await within(screen.getByRole("banner")).findByRole("link", { name: /Another/ })).toBeInTheDocument();
   });
 
-  it("ends every page with the reader-party line", async () => {
+  it("ends every page with the reader-party line and the four links: API, Health, the wallet and the source", async () => {
     fakeApi(() => ({ status: 200, body: status() }));
     for (const route of ["/", "/faucet", "/nowhere"]) {
       const { unmount } = renderApp(route);
-      expect(within(screen.getByRole("contentinfo")).getByText(FOOTER)).toBeInTheDocument();
+      const foot = within(screen.getByRole("contentinfo"));
+      expect(foot.getByText(FOOTER)).toBeInTheDocument();
+      expect(foot.getByRole("link", { name: "API" })).toHaveAttribute("href", "/docs/api");
+      expect(foot.getByRole("link", { name: "Health" })).toHaveAttribute("href", "/api/health");
+      expect(foot.getByRole("link", { name: "Source code" })).toHaveAttribute("href", "https://github.com/rome-protocol/canton-zk-evm");
+      expect(await foot.findByRole("link", { name: "Add Ostia to your wallet" })).toHaveAttribute("href", "/docs/api#rpc-h");
+      expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["API", "Health", "Add Ostia to your wallet", "Source code"]);
       unmount();
     }
+  });
+
+  it("leaves the wallet link out when the explorer serves no public RPC, because the page would have no card to show", async () => {
+    fakeApi(() => ({ status: 200, body: status({ publicRpc: false }) }));
+    renderApp("/faucet");
+    await within(screen.getByRole("banner")).findByText("DevNet");
+    expect(within(screen.getByRole("contentinfo")).queryByRole("link", { name: /wallet/ })).toBeNull();
+  });
+
+  it("has a menu button for phones that shows and hides the pages, and closes when a page is chosen", async () => {
+    const user = userEvent.setup();
+    fakeApi(() => ({ status: 200, body: status() }));
+    renderApp("/faucet");
+    const nav = screen.getByRole("navigation", { name: "Pages" });
+    const menu = within(screen.getByRole("banner")).getByRole("button", { name: "Menu" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(nav).not.toHaveClass("open");
+    await user.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(nav).toHaveClass("open");
+    await user.click(within(nav).getByRole("link", { name: "Blocks" }));
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(nav).not.toHaveClass("open");
   });
 
   it("sends what was typed to the search page, which opens what the server finds", async () => {
