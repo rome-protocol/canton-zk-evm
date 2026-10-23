@@ -228,6 +228,6 @@ describe("the token transfers and the input on Overview", () => {
     await open();
     const card = within(screen.getByRole("region", { name: "Input data" }));
     expect(card.getByText("Method id", { selector: "dt" }).nextElementSibling).toHaveTextContent("0xa9059cbb");
-    expect(card.getByText(/verified interface is not held/)).toBeInTheDocument();
+    expect(await card.findByText(/verified interface is not held/)).toBeInTheDocument();
   });
 });

@@ -17,7 +17,7 @@ const DEFAULT_NAME = "Ostia";
  * the order is kept, and are drawn when their pages land. The API link is the page that describes the routes.
  */
 export const NAV: ReadonlyArray<readonly [path: string, label: string, built: boolean]> = [
-  ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", true], ["/contracts", "Contracts", false], ["/tokens", "Tokens", false],
+  ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", true], ["/contracts", "Contracts", true], ["/tokens", "Tokens", false],
   ["/canton", "Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/docs/api", "API", true],
 ];
 

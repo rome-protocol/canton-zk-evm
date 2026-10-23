@@ -84,6 +84,20 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(text).not.toMatch(/Index Scan Backward using \w*_pkey/);
   });
 
+  it("a contract's events page through an index that is the page's own order, with or without one kind of event", async () => {
+    await ensurePartitions(pool, { head: 1 });
+    const accounts = createAccountRest(recording());
+    const topic = "0x" + "cd".repeat(32);
+    await accounts.contractEvents(addr, null, [5, 1], 10);
+    const all = await plan(/from logs l join transactions t/);
+    expect(all).toMatch(/Index Scan using logs_p\d+_address_block_number_log_index_idx/);
+    expect(all).toMatch(/Index Cond: .*ROW\(block_number, log_index\) </s);
+    await accounts.contractEvents(addr, topic, [5, 1], 10);
+    const kind = await plan(/from logs l join transactions t/);
+    expect(kind).toMatch(/Index Scan using logs_p\d+_address_topic0_block_number_log_index_idx/);
+    expect(kind).toMatch(/Index Cond: .*topic0 = .*ROW\(block_number, log_index\) </s);
+  });
+
   it("the lists sorted on a count or a balance page by their own index, with the address as the tie-breaker", async () => {
     const accounts = createAccountRest(recording());
     await accounts.addresses("balance", [5, addr], 10);

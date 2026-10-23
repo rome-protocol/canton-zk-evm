@@ -321,3 +321,65 @@ export interface TraceFrame { traceAddress: number[]; type: "call" | "create" | 
 export const getTxTrace = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}/trace`, [200])).body as { frames: TraceFrame[]; truncated: boolean };
 /** The receipt of a final transaction as reth gave it. */
 export const getTxReceipt = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}?raw=1`, [200])).body as Record<string, unknown>;
+
+/** An address of the list: the balance is the database's copy, as of `balanceBlock`; the page of one address reads reth's own. */
+export interface AddressListItem { address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null; txCount: number }
+export type AddressSort = "balance" | "txs";
+/** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
+export interface AddressDetail {
+  address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null;
+  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
+  token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null; derived: boolean;
+}
+export interface AddressInternalItem extends InternalCall { txHash: string; block: number; txIndex: number }
+export interface AddressTransferItem extends TokenTransfer { txHash: string; block: number; txIndex: number }
+/** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
+/** The indexer's own spelling of a token standard. */
+export type TokenStandard = "ERC-20" | "ERC-721" | "ERC-1155";
+export interface Holding { token: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
+export interface CoinPoint { block: number; balance: string }
+const of = (a: string, sub = "") => `/api/addresses/${encodeURIComponent(a)}${sub}`;
+export const getAddressList = async (sort: AddressSort, before: string | null, limit = PAGE) => (await call(`/api/addresses?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressListItem>;
+/** What a token is called and counts in, from the token route, which reads no balance from reth. */
+export interface TokenInfo { address: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null }
+export const getTokenInfo = async (a: string) => (await call(`/api/tokens/${encodeURIComponent(a)}`, [200])).body as TokenInfo;
+export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
+export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
+export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
+export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
+export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
+export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
+
+/** A contract in the list. `origin` is "genesis" for a contract the chain's genesis holds (made by no transaction, so no creator and no creation block) or "create". `matchType` is full, partial, or similar (the same code verified at another address). */
+export interface ContractListItem {
+  address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null; interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
+  codeSize: number; destroyedBlock: number | null;
+  /** The token standard when the contract is a token. The balance and the counts are the explorer's copy, as of `balanceBlock`; null or 0 for a contract it has not seen move. */
+  standard: string | null; balance: string | null; balanceBlock: number | null; txCount: number; internalCount: number;
+}
+export type ContractSort = "interactions" | "newest" | "oldest";
+export interface ContractDetail extends ContractListItem {
+  creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
+  proxy: { kind: string; implementation: string | null; beacon: string | null; checkedBlock: number } | null;
+  verification: {
+    language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null;
+    license: string | null; verifiedAt: string; matchNote: string | null;
+  } | null;
+  derived: boolean;
+}
+/** The verified source of a contract. Every field after `verified` is empty while nothing is verified. */
+export interface ContractSource {
+  address: string; verified: boolean; matchType: "full" | "partial" | null; language: string | null; compilerVersion: string | null; codeFormat: string | null; contractPath: string | null; contractName: string | null;
+  optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null; license: string | null; settings: unknown; files: { path: string; content: string }[]; abi: unknown;
+  constructorArgs: string | null; libraries: unknown; verifiedAt: string | null; matchNote: string | null;
+}
+const at = (a: string, sub = "") => `/api/contracts/${encodeURIComponent(a)}${sub}`;
+export const getContractList = async (sort: ContractSort, verified: boolean | null, before: string | null, limit = PAGE) =>
+  (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as DerivedPage<ContractListItem>;
+export const getContract = async (a: string) => (await call(at(a), [200])).body as ContractDetail;
+export const getContractSource = async (a: string) => (await call(at(a, "/source"), [200])).body as ContractSource;
+
+/** A log a contract wrote, with the transaction it is in and that transaction's method id (null when its input is empty). */
+export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null }
+export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
+  (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;

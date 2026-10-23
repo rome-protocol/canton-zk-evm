@@ -14,7 +14,7 @@ import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import type { Reth } from "../reth.ts";
 
-const ADDRESS = /^0x[0-9a-f]{40}$/, LEG_ID = /^0x[0-9a-f]{64}$/;
+const TOPIC = /^0x[0-9a-f]{64}$/, ADDRESS = /^0x[0-9a-f]{40}$/, LEG_ID = /^0x[0-9a-f]{64}$/;
 const ok = (body: unknown): Answer => ({ status: 200, body });
 const fail = (status: number, error: string): Answer => ({ status, body: { error } });
 const sortHelp = (allowed: readonly string[]) => `sort is one of ${allowed.join(", ")}.`;
@@ -104,6 +104,15 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "trace"]);
     const rows = await accounts.addressInternal(a, before, limit);
     return cached(ok(page(rows, limit, (c) => keyOf(c.block, c.txIndex, "t" + c.traceAddress.join("-")), F.addressInternal, await isDerived())), "list");
+  }
+
+  async function contractEvents(a: string, q: URLSearchParams): Promise<Answer> {
+    addressOf(a);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]), topic = q.get("topic0");
+    if (topic !== null && !TOPIC.test(topic)) throw new BadRequest("topic0 is 0x and 64 hex digits.");
+    const rows = await accounts.contractEvents(a, topic, before, limit);
+    const p = pageOf(rows, limit, (e) => keyOf(e.block, e.logIndex));
+    return cached(ok(pick({ items: p.items.map((e) => pick(e, F.contractEvent)), next: p.next }, F.page)), "list");
   }
 
   async function addressTransfers(a: string, q: URLSearchParams): Promise<Answer> {
@@ -217,6 +226,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/contracts", (_, q) => contractList(q)],
     ["/api/contracts/{address}", (a) => oneContract(a)],
     ["/api/contracts/{address}/source", (a) => contractSource(a)],
+    ["/api/contracts/{address}/events", (a, q) => contractEvents(a, q)],
     ["/api/tokens", (_, q) => tokenList(q)],
     ["/api/tokens/{address}", (a) => oneToken(a)],
     ["/api/tokens/{address}/holders", (a, q) => tokenHolders(a, q)],

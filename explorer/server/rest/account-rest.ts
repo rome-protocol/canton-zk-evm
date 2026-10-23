@@ -26,6 +26,8 @@ export interface AddressInternalItem {
   txHash: string; block: number; txIndex: number; traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null;
   selector: string | null; inputSize: number | null; error: string | null;
 }
+/** A log a contract wrote, with the transaction it is in and that transaction's method (the first 4 bytes of its input, null when it has none). */
+export interface ContractEventItem { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null }
 export interface TokenTransferItem { txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
@@ -36,6 +38,8 @@ export const matchNote = (matchType: string | null): string | null => (matchType
 export interface ContractItem {
   address: string; name: string | null; origin: string; creator: string | null; creationBlock: number | null; creationTxIndex: number | null; interactionCount: number; verified: boolean; matchType: string | null; codeSize: number;
   destroyedBlock: number | null;
+  /** The token standard when the contract is a token. The balance and the counts are the explorer's copy, as of `balanceBlock`; a contract it has not seen move has none. */
+  standard: string | null; balance: string | null; balanceBlock: number | null; txCount: number; internalCount: number;
 }
 export interface ContractDetail extends ContractItem {
   creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
@@ -149,6 +153,22 @@ export function createAccountRest(pool: Pool) {
     }));
   }
 
+  /** The logs written by one contract, newest first, after the key (block, log index); `topic0` keeps one kind of event. The indexes are (address, block, log index) and (address, topic0, block, log index). */
+  async function contractEvents(a: string, topic0: string | null, before: Key | null, limit: number): Promise<ContractEventItem[]> {
+    const [bn, li] = before ?? [null, null];
+    const rows = await query(
+      `select l.block_number, l.log_index, l.tx_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data, t.hash, t.method_id
+       from logs l join transactions t on t.block_number = l.block_number and t.tx_index = l.tx_index
+       where l.address = $1 and ($2::bytea is null or l.topic0 = $2) and ($3::bigint is null or (l.block_number, l.log_index) < ($3::bigint, $4::int))
+       order by l.block_number desc, l.log_index desc limit $5`,
+      [bytes(a), topic0 === null ? null : bytes(topic0), bn, li, limit + 1],
+    );
+    return rows.map((r) => ({
+      txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, address: hex(r.address),
+      topics: [r.topic0, r.topic1, r.topic2, r.topic3].flatMap((t, i, all) => (t !== null && all.slice(0, i).every((x) => x !== null) ? [hex(t)] : [])), data: hex(r.data), method: hexOrNull(r.method_id),
+    }));
+  }
+
   const transferSelect = "x.block_number, x.log_index, x.batch_index, x.tx_index, x.token, x.from_address, x.to_address, x.amount::text as amount, x.token_id::text as token_id, t.hash";
   const transferItem = (r: Row): TokenTransferItem => ({
     txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, batchIndex: r.batch_index, token: hex(r.token), from: hex(r.from_address), to: hex(r.to_address),
@@ -192,10 +212,13 @@ export function createAccountRest(pool: Pool) {
     return rows.map((r) => ({ block: Number(r.block_number), balance: r.value }));
   }
 
-  const contractSelect = `c.address, c.name, c.origin, c.creator, c.creation_block, c.creation_tx_index, c.interaction_count, c.verified_source, c.match_type, c.destroyed_block, c.last_interaction_block, c.runtime_code_hash, bc.size`;
+  const contractSelect = `c.address, c.name, c.origin, c.creator, c.creation_block, c.creation_tx_index, c.interaction_count, c.verified_source, c.match_type, c.destroyed_block, c.last_interaction_block, c.runtime_code_hash, bc.size,
+    tk.standard, a.coin_balance::text as balance, a.coin_balance_block, coalesce(a.sent_count + a.received_count, 0) as tx_count, coalesce(a.internal_count, 0) as internal_count`;
+  const withAccount = "left join addresses a on a.address = c.address left join tokens tk on tk.address = c.address";
   const contractItem = (r: Row): ContractItem => ({
     address: hex(r.address), name: r.name, origin: r.origin, creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), creationTxIndex: num(r.creation_tx_index), interactionCount: Number(r.interaction_count),
     verified: r.verified_source !== null, matchType: r.match_type, codeSize: r.size, destroyedBlock: num(r.destroyed_block),
+    standard: r.standard, balance: r.balance, balanceBlock: num(r.coin_balance_block), txCount: Number(r.tx_count), internalCount: Number(r.internal_count),
   });
 
   /**
@@ -203,7 +226,7 @@ export function createAccountRest(pool: Pool) {
    * the sort's own parts and then the address, so that two contracts of one place keep their order.
    */
   async function contracts(sort: ContractSort, verified: boolean | null, before: Key | null, limit: number): Promise<ContractItem[]> {
-    const from = "from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash";
+    const from = `from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash ${withAccount}`;
     const filter = (n: number) => `($${n}::boolean is null or (c.verified_source is not null) = $${n})`;
     const [x, y, z] = before ?? [null, null, null];
     if (sort === "interactions") {
@@ -229,7 +252,7 @@ export function createAccountRest(pool: Pool) {
       `select ${contractSelect}, encode(bc.code, 'hex') as code, (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx,
          p.kind as proxy_kind, p.implementation, p.beacon, p.checked_block, v.match_type as source_match_type, v.language, v.compiler_version, v.code_format, v.contract_path, v.contract_name, v.optimizer_enabled, v.optimizer_runs,
          v.evm_version, v.license, ${MS("v.verified_at")} as verified_at
-       from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash left join proxies p on p.proxy = c.address and p.checked_block >= coalesce(c.creation_block, 0) left join verified_sources v on v.id = c.verified_source where c.address = $1`,
+       from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash ${withAccount} left join proxies p on p.proxy = c.address and p.checked_block >= coalesce(c.creation_block, 0) left join verified_sources v on v.id = c.verified_source where c.address = $1`,
       [bytes(a)],
     );
     if (!r) return undefined;
@@ -350,6 +373,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName,
+    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName,
   };
 }
