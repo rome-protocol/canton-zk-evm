@@ -92,8 +92,9 @@ function Verification({ c }: { c: ContractDetail }) {
 type TabId = "transactions" | "token-transfers" | "code" | "read" | "write" | "events";
 
 /** One contract: who made it, what it holds, whether its source is verified, and its code. The tab is in the link. */
-export function Contract() {
-  const { addr = "" } = useParams();
+export function Contract({ addr: given }: { addr?: string } = {}) {
+  const { addr: routed = "" } = useParams();
+  const addr = given ?? routed;
   const [params, setParams] = useSearchParams();
   const st = useStatus().data;
   const now = useNow();

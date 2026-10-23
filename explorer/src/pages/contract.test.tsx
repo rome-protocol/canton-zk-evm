@@ -221,3 +221,18 @@ describe("the Code tab of a contract that is not verified", () => {
     await waitFor(() => expect(screen.queryByRole("region", { name: "Contract source code" })).toBeNull());
   });
 });
+
+describe("the contract page at the address route", () => {
+  it("opens the contract's own page at /address/<contract>, with its Code tab, as the design routes it", async () => {
+    await open({}, `/address/${A}`);
+    expect(screen.getByRole("tab", { name: /Code/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Read" })).toBeInTheDocument();
+  });
+
+  it("keeps an account's own page at /address/<account>", async () => {
+    fakeApi(route({ addresses: (_a, sub) => (sub === "" ? reply(addressDetail({ address: A, kind: "account" })) : derived([])) }));
+    renderApp(`/address/${A}`);
+    await screen.findByRole("heading", { name: "Address" });
+    expect(screen.queryByRole("tab", { name: "Read" })).toBeNull();
+  });
+});

@@ -72,7 +72,7 @@ describe("the address page: the head and the overview", () => {
   });
 
   it("names the transaction and the block that created a contract", async () => {
-    await open(addressDetail({ kind: "contract", createdBy: { txHash: hash(0xf5), block: 2 } }));
+    await open(addressDetail({ kind: "contract", createdBy: { txHash: hash(0xf5), block: 2 } }), {}, `/token/${addressDetail().address}`);
     expect(kind()).toHaveTextContent("Contract");
     expect(row("Created by")).toHaveTextContent("0xf5f5…f5f5 in block 2");
     expect(within(row("Created by")).getByRole("link", { name: "0xf5f5…f5f5" })).toHaveAttribute("href", `/tx/${hash(0xf5)}`);

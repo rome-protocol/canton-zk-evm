@@ -34,7 +34,7 @@ export function App() {
           <Route path="/contracts" element={<Contracts />} />
           <Route path="/contract/:addr" element={<Contract />} />
           <Route path="/address/:addr" element={<Address />} />
-          <Route path="/token/:addr" element={<Address />} />
+          <Route path="/token/:addr" element={<Address tracker />} />
           <Route path="/txs" element={<Txs />} />
           <Route path="/tx/:hash" element={<Tx />} />
           <Route path="/search" element={<Search />} />
