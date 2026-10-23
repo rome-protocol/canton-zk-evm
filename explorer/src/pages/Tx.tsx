@@ -93,7 +93,7 @@ function FinalTransfersItem({ t }: { t: ApiTxSeen }) {
             <AmountCell x={x} label={labels.get(x.token)} /> <AddressCell address={x.token} label={labels.get(x.token)} to={`/token/${x.token}`} />
           </div>
         ))}
-        {(rest > 0 || p.hasNext) && <div className="muted small">{rest > 0 ? `and ${rest} more` : "and more"} in the Token transfers list below</div>}
+        {(rest > 0 || p.hasNext) && <div className="muted small">{rest > 0 && !p.hasNext ? `and ${rest} more` : "and more"} in the Token transfers list below</div>}
       </div>
     </Item>
   );
