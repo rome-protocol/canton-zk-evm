@@ -46,13 +46,15 @@ grep -q "the explorer's database" <<<"$out" || fail "down.sh --wipe does not say
 ! grep -q "cze-postgres\|cze-explorer-db\|cze-reth" "$FAKE_DOCKER_LOG" || fail "down.sh touched a default container: $(cat "$FAKE_DOCKER_LOG")"
 [ ! -e "$WORK/state/persist.env" ] || fail "persist.env is still there after a wipe"
 echo "ok: down.sh --wipe wipes what persist.env names"
-[ ! -e "$WORK/state/builder/unresolved.json" ] && [ ! -e "$WORK/state/builder/kept-transactions.json" ] || fail "the builder's record of the wiped chain is still there"
+[ ! -e "$WORK/state/builder/unresolved.json" ] || fail "the builder's record of the wiped chain is still there"
+[ ! -e "$WORK/state/builder/kept-transactions.json" ] || fail "the builder's record of the wiped chain is still there"
 [ -e "$WORK/state/builder/status.json" ] || fail "down.sh --wipe removed a file of the builder's that is not its record"
 echo "ok: down.sh --wipe removes the builder's in-doubt record and kept transactions, and only them"
 # A persistent chain that is only stopped keeps them.
 fresh; record
 run "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh of a persistent chain failed"
-[ -e "$WORK/state/builder/unresolved.json" ] && [ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh without --wipe removed the builder's record of a chain that is kept"
+[ -e "$WORK/state/builder/unresolved.json" ] || fail "down.sh without --wipe removed the builder's record of a chain that is kept"
+[ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh without --wipe removed the builder's record of a chain that is kept"
 echo "ok: a persistent chain that is stopped keeps the builder's record"
 
 # 2. A wipe that fails says so, exits non-zero, and keeps persist.env so that it can be run again.
@@ -169,7 +171,9 @@ echo "ok: the Ledger API users' prefix is recorded, used, and not overridden"
 # stop does the same, see tests/demo_explorer_static.sh), so a new chain from the same genesis does not meet the old chain's rows. A failed removal is reported.
 fresh; record; rm -f "$WORK/state/persist.env"; echo 'POSTGRES_PASSWORD=x' > "$WORK/state/explorer-db.env"
 out=$(run "$WORK/repo/network/down.sh" 2>&1) || fail "down.sh of a network that is not persistent failed: $out"
-[ ! -e "$WORK/state/builder/unresolved.json" ] && [ ! -e "$WORK/state/builder/kept-transactions.json" ] && [ -e "$WORK/state/builder/status.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
+[ ! -e "$WORK/state/builder/unresolved.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
+[ ! -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
+[ -e "$WORK/state/builder/status.json" ] || fail "down.sh of a network that is not persistent did not remove the builder's record (and only it)"
 grep -q -- "rm -f cze-explorer-db" "$FAKE_DOCKER_LOG" || fail "down.sh left the explorer's container of a network that is not persistent: $(cat "$FAKE_DOCKER_LOG")"
 grep -q -- "volume rm -f cze-explorer-db-data" "$FAKE_DOCKER_LOG" || fail "down.sh left the explorer's database volume of a network that is not persistent"
 grep -q "explorer's database is removed" <<<"$out" || fail "down.sh does not say that the explorer's database is removed: $out"
