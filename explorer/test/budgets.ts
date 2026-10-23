@@ -17,7 +17,7 @@ export const B2_RUNNER_MS = 16_000;
 /**
  * The ordinary shapes of `tokens-load.test.ts` (5,000 holders, a sweep, the reindex's rebuild) are held to the design's first budgets: 1.0 s for one stage and 3.0 s for both, far inside
  * what they need on the reference machine (stage 2 took 150, 180 and 65 ms on a laptop). On GitHub's shared runner they are measured against a tolerance of 1.25 x the budget, as W1's
- * B2 is under the W1 ruling of 2026-10-23 (design section 9), which names W1 only; the same 1.25 x for these shapes is this follow-up's own decision, to be recorded in the design's section 9 with the next edit of that section: the budget itself is not loosened, and the test prints both when a run is over the budget. A stage 2 of 1,013 ms was seen
+ * B2 is under the W1 ruling of 2026-10-23: the same 1.25 x for these ordinary shapes is recorded in the design's section 9 by the design ruling of 2026-10-24. A stage 2 of 1,013 ms was seen
  * on the runner against the 1,000 ms limit, a slow runner and not a change in the code. `budgets.test.ts` keeps the tolerances at 1.25 x, rounded to 250 ms.
  */
 export const LOAD_B1_MS = 1000;

@@ -378,7 +378,8 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect(await get(`/api?module=contract&action=checkverifystatus&guid=${p.result}`)).toEqual(NOTOK("Unknown UID"));
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${s.result}`)).toEqual(NOTOK("Unknown UID"));
       expect(await post({ action: "verifyproxycontract", address: "0x12" })).toEqual(NOTOK(TEXTS.address));
-      expect(await post({ action: "verifyproxycontract", address: B })).toEqual(NOTOK(`Unable to locate ContractCode at ${B}`));
+      // Remix compares this text in `message` (EtherscanVerifier.verifyProxy) and shows a failure with it
+      expect(await post({ action: "verifyproxycontract", address: B })).toEqual({ status: "0", message: "Smart-contract not found or is not verified", result: null });
       expect(await proxy({ expectedimplementation: "0x12" })).toEqual(NOTOK(TEXTS.address));
       expect(await get("/api?module=contract&action=checkproxyverification")).toEqual(NOTOK("Unknown UID"));
     });

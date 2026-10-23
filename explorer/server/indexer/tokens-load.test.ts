@@ -105,7 +105,7 @@ describe.skipIf(!TEST_URL)("a block of thousands of transfers, on the pinned Pos
       t.frames = [{ ...t.frames[0]!, traceAddress: [], type: "call", callType: "call", created: null }, create([0], ERC20), create([1], ERC1155), create([2], ERC721), create([3], FAT)];
       t.calls = t.frames.length;
       blocks.forEach((logs, i) => chain.blocks[i + 1]!.receipts[0]!.logs.push(...logs));
-      // The fat-return token makes one Transfer in the first block; its every read answers 680 KB, which is read as no answer: its metadata is `failed`.
+      // The fat-return token makes one Transfer in the first block; its every read answers 170 KB, which is read as no answer: its metadata is `failed`.
       chain.blocks[1]!.receipts[0]!.logs.push({ address: A(FAT), topics: [TRANSFER_TOPIC, T(0), T(0x7000)], data: "0x" + W(1) });
       for (const sel of [SELECTORS.name, SELECTORS.symbol, SELECTORS.decimals, SELECTORS.totalSupply]) chain.reads.callResults[`${A(FAT)}:${sel}`] = FAT_ANSWER;
       const call = (sel: string, out: string) => { chain.reads.callResults[`${A(ERC20)}:${sel}`] = out; };

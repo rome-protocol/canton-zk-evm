@@ -645,6 +645,8 @@ const contract: Record<string, Handler> = {
     if (expected !== null) addressOf(expected);
     // The slots are read at the final head, whatever the indexer's last upgrade log said.
     const a = await v.proxy(address, expected, c.ip, await finalHead(c));
+    // An address with no contract is answered in the `message` (status 0, result null), as Remix reads it: it compares that text, and shows a failure with it.
+    if (a.status === 404) throw new NotOk(refused(a).reason, true);
     if (a.status !== 202) throw refused(a);
     return guidOf(a);
   },

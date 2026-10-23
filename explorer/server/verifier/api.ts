@@ -27,6 +27,8 @@ export interface VerifyApi {
 
 /** The words of `checkproxyverification` (Etherscan's). */
 export const PROXY_TEXTS = {
+  /** What Etherscan says (in `message`, with status 0) of an address with no contract it can check; Remix's EtherscanVerifier.verifyProxy compares this exact text and shows a failure with it. */
+  notFound: "Smart-contract not found or is not verified",
   none: "A corresponding implementation contract was unfortunately not detected for the proxy address.",
   mismatch: "The provided expected results are different than the retrieved implementation address!",
   done: (proxy: string, impl: string) => `The proxy's (${proxy}) implementation contract is found at: ${impl} and is successfully updated.`,
@@ -88,7 +90,7 @@ export function createVerifyApi(o: { pool: Pool; queue: JobQueue; clientHash: (c
     async proxy(address, expected, ip, head) {
       const a = Buffer.from(address.slice(2), "hex");
       const known = (await o.pool.query("select 1 from contracts where address = $1", [a])).rowCount;
-      if (!known) return fail(404, `Unable to locate ContractCode at ${address.toLowerCase()}`);
+      if (!known) return fail(404, PROXY_TEXTS.notFound);
       const found = await refreshProxy(o.pool, address.toLowerCase(), head, o.probe);
       const impl = found?.implementation ?? null;
       let status: "pass" | "fail" = "fail", result = PROXY_TEXTS.none;
