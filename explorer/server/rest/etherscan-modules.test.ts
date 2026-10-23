@@ -164,7 +164,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the token, stats and 
       const wrong = async () => (await sql("select count(*)::int as n from blocks b join (select number, sum(burnt_fees) over (order by number) as t from blocks) s using (number) where b.burnt_total <> s.t")).rows[0].n;
       const totals = async () => (await sql("select number::int, burnt_total::text as t from blocks where number > 3 order by number")).rows.map((r) => [r.number, r.t]);
       // Blocks 4, 5 and 7 first, then 6 below the last: the totals of 7 moves, and every total is the sum of the fees up to it.
-      for (const [n, f] of [[4, 1], [5, 2], [7, 4], [6, 3]]) await add(n, f * 1000000000);
+      for (const [n, f] of [[4, 1], [5, 2], [7, 4], [6, 3]] as const) await add(n, f * 1000000000);
       try {
         expect(await totals()).toEqual([[4, "7000000000"], [5, "9000000000"], [6, "12000000000"], [7, "16000000000"]]);
         expect(await wrong()).toBe(0);
