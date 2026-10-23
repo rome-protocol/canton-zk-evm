@@ -2,7 +2,24 @@
 
 A block explorer and faucet for Ostia, a Canton zkEVM (chain id 770101). It shows each block next to its record on Canton, and gives out the chain's test coin, tROME.
 
-The explorer combines EVM data from reth with block records from Canton. The block page's Verify button checks the proof in the visitor's browser and is greyed out while a block is being proven.
+The explorer reads two sources. reth, the chain's execution client, gives the EVM side of every block. Canton gives the block record: the explorer reads it as the reader party, a party that sees the block records and nothing else. A block is shown as final only when its record is on Canton. Until then it is shown from reth and marked as being proven. The block page's Verify button checks the proof in the visitor's browser and is greyed out while a block is being proven.
+
+## The parts
+
+| Part | Where | What it does |
+|---|---|---|
+| Server | `server/main.ts` (`npm start`) | One process on plain `node:http`. It serves the pages, the REST API, the Etherscan-compatible `/api`, the public RPC at `/rpc` and `/healthz`. It reads the chain from the database and reads reth for what the database does not hold |
+| Indexer | `server/indexer/cli.ts` (`npm run index`) | Reads reth and Canton, checks what it reads, and writes the database. Stage 1 makes a block queryable. Stage 2 works out what needs the block's traces. It also loads the builder's journal, rolls up the stats and writes the health rows. See [The indexer](#the-indexer) |
+| REST API and live updates | `server/rest/` | The routes the pages read, with keyset paging, cache headers, an OpenAPI document and a server-sent-events stream. See [The REST API](#the-rest-api) |
+| Etherscan-compatible API | `server/rest/etherscan*.ts` | The `module` and `action` calls that Foundry, Hardhat and ethers send. See [The Etherscan-compatible API](#the-etherscan-compatible-api) |
+| Public RPC | `server/public-rpc.ts` | JSON-RPC for wallets, cut at the finalized block. See [The public RPC](#the-public-rpc) |
+| Transaction tracker | `server/tracker.ts` | Follows every accepted transaction until it is settled. See [The transaction tracker](#the-transaction-tracker) |
+| Faucet | `server/faucet.ts` | Pays out tROME through a queue. See [The faucet](#the-faucet) |
+| Verifier | `server/verifier/cli.ts` | A separate role that compiles submitted Solidity in a sandbox and compares it with the code on chain. Off unless started. See [Contract verification](#contract-verification) |
+| Pages | `src/` | A React app built by Vite into `dist/`. See [The pages](#the-pages) |
+| Verify check | `verify/`, `src/verify/` | The sidecar's block check built for WebAssembly, run in the browser. See [Verify](#verify) |
+| Database | `db/migrations/`, `server/db/` | The explorer's own PostgreSQL. See [The database](#the-database) |
+| Health checks | `server/health.ts`, `server/indexer/health.ts` | Rows in `health_checks` written by the indexer, each API instance and the verifier, read by `/healthz` and `/api/health` |
 
 ## Running it
 
@@ -58,6 +75,20 @@ The server takes its settings from environment variables. A wrong value stops it
 | `FAUCET_STATE_FILE` | none | Where the faucet keeps its limits and the requests still waiting, across restarts. With none, they are in memory only. `run.sh` sets `/var/lib/explorer/faucet.json` |
 | `CAPTCHA_SECRET` | none | Turns on the human check. With it set, the four settings below are required. With none, there is no check |
 | `CAPTCHA_VERIFY_URL`, `CAPTCHA_SCRIPT_URL`, `CAPTCHA_SITE_KEY`, `CAPTCHA_WIDGET_CLASS` | none | Where the explorer verifies a token, the script the page loads, the site key it gives that script, and the class name the script looks for to put its widget in |
+| `EXPLORER_INSTANCE` | the host's name | The name under which an API instance writes its health rows (`api/<instance>/reth` and `api/<instance>/canton`). Set it when several instances share one database |
+
+The indexer reads the settings above that it shares with the server (`RETH_RPC_URL`, `LEDGER_URL`, `LEDGER_TOKEN_FILE`, `READER_PARTY`, `CHAIN_ID`, `PINS_FILE`, `READ_CALL_GAS` and the database) and these of its own. A wrong value stops it at start, with a message that names the variable.
+
+| Variable | Default | What it is |
+|---|---|---|
+| `GATEWAY_ADDRESS` | none, required | The gateway contract's address, 0x and 40 hex digits. `run.sh` takes it from `PINS` |
+| `GENESIS_FILE` | none | The genesis that reth runs. The indexer seeds the chain's contracts from it at its first start. `run.sh` passes `<state>/genesis.json` |
+| `INDEX_DERIVE` | `behind` | `behind` commits stage 2 on its own, so it may fall behind stage 1. `inline` commits it in the same transaction as stage 1 |
+| `INDEX_POLL_MS` | `250` | How often the indexer looks for a new record (at least 20) |
+| `INDEX_RETH_BEHIND_MS` | `10000` | How long reth may lack a block that a record names before the health says so |
+| `INDEX_TRACE_TIMEOUT_MS` | `60000` | How long one `trace_` call to reth may take (at least 1000) |
+| `JOURNAL_DIR`, `PRODUCER_STATUS_FILE` | none | The builder's `journal/` folder and its `status.json`, read only. Without them the blocks are still indexed, the lifecycle stays blank and the health says so |
+| `INDEX_JOURNAL_MS` | `1000` | How often the journal is read (at least 100) |
 
 ## What it reads from reth
 
@@ -65,7 +96,7 @@ Only the `eth_` methods listed in `server/reth.ts`. reth's HTTP port serves `eth
 
 ## What it reads from Canton
 
-Two calls on the JSON Ledger API of the participant that holds the reader party, and no others (`server/ledger.ts`): `GET /v2/state/ledger-end`, and `POST /v2/updates` for the transactions after the last offset the explorer has seen. Every request names only the reader party and the block record template, and asks for the ACS delta. For each block record the explorer keeps the update id, the record time and the record's fields: number, hash, parent hash, header, transactions and proof, and the party ids of the two signers, the chain's operator and confirmer. It reads the builder's and the reader's party ids too, and keeps neither. The reader refuses any call that is not on its list, before it makes it.
+Three calls on the JSON Ledger API of the participant that holds the reader party, and no others (`server/ledger.ts`): `GET /v2/state/ledger-end`, `GET /v2/parties/participant-id`, and `POST /v2/updates` for the transactions after the last offset the reader has seen. Every request names only the reader party and the block record template, and asks for the ACS delta. For each block record the explorer keeps the update id, the record time and the record's fields: number, hash, parent hash, header, transactions and proof, and the party ids of the two signers, the chain's operator and confirmer. It reads the builder's and the reader's party ids too, and keeps neither. The reader refuses any call that is not on its list, before it makes it.
 
 `READER_PARTY` must be set. The local network runs without Ledger API authentication, so it is this code, and its test of what it asks for, that keeps the explorer to the reader party's view. The reader party shares the users participant with other parties, and without Ledger API authentication anyone who can reach that participant can read all of them. Do not give the explorer a public address before that changes. A participant that has a login (an existing participant, `LEDGER_TOKEN_FILE` above) is read with the reader user's token, which can read only what that user's rights allow: set it up with read-only rights on the reader party, as `network/external/setup.py` does for `ostia-reader`. Tokens there last minutes, so write each new one into the same 0600 file, in place.
 
@@ -80,6 +111,39 @@ The block and transaction pages read the final blocks from the tables the indexe
 A block that the indexer has not written yet is shown from reth, with no Canton side. At or below reth's `finalized` block it is `unindexed` (final on Canton, and the page says it is not indexed yet; a transaction in it is `unindexed` too); above it, it is `proving`. The status says `starting` until the indexer has written its first record, goes red with the text of each failed check the indexer keeps, and goes red naming the database when it cannot be read. A check the indexer refreshes every 2 s (C4, C5, `derive_lag`, C10) that has not been looked at for three rounds (6 s) counts as failed ("C5: the indexer has not checked in N s"), so a stopped or crashed indexer turns the status and `/healthz` red instead of leaving its last `ok` rows behind. One of them with no row at all counts as failed too ("C5: the indexer has not checked yet"), as after a rebuild from a records export, or in the first seconds of a new indexer. The home page does not name a block as being proven when reth's `finalized` block already covers it. The routes answer 502 for a database that cannot be read.
 
 The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_DB_PASSWORD_FILE` with its parts) `npm start` refuses to start and says so.
+
+## The indexer
+
+The indexer is the only writer of the chain's tables. It never restarts by itself: a check that stops it leaves it stopped, and the explorer answers 503 until a person has read the log and started it again. `node server/indexer/cli.ts` with no command runs it. The same file takes these commands, each of which exits when it is done:
+
+| Command | What it does |
+|---|---|
+| `reindex <from> [<to>]` | Writes the stage 1 tables again for a range of blocks, from the stored records and reth |
+| `reindex --records <file>` | Builds a fresh database from a records export and reth |
+| `export-records <file>` | Writes every stored block record to a file |
+| `stats-rebuild` | Rolls the stats up again from the facts. See [Stats](#stats) |
+| `reset --yes`, `reader-moved <participant id>`, `clear-check C10` | See [A new chain, and a moved reader](#a-new-chain-and-a-moved-reader) |
+
+**Stage 1** makes a block queryable. For each record the reader party can read, it takes the block and its receipts from reth, and writes the block and its proof, the Canton update, the transactions, logs, balance history, addresses and gateway legs in one database transaction together with the reader's cursor (`server/indexer/stage1.ts`). A block that is already there is skipped whole. Four checks run first, and one that fails stops the indexer before anything is written:
+
+| Check | What it compares |
+|---|---|
+| C1 | reth's hash for the block, the record's hash and the Keccak of the record's header |
+| C2 | The records come in order, and block 1 follows reth's genesis |
+| C3 | The record's transaction list against reth's transactions, in order, each with its receipt, and then the block's counts against the rows written |
+| C7 | The three facts in the proof (program key, ZisK release, block hash) against this explorer's pins |
+
+**Stage 2** works out what has to be derived from the block's traces (`server/indexer/stage2.ts`). It writes `tx_traces` (the call count of a transaction and the decoded revert data of a failed one), `internal_calls` (calls that move value, creations and self-destructs), and the contracts, bytecodes, proxies, tokens and token transfers the block made. It runs behind its own cursor (`cursors.stream = 'derive'`). A route that returns something stage 2 writes says it is not derived yet (`derived: false`, with nulls or an empty list) until the cursor has passed the block, and the pages show that.
+
+Each commit sends a `NOTIFY` inside its own transaction, so a listener hears it only for a transaction that committed. The server listens and passes the events to the clients of `GET /api/stream`.
+
+The indexer reads reth with `eth_` and `trace_` methods and Canton with the Ledger API calls listed in [What it reads from Canton](#what-it-reads-from-canton). Every `eth_call` it makes runs with `READ_CALL_GAS`.
+
+The indexer's other work:
+
+- the builder's journal, loaded into the lifecycle tables (see [The lifecycle](#the-lifecycle));
+- the stats rollups, run every 10 seconds (see [Stats](#stats));
+- the health rows (see [A new chain, and a moved reader](#a-new-chain-and-a-moved-reader) for the checks and their words).
 
 ## The server and its API
 
@@ -102,6 +166,54 @@ The explorer needs the database. Without `EXPLORER_DATABASE_URL` (or `EXPLORER_D
 
 Amounts are whole numbers as decimal strings, in the coin's smallest unit. Each answer, and each object inside it, carries exactly the fields listed in `FIELDS` in `server/api.ts`, built one field at a time; the field test gives the server objects with extra fields and checks that none gets through. No raw Canton answer reaches the API, and no party id except the two signers of the block records. A request target that is not a path is a 400, and a route that does not exist is a 404. A failed read of reth or Canton is a 502 with a plain message, and the detail goes to the server's log.
 
+### The REST API
+
+The routes above are the first ones. The pages read these too, and every one of them is in `/api/openapi.json` with its parameters and the fields it answers with (the API page of the explorer, `/docs/api`, is drawn from the same document).
+
+| Routes | What they list |
+|---|---|
+| `/api/blocks`, `/api/blocks/{id}`, `/api/blocks/{id}/transactions`, `/api/blocks/{id}/legs`, `/api/blocks/{id}/record` | Blocks, one block, its transactions, its gateway legs, and the record's proof, header and transactions as hex |
+| `/api/txs`, `/api/txs/{hash}`, `/api/txs/{hash}/logs`, `/api/txs/{hash}/internal`, `/api/txs/{hash}/token-transfers`, `/api/txs/{hash}/trace` | Transactions, one transaction, and what stage 2 worked out for it |
+| `/api/addresses`, `/api/addresses/{address}`, and under it `/txs`, `/internal`, `/token-transfers`, `/tokens`, `/coin-history` | Addresses and what one address did and holds. The balance is reth's at the newest final block |
+| `/api/contracts`, `/api/contracts/{address}`, and under it `/source` and `/events` | Contracts, one contract with its verification, its verified source and its events |
+| `/api/tokens`, `/api/tokens/{address}`, and under it `/holders` and `/transfers` | Tokens, one token, its holders and its transfers |
+| `/api/legs`, `/api/legs/{id}` | The gateway's legs |
+| `/api/canton/updates`, `/api/canton/updates/{updateId}`, `/api/canton/updates/{updateId}/around` | The Canton updates that carry a block, as the reader party sees them, and the updates next to one |
+| `/api/stats/summary`, `/api/stats/series` | See [Stats](#stats) |
+| `/api/openapi.json`, `/api/stream` | The description of the API, and [Live updates](#live-updates) |
+
+Every list pages by key, never by offset: `?before=<key>&limit=`. A key is the sort key of the last row the client has seen, and a page is the rows that sort strictly after it, newest first. The default `limit` is 25 and the largest is 100 (`server/rest/paging.ts`). A key that the database would refuse is a 400.
+
+Cache headers follow what can change (`server/rest/cache.ts`). A fact that can never change, such as a final block, is `public, max-age=31536000, immutable`. An answer that has fields which arrive later (the lifecycle, stage 2, verification) is `public, max-age=3` with an ETag, and answers `304` to `If-None-Match`. A list is `public, max-age=1`.
+
+### The Etherscan-compatible API
+
+`/api` and `/v2/api` answer the `module` and `action` calls that Foundry, Hardhat and ethers send, in Etherscan's shape: `{status, message, result}`, numbers as decimal strings, addresses in lowercase (`server/rest/etherscan.ts`). HTTP is 200 for everything and a refusal is `status` "0", as on Etherscan. There are no keys: `apikey` is never read, because the tools insist on sending one. A `chainid` parameter that is not the chain's id is refused.
+
+| Module | Actions |
+|---|---|
+| `account` | `balance`, `balancemulti`, `tokenbalance`, `txlist`, `txlistinternal`, `tokentx`, `tokennfttx`, `token1155tx`, `getminedblocks` |
+| `transaction` | `getstatus`, `gettxreceiptstatus` |
+| `block` | `getblockreward`, `getblocknobytime`, `getblockcountdown` |
+| `logs` | `getLogs` |
+| `contract` | `verifysourcecode`, `checkverifystatus`, `getsourcecode`, `getabi`, `getcontractcreation`, `verifyproxycontract`, `checkproxyverification` |
+| `token` | `tokeninfo`, `tokenholdercount`, `tokenholderlist` |
+| `stats` | `ethsupply`, `tokensupply`, `ethprice` (answers NOTOK: the coin has no price) |
+| `gastracker` | `gasoracle`, `gasestimate` |
+| `proxy` | The `eth_` calls that Etherscan's proxy module has (`eth_blockNumber`, `eth_getBlockByNumber`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_call`, `eth_sendRawTransaction` and others). They go through the public RPC's rules and the JSON-RPC answer is given back as it is, with no `status` |
+
+Only final data is served. Every row is from a final block, a balance is reth's at the newest final block and not the database's copy, and a list that stage 2 writes (internal calls, token transfers) stops at the block stage 2 has reached, so a page is never half written. The limits are in [Rate limits](#rate-limits). The tests hold each action's answer to a recorded Etherscan answer, and the nightly runs Foundry's `forge verify-contract` against it (see [The load tests](#the-load-tests-and-the-nightly)).
+
+### Live updates
+
+`GET /api/stream?topics=blocks,txs` is a server-sent-events stream (`server/rest/stream.ts`). The topics are `blocks`, `txs`, `inflight` and `stats`.
+
+- `block` (topic `blocks`) carries the number, hash, transaction count, record time and update id of a new final block. `txs` carries the number and up to 50 transaction hashes of it, and `more` when there are more. Both use the block number as their event id.
+- `derived` says stage 2 has the block. `inflight` carries the block attempts that are not final. `stats` carries the newest block and the time, every 5 seconds. These have no id and are not replayed: a page that reconnects reads their state from the REST routes.
+- A client that reconnects with `Last-Event-ID` gets the blocks it missed, from a buffer of the newest 100.
+- The server sends a heartbeat every 15 seconds, and tells the browser to retry after 3 seconds.
+- A client may hold 4 streams and an instance 5,000. Past that the answer is `429` with `Retry-After`.
+
 ### Rate limits
 
 Every limit is per client: the connection's address, or the last address in `TRUSTED_IP_HEADER` behind our own proxy (never read without it). An IPv6 client counts as its whole /64. There are no API keys. The limits are in `server/limits.ts`, and `server/http-limits.test.ts` holds a test for each.
@@ -111,7 +223,7 @@ Every limit is per client: the connection's address, or the last address in `TRU
 | The pages' REST routes (`/api/...`, including `GET /api/faucet` and the faucet's ticket route, which read from reth) and `/healthz` | 20 a second, bursts of 60 | `429` with `Retry-After` |
 | Etherscan's door (`/api`) | 10 a second and 600 a minute | HTTP 200 with `{"status":"0","message":"NOTOK","result":"Max rate limit reached"}`, as Etherscan answers, and `Retry-After` |
 | A `txlist` or `getLogs` page on Etherscan's door | at most 8 MiB of transaction `input` or log `data` in the page (`MAX_PAGE_BYTES`) | HTTP 200 with `{"status":"0","message":"NOTOK","result":"Result too large; ask for a smaller offset"}`; no `Retry-After` (a smaller `offset` is answered) |
-| Verification (`verifysourcecode`, `verifyproxycontract`) | 30 an hour, 500 KB a request | HTTP 200 with `status` "0", `message` "NOTOK" and the reason; `Retry-After` for the hourly limit. Any other request to `/api` may carry 8 KB |
+| Verification (`verifysourcecode`, `verifyproxycontract`) | 30 an hour; the source at most 500 KB | HTTP 200 with `status` "0", `message` "NOTOK" and the reason; `Retry-After` for the hourly limit. Any other request to `/api` may carry 8 KB |
 | `/rpc` | 300 a minute (`RPC_RATE_PER_MINUTE`) | as in "The public RPC" |
 | `GET /api/stream` | 4 streams for a client, 5,000 for an instance | `429` with `Retry-After` |
 | A faucet request (`POST /api/faucet`) | its own limits | as in "The faucet" |
@@ -122,7 +234,7 @@ Every limit is per client: the connection's address, or the last address in `TRU
 
 The indexer rolls its facts up into `stats_minute`, `stats_hour` and `stats_day` (migration 0027 added the columns the stats page needs). Every run recomputes the minutes from the earlier of a lookback before its cursor and the earliest fact time any writer touched since the last run, to the open minute, so a run twice changes nothing. Writers leave that time in `stats_dirty` through triggers (blocks, block attempts, lifecycle rows, producer runs and the derive cursor), so a block caught up after an outage, a journal loaded late or the history of a chain that already exists is rolled up by the next run, however old it is. Minute rows are kept 30 days; hours and days are kept. Runs whose settings carry `test = true` are counted in the `test_*` columns and left out of the block, attempt, accepted and lost counts and of the histograms; the live open, stuck and lost lists and the day's address counts do not look at test runs. `node server/indexer/cli.ts stats-rebuild` empties the rows in one transaction and then fills them again from the facts chunk by chunk, so the Stats and Home pages show partial figures until it is done; the loop waits until it is done (an advisory lock), so it is safe to run while the indexer runs. The 1h window of `/api/stats/summary` and `/api/stats/series` is read from the minute rows, so it lags the facts by up to one run (10 seconds), and every time in it (and in every other window) is the edge of a histogram bucket, 5 % wide, not the exact value. `prover.maxBusyRatio10m` and `prover.windowsOver` are worked out over the whole 10-minute windows of the window (the prover's busy time over 600 s, and the number of those above 0.6); `prover.meanBusyRatio` is the mean over the part of the window that has happened.
 
-`GET /api/stats/summary?window=` gives the numbers of design section 8 over a window (`1h`, `6h`, `24h`, `7d` or `30d`, `24h` when left out), and what is live now: the rate over the last 60 s, what is waiting (with the age of the pool sample), the open transactions by age (normal, slow, stuck, the stuck ones listed; and how many are being proven and how many wait), the lost ones and the dropped ones each listed, the replaced ones counted, the blocks of each size class, the strategy of the newest ordinary producer run, and the faucet's requests (how many, sent, final, failed, and the time from request to final; refusals by a limit are not stored, so `turnedAway` is always null). `GET /api/stats/series?metric=&window=&step=` gives one metric as a point for each step. Both are listed, with their fields, in `/api/openapi.json`.
+`GET /api/stats/summary?window=` gives the stats over a window (`1h`, `6h`, `24h`, `7d` or `30d`, `24h` when left out), and what is live now: the rate over the last 60 s, what is waiting (with the age of the pool sample), the open transactions by age (normal, slow, stuck, the stuck ones listed; and how many are being proven and how many wait), the lost ones and the dropped ones each listed, the replaced ones counted, the blocks of each size class, the strategy of the newest ordinary producer run, and the faucet's requests (how many, sent, final, failed, and the time from request to final; refusals by a limit are not stored, so `turnedAway` is always null). `GET /api/stats/series?metric=&window=&step=` gives one metric as a point for each step. Both are listed, with their fields, in `/api/openapi.json`.
 
 - A window is the last whole buckets of the rows it is read from (1 h and 6 h: minute rows; 24 h and 7 d: hour rows; 30 d: day rows), the open bucket included. Buckets are cut from the epoch in UTC.
 - Times are read from histograms whose buckets are 5% apart, so a percentile is never below the truth and at most 5% above it.
@@ -171,16 +283,24 @@ The Canton update id of a final transaction is filled in when the database holds
 
 ## The pages
 
-The pages are a small React app in `src/`, built by Vite into `dist/`, which the server serves. `npm run build` makes the build, and `npm run dev` serves the pages while you work on them, with `/api` passed on to a server on the default port.
+The pages are a small React app in `src/`, built by Vite into `dist/`, which the server serves. `npm run build` makes the build, and `npm run dev` serves the pages while you work on them, with `/api` passed on to a server on the default port. The pages read the REST API, and `/rpc` for a contract's Read calls. Where a page shows a changing value it follows the live stream (`src/useLive.ts`).
 
-Every page has the same header (the chain's name and id, which link home, a search box and a link to the Faucet) and ends with the same line about how the explorer reads Canton. The name and the id come from `/api/status`; until it has answered, the header says Ostia. Search sends what was typed to `/search?q=`, which asks the server what it is and opens that page, so a search is also a link. Nothing found says so, in the server's own words, and so does a block, transaction or address that does not exist.
+Every page has the same header (the chain's name and id, which link home, a search box and a link to the Faucet) and ends with the same line about how the explorer reads Canton. The name and the id come from `/api/status`; until it has answered, the header says Ostia. Search sends what was typed to `/search?q=`, which asks `/api/search` what it is and opens that page, so a search is also a link. Nothing found says so, in the server's own words, and so does a block, transaction or address that does not exist.
 
-- **Home** shows the status strip, the newest ten final blocks and a box saying what the explorer can and cannot show. It asks for `/api/status` again every two seconds. The strip and the server's health check read the same answer, so they cannot disagree. The time to commit shown is Canton's record time minus the block's timestamp, rounded to whole seconds. The timestamp comes from the builder's clock, in whole seconds.
-- **Block** (`/block/:number-or-hash`) shows the block's EVM side from reth next to its Canton side: the update id, the commit time, the record and the two parties that signed it, whether reth's hash, the record's hash and the hash of the record's header agree, and the three facts read from the proof (program key, ZisK release, block hash) next to this explorer's pins. A fact that does not match is shown in red with the value that was read; a proof that is not 1,344 bytes gets one red line instead. Under the two sides come the line saying Daml legs are not shown (with no count), the same five steps for every block with only the two measured times, the block's transactions, and the record's data (proof, header and transactions, with their sizes and a copy button each). A block that is still being proven shows its EVM side and says it is not on Canton yet; block 0 is shown as Genesis and checked against block 1's record. The page looks again every two seconds until the block is final, and says Not found when Canton refuses a block that was being proven. The Verify panel sits between the transactions and the record's data, and is greyed out while the block is being proven.
-- **Transaction** (`/tx/:hash`) shows the result, the block and its Canton update, who sent it and to whom, the decoded ERC-20 transfer, the value, the fee at its price, the gas, the nonce, the type, the input and the logs. A transaction that is not final says so and where it is on the way (Waiting, Being proven, Final, or Replaced or Dropped, with the reason in plain words), and the page looks again every two seconds until it is settled. Only a page reached by the transaction's hash can say Waiting.
-- **Address** (`/address/:address` and `/token/:address`, the same page) shows the balance in the chain's coin from reth's newest block and, for an account, the number of transactions it has sent. A token is named by its own name and symbol, and shows its decimals; a contract or token that a block the database holds created names the transaction and the block.
-- **Faucet** (`/faucet`) is the faucet page. See [The faucet page](#the-faucet-page).
-- A route that no page owns answers "Not found".
+| Route | What it shows, and where it comes from |
+|---|---|
+| `/` | The status strip from `/api/status`, the newest final blocks, the block attempts that are not final yet (`/api/in-flight`) and a box saying what the explorer can and cannot show. The strip and the health check read the same answer, so they cannot disagree |
+| `/blocks`, `/block/:number-or-hash` | The list of final blocks. A block shows its EVM side from reth next to its Canton side: the update id, the commit time, the record and the two parties that signed it, whether reth's hash, the record's hash and the hash of the record's header agree, and the three facts read from the proof (program key, ZisK release, block hash) next to this explorer's pins. A fact that does not match is shown in red with the value that was read, and a proof that is not 1,344 bytes gets one red line instead. It also shows the block's transactions and legs, the record's data with a copy button each, and the Verify panel. A block still being proven shows its EVM side and says it is not on Canton yet. Block 0 is shown as Genesis and checked against block 1's record |
+| `/txs`, `/tx/:hash` | The list of transactions. A transaction shows its result, its block and Canton update, sender and recipient, the decoded ERC-20 transfer or call, value, fee, gas, nonce, type, input, logs, internal calls, token transfers and trace. A transaction that is not final says where it is on the way (Waiting, Being proven, Final, Replaced or Dropped, with the reason in plain words) and its lifecycle times, and the page looks again every two seconds until it is settled. Only a page reached by the transaction's hash can say Waiting |
+| `/addresses`, `/address/:address` | The list of addresses. An address shows the balance in the chain's coin from reth's newest block, the number of transactions it sent, and tabs for its transactions and its token transfers. A contract or token that a block the database holds created names the transaction and the block |
+| `/contracts`, `/contract/:address` | The list of contracts. A contract shows its code, its verified source and ABI when it has them, Read and Write calls built from the ABI (Read goes through `/rpc`, Write through the visitor's wallet), and its events |
+| `/tokens`, `/token/:address` | The list of tokens. A token shows its name, symbol and decimals, its supply, its holders and its transfers |
+| `/legs`, `/leg/:id` | The gateway's legs, and one leg |
+| `/canton`, `/canton/:updateId` | The Canton updates that carry a block, as the reader party sees them, and one update with its neighbours |
+| `/stats` | The charts and numbers of [Stats](#stats) |
+| `/docs/api` | The API page, drawn from `/api/openapi.json`: the REST routes, the Etherscan-compatible modules and the rate limits |
+| `/faucet` | The faucet. See [The faucet page](#the-faucet-page) |
+| any other route | "Not found" |
 
 Colours are variables in `src/styles.css`, light by default and dark when the system asks for it. There is no switch and nothing is stored. Times are UTC. Every hash is shown shortened, with a button to copy the whole value and one to read it in full.
 
@@ -188,7 +308,7 @@ The fonts are IBM Plex Sans and IBM Plex Mono, served by the explorer from `publ
 
 ## Contract verification
 
-A person sends a contract's Solidity source (a single file or standard JSON input) with its compiler version, settings, constructor arguments and libraries, to `POST /api/verify`, and asks `GET /api/verify/{guid}` how it went. The API only queues the request (the body may be up to 600 KB, the source 500 KB, and a client may send 30 an hour); a separate role, `node server/verifier/cli.ts`, takes the jobs one at a time, downloads the compiler named, checks its SHA-256 against the compiler list, runs it in a throwaway container with no network, and compares the result with the code on chain: a full match, a partial match (only the metadata differs), or a similar one for a contract with the same runtime code. A contract in the genesis is matched on its runtime code alone. The role writes its state to `health_checks` (`verifier/compilers`, `verifier/queue`), and while no role has done so in the last minute `POST /api/verify` answers 503, "Verification is not running." A partial match carries a note (`matchNote`, on the source answer and on the contract's `verification`): the metadata differs from the compile, so code that reads its own or another contract's code (type(X).creationCode/runtimeCode, codecopy, extcodecopy, address(this).code) may act differently from the source's compile, and only a full match is byte-for-byte. A verified source belongs to the code at an address: a contract made again there with other code is unverified until its new code is verified, and the source of the old code stays with the old code.
+A person sends a contract's Solidity source (a single file or standard JSON input) with its compiler version, settings, constructor arguments and libraries, to `POST /api/verify`, and asks `GET /api/verify/{guid}` how it went. The API only queues the request (the source is at most 500 KB, the body of `POST /api/verify` at most 600 KB, the form body of the Etherscan-compatible door at most 1,564 KiB because a form encodes each byte that is not a letter or digit as three, and a client may send 30 an hour); a separate role, `node server/verifier/cli.ts`, takes the jobs one at a time, downloads the compiler named, checks its SHA-256 against the compiler list, runs it in a throwaway container with no network, and compares the result with the code on chain: a full match, a partial match (only the metadata differs), or a similar one for a contract with the same runtime code. A contract in the genesis is matched on its runtime code alone. The role writes its state to `health_checks` (`verifier/compilers`, `verifier/queue`), and while no role has done so in the last minute `POST /api/verify` answers 503, "Verification is not running." A partial match carries a note (`matchNote`, on the source answer and on the contract's `verification`): the metadata differs from the compile, so code that reads its own or another contract's code (type(X).creationCode/runtimeCode, codecopy, extcodecopy, address(this).code) may act differently from the source's compile, and only a full match is byte-for-byte. A verified source belongs to the code at an address: a contract made again there with other code is unverified until its new code is verified, and the source of the old code stays with the old code.
 
 The role is off unless you start it: `EXPLORER_VERIFIER=1 SOLC_LIST_URL=<the compiler list> explorer/run.sh start` runs it as its own container (`cze-explorer-verifier`), and `start` without the switch stops one that an earlier run left. It needs the Docker socket, the pinned Docker program (downloaded once and checked), and the pinned sandbox image on the machine (`run.sh` says what to pull). The header of `explorer/run.sh` has the settings.
 
@@ -255,14 +375,27 @@ The server reads the key only when `FAUCET_KEY_FILE` is set; without it the fauc
 
 ## The database
 
-The explorer keeps its data in a PostgreSQL of its own, apart from the one Canton uses, so that a heavy query never slows Canton down. `network/explorer-db.sh` starts it for a persistent network (see [network/README.md](../network/README.md)). The schema is a set of numbered SQL files in `db/migrations/`. There is no ORM, and a migration that has been applied is never edited: a change is a new file.
+The explorer keeps its data in a PostgreSQL of its own, apart from the one Canton uses, so that a heavy query never slows Canton down. `network/explorer-db.sh` starts it for a persistent network (see [network/README.md](../network/README.md)). The schema is a set of numbered SQL files in `db/migrations/` (`0001_bookkeeping.sql` upward). There is no ORM, and a migration that has been applied is never edited: a change is a new file.
+
+The tables, by what writes and reads them:
+
+| Group | Tables |
+|---|---|
+| Bookkeeping | `schema_migrations`, `meta`, `cursors`, `health_checks` |
+| Canton's side of a block | `block_records`, `proofs`, `canton_updates`, `canton_participants`, `canton_parties`, `canton_synchronizers`, `canton_templates` |
+| The chain, written by stage 1 | `blocks`, `transactions`, `tx_hashes`, `logs`, `gateway_legs`, `coin_balance_history`, `addresses` |
+| What stage 2 works out | `tx_traces`, `internal_calls`, `contracts`, `bytecodes`, `proxies`, `abi_fragments`, `tokens`, `token_balances`, `token_transfers`, `nft_owners` |
+| The builder's journal | `producer_runs`, `block_attempts`, `attempt_transactions`, `tx_lifecycle`, `pool_samples` |
+| The tracker and the faucet | `tracked_transactions`, `faucet_requests`, `faucet_batches`, `faucet_daily_counts` |
+| Verification | `verification_jobs`, `verified_sources` |
+| Stats | `stats_minute`, `stats_hour`, `stats_day`, `stats_dirty` |
 
 ```sh
 # the password file is the one network/explorer-db.sh made in the network's state folder
 EXPLORER_DB_PASSWORD_FILE=../state/explorer-db.env node server/db/cli.ts migrate --head 0
 ```
 
-`server/db/migrate.ts` applies the files that a database has not seen, each in its own transaction, and records the SHA-256 of each file in `schema_migrations`. It refuses to run, and applies nothing, when an applied file has changed, when a file is missing, or when the numbers skip. Run twice, the second run changes nothing.
+The command takes `--head N`, which makes the partitions up to block N (default 0) and two more ahead, and `--partition-width N`. `server/db/migrate.ts` applies the files that a database has not seen, each in its own transaction, and records the SHA-256 of each file in `schema_migrations`. It refuses to run, and applies nothing, when an applied file has changed, when a file is missing, or when the numbers skip. Run twice, the second run changes nothing.
 
 ### A new chain, and a moved reader
 
@@ -274,7 +407,7 @@ node server/indexer/cli.ts reader-moved <participant id>    # the reader party i
 node server/indexer/cli.ts clear-check C10                    # C10 is ok again after a person has looked at the block it names; the row keeps who cleared it
 ```
 
-The same commands run through npm as `npm run explorer -- reset --yes` (the `--` hands the rest to the command, not to npm). Not yet built: a switch for a throwaway local run that resets by itself when it meets a new chain (`INDEX_RESET_ON_NEW_CHAIN`, design section 4.4); today a person runs `reset --yes`.
+The same commands run through npm as `npm run explorer -- reset --yes` (the `--` hands the rest to the command, not to npm). There is no switch that resets by itself when the indexer meets a new chain: a person runs `reset --yes`.
 
 `reader-moved` adds the participant to `canton_participants`, keeps the old one's last offset, records the move in `meta` (`reader_move_N`) and puts the reader cursor at the new participant's start. Do it after hosting the reader on the new participant and letting the indexer read the old one past that moment. If the new participant starts after the next block, the indexer stops and names the gap.
 
@@ -296,13 +429,36 @@ From the repository root:
 cd explorer
 npm ci
 npm run typecheck
-npm test
+npm test                         # vitest run
 npm run build
 ```
 
-The page tests (`src/**/*.test.tsx`) render the pages with Testing Library against a fetch that answers as the server's API does; their status answer is held to the fields the server serves. The tests run against a small fake reth (`test/fake-reth.ts`) and a small fake Ledger API (`test/fake-ledger.ts`), so they need no chain and no GPU. The proof tests read the recorded proof in `demo/results/run1-proof.hex` and check it against the pins in `prover/fixtures/session.txt`.
+On a laptop, run vitest with two workers so that the machine stays cool: `npx vitest run --maxWorkers=2`. One file or one test is `npx vitest run server/tracker.test.ts` or `-t '<name>'`. A page test asks for the browser-like environment on its first line (`// @vitest-environment jsdom`); the rest run in Node. `vitest.config.ts` includes `server/`, `src/`, `test/` and `e2e/`.
 
-One more check runs in CI only. `check-ledger-api.sh` starts the participants of the pinned Canton, saves the OpenAPI document that Canton writes about its own Ledger API, and `server/ledger.openapi.test.ts` checks the explorer's requests against it, field for field, and the fake's answers for their shape. Set `CANTON_OPENAPI` to a JSON copy of such a document to run it yourself; without it, those tests are skipped. CI runs them in the Node image that `PINS` names (`EXPLORER_NODE_IMAGE`). The packages are pinned to exact versions in `package.json` and `package-lock.json`.
+The page tests (`src/**/*.test.tsx`) render the pages with Testing Library against a fetch that answers as the server's API does; their status answer is held to the fields the server serves. The server tests run against a small fake reth (`test/fake-reth.ts`) and a small fake Ledger API (`test/fake-ledger.ts`), so they need no chain and no GPU. The proof tests read the recorded proof in `demo/results/run1-proof.hex` and check it against the pins in `prover/fixtures/session.txt`. `test/run-sh.test.ts` runs `run.sh` with `EXPLORER_DRY_RUN=1` and checks the Docker commands it prints.
+
+Some tests need something the machine may not have, and are skipped without it:
+
+| Needs | Set | What runs |
+|---|---|---|
+| A PostgreSQL | `EXPLORER_TEST_DATABASE_URL`: a database on a server where the user may create databases. Each test makes a database of its own and drops it | The database tests: migrations, partitions, the schema snapshot, both stages of the indexer, the REST routes on real rows, the tracker and the faucet stores, the stats rollups |
+| A PostgreSQL, and a failure when it is missing | `EXPLORER_TEST_REQUIRE_DATABASE=1` with the URL | The same, but a missing URL fails the run instead of skipping. A CI job that must run them sets it |
+| The tracker and the faucet on the database | `EXPLORER_TEST_STORE=database` | The existing tracker and faucet tests, against the database in the files' place |
+| Docker and the pinned sandbox image | `EXPLORER_TEST_REQUIRE_SANDBOX=1` makes a missing Docker a failure | The verifier's sandbox, for real: a compile in a container with no network, a memory limit and a time limit |
+| Canton's OpenAPI document | `CANTON_OPENAPI`, a JSON copy of it | The explorer's Ledger API requests, field for field, against what Canton says it takes |
+| A running explorer and chain | `EXPLORER_URL`, `RUN1_FILE`; for the ethers checks also `CHAIN_ID`, `ETHERSCAN_ADDRESS`, `ETHERSCAN_BALANCE` and `ETHERSCAN_TX` | `e2e/running.test.tsx` and `e2e/etherscan.test.ts`. `tests/demo_rehearsal.sh` sets them |
+
+For example, with a PostgreSQL on the loopback:
+
+```sh
+EXPLORER_TEST_DATABASE_URL=postgres://<user>:<password>@127.0.0.1:5432/postgres EXPLORER_TEST_REQUIRE_DATABASE=1 npx vitest run --maxWorkers=2 server/db server/indexer
+```
+
+`db/schema.snapshot.txt` is compared with the schema a fresh database ends up with. After a deliberate change to the schema, `UPDATE_SNAPSHOT=1` rewrites it.
+
+`check-ledger-api.sh` starts the participants of the pinned Canton and saves the OpenAPI document that Canton writes about its own Ledger API, and `server/ledger.openapi.test.ts` checks the explorer's requests against it and the fake's answers for their shape. CI runs this in the Node image that `PINS` names (`EXPLORER_NODE_IMAGE`). The packages are pinned to exact versions in `package.json` and `package-lock.json`.
+
+`.github/workflows/explorer.yml` runs these jobs on a pull request: `tests` (typecheck, tests and build, in the pinned Node image), `database` (the database tests against the PostgreSQL that `PINS` pins, scaled L2 included), `verifier-sandbox`, `ledger-api` and `verify-wasm`.
 
 ## Verify
 
@@ -347,3 +503,47 @@ The producer (`builder/`) writes a journal of what it does, and the indexer load
 Every line is applied again without harm, and the lines of a run are put in the order of their numbers, so a line that arrives late finds its attempt. A line whose attempt has no `cut` line, a line of a format the indexer does not know and a line that cannot be read are counted and said in the health, and so is a gap in the numbers (a line the producer could not write): the counts are kept with the cursor and shown for an hour after the last one. A line cut short by a crash is left until it is whole, or dropped and counted when its file is old. The state of a transaction follows one order whoever writes it: `final` is terminal and beats `replaced`, `dropped` and `lost`; `replaced` is set only when another transaction with the same sender and nonce is final; otherwise the newer event wins.
 
 The checks that use it are C8 (every attempt the journal says committed has its update in the index within 10 s, and every indexed block has a committed attempt), C9 (the producer's answer time is not before Canton's record time by more than 100 ms) and the rows `producer_alive`, `producer_state` and `prover` from `status.json` and the journal. All are `degraded` when they fail, which `/healthz` names and still answers 200 for. `producer_state` is degraded when the producer is not `running`, when 3 blocks in a row have failed, or when `waitingToBeResolved` in `status.json` (the block whose outcome is not known) has been set for over 60 s; `blocksUnknown` counts since the producer's loop started and is not read for this. C9 and `prover` read the last six hours of attempts. Without a journal or a status file the blocks are still indexed, the lifecycle stays blank, and the health says so. A chain with no new block is `ok`: the producer's liveness is the age of its status file, never the age of its journal.
+
+## The load tests and the nightly
+
+The explorer is held to budgets (below) by six tests, named L1 to L5 and W1. Their method, the machine they ran on and every number measured are in [docs/METRICS.md](../docs/METRICS.md): "The indexer on a real chain (W1)", "The API at scale (L2)", "The nightly load test" and "What CI runs".
+
+| Test | Where | What it does |
+|---|---|---|
+| L1 | `server/indexer/indexer.test.ts`, tests named `L1:` | Blocks of 0 to 5,000 transactions through both stages of the indexer, on the pinned PostgreSQL |
+| W1 | `tests/demo_rehearsal.sh` | The worst-case block that the 30 Mgas cap allows, on the rehearsal's real chain, indexed into a database of its own |
+| L2 | `test/l2/` | The API at scale: a seeded database, a mixed load at a fixed rate, live-stream clients and ingestion running. It runs only with `L2=1` and the database URL. `L2_TRANSACTIONS`, `L2_SECONDS`, `L2_RATE`, `L2_SSE` set its size, `L2_RESULTS` names the JSON file for its numbers and `L2_KEEP_DATABASE=1` keeps the seeded database for a look at query plans |
+| L3 | `tests/demo_nightly_l3.py` | A flood of blocks of plain transfers through the real builder, timed from the ledger to the served page |
+| L4 | `test/l4/` | The pages opened cold in a browser on a slow link: largest contentful paint, script size and calls before the first paint |
+| L5 | `test/l5/` | Developers' tools against the Etherscan-compatible API: the proxy module, `forge verify-contract`, `hardhat verify` and `cast` |
+
+`.github/workflows/explorer-nightly.yml` runs them every night at 02:17 UTC and by hand (`workflow_dispatch`, with the sizes as inputs), and never on a pull request. The one exception is a pull request that changes the nightly's own files: it runs a short version of everything, so that a change is seen to run before it merges. A pull request otherwise runs only the scaled L2 in `explorer.yml`. Each job keeps its numbers as an artifact and writes a summary to the run.
+
+## Limits and budgets
+
+The limits are stated where each part is described. This table lists them in one place.
+
+| What | Limit |
+|---|---|
+| REST routes and `/healthz` | 20 a second per client, bursts of 60 (see [Rate limits](#rate-limits)) |
+| Etherscan-compatible `/api` | 10 a second and 600 a minute per client; 8 MiB of `input` or `data` in a `txlist` or `getLogs` page |
+| Verification | 30 an hour per client; the source at most 500 KB |
+| `/rpc` | `RPC_RATE_PER_MINUTE` (300) per client; body at most 256 KiB; batch at most 20; 64 requests answered at once across all clients |
+| Live streams | 4 for a client, 5,000 for an instance |
+| Pages of a list | 25 by default, 100 at most |
+| Transaction tracker | `TRACKER_MAX` entries (10,000), `TRACKER_MAX_BYTES` (16 MiB), `TRACKER_PER_SENDER` open entries (64), `TRACKER_MAX_PENDING_MINUTES` (60) |
+| Faucet | `FAUCET_AMOUNT` per request (1), one request per address per day, one per client per 10 minutes, `FAUCET_MAX_PER_HOUR` (5,000), queue of `FAUCET_QUEUE_MAX` (5,000) |
+| Indexer reads of reth | `READ_CALL_GAS` (100,000) per `eth_call`; an answer over 4 KB of data is dropped |
+
+The budgets that the load tests hold the explorer to are these. Each is checked by the test named beside it, and the measured figures are in [docs/METRICS.md](../docs/METRICS.md).
+
+| Budget | Held to | Test |
+|---|---|---|
+| Stage 1 of the worst-case block | at most 2,750 ms (`B1_MS` in `test/budgets.ts`) | L1, W1 |
+| Both stages of the worst-case block | at most 12,750 ms (`B2_MS`) | L1, W1 |
+| One block, transaction or address through the API | p95 at most 100 ms; an address's page of transactions at most 300 ms; a list page at most 200 ms; search at most 100 ms; `getLogs` at most 500 ms | L2 |
+| A new final block to 2,000 stream clients | p95 at most 500 ms | L2 |
+| Home, Block and Transaction on a 10 Mbit/s, 100 ms link | largest contentful paint at most 2.0 s, at most 200 KB of gzipped script | L4 |
+| Database size | at most 2.5 GB per million transactions | L2, L3 |
+| `/api/health` | p97.5 at most 50 ms, and no answer other than 200 | L2 |
+
