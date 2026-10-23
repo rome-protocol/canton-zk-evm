@@ -49,7 +49,7 @@ describe("reading the labels", () => {
 
   it("asks in calls of at most 100 when a page holds more addresses than that", async () => {
     const calls = labelsApi();
-    const rows = Array.from({ length: 230 }, (_, i) => addr(i + 1).slice(0, 38) + i.toString(16).padStart(2, "0"));
+    const rows = Array.from({ length: 230 }, (_, i) => addr(1).slice(0, 40) + i.toString(16).padStart(2, "0"));
     const { result } = renderHook(() => useLabels(rows), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.ready).toBe(true));
     expect(calls).toHaveLength(3);
