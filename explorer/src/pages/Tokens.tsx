@@ -147,7 +147,7 @@ export function Tokens() {
         </div>
       </div>
       {p.error && !p.items ? <ErrorCard message={p.error.message} retrying /> : !p.items ? <LoadingCard>Reading the tokens…</LoadingCard> : (
-        <section className="card" aria-label="Tokens">
+        <section className="card panel" aria-label="Tokens">
           <div className="list-h"><span className="muted">{listLabel(p.items.length, p.from, d?.total, d?.derived)}</span><NumberedPager p={p} label="Pages of tokens" always /></div>
           {p.items.length > 0 && (
             <div className="scroll">
@@ -157,8 +157,8 @@ export function Tokens() {
               </table>
             </div>
           )}
-          <p className="muted small">Holders, transfers and supply are the explorer's copy, read from the Transfer logs of final blocks and the contract. A token with no name here did not answer, and is still listed.</p>
-          {d?.derived === false && <p className="muted small">The explorer is still reading blocks, so this list may be missing the newest tokens and their counts.</p>}
+          <p className="muted small card-note">Holders, transfers and supply are the explorer's copy, read from the Transfer logs of final blocks and the contract. A token with no name here did not answer, and is still listed.</p>
+          {d?.derived === false && <p className="muted small card-note">The explorer is still reading blocks, so this list may be missing the newest tokens and their counts.</p>}
         </section>
       )}
       <Feed now={now} />

@@ -205,9 +205,22 @@ describe("the tokens page to the screen", () => {
     expect(within(r).queryByTitle(/decimals are not known/)).toBeNull();
   });
 
+  it("draws the tokens card as a panel: a header strip with the count and pager over a line, and the table to the card's edges, as screen 09 does", async () => {
+    await open();
+    const card = screen.getByRole("region", { name: "Tokens" });
+    expect(card).toHaveClass("panel");
+    expect(card.querySelector(":scope > .list-h")).not.toBeNull();
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
+    expect(css).toMatch(/\.panel\s*>\s*\.list-h\s*\{[^}]*border-bottom/);
+    // The scroll box takes no side padding around a table; the first and last cells carry the 20px (measured in a browser in the PR).
+    expect(css).toMatch(/\.panel \.scroll\s*\{\s*padding:\s*0 0 14px/);
+    expect(css).toMatch(/\.panel \.tbl th:first-child[^{]*\{[^}]*padding-left:\s*20px/);
+    expect(css).toMatch(/\.panel \.tbl th:last-child[^{]*\{[^}]*padding-right:\s*20px/);
+  });
+
   it("gives the feed card a header that sits inside the card (a panel card pulls no header out of its edge)", async () => {
     await open();
-    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
     expect(css).toMatch(/\.panel\s*>\s*\.card-head\s*\{[^}]*margin:\s*0/);
     const card = screen.getByRole("region", { name: "Latest token transfers" });
     expect(card).toHaveClass("panel");
@@ -215,7 +228,7 @@ describe("the tokens page to the screen", () => {
   });
 
   it("keeps the standard tabs whole on a narrow screen: a label never breaks inside itself", () => {
-    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
     expect(css).toMatch(/\.seg button\s*\{[^}]*white-space:\s*nowrap/);
   });
 

@@ -1,21 +1,23 @@
 import { useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { getFaucetAddress, getStatsSummary, getTx, getTxPage, txsCsvPath, type ApiStatus, type ApiTx, type InFlight, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
+import { getFaucetAddress, getStatsSummary, getTx, getTxPage, getTxPageOldest, txsCsvPath, type ApiStatus, type ApiTx, type InFlight, type InFlightTx, type TxFilter, type TxListItem } from "../api.ts";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { Amount } from "../components/Amount.tsx";
 import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { useBothEnds } from "../components/Ends.tsx";
+import { NumberedPager } from "../components/Numbered.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
-import { count, duration, exact } from "../format.ts";
+import { count, duration, exact, feeOf } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
 import { methodOf } from "../method.ts";
 import { listPoll, notFinalCounts, readOf, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
-import { AllTime, DASH_WHY, Moved, ProvingMoved, Stat, Time } from "./HomeParts.tsx";
+import { AllTime, DASH_WHY, Moved, ProvingMoved, provingToken, Stat, Time } from "./HomeParts.tsx";
 import "./home.css";
 
 const PER = 25;
@@ -25,11 +27,12 @@ type View = "all" | "notfinal" | TxFilter;
 const VIEWS: { id: View; label: string }[] = [{ id: "all", label: "All" }, { id: "notfinal", label: "Not final yet" }, { id: "failed", label: "Failed" }, { id: "calls", label: "Contract calls" }];
 type Coin = ApiStatus["coin"];
 
+/** gas used times the gas price, in the coin's smallest unit. */
 const fee = (gasUsed: number, gasPrice: string) => (BigInt(gasUsed) * BigInt(gasPrice)).toString();
 const Dash = () => <span className="muted">—</span>;
 
 function Fee({ raw, coin }: { raw: string; coin: Coin }) {
-  return <span className="num" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{exact(raw, coin.decimals)}</span>;
+  return <span className="num" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{feeOf(raw, coin.decimals)}</span>;
 }
 /** The sender: the faucet by its name, anything else by its short address, or by its name when the index knows one. */
 function From({ address, faucet, chain, labels }: { address: string; faucet: string | null | undefined; chain: string; labels: Labels }) {
@@ -89,7 +92,8 @@ const head = (coin: Coin) => <thead><tr><th>Transaction hash</th><th>Method</th>
 /**
  * How many are not final yet in all, from the attempts and the pool; the in-flight list is capped by the server and is not the count. `atLeast` when the pool is
  * not counted. `inBlocks` is the part in blocks being proven that the final total does not hold already. The pool is a count with no hashes, so a transaction
- * waiting when it was read may be final by the time of the final total: `about` says so when the pool was read before that total.
+ * waiting when it was read may be final by the time of the final total, and an attempt whose block the final total already holds is left out of the blocks being proven: `about`
+ * says so when the pool was read before that total, and when an attempt's block is at or below the block the total reaches.
  */
 type Total = { total: number; atLeast: boolean; inBlocks: number; about: boolean };
 const totalOf = (f: InFlight | undefined, asOfBlock?: number | null, asOf?: string | null): Total | null => {
@@ -151,15 +155,33 @@ function Cards({ live, inBlocks }: { live: boolean; inBlocks?: number }) {
   );
 }
 
-function FinalRows({ view, st, now, live, faucet, notFinal, all, inAll, finalTotal }: { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null; inAll: Total | null; finalTotal: number | null | undefined }) {
-  const p = usePaged(["txs", "page", view], (before) => getTxPage(before, PER, view), listPoll(live));
-  const items = p.data?.items;
+/** The first page of All: read once, for the total in the subtitle and the page count and for the rows of page 1. */
+const FIRST_KEY = ["txs", "page", "all", null] as const;
+
+type Rows = { items: TxListItem[] | undefined; error: Error | null; page: number };
+type RowsProps = { view: TxFilter; st: ApiStatus | undefined; now: number; live: boolean; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null; inAll: Total | null; finalTotal: number | null | undefined };
+
+/** The list of All with a counted total: Page x of y, First and Last, the last page read from the other end (`order=asc`). */
+function NumberedRows(props: RowsProps) {
+  const p = useBothEnds(["txs", "page", "all"], PER, (before, n) => getTxPage(before, n, "all"), (after, n) => getTxPageOldest(after, n, "all"), listPoll(props.live), FIRST_KEY);
+  return <FinalList {...props} rows={{ items: p.items, error: p.error, page: p.page }} pager={<NumberedPager p={p} label="Pages of transactions" />} />;
+}
+/** The filtered lists, and All while the server cannot count: the server totals only All, so these have no page count and no Last, only newer and older. */
+function PagedRows(props: RowsProps) {
+  const p = usePaged(["txs", "page", props.view], (before) => getTxPage(before, PER, props.view), listPoll(props.live));
+  return <FinalList {...props} rows={{ items: p.data?.items, error: p.error, page: p.page }} pager={<Pager p={p} label="Pages of transactions" />} />;
+}
+const FinalRows = (props: RowsProps) => (props.view === "all" && typeof props.finalTotal === "number" ? <NumberedRows {...props} /> : <PagedRows {...props} />);
+
+function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, rows, pager }: RowsProps & { rows: Rows; pager: React.ReactNode }) {
+  const p = rows;
+  const items = p.items;
   const showNotFinal = view === "all" && p.page === 1;
   const shown = showNotFinal ? notFinal.slice(0, NOT_FINAL_SHOWN) : [];
   const details = useDetails(shown);
   const labels = useLabels([
     ...(items ?? []).flatMap((t) => [t.from, t.to, t.created, t.tokenMoves?.first?.token]),
-    ...details.flatMap((t) => (t ? [t.from, t.to, t.created] : [])),
+    ...details.flatMap((t) => (t ? [t.from, t.to, t.created, provingToken(t)] : [])),
   ]);
   if (p.error && !items) return <ErrorCard message={p.error.message} retrying />;
   if (!items || !st) return <LoadingCard>Reading the transactions…</LoadingCard>;
@@ -176,7 +198,7 @@ function FinalRows({ view, st, now, live, faucet, notFinal, all, inAll, finalTot
     : p.page === 1 ? `Showing the newest ${count(n)} on this page${of}` : `Showing ${count(n)} on page ${p.page}${of}`;
   return (
     <section className="card" aria-label="Transactions">
-      <div className="list-h"><span className="muted">{label}</span><Pager p={p} label="Pages of transactions" /></div>
+      <div className="list-h"><span className="muted">{label}</span>{pager}</div>
       <div className="scroll">
         <table className="tbl txs">
           {head(st.coin)}
@@ -195,7 +217,7 @@ function FinalRows({ view, st, now, live, faucet, notFinal, all, inAll, finalTot
 function NotFinalOnly({ st, now, faucet, notFinal, all }: { st: ApiStatus | undefined; now: number; faucet: string | null | undefined; notFinal: InFlightTx[]; all: Total | null }) {
   const shown = notFinal.slice(0, NOT_FINAL_SHOWN);
   const details = useDetails(shown);
-  const labels = useLabels(details.flatMap((t) => (t ? [t.from, t.to, t.created] : [])));
+  const labels = useLabels(details.flatMap((t) => (t ? [t.from, t.to, t.created, provingToken(t)] : [])));
   if (!all || !st) return <LoadingCard>Reading what is not final yet…</LoadingCard>;
   const c: Ctx = { now, coin: st.coin, faucet, chain: st.chainName, labels };
   const unlisted = all.total - shown.length;
@@ -222,7 +244,7 @@ export function Txs() {
   const notFinal = flight.data?.transactions ?? [];
   const all = totalOf(flight.data);
   // The total comes with the first page of all; the list below shares this read when it shows that page.
-  const first = useQuery({ queryKey: ["txs", "page", "all", null], queryFn: () => getTxPage(null, PER, "all"), refetchInterval: listPoll(live) }).data;
+  const first = useQuery({ queryKey: FIRST_KEY, queryFn: () => getTxPage(null, PER, "all"), refetchInterval: listPoll(live) }).data;
   const finalTotal = first ? (first.total ?? null) : undefined;
   const inAll = totalOf(flight.data, first?.totalAsOfBlock, first?.totalAsOf);
   const counts = headline(finalTotal, inAll, flight.data);

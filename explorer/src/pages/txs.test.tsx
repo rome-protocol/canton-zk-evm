@@ -4,7 +4,15 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { StatsSummary } from "../api.ts";
 import { summary } from "./stats-fixtures.ts";
-import { addr, fakeApi, hash, inFlight, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+import type { Label } from "../api.ts";
+import { addr, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+
+/** The route `base` plus a labels route that answers only the addresses asked, as the server does (so a page that forgot to ask gets no name). */
+const withLabels = (base: (path: string) => { status: number; body: unknown }, items: unknown[]) => {
+  const known = labelsOf(items as Label[]);
+  return Object.assign((path: string) => (path.includes("/api/labels") ? known(path) : base(path)), { routed: true as const });
+};
+const labelsAsked = (calls: string[]) => calls.filter((c) => c.includes("/api/labels")).map((c) => decodeURIComponent(c)).join(" ");
 
 const NOW = Date.parse("2026-10-04T01:38:00Z");
 async function open(h: Parameters<typeof route>[0] = {}) {
@@ -139,7 +147,7 @@ describe("the all-time total", () => {
 
   it("on page 2 and later, tells the page against the final total, or says the total is not counted", async () => {
     await open({ txs: () => reply(counted(1017)), inFlight: () => reply(some()) });
-    await userEvent.click(await screen.findByRole("button", { name: "Older page" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Next page" }));
     expect(await screen.findByText("Showing 2 on page 2 · 1,017 final in all")).toBeInTheDocument();
   });
 
@@ -165,10 +173,11 @@ describe("the all-time total", () => {
     expect(card).not.toHaveTextContent("5 being proven");
   });
 
-  it("says at least when the pool is not counted, and offers no Last button the server cannot serve", async () => {
+  it("says at least when the pool is not counted, while Last and the page count still rest on the exact final total", async () => {
     await open({ txs: () => reply(counted(1017)), inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [] })) });
     await waitFor(() => expect(title()).toHaveTextContent("at least 1,017 in all · 1,017 final · 0 being proven · the pool is not counted"));
-    expect(screen.queryByRole("button", { name: "Last" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Last" })).toBeEnabled();
+    expect(screen.getByRole("navigation", { name: "Pages of transactions" })).toHaveTextContent("Page 1 of 41");
   });
 
   it("makes no claim about a total on the failed list, which the server does not total", async () => {
@@ -221,7 +230,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
   const moved = { count: 1, more: false, first: { token: addr(0xcb), amount: "100000000", tokenId: null, standard: "ERC-20", decimals: 6 } };
   const labelled = (items: unknown[]) => {
     const base = route({ txs: () => reply(page(items as never[])) });
-    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+    fakeApi(withLabels(base, [usd]));
     renderApp("/txs");
   };
 
@@ -240,7 +249,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     const proving = (value: string) => tx({ hash: hash(0xd2), status: "proving", state: "proving", block: { number: 4, hash: null, updateId: null }, success: null, to: addr(0xcb), value, transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" } });
     const run = async (value: string) => {
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply(proving(value)) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      fakeApi(withLabels(base, [usd]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       expect(await within(row).findByText("100 tUSD")).toHaveClass("tname");
@@ -250,7 +259,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     it("has the coin beside the chip when some is sent", async () => { expect(await run("1000000000000000000")).toHaveTextContent("1 tROME"); });
     it("is reverted, with a cross and no chip, when the receipt says it reverted", async () => {
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: false, logs: [] }) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      fakeApi(withLabels(base, [usd]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       await waitFor(() => expect(row).toHaveTextContent("reverted"));
@@ -260,11 +269,33 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     it("takes the chip from the Transfer log of the receipt over the decoded input", async () => {
       const logs = [{ address: addr(0xcb), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (7_000_000n).toString(16).padStart(64, "0") }];
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs }) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      fakeApi(withLabels(base, [usd]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       expect(await within(row).findByText("7 tUSD")).toHaveClass("tname");
       expect(row).not.toHaveTextContent("100 tUSD");
+    });
+    it("names the token of the receipt's Transfer when it is another token than the one the transaction was sent to", async () => {
+      const other = { ...usd, address: addr(0xa5), name: "Other USD", symbol: "tOTH" };
+      const logs = [{ address: addr(0xa5), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (2_000_000n).toString(16).padStart(64, "0") }];
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs, transfer: null }) });
+      const calls = fakeApi(withLabels(base, [usd, other]));
+      renderApp("/txs");
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+      expect(labelsAsked(calls)).toContain(addr(0xa5));
+    });
+
+    it("asks for the same token in Not final yet, which lists them from their receipts alone", async () => {
+      const other = { ...usd, address: addr(0xa5), name: "Other USD", symbol: "tOTH" };
+      const logs = [{ address: addr(0xa5), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (2_000_000n).toString(16).padStart(64, "0") }];
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs, transfer: null }) });
+      const calls = fakeApi(withLabels(base, [usd, other]));
+      renderApp("/txs");
+      await userEvent.click(await screen.findByRole("button", { name: "Not final yet" }));
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+      expect(labelsAsked(calls)).toContain(addr(0xa5));
     });
   });
 
@@ -327,5 +358,83 @@ describe("the subtitle and the list header add up", () => {
     await open({ txs: () => reply(counted), inFlight: () => reply(burst) });
     expect(await screen.findByText("Showing 12 of 2,057")).toBeInTheDocument();
     expect(screen.queryByText(/newest 12/)).toBeNull();
+  });
+});
+
+describe("the pages of All: Page x of y and Last", () => {
+  const at = "2026-10-04T01:37:58Z";
+  const withTotal = (items: ReturnType<typeof txItem>[], next: string | null, total: number | null = 53) => ({ ...page(items, next), total, totalAsOfBlock: total === null ? null : 99, totalAsOf: total === null ? null : at });
+  // 53 transactions, one per block, block 53 the newest.
+  const all = Array.from({ length: 53 }, (_, i) => txItem(i + 1));
+  const newestFirst = (a: number, b: number) => all.slice(a, b).reverse();
+  const blocks = () => rows().map((r) => r.querySelectorAll("td")[2]!.textContent);
+  const nav = () => screen.getByRole("navigation", { name: "Pages of transactions" });
+  const feed = (p: string) => {
+    if (p.includes("order=asc") && !p.includes("after=")) return reply(withTotal(all.slice(0, 3), "1:0"));
+    if (p.includes("order=asc") && p.includes("after=1%3A0")) return reply(withTotal(all.slice(3, 28), "28:0"));
+    return reply(withTotal(newestFirst(28, 53), "29:0"));
+  };
+
+  it("says Page 1 of 3 from the exact total, with First and Last", async () => {
+    await open({ txs: feed });
+    expect(await within(await screen.findByRole("navigation", { name: "Pages of transactions" })).findByText("Page 1 of 3")).toBeInTheDocument();
+    expect(within(nav()).getByRole("button", { name: "Last" })).toBeEnabled();
+    expect(within(nav()).getByRole("button", { name: "First" })).toBeDisabled();
+  });
+
+  it("reads the first page of All once: the subtitle total, the rows and Page x of y come from one read", async () => {
+    const calls = await open({ txs: feed });
+    await within(await screen.findByRole("navigation", { name: "Pages of transactions" })).findByText("Page 1 of 3");
+    expect(calls.filter((c) => c === "/api/txs?limit=25")).toHaveLength(1);
+  });
+
+  it("opens the last page from the other end with only what it holds (total mod page size), so it never overlaps the page before", async () => {
+    const calls = await open({ txs: feed });
+    await userEvent.click(await within(await screen.findByRole("navigation", { name: "Pages of transactions" })).findByRole("button", { name: "Last" }));
+    await screen.findByText("Page 3 of 3");
+    expect(calls).toContain("/api/txs?order=asc&limit=3");
+    // The oldest three, drawn newest first like the rest of the list.
+    expect(blocks()).toEqual(["3", "2", "1"]);
+    await userEvent.click(within(nav()).getByRole("button", { name: "Previous page" }));
+    await screen.findByText("Page 2 of 3");
+    expect(calls).toContain("/api/txs?order=asc&limit=25&after=1%3A0");
+    expect(blocks()[0]).toBe("28");
+    expect(blocks()[24]).toBe("4");
+    expect(blocks()).not.toContain("3");
+    await userEvent.click(within(nav()).getByRole("button", { name: "First" }));
+    await screen.findByText("Page 1 of 3");
+    expect(blocks()[0]).toBe("53");
+  });
+
+  it("reads the last page in full when the total is a whole number of pages", async () => {
+    const calls = await open({ txs: (p) => reply(withTotal([txItem(3)], "3:0", 75)) });
+    await userEvent.click(await within(await screen.findByRole("navigation", { name: "Pages of transactions" })).findByRole("button", { name: "Last" }));
+    await waitFor(() => expect(calls).toContain("/api/txs?order=asc&limit=25"));
+  });
+
+  it("keeps the older/newer pager on the filtered lists, which have no total", async () => {
+    await open({ txs: () => reply(withTotal([txItem(3)], "3:0")) });
+    await userEvent.click(screen.getByRole("button", { name: "Failed" }));
+    const n = await screen.findByRole("navigation", { name: "Pages of transactions" });
+    expect(n).toHaveTextContent("Page 1");
+    expect(n).not.toHaveTextContent("of");
+    expect(within(n).queryByRole("button", { name: "Last" })).toBeNull();
+    expect(within(n).getByRole("button", { name: "Older page" })).toBeEnabled();
+  });
+
+  it("keeps the older/newer pager on All while the server cannot count", async () => {
+    await open({ txs: () => reply(withTotal([txItem(3)], "3:0", null)) });
+    const n = await screen.findByRole("navigation", { name: "Pages of transactions" });
+    expect(within(n).queryByRole("button", { name: "Last" })).toBeNull();
+    expect(within(n).getByRole("button", { name: "Older page" })).toBeEnabled();
+  });
+});
+
+describe("the fee column", () => {
+  it("writes the fee in whole coins to ten decimals, cut and never rounded, and a fee below the tenth place as '<'", async () => {
+    await open({ txs: () => reply(page([txItem(3, { gasUsed: 21000, gasPrice: "1670000000" }), txItem(2, { gasUsed: 1, gasPrice: "99999999" }), txItem(1, { gasUsed: 21000, gasPrice: "1999999999999" })])) });
+    expect(rows()[0]).toHaveTextContent("0.00003507");
+    expect(rows()[1]).toHaveTextContent("<0.0000000001");
+    expect(rows()[2]).toHaveTextContent("0.0419999999");
   });
 });

@@ -1,7 +1,6 @@
-import { useState } from "react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getTokenList, getTokenListOldest, type TokenListItem, type TokenListPage, type TokenSort, type TokenStandard } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
+import { useBothEnds } from "../components/Ends.tsx";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { count, exact, short, units } from "../format.ts";
 import type { Labels } from "../labels.ts";
@@ -72,37 +71,7 @@ export function Avatar({ t }: { t: Pick<TokenListItem, "address" | "name" | "sym
 
 type ListFilter = { sort: TokenSort; standard?: TokenStandard; gateway: boolean };
 
-/**
- * The token list, a page at a time, with a known last page. The API pages by a key (the `next` of the page before), so a page is reached by walking it: from the top
- * (newest or most first) by `before`, and the last page by reading from the other end (`order=asc`) with exactly what the last page holds (the total modulo the page size, or a whole
- * page when it divides), so that the two ends never overlap. From the last page, back is further along that end's key, and the rows are drawn in the list's own order.
- * `go(n)` reaches the first and last pages and the one beside this: the ones the buttons ask for.
- */
+/** The token list, a page at a time, with a known last page: the shared two-ended reader, over the token list's two ends. */
 export function useTokenList(f: ListFilter, per: number, refetchInterval: number | false) {
-  const id = JSON.stringify(f);
-  const [st, setSt] = useState<{ id: string; end: boolean; keys: Array<string | null>; lastN: number }>({ id, end: false, keys: [null], lastN: per });
-  const cur = st.id === id ? st : { id, end: false, keys: [null], lastN: per };
-  const at = cur.keys[cur.keys.length - 1] ?? null;
-  const q = useQuery<TokenListPage>({
-    queryKey: ["tokens", f, cur.end, at, cur.end ? cur.lastN : per],
-    queryFn: () => (cur.end ? getTokenListOldest(f.sort, at, cur.keys.length === 1 ? cur.lastN : per, f.standard, f.gateway) : getTokenList(f.sort, at, per, f.standard, f.gateway)),
-    placeholderData: keepPreviousData,
-    refetchInterval,
-  });
-  const total = q.data?.total ?? 0;
-  const pages = Math.max(1, Math.ceil(total / per));
-  const page = cur.end ? Math.max(1, pages - cur.keys.length + 1) : cur.keys.length;
-  const ready = !q.isPlaceholderData && !!q.data;
-  const items = q.data ? (cur.end ? [...q.data.items].reverse() : q.data.items) : undefined;
-  const set = (end: boolean, keys: Array<string | null>, lastN = cur.lastN) => setSt({ id, end, keys, lastN });
-  const go = (n: number) => {
-    if (n === 1) return set(false, [null]);
-    if (!ready || n < 1 || n > pages || n === page) return undefined;
-    const next = q.data?.next ?? null;
-    // A page beside this one is walked to; only the last page from further off is read from the other end.
-    if (n === page + 1 && (cur.end ? cur.keys.length > 1 : next !== null)) return set(cur.end, cur.end ? cur.keys.slice(0, -1) : [...cur.keys, next]);
-    if (n === page - 1 && (cur.end ? next !== null : cur.keys.length > 1)) return set(cur.end, cur.end ? [...cur.keys, next] : cur.keys.slice(0, -1));
-    return n === pages ? set(true, [null], total % per || per) : undefined;
-  };
-  return { data: q.data, items, error: q.error, page, pages, from: (page - 1) * per, go };
+  return useBothEnds<TokenListPage>(["tokens", f], per, (at, n) => getTokenList(f.sort, at, n, f.standard, f.gateway), (at, n) => getTokenListOldest(f.sort, at, n, f.standard, f.gateway), refetchInterval);
 }
