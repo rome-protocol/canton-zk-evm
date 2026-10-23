@@ -74,7 +74,7 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
       ["ERC-1155", "where x.amount is not null and x.token_id is not null", FEED],
     ] as const) {
       await accounts.allTransfers(standard, [5, 1, 0], 10);
-      const p = await plan(new RegExp(`with k as \\(select x\\.block_number, x\\.log_index, x\\.batch_index from token_transfers x ${where.replace(/\./g, "\\.")}\\s+and`));
+      const p = await plan(new RegExp(`with k as \\(select x\\.block_number, x\\.log_index, x\\.batch_index from token_transfers x ${where.replace(/[.\\]/g, "\\$&")}\\s+and`));
       expect(p, String(standard)).toMatch(idx);
       expect(p, String(standard)).toMatch(/Index Cond: \(ROW\(block_number, log_index, batch_index\) </);
       expect(p, String(standard)).not.toMatch(/Sort Key|Seq Scan|^\s*Filter:/m);
