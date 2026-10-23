@@ -19,6 +19,11 @@ const verified = { [A]: contractSource(0xcb, { abi: ABI }) };
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the contract page: Events", () => {
+  it("says under the table that an event of a block still being proven is listed once the block is final", async () => {
+    await open("events", { sources: verified, events: () => page([log(1)]) });
+    expect(await screen.findByText(/Only events of final blocks are listed.*still being proven.*once the block is final/)).toBeInTheDocument();
+  });
+
   it("shows each log in the words of its event, with the method that wrote it, and links the addresses", async () => {
     await open("events", { sources: verified, events: () => page([log(1)]) });
     const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;

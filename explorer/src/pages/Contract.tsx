@@ -16,6 +16,7 @@ import { WriteTab } from "./ContractWrite.tsx";
 import { howVerified, matchMeans, MatchChip } from "./ContractParts.tsx";
 import { Transfers } from "./Token.tsx";
 import "./address.css";
+import "./block.css";
 import "./contract.css";
 import "./tx.css";
 

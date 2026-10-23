@@ -35,7 +35,22 @@ export function Gate({ abis, entries, what, children }: { abis: Abis; entries: A
 }
 
 export const label = (p: AbiParam, i: number) => `${p.name || `arg${i}`} (${typeOf(p)})`;
-export const headline = (e: AbiEntry) => `${e.name} (${(e.inputs ?? []).map((p, i) => label(p, i)).join(", ")})`;
+/** A function's name, bold, and its parameters after it: with types on Read (as the ABI is read), by name alone on Write. */
+export function FnName({ e, typed }: { e: AbiEntry; typed: boolean }) {
+  const args = (e.inputs ?? []).map((p, i) => (typed ? label(p, i) : p.name || `arg${i}`)).join(", ");
+  return <span className="mono"><span className="fn-name">{e.name}</span> <span className="fn-args">({args})</span></span>;
+}
+
+/** The two small icons the Read and Write heads use; the shared icon set has neither. */
+export function Glyph({ name }: { name: "refresh" | "wallet" }) {
+  return (
+    <svg className="ic" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {name === "refresh"
+        ? <><path d="M13.4 8a5.4 5.4 0 01-9.6 3.4M2.6 8a5.4 5.4 0 019.6-3.4" /><path d="M12.4 1.8v3h-3M3.6 14.2v-3h3" /></>
+        : <><rect x="2" y="3.8" width="12" height="9" rx="1.8" /><path d="M2 6.6h12M10.6 9.6h1.4" /></>}
+    </svg>
+  );
+}
 
 /** The typed fields of a function's inputs. */
 export function Fields({ e, values, onChange }: { e: AbiEntry; values: string[]; onChange: (i: number, v: string) => void }) {

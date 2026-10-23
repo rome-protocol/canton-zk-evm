@@ -11,6 +11,19 @@ afterEach(() => vi.unstubAllGlobals());
 const word = (t: string, v: unknown) => encodeAbiParameters([{ type: t }], [v as never]);
 
 describe("the contract page: Read", () => {
+  it("opens with the standard card header, outline buttons, and typed parameters after each name", async () => {
+    await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x15" : word("string", "x") });
+    const card = await screen.findByRole("region", { name: "Read contract" });
+    const h = card.querySelector(".card-head") as HTMLElement;
+    expect(within(h).getByRole("heading", { level: 2, name: "Read contract" }).parentElement!.querySelector(".muted")).not.toBeNull();
+    for (const n of ["Read again", "Expand all"]) { expect(within(h).getByRole("button", { name: new RegExp(n) })).toHaveClass("btn-line"); }
+    const fn = screen.getByRole("region", { name: "allowance" });
+    expect(fn.querySelector(".fn-name")).toHaveTextContent("allowance");
+    expect(fn.querySelector(".fn-args")).toHaveTextContent("(owner (address), spender (address))");
+    await userEvent.click(within(fn).getByRole("button", { name: /allowance/ }));
+    expect(within(fn).getByRole("button", { name: "Query" })).toHaveClass("btn-line");
+  });
+
   it("reads the final block again on Read again, and calls every function at the new block", async () => {
     let head = 0x15;
     const { rpcCalls } = await open("read", { rpc: (c) => c.method === "eth_blockNumber" ? "0x" + (head).toString(16) : word("string", "x") });

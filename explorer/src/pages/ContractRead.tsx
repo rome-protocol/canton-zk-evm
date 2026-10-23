@@ -3,10 +3,11 @@ import { useEffect, useState } from "react";
 import { callable, decodeOutputs, encodeCall, type AbiEntry } from "../abi-call.ts";
 import { getAddressDetail, type ContractDetail } from "../api.ts";
 import { exact, units } from "../format.ts";
-import { ErrorCard } from "../components/Cards.tsx";
+import { CardHead, ErrorCard } from "../components/Cards.tsx";
+import "./block.css";
 import { Icon } from "../components/Icon.tsx";
 import { ethCall, finalBlock } from "../rpc.ts";
-import { Fields, Gate, headline, Out, useChoice, type Abis } from "./ContractCall.tsx";
+import { Fields, FnName, Gate, Glyph, Out, useChoice, type Abis } from "./ContractCall.tsx";
 import { useAbi } from "./useAbi.ts";
 
 /** The final block of one reading of the tab, asked once and shared by every call on it. */
@@ -60,7 +61,7 @@ function ReadItem({ n, address, e, head, open, coin }: { n: number; address: str
   return (
     <section className="fn" aria-label={e.name}>
       <button type="button" className="fn-h" aria-expanded={!shut} disabled={inputs.length === 0} onClick={() => setToggled((t) => !t)}>
-        <span className="muted">{n}.</span> <span className="mono fn-name">{headline(e)}</span>
+        <span className="muted">{n}.</span> <FnName e={e} typed />
         <span className="muted small">{inputs.length ? `returns ${returns || "nothing"}` : returns}</span>
         {inputs.length > 0 && <Icon name="down" size={14} />}
       </button>
@@ -68,7 +69,7 @@ function ReadItem({ n, address, e, head, open, coin }: { n: number; address: str
         : !shut && (
           <div className="fn-b">
             <Fields e={e} values={values} onChange={(i, v) => setValues((a) => { const b = [...a]; b[i] = v; return b; })} />
-            <div className="fn-q"><button type="button" className="btn" onClick={query}>Query</button></div>
+            <div className="fn-q"><button type="button" className="btn-line" onClick={query}>Query</button></div>
             {problem && <p className="fact-bad small" role="alert">{problem}</p>}
             {ran && <Answer key={ran.n} address={address} e={e} fields={ran.fields} head={head} coin={coin} />}
           </div>
@@ -92,14 +93,13 @@ export function ReadTab({ detail }: { detail: ContractDetail }) {
   return (
     <Gate abis={abis} entries={entries} what="Read contract">
       <section className="card" aria-label="Read contract">
-        <div className="list-h">
-          <h2>Read contract <span className="muted thin">Calls go through <span className="mono">eth_call</span> on this explorer's RPC at the final head{head.data !== undefined ? `, block ${head.data}` : ""}. Nothing is signed and nothing is sent.</span></h2>
-          <span className="row-gap">
+        <CardHead as="h2" title="Read contract"
+          sub={<>Calls go through <span className="mono">eth_call</span> on this explorer's RPC at the final head{head.data !== undefined ? `, block ${head.data}` : ""}. Nothing is signed and nothing is sent.</>}
+          action={<span className="row-gap">
             {switcher}
-            <button type="button" className="btn" onClick={() => setTick((t) => t + 1)}>Read again</button>
-            <button type="button" className="btn" onClick={() => setOpen((o) => !(o ?? false))}>{open ? "Collapse all" : "Expand all"}</button>
-          </span>
-        </div>
+            <button type="button" className="btn-line" onClick={() => setTick((t) => t + 1)}><Glyph name="refresh" /> Read again</button>
+            <button type="button" className="btn-line" onClick={() => setOpen((o) => !(o ?? false))}>{open ? "Collapse all" : "Expand all"}</button>
+          </span>} />
         {note && <p className="small muted card-note">{note}</p>}
         {head.error && <ErrorCard message={head.error.message} retrying />}
         {fns.length === 0 ? <p className="muted">This contract has no functions that only read.</p>

@@ -38,7 +38,7 @@ function Sources({ s }: { s: ContractSource }) {
     <section className="card" aria-label="Contract source code">
       <div className="list-h">
         <h2>Contract source code <MatchChip matchType={s.matchType} /></h2>
-        <a className="btn" href={download} download={`${name}-sources.json`}>Download sources</a>
+        <a className="btn-line" href={download} download={`${name}-sources.json`}>Download sources</a>
       </div>
       {s.matchNote && <p className="small muted card-note">{s.matchNote}</p>}
       <div className="code-cols">

@@ -3,12 +3,13 @@ import { useId, useState } from "react";
 import { parseUnits } from "viem";
 import { callable, decodeOutputs, encodeCall, type AbiEntry } from "../abi-call.ts";
 import type { ApiStatus, ContractDetail } from "../api.ts";
+import { CardHead } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
-import { Icon } from "../components/Icon.tsx";
+import "./block.css";
 import { ethCall, finalBlock } from "../rpc.ts";
 import { useStatus } from "../useStatus.ts";
 import { injected, useWallet, walletWords } from "../wallet.ts";
-import { Fields, Gate, headline, useChoice } from "./ContractCall.tsx";
+import { Fields, FnName, Gate, Glyph, useChoice } from "./ContractCall.tsx";
 import { useAbi } from "./useAbi.ts";
 
 type Wallet = ReturnType<typeof useWallet>;
@@ -66,7 +67,7 @@ function WriteItem({ n, address, e, wallet, coin, owner }: { n: number; address:
   };
   return (
     <section className="fn" aria-label={e.name}>
-      <div className="fn-h"><span className="muted">{n}.</span> <span className="mono fn-name">{headline(e)}</span>{payable && <span className="muted small">payable</span>}<OwnerHint name={e.name} owner={owner} /></div>
+      <div className="fn-h"><span className="muted">{n}.</span> <FnName e={e} typed={false} />{payable && <span className="muted small">payable</span>}<OwnerHint name={e.name} owner={owner} /></div>
       <div className="fn-b">
         <Fields e={e} values={values} onChange={(i, v) => setValues((a) => { const b = [...a]; b[i] = v; return b; })} />
         {payable && (
@@ -76,7 +77,7 @@ function WriteItem({ n, address, e, wallet, coin, owner }: { n: number; address:
           </div>
         )}
         <div className="fn-q">
-          <button type="button" className="btn" disabled={!ready || busy} onClick={send}>Write</button>
+          <button type="button" className="btn-line" disabled={!ready || busy} onClick={send}>Write</button>
           {!ready && <span className="muted small">{wallet.account === null ? "Connect a wallet first" : wallet.wrongChain ? "Switch your wallet to this chain first" : "Checking which chain your wallet is on…"}</span>}
         </div>
         {problem && <p className="fact-bad small" role="alert">{problem}</p>}
@@ -89,17 +90,17 @@ function WriteItem({ n, address, e, wallet, coin, owner }: { n: number; address:
 function Connect({ wallet, status }: { wallet: Wallet; status: ApiStatus | undefined }) {
   const chain = status ? `${status.chainName} (chain ${status.chainId})` : "this chain";
   return (
-    <div className="wallet-bar card-note" role="group" aria-label="Wallet">
-      <Icon name="lock" size={16} />
+    <div className="wallet-bar" role="group" aria-label="Wallet">
+      <Glyph name="wallet" />
       <div>
         {wallet.account === null
-          ? <><strong>Connect a wallet to write.</strong><div className="small muted">The explorer holds no key. Your wallet signs and sends to {chain}; the transaction then shows on its own page as it goes through.</div></>
+          ? <><strong>Connect a wallet to write.</strong><div className="small muted">The explorer holds no key. Your wallet signs and sends to {chain}; the transaction then shows as Waiting, Being proven and Final on its own page.</div></>
           : <><strong>Connected: <span className="mono">{wallet.account.slice(0, 6)}…{wallet.account.slice(-4)}</span></strong>
             {wallet.wrongChain && <div className="small fact-bad">Your wallet is on chain {wallet.chainId}, not {chain}.</div>}</>}
         {wallet.error && <div className="small fact-bad" role="alert">{wallet.error}</div>}
         {!wallet.available && wallet.account === null && <div className="small muted">No wallet was found in this browser.</div>}
       </div>
-      {wallet.account === null ? <button type="button" className="btn" onClick={wallet.connect}>Connect wallet</button>
+      {wallet.account === null ? <button type="button" className="btn" onClick={wallet.connect}><Glyph name="wallet" /> Connect wallet</button>
         : wallet.wrongChain ? <button type="button" className="btn" onClick={wallet.switchChain}>Switch network</button> : null}
     </div>
   );
@@ -116,7 +117,7 @@ export function WriteTab({ detail }: { detail: ContractDetail }) {
   return (
     <Gate abis={abis} entries={entries} what="Write contract">
       <section className="card" aria-label="Write contract">
-        <div className="list-h"><h2>Write contract <span className="muted thin">Drawn from the verified ABI</span></h2>{switcher}</div>
+        <CardHead as="h2" title="Write contract" sub="Drawn from the verified ABI" action={switcher} />
         {note && <p className="small muted card-note">{note}</p>}
         <Connect wallet={wallet} status={status} />
         {fns.length === 0 ? <p className="muted">This contract has no functions that change state.</p>

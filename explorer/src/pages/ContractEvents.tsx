@@ -76,7 +76,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
         <form className="fn-q" onSubmit={(ev) => { ev.preventDefault(); apply(); }}>
           <label htmlFor="ev-topic" className="muted small">First topic</label>
           <input id="ev-topic" className="inp mono" type="text" spellCheck={false} placeholder="0x and 64 hex digits" value={text} onChange={(ev) => setText(ev.target.value)} />
-          <button type="submit" className="btn">Filter</button>
+          <button type="submit" className="btn-line">Filter</button>
         </form>
       )}
       {typing && text.trim() !== "" && !TOPIC.test(text.trim()) && <p className="fact-bad small" role="alert">A topic is 0x and 64 hex digits.</p>}
@@ -92,6 +92,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
             </table>
           </div>
         )}
+      <p className="small muted ev-foot">Only events of final blocks are listed. An event in a block that is still being proven appears here once the block is final.</p>
       <Pager p={p} label="Events pages" />
     </section>
   );

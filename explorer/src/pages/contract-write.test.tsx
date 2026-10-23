@@ -30,6 +30,19 @@ const sources = { [addr(0xcb)]: contractSource(0xcb, { abi: ABI }) };
 const chainHex = async () => { const { status } = await import("../test-utils.tsx"); return "0x" + status().chainId.toString(16); };
 
 describe("the contract page: Write", () => {
+  it("opens with the standard card header, a dashed wallet notice with the Connect button, and names-only function heads", async () => {
+    await open("write", { sources });
+    const card = await screen.findByRole("region", { name: "Write contract" });
+    expect(within(card).getByRole("heading", { level: 2, name: "Write contract" }).closest(".card-head")).not.toBeNull();
+    const bar = within(card).getByRole("group", { name: "Wallet" });
+    expect(bar).toHaveClass("wallet-bar");
+    expect(bar).toHaveTextContent("Waiting, Being proven and Final");
+    expect(within(bar).getByRole("button", { name: /Connect wallet/ })).toHaveClass("btn");
+    const fn = screen.getByRole("region", { name: "transfer" });
+    expect(fn.querySelector(".fn-args")).toHaveTextContent("(to, value)");
+    expect(within(fn).getByRole("button", { name: "Write" })).toHaveClass("btn-line");
+  });
+
   it("lists the state-changing functions with their fields, and holds the Write buttons until a wallet is connected", async () => {
     await open("write", { sources });
     expect(screen.getByRole("region", { name: "transfer" })).toBeInTheDocument();
