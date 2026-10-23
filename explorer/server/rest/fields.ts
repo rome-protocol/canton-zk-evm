@@ -95,7 +95,7 @@ export const REST_FIELDS = {
   /** The addresses list: the database's copy of the balance, as of `balanceBlock`. */
   addressItem: ["address", "kind", "balance", "balanceBlock", "txCount"],
   /** One address: the balance is reth's at the final head (`balanceBlock`); the counters, the times of the first and last block, the creation count, the funder and the kind are the database's. */
-  addressDetail: ["address", "kind", "balance", "balanceBlock", "sentCount", "receivedCount", "internalCount", "tokenTransferCount", "firstSeenBlock", "firstSeenTimestamp", "lastActiveBlock", "lastActiveTimestamp", "createdCount", "fundedBy", "token", "createdBy", "derived"],
+  addressDetail: ["address", "kind", "balance", "balanceBlock", "sentCount", "receivedCount", "internalCount", "tokenTransferCount", "firstSeenBlock", "firstSeenTimestamp", "lastActiveBlock", "lastActiveTimestamp", "createdCount", "createdCountCapped", "fundedBy", "token", "createdBy", "derived"],
   /** The first incoming transaction with value, when the index can say it funded the address. */
   funding: ["from", "txHash", "block", "timestamp", "value"],
   /** An address's internal calls: the call, and the transaction it is in. */

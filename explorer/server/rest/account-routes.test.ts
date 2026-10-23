@@ -874,10 +874,16 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     it("gives the creation count and the times of the first and the last block an address was seen in", async () => {
       const detail = body(await get(`/api/addresses/${A}`));
       same(detail, F.addressDetail);
-      expect(detail).toMatchObject({ createdCount: 3, firstSeenBlock: 1, firstSeenTimestamp: ts(1), lastActiveBlock: 3, lastActiveTimestamp: ts(3) });
+      expect(detail).toMatchObject({ createdCount: 3, createdCountCapped: false, firstSeenBlock: 1, firstSeenTimestamp: ts(1), lastActiveBlock: 3, lastActiveTimestamp: ts(3) });
       expect(body(await get(`/api/addresses/${B}`))).toMatchObject({ createdCount: 0 });
       // An address nothing has touched says what it does not know: no times, no funder, and no contracts made.
       expect(body(await get(`/api/addresses/${h(0xee)}`))).toMatchObject({ createdCount: 0, firstSeenTimestamp: null, lastActiveTimestamp: null, fundedBy: null });
+    });
+
+    it("stops counting the contracts an address made at a ceiling, and says so", async () => {
+      const capped = createAccountRest(pool);
+      expect(await capped.address(A, 2)).toMatchObject({ createdCount: 2, createdCountCapped: true });
+      expect(await capped.address(A, 3)).toMatchObject({ createdCount: 3, createdCountCapped: false });
     });
 
     it("says who funded an address only when its first incoming transaction with value is in the block it first appeared in", async () => {

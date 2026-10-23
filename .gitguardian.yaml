@@ -1,0 +1,5 @@
+version: 2
+secret:
+  ignored_paths:
+    # Test files hold URL-encoded query strings that look like random tokens; they carry no secret.
+    - "explorer/src/api.test.ts"

@@ -26,7 +26,9 @@ export interface AddressDetail {
   address: string; kind: string; sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
   /** The contracts it made (as the direct caller of the creation). */
   createdCount: number;
-  /** Who sent it its first coin, when the index can say: null when it holds no such transaction, or the address was there before it. */
+  /** True when `createdCount` stopped at its ceiling: the address made more. */
+  createdCountCapped: boolean;
+  /** Who sent it its first coin, when the index can say: null when it holds no such transaction, or the address was there before it (a genesis balance, a call inside another transaction, or a token transfer that reached it first). */
   fundedBy: Funding | null;
   token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null;
 }
@@ -153,8 +155,11 @@ export function createAccountRest(pool: Pool) {
     }));
   }
 
+  /** The most contracts of an address that are counted: a factory that made more says `createdCountCapped`, so that its page does not cost a count of millions. */
+  const CREATED_COUNT_CAP = 100_000;
+
   /** What the database holds of an address: the counters, the kind, the token it is and the transaction that made it. Undefined for an address nothing has touched. */
-  async function address(a: string): Promise<AddressDetail | undefined> {
+  async function address(a: string, createdCap = CREATED_COUNT_CAP): Promise<AddressDetail | undefined> {
     // The funder is the first transaction that sent it value, and only when that is in the block the address first appeared in: an address that was there before it (a
     // genesis balance, a call inside another transaction) was funded some other way, which this index does not hold. The times are those of the blocks of the counters.
     const [r] = await query(
@@ -163,19 +168,19 @@ export function createAccountRest(pool: Pool) {
          (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx,
          (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.first_seen_block) as first_ts,
          (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.last_active_block) as last_ts,
-         (select count(*) from contracts k where k.creator = q.address) as created_count,
+         (select count(*) from (select 1 from contracts k where k.creator = q.address limit $2) k) as created_count,
          f.from_address as fund_from, f.hash as fund_tx, f.block_number as fund_block, f.value as fund_value, f.ts as fund_ts
        from (select $1::bytea as address) q left join addresses ad on ad.address = q.address left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address
          left join lateral (select t.from_address, t.hash, t.block_number, t.value::text as value, extract(epoch from b.timestamp)::bigint as ts
-           from transactions t join blocks b on b.number = t.block_number where t.to_address = q.address and t.value > 0 and t.status = 1 order by t.block_number, t.tx_index limit 1) f
-           on f.block_number = ad.first_seen_block`,
-      [bytes(a)],
+           from transactions t join blocks b on b.number = t.block_number where t.to_address = q.address and t.block_number = ad.first_seen_block and t.value > 0 and t.status = 1 order by t.tx_index limit 1) f
+           on true`,
+      [bytes(a), createdCap + 1],
     );
     if (!r || (r.sent_count === null && !r.has_contract)) return undefined;
     return {
       address: a, kind: r.is_token ? "token" : r.is_contract || r.has_contract ? "contract" : "account", sentCount: Number(r.sent_count ?? 0), receivedCount: Number(r.received_count ?? 0),
       internalCount: Number(r.internal_count ?? 0), tokenTransferCount: Number(r.token_transfer_count ?? 0), firstSeenBlock: num(r.first_seen_block), firstSeenTimestamp: num(r.first_ts), lastActiveBlock: num(r.last_active_block), lastActiveTimestamp: num(r.last_ts),
-      createdCount: Number(r.created_count),
+      createdCount: Math.min(Number(r.created_count), createdCap), createdCountCapped: Number(r.created_count) > createdCap,
       fundedBy: r.fund_tx === null ? null : { from: hex(r.fund_from), txHash: hex(r.fund_tx), block: Number(r.fund_block), timestamp: Number(r.fund_ts), value: r.fund_value },
       token: r.is_token ? { name: r.name, symbol: r.symbol, decimals: num(r.decimals) } : null,
       createdBy: r.creation_block === null || r.creation_block === undefined ? null : { txHash: hexOrNull(r.creation_tx), block: Number(r.creation_block) },
@@ -356,7 +361,7 @@ export function createAccountRest(pool: Pool) {
     return { count: Math.min(n, cap), capped: n > cap };
   }
 
-  /** How many contracts there are and how many of them have a verified source: the primary key's count and the partial index's, neither reading the table. */
+  /** How many contracts there are and how many of them have a verified source: counted from the primary key and from the partial index of verified sources. They are index-only scans, but the indexer updates a contract's row in each block that touches it, so they still visit heap pages to check visibility; fine while the list is small, and a counter kept by the indexer can replace them if it grows. */
   async function contractCounts(): Promise<{ all: number; verified: number; notVerified: number }> {
     const [r] = await query("select (select count(*) from contracts) as n, (select count(*) from contracts where verified_source is not null) as v");
     const all = Number(r!.n), verified = Number(r!.v);

@@ -132,7 +132,7 @@ describe("the API client", () => {
     // A value from a page's own URL is encoded, so that it cannot add parameters to the call.
     await getAddressTransfers(A, null, 10, { token: "x&standard=ERC-20" });
     expect(urls()).toEqual([`/api/addresses/${A}/token-transfers?limit=10`, `/api/addresses/${A}/token-transfers?limit=10&before=1%3A2%3A3&token=${T}&standard=ERC-20`, `/api/tokens/${T}/transfers?limit=10`,
-      `/api/addresses/${A}/token-transfers?limit=10&standard=nft`, `/api/addresses/${A}/token-transfers?limit=10&token=x%26standard%3DERC-20`]);
+      `/api/addresses/${A}/token-transfers?limit=10&standard=nft`, `/api/addresses/${A}/token-transfers?limit=10&token=${encodeURIComponent("x&standard=ERC-20")}`]);
     answer(200, { items: [], next: null });
     await getAddressContracts(A, null, 10);
     await getAddressContracts(A, K, 10);

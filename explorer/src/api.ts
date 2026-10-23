@@ -355,14 +355,17 @@ export const getTxReceipt = async (hash: string) => (await call(`/api/txs/${enco
 /** An address of the list: the balance is the database's copy, as of `balanceBlock`; the page of one address reads reth's own. */
 export interface AddressListItem { address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null; txCount: number }
 export type AddressSort = "balance" | "txs";
-/** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
+/** The first transaction that sent an address value: who, which transaction, when and how much. */
 export interface AddressFunding { from: string; txHash: string; block: number; timestamp: number; value: string }
+/** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
 export interface AddressDetail {
   address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null;
   sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
   /** The contracts it made. */
   createdCount: number;
-  /** Who sent it its first coin, null when the explorer cannot say (no such transaction held, or the address was there before it). */
+  /** True when `createdCount` stopped at its ceiling: the address made more. */
+  createdCountCapped: boolean;
+  /** Who sent it its first coin, null when the explorer cannot say (no such transaction held, the address was there before it, or a token transfer reached it first). */
   fundedBy: AddressFunding | null;
   token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null; derived: boolean;
 }
