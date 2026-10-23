@@ -1,5 +1,9 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { abiOrStandard } from "../abi.ts";
+import { ago } from "../block-times.ts";
+import { count, plural } from "../format.ts";
+import { useNow } from "../useStatus.ts";
 import { decodeEventOf, eventKinds, methodNames, type AbiEntry, type Decoded } from "../abi-call.ts";
 import { getContractEvents, type ContractDetail, type ContractEvent } from "../api.ts";
 import { CardHead, ErrorCard, LoadingCard } from "../components/Cards.tsx";
@@ -25,12 +29,12 @@ function Args({ d }: { d: Decoded }) {
   );
 }
 
-function Row({ e, abi, methods }: { e: ContractEvent; abi: AbiEntry[]; methods: Map<string, string> }) {
+function Row({ e, abi, methods, now }: { e: ContractEvent; abi: AbiEntry[]; methods: Map<string, string>; now: number }) {
   const d = useMemo(() => decodeEventOf(abi, e.topics, e.data), [abi, e.topics, e.data]);
   const method = e.method === null ? null : (methods.get(e.method) ?? e.method);
   return (
     <tr>
-      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link></div></td>
+      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link> · {ago(new Date(e.timestamp * 1000).toISOString(), now)}</div></td>
       <td>{e.creation ? <span className="tag method" title="This transaction created a contract">Create contract</span> : method === null ? <span className="muted">—</span> : <span className="tag method" title={e.method ?? undefined}>{method}</span>}</td>
       <td>{d ? <span className="mono" title={d.signature}>{d.name}</span> : <span className="muted">Not decoded</span>}<div className="mono small muted" title={e.topics[0]}>{e.topics[0] ? short(e.topics[0]) : "anonymous"}</div></td>
       <td>{d ? <Args d={d} /> : <span className="mono small wrap muted">{e.topics.length > 1 || e.data !== "0x" ? `${e.topics.length - (e.topics[0] ? 1 : 0)} indexed, data ${e.data.length > 66 ? e.data.slice(0, 66) + "…" : e.data}` : "no data"}</span>}</td>
@@ -41,18 +45,25 @@ function Row({ e, abi, methods }: { e: ContractEvent; abi: AbiEntry[]; methods: 
 /** Events: the logs the contract wrote in final blocks, newest first, decoded with its verified ABI (a proxy's with the implementation's too), paged. */
 export function EventsTab({ detail }: { detail: ContractDetail }) {
   const abis = useAbi(detail);
-  const abi = abis.all;
+  const verifiedAbi = abis.all;
+  const isVerified = verifiedAbi.length > 0;
+  // An unverified contract's logs are still read as the standard token events they are; a verified ABI always wins.
+  const abi = useMemo(() => abiOrStandard(verifiedAbi), [verifiedAbi]);
+  const now = useNow();
   const methods = useMemo(() => methodNames(abi), [abi]);
-  const kinds = useMemo(() => eventKinds(abi), [abi]);
+  const allKinds = useMemo(() => eventKinds(abi), [abi]);
   const [topic, setTopic] = useState<string | null>(null);
   const [typing, setTyping] = useState(false);
   const [text, setText] = useState("");
   const p = usePaged(["contract-events", detail.address, topic], (c) => getContractEvents(detail.address, topic, c));
+  // Verified: every event of the ABI. Not verified: only the standard events this page of logs holds (and the one chosen), so the row of buttons stays short.
+  const seen = new Set(p.data?.items.map((e) => e.topics[0]) ?? []);
+  const kinds = isVerified ? allKinds : allKinds.filter((k) => seen.has(k.topic0) || k.topic0 === topic);
   const apply = () => { if (TOPIC.test(text.trim())) { setTopic(text.trim().toLowerCase()); } };
   const typed = topic !== null && !kinds.some((k) => k.topic0 === topic);
   return (
     <section className="card" aria-label="Events">
-      <CardHead as="h2" title="Events" sub={`from final blocks, ${kinds.length > 0 || abi.length > 0 ? "decoded with the verified ABI" : "shown raw while the source is not verified"}, newest first`} action={
+      <CardHead as="h2" title="Events" sub={`${detail.eventCountCapped ? `${count(detail.eventCount)}+ events` : plural(detail.eventCount, "event")} from final blocks, ${isVerified ? "decoded with the verified ABI" : "decoded with standard token events, as the source is not verified"}, newest first`} action={
         <div className="ev-filter">
           <div className="seg" role="group" aria-label="Event kind">
             <button type="button" aria-pressed={topic === null} onClick={() => { setTopic(null); setTyping(false); }}>All events</button>
@@ -77,7 +88,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
           <div className="tbl-wrap">
             <table className="tbl">
               <thead><tr><th>Transaction</th><th>Method</th><th>Event</th><th>Decoded</th></tr></thead>
-              <tbody>{p.data.items.map((e) => <Row key={`${e.block}-${e.logIndex}`} e={e} abi={abi} methods={methods} />)}</tbody>
+              <tbody>{p.data.items.map((e) => <Row key={`${e.block}-${e.logIndex}`} e={e} abi={abi} methods={methods} now={now} />)}</tbody>
             </table>
           </div>
         )}

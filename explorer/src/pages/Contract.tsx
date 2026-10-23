@@ -118,8 +118,8 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
   if (wait) return wait;
   const c = q.data!;
   const a = read.data;
-  const tabs: { id: TabId; label: string; mark?: boolean; n?: number }[] = [
-    { id: "transactions", label: "Transactions", n: a ? a.sentCount + a.receivedCount : undefined }, { id: "token-transfers", label: "Token transfers", n: tok?.transferCount ?? a?.tokenTransferCount }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" }, { id: "write", label: "Write" }, { id: "events", label: "Events" },
+  const tabs: { id: TabId; label: string; mark?: boolean; n?: number | string }[] = [
+    { id: "transactions", label: "Transactions", n: a ? a.sentCount + a.receivedCount : undefined }, { id: "token-transfers", label: "Token transfers", n: tok?.transferCount ?? a?.tokenTransferCount }, { id: "code", label: "Code", mark: c.verified }, { id: "read", label: "Read" }, { id: "write", label: "Write" }, { id: "events", label: "Events", n: c.eventCountCapped ? `${count(c.eventCount)}+` : c.eventCount },
   ];
   const asked = params.get("tab");
   const tab: TabId = tabs.find((t) => t.id === asked)?.id ?? "transactions";
