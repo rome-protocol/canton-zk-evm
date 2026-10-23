@@ -23,11 +23,16 @@ export function Hero({ tries }: { tries: Array<{ label: string; q: string }> }) 
   );
 }
 
-function Stat({ label, note, children, foot }: { label: string; note?: string; children: ReactNode; foot: ReactNode }) {
+/** The chain's transactions in all, all time, as of the block the server counted to; "not counted yet" when it cannot say, never 0. */
+const AllTime = ({ t }: { t: StatsSummary["txs"]["allTime"] }) =>
+  t ? <span className="muted small" title={`All time, as of block ${t.asOfBlock}`}>{count(t.total)} in all</span> : <span className="muted small">total not counted yet</span>;
+
+function Stat({ label, note, children, foot, sub }: { label: string; note?: string; children: ReactNode; foot: ReactNode; sub?: ReactNode }) {
   return (
     <div className="card stat">
       <span className="stat-k">{label}{note && <span className="faint"> · {note}</span>}</span>
       <span className="stat-v num">{children}</span>
+      {sub}
       <span className="muted small">{foot}</span>
     </div>
   );
@@ -69,7 +74,7 @@ export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary
         <Stat label="Transactions per second" foot={peak ? `peak: the busiest minute in 24 h, ${ago(peak.peakAt!)}` : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now{peak && <> <b>peak {trim(peak.peak!, 1)}</b></>}</small></Stat>
       ) : <Stat label="Transactions per second" foot={noDay}>—</Stat>}
       {d ? (
-        <Stat label="Transactions" note="24 h" foot={`in ${plural(d.blocks.count, "block")}, each one Canton transaction`}>{count(d.txs.count)}</Stat>
+        <Stat label="Transactions" note="24 h" sub={<AllTime t={d.txs.allTime} />} foot={`in ${plural(d.blocks.count, "block")}, each one Canton transaction`}>{count(d.txs.count)}</Stat>
       ) : <Stat label="Transactions" note="24 h" foot={noDay}>—</Stat>}
       <NotFinal n={s.notFinal} read={flight} />
       {d ? (
