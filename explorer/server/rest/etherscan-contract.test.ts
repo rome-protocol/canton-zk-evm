@@ -52,7 +52,7 @@ describe("the contract module's table", () => {
 describe("getsourcecode's fields", () => {
   const verified = (over: Partial<NonNullable<ContractSourceRow["verified"]>> = {}): ContractSourceRow => ({
     held: true, implementation: null,
-    verified: { matchType: "full", format: "solidity-single-file", contractName: "Box", compilerVersion: VERSION, optimizer: true, runs: 200, evmVersion: null, license: "MIT", settings: {}, sources: { "Box.sol": SOURCE }, abi: [{ type: "function", name: "v" }], constructorArgs: null, libraries: null, ...over },
+    verified: { matchType: "full", sourceMatch: "full", format: "solidity-single-file", contractName: "Box", compilerVersion: VERSION, optimizer: true, runs: 200, evmVersion: null, license: "MIT", settings: {}, sources: { "Box.sol": SOURCE }, abi: [{ type: "function", name: "v" }], constructorArgs: null, libraries: null, ...over },
   });
   it("gives a single file as it is, and standard JSON between a second pair of braces", () => {
     expect(sourceCodeFields(verified())).toEqual({
@@ -70,7 +70,9 @@ describe("getsourcecode's fields", () => {
   });
   it("flags a partial match with the pages' note in two extra fields, and a full match carries neither", () => {
     expect(Object.keys(sourceCodeFields(verified()))).toEqual(FIELDS);
-    expect(sourceCodeFields(verified({ matchType: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    expect(sourceCodeFields(verified({ matchType: "partial", sourceMatch: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    expect(sourceCodeFields(verified({ matchType: "similar", sourceMatch: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    expect(Object.keys(sourceCodeFields(verified({ matchType: "similar", sourceMatch: "full" })))).toEqual(FIELDS);
   });
   it("is the same fields, empty, with the text in ABI, for a contract that is not verified, and carries the proxy", () => {
     const empty = sourceCodeFields({ held: true, verified: null, implementation: IMPL });
@@ -271,6 +273,20 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       const [a] = (await get(`/api?module=contract&action=getsourcecode&address=${A}`)).result, [b] = (await get(`/api?module=contract&action=getsourcecode&address=${B}`)).result;
       expect(a.ConstructorArguments).toBe("00ff");
       expect(b).toMatchObject({ SourceCode: SOURCE, ContractName: "Box", ConstructorArguments: "" });
+    });
+    it("carries the partial-match note to a similar match of a partial source, because the code there is read from that source", async () => {
+      await running();
+      await post(single({ constructorArguements: "" }));
+      await worker().step();
+      await addContract(pool, B, runtime, creation);
+      await sql("update contracts set verified_source = (select verified_source from contracts where address = $1), match_type = 'similar', name = 'Box' where address = $2", [Buffer.from(A.slice(2), "hex"), Buffer.from(B.slice(2), "hex")]);
+      const [full] = (await get(`/api?module=contract&action=getsourcecode&address=${B}`)).result;
+      expect(full).not.toHaveProperty("MatchNote");
+      await sql("update verified_sources set match_type = 'partial'");
+      await sql("update contracts set match_type = 'partial' where address = $1", [Buffer.from(A.slice(2), "hex")]);
+      const [a] = (await get(`/api?module=contract&action=getsourcecode&address=${A}`)).result, [b] = (await get(`/api?module=contract&action=getsourcecode&address=${B}`)).result;
+      expect(a).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+      expect(b).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
     });
   });
 
