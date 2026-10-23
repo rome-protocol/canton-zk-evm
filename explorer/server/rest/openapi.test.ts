@@ -78,7 +78,8 @@ describe("the API description", () => {
     expect(Object.keys(props("/api/txs").items.items.properties).sort()).toEqual([...F.txItem].sort());
     expect(Object.keys(props("/api/labels")).sort()).toEqual([...F.labels].sort());
     expect(Object.keys(props("/api/labels").items.items.properties).sort()).toEqual([...F.label].sort());
-    expect(props("/api/txs").totalAsOf.description).toContain("complete through");
+    expect(props("/api/txs").totalAsOf.description).toContain("record time");
+    expect(props("/api/txs").totalAsOfBlock.description).toContain("newest final block");
     const content = (path: string) => Object.keys(doc.paths[path].get.responses["200"].content);
     expect(content("/api/addresses/{address}/txs")).toContain("text/csv");
     expect(content("/api/txs")).toContain("text/csv");

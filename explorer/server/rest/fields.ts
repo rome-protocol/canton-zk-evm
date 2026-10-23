@@ -57,7 +57,7 @@ export const REST_FIELDS = {
   /** A page of a list that stage 2 fills: `derived` is false while the derive cursor has not reached the block, and the list is then empty, not final. */
   derivedPage: ["derived", "items", "next"],
   /** The newest transactions: a page, with how many the chain holds (from the rollups; null when they cannot say, and for a filtered list) and when that was counted to. */
-  txPage: ["items", "next", "total", "totalAsOf"],
+  txPage: ["items", "next", "total", "totalAsOfBlock", "totalAsOf"],
   blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "baseFee", "updateId", "recordTime", "proofSeconds", "finalSeconds", "commitSeconds"],
   /** One block: what the pages already have, with the legs count, whether stage 2 has derived it, and the producer's times. */
   blockDetail: [...FIELDS.block.filter((f) => f !== "transactions"), "legsCount", "derived", "lifecycle"],
@@ -140,7 +140,9 @@ export const REST_FIELDS = {
   statsTxsPerBlock: ["mean", "median", "max", "nonEmptyMean", "nonEmptyMedian"],
   statsBlocks: ["count", "empty", "busy", "bySize"],
   statsBlockSize: ["size", "count"],
-  statsTxs: ["count", "failed", "successRate", "accepted"],
+  statsTxs: ["count", "failed", "successRate", "accepted", "allTime"],
+  /** The chain's transactions since its first block, exact through the newest final block `asOfBlock` (its record time is `asOf`); null where the rollups cannot say. */
+  statsAllTime: ["total", "asOfBlock", "asOf"],
   statsAttempts: ["total", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
   statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
   statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],

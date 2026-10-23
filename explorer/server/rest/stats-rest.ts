@@ -9,6 +9,7 @@ import { ChainDbError } from "../chain-db.ts";
 import { CURSOR, HISTS, SCALARS, TABLES } from "../indexer/stats.ts";
 import { TIME_EDGES, histLength } from "../indexer/stats-hist.ts";
 import { hex } from "./chain-rest.ts";
+import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 
 export type Span = keyof typeof TABLES;
 export const EXTRAS = ["active_addresses", "new_addresses", "new_contracts", "verified_contracts"] as const;
@@ -47,6 +48,8 @@ export interface StatsRest {
   /** The newest run of the producer that is not a test run: its strategy and when it started. Null when no run is known. */
   cutting(): Promise<{ strategy: string; since: number } | null>;
   /** The faucet's requests made in [from, to): by state, and the time from request to final as a time histogram (empty when none is final). */
+  /** The chain's transactions since its first block, exact through the newest final block (one function with /api/txs); null where the rollups cannot say. */
+  txTotal(): Promise<TxTotal | null>;
   faucet(from: number, to: number): Promise<{ requests: number; sent: number; final: number; failed: number; hist: number[] }>;
 }
 
@@ -150,5 +153,5 @@ export function createStatsRest(pool: Pool): StatsRest {
     return { requests: Number(c.requests ?? 0), sent: Number(c.sent ?? 0), final: Number(c.final ?? 0), failed: Number(c.failed ?? 0), hist };
   }
 
-  return { rows, peak, lastMinuteTxs, state, pool: poolSample, open, stuck, lost, cutting, faucet };
+  return { rows, peak, lastMinuteTxs, state, txTotal: () => totalOf(query), pool: poolSample, open, stuck, lost, cutting, faucet };
 }

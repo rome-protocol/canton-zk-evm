@@ -315,19 +315,19 @@ describe("the numbers, from the stats routes", () => {
   });
 
   it("shows a rate of nothing as 0, and no peak when the day had no transaction", async () => {
-    await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, successRate: null, accepted: 0 } } })();
+    await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, successRate: null, accepted: 0, allTime: null } } })();
     expect(tile("Transactions per second")).toHaveTextContent("0 nowno transaction in 24 h");
     expect(tile("Transactions per second")).not.toHaveTextContent("peak");
   });
 
   it("counts the day's transactions and blocks, and gives the success rate with the reverted ones, cut and never rounded up", async () => {
-    await withStats({ day: { txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017 }, blocks: { count: 21, empty: 0, busy: 0, bySize: [] } } })();
+    await withStats({ day: { txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, bySize: [] } } })();
     expect(tile("Transactions · 24 h")).toHaveTextContent("1,017in 21 blocks, each one Canton transaction");
     expect(tile("Success rate")).toHaveTextContent("99.9%1,016 of 1,017 final transactions; 1 reverted");
   });
 
   it("shows no success rate for a day with no transaction, and never makes one up", async () => {
-    await withStats({ day: { txs: { count: 0, failed: 0, successRate: null, accepted: 0 }, blocks: { count: 0, empty: 0, busy: 0, bySize: [] } } })();
+    await withStats({ day: { txs: { count: 0, failed: 0, successRate: null, accepted: 0, allTime: null }, blocks: { count: 0, empty: 0, busy: 0, bySize: [] } } })();
     expect(tile("Success rate").querySelector(".stat-v")!.textContent).toBe("—");
     expect(tile("Success rate")).toHaveTextContent("no transaction in 24 h");
   });

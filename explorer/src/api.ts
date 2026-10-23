@@ -184,7 +184,7 @@ export interface TokenMoves { count: number; more: boolean; first: TokenMove | n
 /** What is known of an address for showing it by name (GET /api/labels): `kind` is null for an address the index holds nothing of; `amount`s of a token are in base units, shown with its `decimals`. */
 export interface Label { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 /** The newest transactions: a page with how many the chain holds (null where the rollups cannot say, and for a filtered list) and when that was counted to. */
-export interface TxsPage extends Page<TxListItem> { total: number | null; totalAsOf: string | null }
+export interface TxsPage extends Page<TxListItem> { total: number | null; totalAsOfBlock: number | null; totalAsOf: string | null }
 export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null; tokenMoves: TokenMoves | null }
 /** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */
 export interface InFlightAttempt {
@@ -214,7 +214,7 @@ export interface StatsSummary {
   proofTime: (StatsSpread & { bySize: StatsSize[] }) | null;
   txsPerBlock: { mean: number | null; median: number | null; max: number | null; nonEmptyMean: number | null; nonEmptyMedian: number | null };
   blocks: { count: number; empty: number; busy: number; bySize: { size: string; count: number }[] };
-  txs: { count: number; failed: number; successRate: number | null; accepted: number };
+  txs: { count: number; failed: number; successRate: number | null; accepted: number; allTime: { total: number; asOfBlock: number; asOf: string } | null };
   attempts: { total: number; refused: number; failed: number; notTaken: number; refusedShare: number | null; failedShare: number | null; notTakenShare: number | null };
   fullness: number | null;
   canton: { argumentBytesPerBlock: number | null; argumentBytesPerTx: number | null; trafficBytesPerBlock: number | null; trafficReported: number };

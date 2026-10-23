@@ -4,6 +4,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
+import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export const hex = (b: Buffer): string => "0x" + b.toString("hex");
@@ -164,22 +165,8 @@ export function createChainRest(pool: Pool) {
     return moves ? withTokenMoves(query, rows.map(txItem)) : rows.map(txItem);
   }
 
-  /**
-   * How many transactions the chain holds, from the day rollups (a few hundred rows however long the chain is, never a count over the transactions), and the time (epoch ms) they are complete through.
-   * The live transactions and the test runs' are both in it, as the list holds both. Null when the rollups cannot say: none has run, or the first day they hold is after the first
-   * block's day (the days before it are not counted). `asOf` is the rollups' cursor position, the end of the last chunk they finished (during a first run or a rebuild it is that chunk's end, not the time of the run); transactions in blocks newer than it are not in the number.
-   */
-  async function txTotal(): Promise<{ total: number; asOf: number } | null> {
-    const [r] = await query(
-      `select (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_day) as n,
-              (select extract(epoch from min(bucket))::float8 * 1000 from stats_day) as since,
-              (select extract(epoch from min(record_time))::float8 * 1000 from blocks) as first,
-              (select position::float8 from cursors where stream = 'stats_rollup') as at`);
-    if (!r || r.since === null || r.at === null) return null;
-    const first = r.first === null ? Infinity : Number(r.first);
-    if (Number(r.since) > Math.floor(first / 86_400_000) * 86_400_000) return null;
-    return { total: Number(r.n), asOf: Number(r.at) };
-  }
+  /** How many transactions the chain holds, exact through the newest final block: see tx-total.ts. */
+  const txTotal = (): Promise<TxTotal | null> => totalOf(query);
 
   /** One block's transactions in order, after the index when one is given. */
   async function blockTxs(number: number, after: number | null, limit: number): Promise<TxListItem[]> {
