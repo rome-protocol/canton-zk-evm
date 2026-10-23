@@ -33,7 +33,7 @@ export function parentPath(pathname: string): string {
 }
 
 /**
- * The words for the checks. With the list /api/health serves, the count is that list's: "All 16 checks ok", or how many of them are not ok. Without it (the route
+ * The words for the checks. With the list /api/health serves, the count is that list's, less the API's own rows (see TopBar): "All 16 checks ok", or how many of them are not ok. Without it (the route
  * did not answer) the status's own word stands, with no count, because none is known.
  */
 function checksText(s: ApiStatus, checks: ReadonlyArray<{ status: string }> | undefined): ReactNode {
@@ -49,14 +49,15 @@ function checksText(s: ApiStatus, checks: ReadonlyArray<{ status: string }> | un
 function TopBar({ status: s }: { status: ApiStatus }) {
   const now = useNow();
   const painted = usePainted();
-  const health = useHealth(painted).data;
+  // The count is of the checks the indexer writes, the rows /api/status counts too (it leaves out the API's own rows: the faucet, the tracker and each instance's reads), so the bar and the home page never disagree.
+  const checks = useHealth(painted).data?.checks.filter((c) => c.role !== "api");
   // The base fee is the newest final block's: the list route carries it, so the bar reads one block.
   const newest = useBlocks(1, false, painted);
   const fee = newest.isError ? "Base fee cannot be read right now" : newest.data ? (newest.data.items[0] ? <>Base fee <b>{baseFee(newest.data.items[0].baseFee)}</b></> : "Base fee: no block yet") : "Base fee reading…";
-  const tone = s.ok && !health?.checks.some((c) => c.status !== "ok") ? "ok" : s.ok ? "bad" : s.starting && !s.problems.length ? "off" : "bad";
+  const tone = s.ok && !checks?.some((c) => c.status !== "ok") ? "ok" : s.ok ? "bad" : s.starting && !s.problems.length ? "off" : "bad";
   return (
     <section className="topbar" aria-label="Chain at a glance">
-      <span className={`sd ${tone}`}><i />{checksText(s, health?.checks)}</span>
+      <span className={`sd ${tone}`}><i />{checksText(s, checks)}</span>
       {s.final && <span>Final block <b><Link className="num" to={`/block/${s.final.number}`}>{s.final.number}</Link></b> · {duration(now - Date.parse(s.final.recordTime))} ago</span>}
       {s.proving && <span className="sd warn tb-wide"><i /><span>Being proven <b><Link className="num" to={`/block/${s.proving.number}`}>block {s.proving.number}</Link></b></span></span>}
       <span className="tb-wide">{fee}</span>
@@ -82,7 +83,8 @@ function ShellBody({ children }: { children: ReactNode }) {
   // A link to a part of a page (the footer's wallet link) scrolls there once the page has drawn it, and again as the sections above it fill in
   // during the next two seconds, unless the reader has started to scroll.
   useEffect(() => {
-    if (!hash) return;
+    // A page opens at its top: following a link at the bottom of a long page must not land at the bottom of the next one.
+    if (!hash) { window.scrollTo?.(0, 0); return; }
     const id = hash.slice(1);
     const go = () => document.getElementById(id)?.scrollIntoView?.();
     go();
@@ -90,8 +92,8 @@ function ShellBody({ children }: { children: ReactNode }) {
     watch.observe(document.body, { childList: true, subtree: true });
     const stop = () => watch.disconnect();
     const timer = setTimeout(stop, 2000);
-    for (const ev of ["wheel", "touchstart", "keydown"]) window.addEventListener(ev, stop, { once: true, passive: true });
-    return () => { stop(); clearTimeout(timer); for (const ev of ["wheel", "touchstart", "keydown"]) window.removeEventListener(ev, stop); };
+    for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"]) window.addEventListener(ev, stop, { once: true, passive: true });
+    return () => { stop(); clearTimeout(timer); for (const ev of ["wheel", "touchstart", "pointerdown", "keydown"]) window.removeEventListener(ev, stop); };
   }, [pathname, hash]);
   const name = status?.chainName ?? DEFAULT_NAME;
   return (

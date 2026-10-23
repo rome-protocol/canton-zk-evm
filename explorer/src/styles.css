@@ -52,8 +52,8 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 
 /* the page: header, the thread under it, the content, the line at the end */
 .page { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
-/* The header, the top bar and the footer sit on the same column as the page (.main: 1216 px of content), and their backgrounds run edge to edge. */
-.top { display: flex; align-items: center; gap: 22px; padding: 14px max(32px, calc((100% - 1216px) / 2)); background: var(--surface); }
+/* The header, the top bar and the footer sit on the same column as the page (.main: 1280 px of content, an 80 px gutter at 1440), and their backgrounds run edge to edge. */
+.top { display: flex; align-items: center; gap: 22px; padding: 14px max(32px, calc((100% - 1280px) / 2)); background: var(--surface); }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--ink); flex: none; }
 .brand:hover { text-decoration: none; }
 .mark { display: block; height: 17px; width: calc(17px * 320 / 183); background: var(--canton); -webkit-mask: url(./assets/rome-mark.png) center / contain no-repeat; mask: url(./assets/rome-mark.png) center / contain no-repeat; }
@@ -71,11 +71,11 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .nav .navlink { padding: 6px 12px; border-radius: 8px; color: var(--ink); }
 .nav .navlink:hover { text-decoration: none; background: var(--surface-2); }
 .nav .navlink.active { background: var(--canton-tint); color: var(--canton); }
-.top .search { flex: 0 1 300px; }
+.top .search { flex: 0 1 380px; }
 .thread { height: 2px; background: linear-gradient(90deg, var(--evm), var(--canton)); opacity: .85; }
-.main { flex: 1; width: 100%; max-width: 1280px; margin: 0 auto; padding: 26px 32px 30px; display: flex; flex-direction: column; gap: 18px; }
+.main { flex: 1; width: 100%; max-width: 1344px; margin: 0 auto; padding: 26px 32px 30px; display: flex; flex-direction: column; gap: 18px; }
 .main > * { min-width: 0; }
-.foot { display: flex; flex-direction: row; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px 32px; padding: 16px max(32px, calc((100% - 1216px) / 2)) 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+.foot { display: flex; flex-direction: row; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px 32px; padding: 16px max(32px, calc((100% - 1280px) / 2)) 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
 .foot-text { display: flex; gap: 9px; align-items: flex-start; margin: 0; max-width: 640px; }
 .foot-text .ic { margin-top: 2px; flex: none; }
 .foot-links { display: flex; flex-wrap: wrap; gap: 6px 22px; }
@@ -289,7 +289,7 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .fl-name { font-weight: 600; font-size: 13px; }
 .fl-wait { margin: 10px 0 0; }
 /* the header's bar and links */
-.topbar { display: flex; flex-wrap: wrap; gap: 4px 22px; align-items: center; padding: 7px max(32px, calc((100% - 1216px) / 2)); background: #1b0b1e; color: #efe4f1; font-size: 12.5px; }
+.topbar { display: flex; flex-wrap: wrap; gap: 4px 22px; align-items: center; padding: 7px max(32px, calc((100% - 1280px) / 2)); background: #1b0b1e; color: #efe4f1; font-size: 12.5px; }
 .topbar a { color: #fff; }
 .topbar b { font-weight: 600; color: #fff; }
 /* a thin separator before every item but the first, and not before the note at the end */

@@ -63,8 +63,8 @@ describe("fonts and outside requests", () => {
   });
 
   it("lines the header, the top bar and the footer up with the page's column", () => {
-    const column = "max(32px, calc((100% - 1216px) / 2))";
-    expect(/\.main \{[^}]*max-width: 1280px[^}]*padding: 26px 32px/.exec(css)).not.toBeNull();
+    const column = "max(32px, calc((100% - 1280px) / 2))";
+    expect(/\.main \{[^}]*max-width: 1344px[^}]*padding: 26px 32px/.exec(css)).not.toBeNull();
     for (const sel of [".top", ".topbar", ".foot"]) expect(new RegExp(`\\n\\${sel} \\{[^}]*${column.replace(/[\\()*/+]/g, "\\$&")}`).test(css), sel).toBe(true);
   });
 
@@ -146,7 +146,7 @@ describe("phone width", () => {
     expect(winner(all, SEARCH, "flex", true)).toBe("1 1 100%");
     expect(winner(all, SEARCH, "max-width", true)).toBe("none");
     expect(winner(all, SEARCH, "margin-left", true)).toBe("0");
-    expect(winner(all, SEARCH, "flex", false)).toBe("0 1 300px");
+    expect(winner(all, SEARCH, "flex", false)).toBe("0 1 380px");
   });
 
   it("holds the top bar to one line: the checks and the final block, with the rest left for wide screens", () => {

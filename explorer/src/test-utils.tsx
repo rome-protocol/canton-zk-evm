@@ -32,7 +32,7 @@ export function status(over: Partial<ApiStatus> = {}): ApiStatus {
 
 /** What /api/health answers with `n` checks, the first `bad` of them with the given word. */
 export function health(n = 16, bad = 0, word: "degraded" | "down" = "degraded") {
-  const checks = Array.from({ length: n }, (_, i) => ({ id: `check-${i}`, role: "api", status: i < bad ? word : "ok", detail: null }));
+  const checks = Array.from({ length: n }, (_, i) => ({ id: `check-${i}`, role: "indexer", status: i < bad ? word : "ok", detail: null }));
   return { status: bad ? word : "ok", instance: "api-1", starting: false, problems: [], checks };
 }
 
@@ -176,6 +176,8 @@ export function fakeApi(answer: ((path: string) => { status: number; body: unkno
 
 /** Renders the whole app at a route. The status is polled every few seconds, so a test of the pages gives it a polling query client with no retries. */
 export function renderApp(route = "/") {
+  // jsdom does not scroll: the shell scrolls to the top on a new page, and a test that wants to see it spies on this
+  if (!vi.isMockFunction(window.scrollTo)) window.scrollTo = () => {};
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[route]}><App /></MemoryRouter></QueryClientProvider>);
 }
