@@ -34,6 +34,11 @@ const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL = /^\d{1,80}$/;
 const SOURCE_PATH = /^[\w@./-]{1,120}$/, SOURCE_NAME = /^\w{1,80}$/;
 
+/** A URL with break points after "//", each "." and each "/", so a narrow cell wraps between words and cuts one only when a single word is wider than the cell. */
+function BreakableUrl({ url }: { url: string }) {
+  return <>{(url.match(/[^./]*(?:\/\/|[./])|[^./]+$/g) ?? [url]).map((part, i, all) => <Fragment key={i}>{part}{i < all.length - 1 ? <wbr /> : null}</Fragment>)}</>;
+}
+
 /** The network's details, the way a wallet asks for them, and the button that asks the wallet to add it. Nothing where the explorer serves no public RPC. */
 function WalletCard({ status }: { status: ApiStatus }) {
   const [note, setNote] = useState<string | null>(null);
@@ -43,14 +48,14 @@ function WalletCard({ status }: { status: ApiStatus }) {
   const add = async () => setNote(await addNetwork(status, name, "above"));
   const rows: [string, React.ReactNode][] = [
     ["Network name", `${name} ${clip(status.networkName ?? "", 20)}`.trim()],
-    ["RPC address", <><span className="mono">{url}</span><button type="button" className="copy" aria-label={copied ? "Copied" : "Copy the RPC address"} onClick={async () => {
+    ["RPC address", <><span className="mono"><BreakableUrl url={url} /></span><button type="button" className="copy" aria-label={copied ? "Copied" : "Copy the RPC address"} onClick={async () => {
       if (!(await copyText(url))) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }}><Icon name={copied ? "check" : "copy"} size={13} /></button></>],
     ["Chain id", <>{status.chainId} <span className="muted small">· 0x{status.chainId.toString(16)}</span></>],
     ["Coin", `${clip(status.coin.symbol, 12)}, ${status.coin.decimals} decimals`],
-    ["Explorer", <span className="mono">{location.origin}</span>],
+    ["Explorer", <span className="mono"><BreakableUrl url={location.origin} /></span>],
     ["Final only", "\"latest\" is the newest final block; a block being proven is not served"],
   ];
   return (

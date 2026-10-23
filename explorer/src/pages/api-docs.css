@@ -31,7 +31,7 @@
 .api-kv dt { margin: 0; } .api-kv dd { margin: 0; text-align: right; }
 .api-two > *, .api-side > *, .api-eth-grid > * { min-width: 0; }
 .api-code .api-pre { max-width: 100%; }
-.api-details td { overflow-wrap: break-word; }
+.api-details td { overflow-wrap: anywhere; }
 .api-details td:first-child { width: 112px; }
 .api-details .copy { vertical-align: -2px; }
 .api-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 14px; }
@@ -45,5 +45,4 @@
   .api-eth-main .api-table td { display: block; padding: 4px 0; border-top: 0; }
   .api-eth-main .api-table tr { display: block; padding: 6px 0; border-top: 1px solid var(--line-2); }
   .api-eth-main .api-table tr:first-child { border-top: 0; }
-  .api-details td { overflow-wrap: anywhere; }
 }

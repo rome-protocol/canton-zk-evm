@@ -158,6 +158,19 @@ describe("the API page", () => {
     expect(within(card).getByRole("button", { name: /Add .* to your wallet/ })).toBeInTheDocument();
   });
 
+  it("marks the wallet table's URLs with break points after '//', each '.' and each '/', so a narrow cell wraps between words", async () => {
+    await open();
+    const card = await screen.findByRole("region", { name: /to your wallet/ });
+    const t = within(card).getByRole("table", { name: "Wallet details" });
+    for (const k of ["RPC address", "Explorer"]) {
+      const m = within(t).getByText(k).closest("tr")!.querySelector(".mono")!;
+      const wbrs = m.querySelectorAll("wbr").length;
+      expect(wbrs, k).toBeGreaterThanOrEqual(1);
+      expect(m.innerHTML.replace(/<wbr>/g, "")).toBe(m.textContent);
+      expect(m.innerHTML).toMatch(/\/\/<wbr>/);
+    }
+  });
+
   it("uses the faucet's own address and balance in the balance example, and a placeholder where the faucet is off", async () => {
     const addr = "0x" + "fa".repeat(20);
     await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: addr, balance: "998996990000000000000000", amount: "1", perAddressSeconds: 1, balanceBlock: 21 }) });

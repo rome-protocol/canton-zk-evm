@@ -134,9 +134,7 @@ describe("final polish: the 21-screen check", () => {
     expect(get(api, ".api-eth-main .api-table td", true)).toMatch(/display:\s*block/);
   });
 
-  it("breaks the wallet table's addresses only where a line cannot hold them, never in the middle of a word on desktop", () => {
-    expect(get(api, ".api-details td")).not.toMatch(/overflow-wrap:\s*anywhere/);
-    expect(get(api, ".api-details td")).toMatch(/overflow-wrap:\s*break-word/);
-    expect(get(api, ".api-details td", true)).toMatch(/overflow-wrap:\s*anywhere/);
+  it("lets the wallet table's cells shrink to the card (anywhere, the last resort after the <wbr> break points), so no width needs a sideways scroll", () => {
+    expect(get(api, ".api-details td")).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });
