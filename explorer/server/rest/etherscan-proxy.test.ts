@@ -84,6 +84,10 @@ describe("the proxy module, as Etherscan's: a JSON-RPC answer, in hex, as the pu
     expect(await refusal("0x01")).toEqual(words("hex number with leading zero digits"));
     expect(await refusal("0xzz")).toEqual(words("invalid hex string"));
     expect(await refusal("0x10000000000000000")).toEqual(words("hex number > 64 bits"));
+    // The length is checked before the digits, as common/hexutil does: 17 characters with a bad one are out of range, not a syntax error.
+    expect(await refusal("0x1000000000000000z")).toEqual(words("hex number > 64 bits"));
+    expect(await refusal("0xzzzzzzzzzzzzzzzzzzzz")).toEqual(words("hex number > 64 bits"));
+    expect(await refusal("0x1000000000000zz")).toEqual(words("invalid hex string"));
   });
 
   it("eth_getTransactionByHash shows a transaction of a block still being proven with no block yet, and null for one unknown", async () => {

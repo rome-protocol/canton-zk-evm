@@ -425,17 +425,16 @@ const ratio = (n: number): string => n.toFixed(15).replace(/\.?0+$/, "");
 /** What Etherscan's `proxy` module gives for an argument that is missing: the node's own words, as a JSON-RPC error. */
 const rpcError = (code: number, message: string): Raw => new Raw({ jsonrpc: "2.0", id: 1, error: { code, message } });
 /**
- * Why go-ethereum refuses a string as a hexutil.Uint (common/hexutil: checkNumber, then the 64-bit range), in its words; null when it takes it. Etherscan's
+ * Why go-ethereum refuses a string as a hexutil.Uint (common/hexutil: checkNumberText, then the length, then the digits), in its words; null when it takes it (an empty value never arrives: the parameter is then missing). Etherscan's
  * `proxy` module gives the node's refusal back as it is, and tools match on these words, so they are kept to the letter.
  */
 function uintRefusal(v: string): string | null {
-  if (v === "") return "empty hex string";
   if (!/^0[xX]/.test(v)) return "hex string without 0x prefix";
   const digits = v.slice(2);
   if (digits === "") return 'hex string "0x"';
   if (digits.length > 1 && digits[0] === "0") return "hex number with leading zero digits";
-  if (!/^[0-9a-fA-F]+$/.test(digits)) return "invalid hex string";
-  return digits.length > 16 ? "hex number > 64 bits" : null;
+  if (digits.length > 16) return "hex number > 64 bits"; // before the digits, as in hexutil.Uint64.UnmarshalText
+  return /^[0-9a-fA-F]+$/.test(digits) ? null : "invalid hex string";
 }
 const rpcResult = (result: unknown): Raw => new Raw({ jsonrpc: "2.0", id: 1, result });
 type Up = { result?: unknown; error?: unknown };
