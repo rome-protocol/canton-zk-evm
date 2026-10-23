@@ -92,6 +92,14 @@ export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockLi
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
   return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, ...over };
 }
+/** One address as /api/addresses/:address gives it: an account that sent 3 transactions, with reth's balance at final block 21. */
+export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {
+  return {
+    address: addr(0x5b), kind: "account", balance: "9997910000000000000", balanceBlock: 21, sentCount: 3, receivedCount: 1, internalCount: 0, tokenTransferCount: 0,
+    firstSeenBlock: 2, lastActiveBlock: 20, token: null, createdBy: null, derived: true, ...over,
+  };
+}
+export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "erc20", name: "Test USD", symbol: "tUSD", decimals: 6, tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
 export const page = <T,>(items: T[], next: string | null = null): Page<T> => ({ items, next });
 
 /** What the in-flight route answers while block 4 is being proven (the producer cut it at T0 + 16, built it in 0.2 s and began its proof 0.4 s after that), with one more transaction in reth's pool. */
@@ -111,6 +119,7 @@ export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
+  addresses?: (arg: string, sub: string, path: string) => Reply;
   blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
@@ -123,6 +132,7 @@ export function route(h: {
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
+    if (kind === "addresses") return h.addresses ? h.addresses(decodeURIComponent(arg), sub, path) : gone();
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
     if (kind === "txs" && arg) {
       const [x, p] = [decodeURIComponent(arg), path];

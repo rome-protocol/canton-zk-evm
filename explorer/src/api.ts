@@ -321,3 +321,26 @@ export interface TraceFrame { traceAddress: number[]; type: "call" | "create" | 
 export const getTxTrace = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}/trace`, [200])).body as { frames: TraceFrame[]; truncated: boolean };
 /** The receipt of a final transaction as reth gave it. */
 export const getTxReceipt = async (hash: string) => (await call(`/api/txs/${encodeURIComponent(hash)}?raw=1`, [200])).body as Record<string, unknown>;
+
+/** An address of the list: the balance is the database's copy, as of `balanceBlock`; the page of one address reads reth's own. */
+export interface AddressListItem { address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null; txCount: number }
+export type AddressSort = "balance" | "txs";
+/** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
+export interface AddressDetail {
+  address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null;
+  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
+  token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null; derived: boolean;
+}
+export interface AddressInternalItem extends InternalCall { txHash: string; block: number; txIndex: number }
+export interface AddressTransferItem extends TokenTransfer { txHash: string; block: number; txIndex: number }
+/** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
+export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
+export interface CoinPoint { block: number; balance: string }
+const of = (a: string, sub = "") => `/api/addresses/${encodeURIComponent(a)}${sub}`;
+export const getAddressList = async (sort: AddressSort, before: string | null, limit = PAGE) => (await call(`/api/addresses?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressListItem>;
+export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
+export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
+export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
+export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
+export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
+export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
