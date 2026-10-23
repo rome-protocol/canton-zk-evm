@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { Fragment, useRef, useState } from "react";
 import { getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
 import { rpcUrl } from "../components/AddToWallet.tsx";
 import { copyText } from "../components/HashLink.tsx";
@@ -144,7 +144,7 @@ export function ApiDocs() {
   const request = `GET ${origin}/api\n    ?module=account&action=balance\n    &address=${example ?? "<address>"}\n    &tag=latest`;
   const answer = `{\n  "status": "1",\n  "message": "OK",\n  "result": "${exBalance ?? "<balance in wei, a decimal string>"}"\n}`;
   const foundry = `# verify a contract, as on Etherscan\nforge verify-contract <address> \\\n  src/<File>.sol:<Contract> \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
-  const hardhat = `etherscan: {\n  apiKey: { ${name.toLowerCase().replace(/\W+/g, "") || "chain"}: "any" },\n  customChains: [{\n    network: "${name.toLowerCase().replace(/\W+/g, "") || "chain"}", chainId: ${id ?? ""},\n    urls: { apiURL: "${origin}/api", browserURL: "${origin}" }\n  }]\n}`;
+  const hardhat = `etherscan: {\n  apiKey: { ${name.toLowerCase().replace(/\W+/g, "") || "chain"}: "any" },\n  customChains: [{\n    network: "${name.toLowerCase().replace(/\W+/g, "") || "chain"}", chainId: ${id ?? ""},\n    urls: { apiURL: "${origin}/api",\n            browserURL: "${origin}" }\n  }]\n}`;
   return (
     <>
       <div className="ptitle"><h1>API</h1> <span className="muted">No keys. Every answer is built only from final data, except where it says not final.</span></div>
@@ -157,11 +157,11 @@ export function ApiDocs() {
         <div className="api-eth-main">
           <header className="api-head"><h2 id="eth-h">Etherscan-compatible API</h2>
             <span className="muted mono small">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span></header>
-          <table className="api-table" aria-label="Etherscan-compatible modules"><tbody>
+          <div className="scroll"><table className="api-table" aria-label="Etherscan-compatible modules"><tbody>
             {modules.map(([m, actions]) => (
-              <tr key={m}><td className="mod mono">{m}</td><td>{actions.map((a) => <span key={a} className="mchip mono">{a}</span>)}</td></tr>
+              <tr key={m}><td className="mod mono">{m}</td><td>{actions.map((a) => <Fragment key={a}><span className="mchip mono">{clip(a, 60)}</span>{" "}</Fragment>)}</td></tr>
             ))}
-          </tbody></table>
+          </tbody></table></div>
         </div>
         <div className="api-eth-side">
           <p className="muted small">Example: an address&apos;s balance</p>
