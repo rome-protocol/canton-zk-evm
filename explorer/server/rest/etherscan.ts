@@ -620,7 +620,8 @@ const contract: Record<string, Handler> = {
     const address = addressOf(c.p.get("address"));
     const expected = c.p.get("expectedimplementation");
     if (expected !== null) addressOf(expected);
-    const a = await v.proxy(address, expected, c.ip);
+    // The slots are read at the final head, whatever the indexer's last upgrade log said.
+    const a = await v.proxy(address, expected, c.ip, await finalHead(c));
     if (a.status !== 202) throw refused(a);
     return guidOf(a);
   },

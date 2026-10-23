@@ -2,6 +2,7 @@
 import type { Pool } from "pg";
 import { keccak256 } from "viem";
 import { CompilerError } from "./compilers.ts";
+import { RethError } from "../reth.ts";
 import { SandboxError } from "./sandbox.ts";
 import type { Compile } from "./verify.ts";
 import type { Compiled } from "./solc.ts";
@@ -81,4 +82,28 @@ export function editedOutput(output: Record<string, unknown>): Record<string, un
     }
   }
   return out;
+}
+
+/** A stand-in for the reads of the final head that `verifyproxycontract` makes: storage words, code and a beacon's answer that a test sets, and the heads it was asked at. */
+export function fakeProbe() {
+  const word = (a: string): string => "0x" + "0".repeat(24) + a.toLowerCase().replace(/^0x/, "");
+  const slots = new Map<string, string>(), codes = new Map<string, string>(), beacons = new Map<string, string>();
+  const heads: number[] = [];
+  return {
+    heads,
+    /** Sets the address a slot holds (a proxy's implementation slot, for one). */
+    setSlot(account: string, slot: string, address: string | null): void { slots.set(`${account.toLowerCase()}:${slot}`, address === null ? "0x" + "0".repeat(64) : word(address)); },
+    setCode(account: string, code: string): void { codes.set(account.toLowerCase(), code); },
+    setBeacon(beacon: string, implementation: string): void { beacons.set(beacon.toLowerCase(), word(implementation)); },
+    probe: {
+      storageAt: async (a: string, s: string, n: number): Promise<string> => { heads.push(n); return slots.get(`${a.toLowerCase()}:${s}`) ?? "0x" + "0".repeat(64); },
+      code: async (a: string, n: number): Promise<string> => { heads.push(n); return codes.get(a.toLowerCase()) ?? "0x"; },
+      call: async (to: string, _input: string, n: number): Promise<string> => {
+        heads.push(n);
+        const r = beacons.get(to.toLowerCase());
+        if (!r) throw new RethError("eth_call: reth answered \"execution reverted\"", true);
+        return r;
+      },
+    },
+  };
 }

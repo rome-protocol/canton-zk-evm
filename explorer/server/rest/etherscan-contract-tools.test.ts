@@ -24,7 +24,7 @@ import { JobQueue } from "../verifier/jobs.ts";
 import { DockerSandbox } from "../verifier/sandbox.ts";
 import { SolcRunner } from "../verifier/solc.ts";
 import { Verifier } from "../verifier/verify.ts";
-import { addContract } from "../verifier/verify-fixtures.ts";
+import { addContract, fakeProbe } from "../verifier/verify-fixtures.ts";
 import { VerifierWorker } from "../verifier/worker.ts";
 import { createEtherscanRest } from "./etherscan-rest.ts";
 
@@ -110,7 +110,7 @@ describe.skipIf(!ready || !(FORGE || HARDHAT))("Foundry and Hardhat against the 
     const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
     const api = createApi({
       config, reth: {} as unknown as Reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest(pool), rpc,
-      verify: createVerifyApi({ pool, queue: new JobQueue(pool), clientHash: (c) => c.padEnd(64, "0").slice(0, 64) }),
+      verify: createVerifyApi({ pool, queue: new JobQueue(pool), clientHash: (c) => c.padEnd(64, "0").slice(0, 64), probe: fakeProbe().probe }),
     });
     server = createHttpServer(api, "/nonexistent", { handler: rpc, ipHeader: null });
     await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));

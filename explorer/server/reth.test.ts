@@ -249,3 +249,23 @@ describe("an answer bigger than the cap", () => {
     expect(MAX_ANSWER_BYTES).toBe(32 * 1024 * 1024);
   });
 });
+
+describe("reads as of one block, for verifyproxycontract", () => {
+  it("asks for a storage slot, the code and a call at the block it is given", async () => {
+    const seen: unknown[][] = [];
+    const r = await reth({
+      eth_getStorageAt: (p: unknown[]) => { seen.push(p); return H("0"); },
+      eth_getCode: (p: unknown[]) => { seen.push(p); return "0x6080"; },
+      eth_call: (p: unknown[]) => { seen.push(p); return "0x" + "0".repeat(24) + "ab".repeat(20); },
+    });
+    expect(await r.storageAt(A("5"), H("1"), 255)).toBe(H("0"));
+    expect(await r.codeAt(A("5"), 255)).toBe("0x6080");
+    expect(await r.callAt(A("6"), "0x5c60da1b", 255)).toBe("0x" + "0".repeat(24) + "ab".repeat(20));
+    expect(seen.map((p) => p[p.length - 1])).toEqual(["0xff", "0xff", "0xff"]);
+  });
+  it("refuses a storage word that is not 32 bytes, and an answer of a call longer than 4 KB", async () => {
+    const r = await reth({ eth_getStorageAt: () => "0x01", eth_call: () => "0x" + "00".repeat(4097) });
+    await expect(r.storageAt(A("5"), H("1"), 1)).rejects.toThrow(RethError);
+    await expect(r.callAt(A("6"), "0x5c60da1b", 1)).rejects.toMatchObject({ answered: true });
+  });
+});

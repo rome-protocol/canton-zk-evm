@@ -11,7 +11,8 @@ import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.t
 import { createVerifyApi, PROXY_TEXTS } from "../verifier/api.ts";
 import { JobQueue } from "../verifier/jobs.ts";
 import { Verifier } from "../verifier/verify.ts";
-import { addContract, outputFor, StubCompile } from "../verifier/verify-fixtures.ts";
+import { addContract, fakeProbe, outputFor, StubCompile } from "../verifier/verify-fixtures.ts";
+import { EIP1822_SLOT, EIP1967_IMPLEMENTATION_SLOT } from "../indexer/proxies.ts";
 import { VerifierWorker } from "../verifier/worker.ts";
 import { createEtherscanRest } from "./etherscan-rest.ts";
 import { MODULES, TEXTS } from "./etherscan.ts";
@@ -77,11 +78,12 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
   checkRequired();
   let db: TestDatabase, pool: Pool;
   const stub = new StubCompile();
+  const probes = fakeProbe();
   const config = () => loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
   const hash = (c: string) => c.padEnd(64, "0").replace(/[^0-9a-f]/g, "0").slice(0, 64);
   const api = (limits = {}) => createApi({
     config: config(), reth: {} as unknown as Reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), etherscanRest: createEtherscanRest(pool),
-    verify: createVerifyApi({ pool, queue: new JobQueue(pool, limits), clientHash: hash }),
+    verify: createVerifyApi({ pool, queue: new JobQueue(pool, limits), clientHash: hash, probe: probes.probe }),
   });
   const get = async (target: string) => shape(await api()("GET", target));
   const post = async (fields: Record<string, string>, ip = "203.0.113.5", limits = {}) => shape(await api(limits)("POST", "/api", form(fields), ip));
@@ -256,7 +258,8 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       const none = await proxy();
       expect(none).toMatchObject({ status: "1", message: "OK" });
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${none.result}`)).toEqual(NOTOK(PROXY_TEXTS.none));
-      await sql("insert into proxies (proxy, kind, implementation, checked_block) values ($1, 'eip1967', $2, 3)", [Buffer.from(P.slice(2), "hex"), Buffer.from(IMPL.slice(2), "hex")]);
+      // The proxy's implementation slot, read at the final head by the call itself (nothing is in `proxies` until then).
+      probes.setSlot(P, EIP1967_IMPLEMENTATION_SLOT, IMPL);
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${none.result}`)).toEqual(NOTOK(PROXY_TEXTS.none));
       const wrong = await proxy({ expectedimplementation: B });
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${wrong.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch(IMPL, B)));
@@ -266,6 +269,30 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect((await sql("select verified_at from proxies")).rows[0].verified_at).not.toBeNull();
       // getsourcecode now says what the proxy points at.
       expect((await get(`/api?module=contract&action=getsourcecode&address=${P}`)).result[0]).toMatchObject({ Proxy: "1", Implementation: IMPL });
+    });
+    it("reads the slots at the final head: an EIP-1822 proxy upgraded with no log is seen, and the old implementation is not answered", async () => {
+      const NEW = "0x" + "e7".repeat(20);
+      await sql("delete from proxies");
+      // The indexer saw the proxy once, pointing at IMPL; then `updateCodeAddress` moved it, which emits no event, so the row is stale.
+      await sql("insert into proxies (proxy, kind, implementation, checked_block) values ($1, 'eip1822', $2, 1)", [Buffer.from(P.slice(2), "hex"), Buffer.from(IMPL.slice(2), "hex")]);
+      probes.setSlot(P, EIP1967_IMPLEMENTATION_SLOT, null);
+      probes.setSlot(P, EIP1822_SLOT, NEW);
+      probes.heads.length = 0;
+      const stale = await proxy({ expectedimplementation: IMPL });
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${stale.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch(NEW, IMPL)));
+      const fresh = await proxy({ expectedimplementation: NEW });
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${fresh.result}`)).toEqual(OK(PROXY_TEXTS.done(P, NEW)));
+      const row = (await sql("select encode(implementation, 'hex') as i, kind, checked_block from proxies")).rows;
+      expect(row).toEqual([{ i: NEW.slice(2), kind: "eip1822", checked_block: expect.anything() }]);
+      expect(Number(row[0].checked_block)).toBeGreaterThan(1);
+      expect(new Set(probes.heads).size).toBe(1);
+      expect((await get(`/api?module=contract&action=getsourcecode&address=${P}`)).result[0]).toMatchObject({ Proxy: "1", Implementation: NEW });
+      // A proxy that is no proxy at the head any more loses its row, and the answer says none was detected.
+      probes.setSlot(P, EIP1822_SLOT, null);
+      const gone = await proxy();
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${gone.result}`)).toEqual(NOTOK(PROXY_TEXTS.none));
+      expect((await sql("select 1 from proxies")).rowCount).toBe(0);
+      expect((await get(`/api?module=contract&action=getsourcecode&address=${P}`)).result[0]).toMatchObject({ Proxy: "0", Implementation: "" });
     });
     it("keeps proxy GUIDs and source GUIDs apart, and refuses a bad address, an unknown contract and a bad expectation", async () => {
       await running();

@@ -7,7 +7,7 @@ import { decodeAbiParameters } from "viem";
 export const ALLOWED_METHODS: ReadonlySet<string> = new Set([
   "eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockByHash", "eth_getBlockReceipts",
   "eth_getTransactionByHash", "eth_getTransactionReceipt", "eth_getBalance", "eth_getTransactionCount",
-  "eth_getCode", "eth_call",
+  "eth_getCode", "eth_call", "eth_getStorageAt",
   // For a transaction's call tree (the explorer's /trace route): one transaction of a final block, never a replay of a block.
   "trace_transaction",
   // For the faucet: the chain id, fee data and the signed transfer.
@@ -214,6 +214,16 @@ export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_
     /** Sends a signed transaction and returns its hash. A refusal from reth is a RethError with `answered` set. */
     sendRaw: (signed: string) => read("eth_sendRawTransaction", [signed], hash),
     code: (a: string) => read("eth_getCode", [a, "latest"], data),
+    /** The code an address has as of one block (`0x` for none). */
+    codeAt: (a: string, block: number) => read("eth_getCode", [a, tag(block)], data),
+    /** One storage slot of an account as of one block, as 32 bytes: for the Etherscan `verifyproxycontract`, which reads a proxy's slots at the final head. */
+    storageAt: (a: string, slot: string, block: number) => read("eth_getStorageAt", [a, slot, tag(block)], hex(/^0x[0-9a-f]{64}$/, "storage word")),
+    /** A read-only call as of one block, answered as data (at most 4 KB, as the indexer's reads are); a revert is a RethError with `answered` set. */
+    callAt: async (to: string, input: string, block: number): Promise<string> => {
+      const out = await read("eth_call", [{ to, data: input, gas: VIEW_GAS }, tag(block)], data);
+      if (out.length > 2 + 2 * 4096) throw new RethError("eth_call: the answer is longer than 4096 bytes", true);
+      return out;
+    },
     /** An ERC-20 holder's balance as of one block (the final head, for the Etherscan `tokenbalance`): 0 when the address is no token (a revert, or no answer), as Etherscan gives. */
     async tokenBalanceAt(token: string, holder: string, block: number): Promise<bigint> {
       const call = "0x70a08231" + holder.toLowerCase().replace(/^0x/, "").padStart(64, "0");
