@@ -1,0 +1,7 @@
+{
+  "name": "canton-zk-evm-explorer-l5-scripts",
+  "private": true,
+  "description": "Marks the scripts of L5 as ES modules. The tools (Hardhat, ethers) are in project/, which Hardhat 2 needs as a plain CommonJS project.",
+  "license": "Apache-2.0",
+  "type": "module"
+}
