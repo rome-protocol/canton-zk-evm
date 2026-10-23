@@ -136,7 +136,7 @@ export const REST_FIELDS = {
   /** /api/stats/summary: the numbers of design section 8 over a window, and what is live now. Each nested object has the list below it. */
   statsSummary: [
     "window", "rows", "from", "to", "asOf", "dataSince", "tps", "blockTime", "timeToFinal", "proofTime", "commitTime", "served", "txsPerBlock", "blocks", "txs", "attempts", "fullness",
-    "canton", "prover", "quality", "test", "today", "waiting", "acceptedNotFinal", "lost", "dropped", "replaced", "cutting", "faucet",
+    "canton", "prover", "rule", "quality", "test", "today", "waiting", "acceptedNotFinal", "lost", "dropped", "replaced", "cutting", "faucet",
   ],
   statsTps: ["now", "peak", "peakAt"],
   /** A time as its middle and its 95th percentile, in seconds, and how many facts it is read from. */
@@ -152,6 +152,9 @@ export const REST_FIELDS = {
   statsAttempts: ["total", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
   statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
   statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],
+  /** The switching rule's two numbers: the hours whose p95 time to final is above `slowAboveSeconds`, and the ten-minute windows above 0.6 of one prover for each UTC day. */
+  statsRule: ["slowAboveSeconds", "hoursCounted", "hoursMeasured", "hoursAbove", "worstHourP95", "worstHourAt", "windowsOverByDay"],
+  statsRuleDay: ["day", "windowsOver", "windowsCounted"],
   statsQuality: ["withoutAcceptanceTime", "clockSkew"],
   /** What the runs marked as tests did: counted apart, and left out of every other number. */
   statsTest: ["blocks", "txs", "attempts", "proverBusyMs"],

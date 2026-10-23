@@ -62,7 +62,36 @@ export function busyWindows(minutes: readonly StatsRow[], from: number, t: numbe
   }
   let top = 0, over = 0;
   for (const ms of by.values()) { top = Math.max(top, ms / W); if (ms / W > BUSY_LOADED) over++; }
-  return { counted, maxRatio: counted > 0 ? top : null, over: counted > 0 ? over : null };
+  // The same windows for each UTC day (a window never crosses midnight: 600 s divides a day), the days with none above 0.6 included.
+  const days = new Map<number, { counted: number; over: number }>();
+  for (let k = first; k < last; k += W) {
+    const d = Math.floor(k / DAY) * DAY, e = days.get(d) ?? { counted: 0, over: 0 };
+    e.counted++; if ((by.get(k) ?? 0) / W > BUSY_LOADED) e.over++;
+    days.set(d, e);
+  }
+  return { counted, maxRatio: counted > 0 ? top : null, over: counted > 0 ? over : null, byDay: [...days].map(([day, e]) => ({ day, over: e.over, counted: e.counted })) };
+}
+
+/** The p95 time to final above which the rule of design 2.7 calls an hour slow. */
+export const SLOW_FINAL_SECONDS = 20;
+
+/**
+ * The p95 time to final hour by hour, over the hours of [from, to) that have ended by `t`: how many there are, how many have a time (an hour with no final transaction has none),
+ * how many are above 20 s, and the worst one. The rule reads "above 20 s for more than an hour", which a p95 over a whole window can hide.
+ */
+export function slowHours(hours: readonly StatsRow[], from: number, t: number) {
+  const first = Math.ceil(from / HOUR) * HOUR, last = Math.floor(t / HOUR) * HOUR;
+  const counted = Math.max(0, Math.round((last - first) / HOUR));
+  let measured = 0, above = 0, worst: { p95: number; at: number } | null = null;
+  for (const r of hours) {
+    if (r.bucket < first || r.bucket >= last) continue;
+    const q = quantile("time", (r.time_to_final_hist as number[] | null) ?? [], 0.95);
+    if (!q) continue;
+    measured++;
+    if (q.value > SLOW_FINAL_SECONDS) above++;
+    if (!worst || q.value > worst.p95) worst = { p95: q.value, at: r.bucket };
+  }
+  return { counted, measured, above: counted > 0 ? above : null, worst };
 }
 
 /** The five size classes of a block, as `proof_size_hist` holds them one after the other (design section 8). */
@@ -117,7 +146,8 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const name = windowOf(q.get("window"));
     const t = now(), w = WINDOWS[name], span = { minute: MINUTE, hour: HOUR, day: DAY }[w.rows];
     const to = Math.floor(t / span) * span + span, from = to - w.ms;
-    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime] = await Promise.all([
+    const hourFrom = Math.ceil(from / HOUR) * HOUR, hourTo = Math.floor(t / HOUR) * HOUR;
+    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime, endedHours] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
         "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed", "attempts",
@@ -129,6 +159,8 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       stats.lost(),
       stats.rows("minute", from, Math.floor(t / MINUTE) * MINUTE + MINUTE, ["proof_busy_ms"]),
       stats.cutting(), stats.faucet(from, to), stats.txTotal(),
+      // The hours that have ended: the window's own rows when it is read from hours, else the hour rows of the same stretch.
+      w.rows === "hour" ? Promise.resolve(null) : hourTo > hourFrom ? stats.rows("hour", hourFrom, hourTo, ["time_to_final_hist"]) : Promise.resolve([]),
     ]);
 
     const blocks = sum(rows, "blocks"), txs = sum(rows, "txs"), empty = sum(rows, "empty_blocks"), attempts = sum(rows, "attempts");
@@ -146,7 +178,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const open = await stats.open(t, timeToFinal ? 2 * timeToFinal.p95 : null);
     const stuck = open.stuck > 0 ? await stats.stuck(t) : [];
     const day = today[0];
-    const busy = busyWindows(busyMinutes, from, t);
+    const busy = busyWindows(busyMinutes, from, t), hourly = slowHours(endedHours ?? rows, from, t);
     const body = {
       window: name, rows: w.rows, from: iso(from), to: iso(to), asOf: iso(state.asOf), dataSince: iso(state.since),
       tps: pick({ now: lastMinute / 60, peak: peak ? peak.txs / 60 : null, peakAt: iso(peak?.at ?? null) }, F.statsTps),
@@ -179,6 +211,11 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
         // The mean over the part of the window that has happened; the 10-minute figures above are what the switching rule reads.
         meanBusyRatio: sum(rows, "proof_busy_ms") / Math.max(1, Math.min(w.ms, t - from)), busyMs: sum(rows, "proof_busy_ms"),
       }, F.statsProver),
+      rule: pick({
+        slowAboveSeconds: SLOW_FINAL_SECONDS, hoursCounted: hourly.counted, hoursMeasured: hourly.measured, hoursAbove: hourly.above,
+        worstHourP95: hourly.worst?.p95 ?? null, worstHourAt: iso(hourly.worst?.at ?? null),
+        windowsOverByDay: busy.byDay.map((d) => pick({ day: iso(d.day)!.slice(0, 10), windowsOver: d.over, windowsCounted: d.counted }, F.statsRuleDay)),
+      }, F.statsRule),
       quality: pick({ withoutAcceptanceTime: sum(rows, "ttf_without_acceptance"), clockSkew: sum(rows, "clock_skew") }, F.statsQuality),
       test: pick({ blocks: sum(rows, "test_blocks"), txs: sum(rows, "test_txs"), attempts: sum(rows, "test_attempts"), proverBusyMs: sum(rows, "test_proof_busy_ms") }, F.statsTest),
       today: day ? pick({

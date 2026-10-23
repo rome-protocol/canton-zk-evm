@@ -154,7 +154,7 @@ describe("the API description", () => {
     const info = doc.paths["/api/faucet"].get;
     for (const f of ["sentToday", "finalToday", "beingProven", "balanceBlock", "batch", "final head"]) expect(info.summary, f).toContain(f);
     const stats = doc.paths["/api/stats/summary"].get.summary as string;
-    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded", "cool-down"]) expect(stats, f).toContain(f);
+    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded", "cool-down", "hoursAbove", "worstHourP95", "windowsOverByDay"]) expect(stats, f).toContain(f);
     // the field lists of both answers carry the new fields
     expect(Object.keys(info.responses["200"].content["application/json"].schema.properties)).toEqual(expect.arrayContaining(["sentToday", "finalToday", "beingProven", "balanceBlock", "batch"]));
   });

@@ -21,7 +21,7 @@ import { PINS } from "../../test/synthetic-chain.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { REST_FIELDS as F } from "./fields.ts";
 import { createStatsRest } from "./stats-rest.ts";
-import { METRICS, WINDOW_STEPS } from "./stats-routes.ts";
+import { METRICS, WINDOW_STEPS, busyWindows } from "./stats-routes.ts";
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
@@ -696,5 +696,69 @@ describe.skipIf(!TEST_URL)("the stats routes: minutes with blocks and no transac
     const s = body(await get("/api/stats/summary?window=1h"));
     expect(s.blocks.count).toBe(3);
     expect(s.tps).toEqual({ now: 0, peak: null, peakAt: null });
+  });
+});
+
+describe.skipIf(!TEST_URL)("the stats routes: the switching rule's two numbers by hour and by day", () => {
+  let db: TestDatabase, get: ReturnType<typeof apiFor>;
+  beforeAll(async () => {
+    db = await makeDatabase(); await base(db.pool); get = apiFor(db.pool, () => NOW);
+    // Ten-minute windows above 0.6 on 20 October (10:00 to 11:59, twelve of them), and one on 19 October (14:00 to 14:09).
+    for (let m = 0; m < 120; m++) await seed(db.pool, "stats_minute", t(10, 0) + m * MINUTE, { proof_busy_ms: 60000 });
+    for (let m = 0; m < 10; m++) await seed(db.pool, "stats_minute", t(14, 0) - DAY + m * MINUTE, { proof_busy_ms: 60000 });
+    // The p95 time to final of three hours: 06:00 the worst (bucket 165), 10:00 above 20 s (bucket C), 11:00 below it (bucket B), 09:00 and the open hour 12:00 above it (not counted: 12:00 is open).
+    await seed(db.pool, "stats_hour", t(6, 0), { time_to_final_hist: time({ 165: 10, [A]: 1 }) });
+    await seed(db.pool, "stats_hour", t(10, 0), { time_to_final_hist: time({ [C]: 5 }) });
+    await seed(db.pool, "stats_hour", t(11, 0), { time_to_final_hist: time({ [B]: 5 }) });
+    await seed(db.pool, "stats_hour", t(12, 0), { time_to_final_hist: time({ 170: 5 }) });
+  });
+  afterAll(async () => { await db?.drop(); });
+
+  it("counts the hours above 20 s and names the worst hour, from the hours that have ended", async () => {
+    const s = body(await get("/api/stats/summary?window=24h"));
+    same(s.rule, F.statsRule);
+    // 24 h window: the hours 13:00 the day before to 11:00 have ended: 23 of them; three have a time to final
+    expect(s.rule).toMatchObject({ slowAboveSeconds: 20, hoursCounted: 23, hoursMeasured: 3, hoursAbove: 2, worstHourAt: new Date(t(6, 0)).toISOString() });
+    expect(s.rule.worstHourP95).toBeCloseTo(edge(165), 6);
+  });
+
+  it("reads the hours from the hour rows when the window is drawn in minutes", async () => {
+    const s = body(await get("/api/stats/summary?window=6h"));
+    // 6 h window: 06:31 .. 12:31 (to is the end of the open minute); the hours that have ended inside it: 07:00 to 11:00, so the 06:00 hour is outside
+    expect(s.rule).toMatchObject({ hoursCounted: 5, hoursMeasured: 2, hoursAbove: 1, worstHourAt: new Date(t(10, 0)).toISOString() });
+    expect(s.rule.worstHourP95).toBeCloseTo(edge(C), 6);
+  });
+
+  it("counts the ten-minute windows above 0.6 for each UTC day, the days with none included (the 14:00 window of the 19th is in the 24 h window)", async () => {
+    const s = body(await get("/api/stats/summary?window=24h"));
+    // the whole windows from 13:00 on the 19th to 12:30 on the 20th: 66 on the 19th (13:00 to 23:50), 75 on the 20th
+    expect(s.rule.windowsOverByDay).toEqual([
+      { day: "2026-10-19", windowsOver: 1, windowsCounted: 66 },
+      { day: "2026-10-20", windowsOver: 12, windowsCounted: 75 },
+    ]);
+    for (const d of s.rule.windowsOverByDay) same(d, F.statsRuleDay);
+    const wide = body(await get("/api/stats/summary?window=7d"));
+    const by = Object.fromEntries(wide.rule.windowsOverByDay.map((d: { day: string; windowsOver: number }) => [d.day, d.windowsOver]));
+    expect(by["2026-10-19"]).toBe(1);
+    expect(by["2026-10-20"]).toBe(12);
+    expect(wide.rule.windowsOverByDay.reduce((n: number, d: { windowsCounted: number }) => n + d.windowsCounted, 0)).toBe(wide.prover.windowsCounted);
+  });
+
+  it("says nothing was measured with no hour and no window behind it: null, not 0", async () => {
+    const e = await makeDatabase();
+    try {
+      await base(e.pool);
+      const s = body(await apiFor(e.pool, () => NOW)("/api/stats/summary?window=24h"));
+      expect(s.rule).toMatchObject({ hoursMeasured: 0, hoursAbove: 0, worstHourP95: null, worstHourAt: null });
+      expect(s.rule.windowsOverByDay.every((d: { windowsOver: number }) => d.windowsOver === 0)).toBe(true);
+    } finally { await e.drop(); }
+  });
+});
+
+describe("busyWindows by day", () => {
+  it("lists a day with none above 0.6 with its count of windows", () => {
+    const W = 10 * MINUTE, d0 = Date.UTC(2026, 9, 19), rows = [{ bucket: d0 + DAY + 3 * HOUR, proof_busy_ms: 600000 }]; // one full ten-minute stretch, from 03:00 on the 20th (a minute row of 10 min is enough here)
+    const r = busyWindows(rows, d0, d0 + 2 * DAY);
+    expect(r.byDay).toEqual([{ day: d0, over: 0, counted: DAY / W }, { day: d0 + DAY, over: 1, counted: DAY / W }]);
   });
 });
