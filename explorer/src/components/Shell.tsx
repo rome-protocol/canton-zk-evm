@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import type { ApiStatus } from "../api.ts";
+import { PaintedProvider, usePainted } from "../painted.tsx";
 import { useNow, useStatus } from "../useStatus.ts";
 import { baseFee, duration } from "../format.ts";
 import { useBlocks } from "../stats.ts";
@@ -25,7 +26,7 @@ function TopBar({ status: s }: { status: ApiStatus }) {
   const now = useNow();
   const checks = s.starting && !s.problems.length ? "Starting" : s.problems.length ? "A check failed" : s.ok ? "All checks ok" : "Checks not complete";
   // The base fee is the newest final block's: the list route carries it, so the bar reads one block.
-  const newest = useBlocks(1, false);
+  const newest = useBlocks(1, false, usePainted());
   const fee = newest.isError ? "Base fee cannot be read right now" : newest.data ? (newest.data.items[0] ? `Base fee ${baseFee(newest.data.items[0].baseFee)}` : "Base fee: no block yet") : "Base fee reading…";
   const tone = s.ok ? "ok" : s.starting && !s.problems.length ? "off" : "bad";
   return (
@@ -42,6 +43,10 @@ function TopBar({ status: s }: { status: ApiStatus }) {
 
 /** The header every page has, and the line every page ends with. */
 export function Shell({ children }: { children: ReactNode }) {
+  return <PaintedProvider><ShellBody>{children}</ShellBody></PaintedProvider>;
+}
+
+function ShellBody({ children }: { children: ReactNode }) {
   const status = useStatus().data;
   const home = useLocation().pathname === "/";
   return (

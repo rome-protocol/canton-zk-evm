@@ -12,6 +12,8 @@ const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockLis
   const calls = fakeApi(route({ status: () => reply(status(over), code), ...(blocks && { blocks: () => reply(page(blocks)) }) }));
   renderApp("/");
   await screen.findByText("Final on Canton");
+  // The lists are read once the first frame is drawn, so they arrive after the status.
+  await vi.waitFor(() => expect(screen.queryByText("Reading the transactions…")).toBeNull());
   if (blocks) await screen.findByText(blocks.length ? "Latest final blocks" : "No final blocks yet.");
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
   return calls;
@@ -219,6 +221,7 @@ describe("the list of latest transactions, with those not final yet", () => {
     }));
     renderApp("/");
     await screen.findByText("Latest transactions");
+    await vi.waitFor(() => expect(screen.queryByText("Reading the transactions…")).toBeNull());
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     return within(screen.getByRole("region", { name: "Latest transactions" }));
   };
@@ -292,6 +295,8 @@ const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => Retu
   const calls = fakeApi(route({ status: () => reply(status()), stats: statsRoute(h), ...(flight && { inFlight: flight }) }));
   renderApp("/");
   await screen.findByText("Final on Canton");
+  // The day and the series are read once the first frame is drawn.
+  await vi.waitFor(() => expect(calls.some((c) => c.startsWith("/api/stats/series"))).toBe(true));
   await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
   return calls;
 };

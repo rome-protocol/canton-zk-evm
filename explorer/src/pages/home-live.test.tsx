@@ -38,7 +38,7 @@ describe("the home page, live", () => {
     const { state, send } = live();
     renderApp("/");
     await screen.findByText("updates live");
-    expect(blockRows()).toHaveLength(2);
+    await vi.waitFor(() => expect(blockRows()).toHaveLength(2));
     state.blocks = [blockItem(4), ...state.blocks];
     state.attempts = [];
     state.waiting = 0;
@@ -52,7 +52,7 @@ describe("the home page, live", () => {
     const { state, send } = live();
     renderApp("/");
     expect(await screen.findByText(/Not final yet\. These can still change/)).toBeInTheDocument();
-    expect(screen.getByRole("list", { name: "Steps of block 4" })).toBeInTheDocument();
+    expect(await screen.findByRole("list", { name: "Steps of block 4" })).toBeInTheDocument();
     state.attempts = [{ ...state.attempts[0]!, stage: "submitted", proofEndedAt: "2026-10-04T01:37:31.000Z", submittedAt: "2026-10-04T01:37:31.500Z" }];
     await send(`event: inflight\ndata: ${JSON.stringify({ number: 4 })}\n\n`);
     const steps = within(screen.getByRole("list", { name: "Steps of block 4" })).getAllByRole("listitem");
