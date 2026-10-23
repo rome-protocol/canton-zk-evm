@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { at as instant, clock, secs } from "../block-times.ts";
+import { ago, at as instant, clock, secs } from "../block-times.ts";
 import { createFaucetClient, type CoinResult, type FaucetClient, type FaucetInfo, type RecentSend, type Ticket, type TxTimes } from "./faucet-client.ts";
-import { formatAgo, formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
+import { formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
 import "./faucet.css";
 
 export interface FaucetPageProps {
@@ -346,7 +346,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
                   )}
                   {rows.map((r) => (
                     <tr key={r.hash}>
-                      <td><Link className="mono hx" to={`/tx/${r.hash}`} title={r.hash}>{shortHash(r.hash)}</Link><span className="ago">{formatAgo(now - r.timestamp * 1000)}</span></td>
+                      <td><Link className="mono hx" to={`/tx/${r.hash}`} title={r.hash}>{shortHash(r.hash)}</Link><span className="ago">{ago(new Date(r.timestamp * 1000).toISOString(), now)}</span></td>
                       <td><Link className="mono hx" to={`/address/${r.to}`} title={r.to}>{shortHash(r.to)}</Link></td>
                       <td className="r"><Link to={`/block/${r.block}`}>{r.block}</Link></td>
                       <td><span className="chip chip-final"><i className="dot" />Final</span></td>

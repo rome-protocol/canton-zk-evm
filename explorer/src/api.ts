@@ -478,6 +478,3 @@ export interface StatsSummaryFaucet {
   requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null;
   turnedAway: StatsTurnedAway | null; turnedAwaySince: string | null;
 }
-/** What `GET /api/faucet` adds to `FaucetInfo`: the block its balance is of, how many payouts go in one block, how many were sent since 00:00 UTC, how many of those are final, and how many are being proven now (each null where the faucet cannot count them). `balanceBlock` is the final head. */
-export interface FaucetFacts { balanceBlock: number | null; batch: number; sentToday: number | null; finalToday: number | null; beingProven: number | null }
-export const getFaucetFacts = async () => { try { return (await call("/api/faucet", [200])).body as FaucetFacts; } catch { return null; } };

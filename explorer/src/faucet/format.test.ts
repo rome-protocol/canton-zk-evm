@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAgo, formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
+import { formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
 
 describe("formatCoin", () => {
   it("shows whole coins with thousands separators", () => {
@@ -68,15 +68,7 @@ describe("formatTiny", () => {
   });
 });
 
-describe("formatAgo and formatMoment", () => {
-  it("writes the time since in the explorer's words", () => {
-    expect(formatAgo(4000)).toBe("4 s ago");
-    expect(formatAgo(24 * 60_000)).toBe("24 min ago");
-    expect(formatAgo(62 * 60_000)).toBe("1 h 2 min ago");
-    expect(formatAgo(3 * 3600_000)).toBe("3 h ago");
-    expect(formatAgo(50 * 3600_000)).toBe("2 d ago");
-    expect(formatAgo(-5000)).toBe("0 s ago");
-  });
+describe("formatMoment and formatCount", () => {
   it("writes a moment in UTC", () => {
     expect(formatMoment(Date.UTC(2026, 9, 24, 17, 57, 31))).toBe("24 Oct, 17:57 UTC");
   });
