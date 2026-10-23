@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
 import {
-  ApiError, addressTransfersCsvPath, blocksCsvPath, getAddressTransfers, getAllTokenTransfers, getBlocks, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
+  ApiError, addressTransfersCsvPath, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
   getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
 } from "./api.ts";
 import { account, block, blockItem, holding, inFlight, status, tokenAddress, tokenItem, tokenTransfer, tx, txItem } from "./test-utils.tsx";
@@ -128,7 +128,15 @@ describe("the API client", () => {
     await getAddressTransfers(A, null, 10);
     await getAddressTransfers(A, K, 10, { token: T, standard: "ERC-20" });
     await getTokenTransfers(T, null, 10);
-    expect(urls()).toEqual([`/api/addresses/${A}/token-transfers?limit=10`, `/api/addresses/${A}/token-transfers?limit=10&before=1%3A2%3A3&token=${T}&standard=ERC-20`, `/api/tokens/${T}/transfers?limit=10`]);
+    await getAddressTransfers(A, null, 10, { standard: "nft" });
+    // A value from a page's own URL is encoded, so that it cannot add parameters to the call.
+    await getAddressTransfers(A, null, 10, { token: "x&standard=ERC-20" });
+    expect(urls()).toEqual([`/api/addresses/${A}/token-transfers?limit=10`, `/api/addresses/${A}/token-transfers?limit=10&before=1%3A2%3A3&token=${T}&standard=ERC-20`, `/api/tokens/${T}/transfers?limit=10`,
+      `/api/addresses/${A}/token-transfers?limit=10&standard=nft`, `/api/addresses/${A}/token-transfers?limit=10&token=x%26standard%3DERC-20`]);
+    answer(200, { items: [], next: null });
+    await getAddressContracts(A, null, 10);
+    await getAddressContracts(A, K, 10);
+    expect(urls()).toEqual([`/api/addresses/${A}/contracts?limit=10`, `/api/addresses/${A}/contracts?limit=10&before=1%3A2%3A3`]);
     answer(200, { items: [], next: null, total: 0, counts: {}, gatewayCount: 0 });
     await getTokenList("holders", null, 10);
     await getTokenList("newest", "7:0xab", 10, "ERC-1155");

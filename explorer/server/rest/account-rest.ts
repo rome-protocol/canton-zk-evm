@@ -21,8 +21,13 @@ export type TokenSort = "holders" | "transfers" | "newest";
 export type TxDirection = "all" | "sent" | "received";
 export const TX_DIRECTIONS: readonly TxDirection[] = ["all", "sent", "received"];
 export interface AddressItem { address: string; kind: string; balance: string | null; balanceBlock: number | null; txCount: number }
+export interface Funding { from: string; txHash: string; block: number; timestamp: number; value: string }
 export interface AddressDetail {
-  address: string; kind: string; sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
+  address: string; kind: string; sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
+  /** The contracts it made (as the direct caller of the creation). */
+  createdCount: number;
+  /** Who sent it its first coin, when the index can say: null when it holds no such transaction, or the address was there before it. */
+  fundedBy: Funding | null;
   token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null;
 }
 export interface AddressInternalItem {
@@ -38,9 +43,11 @@ export interface TokenTransferItem {
 export const TOKEN_STANDARDS = ["ERC-20", "ERC-721", "ERC-1155"] as const;
 export type TokenStandard = (typeof TOKEN_STANDARDS)[number];
 /** What makes a transfer of a standard, in its columns (the indexer writes only transfers of the standard a token is known by): the predicate of that standard's partial indexes, which a query must repeat to use them. */
-const STANDARD_COLUMNS: Record<TokenStandard, string> = { "ERC-20": "x.token_id is null", "ERC-721": "x.amount is null", "ERC-1155": "x.amount is not null and x.token_id is not null" };
-/** The transfers an address list keeps: those of one token and/or one standard. */
-export interface TransferFilter { token?: string | null; standard?: TokenStandard | null }
+const STANDARD_COLUMNS: Record<TokenStandard | NftGroup, string> = { "ERC-20": "x.token_id is null", "ERC-721": "x.amount is null", "ERC-1155": "x.amount is not null and x.token_id is not null", nft: "x.token_id is not null" };
+/** The transfers an address list keeps: those of one token and/or one standard (or the NFT group). */
+export interface TransferFilter { token?: string | null; standard?: TokenStandard | NftGroup | null }
+/** The two NFT standards as one filter of an address's transfers: a transfer with a token id, whichever of them it is. */
+export type NftGroup = "nft";
 export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 /** Shown with a partial match: the library lets the metadata (the CBOR at the end of the code, and of any contract embedded in it) differ from the compile. */
@@ -140,17 +147,28 @@ export function createAccountRest(pool: Pool) {
 
   /** What the database holds of an address: the counters, the kind, the token it is and the transaction that made it. Undefined for an address nothing has touched. */
   async function address(a: string): Promise<AddressDetail | undefined> {
+    // The funder is the first transaction that sent it value, and only when that is in the block the address first appeared in: an address that was there before it (a
+    // genesis balance, a call inside another transaction) was funded some other way, which this index does not hold. The times are those of the blocks of the counters.
     const [r] = await query(
       `select ad.sent_count, ad.received_count, ad.internal_count, ad.token_transfer_count, ad.first_seen_block, ad.last_active_block, ad.is_contract,
          tk.address is not null as is_token, tk.name, tk.symbol, tk.decimals, c.address is not null as has_contract, c.creation_block,
-         (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx
-       from (select $1::bytea as address) q left join addresses ad on ad.address = q.address left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address`,
+         (select t.hash from transactions t where t.block_number = c.creation_block and t.tx_index = c.creation_tx_index) as creation_tx,
+         (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.first_seen_block) as first_ts,
+         (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.last_active_block) as last_ts,
+         (select count(*) from contracts k where k.creator = q.address) as created_count,
+         f.from_address as fund_from, f.hash as fund_tx, f.block_number as fund_block, f.value as fund_value, f.ts as fund_ts
+       from (select $1::bytea as address) q left join addresses ad on ad.address = q.address left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address
+         left join lateral (select t.from_address, t.hash, t.block_number, t.value::text as value, extract(epoch from b.timestamp)::bigint as ts
+           from transactions t join blocks b on b.number = t.block_number where t.to_address = q.address and t.value > 0 and t.status = 1 order by t.block_number, t.tx_index limit 1) f
+           on f.block_number = ad.first_seen_block`,
       [bytes(a)],
     );
     if (!r || (r.sent_count === null && !r.has_contract)) return undefined;
     return {
       address: a, kind: r.is_token ? "token" : r.is_contract || r.has_contract ? "contract" : "account", sentCount: Number(r.sent_count ?? 0), receivedCount: Number(r.received_count ?? 0),
-      internalCount: Number(r.internal_count ?? 0), tokenTransferCount: Number(r.token_transfer_count ?? 0), firstSeenBlock: num(r.first_seen_block), lastActiveBlock: num(r.last_active_block),
+      internalCount: Number(r.internal_count ?? 0), tokenTransferCount: Number(r.token_transfer_count ?? 0), firstSeenBlock: num(r.first_seen_block), firstSeenTimestamp: num(r.first_ts), lastActiveBlock: num(r.last_active_block), lastActiveTimestamp: num(r.last_ts),
+      createdCount: Number(r.created_count),
+      fundedBy: r.fund_tx === null ? null : { from: hex(r.fund_from), txHash: hex(r.fund_tx), block: Number(r.fund_block), timestamp: Number(r.fund_ts), value: r.fund_value },
       token: r.is_token ? { name: r.name, symbol: r.symbol, decimals: num(r.decimals) } : null,
       createdBy: r.creation_block === null || r.creation_block === undefined ? null : { txHash: hexOrNull(r.creation_tx), block: Number(r.creation_block) },
     };
@@ -306,6 +324,18 @@ export function createAccountRest(pool: Pool) {
     return rows.map(contractItem);
   }
 
+  /** The contracts an address made, newest first by the place of the creation, after the key (block, index, address): the order of the contract list's newest sort. */
+  async function contractsMadeBy(a: string, before: Key | null, limit: number): Promise<ContractItem[]> {
+    const [x, y, z] = before ?? [null, null, null];
+    const rows = await query(
+      `select ${contractSelect} from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash ${withAccount}
+       where c.creator = $1 and ($2::bigint is null or (coalesce(c.creation_block, 0), coalesce(c.creation_tx_index, 0), c.address) < ($2::bigint, $3::int, $4::bytea))
+       order by coalesce(c.creation_block, 0) desc, coalesce(c.creation_tx_index, 0) desc, c.address desc limit $5`,
+      [bytes(a), x, y, z === null ? null : bytes(z as string), limit + 1],
+    );
+    return rows.map(contractItem);
+  }
+
   /** One contract with its code, its proxy and what verification says. Undefined when none is held at the address. */
   async function contract(a: string): Promise<ContractDetail | undefined> {
     const [r] = await query(
@@ -452,6 +482,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
+    derivedThrough, tokenCounts, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, allTransfers, coinHistory, contracts, contractsMadeBy, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
   };
 }

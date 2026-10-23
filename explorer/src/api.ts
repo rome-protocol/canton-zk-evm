@@ -316,7 +316,8 @@ export type TxFilter = "all" | "failed" | "calls";
 export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
 /**
  * The transactions oldest first, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page count is `total` over the page
- * size where the total is known. The page is in the order the server gives it, oldest first.
+ * size where the total is known. Open the last page with `limit` = `total` % size || size (the full size when that is 0), so that it does not repeat rows of the page before;
+ * then page on with `after` and the normal size. The page is in the order the server gives it, oldest first.
  */
 export const getTxPageOldest = async (after: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?order=asc&limit=${limit}${cursor("after", after)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
 /** The newest final transactions of the filter as a file, with the list's columns. */
@@ -355,14 +356,18 @@ export const getTxReceipt = async (hash: string) => (await call(`/api/txs/${enco
 export interface AddressListItem { address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null; txCount: number }
 export type AddressSort = "balance" | "txs";
 /** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
+export interface AddressFunding { from: string; txHash: string; block: number; timestamp: number; value: string }
 export interface AddressDetail {
   address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null;
-  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
+  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
+  /** The contracts it made. */
+  createdCount: number;
+  /** Who sent it its first coin, null when the explorer cannot say (no such transaction held, or the address was there before it). */
+  fundedBy: AddressFunding | null;
   token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null; derived: boolean;
 }
 export interface AddressInternalItem extends InternalCall { txHash: string; block: number; txIndex: number }
 export interface AddressTransferItem extends TokenTransfer { txHash: string; block: number; txIndex: number }
-/** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
 /** The indexer's own spelling of a token standard. */
 export type TokenStandard = "ERC-20" | "ERC-721" | "ERC-1155";
 /** What an address holds of a token: `totalSupply` and `decimals` are the token's, null where it has none. */
@@ -391,7 +396,11 @@ const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`
 export interface TokenListPage extends DerivedPage<TokenListItem> { total: number; counts: Record<TokenStandard, number>; gatewayCount: number }
 /** The tokens in the order of `sort`, a page at a time; of one standard and/or only those the gateway wrapped when asked. */
 export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
-/** The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page is in the order the server gives it, the reverse of the list's. */
+/**
+ * The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. Open it with `limit` = `total` % size || size
+ * (the full size when that is 0), so that the last page does not repeat rows of the page before; then page on with `after` and the normal size. The page is in the order the
+ * server gives it, the reverse of the list's.
+ */
 export const getTokenListOldest = async (sort: TokenSort, after: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&order=asc&limit=${limit}${cursor("after", after)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
 export const getToken = async (a: string) => (await call(tk(a), [200])).body as TokenDetail;
 export const getTokenHolders = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/holders")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenHolder>;
@@ -399,8 +408,9 @@ export const getTokenTransfers = async (a: string, before: string | null, limit 
 export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
 export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
-export interface TransferFilter { token?: string; standard?: TokenStandard }
-const transferFilter = (f: TransferFilter) => `${f.token ? `&token=${f.token}` : ""}${f.standard ? `&standard=${f.standard}` : ""}`;
+/** An address's transfers also take `nft`: ERC-721 and ERC-1155 together, in one list. */
+export interface TransferFilter { token?: string; standard?: TokenStandard | "nft" }
+const transferFilter = (f: TransferFilter) => `${f.token ? `&token=${encodeURIComponent(f.token)}` : ""}${f.standard ? `&standard=${f.standard}` : ""}`;
 export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE, filter: TransferFilter = {}) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}${transferFilter({ token: filter.token, standard: filter.standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
 /** The newest token transfers of an address as a CSV file (up to 1,000), kept to the filter. */
 export const addressTransfersCsvPath = (a: string, filter: TransferFilter = {}) => `${of(a, "/token-transfers")}?format=csv${transferFilter(filter)}`;
@@ -409,6 +419,8 @@ export const tokenTransfersCsvPath = (a: string) => `${tk(a, "/transfers")}?form
 /** The transfers of every token, newest first, of one standard when asked. */
 export const getAllTokenTransfers = async (before: string | null, limit = PAGE, standard?: TokenStandard) => (await call(`/api/token-transfers?limit=${limit}${cursor("before", before)}${transferFilter({ standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
+/** The contracts an address made, newest first. */
+export const getAddressContracts = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/contracts")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<ContractListItem>;
 export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
 
 /** A contract in the list. `origin` is "genesis" for a contract the chain's genesis holds (made by no transaction, so no creator and no creation block) or "create". `matchType` is full, partial, or similar (the same code verified at another address). */

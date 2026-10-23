@@ -102,7 +102,7 @@ export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
 export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {
   return {
     address: addr(0x5b), kind: "account", balance: "9997910000000000000", balanceBlock: 21, sentCount: 3, receivedCount: 1, internalCount: 0, tokenTransferCount: 0,
-    firstSeenBlock: 2, lastActiveBlock: 20, token: null, createdBy: null, derived: true, ...over,
+    firstSeenBlock: 2, firstSeenTimestamp: T0, lastActiveBlock: 20, lastActiveTimestamp: T0 + 96, createdCount: 0, fundedBy: null, token: null, createdBy: null, derived: true, ...over,
   };
 }
 export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
