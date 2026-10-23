@@ -20,7 +20,7 @@ import type { VerifyRequest } from "./request.ts";
 // creation code. Needs the database, Docker and the program; EXPLORER_TEST_REQUIRE_SANDBOX=1 makes a missing one a failure.
 const root = resolve(import.meta.dirname, "../../..");
 const pins = readFileSync(join(root, "PINS"), "utf8");
-const IMAGE = /^BUSYBOX_IMAGE=(\S+)$/m.exec(pins)![1]!;
+const IMAGE = /^SOLC_SANDBOX_IMAGE=(\S+)$/m.exec(pins)![1]!;
 const GATEWAY = /^GATEWAY_ADDRESS=(0x[0-9a-f]{40})$/m.exec(pins)![1]!;
 const SOLC = process.env.EXPLORER_TEST_SOLC ?? join(root, "state/solc-0.8.28/solc");
 const VERSION = "0.8.28+commit.7893614a";

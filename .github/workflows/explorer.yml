@@ -31,7 +31,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npm run typecheck && npm test && npm run build"
 
-  # The verifier's sandbox, for real: a compile runs in a container of the pinned image (BUSYBOX_IMAGE) with no network, a read-only filesystem,
+  # The verifier's sandbox, for real: a compile runs in a container of the pinned image (SOLC_SANDBOX_IMAGE, Debian slim: the official compilers need glibc's shared libraries) with no network, a read-only filesystem,
   # a memory limit and a time limit, and the tests check each of them. The tests run in the pinned Node image, which talks to the runner's own
   # Docker through its socket (the Docker program is the static build that PINS pins, checked against its SHA-256 and mounted in). The compilers the tests make sit in a folder that the container
   # and the daemon see at the same path. EXPLORER_TEST_REQUIRE_SANDBOX makes a missing Docker a failure instead of a skip.
@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
         with:
-          images: EXPLORER_NODE_IMAGE BUSYBOX_IMAGE POSTGRES_IMAGE SOLC_IMAGE
+          images: EXPLORER_NODE_IMAGE SOLC_SANDBOX_IMAGE POSTGRES_IMAGE SOLC_IMAGE
       - name: Start the pinned PostgreSQL, on this machine's loopback only
         run: |
           set -a; . ./PINS; set +a
@@ -60,12 +60,13 @@ jobs:
         run: |
           set -a; . ./PINS; set +a
           # The sandbox image is on the runner under the pinned name, and the tests read the same name from PINS.
-          docker image inspect --format '{{.Id}}' "$BUSYBOX_IMAGE"
+          docker image inspect --format '{{.Id}}' "$SOLC_SANDBOX_IMAGE"
           SHARED="$RUNNER_TEMP/verifier-tmp"
           mkdir -p "$SHARED/bin"
           curl -fsSL -A "Rome Protocol rome@romeprotocol.com" -o "$SHARED/docker.tgz" "https://download.docker.com/linux/static/stable/x86_64/docker-$DOCKER_CLI_VERSION.tgz"
           echo "$DOCKER_CLI_SHA256  $SHARED/docker.tgz" | sha256sum -c -
           tar -xzf "$SHARED/docker.tgz" -C "$SHARED/bin" --strip-components=1 docker/docker
+          # server/verifier/real-list.test.ts (EXPLORER_TEST_REAL_LIST=1) downloads the official compiler from the real list and runs it in the sandbox image.
           # The compiler the verification test serves is the static solc of the pinned image (PINS' SOLC_VERSION), copied out of it.
           mkdir -p "$SHARED/solc"
           docker create --name explorer-verifier-solc "$SOLC_IMAGE" > /dev/null
@@ -79,7 +80,7 @@ jobs:
           echo "$FOUNDRY_ALPINE_AMD64_SHA256  $SHARED/foundry.tgz" | sha256sum -c -
           tar -xzf "$SHARED/foundry.tgz" -C "$SHARED/foundry" forge cast
           docker run --rm --user "$(id -u):$(id -g)" --group-add "$(stat -c %g /var/run/docker.sock)" -e HOME=/tmp \
-            --network host -e EXPLORER_TEST_REQUIRE_SANDBOX=1 -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_SOLC="$SHARED/solc/solc" \
+            --network host -e EXPLORER_TEST_REQUIRE_SANDBOX=1 -e EXPLORER_TEST_REAL_LIST=1 -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_SOLC="$SHARED/solc/solc" \
             -e EXPLORER_TEST_FORGE="$SHARED/foundry/forge" -e EXPLORER_TEST_CAST="$SHARED/foundry/cast" -e EXPLORER_TEST_REQUIRE_CLIENTS=1 \
             -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer -e TMPDIR="$SHARED" -v "$SHARED:$SHARED" \
             -v /var/run/docker.sock:/var/run/docker.sock -v "$SHARED/bin/docker:/usr/local/bin/docker:ro" \
