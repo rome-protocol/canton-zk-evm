@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // // @vitest-environment jsdom
 export default defineConfig({
   test: {
-    include: ["server/**/*.test.ts", "src/**/*.test.{ts,tsx}", "test/**/*.test.ts", "e2e/**/*.test.tsx"],
+    include: ["server/**/*.test.ts", "src/**/*.test.{ts,tsx}", "test/**/*.test.ts", "e2e/**/*.test.{ts,tsx}"],
     environment: "node",
   },
 });

@@ -63,3 +63,28 @@ export async function seedGenesis(pool: Pool, reads: Pick<FinalReads, "code">, f
   }
   return contracts.length;
 }
+
+/** The coins the genesis allocates, in wei: the sum of every account's `balance` (hex with 0x, or decimal, as a genesis.json writes it). */
+export function genesisSupply(file: string): bigint {
+  let alloc: unknown;
+  try {
+    alloc = (JSON.parse(readFileSync(file, "utf8")) as { alloc?: unknown }).alloc;
+  } catch (e) {
+    throw new IndexerStop("genesis", `the genesis file ${file} cannot be read: ${(e as Error).message}`, null);
+  }
+  if (typeof alloc !== "object" || alloc === null || Array.isArray(alloc)) throw new IndexerStop("genesis", `the genesis file ${file} has no alloc`, null);
+  let sum = 0n;
+  for (const [key, account] of Object.entries(alloc)) {
+    const balance = (account as { balance?: unknown } | null)?.balance;
+    if (balance === undefined || balance === null || balance === "") continue;
+    if (typeof balance !== "string" && typeof balance !== "number") throw new IndexerStop("genesis", `the balance of ${key} in the genesis file is not a number`, null);
+    try { sum += BigInt(balance); } catch { throw new IndexerStop("genesis", `the balance of ${key} in the genesis file is not a number`, null); }
+  }
+  return sum;
+}
+
+/** Keeps the genesis allocation in `meta.genesis_supply` (the Etherscan `ethsupply` is it minus the burnt fees). The genesis never changes, so a value that is there stays; a database that was seeded before this was kept gets it at its next start. */
+export async function recordGenesisSupply(pool: Pool, file: string): Promise<void> {
+  if ((await pool.query("select 1 from meta where key = 'genesis_supply'")).rowCount) return;
+  await pool.query("insert into meta (key, value) values ('genesis_supply', $1) on conflict do nothing", [genesisSupply(file).toString()]);
+}

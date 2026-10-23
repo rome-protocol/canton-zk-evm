@@ -124,13 +124,26 @@ describe("addresses", () => {
     let seen: unknown[] = [];
     const r = await reth({ eth_call: (p: unknown[]) => { seen = p; return "0x" + (1234).toString(16).padStart(64, "0"); } });
     expect(await r.tokenBalanceAt(A("7"), A("A"), 1203)).toBe(1234n);
-    expect(seen).toEqual([{ to: A("7"), data: "0x70a08231" + "0".repeat(24) + "a".repeat(40) }, "0x4b3"]);
+    expect(seen).toEqual([{ to: A("7"), data: "0x70a08231" + "0".repeat(24) + "a".repeat(40), gas: "0x30d40" }, "0x4b3"]);
     await fake?.close();
     const reverted = await reth({ eth_call: () => { throw "execution reverted"; } });
     expect(await reverted.tokenBalanceAt(A("7"), A("a"), 1)).toBe(0n);
     await fake?.close();
     const empty = await reth({ eth_call: "0x" });
     expect(await empty.tokenBalanceAt(A("7"), A("a"), 1)).toBe(0n);
+  });
+
+  it("reads a token's total supply at the block asked for, and gives 0 for a revert or an address that is no token", async () => {
+    let seen: unknown[] = [];
+    const r = await reth({ eth_call: (p: unknown[]) => { seen = p; return "0x" + (5000).toString(16).padStart(64, "0"); } });
+    expect(await r.tokenSupplyAt(A("7"), 1203)).toBe(5000n);
+    expect(seen).toEqual([{ to: A("7"), data: "0x18160ddd", gas: "0x30d40" }, "0x4b3"]);
+    await fake?.close();
+    const reverted = await reth({ eth_call: () => { throw "execution reverted"; } });
+    expect(await reverted.tokenSupplyAt(A("7"), 1)).toBe(0n);
+    await fake?.close();
+    const empty = await reth({ eth_call: "0x" });
+    expect(await empty.tokenSupplyAt(A("7"), 1)).toBe(0n);
   });
 
   it("returns null for a contract that does not answer the ERC-20 calls, or answers nonsense", async () => {

@@ -55,6 +55,7 @@ RETH_ARGS=(
   --engine.allow-unwind-canonical-header
   --builder.gaslimit "$GAS_CAP"
   --rpc.eth-proof-window 1
+  --rpc.gascap "$GAS_CAP"
 )
 
 # In the persistent mode every block is written to disk as soon as it is imported. With reth's default (the newest ~7 blocks stay in
@@ -92,6 +93,8 @@ require --engine.always-process-payload-attributes-on-canonical-head
 require --engine.allow-unwind-canonical-header
 require --builder.gaslimit "$GAS_CAP"
 require --rpc.eth-proof-window 1
+# No eth_call or eth_estimateGas runs past one block's gas, whoever asks (the public RPC, the Etherscan proxy, a token read): reth's default is 50M, above the chain's block limit.
+require --rpc.gascap "$GAS_CAP"
 # The explorer's indexer reads each final block's traces (trace_replayBlockTransactions) on this port. It listens on the machine only, and the
 # public RPC forwards no trace_ or debug_ method. Nothing that can build or change blocks, and no debug, is ever served on it.
 require --http.api "eth,net,web3,trace"
