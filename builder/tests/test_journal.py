@@ -140,12 +140,13 @@ class EveryOutcome(Lines):
         first = self.producer(s)
         first.step()
         self.assertEqual(self.one(s, "answered")["outcome"], "unknown")
-        s.ledger.no_completion = False
-        second = self.producer(s)   # a new process: the old one's unresolved outcome is gone from memory
+        second = self.producer(s)   # a new process: the old one's unresolved outcome is gone from memory, the command is in the work folder
+        second.load_unresolved()
+        s.ledger.no_completion = False   # its completion shows: Canton failed it
         second.step()
         self.assertNotEqual(first.journal.run_id, second.journal.run_id)
         (line,) = [l for l in self.journal(s, "resolved") if l["run"] == second.journal.run_id]
-        self.assertEqual((line["outcome"], line["attempt_run"], line["attempt"]), ("restarted", first.journal.run_id, 1))
+        self.assertEqual((line["outcome"], line["via"], line["attempt_run"], line["attempt"]), ("not committed", "completion", first.journal.run_id, 1))
 
     def test_a_pool_with_nothing_that_can_go_in_is_a_skipped_attempt(self):
         t = tx(BOB, 0)
@@ -203,11 +204,11 @@ class CommandIdAndAnswer(Lines):
             with mock.patch.object(b, "post_json", return_value=answer):
                 self.assertEqual(b.Ledger(s.cfg).advance({"contractId": "c"}, {}), {"updateId": None, "completionOffset": None})
 
-    def test_a_lost_reply_that_hid_a_commit_has_no_update_id(self):
+    def test_a_lost_reply_that_hid_a_commit_has_the_update_id_of_its_completion(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
         self.producer(s).step()
         answered = self.one(s, "answered")
-        self.assertEqual((answered["outcome"], answered["update_id"], answered["completion_offset"]), ("committed", None, None))
+        self.assertEqual((answered["outcome"], answered["update_id"], answered["completion_offset"]), ("committed", "u1", 43))
 
 
 class Traffic(Lines):

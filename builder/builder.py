@@ -10,7 +10,8 @@ side, and builds the block again without any transaction whose leg has none. Onl
 submit it, with exactly the legs the block recorded.
 
 Exit status: 0 if Canton committed the block, 2 if Canton refused it or did not take it (reth is moved back to Canton's head) or if it is
-not known whether it committed ("committed": null; reth is left where it is), 1 on any other failure (reth is moved
+not known whether it committed ("committed": null; reth is left where it is: an Advance with no answer is settled by its own command id,
+README.md), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
 import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
