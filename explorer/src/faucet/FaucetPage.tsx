@@ -379,7 +379,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
       status === "final" ? { state: "done", title: `Proven${block}`, detail: "The proof was checked and the block was committed." }
         : proving ? { state: "active", title: `Being proven${block}`, detail: "A proof of the block is being made. It is not final until Canton has committed it." }
         : { state: "todo", title: "Being proven", detail: "The block holding the transfer is proven." },
-      status === "final" ? { state: "done", title: "Final on Canton", detail: <>{amount} is final{block}. The coins are yours, and the balance shown everywhere includes them.</> }
+      status === "final" ? { state: "done", title: "Final on Canton", detail: <>{amount} is final on Canton{block}. The coins are yours, and the balance shown everywhere includes them.</> }
         : { state: "todo", title: "Final on Canton", detail: "Then the coins are yours, and the balance shown everywhere includes them." },
     ];
     if (watch.gone) {
