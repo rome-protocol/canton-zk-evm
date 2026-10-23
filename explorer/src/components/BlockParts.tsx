@@ -79,7 +79,7 @@ export function BlockLegs({ id }: { id: string }) {
           <tbody>
             {rows.map((l) => (
               <tr key={l.legIndex}>
-                <td className="r">{l.legIndex}</td>
+                <td className="r"><Link to={`/leg/${l.legId}`}>{l.legIndex}</Link></td>
                 <td><span className="tag">{l.kind}</span></td>
                 <td><HashLink value={l.token} to={`/token/${l.token}`} /></td>
                 <td><HashLink value={l.account} to={`/address/${l.account}`} /></td>
