@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem, StatsSummary, StatsWindow } from "../api.ts";
@@ -504,6 +506,23 @@ describe("the hero", () => {
     expect(tries().map((a) => a.textContent)).toEqual(["3", "0xa3a3a3…a3a3", "0x5b5b5b…5b5b", "122003030303…", "tUSD"]);
     expect(tries()[4]).toHaveAttribute("href", `/search?q=${addr(0xcb)}`);
     expect(tries()[3]).toHaveAttribute("href", `/search?q=${update(3)}`);
+  });
+
+  it("keeps a token's symbol in its own bidi-isolated element, whole in the tooltip, and cut short by the style", async () => {
+    const hostile = "\u202eEvil".padEnd(256, "x");
+    fakeApi(route({ tokenPages: () => reply(page([tokenItem(0xcb, { symbol: hostile })])) }));
+    renderApp("/");
+    await waitFor(() => expect(tries()).toHaveLength(5));
+    const chip = tries()[4]!;
+    expect(chip.querySelector("bdi.tname")?.textContent).toBe(hostile);
+    expect(chip).toHaveAttribute("title", hostile);
+    const css = readFileSync(join(import.meta.dirname, "home.css"), "utf8");
+    const r = css.split("\n").find((l) => l.startsWith(".try .tname {")) ?? "";
+    expect(r).toMatch(/max-width:\s*[\d.]+ch/);
+    expect(r).toMatch(/overflow:\s*hidden/);
+    expect(r).toMatch(/text-overflow:\s*ellipsis/);
+    expect(r).toMatch(/white-space:\s*nowrap/);
+    expect(r).toMatch(/unicode-bidi:\s*isolate/);
   });
 
   it("offers no token chip when the explorer knows no token", async () => {

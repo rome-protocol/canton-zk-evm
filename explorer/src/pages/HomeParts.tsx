@@ -14,14 +14,15 @@ import type { Fetched, Read, Summary } from "../stats.ts";
 import { useNow } from "../useStatus.ts";
 
 /** What the home page says it is, with a search box of its own and a few things to try, which are the newest the explorer holds. */
-export function Hero({ tries }: { tries: Array<{ label: string; q: string }> }) {
+/** `words`: the label is the contract's own text (a token symbol), so it is set apart, cut short by the style, and whole in the tooltip. */
+export function Hero({ tries }: { tries: Array<{ label: string; q: string; words?: boolean }> }) {
   return (
     <section className="card hero" aria-labelledby="hero-h">
       <h1 id="hero-h">Ostia block explorer</h1>
       <p>Ostia is an EVM chain on Canton. Every block is proven with ZisK and then committed to Canton as one transaction, so a transaction is final when its block is final on Canton.</p>
       <SearchBox hero />
       {tries.length > 0 && (
-        <div className="try"><span>Try</span>{tries.map((t) => <Link key={t.q} className="mono" to={`/search?q=${encodeURIComponent(t.q)}`}>{t.label}</Link>)}</div>
+        <div className="try"><span>Try</span>{tries.map((t) => <Link key={t.q} className="mono" to={`/search?q=${encodeURIComponent(t.q)}`} title={t.words ? t.label : undefined}>{t.words ? <bdi className="tname">{t.label}</bdi> : t.label}</Link>)}</div>
       )}
     </section>
   );

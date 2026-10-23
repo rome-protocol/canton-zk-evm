@@ -63,7 +63,7 @@ export function Home() {
     ...(newest ? [{ label: String(newest.number), q: String(newest.number) }] : []),
     ...(first ? [{ label: short(first.hash, 8, 4), q: first.hash }, { label: short(first.from, 8, 4), q: first.from }] : []),
     ...(newest ? [{ label: `${newest.updateId.slice(0, 12)}…`, q: newest.updateId }] : []),
-    ...(token ? [{ label: token.symbol ?? short(token.address, 8, 4), q: token.address }] : []),
+    ...(token ? [{ label: token.symbol ?? short(token.address, 8, 4), q: token.address, words: token.symbol !== null }] : []),
   ];
   // The search box stays whatever the status says: a visitor can look for a block while the chain cannot be read.
   if (error || !data) return <><Hero tries={[]} />{error ? <ErrorCard message={error.message} retrying /> : <LoadingCard>Reading the chain…</LoadingCard>}</>;
