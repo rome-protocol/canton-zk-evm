@@ -178,7 +178,11 @@ export interface BlockListItem { number: number; hash: string; timestamp: number
   /** ZisK's time for the block, and the way from the producer's cut to Canton's record time, in seconds; null where the producer's journal has no times. */
   proofSeconds: number | null; finalSeconds: number | null; commitSeconds: number | null }
 export type BlockFilter = "all" | "transactions" | "empty";
-export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null }
+/** What a listed transaction moved in tokens: how many moves (counted to a cap, `more` past it) and the first; the whole object is null while stage 2 has not reached its block. */
+export interface TokenMoves { count: number; more: boolean; first: { token: string; amount: string | null; tokenId: string | null; standard: string | null } | null }
+/** The newest transactions: a page with how many the chain holds (null where the rollups cannot say, and for a filtered list) and when that was counted to. */
+export interface TxsPage extends Page<TxListItem> { total: number | null; totalAsOf: string | null }
+export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null; tokenMoves: TokenMoves | null }
 /** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */
 export interface InFlightAttempt {
   number: number; strategy: string; cutReason: string; stage: "cut" | "built" | "proving" | "proved" | "submitted" | "committed";
@@ -294,7 +298,7 @@ export const getBlockPage = async (before: string | null, limit = PAGE, filter: 
 export const blocksCsvPath = (filter: BlockFilter) => `/api/blocks?format=csv&filter=${filter}`;
 export type TxFilter = "all" | "failed" | "calls";
 /** The final transactions, newest first, a page at a time; `filter` keeps the reverted ones or the calls into contracts (a transaction with input). */
-export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as Page<TxListItem>;
+export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
 /** The newest final transactions of the filter as a file, with the list's columns. */
 export const txsCsvPath = (filter: TxFilter) => `/api/txs?format=csv&filter=${filter}`;
 /** A block's record as Canton holds it, read only when Verify is pressed. */
