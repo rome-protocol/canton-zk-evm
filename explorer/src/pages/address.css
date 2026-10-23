@@ -10,3 +10,15 @@
 .way-out { color: var(--warn, #8a5a00); background: var(--warn-tint, #fdf3dc); }
 .way-in { color: var(--ok); background: var(--ok-tint, #e6f5ea); }
 .way-self { color: var(--muted); background: var(--surface-2); }
+.chip-made { color: var(--canton); background: var(--canton-tint); border-color: var(--canton-tint); text-decoration: none; }
+.chip-made:hover { border-color: var(--canton); }
+.chip-count { font-weight: 400; }
+.hold-name { font-weight: 600; color: var(--ink); }
+.hold .r .small { margin-top: 2px; }
+.hold-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.tab-card { padding: 0; margin-top: 18px; }
+.tab-card .tabs { margin: 0; padding: 0 12px; }
+.tab-card .tab-body { padding: 16px 20px; }
+.tab-card .tab-body .card { box-shadow: none; }
+.list-tools { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+@media (max-width: 640px) { .tab-card .tab-body { padding: 12px 14px; } }

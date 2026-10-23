@@ -58,12 +58,12 @@ describe("the address page: the head and the overview", () => {
   });
 
   it("shows what the index knows: sent, received, first seen and last active", async () => {
-    await open();
+    await open(addressDetail(), { txs: (p) => reply(page(p.includes("direction=sent") ? [txItem(20, { from: A })] : [])) });
     const more = screen.getByRole("region", { name: "More information" });
     expect(within(more).getByText("Transactions sent", { selector: "dt" }).nextElementSibling).toHaveTextContent("3");
     expect(within(more).getByText("Transactions received", { selector: "dt" }).nextElementSibling).toHaveTextContent("1");
     expect(within(more).getByRole("link", { name: "Block 2" })).toHaveAttribute("href", "/block/2");
-    expect(within(more).getByRole("link", { name: "Block 20" })).toHaveAttribute("href", "/block/20");
+    expect(await within(more).findByRole("link", { name: "Block 20" })).toHaveAttribute("href", "/block/20");
   });
 
   it("says first seen and last active are not known for an address nothing in a block has touched", async () => {
@@ -88,13 +88,16 @@ describe("the address page: token holdings", () => {
     expect(card).toHaveTextContent("995,000 tUSD");
     expect(card).not.toHaveTextContent("tUSD #0");
     expect(card).toHaveTextContent("ERC-20");
-    expect(card).toHaveTextContent("as of block 20");
+    expect(card).toHaveTextContent("as of block 3");
+    expect(card).toHaveTextContent("99.50% of supply");
+    expect(card).toHaveTextContent("3 tokens");
+    expect(card.querySelector(".r[title='Last moved in block 20']")).not.toBeNull();
     expect(within(card).getByRole("link", { name: "Test USD" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
-    expect(card).toHaveTextContent("OPASS · ERC-721");
+    expect(card).toHaveTextContent("ERC-721 · Ostia Pass (OPASS)");
     expect(card).toHaveTextContent("2 tokens");
     expect(card).not.toHaveTextContent("OPASS #0");
-    expect(card).toHaveTextContent("ITEM #7");
-    expect(card).toHaveTextContent("as of block 22");
+    expect(card).toHaveTextContent("ERC-1155 · #7 · ITEM");
+    expect(card.querySelector(".r[title='Last moved in block 22']")).not.toBeNull();
   });
 
   it("says so when it holds nothing", async () => {
@@ -105,7 +108,8 @@ describe("the address page: token holdings", () => {
   it("shows the raw value when a token's decimals are not known, never a guess", async () => {
     await open(addressDetail(), withHoldings([holding({ decimals: null, symbol: null, name: null })]));
     const card = await screen.findByRole("region", { name: "Token holdings" });
-    await within(card).findByText("995000000000");
+    const v = await within(card).findByText("995,000,000,000");
+    expect(v).toHaveAttribute("title", "The token's decimals are not known, so this is the raw value");
   });
 
   it("says the list may be missing tokens while the explorer is still reading blocks", async () => {
@@ -122,7 +126,7 @@ describe("the address page: the transactions tab", () => {
     await open(addressDetail(), { txs: () => reply(page([sent, got])) });
     expect(tab("Transactions 4")).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(rows()).toHaveLength(2));
-    expect(within(rows()[0]!).getByRole("link", { name: "0xa3a3…a3a3" })).toHaveAttribute("href", `/tx/${hash(0xa3)}`);
+    expect(within(rows()[0]!).getByRole("link", { name: "0xa3a3a3a3…a3a3a3" })).toHaveAttribute("href", `/tx/${hash(0xa3)}`);
     expect(rows()[0]).toHaveTextContent("OUT");
     expect(rows()[1]).toHaveTextContent("IN");
     expect(rows()[1]).toHaveTextContent("1 tROME");
@@ -163,7 +167,7 @@ describe("the address page: the other tabs", () => {
     const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, token: addr(0xcb), from: A, to: addr(0x77), amount: "5000000000", tokenId: null };
     const n = { ...t, txHash: hash(0xe2), block: 19, amount: null, tokenId: "3", token: addr(0xcc) };
     const calls = await open(addressDetail({ tokenTransferCount: 2 }), { "token-transfers": () => derived([t, n]) });
-    await userEvent.click(tab("Token transfers 2"));
+    await userEvent.click(tab("Token transfers"));
     await waitFor(() => expect(rows()).toHaveLength(2));
     await waitFor(() => expect(rows()[0]).toHaveTextContent("5,000 tUSD"));
     expect(rows()[0]).toHaveTextContent("OUT");
@@ -218,8 +222,8 @@ describe("the address page: reads", () => {
     const calls = await open();
     await screen.findByText("No transactions yet.");
     const asked = calls.filter((c) => c.startsWith("/api/addresses"));
-    expect(asked).toHaveLength(3);
-    expect(asked).toEqual(expect.arrayContaining([`/api/addresses/${A}`, `/api/addresses/${A}/txs?limit=25`, `/api/addresses/${A}/tokens?limit=25`]));
+    expect(asked).toHaveLength(4);
+    expect(asked).toEqual(expect.arrayContaining([`/api/addresses/${A}`, `/api/addresses/${A}/txs?limit=25`, `/api/addresses/${A}/tokens?limit=25`, `/api/addresses/${A}/txs?limit=1&direction=sent`]));
   });
 });
 

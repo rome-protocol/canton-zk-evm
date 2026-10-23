@@ -1,15 +1,20 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
-import { getAddressInternal, getAddressTransfers, getAddressTxs, getCoinHistory, getFaucetAddress, getTokenInfo, type AddressInternalItem, type AddressTransferItem, type ApiStatus, type DerivedPage, type TxListItem } from "../api.ts";
-import { Sender } from "../components/BlockParts.tsx";
-import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { addressTxsCsvPath, getAddressContracts, getAddressInternal, getAddressTransfers, getAddressTxs, getCoinHistory, getFaucetAddress, getTokenInfo, type AddressInternalItem, type AddressTransferItem, type ApiStatus, type ContractListItem, type DerivedPage, type TxDirection, type TxListItem } from "../api.ts";
+import { AddressCell } from "../components/AddressCell.tsx";
+import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Amount } from "../components/Amount.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
-import { count, duration, exact, units } from "../format.ts";
+import { Seg } from "../components/Seg.tsx";
+import { count, duration, exact, feeOf, units } from "../format.ts";
+import { useLabels, type Labels } from "../labels.ts";
 import { methodOf } from "../method.ts";
+import { Moved } from "./HomeParts.tsx";
+import { Who } from "./AddressParts.tsx";
 import "./tx.css";
 
 type Coin = ApiStatus["coin"];
@@ -37,43 +42,90 @@ function Gap({ page, none }: { page: DerivedPage<unknown>; none: string }) {
 function Frame({ label, error, ready, children }: { label: string; error: Error | null; ready: boolean; children: React.ReactNode }) {
   if (error && !ready) return <ErrorCard message={error.message} retrying />;
   if (!ready) return <LoadingCard>{`Reading the ${label}…`}</LoadingCard>;
-  return <section className="card" aria-label={label}>{children}</section>;
+  return <section className="tab-body" aria-label={label}>{children}</section>;
 }
 
-function TxRow({ a, t, now, coin, faucet, chain }: { a: string; t: TxListItem; now: number; coin: Coin; faucet: string | null | undefined; chain: string }) {
+function TxRow({ a, t, now, coin, faucet, chain, labels }: { a: string; t: TxListItem; now: number; coin: Coin; faucet: string | null | undefined; chain: string; labels: Labels }) {
   const fee = (BigInt(t.gasUsed) * BigInt(t.gasPrice)).toString();
   return (
     <tr>
-      <td className="c-hash"><HashLink value={t.hash} to={`/tx/${t.hash}`} />{!t.success && <span className="fact-bad" role="img" aria-label="Failed (reverted)" title="Failed (reverted)"><Icon name="cross" size={13} /></span>}</td>
+      <td className="c-hash"><HashLink value={t.hash} to={`/tx/${t.hash}`} plain />{!t.success && <span className="fact-bad" role="img" aria-label="Failed (reverted)" title="Failed (reverted)"><Icon name="cross" size={13} /></span>}</td>
       <td><span className="tag method">{methodOf(t)}</span></td>
       <td><Link className="num" to={`/block/${t.block}`}>{t.block}</Link></td>
       <td title={new Date(t.timestamp * 1000).toISOString()}>{duration(now - t.timestamp * 1000)} ago</td>
-      <td><Sender address={t.from} faucet={faucet} chain={chain} /></td>
+      <td><Who address={t.from} faucet={faucet} chain={chain} labels={labels} /></td>
       <td><Way me={a} from={t.from} to={t.to} /></td>
-      <td><To t={t} /></td>
-      <td className="r"><CoinValue raw={t.value} coin={coin} /></td>
-      <td className="r"><span className="num" title={`${exact(fee, coin.decimals)} ${coin.symbol}`}>{exact(fee, coin.decimals)}</span></td>
+      <td>{t.to ? <AddressCell address={t.to} label={labels.get(t.to)} /> : t.created ? <span className="create"><span className="muted">Create:</span> <AddressCell address={t.created} label={labels.get(t.created)} /></span> : <span className="muted">creates a contract</span>}</td>
+      <td className="r"><Moved t={t} coin={coin} labels={labels} /></td>
+      <td className="r"><span className="num" title={`${exact(fee, coin.decimals)} ${coin.symbol}`}>{feeOf(fee, coin.decimals)}</span></td>
       <td><Chip status="final" /></td>
     </tr>
   );
 }
 
+const DIRECTIONS: { id: TxDirection; text: string; noun: string }[] = [{ id: "all", text: "All", noun: "" }, { id: "sent", text: "Sent", noun: "sent " }, { id: "received", text: "Received", noun: "received " }];
+
 export function TxsTab({ a, st, now }: { a: string; st: ApiStatus; now: number }) {
-  const p = usePaged(["address-txs", a], (before) => getAddressTxs(a, before), 5000);
+  const [dir, setDir] = useState<TxDirection>("all");
+  const p = usePaged(["address-txs", a, dir], (before) => getAddressTxs(a, before, undefined, dir), 5000);
   const faucet = useQuery({ queryKey: ["faucet-address"], queryFn: getFaucetAddress, staleTime: 60_000, retry: false }).data;
   const items = p.data?.items;
+  const labels = useLabels(items?.flatMap((t) => [t.from, t.to, t.created, t.tokenMoves?.first?.token]) ?? []);
+  const noun = DIRECTIONS.find((d) => d.id === dir)!.noun;
+  const whole = !p.hasPrev && !p.hasNext;
   return (
     <Frame label="Transactions" error={p.error} ready={!!items}>
-      <div className="list-h"><span className="muted">{items?.length ? `Showing ${count(items.length)} on this page, newest first` : "No transactions yet."}</span><Pager p={p} label="Pages of transactions" /></div>
+      <div className="list-h">
+        <span className="muted">{items?.length ? (whole ? `Showing all ${count(items.length)} ${noun}transaction${items.length === 1 ? "" : "s"}, newest first` : `Showing ${count(items.length)} on this page, newest first`) : `No ${noun}transactions yet.`}</span>
+        <span className="list-tools">
+          <Pager p={p} label="Pages of transactions" />
+          <Seg label="Show transactions" value={dir} options={DIRECTIONS.map((d) => ({ id: d.id, text: d.text }))} onPick={setDir} />
+          <DownloadLink href={addressTxsCsvPath(a, dir)} file={`transactions-${a}.csv`}>CSV</DownloadLink>
+        </span>
+      </div>
       {items && items.length > 0 && (
         <div className="scroll">
           <table className="tbl txs">
             <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Value</th><th className="r">{`Fee (${st.coin.symbol})`}</th><th>Stage</th></tr></thead>
-            <tbody>{items.map((t) => <TxRow key={t.hash} a={a} t={t} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} />)}</tbody>
+            <tbody>{items.map((t) => <TxRow key={t.hash} a={a} t={t} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} labels={labels} />)}</tbody>
           </table>
         </div>
       )}
       <p className="muted small">Only final transactions are listed. The balance above is read from reth at the final block, never from this list.</p>
+    </Frame>
+  );
+}
+
+function ContractRow({ c, now, labels }: { c: ContractListItem; now: number; labels: Labels }) {
+  const at = c.createdAt ? Date.parse(c.createdAt) : null;
+  return (
+    <tr>
+      <td><AddressCell address={c.address} label={labels.get(c.address) ?? { address: c.address, name: c.name, symbol: null, kind: "contract", standard: c.standard, decimals: null, verified: c.verified }} /></td>
+      <td>{c.creationBlock === null ? <Dash /> : <Link className="num" to={`/block/${c.creationBlock}`}>{c.creationBlock}</Link>}</td>
+      <td title={c.createdAt ?? undefined}>{at === null ? <Dash /> : `${duration(now - at)} ago`}</td>
+      <td>{c.verified ? <span className="chip chip-final"><Icon name="check" size={12} />Verified</span> : <span className="muted">Not verified</span>}</td>
+      <td className="r"><span className="num">{count(c.interactionCount)}</span></td>
+    </tr>
+  );
+}
+
+/** The contracts this address made, newest first, read from the derived stage. */
+export function ContractsTab({ a, now }: { a: string; now: number }) {
+  const p = usePaged(["address-contracts", a], (before) => getAddressContracts(a, before), 5000);
+  const d = p.data;
+  const labels = useLabels(d?.items.map((c) => c.address) ?? []);
+  return (
+    <Frame label="Contracts created" error={p.error} ready={!!d}>
+      <div className="list-h"><span className="muted">{d?.items.length ? "The contracts this address made, newest first" : ""}</span><Pager p={p} label="Pages of contracts created" /></div>
+      {d && d.items.length > 0 && (
+        <div className="scroll">
+          <table className="tbl">
+            <thead><tr><th>Contract</th><th>Block</th><th>Age</th><th>Source code</th><th className="r">Interactions</th></tr></thead>
+            <tbody>{d.items.map((c) => <ContractRow key={c.address} c={c} now={now} labels={labels} />)}</tbody>
+          </table>
+        </div>
+      )}
+      {d && <Gap page={d} none="This address has made no contracts." />}
     </Frame>
   );
 }
@@ -100,12 +152,14 @@ function TransferRow({ a, x }: { a: string; x: AddressTransferItem }) {
   );
 }
 
-export function TransfersTab({ a }: { a: string }) {
-  const p = usePaged(["address-transfers", a], (before) => getAddressTransfers(a, before), 5000);
+/** The token transfers of an address: the ERC-20 ones, or the NFT ones (ERC-721 and ERC-1155) in their own list. */
+export function TransfersTab({ a, nft = false }: { a: string; nft?: boolean }) {
+  const kind = nft ? "NFT transfers" : "Token transfers";
+  const p = usePaged(["address-transfers", a, nft ? "nft" : "ERC-20"], (before) => getAddressTransfers(a, before, undefined, { standard: nft ? "nft" : "ERC-20" }), 5000);
   const d = p.data;
   return (
-    <Frame label="Token transfers" error={p.error} ready={!!d}>
-      <div className="list-h"><span className="muted">{d?.items.length ? `Showing ${count(d.items.length)} on this page, newest first` : ""}</span><Pager p={p} label="Pages of token transfers" /></div>
+    <Frame label={kind} error={p.error} ready={!!d}>
+      <div className="list-h"><span className="muted">{d?.items.length ? `Showing ${count(d.items.length)} on this page, newest first` : ""}</span><Pager p={p} label={`Pages of ${kind.toLowerCase()}`} /></div>
       {d && d.items.length > 0 && (
         <div className="scroll">
           <table className="tbl">
@@ -114,7 +168,7 @@ export function TransfersTab({ a }: { a: string }) {
           </table>
         </div>
       )}
-      {d && <Gap page={d} none="No token transfers." />}
+      {d && <Gap page={d} none={nft ? "No NFT transfers." : "No token transfers."} />}
       <p className="muted small">Transfers are read from the Transfer logs of final blocks.</p>
     </Frame>
   );
