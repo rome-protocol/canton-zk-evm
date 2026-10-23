@@ -26,10 +26,10 @@ const used = (calls: string[], part: string) => calls.filter((c) => c.includes(p
 afterEach(cleanup);
 
 describe("the tabs of the transaction page", () => {
-  it("opens on Overview, counts the logs, gives the internal calls tab no count (its list is only the calls that moved value), and keeps the tab in the address", async () => {
+  it("opens on Overview, counts the logs, counts the calls under the top level on the internal calls tab, and keeps the tab in the address", async () => {
     const user = userEvent.setup();
     await open({ txDetail: () => reply(txDetail({ callCount: 3 })), txLogs: () => reply(page([log(0)])) });
-    await waitFor(() => expect(screen.getAllByRole("tab").map((x) => x.textContent)).toEqual(["Overview", "Logs1", "Internal calls", "Call tree", "Raw"]));
+    await waitFor(() => expect(screen.getAllByRole("tab").map((x) => x.textContent)).toEqual(["Overview", "Logs1", "Internal calls3", "Call tree", "Raw"]));
     expect(tab("Overview")).toHaveAttribute("aria-selected", "true");
     await user.click(tab(/^Logs/));
     expect(tab(/^Logs/)).toHaveAttribute("aria-selected", "true");
@@ -181,24 +181,77 @@ describe("the Logs tab, decoded", () => {
 });
 
 describe("the Internal calls tab", () => {
-  it("lists the calls that moved value, and says the list is only those and the rest are in Call tree", async () => {
-    await open({ txInternal: () => reply({ items: [call({ value: "1000000000000000000" }), call({ traceAddress: [0, 1], callType: "delegatecall", selector: null, gasUsed: null, error: "out of gas" })], next: null, derived: true }) }, tx(), "?tab=internal");
+  const T = addr(0xcb), DISPERSE = addr(0xd1), SENDER = addr(0x5b), TO = addr(0x5a);
+  const usd = tokenLabel({ address: T, name: "Test USD", symbol: "tUSD", decimals: 18 });
+  const disperse = tokenLabel({ address: DISPERSE, name: "Disperse", symbol: null, kind: "contract", standard: null, decimals: null });
+  const word = (n: bigint) => n.toString(16).padStart(64, "0");
+  const transferFrom = "0x23b872dd" + "0".repeat(24) + SENDER.slice(2) + "0".repeat(24) + DISPERSE.slice(2) + word(5000n * 10n ** 18n);
+  const trace = (over: Partial<TraceFrame>[] = []) => ({ frames: [
+    frame({ from: SENDER, to: DISPERSE, input: "0xc73a2d60", inputSize: 4, gasUsed: 109042 }),
+    frame({ traceAddress: [0], from: DISPERSE, to: T, input: transferFrom, inputSize: 100, gasUsed: 31211 }),
+    frame({ traceAddress: [1], from: DISPERSE, to: T, input: transferFrom, inputSize: 100, gasUsed: 25464, value: "2000000000000000000" }),
+    ...over.map((o) => frame(o)),
+  ], truncated: false });
+  const labels = labelsOf([usd, disperse]);
+
+  it("lists every call of the trace: the top level, then call 1 to n, with type, from, to, the function decoded, value, gas and result", async () => {
+    await open({ labels, txDetail: () => reply(txDetail({ callCount: 2 })), txTrace: () => reply(trace()), contracts: (_a, sub) => (sub === "source" ? reply(contractSource(0xcb, { verified: false, abi: null })) : reply({ error: "none" }, 404)) }, tx(), "?tab=internal");
     const rows = await screen.findAllByRole("row");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(4);
     expect(rows[1]).toHaveTextContent("top level");
-    expect(rows[1]).toHaveTextContent("0xa9059cbb");
+    expect(rows[1]).toHaveTextContent("CALL");
+    expect(rows[1]).toHaveTextContent("109,042");
     expect(rows[1]).toHaveTextContent("true");
-    expect(rows[2]).toHaveTextContent("call 0-1");
-    expect(rows[2]).toHaveTextContent("delegatecall");
-    expect(rows[2]).toHaveTextContent("none");
-    expect(rows[2]).toHaveTextContent("out of gas");
-    expect(screen.getByText(/only the calls that moved value/)).toHaveTextContent("Every call is in Call tree");
+    expect(rows[2]).toHaveTextContent("call 1");
+    expect(rows[3]).toHaveTextContent("call 2");
+    await waitFor(() => expect(rows[2]).toHaveTextContent("Test USD (tUSD)"));
+    expect(rows[2]).toHaveTextContent("Disperse");
+    await waitFor(() => expect(rows[2]).toHaveTextContent(`transferFrom(from ${SENDER.slice(0, 8)}…${SENDER.slice(-4)}, to Disperse, value 5,000 tUSD)`));
+    expect(rows[1]).toHaveTextContent("0xc73a2d60");
+    expect(screen.getByText(/2 internal calls under the top-level call/)).toHaveTextContent("traced by reth after block 20 was final");
   });
 
-  it("says not derived yet in the gap, and shows no rows", async () => {
-    await open({ txInternal: () => reply({ items: [], next: null, derived: false }) }, tx(), "?tab=internal");
-    expect(await screen.findByText("not derived yet")).toBeInTheDocument();
-    expect(screen.queryByRole("table")).toBeNull();
+  it("counts the calls under the top level on the tab, and gives no count where the block is not derived", async () => {
+    await open({ txDetail: () => reply(txDetail({ callCount: 4 })) });
+    await waitFor(() => expect(tab(/^Internal calls/)).toHaveTextContent("Internal calls4"));
+  });
+
+  it("keeps only the calls that moved coin with the switch, naming how many, and says when none did", async () => {
+    const user = userEvent.setup();
+    await open({ labels, txTrace: () => reply(trace()) }, tx(), "?tab=internal");
+    await screen.findAllByRole("row");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (1)" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Only those moving tROME (1)" }));
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("call 2");
+    expect(screen.queryByText(/None of these calls moved/)).toBeNull();
+    cleanup();
+    await open({ txTrace: () => reply({ frames: [frame()], truncated: false }) }, tx(), "?tab=internal");
+    await screen.findAllByRole("row");
+    expect(screen.getByRole("button", { name: "Only those moving tROME (0)" })).toBeInTheDocument();
+    expect(screen.getByText(/None of these calls moved tROME, so the address pages list no internal transfers/)).toBeInTheDocument();
+    expect(screen.getByText(/No call under the top-level call/)).toBeInTheDocument();
+  });
+
+  it("shows a failed call's reason, a creation's new address, and a call without a selector as none", async () => {
+    await open({ txTrace: () => reply({ frames: [frame({ input: "0x", inputSize: 0, to: null, created: addr(0xc7), type: "create", callType: "create", error: "out of gas", gasUsed: null })], truncated: false }) }, tx(), "?tab=internal");
+    const row = (await screen.findAllByRole("row"))[1]!;
+    expect(row).toHaveTextContent("CREATE");
+    expect(row).toHaveTextContent("out of gas");
+    expect(row).toHaveTextContent("not given");
+    expect(row).toHaveTextContent("none");
+  });
+
+  it("names only the function where the input was served cut short, and says when the trace shows the first calls only", async () => {
+    await open({ txTrace: () => reply({ frames: [frame({ input: "0xa9059cbb" + "00".repeat(8), inputSize: 4000 })], truncated: true }) }, tx(), "?tab=internal");
+    const row = (await screen.findAllByRole("row"))[1]!;
+    expect(row).toHaveTextContent("transfer(…)");
+    expect(screen.getByRole("status")).toHaveTextContent("Showing the first 1 calls");
+  });
+
+  it("says the server's words when the trace cannot be read", async () => {
+    await open({ txTrace: () => reply({ error: "the trace is too big to serve" }, 502) }, tx(), "?tab=internal");
+    expect(await screen.findByRole("alert")).toHaveTextContent("the trace is too big to serve");
   });
 });
 

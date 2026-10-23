@@ -17,7 +17,8 @@ import { InputData } from "./TxDecoded.tsx";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
 import { CantonRecord, ProofSide } from "./TxSides.tsx";
 import { LogsTab } from "./TxLogs.tsx";
-import { InternalTab, Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
+import { InternalTab } from "./TxCalls.tsx";
+import { Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
 import { RawTab, TreeTab } from "./TxTrace.tsx";
 import { TransfersCard } from "./TxTransfers.tsx";
 import "./tx.css";
@@ -257,7 +258,7 @@ function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin |
     { id: "overview", label: "Overview" },
     { id: "logs", label: "Logs", count: t.logs.length },
     ...(final ? [
-      { id: "internal" as const, label: "Internal calls" },
+      { id: "internal" as const, label: "Internal calls", count: detail.data?.derived && detail.data.callCount !== null ? detail.data.callCount : null },
       { id: "tree" as const, label: "Call tree" },
       { id: "raw" as const, label: "Raw" },
     ] : []),
