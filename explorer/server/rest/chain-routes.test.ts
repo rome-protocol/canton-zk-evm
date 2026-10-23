@@ -520,4 +520,29 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
       spy.mockRestore();
     }
   });
+
+  it("gives a transaction's token transfers its method and time and the token's standard", async () => {
+    const who = (n: number) => Buffer.alloc(20, n);
+    const [call] = (await pool.query("select t.block_number, t.tx_index, t.method_id, extract(epoch from b.timestamp)::bigint as ts from transactions t join blocks b on b.number = t.block_number where t.block_number = 2 and t.tx_index = 1")).rows;
+    const [made] = (await pool.query("select t.block_number, t.tx_index, extract(epoch from b.timestamp)::bigint as ts from tx_hashes h join transactions t on t.block_number = h.block_number and t.tx_index = h.tx_index join blocks b on b.number = t.block_number where h.hash = $1", [Buffer.from(tx(3, 6).slice(2), "hex")])).rows;
+    await addToken(who(0x31), "ERC-721", "Nft", "NFT", null, 3);
+    await pool.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, token_id, from_address, to_address) values ($1, 95, 0, $2, $3, 1, $4, $5)", [made.block_number, made.tx_index, who(0x31), who(4), who(5)]);
+    try {
+      const a = body(await get(`/api/txs/${tx(2, 1)}/token-transfers`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(a.length).toBeGreaterThan(0);
+      for (const t of a) {
+        expect(t.methodId).toBe(call.method_id === null ? null : "0x" + call.method_id.toString("hex"));
+        expect(t.timestamp).toBe(Number(call.ts));
+        expect(t.standard === null || typeof t.standard === "string").toBe(true);
+      }
+      // The creation has no method (its first input bytes are code), and the token in the row is an ERC-721.
+      const b = (body(await get(`/api/txs/${tx(3, 6)}/token-transfers`)).items as Record<string, any>[])[0]!; // eslint-disable-line @typescript-eslint/no-explicit-any
+      same(b, F.transfer);
+      expect(b).toMatchObject({ methodId: null, timestamp: Number(made.ts), standard: "ERC-721", tokenId: "1" });
+    } finally {
+      await pool.query("delete from token_transfers where block_number = $1 and log_index = 95", [made.block_number]);
+      await pool.query("delete from tokens where address = $1", [who(0x31)]);
+      await pool.query("delete from contracts where address = $1", [who(0x31)]);
+    }
+  });
 });

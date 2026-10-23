@@ -554,4 +554,152 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect((a.body as { items: unknown[] }).items.length).toBeGreaterThan(3);
     expect(seen.filter((t) => /from token_transfers/.test(t))).toHaveLength(1);
   });
+
+  describe("token transfers: method, time and standard, the all-tokens feed, and the filters", () => {
+    const ERC721 = h(0xb3);
+    const ids = (items: { block: number; logIndex: number; batchIndex: number }[]) => items.map((t) => [t.block, t.logIndex, t.batchIndex]);
+    const whole = [[3, 501, 1], [3, 501, 0], [3, 500, 0], [2, 501, 0], [2, 500, 0]];
+
+    it("gives each transfer the method and time of its transaction and the standard of its token, in one query", async () => {
+      const seen: string[] = [];
+      const spy = { query: (text: string, values?: unknown[]) => (seen.push(text), pool.query(text, values)) } as unknown as Pool;
+      const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
+      const reth = { code: async () => "0x6080", token: async () => null, block: async () => undefined, transaction: async () => null, balanceAt: async () => 0n } as unknown as Reth;
+      const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), accounts: createAccountRest(spy) });
+      for (const path of [`/api/addresses/${A}/token-transfers?limit=100`, `/api/tokens/${T1}/transfers?limit=100`, "/api/token-transfers?limit=100"]) {
+        seen.length = 0;
+        const a = await api("GET", path);
+        expect(a.status).toBe(200);
+        expect((a.body as { items: unknown[] }).items.length).toBeGreaterThan(1);
+        expect(seen.filter((t) => /from token_transfers/.test(t)), path).toHaveLength(1);
+      }
+      const rows = (await sql(
+        `select x.block_number, x.log_index, x.batch_index, t.method_id, t.to_address, extract(epoch from b.timestamp)::bigint as ts, tk.standard
+         from token_transfers x join transactions t on t.block_number = x.block_number and t.tx_index = x.tx_index join blocks b on b.number = x.block_number join tokens tk on tk.address = x.token`,
+      )).rows;
+      expect(rows).toHaveLength(5);
+      const moved = body(await get(`/api/addresses/${A}/token-transfers`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(moved).toHaveLength(5);
+      for (const t of moved) {
+        same(t, F.tokenTransferItem);
+        const r = rows.find((x) => x.block_number == t.block && x.log_index === t.logIndex && x.batch_index === t.batchIndex)!;
+        // A creation's first four bytes of input are code, not a method: none is given.
+        expect(t.methodId).toBe(r.to_address === null || r.method_id === null ? null : "0x" + r.method_id.toString("hex"));
+        expect(t.timestamp).toBe(Number(r.ts));
+        expect(t.standard).toBe(r.standard);
+      }
+      expect(moved.map((t) => t.standard)).toEqual(["ERC-1155", "ERC-1155", "ERC-20", "ERC-20", "ERC-20"]);
+      expect(moved.some((t) => t.methodId !== null)).toBe(true);
+      expect(moved.every((t) => typeof t.timestamp === "number" && t.timestamp > 0)).toBe(true);
+    });
+
+    it("says no method for a transaction that created a contract, and no standard for a token it does not know", async () => {
+      const [was] = (await sql("select to_address, created_contract from transactions where block_number = 2 and tx_index = 0")).rows;
+      await sql("update transactions set to_address = null, created_contract = $1 where block_number = 2 and tx_index = 0", [who(0xc2)]);
+      await sql("delete from tokens where address = $1", [who(0xb1)]);
+      try {
+        const t = (body(await get(`/api/addresses/${A}/token-transfers`)).items as Record<string, any>[]).find((x) => x.block === 2 && x.logIndex === 500)!; // eslint-disable-line @typescript-eslint/no-explicit-any
+        expect(t.methodId).toBeNull();
+        expect(t.standard).toBeNull();
+      } finally {
+        await sql("update transactions set to_address = $1, created_contract = $2 where block_number = 2 and tx_index = 0", [was.to_address, was.created_contract]);
+        await sql(
+          "insert into tokens (address, standard, name, symbol, decimals, total_supply, total_supply_block, holder_count, transfer_count, first_transfer_block, metadata_status) values ($1, 'ERC-20', 'Test Token', 'TT', 6, 1000, 3, 2, 3, 2, 'read')",
+          [who(0xb1)],
+        );
+      }
+    });
+
+    it("lists the transfers of every token, newest first, as one derived keyset-paged list", async () => {
+      const feed = body(await get("/api/token-transfers"));
+      same(feed, F.derivedPage);
+      expect(feed.derived).toBe(true);
+      for (const t of feed.items) same(t, F.tokenTransferItem);
+      expect(ids(feed.items)).toEqual(whole);
+      for (const limit of [1, 2]) expect(ids(await walk("/api/token-transfers", "before", limit) as never)).toEqual(whole);
+      expect((await get("/api/token-transfers?limit=0")).status).toBe(400);
+      expect((await get("/api/token-transfers?before=nonsense")).status).toBe(400);
+    });
+
+    it("is behind the derived mark and cached like the other derived lists", async () => {
+      await setCursor(1);
+      try {
+        expect(body(await get("/api/token-transfers")).derived).toBe(false);
+      } finally { await setCursor(3); }
+      expect((await get("/api/token-transfers")).headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+    });
+
+    it("filters the feed by standard, each standard on its own rows", async () => {
+      const std = async (s: string) => body(await get(`/api/token-transfers?standard=${s}`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(ids(await std("ERC-20") as never)).toEqual([[3, 500, 0], [2, 501, 0], [2, 500, 0]]);
+      expect(ids(await std("ERC-1155") as never)).toEqual([[3, 501, 1], [3, 501, 0]]);
+      expect(await std("ERC-721")).toEqual([]);
+      await sql("insert into contracts (address, origin, creator, creation_block, creation_tx_index, runtime_code_hash, name) values ($1, 'create', $2, 2, 0, $3, 'Nft')", [who(0xb3), who(0xa1), Buffer.alloc(32, 1)]);
+      await sql("insert into tokens (address, standard, name, symbol, holder_count, transfer_count, first_transfer_block, metadata_status) values ($1, 'ERC-721', 'Nft', 'NFT', 1, 1, 3, 'read')", [who(0xb3)]);
+      await sql("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) values (3, 502, 0, 2, $1, $2, $3, null, 9)", [who(0xb3), who(0xa1), who(0xa2)]);
+      try {
+        const nft = await std("ERC-721");
+        expect(ids(nft as never)).toEqual([[3, 502, 0]]);
+        expect(nft[0]).toMatchObject({ token: ERC721, tokenId: "9", amount: null, standard: "ERC-721" });
+        expect(ids(body(await get("/api/token-transfers")).items)).toEqual([[3, 502, 0], ...whole]);
+        const walked = await walk("/api/token-transfers?standard=ERC-20", "before", 1);
+        expect(ids(walked as never)).toEqual([[3, 500, 0], [2, 501, 0], [2, 500, 0]]);
+        // ?standard= on an address's transfers and on a token's own transfers
+        expect(ids(body(await get(`/api/addresses/${A}/token-transfers?standard=ERC-721`)).items)).toEqual([[3, 502, 0]]);
+      } finally {
+        await sql("delete from token_transfers where block_number = 3 and log_index = 502");
+        await sql("delete from tokens where address = $1", [who(0xb3)]);
+        await sql("delete from contracts where address = $1", [who(0xb3)]);
+      }
+      expect(await get("/api/token-transfers?standard=ERC20")).toMatchObject({ status: 400 });
+      expect(await get("/api/token-transfers?standard=")).toMatchObject({ status: 400 });
+    });
+
+    it("filters an address's transfers by token and by standard, and both together", async () => {
+      const path = (q: string) => `/api/addresses/${A}/token-transfers?${q}`;
+      const list = async (q: string) => ids(body(await get(path(q))).items);
+      expect(await list(`token=${T1}`)).toEqual([[3, 500, 0], [2, 501, 0], [2, 500, 0]]);
+      expect(await list(`token=${T2}`)).toEqual([[3, 501, 1], [3, 501, 0]]);
+      expect(await list("standard=ERC-20")).toEqual([[3, 500, 0], [2, 501, 0], [2, 500, 0]]);
+      expect(await list("standard=ERC-1155")).toEqual([[3, 501, 1], [3, 501, 0]]);
+      expect(await list("standard=ERC-721")).toEqual([]);
+      expect(await list(`token=${T1}&standard=ERC-20`)).toEqual([[3, 500, 0], [2, 501, 0], [2, 500, 0]]);
+      expect(await list(`token=${T1}&standard=ERC-1155`)).toEqual([]);
+      expect(await list(`token=${h(0xee)}`)).toEqual([]);
+      for (const q of [`token=${T1}`, "standard=ERC-20", `token=${T2}&standard=ERC-1155`]) {
+        const all = ids((await walk(path(q), "before", 100)) as never);
+        for (const limit of [1, 2]) expect(ids((await walk(path(q), "before", limit)) as never), q).toEqual(all);
+      }
+      for (const q of ["token=0x12", "token=nonsense", "standard=erc-20", "standard=ERC-999"]) expect(await get(path(q)), q).toMatchObject({ status: 400 });
+    });
+
+    it("answers the new queries from an index of their own, in order, without filtering rows after the read", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local enable_seqscan = off");
+        await client.query("set local enable_bitmapscan = off");
+        // Many ERC-20 transfers, a few of the other standards, spread over many senders: what the partial indexes are for. Rolled back with the rest.
+        const [first] = (await client.query("select block_number, tx_index from token_transfers order by block_number limit 1")).rows;
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 20000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, g, null from generate_series(1, 4000) g", [first.block_number, first.tx_index, who(0xb1), who(0xa1), who(0xa2)]);
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 30000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, null, g from generate_series(1, 120) g", [first.block_number, first.tx_index, who(0xb3), who(0xa1), who(0xa2)]);
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 40000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, g, g from generate_series(1, 120) g", [first.block_number, first.tx_index, who(0xb2), who(0xa1), who(0xa2)]);
+        await client.query("analyze token_transfers");
+        const plan = async (text: string, values: unknown[]) => (await client.query(`explain ${text}`, values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
+        // Ordered by the index, so no sort; the predicate is the index's own, so no filter on the rows read; and every partition by an index.
+        const indexed = (p: string) => { expect(p).toMatch(/Index (Only )?Scan/); expect(p).not.toMatch(/Seq Scan|Sort Key|Filter:/); };
+        const feedOf = (cond: string) => `select x.block_number from token_transfers x where ${cond} and ($1::bigint is null or (x.block_number, x.log_index, x.batch_index) < ($1::bigint, $2::int, $3::int)) order by x.block_number desc, x.log_index desc, x.batch_index desc limit 51`;
+        const rare = ["x.amount is null", "x.amount is not null and x.token_id is not null"];
+        for (const key of [[null, null, null], [3, 501, 0]]) {
+          indexed(await plan(feedOf("true"), key));
+          for (const cond of rare) indexed(await plan(feedOf(cond), key));
+          expect(await plan(feedOf("x.token_id is null"), key)).toMatch(/Index Scan/);
+        }
+        const side = (extra: string) => `select x.block_number from token_transfers x where x.from_address = $1 ${extra} and (x.block_number, x.log_index, x.batch_index) < (3, 501, 0) order by x.block_number desc, x.log_index desc, x.batch_index desc limit 51`;
+        expect(await plan(side("and x.token = $2"), [who(0xa1), who(0xb1)])).toMatch(/from_address_token/);
+        // (An address's transfers of one standard are the 0028 indexes' shape, which that migration's own queries use.)
+        await client.query("rollback");
+      } finally { client.release(); }
+    });
+  });
 });

@@ -46,7 +46,7 @@ export interface BlockExtras {
 export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
 export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
-export interface TransferItem { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
+export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface TxPlace { block: number; index: number }
 export interface TxTrace { callCount: number; revertReason: string | null; revertData: string | null }
 export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null }
@@ -238,12 +238,18 @@ export function createChainRest(pool: Pool) {
 
   async function txTransfers(at: TxPlace, after: (number | string)[] | null, limit: number): Promise<TransferItem[]> {
     const [li, bi] = after ?? [null, null];
+    // The transaction and its block are one row each, and the token's standard one join: the query is the same whatever the page's size.
     const rows = await query(
-      `select log_index, batch_index, token, from_address, to_address, amount::text as amount, token_id::text as token_id from token_transfers
-       where block_number = $1 and tx_index = $2 and ($3::int is null or (log_index, batch_index) > ($3::int, $4::int)) order by log_index, batch_index limit $5`,
+      `select x.log_index, x.batch_index, x.token, x.from_address, x.to_address, x.amount::text as amount, x.token_id::text as token_id, t.method_id, t.to_address as tx_to,
+         extract(epoch from b.timestamp)::bigint as ts, tk.standard
+       from token_transfers x join transactions t on t.block_number = x.block_number and t.tx_index = x.tx_index join blocks b on b.number = x.block_number left join tokens tk on tk.address = x.token
+       where x.block_number = $1 and x.tx_index = $2 and ($3::int is null or (x.log_index, x.batch_index) > ($3::int, $4::int)) order by x.log_index, x.batch_index limit $5`,
       [at.block, at.index, li, bi, limit + 1],
     );
-    return rows.map((r) => ({ logIndex: r.log_index, batchIndex: r.batch_index, token: hex(r.token), from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id }));
+    return rows.map((r) => ({
+      logIndex: r.log_index, batchIndex: r.batch_index, methodId: r.tx_to === null ? null : hexOrNull(r.method_id), timestamp: Number(r.ts), token: hex(r.token), standard: r.standard,
+      from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id,
+    }));
   }
 
   /** The key carries the record time in whole microseconds; it is compared as a time (exactly) on the column itself, so the index on (record_time, update_id) answers it. */

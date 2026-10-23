@@ -8,7 +8,7 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import { TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TxDirection } from "./account-rest.ts";
+import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TokenStandard, type TxDirection } from "./account-rest.ts";
 import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
@@ -140,10 +140,26 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return cached(ok(pick({ items: p.items.map((e) => pick(e, F.contractEvent)), next: p.next }, F.page)), "list");
   }
 
+  /** `standard` is one of the three, spelt as the lists spell it; a value that is none of them is a mistake, not an empty list. */
+  const standardOf = (q: URLSearchParams): TokenStandard | null => {
+    const v = q.get("standard");
+    if (v === null) return null;
+    if (!(TOKEN_STANDARDS as readonly string[]).includes(v)) throw new BadRequest(`standard is one of ${TOKEN_STANDARDS.join(", ")}.`);
+    return v as TokenStandard;
+  };
+
   async function addressTransfers(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
-    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]);
-    const rows = await accounts.addressTransfers(a, before, limit);
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]), standard = standardOf(q), token = q.get("token");
+    if (token !== null) addressOf(token);
+    const rows = await accounts.addressTransfers(a, before, limit, { token, standard });
+    return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
+  }
+
+  /** The transfers of every token, newest first. */
+  async function allTransfers(q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4", "int4"]), standard = standardOf(q);
+    const rows = await accounts.allTransfers(standard, before, limit);
     return cached(ok(page(rows, limit, (t) => keyOf(t.block, t.logIndex, t.batchIndex), F.tokenTransferItem, await isDerived())), "list");
   }
 
@@ -265,6 +281,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/tokens/{address}", (a) => oneToken(a)],
     ["/api/tokens/{address}/holders", (a, q) => tokenHolders(a, q)],
     ["/api/tokens/{address}/transfers", (a, q) => tokenTransfers(a, q)],
+    ["/api/token-transfers", (_, q) => allTransfers(q)],
     ["/api/labels", (_, q) => labelList(q)],
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
