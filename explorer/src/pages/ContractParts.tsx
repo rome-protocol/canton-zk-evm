@@ -1,4 +1,5 @@
-import { getContractList, getContractListOldest, type ContractListItem, type ContractListPage, type ContractSort } from "../api.ts";
+import { useQuery } from "@tanstack/react-query";
+import { getAddressDetail, getContractList, getContractListOldest, type ContractListItem, type ContractListPage, type ContractSort } from "../api.ts";
 import { useBothEnds } from "../components/Ends.tsx";
 import { Icon } from "../components/Icon.tsx";
 
@@ -55,3 +56,12 @@ const BEFORE_PRAGUE = ["homestead", "tangerineWhistle", "spuriousDragon", "byzan
 /** What the compile's EVM version means on this chain: the chain runs Prague rules, so code compiled for an earlier version runs unchanged. Null for prague, for no version, or one not known. */
 export const evmVersionNote = (version: string | null, chain: string): string | null =>
   version && BEFORE_PRAGUE.includes(version) ? `${chain} runs Prague rules; ${version} code runs unchanged` : null;
+
+/** The coin a token's amounts are written in. */
+export interface Coin { symbol: string; decimals: number }
+
+/** The coin of an ERC-20 contract, from the address record the page already read (same key as the page's own query); null for any other contract, or when the decimals are not known. */
+export function useCoin(detail: { address: string; standard?: string | null }): Coin | null {
+  const rec = useQuery({ queryKey: ["address-detail", detail.address], queryFn: () => getAddressDetail(detail.address) }).data?.token;
+  return detail.standard === "ERC-20" && rec && rec.decimals !== null ? { symbol: rec.symbol ?? "", decimals: rec.decimals } : null;
+}

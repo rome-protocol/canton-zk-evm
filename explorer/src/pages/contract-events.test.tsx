@@ -48,6 +48,32 @@ describe("the contract page: Events", () => {
     expect(within(row).getByRole("link", { name: "19" })).toHaveAttribute("href", "/block/19");
   });
 
+  describe("amounts in whole coins", () => {
+    const token = { name: "Test USD", symbol: "tUSD", decimals: 18 };
+    const big = (n: number) => log(n, { data: encodeAbiParameters([{ type: "uint256" }], [400n * 10n ** 18n]) });
+
+    it("writes the value of an ERC-20 Transfer of this token in whole coins, with every digit in the title", async () => {
+      await open("events", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources: verified, token, events: () => page([big(1)]) });
+      const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+      const unit = await within(row).findByText("400 tUSD");
+      expect(unit).toHaveAttribute("title", "400 tUSD");
+      expect(within(row).queryByText("400000000000000000000")).toBeNull();
+    });
+
+    it("leaves the raw number when the token is not an ERC-20 or its decimals are not known", async () => {
+      await open("events", { detail: contractDetail(0xcb, { standard: "ERC-721" }), sources: verified, token, events: () => page([big(1)]) });
+      const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+      expect(within(row).getByText("400000000000000000000")).toBeInTheDocument();
+      expect(within(row).queryByText(/tUSD/)).toBeNull();
+    });
+
+    it("leaves the raw number when the explorer does not know the token's decimals", async () => {
+      await open("events", { detail: contractDetail(0xcb, { standard: "ERC-20" }), sources: verified, events: () => page([big(1)]) });
+      const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+      expect(within(row).getByText("400000000000000000000")).toBeInTheDocument();
+    });
+  });
+
   it("names a contract-creation transaction \"Create contract\", not the first bytes of its init code", async () => {
     await open("events", { sources: verified, events: () => page([log(3, { method: null, creation: true }), log(4, { method: "0xa9059cbb" })]) });
     const rows = await screen.findAllByRole("row");

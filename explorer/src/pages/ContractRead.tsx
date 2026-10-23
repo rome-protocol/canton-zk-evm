@@ -1,20 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { callable, decodeOutputs, encodeCall, type AbiEntry } from "../abi-call.ts";
-import { getAddressDetail, type ContractDetail } from "../api.ts";
+import type { ContractDetail } from "../api.ts";
 import { exact, units } from "../format.ts";
 import { CardHead, ErrorCard } from "../components/Cards.tsx";
 import "./block.css";
 import { Icon } from "../components/Icon.tsx";
 import { ethCall, finalBlock } from "../rpc.ts";
 import { Fields, FnName, Gate, Glyph, Out, useChoice, type Abis } from "./ContractCall.tsx";
+import { useCoin, type Coin } from "./ContractParts.tsx";
 import { useAbi } from "./useAbi.ts";
 
 /** The final block of one reading of the tab, asked once and shared by every call on it. */
 interface Head { block: number | undefined; error: string | null; tick: number }
-
-/** The coin a token's amount is written in. */
-interface Coin { symbol: string; decimals: number }
 
 /**
  * balanceOf, totalSupply and allowance of an ERC-20 are amounts of that token, so they are also written in whole coins. Only the exact
@@ -82,9 +80,7 @@ function ReadItem({ n, address, e, head, open, coin }: { n: number; address: str
 export function ReadTab({ detail }: { detail: ContractDetail }) {
   const abis: Abis = useAbi(detail);
   const { entries, note, switcher } = useChoice(abis);
-  // The token's decimals come from the address record the page already read (same key as the page's own query).
-  const rec = useQuery({ queryKey: ["address-detail", detail.address], queryFn: () => getAddressDetail(detail.address) }).data?.token;
-  const coin: Coin | null = detail.standard === "ERC-20" && rec && rec.decimals !== null ? { symbol: rec.symbol ?? "", decimals: rec.decimals } : null;
+  const coin = useCoin(detail);
   const [tick, setTick] = useState(0);
   const [open, setOpen] = useState<boolean | null>(null);
   const head = useQuery({ queryKey: ["rpc-final-block", detail.address, tick], queryFn: finalBlock, retry: false, staleTime: Infinity, gcTime: 0 });

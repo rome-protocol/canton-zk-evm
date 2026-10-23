@@ -44,7 +44,7 @@ function Sources({ s }: { s: ContractSource }) {
       <div className="code-cols">
         <Kv label="The compile">
           <Item label="Contract name"><span className="mono">{s.contractName}</span></Item>
-          <Item label="Compiler"><span className="mono">{s.compilerVersion}</span></Item>
+          <Item label="Compiler"><span className="mono">{s.compilerVersion && /^\d/.test(s.compilerVersion) ? `v${s.compilerVersion}` : s.compilerVersion}</span></Item>
           <Item label="Optimization">{s.optimizerEnabled === null ? <span className="muted">Not recorded</span> : s.optimizerEnabled ? `Yes, ${count(s.optimizerRuns ?? 0)} runs` : "No"}</Item>
           <Item label="EVM version">{s.evmVersion ? <><span className="mono">{s.evmVersion}</span>{note && <span className="muted small"> · {note}</span>}</> : <span className="muted">Compiler default</span>}</Item>
           <Item label="License">{s.license ?? <span className="muted">None given</span>}</Item>
