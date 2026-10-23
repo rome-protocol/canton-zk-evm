@@ -226,6 +226,24 @@ describe.skipIf(!ready || !(FORGE || HARDHAT))("Foundry and Hardhat against the 
       expect(none.code).not.toBe(0);
       expect(none.out).toMatch(/not verified/i);
     });
+
+    it("tests/demo_etherscan_contract.sh, the script the rehearsal runs: forge in both formats, cast source and cast interface", async () => {
+      const script = join(root, "tests/demo_etherscan_contract.sh");
+      const tools = { SOLC: TOOLS_SOLC, FORGE: FORGE!, CAST: CAST! };
+      // The script builds the two Box contracts (they differ in their optimizer runs, so neither is a similar match of the other) and says what to deploy.
+      const boxes = join(dir, "boxes");
+      const built = await run("bash", [script, "build", boxes], { cwd: root, env: tools });
+      expect(built.code, built.out).toBe(0);
+      const standard = address(0xc1), flat = address(0xc2);
+      for (const [at, name] of [[standard, "standard"], [flat, "flat"]] as const) {
+        const hex = (ext: string): string => "0x" + readFileSync(join(boxes, `${name}.${ext}`), "utf8").trim();
+        await deployed(at, hex("creation"), hex("runtime"));
+        expect(readFileSync(join(boxes, `${name}.deploy`), "utf8").trim()).toBe(hex("creation").slice(2) + ARG_HEX);
+      }
+      const r = await run("bash", [script, "verify"], { cwd: root, env: { ...tools, EXPLORER: base, CHAIN_ID: String(CHAIN_ID), BOX_STANDARD: standard, BOX_FLAT: flat } });
+      expect(r.code, r.out).toBe(0);
+      expect(r.out).toContain("forge, cast and the contract module agree");
+    });
   });
 
   describe.skipIf(!HARDHAT)("Hardhat", () => {
