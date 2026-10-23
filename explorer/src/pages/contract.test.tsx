@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { act } from "@testing-library/react";
@@ -197,6 +198,16 @@ describe("the Code tab of a verified contract", () => {
     await userEvent.click(within(code).getByRole("button", { name: "Opcodes" }));
     expect(code.querySelector("pre")).toHaveTextContent("PUSH1 0x80");
     expect(code.querySelector("pre")).toHaveTextContent("MSTORE");
+  });
+
+  it("shows the deployed code in the light grey box of the screen, not the dark one", async () => {
+    await open();
+    const code = await screen.findByRole("region", { name: "Deployed code" });
+    expect(code.querySelector("pre")).toHaveClass("light");
+    expect(code.querySelector("pre")).not.toHaveClass("dark");
+    await userEvent.click(within(code).getByRole("button", { name: "Opcodes" }));
+    expect(code.querySelector("pre")).toHaveClass("light");
+    expect(readFileSync("src/pages/contract.css", "utf8")).toMatch(/pre\.light\s*\{[^}]*background: var\(--surface-2\)/);
   });
 
   it("shows the partial-match note on the Code tab", async () => {

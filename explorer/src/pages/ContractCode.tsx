@@ -117,8 +117,8 @@ function Deployed({ detail }: { detail: ContractDetail }) {
         <span className="row-gap"><CopyButton value={detail.code} label="Copy the code" /><Segmented label="Code view" value={view} options={["Hex", "Opcodes"] as const} onPick={setView} /></span>
       </div>
       {ops
-        ? <pre className="dark">{ops.ops.map((o) => `${String(o.pc).padStart(5, "0")}  ${o.name}${o.data ? " " + o.data : ""}`).join("\n")}{ops.more ? `\n… the first ${count(SHOWN_OPS)} opcodes of the code` : ""}</pre>
-        : <pre className="dark wrap">{cut ? detail.code.slice(0, SHOWN_HEX) + `… (${count(size)} bytes)` : detail.code}</pre>}
+        ? <pre className="light">{ops.ops.map((o) => `${String(o.pc).padStart(5, "0")}  ${o.name}${o.data ? " " + o.data : ""}`).join("\n")}{ops.more ? `\n… the first ${count(SHOWN_OPS)} opcodes of the code` : ""}</pre>
+        : <pre className="light wrap">{cut ? detail.code.slice(0, SHOWN_HEX) + `… (${count(size)} bytes)` : detail.code}</pre>}
     </section>
   );
 }
