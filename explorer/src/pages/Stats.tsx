@@ -7,7 +7,7 @@ import { Icon } from "../components/Icon.tsx";
 import { count, pct, plural, sec, short, span, trim, units, utcMinute } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 
-const DEFAULT_WINDOW: StatsWindow = "24h";
+const DEFAULT_WINDOW: StatsWindow = "7d";
 const BUTTONS: [StatsWindow, string][] = [["1h", "Last hour"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]];
 /** The step each window is drawn in when none is asked for: the first the series route allows. */
 const STEP: Record<StatsWindow, { word: string; every: string }> = { "1h": { word: "minute", every: "minute" }, "6h": { word: "10 minutes", every: "10 minutes" }, "24h": { word: "hour", every: "hour" }, "7d": { word: "hour", every: "hour" }, "30d": { word: "day", every: "day" } };
@@ -122,7 +122,7 @@ function Rule({ s }: { s: StatsSummary }) {
 function turnedAwaySub(f: StatsSummary["faucet"]): string {
   if (f.turnedAway === null) return f.turnedAwaySince ? `not recorded before ${utcMinute(Date.parse(f.turnedAwaySince))}` : "not recorded";
   const r = f.turnedAway.byReason;
-  const parts = [[r.address, "same address"], [r.ip, "same network"], [r.hour, "hourly cap"], [r.captcha, "failed check"]].filter(([n]) => (n as number) > 0).map(([n, w]) => `${count(n as number)} ${w}`);
+  const parts = [[r.address, "same address in 24 h: "], [r.ip, "same network address in 10 min: "], [r.hour, "hourly cap: "], [r.captcha, "failed check: "]].filter(([n]) => (n as number) > 0).map(([n, w]) => `${w}${count(n as number)}`);
   return parts.length ? parts.join(" · ") : "requests the limits refused";
 }
 
@@ -137,7 +137,7 @@ function FaucetCard({ s, faucetOn, coin }: { s: StatsSummary; faucetOn: boolean;
         <Cell k="Sent" v={count(f.sent)} sub={`${f.final === f.sent ? "all final" : `${count(f.final)} final`}${f.failed ? ` · ${count(f.failed)} failed` : ""}`} />
         <Cell k="Turned away by the limits" v={f.turnedAway === null ? "Not recorded" : count(f.turnedAway.total)} sub={turnedAwaySub(f)} />
         <Cell k="Time to final, faucet sends" v={f.timeToFinal ? sec(f.timeToFinal.median) : DASH} sub={f.timeToFinal ? `median · p95 ${sec(f.timeToFinal.p95)}` : "no faucet send was final in this window"} />
-        <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol} · queue now ${info.queue ?? 0}` : faucetOn ? "reading…" : "the faucet is off"} />
+        <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol}${typeof info.balanceBlock === "number" ? `, as of block ${count(info.balanceBlock)}` : ""} · queue now ${info.queue ?? 0}` : faucetOn ? "reading…" : "the faucet is off"} />
       </div>
     </section>
   );
