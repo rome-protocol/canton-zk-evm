@@ -13,10 +13,12 @@ FOUNDRY_SHA256=58850106984038f3a7200f38a4182c8cb423d3a4f4c7848eacbc2453e6bc35fc
 fail() { echo "FAIL: $*" >&2; exit 1; }
 : "${EXPLORER:?EXPLORER is not set}" "${ETHERSCAN_ADDRESS:?ETHERSCAN_ADDRESS is not set}" "${ETHERSCAN_BALANCE:?ETHERSCAN_BALANCE is not set}" "${ETHERSCAN_TX:?ETHERSCAN_TX is not set}"
 
+# A folder of this run's own, removed on exit: the downloaded cast and the headers of the last answer.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
 if [ -z "${CAST:-}" ]; then
   [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] || fail "the pinned Foundry is the Linux x86-64 build; set CAST to use another"
-  TMP=$(mktemp -d)
-  trap 'rm -rf "$TMP"' EXIT
+  TMP=$WORK
   curl -sSfL -o "$TMP/foundry.tar.gz" "https://github.com/foundry-rs/foundry/releases/download/$FOUNDRY_VERSION/foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
   echo "$FOUNDRY_SHA256  $TMP/foundry.tar.gz" | sha256sum -c -
   tar -xzf "$TMP/foundry.tar.gz" -C "$TMP" cast
@@ -26,8 +28,21 @@ echo "using $("$CAST" --version | head -n 1)"
 
 RPC=$EXPLORER/rpc
 # The proxy's whole answer, and its result alone.
-proxy_raw() { local q=""; local a; for a in "${@:2}"; do q="$q&$a"; done; curl -sSf "$EXPLORER/api?module=proxy&action=$1$q"; }
+# A refusal for the door's rate is HTTP 200 with a Retry-After, as Etherscan's is: wait it out, as a client does.
+proxy_raw() {
+  local q=""; local a; local n=0; local out
+  for a in "${@:2}"; do q="$q&$a"; done
+  while :; do
+    out=$(curl -sSf -D "$WORK/headers" "$EXPLORER/api?module=proxy&action=$1$q")
+    grep -qi '^retry-after:' "$WORK/headers" || break
+    n=$((n + 1)); [ "$n" -lt 20 ] || fail "the door kept asking to wait: $out"
+    sleep "$(tr -d '\r' < "$WORK/headers" | awk 'tolower($1) == "retry-after:" { print $2 }')"
+  done
+  printf '%s\n' "$out"
+}
 proxy() { proxy_raw "$@" | jq -r 'if .jsonrpc == "2.0" and (has("error") | not) then .result else error("not a JSON-RPC result: \(tostring)") end'; }
+# cast 1.8 wraps its --json output in {"schema_version", "success", "data"}; earlier releases print the object itself.
+cast_json() { jq -r "(if (type == \"object\" and has(\"data\") and has(\"schema_version\")) then .data else . end) | $1"; }
 eq() { [ "$2" = "$3" ] || fail "$1: the proxy gave '$2' and cast read '$3'"; }
 dec() { "$CAST" to-dec "$1"; }
 
@@ -42,14 +57,15 @@ echo "the final head: $head_dec"
 
 # The block at that height: the proxy's hash is cast's, with and without the transactions.
 want=$(proxy eth_getBlockByNumber "tag=$n_hex" boolean=false)
-eq "eth_getBlockByNumber" "$(jq -r .hash <<<"$want")" "$("$CAST" block "$head_dec" --rpc-url "$RPC" --json | jq -r .hash)"
+cast_block=$("$CAST" block "$head_dec" --rpc-url "$RPC" --json)
+eq "eth_getBlockByNumber" "$(jq -r .hash <<<"$want")" "$(cast_json .hash <<<"$cast_block")"
 full=$(proxy eth_getBlockByNumber "tag=$n_hex" boolean=true)
 [ "$(jq '.transactions | length' <<<"$full")" = "$(jq '.transactions | length' <<<"$want")" ] || fail "the block's transactions differ with boolean=true and false"
 
 # A final transaction: the proxy's transaction and receipt are cast's.
-eq "eth_getTransactionByHash" "$(proxy eth_getTransactionByHash "txhash=$ETHERSCAN_TX" | jq -r .hash)" "$("$CAST" tx "$ETHERSCAN_TX" --rpc-url "$RPC" --json | jq -r .hash)"
+eq "eth_getTransactionByHash" "$(proxy eth_getTransactionByHash "txhash=$ETHERSCAN_TX" | jq -r .hash)" "$("$CAST" tx "$ETHERSCAN_TX" --rpc-url "$RPC" --json | cast_json .hash)"
 receipt=$(proxy eth_getTransactionReceipt "txhash=$ETHERSCAN_TX")
-eq "eth_getTransactionReceipt status" "$(jq -r .status <<<"$receipt")" "$("$CAST" receipt "$ETHERSCAN_TX" --rpc-url "$RPC" --json | jq -r .status)"
+eq "eth_getTransactionReceipt status" "$(jq -r .status <<<"$receipt")" "$("$CAST" receipt "$ETHERSCAN_TX" --rpc-url "$RPC" --json | cast_json .status)"
 tx_block=$(jq -r .blockNumber <<<"$receipt")
 tx_index=$(jq -r .transactionIndex <<<"$receipt")
 count=$(proxy eth_getBlockTransactionCountByNumber "tag=$tx_block")
