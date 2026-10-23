@@ -139,7 +139,7 @@ jobs:
         if: always()
         run: docker rm -f -v explorer-nightly-l2-db
 
-  # W1 and the lab on the real chain (what the demo's rehearsal does), then L3, L4 and L5 on the same chain, through tests/demo_nightly_chain.sh. L3's index lag is held to B1 (2.75 s on this runner, the lead's ruling of 2026-10-23), and its time to final is not
+  # W1 and the lab on the real chain (what the demo's rehearsal does), then L3, L4 and L5 on the same chain, through tests/demo_nightly_chain.sh. L3's index lag is held to B1 (2.75 s on this runner; see docs/METRICS.md, "B1 and B2 on the reference machine and on the runner"), and its time to final is not
   # measured (no GPU, a stand-in proof); the design's 30 minutes is the default length of its flood. The rehearsal fails if any part broke a budget.
   chain:
     runs-on: ubuntu-latest

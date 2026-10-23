@@ -7,9 +7,8 @@ export const B1_MS = 2750;
 export const B2_MS = 12_750;
 
 /**
- * What the W1 test holds B2 to on GitHub's shared runner (lead ruling 2026-10-23, recorded in the design's section 9). B2_MS stays the budget and is met on the reference
- * machine: W1 (rehearsal block 10: 5 transactions, 1,028 logs, 24,360,904 gas) measured there over 5 runs, B1 p50 806 ms (802 to 810) and B2 p50 3,998 ms (3,972 to 4,072).
- * The shared runner is about 3x slower (B2 11.4 to 13.0 s on 2026-10-23; failures at 13,026, 12,755 and 12,756 ms, passes at 11,410 and 12,367 ms), so there the test is
+ * What the W1 test holds B2 to on GitHub's shared runner (see docs/METRICS.md, "B1 and B2 on the reference machine and on the runner"). B2_MS stays the budget. A provisional reference-machine measurement: W1 (rehearsal block 10: 5 transactions, 1,028 logs, 24,360,904 gas) measured there over 5 runs, B1 p50 806 ms (802 to 810) and B2 p50 3,998 ms (3,972 to 4,072).
+ * On the shared runner B2 took 11.4 to 13.0 s on 2026-10-23 (failures at 13,026, 12,755 and 12,756 ms, passes at 11,410 and 12,367 ms), so there the test is
  * a regression check held to 1.25 x B2. B1 is held to B1_MS on both. `budgets.test.ts` keeps this at 1.25 x B2_MS, rounded to 250 ms.
  */
 export const B2_RUNNER_MS = 16_000;
