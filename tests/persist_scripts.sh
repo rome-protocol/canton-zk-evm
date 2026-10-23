@@ -57,7 +57,8 @@ run env CZE_WORK_DIR="$WORK/custom" "$WORK/repo/network/down.sh" --wipe > /dev/n
 [ ! -e "$WORK/custom/unresolved.json" ] || fail "the record in CZE_WORK_DIR is still there after a wipe"
 [ ! -e "$WORK/custom/kept-transactions.json" ] || fail "the kept transactions in CZE_WORK_DIR are still there after a wipe"
 [ -e "$WORK/custom/status.json" ] || fail "down.sh --wipe removed a file of CZE_WORK_DIR that is not the record"
-[ -e "$WORK/state/builder/unresolved.json" ] && [ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh --wipe removed files of the default folder when CZE_WORK_DIR names another"
+[ -e "$WORK/state/builder/unresolved.json" ] || fail "down.sh --wipe removed the default folder's record when CZE_WORK_DIR names another"
+[ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh --wipe removed the default folder's kept transactions when CZE_WORK_DIR names another"
 rm -rf "$WORK/custom"
 echo "ok: down.sh --wipe removes the record where CZE_WORK_DIR says the builder keeps it"
 # A persistent chain that is only stopped keeps them.
