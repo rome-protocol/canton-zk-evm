@@ -3,14 +3,11 @@ import { count, exact, short, units } from "../format.ts";
 import { labelName } from "../labels.ts";
 import { Icon } from "./Icon.tsx";
 
-/**
- * An amount in whole coins or tokens, with the exact amount in its tooltip. The symbol is the contract's own words, and so is a token id
- * beside it (when `tokenId` is given): each is set apart in its own bdi, so a hostile right-to-left symbol cannot reorder the id.
- */
-export function Amount({ raw, decimals, symbol, tokenId }: { raw: string; decimals: number; symbol: string; tokenId?: string | null }) {
+/** An amount in whole coins or tokens, with the exact amount in its tooltip. The symbol is the contract's own words, set apart in a bdi. */
+export function Amount({ raw, decimals, symbol }: { raw: string; decimals: number; symbol: string }) {
   return (
-    <span title={`${exact(raw, decimals)} ${symbol}${tokenId ? ` #${tokenId}` : ""}`}>
-      <span className="num">{units(raw, decimals)}</span> <bdi>{symbol}</bdi>{tokenId ? <> <bdi>{`#${tokenId}`}</bdi></> : null}
+    <span title={`${exact(raw, decimals)} ${symbol}`}>
+      <span className="num">{units(raw, decimals)}</span> <bdi>{symbol}</bdi>
     </span>
   );
 }
@@ -30,7 +27,8 @@ export function TokenChip({ move, label }: { move: TokenMove; label?: Label | nu
   if (move.tokenId !== null) {
     const copies = move.amount !== null && move.amount !== "1" ? `${count(move.amount)} × ` : "";
     // A token id can be 78 digits: the chip keeps its ends, and the tooltip the whole id.
-    return <span className="tchip tchip-nft" title={[labelName(label) ?? move.token, `#${move.tokenId}`, ...notes].join(" ")}>{text(`${copies}${name} #${short(move.tokenId, 6, 4)}`)}</span>;
+    // The symbol alone is in a bdi: the copies and the id stand outside it, so a right-to-left symbol cannot reorder them.
+    return <span className="tchip tchip-nft" title={[labelName(label) ?? move.token, `#${move.tokenId}`, ...notes].join(" ")}><span className="tname">{copies}<bdi>{name}</bdi>{` #${short(move.tokenId, 6, 4)}`}</span></span>;
   }
   if (move.amount === null) return <span className="tchip tchip-ft" title={[...notes, "The amount is not in the logs."].join(" ")}><Icon name="coin" size={12} />{text(name)}</span>;
   const decimals = move.decimals ?? label?.decimals ?? null;

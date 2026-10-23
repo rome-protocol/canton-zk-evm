@@ -86,15 +86,15 @@ describe("a token amount chip", () => {
 
   it("shows a token id as 'OPASS #3'", () => {
     render(<TokenChip move={move({ token: pass.address, amount: null, tokenId: "3", standard: "ERC-721", decimals: null })} label={pass} />);
-    expect(screen.getByText("OPASS #3")).toBeInTheDocument();
+    expect(document.querySelector(".tname")!.textContent).toBe("OPASS #3");
   });
 
   it("shows the number of a many-copies token before its id, and says nothing of one copy", () => {
     const { unmount } = render(<TokenChip move={move({ token: pass.address, amount: "5", tokenId: "3", standard: "ERC-1155", decimals: null })} label={{ ...pass, standard: "ERC-1155" }} />);
-    expect(screen.getByText("5 × OPASS #3")).toBeInTheDocument();
+    expect(document.querySelector(".tname")!.textContent).toBe("5 × OPASS #3");
     unmount();
     render(<TokenChip move={move({ token: pass.address, amount: "1", tokenId: "3", standard: "ERC-1155", decimals: null })} label={{ ...pass, standard: "ERC-1155" }} />);
-    expect(screen.getByText("OPASS #3")).toBeInTheDocument();
+    expect(document.querySelector(".tname")!.textContent).toBe("OPASS #3");
   });
 
   it("names a token it has no label for by its short address, and says so", () => {
@@ -157,14 +157,26 @@ describe("the icons the cells use", () => {
 });
 
 describe("an amount", () => {
-  it("sets the symbol and the token id apart, each in its own bdi, so a hostile symbol cannot reorder the id", () => {
-    const { container } = render(<Amount raw="5000000" decimals={6} symbol={"\u202Eevil"} tokenId="42" />);
-    const isolated = [...container.querySelectorAll("bdi")].map((b) => b.textContent);
-    expect(isolated).toEqual(["\u202Eevil", "#42"]);
+  it("sets the symbol apart in its own bdi", () => {
+    const { container } = render(<Amount raw="5000000" decimals={6} symbol={"\u202Eevil"} />);
+    expect([...container.querySelectorAll("bdi")].map((b) => b.textContent)).toEqual(["\u202Eevil"]);
+  });
+});
+
+describe("a token chip with a hostile symbol", () => {
+  const evil = { ...pass, symbol: "\u202EOPASS" };
+  it("keeps the token id outside the symbol's bdi, so the symbol cannot reorder it", () => {
+    const { container } = render(<TokenChip move={move({ token: pass.address, amount: null, tokenId: "12", standard: "ERC-721", decimals: null })} label={evil} />);
+    const bdis = [...container.querySelectorAll("bdi")];
+    expect(bdis.map((b) => b.textContent)).toEqual(["\u202EOPASS"]);
+    const wrap = container.querySelector(".tname")!;
+    expect(wrap.textContent).toBe("\u202EOPASS #12");
+    expect(bdis[0]!.textContent).not.toContain("#12");
   });
 
-  it("shows no id bdi where there is no token id", () => {
-    const { container } = render(<Amount raw="5000000" decimals={6} symbol="tUSD" />);
-    expect([...container.querySelectorAll("bdi")].map((b) => b.textContent)).toEqual(["tUSD"]);
+  it("keeps the number of copies and the amount outside the symbol's bdi", () => {
+    const { container } = render(<TokenChip move={move({ token: pass.address, amount: "5", tokenId: "12", standard: "ERC-1155", decimals: null })} label={evil} />);
+    expect(container.querySelector(".tname")!.textContent).toBe("5 \u00D7 \u202EOPASS #12");
+    expect(container.querySelector("bdi")!.textContent).toBe("\u202EOPASS");
   });
 });
