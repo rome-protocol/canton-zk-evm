@@ -4,6 +4,7 @@ src = "contracts"
 out = "out"
 cache_path = "cache"
 solc = "@SOLC@"
+auto_detect_solc = false
 evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200

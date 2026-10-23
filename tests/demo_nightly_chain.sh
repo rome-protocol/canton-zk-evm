@@ -62,11 +62,11 @@ else
   l5_work=$WORK/l5
   L5_EXPLORER=$EXPLORER L5_CHAIN_ID=$chain_id "$L5/l5.sh" prepare "$l5_work"
   "$L5/l5.sh" tools "$WORK/l5-foundry"
-  l5_docker() { # <name> <command...>: one step of L5 in the browser image, as this user, with Foundry mounted
+  l5_docker() { # <name> <command...>: one step of L5 in the browser image, as this user, with Foundry and the run's pinned solc mounted (nothing is downloaded: $WORK/solc is the binary of PINS' SOLC_IMAGE, copied out by the rehearsal)
     local name=$1; shift
     docker run --rm --name "$name" --network host --user "$(id -u):$(id -g)" -e HOME=/l5/home -e PATH=/foundry:/usr/local/bin:/usr/bin:/bin \
-      -e L5_EXPLORER="$EXPLORER" -e L5_RPC="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e L5_CHAIN_ID="$chain_id" -e L5_ADDRS="${l5_addrs:-}" -e L5_MODULES="$l5_modules" -e L5_ARGS=1,2,3 -e L5_RUNS=200,201,202 -e L5_TX="${l5_tx:-}" -e L5_OUT=/l5/l5.json \
-      -v "$l5_work:/l5" -v "$WORK/l5-foundry:/foundry:ro" -v "$L5:/src:ro" -w /l5/project "$EXPLORER_BROWSER_IMAGE" "$@"
+      -e L5_EXPLORER="$EXPLORER" -e L5_RPC="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" -e L5_CHAIN_ID="$chain_id" -e L5_ADDRS="${l5_addrs:-}" -e L5_MODULES="$l5_modules" -e L5_SOLC=/solc/solc -e L5_ARGS=1,2,3 -e L5_RUNS=200,201,202 -e L5_TX="${l5_tx:-}" -e L5_OUT=/l5/l5.json \
+      -v "$l5_work:/l5" -v "$WORK/l5-foundry:/foundry:ro" -v "$WORK/solc:/solc/solc:ro" -v "$L5:/src:ro" -w /l5/project "$EXPLORER_BROWSER_IMAGE" "$@"
   }
   l5_docker "cze-nightly-l5-build-$$" bash /src/l5.sh build || fail "L5's contract did not build"
   docker rm -f -v "cze-nightly-l5-build-$$" >/dev/null 2>&1 || true

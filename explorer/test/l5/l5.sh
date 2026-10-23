@@ -15,7 +15,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # shellcheck disable=SC1091
 . "$HERE/TOOLS"
-export L5_SOLC_VERSION
+export L5_SOLC_VERSION L5_SOLC
 
 case "${1:-}" in
   probe)
@@ -70,10 +70,14 @@ case "${1:-}" in
     dir=${2:?the work folder}
     : "${L5_EXPLORER:?L5_EXPLORER is not set}" "${L5_CHAIN_ID:?L5_CHAIN_ID is not set}"
     [[ $L5_CHAIN_ID =~ ^[0-9]+$ ]] || fail "L5_CHAIN_ID is not a number"
-    mkdir -p "$dir/project" "$dir/home"
+    mkdir -p "$dir/project" "$dir/home/.svm/0.8.28"
+    # The compiler is the run's pinned solc (the one in PINS' SOLC_IMAGE), which tests/demo_nightly_chain.sh mounts at L5_SOLC in the container: nothing is downloaded from the Solidity
+    # servers. Forge reads it from foundry.toml (solc = path, auto_detect_solc = false); `forge verify-contract --flatten` looks in svm's folder for the version, so the link is there; Hardhat
+    # takes it from hardhat.config.cjs (a SUBTASK_COMPILE_SOLIDITY_GET_SOLC_BUILD override). The link points into the container: it is dangling on the runner, and that is right.
+    ln -sfn "$L5_SOLC" "$dir/home/.svm/0.8.28/solc-0.8.28"
     cp "$HERE/package.json" "$HERE/l5.mjs" "$HERE/summary.ts" "$dir/"
     cp -R "$HERE/project/contracts" "$HERE/project/package.json" "$HERE/project/package-lock.json" "$HERE/project/hardhat.config.cjs" "$dir/project/"
-    sed -e "s|@SOLC@|$L5_SOLC_VERSION|" -e "s|@CHAIN_ID@|$L5_CHAIN_ID|" -e "s|@EXPLORER@|$L5_EXPLORER|" "$HERE/project/foundry.toml.in" > "$dir/project/foundry.toml"
+    sed -e "s|@SOLC@|$L5_SOLC|" -e "s|@CHAIN_ID@|$L5_CHAIN_ID|" -e "s|@EXPLORER@|$L5_EXPLORER|" "$HERE/project/foundry.toml.in" > "$dir/project/foundry.toml"
     ;;
   build)
     npm ci --ignore-scripts --no-audit --no-fund
