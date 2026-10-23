@@ -1,10 +1,9 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { userEvent } from "@testing-library/user-event";
+import { cleanup, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fakeApi, renderApp, status } from "../test-utils.tsx";
-import { AddToWallet } from "./AddToWallet.tsx";
+import { fakeApi, renderApp, status } from "./test-utils.tsx";
+import { addNetwork } from "./wallet.ts";
 
 afterEach(() => {
   cleanup();
@@ -12,32 +11,17 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const st = (over: Partial<Parameters<typeof AddToWallet>[0]["status"]> = {}) => ({ chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 }, publicRpc: true, ...over });
+const st = (over: Partial<Parameters<typeof addNetwork>[0]> = {}) => ({ chainId: 770101, chainName: "Ostia", coin: { symbol: "tROME", decimals: 18 }, ...over });
 const wallet = (request: (call: { method: string; params: unknown[] }) => Promise<unknown>) => {
   const spy = vi.fn(request);
   (window as unknown as { ethereum: unknown }).ethereum = { request: spy };
   return spy;
 };
-const button = () => screen.getByRole("button", { name: "Add Ostia to your wallet" });
 
-describe("the Add to wallet card", () => {
-  it("shows nothing at all when the public RPC is off", () => {
-    const { container } = render(<AddToWallet status={st({ publicRpc: false })} />);
-    expect(container).toBeEmptyDOMElement();
-    expect(screen.queryByText(/\/rpc/)).toBeNull();
-  });
-
-  it("shows the button, and the RPC address on this host with the guarantee, when the public RPC is on", () => {
-    render(<AddToWallet status={st()} />);
-    expect(button()).toBeInTheDocument();
-    expect(screen.getByLabelText("RPC address")).toHaveTextContent(`${location.origin}/rpc`);
-    expect(screen.getByText("A receipt from this address means the block is proven and final on Canton.")).toBeInTheDocument();
-  });
-
+describe("addNetwork", () => {
   it("asks the wallet to add the chain with the chain's id in hex, the coin, this host's RPC and the explorer", async () => {
     const request = wallet(async () => null);
-    render(<AddToWallet status={st()} />);
-    await userEvent.setup().click(button());
+    expect(await addNetwork(st(), "Ostia", "below")).toBe("Ostia is in your wallet.");
     expect(request).toHaveBeenCalledTimes(1);
     expect(request).toHaveBeenCalledWith({
       method: "wallet_addEthereumChain",
@@ -46,36 +30,23 @@ describe("the Add to wallet card", () => {
         rpcUrls: [`${location.origin}/rpc`], blockExplorerUrls: [location.origin],
       }],
     });
-    expect(await screen.findByRole("status")).toHaveTextContent("Ostia is in your wallet.");
   });
 
-  it("says so, and points to the address, when the browser has no wallet", async () => {
-    render(<AddToWallet status={st()} />);
-    await userEvent.setup().click(button());
-    expect(await screen.findByRole("status")).toHaveTextContent("No wallet was found in this browser. Add the network by hand with the address below.");
+  it("says so, and points to where the details are, when the browser has no wallet", async () => {
+    expect(await addNetwork(st(), "Ostia", "below")).toBe("No wallet was found in this browser. Add the network by hand with the address below.");
+    expect(await addNetwork(st(), "Ostia", "above")).toBe("No wallet was found in this browser. Add the network by hand with the details above.");
   });
 
-  it("says what the wallet said when the visitor refuses it", async () => {
+  it("says what the wallet said when the visitor refuses it, cut when long", async () => {
     wallet(async () => { throw Object.assign(new Error("User rejected the request."), { code: 4001 }); });
-    render(<AddToWallet status={st()} />);
-    await userEvent.setup().click(button());
-    expect(await screen.findByRole("status")).toHaveTextContent("Your wallet did not add the network: User rejected the request.");
+    expect(await addNetwork(st(), "Ostia", "below")).toBe("Your wallet did not add the network: User rejected the request.");
+    wallet(async () => { throw new Error("x".repeat(400)); });
+    expect((await addNetwork(st(), "Ostia", "below")).length).toBeLessThan(220);
   });
 
   it("says it plainly when the wallet refuses with no message", async () => {
     wallet(async () => { throw {}; });
-    render(<AddToWallet status={st()} />);
-    await userEvent.setup().click(button());
-    expect(await screen.findByRole("status")).toHaveTextContent(/^Your wallet did not add the network\.$/);
-  });
-
-  it("copies the RPC address, and says it was copied", async () => {
-    const user = userEvent.setup();
-    render(<AddToWallet status={st()} />);
-    const write = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
-    await user.click(screen.getByRole("button", { name: "Copy the RPC address" }));
-    expect(write).toHaveBeenCalledWith(`${location.origin}/rpc`);
-    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    expect(await addNetwork(st(), "Ostia", "below")).toBe("Your wallet did not add the network.");
   });
 });
 

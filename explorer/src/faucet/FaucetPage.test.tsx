@@ -442,9 +442,9 @@ describe("your request", () => {
 
 describe("the times of a request", () => {
   const times = (over: Partial<TxTimes> = {}): TxTimes => ({ nonce: 1004, acceptedAt: "2026-10-23T17:57:31.428Z", proofStartedAt: "2026-10-23T17:57:31.832Z", finalAt: null, ...over });
-  const withTimes = (t: Ticket["status"], state: string | null, tx: TxTimes | null, usual: { lowMs: number; highMs: number } | null = { lowMs: 7000, highMs: 7700 }, over: Partial<Ticket> = {}) => {
+  const withTimes = (t: Ticket["status"], state: string | null, tx: TxTimes | null, usual: { lowMs: number; highMs: number } | null = { lowMs: 7000, highMs: 7700 }, over: Partial<Ticket> = {}, commitMs: number | null = 600) => {
     const client = fake({ tickets: [view({ status: t, position: null, hash: HASH, state, block: 22, ...over })] });
-    return Object.assign(client, { txTimes: vi.fn(async (_h: string) => tx), usualProof: vi.fn(async () => usual) });
+    return Object.assign(client, { txTimes: vi.fn(async (_h: string) => tx), usualProof: vi.fn(async () => usual), usualCommitMs: vi.fn(async () => commitMs) });
   };
   const step = (name: string) => within(screen.getByRole("status")).getAllByRole("listitem").find((li) => li.querySelector("b")?.textContent?.startsWith(name))!;
 
@@ -467,6 +467,27 @@ describe("the times of a request", () => {
     expect(Number(bar.getAttribute("aria-valuenow"))).toBeGreaterThan(40);
     expect(Number(bar.getAttribute("aria-valuenow"))).toBeLessThanOrEqual(100);
     expect(step("Final on Canton")).toHaveTextContent(/about \d\d:\d\d:\d\d/);
+  });
+
+  it("puts on Final on Canton the proof's start, plus the usual proof, plus the usual Canton commit, and says the commit clause", async () => {
+    const user = await open(withTimes("sent", "proving", times({ proofStartedAt: "2026-10-23T17:57:31.000Z" }), { lowMs: 7000, highMs: 8000 }, {}, 5400));
+    await ask(user);
+    await waitFor(() => expect(step("Being proven")).toHaveTextContent("Then Canton commits in about 5.4 s."));
+    // 17:57:31 + 7.5 s + 5.4 s = 17:57:43.9, drawn to the second
+    expect(step("Final on Canton")).toHaveTextContent("about 17:57:43");
+  });
+
+  it("shows no 'about' time and no commit clause when the usual Canton commit is not known, and none when the usual proof is not known", async () => {
+    let user = await open(withTimes("sent", "proving", times(), { lowMs: 7000, highMs: 7700 }, {}, null));
+    await ask(user);
+    await waitFor(() => expect(step("Being proven")).toHaveTextContent("A proof usually takes 7.0–7.7 s"));
+    expect(step("Being proven")).not.toHaveTextContent("Canton commits in about");
+    expect(screen.queryByText(/about \d\d:/)).not.toBeInTheDocument();
+    cleanup();
+    user = await open(withTimes("sent", "proving", times(), null, {}, 600));
+    await ask(user);
+    await waitFor(() => expect(step("Being proven")).toHaveTextContent("Then Canton commits in about 0.6 s."));
+    expect(screen.queryByText(/about \d\d:/)).not.toBeInTheDocument();
   });
 
   it("shows no usual time, no bar and no 'about' when too few blocks have a proof time", async () => {

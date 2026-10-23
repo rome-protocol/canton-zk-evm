@@ -65,6 +65,8 @@ export interface FaucetClient {
   txTimes?(hash: string): Promise<TxTimes | null>;
   /** The proof time the newest blocks usually take (10th to 90th percentile), or null when too few blocks have one. Never throws. */
   usualProof?(): Promise<{ lowMs: number; highMs: number } | null>;
+  /** The time Canton usually takes to commit a block, in ms: the median of the last hour's stats summary (the figure the Stats page and the home page show), or null when it is not served. Never throws. */
+  usualCommitMs?(): Promise<number | null>;
 }
 
 const UNREACHABLE = "The explorer cannot be reached. Try again in a moment.";
@@ -151,6 +153,12 @@ export function createFaucetClient(fetchFn: typeof fetch = (...args) => fetch(..
     async usualProof() {
       const answer = await read(fetchFn, "/api/blocks?limit=10");
       return answer?.status === 200 && Array.isArray(answer.body.items) ? usualProof(answer.body.items as BlockListItem[]) : null;
+    },
+
+    async usualCommitMs() {
+      const answer = await read(fetchFn, "/api/stats/summary?window=1h");
+      const c = answer?.status === 200 ? (answer.body.commitTime as Record<string, unknown> | null | undefined) : null;
+      return typeof c?.median === "number" && Number.isFinite(c.median) && c.median >= 0 ? Math.round(c.median * 1000) : null;
     },
 
     async baseFee() {

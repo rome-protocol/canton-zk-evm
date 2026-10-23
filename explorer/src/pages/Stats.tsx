@@ -142,7 +142,7 @@ function FaucetCard({ s, faucetOn, coin }: { s: StatsSummary; faucetOn: boolean;
         <Cell k="Sent" v={count(f.sent)} sub={`${f.final === f.sent ? "all final" : `${count(f.final)} final`}${f.failed ? ` · ${count(f.failed)} failed` : ""}`} />
         <Cell k="Turned away by the limits" v={f.turnedAway === null ? "Not recorded" : count(f.turnedAway.total)} sub={turnedAwaySub(f, info)} />
         <Cell k="Time to final, faucet sends" v={f.timeToFinal ? sec(f.timeToFinal.median) : DASH} sub={f.timeToFinal ? `median · p95 ${sec(f.timeToFinal.p95)}` : "no faucet send was final in this window"} />
-        <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol}${typeof info.balanceBlock === "number" ? `, as of block ${count(info.balanceBlock)}` : info.balanceBlock === null ? ", as of the newest block, which may not be final" : ""} · queue now ${info.queue ?? 0}` : faucetOn ? "reading…" : "the faucet is off"} />
+        <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol}${typeof info.balanceBlock === "number" ? `, as of block ${count(info.balanceBlock)}` : info.balanceBlock === null ? ", as of the newest block, which may not be final" : ""} · ${typeof info.queue === "number" ? `queue now ${info.queue}` : "queue not served"}` : faucetOn ? "reading…" : "the faucet is off"} />
       </div>
     </section>
   );

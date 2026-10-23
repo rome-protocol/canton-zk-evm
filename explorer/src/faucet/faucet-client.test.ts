@@ -156,3 +156,18 @@ describe("baseFee", () => {
     expect(await client(() => json(500, {})).faucet.baseFee!()).toBeNull();
   });
 });
+
+describe("usualCommitMs", () => {
+  it("reads the median commit time of the last hour's stats summary, in ms", async () => {
+    const { faucet, calls } = client(() => json(200, { commitTime: { median: 5.4, p95: 9, samples: 40, capped: false } }));
+    expect(await faucet.usualCommitMs!()).toBe(5400);
+    expect(calls[0]?.url).toBe("/api/stats/summary?window=1h");
+  });
+  it("says null when the summary has no commit time, a bad one, or cannot be read", async () => {
+    expect(await client(() => json(200, { commitTime: null })).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => json(200, {})).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => json(200, { commitTime: { median: "5" } })).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => json(500, {})).faucet.usualCommitMs!()).toBeNull();
+    expect(await client(() => { throw new Error("down"); }).faucet.usualCommitMs!()).toBeNull();
+  });
+});

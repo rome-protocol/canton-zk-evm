@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useRef, useState } from "react";
 import { getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
-import { addNetwork, rpcUrl } from "../components/AddToWallet.tsx";
+import { addNetwork, rpcUrl } from "../wallet.ts";
 import { copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useStatus } from "../useStatus.ts";

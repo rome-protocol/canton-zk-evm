@@ -265,10 +265,6 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .stage.s-pending, .stage.s-proving, .stage.s-unindexed { color: var(--amber); }
 .stage.s-dropped { color: var(--bad); }
 .stage.s-replaced { color: var(--muted); }
-.rpc-card h3 { margin: 0 0 6px; }
-.rpc-card p { margin: 0 0 10px; }
-.rpc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
-.rpc-url { font-family: var(--mono, ui-monospace, monospace); font-size: 13px; overflow-wrap: anywhere; }
 .rpc-btn { border: 0; border-radius: 8px; background: var(--btn); color: var(--btn-ink); padding: 8px 14px; font: inherit; font-weight: 500; cursor: pointer; }
 .rpc-btn.quiet { background: transparent; color: var(--ink); border: 1px solid var(--line); }
 .rpc-msg { font-size: 13px; color: var(--muted); }

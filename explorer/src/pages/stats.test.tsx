@@ -252,6 +252,13 @@ describe("the stats page", () => {
     await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("tROME, as of the newest block, which may not be final · queue now 2"));
   });
 
+  it("says the queue is not served when the faucet does not give one, never 0", async () => {
+    await open("/stats?window=7d", { faucetOn: true, faucet: () => reply({ on: true, address: "0x" + "fa".repeat(20), balance: "1000000000000000000", amount: "1", perAddressSeconds: 86400, balanceBlock: 21 }) });
+    const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
+    await waitFor(() => expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("tROME, as of block 21 · queue not served"));
+    expect(within(card).getByText("Faucet balance").parentElement).not.toHaveTextContent("queue now");
+  });
+
   it("says not recorded before the minute the counting began for a window that starts earlier, and plain not recorded where it never began", async () => {
     await open("/stats?window=7d", { summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: null, turnedAwaySince: "2026-10-23T12:01:00.000Z" } })) });
     const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;

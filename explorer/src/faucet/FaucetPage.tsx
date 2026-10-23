@@ -88,6 +88,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
   const [now, setNow] = useState(() => Date.now());
   const [times, setTimes] = useState<TxTimes | null>(null);
   const [usual, setUsual] = useState<{ lowMs: number; highMs: number } | null>(null);
+  const [commitMs, setCommitMs] = useState<number | null>(null);
   const [second, setSecond] = useState(() => Date.now());
   const alive = useRef(true);
   const field = useId(), notice = useId();
@@ -122,6 +123,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     if (!proving) return;
     let stop = false;
     client.usualProof?.().then((u) => !stop && setUsual(u), () => {});
+    client.usualCommitMs?.().then((c) => !stop && setCommitMs(c), () => {});
     const timer = setInterval(() => setSecond(Date.now()), 1000);
     return () => { stop = true; clearInterval(timer); };
   }, [proving, client]);
@@ -381,18 +383,19 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
     const place = t?.position ?? watch.asked.position;
     const block = t?.block !== null && t?.block !== undefined ? ` in block ${formatCount(t.block)}` : "";
     type Step = { state: "done" | "active" | "todo" | "bad"; title: string; detail: ReactNode; at?: string | null; extra?: ReactNode };
-    // The times are the explorer's own, from the transaction route; a time it does not serve is not drawn.
+    // The times are the explorer's own, from the transaction route; a time it does not serve is not drawn. Queued has none: the page's own clock is not the chain's.
     const stamp = (iso: string | null | undefined) => (iso ? clock(iso, 3) : null);
-    const askedIso = askedAt !== null && (!times?.acceptedAt || askedAt <= instant(times.acceptedAt)) ? new Date(askedAt).toISOString() : null;
     const startedAt = times?.proofStartedAt ?? null;
     const elapsed = startedAt ? Math.max(0, second - instant(startedAt)) : null;
     const range = usual ? `${(usual.lowMs / 1000).toFixed(1)}–${(usual.highMs / 1000).toFixed(1)} s` : null;
-    const expected = proving && startedAt && usual ? new Date(instant(startedAt) + (usual.lowMs + usual.highMs) / 2).toISOString() : null;
+    // Final is the proof's end, the send to Canton and Canton's commit; with either usual time unknown there is no estimate, never a partial one.
+    const expected = proving && startedAt && usual && commitMs !== null ? new Date(instant(startedAt) + (usual.lowMs + usual.highMs) / 2 + commitMs).toISOString() : null;
+    const commitClause = commitMs !== null ? ` Then Canton commits in about ${secs(commitMs, 1)}.` : "";
     const nonce = times?.nonce !== null && times?.nonce !== undefined ? `, nonce ${times.nonce},` : "";
     const steps: Step[] = [
       status === "queued"
-        ? { at: stamp(askedIso), state: "active", title: "Queued", detail: place <= 1 ? "Taken by the faucet. No one is ahead of you." : `You are number ${formatCount(place)} in line. The faucet sends in batches.` }
-        : { at: stamp(askedIso), state: "done", title: "Queued", detail: "Taken by the faucet." },
+        ? { state: "active", title: "Queued", detail: place <= 1 ? "Taken by the faucet. No one is ahead of you." : `You are number ${formatCount(place)} in line. The faucet sends in batches.` }
+        : { state: "done", title: "Queued", detail: "Taken by the faucet." },
       failed
         ? { state: "bad", title: "Not sent", detail: <>{(t?.reason ?? "The transfer did not happen.").slice(0, REASON_MAX)} Nothing was taken from you, and you may ask again.</> }
         : dropped
@@ -403,7 +406,7 @@ export function FaucetPage({ client = DEFAULT_CLIENT, coin, chain, pollMs = 2000
       status === "final" ? { state: "done", title: `Proven${block}`, detail: "The proof was checked and the block was committed." }
         : proving ? {
           at: stamp(startedAt), state: "active", title: `Being proven${block}`,
-          detail: <>A proof of the block is being made. It is not final until Canton has committed it.{elapsed !== null && ` ${secs(elapsed, 1)} so far.`}{range && ` A proof usually takes ${range}.`}</>,
+          detail: <>A proof of the block is being made. It is not final until Canton has committed it.{elapsed !== null && ` ${secs(elapsed, 1)} so far.`}{range && ` A proof usually takes ${range}.`}{commitClause}</>,
           extra: elapsed !== null && usual ? <i className="pbar" role="progressbar" aria-label="How far the proof has got, against how long a proof usually takes" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, Math.round((elapsed / Math.max(1, usual.highMs)) * 100))}><b style={{ width: `${Math.min(100, (elapsed / Math.max(1, usual.highMs)) * 100)}%` }} /></i> : null,
         }
         : { state: "todo", title: "Being proven", detail: "The block holding the transfer is proven." },
