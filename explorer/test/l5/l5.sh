@@ -2,7 +2,7 @@
 # L5 of the nightly load test: the tools developers verify and read contracts with, pointed at the explorer's Etherscan-compatible API. The steps, in the order
 # tests/demo_nightly_chain.sh runs them (probe, tools and prepare on the runner; build and verify in the pinned browser image, which has glibc and Node 24):
 #   l5.sh probe                     whether the Etherscan-compatible API is there, from GET /api/openapi.json (paths['/api'].get['x-modules'], never a live call to the API):
-#                                   exit 0 and the modules in it on stdout (L5 runs), 3 no /api door in the description (a skip), 4 the description cannot be read (a failure) (EXPLORER)
+#                                   exit 0 and the modules in it on stdout (L5 runs), 3 no /api door in the description (a skip), 4 the description cannot be read, or has the door without its x-modules (a failure) (EXPLORER)
 #   l5.sh skipped                   the JSON of a skip
 #   l5.sh tools <folder>            Foundry, the release and SHA-256 of tests/FOUNDRY, into <folder>
 #   l5.sh prepare <folder>          this directory, with foundry.toml filled in for the chain, into <folder> (L5_EXPLORER, L5_CHAIN_ID)
@@ -35,8 +35,12 @@ case "${1:-}" in
       echo "L5 FAIL: GET /api/openapi.json answered HTTP $code and no OpenAPI document: ${body:0:200}" >&2
       exit 4
     fi
-    if ! jq -e '(.paths["/api"].get["x-modules"] // null) | type == "object"' <<<"$spec" >/dev/null 2>&1; then
+    if ! jq -e '(.paths["/api"] // null) != null' <<<"$spec" >/dev/null 2>&1; then
       exit 3   # no /api door in the explorer's description: a skip
+    fi
+    if ! jq -e '(.paths["/api"].get["x-modules"] // null) | type == "object"' <<<"$spec" >/dev/null 2>&1; then
+      echo "L5 FAIL: /api/openapi.json has the /api door without its x-modules" >&2   # the door exists (it is in main), so a description without its modules is a regression
+      exit 4
     fi
     modules=$(jq -r '.paths["/api"].get["x-modules"] | keys_unsorted | join(",")' <<<"$spec")
     [ -n "$modules" ] || { echo "L5 FAIL: /api/openapi.json lists the /api door with no modules" >&2; exit 4; }

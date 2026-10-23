@@ -64,7 +64,9 @@ class Probe(unittest.TestCase):
 
     def test_no_door_in_the_description_is_a_skip(self):
         self.assertEqual(self.probe(200, self.spec(door=False))[0], 3)
-        self.assertEqual(self.probe(200, self.spec(None))[0], 3)  # /api without x-modules
+
+    def test_the_door_without_its_modules_is_a_failure(self):
+        self.assertEqual(self.probe(200, self.spec(None))[0], 4)  # /api without x-modules
 
     def test_a_description_that_cannot_be_read_is_a_failure_not_a_skip(self):
         for status, body in [(404, "{}"), (429, '{"error":"slow down"}'), (500, ""), (200, "<!doctype html>"), (200, '{"openapi":"3.1.0"}')]:
