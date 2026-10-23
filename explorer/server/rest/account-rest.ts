@@ -153,7 +153,7 @@ export function createAccountRest(pool: Pool) {
     }));
   }
 
-  /** The logs written by one contract, newest first, after the key (block, log index); `topic0` keeps one kind of event. The index is (address, block_number). */
+  /** The logs written by one contract, newest first, after the key (block, log index); `topic0` keeps one kind of event. The indexes are (address, block, log index) and (address, topic0, block, log index). */
   async function contractEvents(a: string, topic0: string | null, before: Key | null, limit: number): Promise<ContractEventItem[]> {
     const [bn, li] = before ?? [null, null];
     const rows = await query(
