@@ -1,6 +1,6 @@
 """The builder, against fakes only: a fake reth (builder-only WebSocket port and Engine port), a fake Canton JSON
 Ledger API and a fake prover. No real Canton, GPU or reth. Run: python3 -m unittest discover -s builder/tests"""
-import base64, contextlib, stat, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
+import base64, contextlib, stat, time, urllib.error, hashlib, hmac, io, json, os, re, shutil, sys, tempfile, unittest
 from datetime import datetime, timezone
 from unittest import mock
 from pathlib import Path
@@ -1014,7 +1014,7 @@ class CommandLine(Case):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
         s.ledger.no_completion, s.ledger.head_fails_after_submit = True, True   # no completion, and the window over with no head to read
         s.ledger.record_time = "2100-01-01T00:00:00.000000Z"
-        with mock.patch.dict(os.environ, {"CZE_RESOLVE_SECONDS": "0"}):
+        with mock.patch.object(b, "builder_now", lambda: YEAR_2100):
             code, out = self.run_main(s)
         self.assertEqual(code, 2)
         self.assertIn("committed", out)
@@ -1027,7 +1027,7 @@ class CommandLine(Case):
             s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
             s.ledger.no_completion, s.ledger.commit = True, commit
             s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's time is past the window
-            with mock.patch.dict(os.environ, {"CZE_RESOLVE_SECONDS": "0"}):
+            with mock.patch.object(b, "builder_now", lambda: YEAR_2100):   # the builder's clock agrees with Canton's
                 code, out = self.run_main(s)
             self.assertEqual((code, out["committed"], out["resolved"]), (0 if commit else 2, commit, "head" if commit else "window"))
             self.assertNotIn("resolve", out)
@@ -1142,6 +1142,9 @@ class CommandLine(Case):
         self.assertIn("no state found", out["rewindError"])
 
 
+YEAR_2100 = 4102444800.0
+
+
 class NoAnswer(Case):
     """An Advance whose answer did not arrive is settled by its own command id before anything else happens (README.md, "Outcomes")."""
 
@@ -1160,6 +1163,9 @@ class NoAnswer(Case):
         """Canton's time (the record time of the checkpoints it shows) is `after_window` seconds after the end of the command's window."""
         at = result["resolve"]["submittedAt"] + s.cfg.resolve_seconds + after_window
         s.ledger.record_time = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        patch = mock.patch.object(b, "builder_now", lambda: at)   # the clocks agree: only the skew test lets them differ
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def test_a_submit_that_times_out_but_commits_later_is_not_rewound_and_the_next_block_goes_on_top(self):
         t = tx(ALICE, 0)
@@ -1229,6 +1235,32 @@ class NoAnswer(Case):
         committed, _, how, _ = self.settle(s, result)
         self.assertEqual((committed, how), (True, "completion"))
         self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], result["blockHash"])
+
+    def test_canton_time_far_ahead_of_the_builders_clock_does_not_settle_by_the_window_and_says_why(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, False
+        result = self.first(s)
+        s.ledger.record_time = datetime.fromtimestamp(time.time() + s.cfg.resolve_seconds + 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with self.assertRaises(b.Unresolved) as raised:   # past the window by Canton's time, but Canton's clock is an hour ahead of ours
+            self.settle(s, result)
+        self.assertIn("clock", str(raised.exception))
+        self.assertIn("ahead", str(raised.exception))
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])   # reth is untouched
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        reached = time.time() + s.cfg.resolve_seconds + 3600
+        with mock.patch.object(b, "builder_now", lambda: reached):   # the clocks agree again: the window decides
+            committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (False, "window"))
+
+    def test_canton_time_a_few_seconds_ahead_of_the_builders_clock_still_settles_by_the_window(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, False
+        result = self.first(s)
+        at = result["resolve"]["submittedAt"] + s.cfg.resolve_seconds + 1
+        s.ledger.record_time = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        with mock.patch.object(b, "builder_now", lambda: at - 10):   # Canton is 10 s ahead: inside the minute the README assumes
+            committed, _, how, _ = self.settle(s, result)
+        self.assertEqual((committed, how), (False, "window"))
 
     def test_the_head_showing_the_block_settles_it_before_the_window_is_over(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
@@ -1469,6 +1501,25 @@ class CompletionReading(unittest.TestCase):
         for bad in ("yesterday", "2026-10-23T10:00:00+03:00", 5, None):
             self.assertIsNone(b.completion_in([checkpoint(9, bad)], "c")[2], bad)
         self.assertIsNone(b.completion_in([checkpoint(9)], "c")[2])
+
+
+class ResolveSeconds(unittest.TestCase):
+    def config(self, seconds):
+        with tempfile.TemporaryDirectory() as state:
+            (Path(state) / "jwt.hex").write_text("ab" * 32)
+            env = {"CZE_STATE_DIR": state, "CZE_LEDGER_USER": "u", "CZE_BUILDER_PARTY": "p", "CZE_FEE_RECIPIENT": "0x" + "11" * 20}
+            if seconds is not None:
+                env["CZE_RESOLVE_SECONDS"] = seconds
+            with mock.patch.dict(os.environ, env, clear=True):
+                return b.Config.from_env()
+
+    def test_a_window_below_120_seconds_is_refused(self):
+        for seconds in ("0", "119.9", "-5"):
+            with self.assertRaises(b.BuilderError, msg=seconds) as raised:
+                self.config(seconds)
+            self.assertIn("CZE_RESOLVE_SECONDS", str(raised.exception))
+        self.assertEqual(self.config("120").resolve_seconds, 120)
+        self.assertEqual(self.config(None).resolve_seconds, 300)
 
 
 class Pieces(unittest.TestCase):

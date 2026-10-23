@@ -1,5 +1,6 @@
 """The always-on loop (`builder.py run`), against the same fakes as test_builder.py. The tests drive `Producer.step()` by hand with a
 fake clock and a recording `wait`, so no test sleeps; one test runs the real command and signals it."""
+from datetime import datetime, timezone
 import json, os, signal, subprocess, sys, tempfile, threading, time, unittest
 from unittest import mock
 from pathlib import Path
@@ -252,7 +253,7 @@ class Refusals(Loop):
         p.step()
         self.assertIsNone(self.reports[0]["committed"])
         self.assertEqual(self.status()["blocksUnknown"], 1)
-        self.assertEqual(self.status()["waitingToBeResolved"], {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"], "commandId": self.reports[0]["commandId"]})
+        self.assertEqual({k: v for k, v in self.status()["waitingToBeResolved"].items() if k != "why"}, {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"], "commandId": self.reports[0]["commandId"]})
         s.ledger.no_completion, s.ledger.drop_but_commit = False, False
         p.step()   # finds out
         self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"], "updateId": "u1", "completionOffset": 43})
@@ -297,7 +298,7 @@ class Refusals(Loop):
         self.assertEqual((len(self.built(s)), len(s.ledger.submitted), len(self.reports)), (1, 1, 1))
         self.assertEqual(self.waits, [1.0] * 3)
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], first["blockHash"])
-        self.assertEqual(self.status()["waitingToBeResolved"], {"number": HEAD_NUMBER + 1, "hash": first["blockHash"], "commandId": first["commandId"]})
+        self.assertEqual({k: v for k, v in self.status()["waitingToBeResolved"].items() if k != "why"}, {"number": HEAD_NUMBER + 1, "hash": first["blockHash"], "commandId": first["commandId"]})
         s.ledger.land(ok=True)
         s.ledger.late = False
         p.step()
@@ -335,8 +336,22 @@ class Refusals(Loop):
                 self.assertEqual(len(self.reports), 1)   # still waiting
                 self.assertEqual(self.status()["waitingToBeResolved"]["number"], HEAD_NUMBER + 1)
                 s.ledger.record_time = "2100-01-01T00:00:00.000000Z"   # Canton's checkpoints are past it
-            p.step()
+            with mock.patch.object(b, "builder_now", lambda: 4102444800.0):   # and the builder's clock agrees with them
+                p.step()
             self.assertEqual(self.reports[1]["resolved"], "committed" if commit else "not committed")
+
+    def test_a_canton_clock_far_ahead_of_the_builders_is_named_in_the_status(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.no_completion, s.ledger.commit = True, False
+        p = self.producer(s)
+        p.step()
+        s.ledger.record_time = datetime.fromtimestamp(time.time() + 10_000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")   # past the window by Canton's time, an hour ahead of ours
+        self.now[0] += 10_000
+        p.step()
+        self.assertEqual(len(self.reports), 1)   # still waiting: nothing is settled by the window
+        why = self.status()["waitingToBeResolved"]["why"]
+        self.assertIn("clock", why)
+        self.assertIn("ahead", why)
 
     def test_an_advance_with_no_answer_is_still_settled_by_its_command_after_a_restart(self):
         t = tx(ALICE, 0)

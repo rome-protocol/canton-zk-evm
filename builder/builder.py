@@ -84,6 +84,12 @@ class Config:
             jwt_secret = bytes.fromhex((state / "jwt.hex").read_text().strip())
         except (OSError, ValueError) as err:
             raise BuilderError(f"cannot read the Engine secret {state / 'jwt.hex'} (hex, as launch.sh makes it): {err}") from err
+        try:
+            resolve_seconds = float(e.get("CZE_RESOLVE_SECONDS", 300))
+        except ValueError as err:
+            raise BuilderError(f"CZE_RESOLVE_SECONDS is not a number: {err}") from err
+        if not resolve_seconds >= MIN_RESOLVE_SECONDS:   # the window is judged on Canton's time and the builder's clock: a short one is a few seconds of skew away from a wrong answer
+            raise BuilderError(f"CZE_RESOLVE_SECONDS must be at least {MIN_RESOLVE_SECONDS:g} (the window starts on the builder's clock and Canton's time decides it), not {resolve_seconds:g}")
         return cls(
             ws_url=f"ws://127.0.0.1:{e.get('RETH_WS_PORT', 8546)}",
             engine_url=f"http://127.0.0.1:{e.get('RETH_ENGINE_PORT', 8551)}",
@@ -96,7 +102,7 @@ class Config:
             work_dir=e.get("CZE_WORK_DIR", str(state / "builder")),
             make_input_cmd=e.get("CZE_MAKE_INPUT_CMD", str(ROOT / "prover" / "make-input.sh")),
             prove_cmd=e.get("CZE_PROVE_CMD", str(ROOT / "prover" / "prove-one.sh")),
-            resolve_seconds=float(e.get("CZE_RESOLVE_SECONDS", 300)))
+            resolve_seconds=resolve_seconds)
 
 
 # ---- reth ------------------------------------------------------------------------------------------------------
@@ -335,6 +341,8 @@ def split_block(raw: bytes) -> tuple:
 COMPLETION_IDLE_MS = 1000   # how long the completions stream waits for another completion before it ends
 COMPLETION_TIMEOUT = 5.0    # seconds a completions read waits in all
 COMPLETION_LIMIT = 500      # completions a read of the command's own outcome takes at most; a full page is followed by the next
+MIN_RESOLVE_SECONDS = 120.0   # the least CZE_RESOLVE_SECONDS: the window starts on the builder's clock, so it must be long beside the skew the clocks may have
+SKEW_SECONDS = 30.0           # Canton's time further than this ahead of the builder's clock is a skew, not a window that has passed
 COMPLETION_READS = 20       # pages one look for a command's completion reads at most
 
 
@@ -1044,6 +1052,11 @@ def read_saved(cfg: Config) -> list | None:
     return pairs
 
 
+def builder_now() -> float:
+    """The builder's clock, epoch seconds; the window of an unknown outcome starts on it."""
+    return time.time()
+
+
 def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
     """Settles an Advance whose answer did not arrive, by its own command id. Reads the builder user's completions from the ledger end
     recorded before the submit. A completion that succeeded: the block committed, reth's head is made final. One that failed: it did not
@@ -1051,7 +1064,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
     committed when it is this block's hash (it cannot be anything else then). Otherwise the command may still commit, and `Unresolved` is
     raised, until the read has reached an OffsetCheckpoint whose record time is at or past `u["since"]` + cfg.resolve_seconds: that is
     Canton's own time, so a participant that lags or reconnects after it confirmed the command cannot commit it later by our clock being
-    ahead. Then it is settled as not committed and the head is where reth goes. Raises too while the head cannot be read. Returns
+    ahead. Then it is settled as not committed and the head is where reth goes, unless Canton's time is more than 30 s ahead of the builder's
+    clock: that is a skew, the window cannot be judged, and `Unresolved` names it. Raises too while the head cannot be read. Returns
     (committed, the transactions reth refused, how it was settled, {"updateId", "completionOffset"} when known)."""
     bound = u["since"] + cfg.resolve_seconds
     with connect(cfg.ws_url, max_size=None) as ws:
@@ -1073,6 +1087,9 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
                 if unread is not None:
                     raise Unresolved(f"the completion of command {u['commandId']} cannot be read yet: {unread}")
                 raise Unresolved(f"command {u['commandId']} has no completion yet and Canton's time has not passed the last moment it can commit")
+            if found is None and not committed and reached > builder_now() + SKEW_SECONDS:
+                raise Unresolved(f"command {u['commandId']} has no completion, and Canton's clock is ahead of the builder's by {reached - builder_now():.0f} s "
+                                 f"(more than {SKEW_SECONDS:g}): the window cannot be judged until the clocks agree, so it is not settled as not committed")
         if committed:
             reth.forkchoice(u["hash"], u["hash"], u["hash"])
             clear_saved(cfg)
@@ -1514,7 +1531,8 @@ class Producer:
         u = self.unresolved
         try:
             committed, lost, how, info = self.resolve(self.cfg, u, u["pairs"])   # raises while it cannot be read: backoff
-        except Unresolved:
+        except Unresolved as why:
+            u["why"] = str(why)   # the status says what it waits for (no completion yet, a clock skew, ...)
             self.write_status()
             self.wait(max(self.idle, 1.0))
             return
@@ -1607,7 +1625,7 @@ class Producer:
                              for h, u in sorted(self.excluded.items())],
                 "searchingForUnprovable": self.hunt and {"candidates": self.hunt["live"]},
                 "waitingToBeResolved": self.unresolved and {"number": self.unresolved["number"], "hash": self.unresolved["hash"],
-                                                            "commandId": self.unresolved.get("commandId")},
+                                                            "commandId": self.unresolved.get("commandId"), "why": self.unresolved.get("why")},
                 "lostTransactions": self.lost,
                 "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total)}
 
