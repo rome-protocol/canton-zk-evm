@@ -298,6 +298,27 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(body(await get(`/api/contracts/${h(0x99)}/events`)).items).toEqual([]);
   });
 
+  it("marks the logs of a contract-creation transaction as a creation, with no method, because the first bytes of its input are init code", async () => {
+    const [made] = (await sql("select block_number, tx_index from transactions where to_address is null order by block_number, tx_index limit 1")).rows;
+    const [call] = (await sql("select block_number, tx_index from transactions where to_address is not null and method_id is not null order by block_number, tx_index limit 1")).rows;
+    expect(made).toBeDefined();
+    expect(call).toBeDefined();
+    const W = Buffer.alloc(20, 0x5e), topic = Buffer.alloc(32, 0x77);
+    try {
+      for (const [i, r] of [made, call].entries()) {
+        await sql("insert into logs (block_number, log_index, tx_index, address, topic0, data) values ($1, $2, $3, $4, $5, $6)", [r.block_number, 900 + i, r.tx_index, W, topic, Buffer.alloc(0)]);
+      }
+      const items = body(await get(`/api/contracts/0x${W.toString("hex")}/events`)).items as { block: number; txIndex: number; creation: boolean; method: string | null }[];
+      expect(items).toHaveLength(2);
+      for (const e of items) same(e, F.contractEvent);
+      const at = (r: { block_number: string; tx_index: number }) => items.find((e) => e.block === Number(r.block_number) && e.txIndex === r.tx_index)!;
+      expect(at(made)).toMatchObject({ creation: true, method: null });
+      expect(at(call)).toMatchObject({ creation: false, method: expect.stringMatching(/^0x[0-9a-f]{8}$/) });
+    } finally {
+      await sql("delete from logs where address = $1", [W]);
+    }
+  });
+
   it("answers a token with its numbers, and names the ones it does not hold", async () => {
     expect(body(await get(`/api/tokens/${T1}`))).toMatchObject({ standard: "ERC-20", name: "Test Token", symbol: "TT", decimals: 6, totalSupply: "1000", holderCount: 2, transferCount: 3, firstTransferBlock: 2, balanceMode: "derived" });
     expect(body(await get(`/api/tokens/${T2}`))).toMatchObject({ standard: "ERC-1155", decimals: null, totalSupply: null, gatewayWrapped: false });
