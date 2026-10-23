@@ -44,16 +44,19 @@ interface Props {
   kind?: "hash" | "update" | "party";
   /** Shown in full from the start, as a page's own hash is. Otherwise a button shows it in full. */
   full?: boolean;
-  /** Ten characters and eight instead of six and four: for the hash a page is about. */
+  /** Ten characters and eight instead of six and four (an update id: twelve and eight): for the hash a page is about. */
   long?: boolean;
-  /** For a row in a list: the shortened value and nothing else. The copy and expand buttons belong in the header of a detail page, which is the default. */
+  /** How many characters to keep at the start and at the end, where a screen shows a hash its own way. They win over `long` and `plain`. */
+  lead?: number;
+  tail?: number;
+  /** For a row in a list: the shortened value and nothing else, as the list screens show it ("0x1105282d…7abfe4": 0x and eight, then six). The copy and expand buttons belong in the header of a detail page, which is the default. */
   plain?: boolean;
 }
 
 /** A hash or an id, shortened, with a button to copy the whole value and one to read it in full. */
-export function HashLink({ value, to, kind = "hash", full = false, long = false, plain = false }: Props) {
+export function HashLink({ value, to, kind = "hash", full = false, long = false, lead, tail, plain = false }: Props) {
   const [open, setOpen] = useState(full);
-  const text = open ? value : kind === "update" ? shortUpdate(value) : kind === "party" ? party(value) : long ? short(value, 10, 8) : short(value);
+  const text = open ? value : kind === "party" ? party(value) : kind === "update" ? shortUpdate(value, lead ?? (long ? 12 : 8), tail ?? (long ? 8 : 4)) : short(value, lead ?? (long ? 10 : plain ? 10 : 6), tail ?? (long ? 8 : plain ? 6 : 4));
   const body = <span className={`mono${open ? " wrap" : ""}`}>{text}</span>;
   return (
     <span className="hl">

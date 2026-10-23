@@ -10,12 +10,12 @@ export const addressPath = (address: string, label?: Label | null) =>
 
 /**
  * An address in a list: a token or a contract by its name (a document icon, the name and symbol, and a check when its source is
- * verified), anything else by its short address. `label` comes from `useLabels` for the whole page, so a cell asks nothing itself.
+ * verified), anything else by its short address (0x and six, then four, as the screens show it). `label` comes from `useLabels` for the whole page, so a cell asks nothing itself.
  */
 export function AddressCell({ address, label, to }: { address: string; label?: Label | null; to?: string }) {
   const name = labelName(label);
   const href = to ?? addressPath(address, label);
-  if (!name) return <Link className="hx" to={href} title={address}><span className="mono">{short(address)}</span></Link>;
+  if (!name) return <Link className="hx" to={href} title={address}><span className="mono">{short(address, 8, 4)}</span></Link>;
   return (
     <span className="acell">
       <Link className="hx" to={href} title={address}><Icon name="doc" size={13} /><span>{name}</span></Link>

@@ -1,8 +1,11 @@
 /** A hash or id with its middle left out: six characters and four, by default. A value that short already is left whole. */
 export const short = (value: string, lead = 6, tail = 4) => (value.length <= lead + tail + 1 ? value : `${value.slice(0, lead)}…${value.slice(-tail)}`);
 
-/** A Canton update id as on the screens: its first eight characters (the "1220" prefix and four more) and its last four. */
-export const shortUpdate = (id: string) => (id.length <= 13 ? id : `${id.slice(0, 8)}…${id.slice(-4)}`);
+/**
+ * A Canton update id as on the screens: by default its first eight characters (the "1220" prefix and four more) and its last four, as the
+ * home page shows it. The Blocks list shows 10 and 6, the update lists and the Canton record 12 and 6 or 12 and 8: a page passes its own.
+ */
+export const shortUpdate = (id: string, lead = 8, tail = 4) => short(id, lead, tail);
 
 /** Clock time in UTC, to the second. Times on every page are UTC, so that two visitors comparing notes read the same thing. */
 export const utc = (ms: number) => `${new Date(ms).toISOString().slice(11, 19)} UTC`;

@@ -37,7 +37,7 @@ describe("an address cell", () => {
     const a = addr(0x57);
     for (const label of [undefined, { ...usd, address: a, name: null, symbol: null, kind: null, verified: false } as Label, { ...usd, address: a, name: null, symbol: null, kind: "account", verified: false } as Label]) {
       const { unmount } = cell(a, label);
-      expect(screen.getByRole("link", { name: "0x5757…5757" })).toHaveAttribute("href", `/address/${a}`);
+      expect(screen.getByRole("link", { name: "0x575757…5757" })).toHaveAttribute("href", `/address/${a}`);
       expect(screen.queryByRole("img", { name: "Verified" })).toBeNull();
       unmount();
     }
@@ -81,7 +81,7 @@ describe("a token amount chip", () => {
 
   it("names a token it has no label for by its short address, and says so", () => {
     render(<TokenChip move={move({ token: addr(0x77) })} />);
-    const chip = screen.getByText("100 0x7777…7777").closest(".tchip")!;
+    const chip = screen.getByText("100 0x777777…7777").closest(".tchip")!;
     expect(chip.getAttribute("title")).toMatch(/name of this token is not known/i);
   });
 

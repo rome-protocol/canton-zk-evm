@@ -77,6 +77,8 @@ describe("baseFee", () => {
 describe("a Canton update id", () => {
   it("is its first eight characters and its last four, as on the screens", () => {
     expect(shortUpdate("12204594" + "ab".repeat(26) + "b509")).toBe("12204594…b509");
+    expect(shortUpdate("12204594" + "ab".repeat(26) + "b509", 10, 6)).toBe("12204594ab…abb509");
+    expect(shortUpdate("12204594" + "ab".repeat(26) + "b509", 12, 8)).toBe("12204594abab…ababb509");
   });
 });
 

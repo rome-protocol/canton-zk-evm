@@ -15,7 +15,7 @@ export function Amount({ raw, decimals, symbol }: { raw: string; decimals: numbe
  */
 export function TokenChip({ move, label }: { move: TokenMove; label?: Label | null }) {
   const symbol = label?.symbol ?? null;
-  const name = symbol ?? short(move.token);
+  const name = symbol ?? short(move.token, 8, 4);
   const notes: string[] = [];
   if (!symbol) notes.push("The name of this token is not known.");
   if (move.tokenId !== null) {
