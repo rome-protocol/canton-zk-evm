@@ -21,7 +21,7 @@ import { PINS } from "../../test/synthetic-chain.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { REST_FIELDS as F } from "./fields.ts";
 import { createStatsRest } from "./stats-rest.ts";
-import { METRICS, WINDOW_STEPS, busyWindows } from "./stats-routes.ts";
+import { METRICS, WINDOW_STEPS, busyWindows, slowHours } from "./stats-routes.ts";
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
@@ -766,7 +766,17 @@ describe.skipIf(!TEST_URL)("the stats routes: days before the first record", () 
       expect(s.dataSince).toBe(new Date(Date.UTC(2026, 9, 20)).toISOString());
       expect(s.rule.windowsOverByDay).toEqual([{ day: "2026-10-20", windowsOver: 0, windowsCounted: 75 }]); // 00:00 to 12:20; the 30 days before it are not 'idle'
       expect(s.prover.windowsCounted).toBe(75);
+      expect(s.rule.hoursCounted).toBe(12); // the ended hours from 00:00 to 12:00 on the 20th; none of the 29 days before it
     } finally { await e.drop(); }
+  });
+});
+
+describe("slowHours from the first day with a record", () => {
+  it("counts no hour before `since`, and the whole range when `since` is not known", () => {
+    const d0 = Date.UTC(2026, 9, 19), since = d0 + DAY;
+    expect(slowHours([], d0 + 5 * HOUR, since + 3 * HOUR, since).counted).toBe(3);
+    expect(slowHours([], d0 + 5 * HOUR, since + 3 * HOUR).counted).toBe(19 + 3);
+    expect(slowHours([], d0, d0 + DAY, since).counted).toBe(0);
   });
 });
 

@@ -81,8 +81,9 @@ export const SLOW_FINAL_SECONDS = 20;
  * The p95 time to final hour by hour, over the hours of [from, to) that have ended by `t`: how many there are, how many have a time (an hour with no final transaction has none),
  * how many are above 20 s, and the worst one. The rule reads "above 20 s for more than an hour", which a p95 over a whole window can hide.
  */
-export function slowHours(hours: readonly StatsRow[], from: number, t: number) {
-  const first = Math.ceil(from / HOUR) * HOUR, last = Math.floor(t / HOUR) * HOUR;
+export function slowHours(hours: readonly StatsRow[], from: number, t: number, since: number | null = null) {
+  // As for busyWindows: an hour before the first day with a record (`since`) is not counted, so 'an hour with no final transaction' is never said of a stretch with no record.
+  const first = Math.max(Math.ceil(from / HOUR) * HOUR, since === null ? -Infinity : Math.ceil(since / HOUR) * HOUR), last = Math.floor(t / HOUR) * HOUR;
   const counted = Math.max(0, Math.round((last - first) / HOUR));
   let measured = 0, above = 0, worst: { p95: number; at: number } | null = null;
   for (const r of hours) {
@@ -180,7 +181,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const open = await stats.open(t, timeToFinal ? 2 * timeToFinal.p95 : null);
     const stuck = open.stuck > 0 ? await stats.stuck(t) : [];
     const day = today[0];
-    const busy = busyWindows(busyMinutes, from, t, state.since), hourly = slowHours(endedHours ?? rows, from, t);
+    const busy = busyWindows(busyMinutes, from, t, state.since), hourly = slowHours(endedHours ?? rows, from, t, state.since);
     const body = {
       window: name, rows: w.rows, from: iso(from), to: iso(to), asOf: iso(state.asOf), dataSince: iso(state.since),
       tps: pick({ now: lastMinute / 60, peak: peak ? peak.txs / 60 : null, peakAt: iso(peak?.at ?? null) }, F.statsTps),
