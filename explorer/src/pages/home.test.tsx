@@ -61,7 +61,7 @@ describe("the home page's status strip", () => {
     expect(strip().getByText("Canton").closest(".sd")).toHaveClass("bad");
     expect(strip().getByText("Checks").closest(".sd")).toHaveClass("off");
     expect(strip().getByText("Canton cannot be read right now. The blocks below are what the explorer last read.")).toBeInTheDocument();
-    expect(rowsOf()[0]).toHaveTextContent("1220 0303…0303");
+    expect(rowsOf()[0]).toHaveTextContent("12200303…0303");
   });
 
   it("says when the EVM node cannot be read", async () => {
@@ -136,7 +136,7 @@ describe("the list of latest final blocks", () => {
     expect(rows).toHaveLength(2);
     const first = within(rows[0]!);
     expect(first.getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
-    expect(first.getByRole("link", { name: "1220 0303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
+    expect(first.getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(rows[0]).toHaveTextContent("7.40 s");
     expect(rows[0]).toHaveTextContent("11 s ago");
     expect(first.getByText("Final")).toHaveClass("chip-final");

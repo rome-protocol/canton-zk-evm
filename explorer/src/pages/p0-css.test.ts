@@ -49,7 +49,8 @@ describe("the way to final: tx.css wins over block.css whichever sheet comes las
   it("lays the four steps out in four columns, not block.css's six", () => {
     const cols = rules(tx).find(([s]) => s === ".how-steps.way-steps")?.[1] ?? "";
     expect(cols).toContain("grid-template-columns: repeat(4, 1fr)");
-    expect(block).toContain(".how-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(6, 1fr)");
+    const base = rules(block).find(([s]) => s === ".how-steps")?.[1] ?? "";
+    expect(base).toMatch(/grid-template-columns:\s*repeat\(6,\s*1fr\)/);
   });
 
   it("puts the step's dot above its name: room above the text, and the dot and the line lower than block.css's", () => {

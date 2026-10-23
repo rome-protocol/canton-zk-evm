@@ -92,7 +92,7 @@ describe("the blocks page", () => {
     expect(r).toHaveTextContent("3,000,000 10.0%");
     expect(r).toHaveTextContent("7.24 s");
     expect(r).toHaveTextContent("8.09 s");
-    expect(within(r).getByRole("link", { name: "1220 0303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
+    expect(within(r).getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
   });
 
   it("flags a slow proof, and writes minutes past one", async () => {

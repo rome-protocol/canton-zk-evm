@@ -1,8 +1,11 @@
 /** A hash or id with its middle left out: six characters and four, by default. A value that short already is left whole. */
 export const short = (value: string, lead = 6, tail = 4) => (value.length <= lead + tail + 1 ? value : `${value.slice(0, lead)}…${value.slice(-tail)}`);
 
-/** A Canton update id: its "1220" prefix, then eight characters of the rest and the last four. */
-export const shortUpdate = (id: string) => `${id.slice(0, 4)} ${id.slice(4, 8)}…${id.slice(-4)}`;
+/**
+ * A Canton update id as on the screens: by default its first eight characters (the "1220" prefix and four more) and its last four, as the
+ * home page shows it. The Blocks list shows 10 and 6, the update lists and the Canton record 12 and 6 or 12 and 8: a page passes its own.
+ */
+export const shortUpdate = (id: string, lead = 8, tail = 4) => short(id, lead, tail);
 
 /** Clock time in UTC, to the second. Times on every page are UTC, so that two visitors comparing notes read the same thing. */
 export const utc = (ms: number) => `${new Date(ms).toISOString().slice(11, 19)} UTC`;
@@ -97,3 +100,24 @@ export const sec = (s: number) => (s < 1 ? `${s.toFixed(2)} s` : s < 100 ? `${s.
 export const pct = (r: number) => (r >= 1 ? "100%" : `${Math.floor(r * 1000) / 10}%`);
 export const trim = (n: number, places: number) => String(+n.toFixed(places));
 export const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
+
+/** A fee in whole coins to ten decimals, cut and never rounded, with the zeros at the end left off ("0.0000035364"). A fee below the tenth place is "<0.0000000001", never "0". */
+export function feeOf(raw: string, decimals: number): string {
+  const v = BigInt(raw);
+  if (v === 0n) return "0";
+  const places = Math.min(10, decimals), cut = 10n ** BigInt(decimals - places);
+  const scaled = v / cut; // in units of 10^-places
+  if (scaled === 0n) return `<0.${"0".repeat(places - 1)}1`;
+  const unit = 10n ** BigInt(places);
+  const fraction = (scaled % unit).toString().padStart(places, "0").replace(/0+$/, "");
+  return count(scaled / unit) + (fraction ? `.${fraction}` : "");
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** A date and time as 'DD Mon YYYY, HH:MM:SS UTC' ("20 Oct 2026, 17:44:57 UTC"): the one way every page writes one. Takes milliseconds or an ISO time. */
+export function dateTime(at: number | string): string {
+  const d = new Date(typeof at === "number" ? at : Date.parse(at));
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${d.toISOString().slice(11, 19)} UTC`;
+}
