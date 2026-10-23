@@ -31,6 +31,7 @@ cleanup() {
     echo "--- reth log (tail)"; docker logs --tail 30 "${RETH_CONTAINER:-cze-reth}" 2>&1 || true
     echo "--- explorer log (tail)"; docker logs --tail 30 "${EXPLORER_CONTAINER:-cze-explorer}" 2>&1 || true
     echo "--- indexer log (tail)"; docker logs --tail 30 "$EXPLORER_INDEXER_CONTAINER" 2>&1 || true
+    echo "--- verifier log (tail)"; docker logs --tail 30 "${EXPLORER_VERIFIER_CONTAINER:-cze-explorer-verifier}" 2>&1 || true
   fi
   "$ROOT/explorer/run.sh" stop || true
   "$ROOT/network/explorer-db.sh" wipe || true
