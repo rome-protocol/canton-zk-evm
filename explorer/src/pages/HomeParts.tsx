@@ -120,10 +120,10 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
               <tbody>
                 {blocks.map((b) => (
                   <tr key={b.number}>
-                    <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></td>
+                    <td><span className="idcell"><Icon name="cube" size={14} /><span><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></span></span></td>
                     <td className="r">{b.txCount}</td>
                     <td className="r" title="from the producer's cut to Canton's record time">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
-                    <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /></td>
+                    <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} plain lead={8} tail={4} /></td>
                     <td><Chip status="final" /></td>
                   </tr>
                 ))}

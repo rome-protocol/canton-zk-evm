@@ -168,6 +168,16 @@ describe("the list of latest final blocks", () => {
     expect(within(rows[1]!).getAllByRole("cell")[1]).toHaveTextContent("2");
   });
 
+  it("draws the cube before each block, and the Canton update as plain text with no copy or expand button, as screen 01 does", async () => {
+    await home();
+    const first = rowsOf()[0]!;
+    expect(first.querySelector("td svg.ic")).not.toBeNull();
+    expect(within(first).getAllByRole("cell")[0]!.querySelector(".idcell")).not.toBeNull();
+    expect(within(first).queryByRole("button")).toBeNull();
+    // The update is 8 characters, then 4: "12204594…b509".
+    expect(within(first).getByRole("link", { name: "12200303…0303" })).toBeInTheDocument();
+  });
+
   it("gives the time to final from the producer's cut to Canton's record time, and a dash where the producer's log has none", async () => {
     // The block was made 7.4 s before Canton's record, but its way to final began at the cut and took 8.09 s.
     await home({}, 200, [blockItem(3, { finalSeconds: 8.09 }), blockItem(2, { finalSeconds: 89.3 }), blockItem(1, { finalSeconds: null })]);
