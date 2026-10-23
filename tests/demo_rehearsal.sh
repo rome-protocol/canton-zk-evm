@@ -109,8 +109,8 @@ EXPLORER=http://127.0.0.1:${EXPLORER_PORT:-8088}
 : > "$WORK/ledger-calls"; : > "$WORK/reth-calls"
 background ledger-calls python3 "$ROOT/tests/demo_call_log.py" 7597 http://127.0.0.1:7577 "$WORK/ledger-calls"
 background reth-calls python3 "$ROOT/tests/demo_call_log.py" 8595 "http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$WORK/reth-calls"
-# The indexer asks reth for trace_ methods as well, so it reads reth directly; the explorer's own calls to reth are logged. Both read Canton through the log.
-LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 INDEXER_RETH_RPC_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$ROOT/explorer/run.sh" start
+# The indexer asks reth for trace_ methods as well, so it reads reth directly; the explorer's own calls to reth are logged. Both read Canton through the log. The Etherscan door's proxy asks the public RPC, so it is on (PUBLIC_RPC=1).
+PUBLIC_RPC=1 LEDGER_URL=http://127.0.0.1:7597 RETH_RPC_URL=http://127.0.0.1:8595 INDEXER_RETH_RPC_URL="http://127.0.0.1:${RETH_HTTP_PORT:-8545}" "$ROOT/explorer/run.sh" start
 # Healthy means the indexer has started and its checks are fresh; the blocks follow as it writes them.
 for _ in $(seq 1 120); do curl -sf "$EXPLORER/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -sf "$EXPLORER/healthz" >/dev/null || fail "the explorer is not healthy: $(curl -s "$EXPLORER/healthz" | cut -c1-600)"
