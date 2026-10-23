@@ -78,12 +78,12 @@ class EveryOutcome(Lines):
 
     def test_an_unknown_outcome_is_resolved_later_on_the_same_attempt(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         p = self.producer(s)
         p.step()
         self.assertEqual(self.one(s, "answered")["outcome"], "unknown")
         self.assertNotIn("resolved", self.events(s))
-        s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False
+        s.ledger.no_completion, s.ledger.drop_but_commit = False, False
         p.step()
         self.assertEqual(self.one(s, "resolved")["outcome"], "committed")
         self.assertEqual(self.one(s, "resolved")["attempt"], 1)
@@ -91,10 +91,10 @@ class EveryOutcome(Lines):
 
     def test_an_unknown_outcome_that_was_not_committed_is_resolved_as_not_committed(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.commit, s.ledger.head_fails_after_submit = False, True
+        s.ledger.commit, s.ledger.no_completion = False, True
         p = self.producer(s)
         p.step()
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         p.step()
         self.assertEqual(self.one(s, "resolved")["outcome"], "not committed")
         self.assertNotIn("final_seen", self.events(s))
@@ -136,11 +136,11 @@ class EveryOutcome(Lines):
     def test_an_outcome_that_is_unknown_at_a_restart_is_resolved_by_the_next_run(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         first = self.producer(s)
         first.step()
         self.assertEqual(self.one(s, "answered")["outcome"], "unknown")
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         second = self.producer(s)   # a new process: the old one's unresolved outcome is gone from memory
         second.step()
         self.assertNotEqual(first.journal.run_id, second.journal.run_id)

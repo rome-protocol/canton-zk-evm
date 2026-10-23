@@ -218,15 +218,16 @@ class OneBlock(Case):
         self.assertIs(result["committed"], False)
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
 
-    def test_a_lost_reply_and_an_unreadable_head_is_unknown_and_reth_stays_where_it_is(self):
-        for commit in (True, False):   # whether or not Canton committed, the builder cannot tell
+    def test_a_lost_reply_with_no_completion_yet_is_unknown_and_reth_stays_where_it_is(self):
+        for commit in (True, False):   # whether or not Canton commits, the builder cannot tell yet
             s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-            s.ledger.commit, s.ledger.head_fails_after_submit = commit, True
+            s.ledger.commit, s.ledger.no_completion = commit, True
             result = b.build_block(s.cfg)
             self.assertIsNone(result["committed"], result)
             self.assertEqual(result["number"], HEAD_NUMBER + 1)
             self.assertIn("no usable reply from Canton", result["reason"])
-            self.assertIn("Canton's head", result["reason"])
+            self.assertIn("no completion yet", result["reason"])
+            self.assertEqual(result["resolve"]["begin"], 42)   # the ledger end read before the submit
             self.assertEqual(len(s.ledger.submitted), 1)
             # reth is not moved: the last forkchoice is the one that made the new block its head
             n_hash = result["blockHash"]
@@ -234,10 +235,10 @@ class OneBlock(Case):
 
     def test_the_next_run_after_an_unknown_outcome_starts_from_canton_head(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         first = b.build_block(s.cfg)
         self.assertIsNone(first["committed"])
-        s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False   # Canton is reachable again; it had committed
+        s.ledger.no_completion, s.ledger.drop_but_commit = False, False   # Canton is reachable again; it had committed
         second = b.build_block(s.cfg)
         self.assertEqual(second["number"], HEAD_NUMBER + 2)
         h = first["blockHash"]
@@ -746,7 +747,7 @@ class Rebuilding(LegCase):
     def test_an_unknown_outcome_lists_the_legs_too(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]}, terms=[TERMS], drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         s.reth.tx_legs[t["hash"]] = [PAY]
         result = b.build_block(s.cfg)
         self.assertIsNone(result["committed"])
@@ -1011,7 +1012,7 @@ class CommandLine(Case):
 
     def test_unknown_outcome_exits_2_with_committed_null(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         code, out = self.run_main(s)
         self.assertEqual(code, 2)
         self.assertIn("committed", out)

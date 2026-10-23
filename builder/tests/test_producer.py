@@ -246,13 +246,13 @@ class Refusals(Loop):
 
     def test_an_unknown_outcome_that_canton_did_commit_is_counted_and_the_chain_goes_on(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.head_fails_after_submit = True
+        s.ledger.no_completion = True
         p = self.producer(s)
         p.step()
         self.assertIsNone(self.reports[0]["committed"])
         self.assertEqual(self.status()["blocksUnknown"], 1)
         self.assertEqual(self.status()["waitingToBeResolved"], {"number": HEAD_NUMBER + 1, "hash": self.reports[0]["blockHash"]})
-        s.ledger.head_fails_after_submit, s.ledger.drop_but_commit = False, False
+        s.ledger.no_completion, s.ledger.drop_but_commit = False, False
         p.step()   # finds out
         self.assertEqual(self.reports[1], {"resolved": "committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
         self.assertEqual((self.status()["blocksCommitted"], self.status()["lastCommitted"]["number"]), (1, HEAD_NUMBER + 1))
@@ -263,7 +263,7 @@ class Refusals(Loop):
     def test_an_unknown_outcome_that_canton_did_not_commit_puts_the_transactions_back_and_they_go_in_later(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         p = self.producer(s)
         p.step()
         self.assertIsNone(self.reports[0]["committed"])
@@ -272,7 +272,7 @@ class Refusals(Loop):
         self.assertEqual(len(self.built(s)), 1)
         self.assertIn("error", self.reports[1])
         self.assertEqual(self.waits[-1], 1)
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         p.step()
         self.assertEqual(self.reports[2], {"resolved": "not committed", "number": HEAD_NUMBER + 1, "blockHash": self.reports[0]["blockHash"]})
         self.assertEqual(self.in_pool(s), {t["hash"]})
@@ -284,10 +284,10 @@ class Refusals(Loop):
     def test_a_transaction_that_cannot_be_put_back_is_listed_in_the_status(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         p = self.producer(s)
         p.step()
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         s.reth.refuse_resend = True
         p.step()
         self.assertEqual(self.reports[-1]["lostTransactions"], [{"transaction": t["hash"], "error": self.reports[-1]["lostTransactions"][0]["error"]}])
@@ -746,11 +746,11 @@ class SavedBlock(Loop):
     def test_a_block_whose_outcome_is_not_known_keeps_them_until_it_is_settled(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
-        s.ledger.garbage_reply, s.ledger.commit, s.ledger.head_fails_after_submit = True, False, True
+        s.ledger.garbage_reply, s.ledger.commit, s.ledger.no_completion = True, False, True
         p = self.producer(s)
         p.step()
         self.assertTrue(self.saved(s).exists())
-        s.ledger.head_fails_after_submit = False
+        s.ledger.no_completion = False
         p.step()
         self.assertFalse(self.saved(s).exists())
         self.assertEqual(self.in_pool(s), {t["hash"]})
