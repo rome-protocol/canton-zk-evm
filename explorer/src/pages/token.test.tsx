@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenDetail } from "../api.ts";
-import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
+import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
 
+afterEach(() => { vi.useRealTimers(); });
 const A = addr(0xcb);
 const derived = <T,>(items: T[], next: string | null = null, d = true) => reply({ ...page(items, next), derived: d });
 const HOLDERS = [tokenHolder(0xe3, "995000000000"), tokenHolder(0xa1, "2500000000"), tokenHolder(0xa2, "2500000"), tokenHolder(0xa3, "1")];
@@ -20,7 +23,7 @@ async function open(t: TokenDetail = tokenDetail(), subs: Subs = {}, path = `/to
   return calls;
 }
 const card = (k: string) => screen.getByText(k, { selector: ".stat-k" }).parentElement!;
-const rows = () => within(screen.getByRole("table")).getAllByRole("row").slice(1);
+const rows = (name = "Token holders") => within(screen.getByRole("table", { name })).getAllByRole("row").slice(1);
 
 describe("the token page: the overview", () => {
   it("names the token, its standard and whether its source is verified, and links back to the list", async () => {
@@ -124,7 +127,7 @@ describe("the token page: the overview", () => {
 describe("the token page: holders", () => {
   it("lists the holders in the order the server gave, biggest balance first, with the share of the supply", async () => {
     const calls = await open();
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(calls).toContain(`/api/tokens/${A}/holders?limit=25`);
     expect(rows()).toHaveLength(4);
     expect(rows()[0]).toHaveTextContent("995,000");
@@ -133,18 +136,18 @@ describe("the token page: holders", () => {
     expect(rows()[1]).toHaveTextContent("0.25%");
     expect(rows()[2]).toHaveTextContent("2.5");
     expect(rows()[2]).toHaveTextContent("<0.01%");
-    expect(within(rows()[0]!).getByRole("link", { name: "0xe3e3…e3e3" })).toHaveAttribute("href", `/address/${addr(0xe3)}`);
+    expect(within(rows()[0]!).getByRole("link", { name: "0xe3e3e3e3…e3e3e3" })).toHaveAttribute("href", `/address/${addr(0xe3)}`);
   });
 
   it("says a share too small to show is below it, never 0", async () => {
     await open(tokenDetail(0xcb, { totalSupply: "1000000000000" }), { holders: () => derived([tokenHolder(0xa3, "1")]) });
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(rows()[0]).toHaveTextContent("<0.01%");
   });
 
   it("numbers the rows on a later page from where the page before stopped", async () => {
     await open(tokenDetail(), { holders: (p) => derived(HOLDERS.slice(0, 2), p.includes("before=") ? null : "cursor") });
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     await userEvent.click(screen.getByRole("button", { name: "Older page" }));
     await screen.findByText("Page 2");
     expect(rows()[0]!.querySelector("td")).toHaveTextContent("26");
@@ -152,7 +155,7 @@ describe("the token page: holders", () => {
 
   it("shows an ERC-721 holder's balance as a count of tokens, as the API gives it, with no share and no token id", async () => {
     await open(tokenDetail(0xcb, { standard: "ERC-721", decimals: null, totalSupply: "3" }), { holders: () => derived([tokenHolder(0xa1, "2"), tokenHolder(0xa2, "1")]) });
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(screen.queryByRole("columnheader", { name: "Share" })).toBeNull();
     expect(screen.queryByRole("columnheader", { name: "Token id" })).toBeNull();
     expect(rows()[0]).toHaveTextContent("2 tokens");
@@ -162,20 +165,20 @@ describe("the token page: holders", () => {
 
   it("names the final block the holders are as of, and says nothing of it while the explorer is still reading", async () => {
     await open();
-    await screen.findByRole("table");
-    expect(screen.getByLabelText("Holders")).toHaveTextContent("as of final block 3");
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("region", { name: "Holder distribution" })).toHaveTextContent("as of final block 3");
   });
 
   it("names no block while the explorer is still reading, because the list is then short of the newest rows", async () => {
     await open(tokenDetail(), { holders: () => derived(HOLDERS, null, false) });
-    await screen.findByRole("table");
-    expect(screen.getByLabelText("Holders")).not.toHaveTextContent("as of final block");
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("region", { name: "Holders" })).not.toHaveTextContent("as of final block");
     expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
   });
 
   it("shows how much of the supply the top holder has, with a bar and a key for the biggest holders", async () => {
     await open();
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     const box = screen.getByRole("region", { name: "Holder distribution" });
     expect(box).toHaveTextContent("Share held by the top holder");
     expect(box).toHaveTextContent("99.50%");
@@ -186,19 +189,19 @@ describe("the token page: holders", () => {
 
   it("shows no distribution for an NFT", async () => {
     await open(tokenDetail(0xcb, { standard: "ERC-721", decimals: null, totalSupply: "3" }), { holders: () => derived([tokenHolder(0xa1, "2")]) });
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
   });
 
   it("shows no distribution when the supply is not known", async () => {
     await open(tokenDetail(0xcb, { totalSupply: null, totalSupplyBlock: null }));
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
   });
 
   it("shows the distribution on the first page only", async () => {
     await open(tokenDetail(), { holders: (p) => derived(HOLDERS.slice(0, 2), p.includes("before=") ? null : "cursor") });
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(screen.getByRole("region", { name: "Holder distribution" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Older page" }));
     await screen.findByText("Page 2");
@@ -207,7 +210,7 @@ describe("the token page: holders", () => {
 
   it("shows an ERC-1155 balance by id with no share, because the supply of one id is not known", async () => {
     await open(tokenDetail(0xcb, { standard: "ERC-1155", name: null, symbol: null, decimals: null, totalSupply: null, totalSupplyBlock: null }), { holders: () => derived([tokenHolder(0xa1, "40", { tokenId: "7" })]) });
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token holders" });
     expect(screen.queryByRole("columnheader", { name: "Share" })).toBeNull();
     expect(rows()[0]).toHaveTextContent("#7");
     expect(rows()[0]).toHaveTextContent("40");
@@ -232,43 +235,35 @@ describe("the token page: holders", () => {
 describe("the token page: transfers", () => {
   const go = async (items: ReturnType<typeof tokenTransfer>[], t = tokenDetail()) => {
     const calls = await open(t, { transfers: () => derived(items) });
-    await userEvent.click(screen.getByRole("tab", { name: /Transfers/ }));
-    await screen.findByRole("table");
+    await screen.findByRole("table", { name: "Token transfers" });
     return calls;
   };
 
   it("lists the transfers with the amount in the token's decimals, and is in the link", async () => {
     const calls = await go([tokenTransfer(0xd1), tokenTransfer(0xd2, { amount: "2500000", from: "0x" + "00".repeat(20) })]);
     expect(calls).toContain(`/api/tokens/${A}/transfers?limit=25`);
-    expect(screen.getByRole("tab", { name: /Transfers/ })).toHaveAttribute("aria-selected", "true");
-    expect(rows()).toHaveLength(2);
-    expect(rows()[0]).toHaveTextContent("100 tUSD");
-    expect(rows()[1]).toHaveTextContent("2.5 tUSD");
-    expect(within(rows()[0]!).getByRole("link", { name: "0xd1d1…d1d1" })).toHaveAttribute("href", `/tx/${"0x" + "d1".repeat(32)}`);
-    expect(within(rows()[0]!).getByRole("link", { name: "20" })).toHaveAttribute("href", "/block/20");
-  });
-
-  it("opens on the transfers when the link says so", async () => {
-    await open(tokenDetail(), { transfers: () => derived([tokenTransfer(0xd1)]) }, `/token/${A}?tab=transfers`);
-    await screen.findByRole("table");
-    expect(screen.getByRole("tab", { name: /Transfers/ })).toHaveAttribute("aria-selected", "true");
+    expect(rows("Token transfers")).toHaveLength(2);
+    expect(rows("Token transfers")[0]).toHaveTextContent("100 tUSD");
+    expect(rows("Token transfers")[1]).toHaveTextContent("2.5 tUSD");
+    expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "0xd1d1d1d1…d1d1d1" })).toHaveAttribute("href", `/tx/${"0x" + "d1".repeat(32)}`);
+    expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "20" })).toHaveAttribute("href", "/block/20");
   });
 
   it("marks a mint, which comes from the zero address", async () => {
     await go([tokenTransfer(0xd1, { from: "0x" + "00".repeat(20) })]);
-    expect(within(rows()[0]!).getByText("mint")).toBeInTheDocument();
+    expect(within(rows("Token transfers")[0]!).getByText("mint")).toBeInTheDocument();
   });
 
   it("shows an NFT transfer by its id, and an ERC-1155 transfer by its id and amount", async () => {
     await go([tokenTransfer(0xd1, { amount: null, tokenId: "3" }), tokenTransfer(0xd2, { amount: "40", tokenId: "7" })], tokenDetail(0xcb, { standard: "ERC-1155", name: null, symbol: null, decimals: null }));
-    expect(rows()[0]).toHaveTextContent("#3");
-    expect(rows()[1]).toHaveTextContent("#7");
-    expect(rows()[1]).toHaveTextContent("40");
+    expect(rows("Token transfers")[0]).toHaveTextContent("#3");
+    expect(rows("Token transfers")[1]).toHaveTextContent("#7");
+    expect(rows("Token transfers")[1]).toHaveTextContent("40");
   });
 
   it("shows the raw amount, and says why, when the decimals are not known", async () => {
     await go([tokenTransfer(0xd1, { amount: "123456" })], tokenDetail(0xcb, { decimals: null, symbol: null, name: null, metadataStatus: "failed" }));
-    expect(within(rows()[0]!).getByTitle("The token's decimals are not known, so this is the raw amount")).toHaveTextContent("123,456");
+    expect(within(rows("Token transfers")[0]!).getByTitle("The token's decimals are not known, so this is the raw amount")).toHaveTextContent("123,456");
   });
 
   it("says only final transfers are listed, and that a reverted one is not a transfer", async () => {
@@ -279,7 +274,147 @@ describe("the token page: transfers", () => {
 
   it("says there are no transfers", async () => {
     await open(tokenDetail(), { transfers: () => derived([]) });
-    await userEvent.click(screen.getByRole("tab", { name: /Transfers/ }));
     expect(await screen.findByText("No transfers yet.")).toBeInTheDocument();
+  });
+});
+
+describe("the token page: one stacked page", () => {
+  it("is one page with no tabs: the holders, the transfers and the information, one under the other", async () => {
+    await open(tokenDetail(), { transfers: () => derived([tokenTransfer(0xd1)]) });
+    await screen.findByRole("table", { name: "Token transfers" });
+    expect(screen.queryByRole("tablist")).toBeNull();
+    const cards = ["Holder distribution", "Transfers", "Token information"].map((n) => screen.getByRole("region", { name: n }));
+    cards.slice(1).forEach((c, i) => expect(cards[i]!.compareDocumentPosition(c) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy());
+  });
+
+  it("puts the holders table beside the distribution, in two columns, with a space before the sub-title", async () => {
+    await open();
+    const box = await screen.findByRole("region", { name: "Holder distribution" });
+    expect(box.querySelector(".holds-cols")).not.toBeNull();
+    expect(within(box).getByRole("table", { name: "Token holders" })).toBeInTheDocument();
+    expect(box.querySelector(".card-title")!.textContent).toBe("Holder distribution as of final block 3");
+  });
+
+  it("tags the holder the API says made the token as its creator", async () => {
+    await open(tokenDetail(0xcb, { creator: addr(0xe3) }));
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(within(rows()[0]!).getByText("creator")).toBeInTheDocument();
+    expect(within(rows()[1]!).queryByText("creator")).toBeNull();
+  });
+
+  it("claims no owner, because the API does not serve one", async () => {
+    await open(tokenDetail(0xcb, { creator: addr(0xe3) }));
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.queryByText(/owner/i)).toBeNull();
+  });
+
+  it("gives the transfers a Method, an age and a CSV of the newest 1,000", async () => {
+    const t = tokenTransfer(0xd1, { methodId: "0xa9059cbb", timestamp: Math.floor(Date.now() / 1000) - 7200 });
+    await open(tokenDetail(), { transfers: () => derived([t, tokenTransfer(0xd2, { creation: false, methodId: null })]) });
+    const t20 = await screen.findByRole("table", { name: "Token transfers" });
+    expect(within(t20).getByRole("columnheader", { name: "Method" })).toBeInTheDocument();
+    expect(rows("Token transfers")[0]).toHaveTextContent("transfer");
+    expect(rows("Token transfers")[0]).toHaveTextContent("2 h ago");
+    const csv = within(screen.getByRole("region", { name: "Transfers" })).getByRole("link", { name: /CSV/ });
+    expect(csv).toHaveAttribute("href", `/api/tokens/${A}/transfers?format=csv`);
+  });
+
+  it("says the transfers are the final ones only", async () => {
+    await open(tokenDetail(), { transfers: () => derived([tokenTransfer(0xd1)]) });
+    const box = await screen.findByRole("region", { name: "Transfers" });
+    expect(box.querySelector(".card-title")).toHaveTextContent("newest first, final blocks only");
+  });
+
+  it("gives the token information in three columns, with where and by which transaction it was created", async () => {
+    await open(tokenDetail(0xcb, { creator: addr(0xe3), creationBlock: 18 }), { contract: () => reply(contractDetail(0xcb, { creationTxHash: "0x" + "d7".repeat(32), creationBlock: 18 })) });
+    const box = screen.getByRole("region", { name: "Token information" });
+    expect(box.querySelector(".kv-3")).not.toBeNull();
+    const created = await within(box).findByText("Block 18");
+    expect(created.closest("dd")).toHaveTextContent(/Block 18\s*·\s*0xd7d7d7…d7d7/);
+    expect(within(created.closest("dd") as HTMLElement).getByRole("link", { name: "0xd7d7d7…d7d7" })).toHaveAttribute("href", `/tx/${"0x" + "d7".repeat(32)}`);
+    expect(within(box).getByRole("link", { name: "Block 18" })).toHaveAttribute("href", "/block/18");
+    expect(within(box).getByText("Creator")).toBeInTheDocument();
+  });
+
+  it("says a token of the genesis state was made by no transaction", async () => {
+    await open(tokenDetail(0xcb, { creator: null, creationBlock: null, createdAt: null }), { contract: () => reply(contractDetail(0xcb, { origin: "genesis", creator: null, creationBlock: null, creationTxHash: null })) });
+    expect(await within(screen.getByRole("region", { name: "Token information" })).findByText("Genesis state")).toBeInTheDocument();
+  });
+
+  it("breaks a long supply only after a comma", async () => {
+    await open(tokenDetail(0xcb, { symbol: "TKA", decimals: 18, totalSupply: "1" + "0".repeat(24) }));
+    const v = card("Total supply").querySelector(".stat-v")!;
+    expect(v.querySelectorAll("wbr")).toHaveLength(2);
+    expect(v.innerHTML).toContain(",<wbr>");
+  });
+
+  it("never puts the symbol on a raw amount: the decimals are not known", async () => {
+    await open(tokenDetail(0xcb, { decimals: null, symbol: "tUSD", totalSupply: "12345" }));
+    expect(card("Total supply")).not.toHaveTextContent("tUSD");
+    expect(card("Total supply")).toHaveTextContent("12,345");
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("columnheader", { name: /Balance/ })).not.toHaveTextContent("tUSD");
+  });
+
+  it("says an ERC-1155 has no total supply by standard", async () => {
+    await open(tokenDetail(0xcb, { standard: "ERC-1155", name: null, symbol: null, decimals: null, totalSupply: null, totalSupplyBlock: null }));
+    expect(card("Total supply")).toHaveTextContent("ERC-1155 has no total supply");
+    expect(card("Total supply")).not.toHaveTextContent("has not told it");
+  });
+
+  it("says a read balance is read at the last block that moved it, not as of the final block", async () => {
+    await open(tokenDetail(0xcb, { balanceMode: "read" }));
+    const box = await screen.findByRole("region", { name: "Holder distribution" });
+    expect(box).toHaveTextContent("each balance is read at the last block that moved it");
+    expect(box).not.toHaveTextContent("as of final block");
+  });
+
+  it("asks for the token again at the lists' interval, so the supply and the counts move with the lists", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let supply = "1000000000";
+    fakeApi(route({
+      tokenPages: (_a, sub) => (sub === "" ? reply(tokenDetail(0xcb, { totalSupply: supply })) : derived(sub === "holders" ? HOLDERS : [])),
+      contracts: () => reply(contractDetail(0xcb)),
+    }));
+    renderApp(`/token/${A}`);
+    await screen.findByRole("heading", { level: 1 });
+    expect(card("Total supply")).toHaveTextContent("1,000");
+    supply = "2000000000";
+    await tick(5000);
+    expect(card("Total supply")).toHaveTextContent("2,000");
+    vi.useRealTimers();
+  });
+});
+
+describe("the token page: review fixes", () => {
+  const icons = (el: HTMLElement) => [...within(el).queryAllByRole("button", { name: /Show in full|Copy/ })];
+
+  it("lists plain hashes in the holders and transfers tables and in the information card: no copy or show-in-full icons on a row", async () => {
+    await open(tokenDetail(0xcb, { creator: addr(0xe3), creationBlock: 18 }), { transfers: () => derived([tokenTransfer(0xd1), tokenTransfer(0xd2)]), contract: () => reply(contractDetail(0xcb, { creationTxHash: "0x" + "d7".repeat(32), creationBlock: 18 })) });
+    await screen.findByRole("table", { name: "Token transfers" });
+    expect(icons(screen.getByRole("table", { name: "Token holders" }))).toHaveLength(0);
+    expect(icons(screen.getByRole("table", { name: "Token transfers" }))).toHaveLength(0);
+    const info = screen.getByRole("region", { name: "Token information" });
+    await within(info).findByText("Block 18");
+    expect(icons(info)).toHaveLength(0);
+  });
+
+  it("says in the supply value itself that an ERC-1155 has no total supply", async () => {
+    await open(tokenDetail(0xcb, { standard: "ERC-1155", name: null, symbol: null, decimals: null, totalSupply: null, totalSupplyBlock: null }));
+    const v = card("Total supply").querySelector(".stat-v")!;
+    expect(v.querySelector("[title]")).toHaveAttribute("title", "ERC-1155 has no total supply");
+    expect(v.querySelector("[title]")!.getAttribute("title")).not.toMatch(/not told/);
+  });
+
+  it("keeps a token name of the longest stored length inside the page: the title wraps anywhere", async () => {
+    await open(tokenDetail(0xcb, { name: "N".repeat(256) }));
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("N".repeat(256));
+    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    expect(css).toMatch(/\.ptitle h1\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*min-width:\s*0|\.ptitle h1\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
+  });
+
+  it("does not repeat the contract address under the title: the Contract card carries it", async () => {
+    await open();
+    expect(document.querySelector(".bighash")).toBeNull();
   });
 });
