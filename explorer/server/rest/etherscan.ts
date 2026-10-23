@@ -582,7 +582,7 @@ const licenseOf = (v: string | null): string | undefined => (v === null ? undefi
 
 /**
  * The contract module. A verification is the verifier's: `verifysourcecode` queues the job and answers its GUID, and the answers about it are the job's texts. What is read
- * is read from the indexer's rows (the verified source, the proxies table, the contracts' creations), final blocks only. A proxy check is answered at once from the proxies table.
+ * is read from the indexer's rows (the verified source, the proxies table, the contracts' creations), final blocks only. A proxy check reads the proxy's slots at the final head, writes `proxies` and answers at once.
  */
 const contract: Record<string, Handler> = {
   async verifysourcecode(c) {

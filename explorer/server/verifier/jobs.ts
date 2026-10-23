@@ -70,7 +70,7 @@ export class JobQueue {
   }
 
   /**
-   * Records a proxy verification that was answered on the spot (the proxies table already says what the implementation is), as an ended job of kind `proxy`, so that
+   * Records a proxy verification that was answered on the spot (the slots were just read at the final head), as an ended job of kind `proxy`, so that
    * `checkproxyverification` has a GUID to answer by. It counts against the client's hourly limit like a source does. No verifier takes it: only waiting jobs are claimed.
    */
   async recordProxy(address: string, clientKey: Buffer, status: "pass" | "fail", result: string): Promise<string> {
