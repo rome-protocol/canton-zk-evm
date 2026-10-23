@@ -10,7 +10,7 @@ import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
-import { count, dateTime, gwei, short } from "../format.ts";
+import { count, dateTime, exact, feeOf, gwei, short } from "../format.ts";
 import { labelName, useLabels } from "../labels.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { InputData } from "./TxDecoded.tsx";
@@ -54,6 +54,10 @@ function NotFinal({ t }: { t: ApiTxSeen }) {
 /** An amount in the chain's coin. Until the server has named the coin there is no amount to show. */
 const InCoin = ({ raw, coin }: { raw: string; coin: Coin | undefined }) =>
   coin ? <Amount raw={raw} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>;
+
+/** A fee in the chain's coin to ten decimals, cut and never rounded (the exact fee in the tooltip). */
+const FeeIn = ({ raw, coin }: { raw: string; coin: Coin | undefined }) =>
+  coin ? <span title={`${exact(raw, coin.decimals)} ${coin.symbol}`}><span className="num">{feeOf(raw, coin.decimals)}</span> <bdi>{coin.symbol}</bdi></span> : <span className="muted">…</span>;
 
 /** What the transaction's ERC-20 transfer did. A reverted one moved nothing, and says so. */
 function TransferItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
@@ -122,7 +126,7 @@ function FeeFacts({ t, coin, block, detail }: { t: ApiTxSeen; coin: Coin | undef
           </>}
         </Item>
       )}
-      {burn !== null && <Item label="Burnt fees"><InCoin raw={burn} coin={coin} /></Item>}
+      {burn !== null && <Item label="Burnt fees"><FeeIn raw={burn} coin={coin} /></Item>}
     </>
   );
 }
@@ -151,7 +155,7 @@ function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coi
         <TransferItem t={t} waiting={waiting} />
         <Item label="Value"><InCoin raw={t.value} coin={coin} /></Item>
         <Item label="Transaction fee">
-          {t.fee !== null ? <InCoin raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}
+          {t.fee !== null ? <FeeIn raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}
         </Item>
         {t.gasPrice !== null && <Item label="Gas price"><span className="num">{gwei(t.gasPrice)}</span></Item>}
         {t.gasUsed === null ? <Item label="Gas limit"><span className="num">{count(t.gas)}</span></Item>

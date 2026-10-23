@@ -75,7 +75,7 @@ describe("the transaction page, for a final transaction", () => {
   it("shows the value, the fee, the gas price, the gas with its share used, the nonce and the type", async () => {
     await open();
     expect(row("Value")).toHaveTextContent("0 tROME");
-    expect(row("Transaction fee")).toHaveTextContent("0.0000863 tROME");
+    expect(row("Transaction fee")).toHaveTextContent("0.0000863356 tROME");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     expect(row("Gas used")).toHaveTextContent("51,698 of 100,000 (51.70%)");
     expect(row("Nonce and position")).toHaveTextContent("1");
@@ -589,7 +589,7 @@ describe("the facts the block and the detail add to the overview", () => {
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     await waitFor(() => expect(row("Fees")).toHaveTextContent("Base 0.67 gwei · Max 2 gwei · Max priority 1 gwei"));
     // 0.67 gwei x 51,698 gas
-    expect(row("Burnt fees")).toHaveTextContent("0.0000346 tROME");
+    expect(row("Burnt fees")).toHaveTextContent("0.0000346376 tROME");
     expect(row("Nonce and position")).toHaveTextContent("1 · position 2 in block 3");
   });
 
