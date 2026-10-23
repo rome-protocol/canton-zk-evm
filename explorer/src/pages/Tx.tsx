@@ -9,7 +9,7 @@ import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
-import { count, gwei, short, utc, utcDate } from "../format.ts";
+import { count, dateTime, gwei, short } from "../format.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { MethodRows } from "./TxDecoded.tsx";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
@@ -97,7 +97,7 @@ const burnt = (baseFee: string | null, gasUsed: number | null) => (baseFee !== n
 function TimeItem({ t, block, read }: { t: ApiTxSeen; block: BlockSummary | undefined; read: BlockRead }) {
   if (!t.block) return null;
   const ms = block ? block.timestamp * 1000 : null;
-  return <Item label="Time"><FromBlock read={read}>{ms !== null && <><span className="mono">{utcDate(ms)} {utc(ms)}</span> <span className="muted">· {ago(new Date(ms).toISOString())}</span></>}</FromBlock></Item>;
+  return <Item label="Time"><FromBlock read={read}>{ms !== null && <><span className="mono">{dateTime(ms)}</span> <span className="muted">· {ago(new Date(ms).toISOString())}</span></>}</FromBlock></Item>;
 }
 
 /** The price and the fee caps and the burnt fees: what the block and the detail route add after the gas. Each is left out when it cannot be known, and "reading" while it is being read. */
@@ -192,7 +192,7 @@ export function stageText(t: ApiTx): string {
     case "pending": return "Waiting to go into a block";
     case "proving": return "In a block that is being proven";
     case "unindexed": return t.block ? `Final on Canton in block ${t.block.number}, which the explorer has not indexed yet` : "Final on Canton, not indexed yet";
-    case "final": return t.block ? `Final on Canton in block ${t.block.number}` : "Final on Canton";
+    case "final": return "Final on Canton";
     case "replaced": return "Replaced by another transaction with the same nonce";
     case "dropped": return `Dropped: ${t.reason ?? "no reason was given"}`;
   }
@@ -200,7 +200,9 @@ export function stageText(t: ApiTx): string {
 
 const settled = (t: ApiTx) => t.state === "final" || t.state === "replaced" || t.state === "dropped";
 
+/** A final transaction says so in the chip beside the title, and the page does not say it twice. */
 function Stage({ t }: { t: ApiTx }) {
+  if (t.state === "final") return null;
   return <p className={`stage s-${t.state}`} aria-live="polite" data-state={t.state}>{stageText(t)}</p>;
 }
 
@@ -237,7 +239,7 @@ export function Tx() {
   return (
     <>
       <nav className="crumbs" aria-label="Breadcrumb"><Link to="/txs">Transactions</Link> / <span className="mono">{short(t.hash, 8, 6)}</span></nav>
-      <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} /><Result t={t} /></div>
+      <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} label={t.status === "final" ? "Final on Canton" : undefined} /><Result t={t} /></div>
       <div className="bighash"><HashLink value={t.hash} full /></div>
       <Stage t={t} />
       {t.value === null && <Unseen t={t} />}

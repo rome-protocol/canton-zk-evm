@@ -31,7 +31,7 @@ describe("the transaction page, for a final transaction", () => {
   it("says it is final, and shows its own hash in full with a button to copy it", async () => {
     const user = userEvent.setup();
     await open();
-    expect(chip()).toHaveTextContent("Final");
+    expect(chip()).toHaveTextContent("Final on Canton");
     expect(chip()).toHaveClass("chip-final");
     const own = screen.getByText(H);
     expect(own).toBeInTheDocument();
@@ -105,7 +105,7 @@ describe("the transaction page, for a final transaction", () => {
 
   it("is final and failed when it reverted", async () => {
     await open(tx({ success: false, logs: [] }));
-    expect(chip()).toHaveTextContent("Final");
+    expect(chip()).toHaveTextContent("Final on Canton");
     expect(row("Status")).toHaveTextContent("Failed (reverted)");
     expect(row("Status").firstElementChild).toHaveClass("fact-bad");
     expect(screen.queryByText("Not final yet.", { exact: false })).toBeNull();
@@ -210,7 +210,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(row("Status")).toHaveTextContent("Success");
     answer = tx({ block: { number: 4, hash: hash(4), updateId: update(4) } });
     await tick();
-    expect(chip()).toHaveTextContent("Final");
+    expect(chip()).toHaveTextContent("Final on Canton");
     expect(screen.queryByRole("status")).toBeNull();
     expect(row("Block")).toHaveTextContent("4, final on Canton in update 12200404…0404");
     const seen = asked();
@@ -291,8 +291,7 @@ describe("the stage, in plain words", () => {
       [waitingTx({ state: "pending" }), "pending", "Waiting to go into a block"],
       [tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } }), "proving", "In a block that is being proven"],
       [tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }), "unindexed", "Final on Canton in block 4, which the explorer has not indexed yet"],
-      [tx({ state: "final" }), "final", "Final on Canton in block 3"],
-      [goneTx({ status: "replaced", state: "replaced", reason: "Another transaction from the same sender took nonce 7." }), "replaced", "Replaced by another transaction with the same nonce"],
+            [goneTx({ status: "replaced", state: "replaced", reason: "Another transaction from the same sender took nonce 7." }), "replaced", "Replaced by another transaction with the same nonce"],
       [goneTx({ status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: insufficient funds." }), "dropped", "Dropped: The chain refused it 5 times in a row: insufficient funds."],
     ];
     for (const [t, state, words] of cases) {
@@ -304,9 +303,16 @@ describe("the stage, in plain words", () => {
     }
   });
 
-  it("says Final without a block number when the server gave none, and a dropped one without a reason", async () => {
+  it("does not repeat in a green line under the title that a final transaction is final: the chip says it", async () => {
+    await open(tx({ state: "final" }));
+    expect(chip()).toHaveTextContent("Final on Canton");
+    expect(stage()).toBeNull();
+    expect(screen.queryByText("Final on Canton in block 3")).toBeNull();
+  });
+
+  it("says nothing under the title for a final one with no block, and a dropped one without a reason", async () => {
     await open(tx({ state: "final", block: null }));
-    expect(stage()).toHaveTextContent(/^Final on Canton$/);
+    expect(stage()).toBeNull();
     cleanup();
     await open(goneTx({ reason: null }));
     expect(stage()).toHaveTextContent("Dropped: no reason was given");
@@ -382,7 +388,7 @@ describe("the block's answers, kept by one cache for every page", () => {
   it("opens the block page from a transaction page and shows the block, though the transaction page has read the block's summary", async () => {
     const user = userEvent.setup();
     await openFinal(undefined, { block: () => reply(block()) });
-    await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
+    await waitFor(() => expect(row("Time")).toHaveTextContent("04 Oct 2026, 01:37:16 UTC"));
     await user.click(within(row("Block")).getByRole("link", { name: "3" }));
     expect(await screen.findByRole("heading", { name: "Block #3" })).toBeInTheDocument();
     expect(screen.queryByText(/something went wrong|cannot read/i)).toBeNull();
@@ -412,6 +418,24 @@ describe("the way to final", () => {
       "+0.41 sFinal on Canton01:37:23.412000Canton record time",
     ]);
     expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
+  });
+
+  it("adds the median time to final of the last hour, and says it was not refused or left out of any earlier block when the journal shows no earlier attempt", async () => {
+    const calls = await openFinal(undefined, { stats: (p) => (p.includes("/summary") ? reply({ timeToFinal: { median: 8.5, p95: 8.9, samples: 12, capped: false } }) : reply({}, 404)) });
+    await waitFor(() => expect(way().getByText(/The median for the last hour is 8\.5 s\./)).toBeInTheDocument());
+    expect(calls.some((c) => c.startsWith("/api/stats/summary?window=1h"))).toBe(true);
+    expect(way().getByText("Not refused or left out of any earlier block.")).toBeInTheDocument();
+  });
+
+  it("says no median when the hour has no final transaction or the stats cannot be read, and never says 'not refused' for a transaction that was", async () => {
+    await openFinal(undefined, { stats: () => reply({ timeToFinal: null }) });
+    await waitFor(() => expect(way().getByText(/after Ostia accepted it/)).toBeInTheDocument());
+    expect(way().queryByText(/median/i)).toBeNull();
+    cleanup();
+    await openFinal(tx({ lifecycle: journal({ attempts: 3 }) }), { stats: () => reply({ error: "down" }, 503) });
+    await waitFor(() => expect(way().getByText(/It took 3 attempts\./)).toBeInTheDocument());
+    expect(way().queryByText(/median/i)).toBeNull();
+    expect(way().queryByText(/Not refused/)).toBeNull();
   });
 
   it("says when the producer's journal has no row, shows a dash for each time it would hold, and still gives Canton's record time", async () => {
@@ -547,7 +571,7 @@ describe("the internal calls row, and the stage 2 gap", () => {
 describe("the facts the block and the detail add to the overview", () => {
   it("shows the time of its block, the stage, the final head, the gas price, the fees, the burnt fees and its position", async () => {
     await openFinal(undefined, { txDetail: () => reply(txDetail({ index: 2 })) });
-    await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
+    await waitFor(() => expect(row("Time")).toHaveTextContent("04 Oct 2026, 01:37:16 UTC"));
     expect(row("Stage")).toHaveTextContent(/^Final · committed on Canton /);
     expect(row("Block")).toHaveTextContent("final head is 3");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");

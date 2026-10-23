@@ -8,7 +8,8 @@
 .way-delta { position: absolute; left: calc(-50% - 6px); transform: translateX(-50%); white-space: nowrap; top: 0; }
 .how-steps.way-steps .how-dot { top: 22px; }
 .how-steps.way-steps li::before { top: 28px; }
-.way-foot { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.way-foot { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
+.way-foot-r { text-align: right; }
 .tx-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .tx-main, .tx-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .side-foot { display: flex; gap: 12px; padding-top: 12px; border-top: 1px solid var(--line); margin-top: 8px; }

@@ -1,5 +1,7 @@
-import type { BlockSummary, ApiTx } from "../api.ts";
+import { useQuery } from "@tanstack/react-query";
+import { getStatsSummary, type BlockSummary, type ApiTx } from "../api.ts";
 import { at, clock, secs } from "../block-times.ts";
+import { sec } from "../format.ts";
 import "./block.css";
 
 /** What reading the transaction's block came to: still being read, could not be read, or read. A transaction in no block has none to read. */
@@ -34,6 +36,9 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
   const steps = stepsOf(t, block, read, index);
   const l = t.lifecycle;
   const final = t.status === "final";
+  // The hour's median is the same read the home page makes; where it cannot be read, or the hour has no final transaction, the page says nothing of it.
+  const hour = useQuery({ queryKey: ["stats-summary", "1h"], queryFn: () => getStatsSummary("1h"), enabled: final, retry: false, staleTime: 30_000 });
+  const median = hour.data?.timeToFinal?.median ?? null;
   const caption = l === null ? "No row in the producer's journal, so only the times Canton and the block give are shown."
     : "One line per step, each with its own time. Only measured times are shown.";
   return (
@@ -57,11 +62,17 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
         })}
       </ol>
       {l === null && <p className="way-foot muted small">The producer's journal has no row for this transaction, so Accepted, In block and Proof done have no times.</p>}
-      {l !== null && (l.timeToFinalMs !== null || l.attempts > 1 || l.leftOutReason) && (
+      {l !== null && (l.timeToFinalMs !== null || l.attempts > 1 || l.leftOutReason || final) && (
         <div className="way-foot small">
-          {l.timeToFinalMs !== null && final && <span>Final <b className="mono">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
-          {l.attempts > 1 && <span className="muted"> It took {l.attempts} attempts.</span>}
-          {l.leftOutReason && <span className="muted"> Left out of an earlier block: {l.leftOutReason}.</span>}
+          <span className="way-foot-l">
+            {l.timeToFinalMs !== null && final && <span>Final <b className="mono">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
+            {median !== null && final && <span className="muted"> The median for the last hour is {sec(median)}.</span>}
+          </span>
+          <span className="way-foot-r muted">
+            {l.attempts > 1 && <span>It took {l.attempts} attempts.</span>}
+            {l.leftOutReason && <span> Left out of an earlier block: {l.leftOutReason}.</span>}
+            {final && l.attempts <= 1 && !l.leftOutReason && <span>Not refused or left out of any earlier block.</span>}
+          </span>
         </div>
       )}
     </section>
