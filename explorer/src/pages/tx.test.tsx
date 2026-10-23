@@ -2,8 +2,8 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ApiTx } from "../api.ts";
-import { addr, block, blockSummary, fakeApi, goneTx, hash, labelsOf, NOT_FOUND, renderApp, reply, route, status, tick, tokenLabel, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
+import type { ApiTx, TokenTransfer } from "../api.ts";
+import { addr, block, page, blockSummary, fakeApi, goneTx, hash, labelsOf, NOT_FOUND, renderApp, reply, route, status, tick, tokenLabel, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
 import type { TxLifecycle } from "../api.ts";
 
 const verifierRun = vi.hoisted(() => ({ line: "" }));
@@ -602,7 +602,7 @@ describe("the facts the block and the detail add to the overview", () => {
   it("shows the time of its block, the stage, the final head, the gas price, the fees, the burnt fees and its position", async () => {
     await openFinal(undefined, { txDetail: () => reply(txDetail({ index: 2 })) });
     await waitFor(() => expect(row("Time")).toHaveTextContent("04 Oct 2026, 01:37:16 UTC"));
-    expect(row("Stage")).toHaveTextContent(/^Final · committed on Canton /);
+    expect(row("Stage")).toHaveTextContent(/^Final on Canton · final .* ago · nothing to confirm beyond final$/);
     expect(row("Block")).toHaveTextContent("final head is 3");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     await waitFor(() => expect(row("Fees")).toHaveTextContent("Base 0.67 gwei · Max 2 gwei · Max priority 1 gwei"));
@@ -624,5 +624,35 @@ describe("the facts the block and the detail add to the overview", () => {
     cleanup();
     await open(waitingTx());
     for (const l of ["Time", "Gas price", "Fees", "Burnt fees"]) expect(screen.queryByText(l, { selector: "dt" })).toBeNull();
+  });
+});
+
+describe("the footer of the way to final", () => {
+  it("is not drawn when none of its lines has anything to say", async () => {
+    // Final, no time to final, no median for the hour, no attempt on record: nothing to put in it.
+    await openFinal(tx({ lifecycle: journal({ timeToFinalMs: null, attempts: 0 }) }), { stats: () => reply({ timeToFinal: null }) });
+    await waitFor(() => expect(way().getByText("Canton record time")).toBeInTheDocument());
+    expect(document.querySelector(".way-foot")).toBeNull();
+  });
+});
+
+describe("the Token transfers row of the overview", () => {
+  const xfer = (i: number, over: Partial<TokenTransfer> = {}): TokenTransfer => ({ logIndex: i, batchIndex: 0, methodId: null, creation: false, timestamp: 1700000000, token: addr(0xcb), standard: "ERC-20", from: addr(0x5b), to: addr(0x60 + i), amount: "10000000000000000000", tokenId: null, ...over });
+  const usd = tokenLabel({ address: addr(0xcb), name: "Test USD", symbol: "tUSD", decimals: 18 });
+
+  it("lists the transfers of a final transaction by name with their amounts, the first few, and points to the list below for the rest", async () => {
+    const items = Array.from({ length: 7 }, (_, i) => xfer(i));
+    const calls = await openFinal(tx({ transfer: null, lifecycle: journal() }), { labels: labelsOf([usd]), txTransfers: () => reply({ ...page(items), derived: true }) });
+    await waitFor(() => expect(row("Token transfers")).toHaveTextContent("10"));
+    const r = row("Token transfers");
+    expect(r.querySelectorAll(".xfer-line")).toHaveLength(5);
+    await waitFor(() => expect(r).toHaveTextContent("tUSD"));
+    expect(r).toHaveTextContent("and 2 more in the Token transfers list below");
+    expect(calls.filter((c) => c.includes("/token-transfers"))).toHaveLength(1);
+  });
+
+  it("falls back to the one transfer /api/tx decoded where the list holds none", async () => {
+    await openFinal(tx({ lifecycle: journal() }), { txTransfers: () => reply({ ...page([]), derived: true }) });
+    await waitFor(() => expect(row("Token moved")).toHaveTextContent("10 TKA"));
   });
 });

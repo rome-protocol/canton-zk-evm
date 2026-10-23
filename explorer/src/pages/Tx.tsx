@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getBlockSummary, getTx, getTxDetail, type BlockSummary, type ApiStatus, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen } from "../api.ts";
+import { getBlockSummary, getTx, getTxDetail, getTxTransfers, type BlockSummary, type ApiStatus, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen } from "../api.ts";
 import { AddressCell, addressPath } from "../components/AddressCell.tsx";
 import { Amount } from "../components/Amount.tsx";
+import { usePaged } from "../components/Pager.tsx";
 import { unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
@@ -20,7 +21,7 @@ import { LogsTab } from "./TxLogs.tsx";
 import { InternalTab } from "./TxCalls.tsx";
 import { Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
 import { RawTab, TreeTab } from "./TxTrace.tsx";
-import { TransfersCard } from "./TxTransfers.tsx";
+import { AmountCell, TransfersCard } from "./TxTransfers.tsx";
 import "./tx.css";
 
 const TYPES: Record<number, string> = { 0: "legacy", 1: "EIP-2930", 2: "EIP-1559", 3: "EIP-4844", 4: "EIP-7702" };
@@ -69,6 +70,37 @@ function TransferItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
   if (waiting) return <Item label="Token to move">{amount} to {to}</Item>;
   if (t.success === false) return <Item label="Token transfer">Tried to move {amount} from {from} to {to}. <span className="muted">The transaction reverted, so nothing moved.</span></Item>;
   return <Item label="Token moved">{amount} from {from} to {to}</Item>;
+}
+
+/** How many transfers the Overview row lists; the card below lists them all, a page at a time. */
+const OVERVIEW_TRANSFERS = 5;
+
+/** The transfers of a final transaction, by name with their amounts, as the Overview of the screen lists them. Where none can be read, the one transfer /api/tx decoded, if any. */
+function FinalTransfersItem({ t }: { t: ApiTxSeen }) {
+  const p = usePaged(["tx-transfers", t.hash], (after) => getTxTransfers(t.hash, after));
+  const items = p.data?.items ?? [];
+  // The same addresses as the card below asks for, so the names are one request.
+  const labels = useLabels(items.flatMap((x) => [x.from, x.to, x.token]));
+  if (items.length === 0 || p.data?.derived === false) return <TransferItem t={t} waiting={false} />;
+  const shown = items.slice(0, OVERVIEW_TRANSFERS);
+  const rest = items.length - shown.length;
+  return (
+    <Item label="Token transfers">
+      <div className="xfer-list">
+        {shown.map((x) => (
+          <div key={`${x.logIndex}-${x.batchIndex}`} className="xfer-line">
+            <AddressCell address={x.from} label={labels.get(x.from)} /> <span className="muted" aria-hidden="true">→</span> <AddressCell address={x.to} label={labels.get(x.to)} />{" "}
+            <AmountCell x={x} label={labels.get(x.token)} /> <AddressCell address={x.token} label={labels.get(x.token)} to={`/token/${x.token}`} />
+          </div>
+        ))}
+        {(rest > 0 || p.hasNext) && <div className="muted small">{rest > 0 ? `and ${rest} more` : "and more"} in the Token transfers list below</div>}
+      </div>
+    </Item>
+  );
+}
+
+function TransfersItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
+  return t.status === "final" ? <FinalTransfersItem t={t} /> : <TransferItem t={t} waiting={waiting} />;
 }
 
 function BlockItem({ t, head }: { t: ApiTxSeen; head: number | undefined }) {
@@ -146,13 +178,15 @@ function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coi
         <Item label="Status">
           {waiting ? <span className="muted">Not run yet</span> : t.success === null ? <span className="muted">Not known</span> : t.success ? <Good>Success</Good> : <Bad>Failed (reverted)</Bad>}
         </Item>
-        <Item label="Stage"><Chip status={t.status} />{finalAt && t.status === "final" && <span className="muted"> · committed on Canton {ago(finalAt)}</span>}</Item>
+        <Item label="Stage">
+          {t.status === "final" ? <><Chip status="final" label="Final on Canton" />{finalAt && <span className="muted"> · final {ago(finalAt)} · nothing to confirm beyond final</span>}</> : <Chip status={t.status} />}
+        </Item>
         <Item label="Block"><BlockItem t={t} head={t.status === "final" ? head : undefined} /></Item>
         <TimeItem t={t} block={block} read={read} />
         <Item label="From"><HashLink value={t.from} to={`/address/${t.from}`} full /></Item>
         <Item label="To">{to || <span className="muted">none, this transaction created a contract</span>}</Item>
         {t.created && <Item label="Created contract"><HashLink value={t.created} to={`/address/${t.created}`} full /></Item>}
-        <TransferItem t={t} waiting={waiting} />
+        <TransfersItem t={t} waiting={waiting} />
         <Item label="Value"><InCoin raw={t.value} coin={coin} /></Item>
         <Item label="Transaction fee">
           {t.fee !== null ? <FeeIn raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}

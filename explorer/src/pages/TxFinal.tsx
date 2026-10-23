@@ -40,6 +40,10 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
   // The hour's median is the same read the home page makes; where it cannot be read, or the hour has no final transaction, the page says nothing of it.
   const hour = useQuery({ queryKey: ["stats-summary", "1h"], queryFn: () => getStatsSummary("1h"), enabled: final, retry: false, staleTime: 30_000 });
   const median = hour.data?.timeToFinal?.median ?? null;
+  // The footer is drawn only when one of its lines has something to say.
+  const took = final && l?.timeToFinalMs != null;
+  const typical = final && median !== null;
+  const clean = final && l !== null && l.attempts === 1 && !l.leftOutReason;
   const caption = l === null ? "No row in the producer's journal, so only the times Canton and the block give are shown."
     : "One line per step, each with its own time. Only measured times are shown.";
   return (
@@ -63,16 +67,16 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
         })}
       </ol>
       {l === null && <p className="way-foot muted small">The producer's journal has no row for this transaction, so Accepted, In block and Proof done have no times.</p>}
-      {l !== null && (l.timeToFinalMs !== null || l.attempts > 1 || l.leftOutReason || final) && (
+      {l !== null && (took || typical || l.attempts > 1 || l.leftOutReason || clean) && (
         <div className="way-foot small">
-          <span className="way-foot-l"><Icon name="clock" size={13} />
-            {l.timeToFinalMs !== null && final && <span>Final <b className="num">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
-            {median !== null && final && <span className="muted"> The median for the last hour is {sec(median)}.</span>}
-          </span>
+          {(took || typical) && <span className="way-foot-l"><Icon name="clock" size={13} />
+            {took && <span>Final <b className="num">{secs(l.timeToFinalMs!)}</b> after Ostia accepted it.</span>}
+            {typical && <span className="muted"> The median for the last hour is {sec(median!)}.</span>}
+          </span>}
           <span className="way-foot-r muted">
             {l.attempts > 1 && <span>It took {l.attempts} attempts.</span>}
             {l.leftOutReason && <span> Left out of an earlier block: {l.leftOutReason}.</span>}
-            {final && l.attempts === 1 && !l.leftOutReason && <span>Not refused or left out of any earlier block.</span>}
+            {clean && <span>Not refused or left out of any earlier block.</span>}
           </span>
         </div>
       )}

@@ -9,7 +9,7 @@ import { useLabels, type Labels } from "../labels.ts";
  * The amount of one transfer. A fungible token's is in whole units, as the screen shows it, with the exact amount and the symbol in its tooltip. Where the token's decimals
  * are not known the raw amount is shown and says so. A token id, with or without a count, is a chip.
  */
-function AmountCell({ x, label }: { x: TokenTransfer; label: Label | undefined }) {
+export function AmountCell({ x, label }: { x: TokenTransfer; label: Label | undefined }) {
   if (x.tokenId !== null || x.amount === null) {
     return <TokenChip move={{ token: x.token, amount: x.amount, tokenId: x.tokenId, standard: label?.standard ?? null, decimals: null }} label={label} />;
   }
