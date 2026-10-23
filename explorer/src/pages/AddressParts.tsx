@@ -77,7 +77,7 @@ export function Holdings({ addr }: { addr: string }) {
   const d = p.data;
   const labels = useLabels(d?.items.map((h) => h.token) ?? []);
   const tokens = d ? new Set(d.items.map((h) => h.token)).size : 0;
-  const atLeast = !!d && (p.hasNext || d.derived === false);
+  const atLeast = !!d && (p.hasPrev || p.hasNext || d.derived === false);
   return (
     <section className="card" aria-label="Token holdings">
       <CardHead as="h2" title="Token holdings" sub={st?.deriveCursor != null ? `as of block ${st.deriveCursor}` : undefined} action={d && tokens > 0 ? <span className="chip chip-kind chip-count">{count(tokens)}{atLeast ? "+" : ""} {tokens === 1 && !atLeast ? "token" : "tokens"}</span> : undefined} />
@@ -97,8 +97,8 @@ const Ago = ({ ts, now }: { ts: number | null; now: number }) => (ts == null ? n
 
 /** When it last sent a transaction: read from its newest sent one, as "last active" counts what it received too. */
 function LastSent({ a, now }: { a: AddressDetail; now: number }) {
-  const q = useQuery({ queryKey: ["address-last-sent", a.address], queryFn: () => getAddressTxs(a.address, null, 1, "sent"), enabled: a.sentCount > 0, refetchInterval: 5000, retry: false });
-  if (a.sentCount === 0) return <span className="muted">Has sent nothing</span>;
+  const q = useQuery({ queryKey: ["address-last-sent", a.address], queryFn: () => getAddressTxs(a.address, null, 1, "sent"), enabled: a.sentCount > 0 || !a.derived, refetchInterval: 5000, retry: false });
+  if (a.sentCount === 0 && a.derived && !q.data?.items[0]) return <span className="muted">Has sent nothing</span>;
   const t = q.data?.items[0];
   if (!t) return q.error ? <span className="muted">Not known</span> : <span className="muted">…</span>;
   return <><Link className="num" to={`/block/${t.block}`}>Block {t.block}</Link><Ago ts={t.timestamp} now={now} /></>;

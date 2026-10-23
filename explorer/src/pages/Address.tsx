@@ -44,7 +44,7 @@ export function Address() {
   const a = q.data!;
   // Design section 7: an address that holds code (a token too) is the contract page; a token has its own page at /token.
   if (a.kind !== "account") return <Contract addr={addr} />;
-  const made = a.createdCount > 0 ? `${count(a.createdCount)}${a.createdCountCapped ? "+" : ""}` : undefined;
+  const made = typeof a.createdCount === "number" ? `${count(a.createdCount)}${a.createdCountCapped ? "+" : ""}` : undefined;
   // The counts of the transfer tabs are not served per standard, so they show none: a count of both together would be wrong for each.
   const tabs: { id: TabId; label: string; n?: number | string }[] = [
     { id: "transactions", label: "Transactions", n: a.sentCount + a.receivedCount },

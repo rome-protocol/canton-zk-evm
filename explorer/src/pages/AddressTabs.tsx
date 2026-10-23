@@ -134,9 +134,9 @@ export function ContractsTab({ a, now }: { a: string; now: number }) {
 const ZERO = "0x" + "00".repeat(20);
 
 /** What moved, in the token's own units: the amount with its symbol where the decimals and the symbol are known, whole units (exact in the title) where only the decimals are, the raw count (and said so) where they are not; `#id` for an NFT, with an ERC-1155's count before it. */
-function TransferAmount({ x, label }: { x: AddressTransferItem; label: Label | undefined }) {
+function TransferAmount({ x, label, ready }: { x: AddressTransferItem; label: Label | undefined; ready: boolean }) {
   // The labels carry what the token has told; the token route (which reads no balance from reth) is asked only for one they do not describe.
-  const need = x.amount !== null && x.tokenId === null && label?.decimals == null;
+  const need = ready && x.amount !== null && x.tokenId === null && label?.decimals == null;
   const info = useQuery({ queryKey: ["token-info", x.token], queryFn: () => getTokenInfo(x.token), retry: false, staleTime: 60_000, enabled: need }).data ?? null;
   if (x.tokenId !== null) return <span className="num">{x.amount !== null ? `${count(x.amount)} · ` : ""}#{x.tokenId}</span>;
   if (x.amount === null) return <Dash />;
@@ -160,7 +160,7 @@ function TransferRow({ a, x, now, labels }: { a: string; x: AddressTransferItem;
       <td><Party address={x.from} labels={labels} />{x.from === ZERO && <span className="tag">mint</span>}</td>
       <td><Way me={a} from={x.from} to={x.to} /></td>
       <td><Party address={x.to} labels={labels} />{x.to === ZERO && <span className="tag">burn</span>}</td>
-      <td className="r"><TransferAmount x={x} label={token} /></td>
+      <td className="r"><TransferAmount x={x} label={token} ready={labels.ready} /></td>
       <td><AddressCell address={x.token} label={token} to={`/token/${x.token}`} /></td>
       <td><Chip status="final" /></td>
     </tr>
@@ -183,17 +183,17 @@ export function TransfersTab({ a, nft = false }: { a: string; nft?: boolean }) {
   const labels = useLabels([...(d?.items ?? []).flatMap((x) => [x.from, x.to, x.token]), ...known]);
   const whole = !p.hasPrev && !p.hasNext;
   const n = d?.items.length ?? 0;
-  const l = (t: string) => labels.get(t), name = (t: string) => l(t)?.name ?? l(t)?.symbol ?? short(t, 8, 4);
+  const l = (t: string) => labels.get(t), name = (t: string) => { const w = l(t)?.name ?? l(t)?.symbol ?? short(t, 8, 4); return w.length > 24 ? `${w.slice(0, 23)}…` : w; }, full = (t: string) => l(t)?.name ?? l(t)?.symbol ?? t;
   return (
     <Frame label={kind} error={p.error} ready={!!d}>
       <div className="list-h">
-        <span className="muted">{n ? (whole ? `${count(n)} ${nft ? "NFT" : "ERC-20"} transfer${n === 1 ? "" : "s"} to or from this address` : `Showing ${count(n)} on this page, newest first`) : ""}</span>
+        <span className="muted">{n ? (whole ? `${count(n)} ${tok ? name(tok) : nft ? "NFT" : "ERC-20"} transfer${n === 1 ? "" : "s"} to or from this address` : `Showing ${count(n)} on this page, newest first`) : ""}</span>
         <span className="list-tools">
           <Pager p={p} label={`Pages of ${kind.toLowerCase()}`} />
           {known.length > 0 && (known.length <= 3
             ? <Seg label="Show tokens" value={tok ?? "all"} options={[{ id: "all", text: "All tokens" }, ...known.map((t) => ({ id: t, text: name(t) }))]} onPick={(id) => setTok(id === "all" ? null : id)} />
             : <select className="seg-select" aria-label="Show tokens" value={tok ?? "all"} onChange={(e) => setTok(e.target.value === "all" ? null : e.target.value)}>
-                <option value="all">All tokens</option>{known.map((t) => <option key={t} value={t}>{name(t)}</option>)}
+                <option value="all">All tokens</option>{known.map((t) => <option key={t} value={t} title={full(t)}>{name(t)}</option>)}
               </select>)}
           <DownloadLink href={addressTransfersCsvPath(a, { standard, token: tok ?? undefined })} file={`${nft ? "nft" : "token"}-transfers-${a}.csv`}>CSV</DownloadLink>
         </span>

@@ -101,6 +101,18 @@ describe("the address page: token holdings", () => {
     expect(card.querySelector(".r[title='Last moved in block 22']")).not.toBeNull();
   });
 
+  it("keeps the token count a lower bound on every page, as it only counts the page in view", async () => {
+    const pageOf = (p: string) => (p.includes("after=") ? derived([holding({ token: addr(0xcc), name: "Other", symbol: "OTH" })]) : derived([holding()], "20:cb"));
+    await open(addressDetail(), { tokens: pageOf });
+    const card = await screen.findByRole("region", { name: "Token holdings" });
+    await within(card).findByText("Test USD");
+    expect(card).toHaveTextContent("1+ tokens");
+    await userEvent.click(within(card).getByRole("button", { name: "Older page" }));
+    await within(card).findByText("Other");
+    expect(card).toHaveTextContent("1+ tokens");
+    expect(card).not.toHaveTextContent(/\b1 token\b/);
+  });
+
   it("says so when it holds nothing", async () => {
     await open(addressDetail(), withHoldings([]));
     expect(await screen.findByText("This address holds no tokens.")).toBeInTheDocument();
@@ -205,11 +217,22 @@ describe("the address page: the other tabs", () => {
       tokens: (a) => reply(a === addr(0xcb) ? { address: a, standard: "ERC-20", name: null, symbol: null, decimals: 6 } : { address: a, standard: "ERC-20", name: null, symbol: null, decimals: null }),
     });
     await userEvent.click(tab("Token transfers"));
-    await waitFor(() => expect(rows()[0]).toHaveTextContent("5,000"));
+    await waitFor(() => expect(rows()[0]!.querySelector("[title='5,000']")).not.toBeNull());
     expect(rows()[0]).not.toHaveTextContent("tUSD");
-    expect(rows()[0]!.querySelector("[title='5,000']")).not.toBeNull();
+    await waitFor(() => expect(rows()[0]!.querySelector("[title='5,000']")).not.toBeNull());
     await waitFor(() => expect(rows()[1]!.querySelector("[title*='decimals are not known']")).not.toBeNull());
     expect(rows()[1]).toHaveTextContent("5,000,000,000");
+  });
+
+  it("does not ask the token route for a token the label already describes", async () => {
+    const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: null, creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: A, to: addr(0x77), amount: "5000000", tokenId: null };
+    const calls = await open(addressDetail({ tokenTransferCount: 1 }), { "token-transfers": () => derived([t]) }, `/address/${A}`, "Address", {
+      labels: labelsOf([{ address: addr(0xcb), name: "Test USD", symbol: null, kind: "token", standard: "ERC-20", decimals: 6, verified: false }]),
+    });
+    await userEvent.click(tab("Token transfers"));
+    await waitFor(() => expect(rows()[0]).toHaveTextContent("5"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(calls.some((c) => c.startsWith("/api/tokens/"))).toBe(false);
   });
 
   it("filters the token transfers by token and keeps the CSV to the filter", async () => {
@@ -221,7 +244,7 @@ describe("the address page: the other tabs", () => {
     await screen.findByText("2 ERC-20 transfers to or from this address");
     expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&standard=ERC-20`);
     await userEvent.click(await screen.findByRole("button", { name: "Test USD" }));
-    await screen.findByText("1 ERC-20 transfer to or from this address");
+    await screen.findByText("1 Test USD transfer to or from this address");
     expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&token=${addr(0xcb)}&standard=ERC-20`);
     expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/token-transfers?format=csv&token=${addr(0xcb)}&standard=ERC-20`);
     // the filter keeps offering both tokens while one is chosen
@@ -343,9 +366,10 @@ describe("the address page: the header facts", () => {
     expect(chip()).toHaveTextContent("Created 100,000+ contracts");
     expect(tab(/Contracts created/)).toHaveTextContent("100,000+");
   });
-  it("shows no chip for an address that made none", async () => {
+  it("shows no chip for an address that made none, but the tab says 0", async () => {
     await open(addressDetail({ createdCount: 0 }));
     expect(chip()).toBeNull();
+    expect(tab(/Contracts created/)).toHaveTextContent("Contracts created 0");
   });
 
   it("names the faucet that funded it, with the block and the transaction", async () => {
@@ -368,6 +392,12 @@ describe("the address page: the header facts", () => {
     await waitFor(() => expect(row("Last sent")).toHaveTextContent(/Block 20\s*· .* ago/));
     expect(row("Last sent")).not.toHaveTextContent("25");
     expect(calls).toContain(`/api/addresses/${A}/txs?limit=1&direction=sent`);
+  });
+  it("does not say it has sent nothing while the counts may be short", async () => {
+    const calls = await open(addressDetail({ sentCount: 0, receivedCount: 1, derived: false }), { txs: () => reply(page([txItem(20, { from: A })])) });
+    await waitFor(() => expect(row("Last sent")).toHaveTextContent(/Block 20/));
+    expect(row("Last sent")).not.toHaveTextContent("Has sent nothing");
+    expect(calls.some((c) => c.includes("direction=sent"))).toBe(true);
   });
   it("says it has sent nothing without asking", async () => {
     const calls = await open(addressDetail({ sentCount: 0, receivedCount: 1 }));

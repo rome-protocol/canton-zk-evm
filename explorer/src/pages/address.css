@@ -16,11 +16,12 @@
 .hold-name { font-weight: 600; color: var(--ink); }
 .hold .r .small { margin-top: 2px; }
 .hold-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.tab-card { padding: 0; margin-top: 18px; }
+.card.tab-card { padding: 0; margin-top: 18px; }
 .tab-card .tabs { margin: 0; padding: 0 12px; }
 .tab-card .tab-body { padding: 16px 20px; }
 .tab-card .tab-body .card { box-shadow: none; }
 .list-tools { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 @media (max-width: 640px) { .tab-card .tab-body { padding: 12px 14px; } }
 .seg-select { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 13px; background: var(--surface); color: var(--ink); max-width: 100%; }
+.list-tools .seg button { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 720px) { .list-tools .seg { max-width: 100%; overflow-x: auto; } .list-tools .seg button { white-space: nowrap; } }
