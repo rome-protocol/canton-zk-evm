@@ -94,7 +94,7 @@ const ETHERSCAN_QUERY: Query[] = [
   { name: "topic0", about: "getLogs: a 0x topic of 32 bytes. topic1, topic2 and topic3 are the same." },
   { name: "topic0_1_opr", about: "getLogs: and or or between two topics; topicX_Y_opr for any pair (and when left out).", values: ["and", "or"] },
 ];
-const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. The proxy answers are JSON-RPC {jsonrpc, id, result|error} in hex, as Etherscan's proxy gives them, and final only as on /rpc. Balances are reth's at the newest final block; nothing that is not final is served. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
+const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. The proxy answers are JSON-RPC {jsonrpc, id, result|error} in hex, as Etherscan's proxy gives them, and final only as on /rpc. Balances are reth's at the newest final block; nothing that is not final is served. getsourcecode adds MatchType and MatchNote (not Etherscan's fields) for a partial match. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
 
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },

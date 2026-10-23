@@ -2,6 +2,7 @@
  * The reads behind the `contract` module of the Etherscan-compatible `/api` (design 6.2 and 6.3): what is verified at an address, what proxy the indexer found there,
  * and how a contract was created. Nothing here writes; verification itself is the verifier's (`../verifier`), and a proxy check is recorded by its API.
  */
+import { matchNote } from "./account-rest.ts";
 import { bytes, hex, hexOrNull } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -76,6 +77,8 @@ export function createContractRest(query: Query) {
 export interface SourceCodeFields {
   SourceCode: string; ABI: string; ContractName: string; CompilerVersion: string; OptimizationUsed: string; Runs: string; ConstructorArguments: string; EVMVersion: string; Library: string;
   LicenseType: string; Proxy: string; Implementation: string; SwarmSource: string;
+  /** Not Etherscan's: only for a partial match, which the pages flag with the same note. Foundry, Hardhat and cast ignore a field they do not know. */
+  MatchType?: string; MatchNote?: string;
 }
 
 /** What Etherscan answers for an address whose source is not verified: the same fields, empty, with the text in `ABI`. */
@@ -99,5 +102,6 @@ export function sourceCodeFields(s: ContractSourceRow): SourceCodeFields {
   return {
     SourceCode: code, ABI: JSON.stringify(v.abi), ContractName: v.contractName, CompilerVersion: v.compilerVersion.startsWith("v") ? v.compilerVersion : `v${v.compilerVersion}`, OptimizationUsed: v.optimizer ? "1" : "0", Runs: String(v.runs ?? 0),
     ConstructorArguments: v.constructorArgs ?? "", EVMVersion: v.evmVersion ?? "Default", Library: libraries, LicenseType: v.license ?? "None", ...proxy, SwarmSource: "",
+    ...(matchNote(v.matchType) === null ? {} : { MatchType: "partial", MatchNote: matchNote(v.matchType)! }),
   };
 }

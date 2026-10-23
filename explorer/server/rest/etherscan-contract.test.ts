@@ -17,6 +17,7 @@ import { VerifierWorker } from "../verifier/worker.ts";
 import { createEtherscanRest } from "./etherscan-rest.ts";
 import { MODULES, TEXTS } from "./etherscan.ts";
 import { NOT_VERIFIED, sourceCodeFields, type ContractSourceRow } from "./etherscan-contract-rest.ts";
+import { PARTIAL_MATCH_NOTE } from "./account-rest.ts";
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const meta = (tag: number): Buffer => {
@@ -66,6 +67,10 @@ describe("getsourcecode's fields", () => {
   it("gives the compiler's version with the v that Etherscan writes, whichever way it was stored (the verifier stores the compiler's own, with no v)", () => {
     expect(sourceCodeFields(verified({ compilerVersion: VERSION.slice(1) })).CompilerVersion).toBe(VERSION);
     expect(sourceCodeFields(verified({ compilerVersion: VERSION })).CompilerVersion).toBe(VERSION);
+  });
+  it("flags a partial match with the pages' note in two extra fields, and a full match carries neither", () => {
+    expect(Object.keys(sourceCodeFields(verified()))).toEqual(FIELDS);
+    expect(sourceCodeFields(verified({ matchType: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
   });
   it("is the same fields, empty, with the text in ABI, for a contract that is not verified, and carries the proxy", () => {
     const empty = sourceCodeFields({ held: true, verified: null, implementation: IMPL });
