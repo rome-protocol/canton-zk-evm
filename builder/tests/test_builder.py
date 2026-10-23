@@ -1012,12 +1012,23 @@ class CommandLine(Case):
 
     def test_unknown_outcome_exits_2_with_committed_null(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
-        s.ledger.no_completion = True
-        code, out = self.run_main(s)
+        s.ledger.no_completion, s.ledger.head_fails_after_submit = True, True   # no completion, and the window over with no head to read
+        with mock.patch.dict(os.environ, {"CZE_RESOLVE_SECONDS": "0"}):
+            code, out = self.run_main(s)
         self.assertEqual(code, 2)
         self.assertIn("committed", out)
         self.assertIsNone(out["committed"])
-        self.assertIn("reason", out)
+        self.assertIn("could not be settled", out["reason"])
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], HEAD_HASH)   # reth is left where it is
+
+    def test_once_settles_an_advance_with_no_answer_by_the_head_when_the_window_is_over(self):
+        for commit in (True, False):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+            s.ledger.no_completion, s.ledger.commit = True, commit
+            with mock.patch.dict(os.environ, {"CZE_RESOLVE_SECONDS": "0"}):
+                code, out = self.run_main(s)
+            self.assertEqual((code, out["committed"], out["resolved"]), (0 if commit else 2, commit, "window"))
+            self.assertNotIn("resolve", out)
 
     def test_exit_status_says_failed_when_reth_is_unreachable(self):
         s = self.setup({})
@@ -1112,6 +1123,141 @@ class CommandLine(Case):
         self.assertIn("wrong program key", out["reason"])
         self.assertNotIn("no state found", out["reason"])
         self.assertIn("no state found", out["rewindError"])
+
+
+class NoAnswer(Case):
+    """An Advance whose answer did not arrive is settled by its own command id before anything else happens (README.md, "Outcomes")."""
+
+    def first(self, s):
+        """A block whose Advance timed out (a 503) and is still in progress at Canton: nothing is decided."""
+        s.ledger.late = True
+        result = b.build_block(s.cfg)
+        self.assertIsNone(result["committed"], result)
+        return result
+
+    def settle(self, s, result, now=None, pairs=None):
+        u = {**result["resolve"], "since": result["resolve"]["submittedAt"]}
+        return b.resolve_unknown(s.cfg, u, pairs if pairs is not None else b.read_saved(s.cfg) or [], now if now is not None else u["since"])
+
+    def test_a_submit_that_times_out_but_commits_later_is_not_rewound_and_the_next_block_goes_on_top(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        self.assertEqual(result["resolve"]["begin"], 42)   # the ledger end before the submit
+        self.assertEqual(s.ledger.head["headHash"], HEAD_HASH[2:])   # Canton's head is still the old one: reading it now would say "not committed"
+        # reth stays on the block it built: no move back, the transactions are not given to the pool again
+        self.assertEqual(s.forkchoices()[-1], {"headBlockHash": result["blockHash"], "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH})
+        self.assertEqual(self.in_pool(s), set())
+        with self.assertRaises(b.Unresolved):   # no completion yet, and the window is not over: still nothing decided
+            self.settle(s, result)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        s.ledger.land(ok=True)   # the command commits
+        committed, lost, how, info = self.settle(s, result)
+        self.assertEqual((committed, lost, how, info), (True, [], "completion", {"updateId": "u1", "completionOffset": 43}))
+        h = result["blockHash"]
+        self.assertEqual(s.forkchoices()[-1], {"headBlockHash": h, "safeBlockHash": h, "finalizedBlockHash": h})
+        self.assertFalse(b.unresolved_path(s.cfg).exists() or b.saved_path(s.cfg).exists())
+        s.ledger.late = False
+        s.reth.pool[ALICE] = [tx(ALICE, 1)]
+        second = b.build_block(s.cfg)
+        self.assertEqual((second["committed"], second["number"]), (True, HEAD_NUMBER + 2))
+        numbers = [int(x["commandId"].split("-")[2]) for x in s.ledger.submitted]
+        self.assertEqual(numbers, [HEAD_NUMBER + 1, HEAD_NUMBER + 2])   # never two different blocks at one height
+
+    def test_a_submit_that_times_out_and_is_rejected_later_is_refused_and_reth_goes_to_canton_head(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        s.ledger.land(ok=False, message="UNKNOWN_CONTRACT_SYNCHRONIZERS")
+        committed, lost, how, info = self.settle(s, result)
+        self.assertEqual((committed, lost, how), (False, [], "completion"))
+        self.assertEqual(s.forkchoices()[-1], {"headBlockHash": HEAD_HASH, "safeBlockHash": HEAD_HASH, "finalizedBlockHash": HEAD_HASH})
+        self.assertEqual(self.in_pool(s), {t["hash"]})   # the transactions go in a later block
+        self.assertFalse(b.unresolved_path(s.cfg).exists() or b.saved_path(s.cfg).exists())
+
+    def test_the_window_passing_with_no_completion_lets_the_head_decide(self):
+        for commit in (True, False):
+            s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+            s.ledger.no_completion, s.ledger.commit = True, commit
+            result = b.build_block(s.cfg)
+            since = result["resolve"]["submittedAt"]
+            with self.assertRaises(b.Unresolved):   # the window is 300 s: until it is over, the head says nothing
+                self.settle(s, result, now=since + 299)
+            committed, lost, how, info = self.settle(s, result, now=since + 300)
+            self.assertEqual((committed, how), (commit, "window"))
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"] if commit else HEAD_HASH)
+
+    def test_completions_that_cannot_be_read_leave_everything_as_it_is_until_the_window_is_over(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]}, drop_but_commit=True)
+        s.ledger.completions_fail = True
+        result = b.build_block(s.cfg)
+        self.assertIsNone(result["committed"])
+        self.assertIn("could not be read", result["reason"])
+        with self.assertRaises(b.Unresolved):
+            self.settle(s, result)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
+        committed, _, how, _ = self.settle(s, result, now=result["resolve"]["submittedAt"] + 301)
+        self.assertEqual((committed, how), (True, "window"))   # the head shows the block
+
+    def test_a_restart_settles_the_command_before_it_moves_reth(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        result = self.first(s)
+        with self.assertRaises(b.Unresolved):   # a new process: the command has no completion yet, so reth is not moved to Canton's head
+            b.recover_saved(s.cfg)
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], result["blockHash"])
+        self.assertEqual(self.in_pool(s), set())
+        s.ledger.land(ok=True)
+        self.assertIsNone(b.recover_saved(s.cfg))   # settled as committed: nothing to give back
+        self.assertEqual(s.forkchoices()[-1]["finalizedBlockHash"], result["blockHash"])
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_a_restart_after_a_failed_command_gives_the_transactions_back(self):
+        t = tx(ALICE, 0)
+        s = self.setup({ALICE: [t]})
+        self.first(s)
+        s.ledger.land(ok=False)
+        self.assertIsNone(b.recover_saved(s.cfg))
+        self.assertEqual(self.in_pool(s), {t["hash"]})
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
+
+    def test_once_waits_for_the_command_and_reports_it_as_if_canton_had_answered(self):
+        for ok in (True, False):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            result = self.first(s)
+            waited = []
+            def sleep(seconds):   # Canton decides while `once` waits
+                waited.append(seconds)
+                s.ledger.land(ok=ok)
+            settled = b.settle_once(s.cfg, result, sleep)
+            self.assertEqual(waited, [2])
+            self.assertEqual((settled["committed"], settled["resolved"]), (ok, "completion"))
+            self.assertNotIn("resolve", settled)
+            if ok:
+                self.assertEqual((settled["transactions"], settled["updateId"]), ([t["hash"]], "u1"))
+            else:
+                self.assertEqual(self.in_pool(s), {t["hash"]})
+
+    def test_the_completions_are_read_from_the_ledger_end_before_the_submit_for_the_builder_user(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        result = self.first(s)
+        s.ledger.land(ok=True)
+        self.settle(s, result)
+        path, body = s.ledger.completion_queries[-1]
+        self.assertEqual((body["beginExclusive"], body["userId"], body["parties"]), (42, "builder-user", [BUILDER]))
+
+
+class CompletionReading(unittest.TestCase):
+    def test_a_completion_is_committed_without_a_status_or_with_code_0_and_failed_otherwise(self):
+        done = lambda **v: {"completionResponse": {"Completion": {"value": {"commandId": "c", "offset": 7, **v}}}}
+        self.assertEqual(b.completion_in([done(status={}, updateId="u")], "c"), ({"committed": True, "updateId": "u", "completionOffset": 7}, 7))
+        self.assertEqual(b.completion_in([done(status={"code": 0})], "c")[0]["committed"], True)
+        found, last = b.completion_in([done(status={"code": 14, "message": "UNAVAILABLE"})], "c")
+        self.assertEqual((found["committed"], "14" in found["reason"], "UNAVAILABLE" in found["reason"]), (False, True, True))
+        self.assertEqual(b.completion_in([done()], "other"), (None, 7))   # the offset reached, with no completion of this command
+        self.assertEqual(b.completion_in([{"completionResponse": {"OffsetCheckpoint": {"value": {"offset": 9}}}}, "nonsense"], "c"), (None, 9))
 
 
 class Pieces(unittest.TestCase):

@@ -364,8 +364,12 @@ class Ledger:
         completions cannot be read."""
         for _ in range(COMPLETION_READS):
             body = {"userId": self.cfg.ledger_user, "parties": [self.cfg.party], "beginExclusive": begin}
-            items = post_json(f"{self.cfg.ledger_url}/v2/commands/completions?limit={COMPLETION_LIMIT}&stream_idle_timeout_ms={COMPLETION_IDLE_MS}",
-                              body, self.auth, timeout=COMPLETION_TIMEOUT)
+            try:
+                items = post_json(f"{self.cfg.ledger_url}/v2/commands/completions?limit={COMPLETION_LIMIT}&stream_idle_timeout_ms={COMPLETION_IDLE_MS}",
+                                  body, self.auth, timeout=COMPLETION_TIMEOUT)
+            except urllib.error.HTTPError as e:
+                e.close()
+                raise
             if not isinstance(items, list):
                 raise ValueError("the completions are not a list")
             found, last = completion_in(items, command_id)
