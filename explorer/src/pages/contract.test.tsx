@@ -3,9 +3,10 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { ContractDetail, ContractSource } from "../api.ts";
-import { addr, addressDetail, contractDetail, contractSource, fakeApi, NOT_FOUND, page, renderApp, reply, route, unverifiedSource } from "../test-utils.tsx";
+import { addr, addressDetail, contractDetail, contractSource, fakeApi, page, renderApp, reply, route, unverifiedSource } from "../test-utils.tsx";
 
 const A = addr(0xcb);
+const BAD = "Give an address as 0x and 40 hex digits.";
 const derived = <T,>(items: T[]) => reply({ ...page(items), derived: true });
 interface Seen { detail?: ContractDetail; source?: ContractSource; account?: Parameters<typeof addressDetail>[0] }
 async function open(seen: Seen = {}, path = `/contract/${A}?tab=code`) {
@@ -24,7 +25,7 @@ const card = (name: string) => screen.getByRole("region", { name });
 describe("the contract page: the head and the cards", () => {
   it("names the contract, links back to the list, and shows the address in full", async () => {
     await open();
-    expect(screen.getByRole("link", { name: "Contracts" })).toHaveAttribute("href", "/contracts");
+    expect(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", { name: "Contracts" })).toHaveAttribute("href", "/contracts");
     expect(screen.getAllByText("TestUSD").length).toBeGreaterThan(0);
     expect(screen.getByText(A)).toBeInTheDocument();
     expect(screen.getByText("Source code verified")).toBeInTheDocument();
@@ -104,9 +105,9 @@ describe("the contract page: the head and the cards", () => {
   });
 
   it("keeps a bad address as the server's own answer", async () => {
-    fakeApi(route({ contracts: () => reply({ error: NOT_FOUND }, 400) }));
+    fakeApi(route({ contracts: () => reply({ error: BAD }, 400) }));
     renderApp("/contract/nope");
-    expect(await screen.findByText(NOT_FOUND)).toBeInTheDocument();
+    expect(await screen.findByText(BAD)).toBeInTheDocument();
   });
 });
 
@@ -186,7 +187,7 @@ describe("the Code tab of a verified contract", () => {
   it("shows the deployed code in hex and as opcodes, with its size and hash", async () => {
     await open();
     const code = await screen.findByRole("region", { name: "Deployed code" });
-    expect(code).toHaveTextContent("10 bytes");
+    expect(code).toHaveTextContent("13 bytes");
     expect(code.querySelector("pre")).toHaveTextContent("0x6080604052");
     await userEvent.click(within(code).getByRole("button", { name: "Opcodes" }));
     expect(code.querySelector("pre")).toHaveTextContent("PUSH1 0x80");
