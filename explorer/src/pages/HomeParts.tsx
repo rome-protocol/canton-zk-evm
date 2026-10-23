@@ -8,7 +8,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Spark } from "../components/Spark.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { SearchBox } from "../components/SearchBox.tsx";
-import { count, duration, pct, plural, sec, span, trim } from "../format.ts";
+import { count, duration, pct, peakCount, plural, rate, sec, span, trim } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
 import type { Fetched, Read, Summary } from "../stats.ts";
 import { useNow } from "../useStatus.ts";
@@ -81,7 +81,7 @@ export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary
       <Time icon="shield" label="Proof time" note="last hour" s={hr(h?.proofTime)} read={hour.read} foot={`ZisK, one proof per block, ${plural(h?.proofTime?.samples ?? 0, "block")}`} none="no block in the last hour" />
       <Time icon="link" label="Canton commit time" note="last hour" s={hr(h?.commitTime)} read={hour.read} foot="sent to Canton's record time" none="no block in the last hour" />
       {d ? (
-        <Stat icon="bolt" label="Transactions per second" foot={peak ? `peak: the busiest minute in 24 h, ${ago(peak.peakAt!)}` : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now{peak && <> <b>peak {trim(peak.peak!, 1)}</b></>}</small></Stat>
+        <Stat icon="bolt" label="Transactions per second" foot={peak ? `peak: ${peak.peak! < 1 ? `${peakCount(peak.peak!)} in the busiest minute` : "the busiest minute"} in 24 h, ${ago(peak.peakAt!)}` : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now{peak && <> <b>peak {rate(peak.peak!)}</b></>}</small></Stat>
       ) : <Stat icon="bolt" label="Transactions per second" foot={noDay}>—</Stat>}
       {d ? (
         <Stat icon="doc" label="Transactions" note="24 h" sub={<AllTime t={d.txs.allTime} />} foot={`in ${plural(d.blocks.count, "block")}, each one Canton transaction`}>{count(d.txs.count)}</Stat>

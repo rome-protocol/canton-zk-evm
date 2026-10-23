@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { baseFee, bytesOf, count, dateTime, feeOf, gwei, party, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, count, dateTime, feeOf, gwei, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
+
+describe("a rate of transactions per second", () => {
+  it("keeps one place from 1 up and two significant figures under 1, so a busiest minute of 1 or 2 transactions is not 0", () => {
+    expect([1 / 60, 2 / 60, 0.5, 0.25, 1, 10.2, 20.84, 1248 / 60].map(rate)).toEqual(["0.017", "0.033", "0.5", "0.25", "1", "10.2", "20.8", "20.8"]);
+    expect(rate(0)).toBe("0");
+  });
+  it("says the busiest minute as a count", () => {
+    expect([peakCount(1 / 60), peakCount(2 / 60), peakCount(59 / 60)]).toEqual(["1 tx", "2 tx", "59 tx"]);
+  });
+});
 
 describe("numbers", () => {
   it("groups thousands", () => {

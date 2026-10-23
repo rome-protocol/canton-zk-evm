@@ -4,13 +4,15 @@ import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type Sta
 import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { count, pct, plural, sec, short, span, trim, units, utcMinute } from "../format.ts";
+import { count, pct, peakCount, plural, rate, sec, short, span, trim, units, utcMinute } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 
 const DEFAULT_WINDOW: StatsWindow = "7d";
 const BUTTONS: [StatsWindow, string][] = [["1h", "Last hour"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]];
 /** The step each window is drawn in when none is asked for: the first the series route allows. */
 const STEP: Record<StatsWindow, { word: string; every: string }> = { "1h": { word: "minute", every: "minute" }, "6h": { word: "10 minutes", every: "10 minutes" }, "24h": { word: "hour", every: "hour" }, "7d": { word: "hour", every: "hour" }, "30d": { word: "day", every: "day" } };
+/** A series' own step, as the screen words it: the step the answer says it was drawn in, not the window's usual one. */
+const STEP_WORD: Record<StatsSeries["step"], string> = { "1m": "minute", "10m": "10 minutes", "1h": "hour", "1d": "day" };
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const DASH = <span className="muted">—</span>;
@@ -94,23 +96,18 @@ function PerBlock({ s }: { s: StatsSummary }) {
   );
 }
 
-/** The most a step's p95 time to final may be before the rule cuts differently: above this for more than an hour. */
-const SLOW_FINAL_SECONDS = 20;
-
 function Rule({ s }: { s: StatsSummary }) {
-  const p = s.prover, word = STEP[s.window].word;
-  // The same series as the Time to final chart (so one read serves both): the p95 of each step, to find the worst and count those above the line.
-  const ttf = useQuery({ queryKey: ["stats-series", "time_to_final_p95", s.window], queryFn: () => getStatsSeries("time_to_final_p95", s.window), refetchInterval: 60_000 }).data;
-  const vals = (ttf?.points ?? []).map((x) => x.value).filter((v): v is number => v !== null);
-  const worst = vals.length ? Math.max(...vals) : null, over = vals.filter((v) => v > SLOW_FINAL_SECONDS).length;
+  const p = s.prover, r = s.rule;
+  // The rule of design 2.7, as the server counts it: by the hour for the time to final, by the UTC day for the ten-minute windows (more than one window of a day above the line makes the day count).
+  const days = r.windowsOverByDay, daysOver = days.filter((d) => d.windowsOver > 1).length;
   return (
     <div className="rule">
       <h4>The two numbers the block-cutting rule watches</h4>
       <dl className="kv wide">
         <dt className="kv-k">p95 time to final</dt>
-        <dd className="kv-v">{worst !== null ? <><b>{sec(worst)}</b> <span className="muted small">by the {word} (the worst) · {plural(over, "step")} above {SLOW_FINAL_SECONDS} s{s.timeToFinal ? ` · ${sec(s.timeToFinal.p95)} over the whole window` : ""}</span></> : s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window</span></> : DASH}</dd>
+        <dd className="kv-v">{r.worstHourP95 !== null ? <><b>{sec(r.worstHourP95)}</b> <span className="muted small">by the hour (the worst){r.worstHourAt ? `, ${pointTime(r.worstHourAt, false)}` : ""} · {plural(r.hoursAbove ?? 0, "hour")} of {count(r.hoursMeasured)} above {r.slowAboveSeconds} s{r.hoursMeasured < r.hoursCounted ? ` · ${plural(r.hoursCounted - r.hoursMeasured, "hour")} with no final transaction` : ""}{s.timeToFinal ? ` · ${sec(s.timeToFinal.p95)} over the whole window` : ""}</span></> : s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window · no whole hour with a final transaction yet</span></> : DASH}</dd>
         <dt className="kv-k">Busiest ten minutes</dt>
-        <dd className="kv-v">{p.maxBusyRatio10m !== null ? <><b>{pct(p.maxBusyRatio10m)}</b> <span className="muted small">of what one prover can carry · {count(p.windowsOver)} of {count(p.windowsCounted)} ten-minute windows above {pct(p.loadedAbove)}</span></> : DASH}</dd>
+        <dd className="kv-v">{p.maxBusyRatio10m !== null ? <><b>{pct(p.maxBusyRatio10m)}</b> <span className="muted small">of what one prover can carry · {count(p.windowsOver)} of {count(p.windowsCounted)} ten-minute windows above {pct(p.loadedAbove)}{days.length > 0 ? ` · ${count(daysOver)} of ${plural(days.length, "day")} with more than one` : ""}</span></> : DASH}</dd>
         <dt className="kv-k">Cutting now</dt>
         <dd className="kv-v">{s.cutting ? <><code>{s.cutting.strategy}</code>{s.cutting.strategy === "on_demand" && <span className="muted small"> · a block when transactions wait</span>}</> : DASH}</dd>
       </dl>
@@ -176,7 +173,7 @@ export function Stats() {
             {timeTile("Proof time", s.proofTime, `per block, ${plural(s.proofTime?.samples ?? 0, "proof")}`)}
             {timeTile("Canton commit", s.commitTime, "sent to record time")}
             <Tile k="Transactions" v={count(s.txs.count)} small={s.txs.allTime ? <span title={`All time, as of block ${s.txs.allTime.asOfBlock}; runs marked as tests are counted`}>{count(s.txs.allTime.total)} final all time · test runs included</span> : "total not counted yet"} sub={`in ${plural(s.blocks.count, "block")}${s.txsPerBlock.mean !== null ? ` · ${trim(s.txsPerBlock.mean, 1)} per block` : ""}${s.txs.allTime ? ` · all time as of block ${s.txs.allTime.asOfBlock}` : ""}`} />
-            <Tile k="Peak rate" v={s.tps.peak !== null && s.txs.count > 0 ? trim(s.tps.peak, 1) : DASH} small={s.tps.peak !== null && s.txs.count > 0 ? "tx/s" : undefined} sub={s.tps.peakAt ? `busiest minute, ${pointTime(s.tps.peakAt, false)}` : "no transaction in this window"} />
+            <Tile k="Peak rate" v={s.tps.peak !== null && s.txs.count > 0 ? rate(s.tps.peak) : DASH} small={s.tps.peak !== null && s.txs.count > 0 ? "tx/s" : undefined} sub={s.tps.peakAt ? `${s.tps.peak !== null && s.tps.peak < 1 ? `${peakCount(s.tps.peak)} in the busiest minute` : "busiest minute"}, ${pointTime(s.tps.peakAt, false)}` : "no transaction in this window"} />
             <Tile k="Success rate" v={s.txs.successRate !== null ? pct(s.txs.successRate) : DASH} sub={s.txs.successRate !== null ? `${count(s.txs.failed)} reverted of ${count(s.txs.count)}` : "no transaction in this window"} />
           </div>
           <Reliability s={s} />
@@ -188,11 +185,7 @@ export function Stats() {
           </div>
           <div className="cols">
             <PerBlock s={s} />
-            <section className="card panel">
-              <div className="list-h"><div><h3>Prover busy</h3> <span className="muted small">share of each {step} the prover spent proving</span></div></div>
-              <BusyChart window={window} />
-              <Rule s={s} />
-            </section>
+            <BusyCard s={s} />
           </div>
           <FaucetCard s={s} faucetOn={!!st?.faucet.on} coin={st?.coin} />
         </>
@@ -201,10 +194,17 @@ export function Stats() {
   );
 }
 
-/** The prover chart sits inside a card that also holds the rule, so it has no card of its own. */
-function BusyChart({ window }: { window: StatsWindow }) {
-  const r = useQuery({ queryKey: ["stats-series", "busy_ratio", window], queryFn: () => getStatsSeries("busy_ratio", window), refetchInterval: 60_000 });
-  if (r.isError && !r.data) return <p className="muted small chart-msg">This chart cannot be read right now. The page tries again in a minute.</p>;
-  if (!r.data) return <p className="muted small chart-msg" aria-busy="true">Reading…</p>;
-  return <Chart kind="bars" fmt={(v) => `${trim(v * 100, 1)}%`} fmtPoint={pct} from={r.data.from} to={r.data.to} step={r.data.step} label={`Prover busy, per ${STEP[window].word}`} lines={[{ name: "busy", tone: "b", points: r.data.points }]} />;
+/** The prover card: its chart and the rule. The chart is drawn in the step the series answers with (busy_ratio has no minute step, so an hour is drawn in 10 minutes), and the card says so. */
+function BusyCard({ s }: { s: StatsSummary }) {
+  const r = useQuery({ queryKey: ["stats-series", "busy_ratio", s.window], queryFn: () => getStatsSeries("busy_ratio", s.window), refetchInterval: 60_000 });
+  const word = r.data ? STEP_WORD[r.data.step] : null;
+  return (
+    <section className="card panel">
+      <div className="list-h"><div><h3>Prover busy</h3> <span className="muted small">share of {word ? `each ${word}` : "each step"} the prover spent proving</span></div></div>
+      {r.isError && !r.data ? <p className="muted small chart-msg">This chart cannot be read right now. The page tries again in a minute.</p>
+        : !r.data ? <p className="muted small chart-msg" aria-busy="true">Reading…</p>
+        : <Chart kind="bars" fmt={(v) => `${trim(v * 100, 1)}%`} fmtPoint={pct} from={r.data.from} to={r.data.to} step={r.data.step} label={`Prover busy, per ${word}`} lines={[{ name: "busy", tone: "b", points: r.data.points }]} />}
+      <Rule s={s} />
+    </section>
+  );
 }

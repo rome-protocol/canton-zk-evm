@@ -393,6 +393,11 @@ describe("the numbers, from the stats routes", () => {
     expect(tile("Transactions per second")).toHaveTextContent("0.03 now peak 10.2peak: the busiest minute in 24 h, 12:49 UTC");
   });
 
+  it.each([[1, "0.017"], [2, "0.033"]] as const)("shows a busiest minute of %i transaction(s) as peak %s, never peak 0, and says how many it was", async (txs, shown) => {
+    await withStats({ day: { tps: { now: 0, peak: txs / 60, peakAt: "2026-10-04T12:49:00.000Z" }, txs: { count: txs, failed: 0, successRate: 1, accepted: txs, allTime: null } } })();
+    expect(tile("Transactions per second")).toHaveTextContent(`0 now peak ${shown}peak: ${txs} tx in the busiest minute in 24 h, 12:49 UTC`);
+  });
+
   it("shows a rate of nothing as 0, and no peak when the day had no transaction", async () => {
     await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, successRate: null, accepted: 0, allTime: null } } })();
     expect(tile("Transactions per second")).toHaveTextContent("0 nowno transaction in 24 h");
