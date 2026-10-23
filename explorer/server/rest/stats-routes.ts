@@ -91,7 +91,7 @@ export function slowHours(hours: readonly StatsRow[], from: number, t: number) {
     if (q.value > SLOW_FINAL_SECONDS) above++;
     if (!worst || q.value > worst.p95) worst = { p95: q.value, at: r.bucket };
   }
-  return { counted, measured, above: counted > 0 ? above : null, worst };
+  return { counted, measured, above: measured > 0 ? above : null, worst };
 }
 
 /** The five size classes of a block, as `proof_size_hist` holds them one after the other (design section 8). */

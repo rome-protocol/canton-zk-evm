@@ -749,7 +749,8 @@ describe.skipIf(!TEST_URL)("the stats routes: the switching rule's two numbers b
     try {
       await base(e.pool);
       const s = body(await apiFor(e.pool, () => NOW)("/api/stats/summary?window=24h"));
-      expect(s.rule).toMatchObject({ hoursMeasured: 0, hoursAbove: 0, worstHourP95: null, worstHourAt: null });
+      expect(s.rule.hoursCounted).toBeGreaterThan(0); // hours went by, none with a time to final: hoursAbove says nothing, not 0
+      expect(s.rule).toMatchObject({ hoursMeasured: 0, hoursAbove: null, worstHourP95: null, worstHourAt: null });
       expect(s.rule.windowsOverByDay.every((d: { windowsOver: number }) => d.windowsOver === 0)).toBe(true);
     } finally { await e.drop(); }
   });
