@@ -1,0 +1,10 @@
+/* home: the health strip */
+.strip { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; padding-bottom: 12px; }
+.strip-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; }
+.strip-dots { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--muted); }
+.strip-dots .sd.lead { color: var(--ok); font-weight: 600; font-size: 14px; }
+.strip-dots .sd.lead.bad { color: var(--bad); }
+.strip-dots .sd.lead.off { color: var(--muted); }
+.strip-last { font-size: 13px; color: var(--muted); }
+.strip-last .num, .strip-last b { color: var(--ink); font-weight: 600; }
+.strip-last .num { color: var(--link); }

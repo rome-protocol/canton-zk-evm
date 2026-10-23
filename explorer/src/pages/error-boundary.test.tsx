@@ -14,7 +14,7 @@ describe("a page that fails while drawing", () => {
     renderApp("/faucet");
     expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeInTheDocument();
     await user.click(within(screen.getByRole("banner")).getByRole("link", { name: /Ostia/ }));
-    expect(await screen.findByText("Final on Canton")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Chain status" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Something went wrong" })).toBeNull();
   });
 });

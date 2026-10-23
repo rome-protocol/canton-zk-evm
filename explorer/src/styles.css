@@ -130,8 +130,6 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .chip-genesis { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
 
 /* home: the status strip */
-.strip { display: flex; flex-direction: column; gap: 12px; }
-.strip-dots { display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 13px; color: var(--muted); }
 .sd { display: inline-flex; align-items: center; gap: 7px; }
 .sd i { width: 8px; height: 8px; border-radius: 50%; display: block; }
 .sd.ok i { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-tint); }
@@ -139,11 +137,6 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .sd.off i { background: var(--faint); }
 .sd.warn i { background: var(--amber); }
 .sd.bad { color: var(--bad); font-weight: 500; }
-.strip-lines { display: flex; flex-direction: column; gap: 6px; }
-.sl { display: flex; gap: 16px; align-items: baseline; }
-.sl-k { width: 130px; flex: none; color: var(--muted); font-size: 13px; }
-.sl-v { font-size: 15px; min-width: 0; }
-.sl-v .num { font-weight: 500; }
 
 /* tables */
 .scroll { overflow-x: auto; }

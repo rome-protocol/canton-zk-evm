@@ -11,7 +11,7 @@ const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockLis
   vi.setSystemTime(NOW);
   const calls = fakeApi(route({ status: () => reply(status(over), code), ...(blocks && { blocks: () => reply(page(blocks)) }) }));
   renderApp("/");
-  await screen.findByText("Final on Canton");
+  await screen.findByRole("region", { name: "Chain status" });
   // The lists are read once the first frame is drawn, so they arrive after the status.
   await vi.waitFor(() => expect(screen.queryByText("Reading the transactions…")).toBeNull());
   if (blocks) await screen.findByText(blocks.length ? "Latest final blocks" : "No final blocks yet.");
@@ -19,6 +19,14 @@ const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockLis
   return calls;
 };
 const strip = () => within(screen.getByRole("region", { name: "Chain status" }));
+/** /api/health with the named parts of screen 01 (the API's own reth row is left out of the count), and one of them, if named, not ok. */
+const strip16 = (bad?: string, word: "degraded" | "down" = "degraded") => {
+  const r = (id: string, role: string, value?: unknown) => ({ id, role, status: id === bad ? word : "ok", detail: id === bad ? "it says so" : null, ...(value ? { value } : {}) });
+  return { status: "ok", instance: "api-1", starting: false, problems: [], checks: [
+    r("api/api-1/reth", "api"), r("producer_alive", "indexer"), r("producer_state", "indexer"), r("prover", "indexer"), r("C5", "indexer", { lagBlocks: 0, lagSeconds: 0.3 }),
+    r("faucet", "api"), r("verifier/compilers", "verifier"), r("C9", "indexer", { worstMs: 41, checked: 3 }),
+  ] };
+};
 
 describe("the home page's status strip", () => {
   it("names how far the index is behind Canton, in blocks, and says nothing of it while that is not known", async () => {
@@ -31,34 +39,40 @@ describe("the home page's status strip", () => {
     expect(strip().queryByText(/Index lag/)).toBeNull();
   });
 
-  it("says what is final, how long it took to commit, and what is being proven", async () => {
-    await home();
-    expect(strip().getByText("EVM node").closest(".sd")).toHaveClass("ok");
-    expect(strip().getByText("Canton").closest(".sd")).toHaveClass("ok");
-    expect(strip().getByText("Checks pass").closest(".sd")).toHaveClass("ok");
-    const final = strip().getByText("Final on Canton").parentElement!;
-    expect(within(final).getByRole("link", { name: "Block 3" })).toHaveAttribute("href", "/block/3");
-    expect(final).toHaveTextContent("committed 7 s after it was made · 01:37:23 UTC");
-    const proving = strip().getByText("Being proven").parentElement!;
-    expect(within(proving).getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
-    expect(proving).toHaveTextContent("made 3 s ago");
+  it("says the count of checks, names each part as screen 01 does, and the last final block with its time to the millisecond", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    fakeApi(route({ health: () => reply(strip16()) }));
+    renderApp("/");
+    await screen.findByRole("region", { name: "Chain status" });
+    await strip().findByText("All 6 checks ok");
+    expect(strip().getByText("All 6 checks ok").closest(".sd")).toHaveClass("ok");
+    for (const w of ["EVM node", "Canton ledger", "Producer", "Prover", "Index lag 0.3 s", "Faucet", "Verifier", "Clock gap 41 ms"]) expect(strip().getByText(w).closest(".sd")).toHaveClass("ok");
+    const last = strip().getByText("Last final block", { exact: false });
+    expect(within(last).getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
+    expect(last).toHaveTextContent("Last final block 3 · 4 s ago · 01:37:23.412 UTC");
+    expect(strip().queryByText("Final on Canton")).toBeNull();
   });
 
-  it("says when nothing is being proven", async () => {
-    await home({ proving: null });
-    expect(strip().getByText("None right now.")).toBeInTheDocument();
+  it("marks a part red when its check is not ok", async () => {
+    fakeApi(route({ health: () => reply(strip16("prover", "degraded")) }));
+    renderApp("/");
+    await screen.findByRole("region", { name: "Chain status" });
+    await strip().findByText("1 of 6 checks not ok");
+    expect(strip().getByText("Prover").closest(".sd")).toHaveClass("bad");
+    expect(strip().getByText("Producer").closest(".sd")).toHaveClass("ok");
   });
 
   it("names the block when a check failed, in red", async () => {
     await home({ ok: false, problems: ["block 3: reth's hash is 0x1111…1111, the record's hash is 0x2222…2222"] }, 503);
     expect(strip().getByText("A check failed").closest(".sd")).toHaveClass("bad");
     expect(strip().getByText("block 3: reth's hash is 0x1111…1111, the record's hash is 0x2222…2222")).toBeInTheDocument();
-    expect(strip().getByText("Final on Canton")).toBeInTheDocument();
+    expect(strip().getByText("Last final block", { exact: false })).toBeInTheDocument();
   });
 
   it("says when Canton cannot be read, and keeps the blocks it last read", async () => {
     await home({ ok: false, canton: false }, 503);
-    expect(strip().getByText("Canton").closest(".sd")).toHaveClass("bad");
+    expect(strip().getByText("Canton ledger").closest(".sd")).toHaveClass("bad");
     expect(strip().getByText("Checks").closest(".sd")).toHaveClass("off");
     expect(strip().getByText("Canton cannot be read right now. The blocks below are what the explorer last read.")).toBeInTheDocument();
     expect(rowsOf()[0]).toHaveTextContent("12200303…0303");
@@ -117,13 +131,13 @@ describe("the home page's status strip", () => {
     vi.setSystemTime(NOW);
     fakeApi(route({ status: () => reply(status({ ok: false, canton: false }), 503) }));
     renderApp("/");
-    await screen.findByText("Final on Canton");
-    const proving = () => strip().getByText("Being proven").parentElement!;
-    expect(proving()).toHaveTextContent("made 3 s ago");
+    await screen.findByRole("region", { name: "Chain status" });
+    const last = async () => strip().findByText("Last final block", { exact: false });
+    expect(await last()).toHaveTextContent("4 s ago");
     for (let i = 0; i < 6; i++) await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(proving()).toHaveTextContent("made 15 s ago");
+    expect(await last()).toHaveTextContent("16 s ago");
     await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(proving()).toHaveTextContent("made 16 s ago");
+    expect(await last()).toHaveTextContent("17 s ago");
   });
 });
 
@@ -173,7 +187,7 @@ describe("the list of latest final blocks", () => {
     fakeApi(route({ blocks: () => reply({ error: "The explorer cannot read the chain right now." }, 502) }));
     renderApp("/");
     expect(await screen.findByText("The explorer cannot read this list right now.")).toBeInTheDocument();
-    expect(screen.getByText("Final on Canton")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Chain status" })).toBeInTheDocument();
   });
 });
 
@@ -294,7 +308,7 @@ const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => Retu
   vi.setSystemTime(NOW);
   const calls = fakeApi(route({ status: () => reply(status()), stats: statsRoute(h), ...(flight && { inFlight: flight }) }));
   renderApp("/");
-  await screen.findByText("Final on Canton");
+  await screen.findByRole("region", { name: "Chain status" });
   // The day and the series are read once the first frame is drawn.
   await vi.waitFor(() => expect(calls.some((c) => c.startsWith("/api/stats/series"))).toBe(true));
   await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
@@ -423,7 +437,7 @@ describe("following the chain", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const calls = fakeApi(route({}));
     renderApp("/");
-    await screen.findByText("Final on Canton");
+    await screen.findByRole("region", { name: "Chain status" });
     const first = calls.filter((c) => c === "/api/status").length;
     await vi.advanceTimersByTimeAsync(4100);
     expect(calls.filter((c) => c === "/api/status").length).toBeGreaterThanOrEqual(first + 2);
