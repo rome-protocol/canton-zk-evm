@@ -177,6 +177,15 @@ describe("the token page: holders", () => {
     expect(screen.getByRole("region", { name: "Holder distribution" })).not.toHaveTextContent("as of final block 3");
   });
 
+  it("shows each balance as a bare number under 'Balance (tUSD)', as screen 09b does, with the symbol in the tooltip", async () => {
+    await open();
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("columnheader", { name: "Balance (tUSD)" })).toBeInTheDocument();
+    const first = rows()[0]!;
+    expect(first).not.toHaveTextContent("tUSD");
+    expect(within(first).getByTitle("995,000 tUSD")).toHaveTextContent(/^995,000$/);
+  });
+
   it("names no block while the explorer is still reading, because the list is then short of the newest rows", async () => {
     await open(tokenDetail(), { holders: () => derived(HOLDERS, null, false) });
     await screen.findByRole("table", { name: "Token holders" });
@@ -251,8 +260,10 @@ describe("the token page: transfers", () => {
     const calls = await go([tokenTransfer(0xd1), tokenTransfer(0xd2, { amount: "2500000", from: "0x" + "00".repeat(20) })]);
     expect(calls).toContain(`/api/tokens/${A}/transfers?limit=25`);
     expect(rows("Token transfers")).toHaveLength(2);
-    expect(rows("Token transfers")[0]).toHaveTextContent("100 tUSD");
-    expect(rows("Token transfers")[1]).toHaveTextContent("2.5 tUSD");
+    // A bare number, as screen 09b has it: the unit is the token's own, and the tooltip names it with the exact amount.
+    expect(within(rows("Token transfers")[0]!).getByTitle("100 tUSD")).toHaveTextContent(/^100$/);
+    expect(within(rows("Token transfers")[1]!).getByTitle("2.5 tUSD")).toHaveTextContent(/^2\.5$/);
+    expect(rows("Token transfers")[0]).not.toHaveTextContent("tUSD");
     expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "0xd1d1d1d1…d1d1d1" })).toHaveAttribute("href", `/tx/${"0x" + "d1".repeat(32)}`);
     expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "20" })).toHaveAttribute("href", "/block/20");
   });

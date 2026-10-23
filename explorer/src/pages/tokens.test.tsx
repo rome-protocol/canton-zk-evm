@@ -205,6 +205,15 @@ describe("the tokens page to the screen", () => {
     expect(within(r).queryByTitle(/decimals are not known/)).toBeNull();
   });
 
+  it("draws the tokens card as a panel: a header strip with the count and pager over a line, and the table to the card's edges, as screen 09 does", async () => {
+    await open();
+    const card = screen.getByRole("region", { name: "Tokens" });
+    expect(card).toHaveClass("panel");
+    expect(card.querySelector(":scope > .list-h")).not.toBeNull();
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
+    expect(css).toMatch(/\.panel\s*>\s*\.list-h\s*\{[^}]*border-bottom/);
+  });
+
   it("gives the feed card a header that sits inside the card (a panel card pulls no header out of its edge)", async () => {
     await open();
     const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");

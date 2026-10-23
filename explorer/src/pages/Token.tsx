@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, getContract, getToken, getTokenHolders, getTokenTransfers, tokenTransfersCsvPath, type AddressTransferItem, type TokenDetail, type TokenHolder } from "../api.ts";
-import { Amount } from "../components/Amount.tsx";
 import { CardHead, DownloadLink, ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
@@ -57,6 +56,11 @@ const SEG = ["var(--canton)", "#3B82B4", "#C27BA8", "#4FA58A", "#C9A227"];
 const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 const raw = (t: TokenDetail) => t.standard === "ERC-20" && t.decimals === null;
 
+/** A number in this token's whole units, with no symbol: the column header names the unit as screen 09b does, and the tooltip has the exact amount with the symbol. */
+function Bare({ raw, t, decimals }: { raw: string; t: TokenDetail; decimals: number }) {
+  return <span className="num" title={`${exact(raw, decimals)}${hasSymbol(t) ? ` ${t.symbol}` : ""}`}>{units(raw, decimals)}</span>;
+}
+
 function HolderRow({ h, n, t, dot }: { h: TokenHolder; n: number; t: TokenDetail; dot?: string }) {
   const fungible = t.standard === "ERC-20";
   const s = fungible ? share(h.value, t.totalSupply) : null;
@@ -71,8 +75,7 @@ function HolderRow({ h, n, t, dot }: { h: TokenHolder; n: number; t: TokenDetail
         {t.creator !== null && h.holder.toLowerCase() === t.creator.toLowerCase() && <span className="tag">creator</span>}
       </td>
       {multi && <td><span className="mono">#{h.tokenId}</span></td>}
-      <td className="r">{fungible && t.decimals !== null && t.symbol ? <Amount raw={h.value} decimals={t.decimals} symbol={t.symbol} />
-        : fungible && t.decimals !== null ? <span className="num" title={exact(h.value, t.decimals)}>{units(h.value, t.decimals)}</span>
+      <td className="r">{fungible && t.decimals !== null ? <Bare raw={h.value} t={t} decimals={t.decimals} />
         : t.standard === "ERC-721" ? <NftCount n={h.value} />
         : <span className="num" title={fungible ? "The token's decimals are not known, so this is the raw balance" : undefined}>{count(h.value)}</span>}</td>
       {fungible && <td className="r"><span className="num">{s ? s.text : "—"}</span></td>}
@@ -147,8 +150,7 @@ function Holders({ t }: { t: TokenDetail }) {
 function Moved({ x, t }: { x: AddressTransferItem; t: TokenDetail }) {
   if (x.tokenId !== null) return <span className="mono">{x.amount !== null ? `${count(x.amount)} · ` : ""}#{x.tokenId}</span>;
   if (x.amount === null) return <Dash />;
-  if (t.decimals !== null && t.symbol) return <Amount raw={x.amount} decimals={t.decimals} symbol={t.symbol} />;
-  if (t.decimals !== null) return <span className="num" title={exact(x.amount, t.decimals)}>{units(x.amount, t.decimals)}</span>;
+  if (t.decimals !== null) return <Bare raw={x.amount} t={t} decimals={t.decimals} />;
   return <span className="num" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span>;
 }
 
