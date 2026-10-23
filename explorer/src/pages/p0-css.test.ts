@@ -80,6 +80,21 @@ describe("the card header", () => {
   });
 });
 
+describe("home: the hero's search box", () => {
+  const home = read("home.css");
+  it("sits under the intro from the left: no auto left margin, and a width the sheet that styles .search cannot cap at 600 px", () => {
+    const own = rules(home).filter(([sel]) => /hero-search/.test(sel));
+    expect(own).toHaveLength(1);
+    const [sel, body] = own[0]!;
+    expect(body).toMatch(/margin-left:\s*0\b/);
+    expect(body).toMatch(/max-width:\s*900px/);
+    // It beats the shared `.search` rule (max-width 600 px, margin-left auto) whichever sheet comes last.
+    const shared = rules(styles).find(([s]) => s === ".search")!;
+    expect(shared[1]).toMatch(/max-width:\s*600px/);
+    expect(beats(spec(sel), spec(".search"))).toBe(true);
+  });
+});
+
 describe("the transaction page on a phone, as screen 14 has it", () => {
   const block = (width: number) => { const m = new RegExp(`@media \\(max-width: ${width}px\\) \\{([\\s\\S]*?)\\n\\}`).exec(tx); return m ? m[1]! : ""; };
   const body = (css: string, sel: string) => new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
