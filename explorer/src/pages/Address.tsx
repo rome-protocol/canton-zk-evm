@@ -9,18 +9,14 @@ import { count, exact, units } from "../format.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
 import { CoinTab, InternalTab, TransfersTab, TxsTab } from "./AddressTabs.tsx";
 import { Contract } from "./Contract.tsx";
+import { NftCount } from "./TokenParts.tsx";
 import "./address.css";
 import "./tx.css";
 
-const KIND = { account: "Account", contract: "Contract", token: "Token" } as const;
 const Dash = () => <span className="muted">—</span>;
 
-/** The title: a token is named by its own name and symbol; an account and a contract are an address, and the chip says which. */
-function Title({ a }: { a: AddressDetail }) {
-  const t = a.token;
-  const named = t && (t.name || t.symbol) ? <>{t.name ?? t.symbol} {t.name && t.symbol && <span className="muted thin">({t.symbol})</span>}</> : "Address";
-  return <div className="ptitle"><h1>{named}</h1><span className="chip chip-kind">{KIND[a.kind]}</span></div>;
-}
+/** The title: an address that holds no code. A contract and a token have their own pages. */
+const Title = () => <div className="ptitle"><h1>Address</h1><span className="chip chip-kind">Account</span></div>;
 
 /** The balance is what reth says at the final block; with no final block yet it is not known, and is never drawn as 0. */
 function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | undefined }) {
@@ -43,10 +39,11 @@ function HoldingRow({ h }: { h: Holding }) {
     <div className="hold">
       <div>
         {name ? <Link to={`/token/${h.token}`}>{name}</Link> : <HashLink value={h.token} to={`/token/${h.token}`} />}
-        <div className="muted small">{h.symbol && <>{h.symbol}{nft && ` #${h.tokenId}`} · </>}{h.standard} · as of block {h.updatedBlock}</div>
+        <div className="muted small">{h.symbol && <>{h.symbol}{h.standard === "ERC-1155" && ` #${h.tokenId}`} · </>}{h.standard} · as of block {h.updatedBlock}</div>
       </div>
       <div className="r">
-        {nft ? <span className="mono">{h.value === "1" ? "1" : h.value}</span>
+        {h.standard === "ERC-721" ? <NftCount n={h.value} />
+          : nft ? <span className="mono">{h.value}</span>
           : h.decimals !== null && h.symbol ? <Amount raw={h.value} decimals={h.decimals} symbol={h.symbol} />
           : <span className="mono" title="The token's decimals are not known, so this is the raw value">{h.value}</span>}
       </div>
@@ -79,7 +76,6 @@ function More({ a }: { a: AddressDetail }) {
     <section className="card" aria-label="More information">
       <h2>More information</h2>
       <Kv wide>
-        {a.createdBy && <Item label="Created by">{a.createdBy.txHash ? <><HashLink value={a.createdBy.txHash} to={`/tx/${a.createdBy.txHash}`} /> in </> : "genesis, "}<Link className="num" to={`/block/${a.createdBy.block}`}>block {a.createdBy.block}</Link></Item>}
         <Item label="Transactions sent"><span className="mono">{count(a.sentCount)}</span></Item>
         <Item label="Transactions received"><span className="mono">{count(a.receivedCount)}</span></Item>
         <Item label="First seen">{blk(a.firstSeenBlock)}</Item>
@@ -119,7 +115,7 @@ export function Address() {
   return (
     <>
       <nav className="small muted" aria-label="Breadcrumb"><Link to="/addresses">Addresses</Link> / <span className="mono">{a.address.slice(0, 6)}…{a.address.slice(-4)}</span></nav>
-      <Title a={a} />
+      <Title />
       <div className="bighash"><HashLink value={a.address} full /></div>
       <div className="addr-cards">
         <Overview a={a} coin={st?.coin} />
