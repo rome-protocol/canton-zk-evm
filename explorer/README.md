@@ -23,20 +23,47 @@ The explorer reads two sources. reth, the chain's execution client, gives the EV
 
 ## Running it
 
-The explorer runs as a container beside the chain it shows, on the same machine. `run.sh` builds the image and starts it:
+The explorer runs as a container beside the chain it shows, on the same machine. It needs Docker on Linux.
+
+The chain comes first, and it has its own prerequisites: a Linux x86-64 machine with an NVIDIA GPU, Docker, Rust, Python 3.12 or newer, `jq`, `curl` and `openssl`, and ZisK installed with `prover/install.sh`. `network/up.sh` stops when `cargo-zisk` is missing. [network/README.md](../network/README.md#running-it) has the details.
+
+Start the chain with a genesis that funds the faucet. `setup` makes the faucet's key for this run and that genesis, and it comes before the network because reth starts from the genesis (see [The faucet](#the-faucet)):
 
 ```sh
-explorer/run.sh setup        # the faucet's key for this run, and a genesis that funds it
+explorer/run.sh setup
 CZE_GENESIS_FILE=state/faucet/genesis.json network/up.sh
-explorer/run.sh start        # then open http://127.0.0.1:8088
+```
+
+Run the builder once. The chain has no blocks until it does, and a faucet payout waits for the next proven block, so run it once per block, as `network/smoke.sh` does. Replace `<address>` with the address that receives the block's fees. The other builder settings are in [builder/README.md](../builder/README.md#settings):
+
+```sh
+CZE_LEDGER_USER=builder \
+CZE_BUILDER_PARTY=$(sed -n 's/^BUILDER_PARTY=//p' state/canton/parties.env) \
+CZE_FEE_RECIPIENT=<address> \
+state/venv/bin/python3 builder/builder.py once
+```
+
+Start the explorer, then open http://127.0.0.1:8088:
+
+```sh
+explorer/run.sh start
+```
+
+`run.sh start` gives the indexer the builder's work folder (`CZE_WORK_DIR`, `<state>/builder` by default) only if the folder exists at that moment. If the explorer was started before the first builder run, run `explorer/run.sh start` again, or the block lifecycle stays blank and the health says so.
+
+Stop it with the command below. When the state folder has no `persist.env` (a network made without `CZE_PERSIST`), `stop` also deletes the explorer's database with everything in it, including the tracker's rows, the faucet's requests and any verified contract sources. A persistent network keeps the database.
+
+```sh
 explorer/run.sh stop
 ```
 
-The explorer shows the chain from its own PostgreSQL, which the indexer fills, so `start` does three things before the explorer runs: it starts the database that `network/explorer-db.sh` makes for this state folder (unless it is already up, or `EXPLORER_DATABASE_URL` or `EXPLORER_DB_PASSWORD_FILE` names another), applies the migrations, and starts the indexer as its own container (`cze-explorer-indexer`). The explorer answers 503 on `/healthz` until the indexer has started, and it says so whenever the indexer's checks go stale or one has stopped it. A stopped indexer is not restarted by itself: read its log (`docker logs cze-explorer-indexer`), then `explorer/run.sh start` again. `stop` stops both. The database follows the network's life: when the state folder has no `persist.env` (a network made without `CZE_PERSIST`), `stop` also removes the database that `start` made (`network/explorer-db.sh wipe`), as `network/down.sh` does, so the next chain, made from the same genesis, starts with an empty one and the indexer does not meet the old chain's rows. A persistent network keeps it, and `start` reads the database's container and port from `persist.env`. A database you name yourself is never removed. The faucet's hash key is made once, as `faucet/client-key` in the state folder, when there is a faucet key and `FAUCET_CLIENT_KEY_FILE` names none. The indexer reads reth and Canton where the explorer does, or at `INDEXER_RETH_RPC_URL` and `INDEXER_LEDGER_URL` when those are set; `GATEWAY_ADDRESS` comes from `PINS`, and its genesis is `<state>/genesis.json`, the one reth runs (`GENESIS_FILE` names another): the indexer seeds the chain's contracts from it at its first start, and `start` stops, naming the setting, when there is none.
+`start` does three things before the explorer runs. It starts the database that `network/explorer-db.sh` makes for this state folder, unless that database is already up or `EXPLORER_DATABASE_URL` or `EXPLORER_DB_PASSWORD_FILE` names another. It applies the migrations. It starts the indexer as its own container, `cze-explorer-indexer`. The explorer answers 503 on `/healthz` until the indexer has started, and `/healthz` reports the indexer's checks when they go stale or fail. `run.sh` does not restart a stopped indexer: read its log (`docker logs cze-explorer-indexer`), then run `explorer/run.sh start` again. `stop` stops both containers.
 
-`setup` comes before the network starts, because reth starts from that genesis (see [The faucet](#the-faucet)). `start` takes what it needs from the run's state folder (`CZE_STATE_DIR`, `./state` by default): the reader party from `canton/parties.env`, the run's own pins from `net/guest.txt` and the faucet's key from `faucet/key`. The caller can set `READER_PARTY`, `PINS_FILE` and `FAUCET_KEY_FILE` instead, and any of the [settings](#settings) below. With no key the faucet is off.
+`stop` removes the database for a network that is not persistent (`network/explorer-db.sh wipe`), as `network/down.sh` does, so the next chain made from the same genesis starts with an empty one and the indexer does not meet the old chain's rows. A persistent network keeps it, and `start` reads the database's container and port from `persist.env`. A database you name yourself is never removed.
 
-Neither `network/up.sh` nor `run.sh start` runs the builder. A payout waits for the next proven block, so run the builder once per block, as `network/smoke.sh` does: `CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$(sed -n 's/^BUILDER_PARTY=//p' state/canton/parties.env) CZE_FEE_RECIPIENT=<address> state/venv/bin/python3 builder/builder.py once`. The other settings are in [builder/README.md](../builder/README.md#settings).
+The faucet's hash key is made once, as `faucet/client-key` in the state folder, when there is a faucet key and `FAUCET_CLIENT_KEY_FILE` names none. The indexer reads reth and Canton where the explorer does, or at `INDEXER_RETH_RPC_URL` and `INDEXER_LEDGER_URL` when those are set. `GATEWAY_ADDRESS` comes from `PINS`. The genesis is `<state>/genesis.json`, the one reth runs, and `GENESIS_FILE` names another. The indexer seeds the chain's contracts from the genesis at its first start, and `start` stops, naming the setting, when there is none.
+
+`start` takes what it needs from the run's state folder (`CZE_STATE_DIR`, `./state` by default): the reader party from `canton/parties.env`, the run's own pins from `net/guest.txt` and the faucet's key from `faucet/key`. `READER_PARTY`, `PINS_FILE` and `FAUCET_KEY_FILE` set them instead. With no key the faucet is off. `run.sh` passes only some of the [settings](#settings) below on to the containers: the Settings tables name them, and the rest apply to a process started directly.
 
 The container runs on the host's network, because the explorer reads reth and Canton on the machine's own ports, and it listens on 127.0.0.1 only. It runs as the user who starts it, with a read-only filesystem and no added rights, and it gets the pins file and the key as read-only files. This needs Docker on Linux.
 
@@ -47,6 +74,8 @@ The container runs on the host's network, because the explorer reads reth and Ca
 ## Settings
 
 The server takes its settings from environment variables. A wrong value stops it at start, with a message that names the variable.
+
+`run.sh` passes these settings to the explorer container: `EXPLORER_HOST`, `EXPLORER_PORT`, `RETH_RPC_URL`, `LEDGER_URL`, `CHAIN_NAME`, `NETWORK_NAME`, `COIN_SYMBOL`, `RPC_TIMEOUT_MS`, `POLL_MS`, `PUBLIC_RPC`, `RPC_RATE_PER_MINUTE`, `TRUSTED_IP_HEADER`, the `FAUCET_*`, `CAPTCHA_*` and `TRACKER_*` settings, and the files and database settings that it handles itself (see Running it). It passes `RPC_TIMEOUT_MS`, `INDEX_DERIVE`, `INDEX_POLL_MS`, `INDEX_RETH_BEHIND_MS` and `INDEX_TRACE_TIMEOUT_MS` to the indexer. `READ_CALL_GAS`, `EXPLORER_INSTANCE` and `INDEX_JOURNAL_MS` are not passed on: they take effect only when the process is started directly, as in [The database](#the-database).
 
 | Variable | Default | What it is |
 |---|---|---|
@@ -60,11 +89,11 @@ The server takes its settings from environment variables. A wrong value stops it
 | `NETWORK_NAME` | not set | The Canton network the chain runs on, as the header's pill names it (`DevNet`). When it is not set, no network is named and the "test coin" line is not shown |
 | `RPC_TIMEOUT_MS`, `POLL_MS` | `5000`, `2000` | How long one call to reth may take, and how often the transaction tracker looks at the transactions it holds |
 | `READ_CALL_GAS` | `100000` | The gas limit of every `eth_call` the indexer makes (a token's name, symbol, decimals, total supply and balances, and the proxy reads), so a contract that spends all the gas it gets costs a short read and not a long one; a low limit also bounds the memory reth builds for the answer (memory expansion costs gas), and honest reads cost a few thousand gas, tens of thousands behind a proxy. An answer longer than 4 KB of data is dropped before it is decoded, and counts as not answered too. A call that runs out of gas counts as not answered: the token's metadata is `failed`, a balance is `unanswered`, and the block goes on |
-| `PUBLIC_RPC` | `0` | Set to `1` to serve the public RPC at `POST /rpc`. See [The public RPC](#the-public-rpc) |
+| `PUBLIC_RPC` | `0` | Set to `1` to serve the public RPC at `POST /rpc`. See [The public RPC](#the-public-rpc). The Etherscan API's `proxy` module and the Contract page's Read calls use `/rpc` and need it |
 | `RPC_RATE_PER_MINUTE` | `300` | Calls per client address per minute on `/rpc`. A batch counts each of its calls |
 | `TRUSTED_IP_HEADER` | none | The request header that holds the client's address, such as `X-Real-IP`, for a server that sits behind a proxy that writes it. With none, the address of the connection is used |
 | `EXPLORER_DATABASE_URL`, or `EXPLORER_DB_PASSWORD_FILE` with its parts | none, and the explorer does not start without it | The explorer's database (see [The database](#the-database)). It holds the chain the indexer writes, which the block and transaction pages read. The tracker and the faucet keep their state in it instead of in their files, only one API instance runs each loop, and `TRACKER_FILE` and `FAUCET_STATE_FILE` are imported once and renamed to `<file>.imported` |
-| `TRACKER_FILE` | none | Where the transaction tracker keeps its list across restarts. With none, the list is in memory only. `run.sh` mounts a writable folder for it and sets `/var/lib/explorer/tracker.json` |
+| `TRACKER_FILE` | none | A file in which an earlier version kept the tracker's list. The tracker now keeps its list in the database. If the file exists at start, its entries are imported once and the file is renamed to `<file>.imported`. `run.sh` mounts a writable folder and sets `/var/lib/explorer/tracker.json` |
 | `TRACKER_MAX`, `TRACKER_MAX_BYTES`, `TRACKER_PER_SENDER`, `TRACKER_MAX_PENDING_MINUTES` | `10000`, `16777216`, `64`, `60` | The most entries the tracker holds, the most characters of signed transactions it holds for open entries, the most open entries one sender may have, and how many minutes an open entry may stay without a block before it is dropped. See [The transaction tracker](#the-transaction-tracker) |
 | `FAUCET_KEY_FILE` | none | The faucet's key. With none, the faucet is off |
 | `FAUCET_CLIENT_KEY_FILE` | none | Required with a database and a faucet: 64 hex digits in a file that only its owner can read (`chmod 600`). Client addresses are stored only as an HMAC-SHA-256 of the address (an IPv6 client by its /64) made with this key. The key never goes in the database. Lose it and clients' per-address limits start over |
@@ -72,7 +101,7 @@ The server takes its settings from environment variables. A wrong value stops it
 | `FAUCET_PER_ADDRESS_SECONDS`, `FAUCET_PER_IP_SECONDS` | `86400`, `600` | One request per address per day, and one per client address (see `TRUSTED_IP_HEADER`) per 10 minutes |
 | `FAUCET_MAX_PER_HOUR` | `5000` | The most requests the faucet accepts in any hour, from everyone |
 | `FAUCET_BATCH`, `FAUCET_QUEUE_MAX` | `100`, `5000` | The most transfers sent in one batch, and the most requests waiting for a batch. Past the second the faucet answers 503 |
-| `FAUCET_STATE_FILE` | none | Where the faucet keeps its limits and the requests still waiting, across restarts. With none, they are in memory only. `run.sh` sets `/var/lib/explorer/faucet.json` |
+| `FAUCET_STATE_FILE` | none | A file in which an earlier version kept the faucet's limits and waiting requests. The faucet now keeps them in the database. If the file exists at start and a faucet key is set, its requests are imported once, their client addresses as keyed hashes, and the file is renamed to `<file>.imported`. `run.sh` sets `/var/lib/explorer/faucet.json` |
 | `CAPTCHA_SECRET` | none | Turns on the human check. With it set, the four settings below are required. With none, there is no check |
 | `CAPTCHA_VERIFY_URL`, `CAPTCHA_SCRIPT_URL`, `CAPTCHA_SITE_KEY`, `CAPTCHA_WIDGET_CLASS` | none | Where the explorer verifies a token, the script the page loads, the site key it gives that script, and the class name the script looks for to put its widget in |
 | `EXPLORER_INSTANCE` | the host's name | The name under which an API instance writes its health rows (`api/<instance>/reth` and `api/<instance>/canton`). Set it when several instances share one database |
@@ -82,7 +111,7 @@ The indexer reads the settings above that it shares with the server (`RETH_RPC_U
 | Variable | Default | What it is |
 |---|---|---|
 | `GATEWAY_ADDRESS` | none, required | The gateway contract's address, 0x and 40 hex digits. `run.sh` takes it from `PINS` |
-| `GENESIS_FILE` | none | The genesis that reth runs. The indexer seeds the chain's contracts from it at its first start. `run.sh` passes `<state>/genesis.json` |
+| `GENESIS_FILE` | none, required by `run` | The genesis that reth runs. The indexer seeds the chain's contracts from it at its first start. `run.sh` passes `<state>/genesis.json` |
 | `INDEX_DERIVE` | `behind` | `behind` commits stage 2 on its own, so it may fall behind stage 1. `inline` commits it in the same transaction as stage 1 |
 | `INDEX_POLL_MS` | `250` | How often the indexer looks for a new record (at least 20) |
 | `INDEX_RETH_BEHIND_MS` | `10000` | How long reth may lack a block that a record names before the health says so |
