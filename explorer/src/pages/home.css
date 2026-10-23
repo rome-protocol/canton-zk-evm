@@ -25,6 +25,7 @@
 /* home and transactions: the transaction cell and the value cell */
 .idcell { display: inline-flex; align-items: flex-start; gap: 8px; }
 .idcell .ic { color: var(--muted); flex: none; margin-top: 3px; }
+.idcell.blk .ic { color: var(--canton); } /* screen 01 draws the block's cube in the accent */
 .moved { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; }
 
 /* transactions: four cards in a row on a wide screen */

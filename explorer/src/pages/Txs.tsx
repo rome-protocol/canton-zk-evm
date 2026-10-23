@@ -197,7 +197,7 @@ function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, ro
     : view === "all" && finalTotal !== undefined && finalTotal !== null && p.page === 1 ? `Showing the newest ${count(n)} of ${count(finalTotal)}`
     : p.page === 1 ? `Showing the newest ${count(n)} on this page${of}` : `Showing ${count(n)} on page ${p.page}${of}`;
   return (
-    <section className="card" aria-label="Transactions">
+    <section className="card panel" aria-label="Transactions">
       <div className="list-h"><span className="muted">{label}</span>{pager}</div>
       <div className="scroll">
         <table className="tbl txs">
