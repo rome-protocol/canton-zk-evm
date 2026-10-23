@@ -2,7 +2,21 @@ import { useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { getTokenList, getTokenListOldest, type TokenListItem, type TokenListPage, type TokenSort, type TokenStandard } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
-import { count, exact, units } from "../format.ts";
+import { AddressCell } from "../components/AddressCell.tsx";
+import { count, exact, short, units } from "../format.ts";
+import type { Labels } from "../labels.ts";
+
+/** A number that may wrap only after a comma, so a long supply never breaks in the middle of a group. */
+export function Breaks({ text }: { text: string }) {
+  const parts = text.split(",");
+  return <>{parts.map((x, i) => <span key={i}>{x}{i < parts.length - 1 && <>,<wbr /></>}</span>)}</>;
+}
+
+const ZERO = "0x" + "00".repeat(20);
+/** A party to a transfer: the zero address (a mint or a burn) in short form, anything else by its name where it has one. */
+export function Mint({ address, labels }: { address: string; labels: Labels }) {
+  return address === ZERO ? <span className="mono">{short(ZERO, 6, 4)}</span> : <AddressCell address={address} label={labels.get(address)} />;
+}
 
 /** Why a token has no name: the contract did not answer, has not been asked yet, or (an ERC-1155) has none to give. */
 export function noName(t: Pick<TokenListItem, "standard" | "metadataStatus">): string {
@@ -24,8 +38,8 @@ export function Supply({ t, bare = false }: { t: Pick<TokenListItem, "standard" 
   const s = t.totalSupply;
   if (s === null) return <span className="muted" title="The contract has not told its supply">—</span>;
   if (t.standard === "ERC-721") return <NftCount n={s} />;
-  if (t.decimals === null) return <span className="num" title="The token's decimals are not known, so this is the raw count">{count(s)}</span>;
-  if (!t.symbol || bare) return <span className="num" title={`${exact(s, t.decimals)}${t.symbol ? ` ${t.symbol}` : ""}`}>{units(s, t.decimals)}</span>;
+  if (t.decimals === null) return <span className="num" title="The token's decimals are not known, so this is the raw count"><Breaks text={count(s)} /></span>;
+  if (!t.symbol || bare) return <span className="num" title={`${exact(s, t.decimals)}${t.symbol ? ` ${t.symbol}` : ""}`}><Breaks text={units(s, t.decimals)} /></span>;
   return <Amount raw={s} decimals={t.decimals} symbol={t.symbol} />;
 }
 

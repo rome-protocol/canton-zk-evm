@@ -14,7 +14,7 @@ import { useLabels, type Labels } from "../labels.ts";
 import { methodOf } from "../method.ts";
 import { listPoll } from "../stats.ts";
 import { useNow, useStatus } from "../useStatus.ts";
-import { Avatar, noName, Supply, useTokenList } from "./TokenParts.tsx";
+import { Avatar, Mint, noName, Supply, useTokenList } from "./TokenParts.tsx";
 import "./token.css";
 
 const PER = 25;
@@ -67,10 +67,6 @@ function listLabel(shown: number, from: number, total: number | undefined, deriv
   if (shown === 0) return derived === false ? "The explorer has not read this far yet." : "No tokens yet.";
   if (total === undefined || total <= shown) return `Showing all ${plural(shown, "token")}`;
   return `Showing ${count(from + 1)}–${count(from + shown)} of ${count(total)} tokens`;
-}
-
-function Mint({ address, labels }: { address: string; labels: Labels }) {
-  return address === ZERO ? <span className="mono">{short(ZERO, 6, 4)}</span> : <AddressCell address={address} label={labels.get(address)} />;
 }
 
 /** What moved, in the token's own units: whole tokens where its decimals are known, the raw count (and said so) where they are not, `#id` for an NFT. */

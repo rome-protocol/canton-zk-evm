@@ -1,6 +1,6 @@
 /* The token page. A card in the grid may shrink below its content, and what is in it wraps, so a long supply or address stays inside. */
 .tok-stats .stat { min-width: 0; overflow: hidden; }
-.tok-stats .stat-v { min-width: 0; overflow-wrap: anywhere; line-height: 1.2; }
+.tok-stats .stat-v { min-width: 0; overflow-wrap: break-word; line-height: 1.2; }
 .tok-stats .stat-hash { font-size: 14px; font-weight: 500; line-height: 1.6; padding-top: 6px; }
 .tok-stats .stat-hash .hl { white-space: normal; }
 
@@ -15,3 +15,20 @@
 .tok-notes .legs { margin: 0; }
 .tbl .arrow { padding-left: 0; padding-right: 0; text-align: center; }
 @media (max-width: 720px) { .tok-notes { grid-template-columns: 1fr; } }
+
+/* The token page: the holders beside their distribution, the transfers, and the three-column information. */
+.ptitle .tok-av { width: 40px; height: 40px; font-size: 14px; }
+.holds-cols { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); margin: -14px -20px -18px; }
+.holds-side { display: grid; gap: 12px; align-content: start; padding: 18px 20px; border-right: 1px solid var(--line-2); }
+.holds-side .stat-v { font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }
+.holds-side p { margin: 0; }
+.holds-tbl { min-width: 0; }
+.holds-card .holds-tbl .list-h { padding: 10px 20px 0; }
+.holds-card .holds-tbl .tbl th:first-child, .holds-card .holds-tbl .tbl td:first-child { padding-left: 20px; }
+.dot.sq { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
+.holds-foot { margin-top: 10px; }
+.kv-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 40px; }
+.kv-3 .kv { grid-template-columns: 110px minmax(0, 1fr); gap: 0 14px; align-content: start; }
+.kv-3 .kv-k, .kv-3 .kv-v { padding: 9px 0; border-bottom: 1px solid var(--line-2); }
+.kv-3 .kv > :nth-last-child(-n + 2) { border-bottom: 0; }
+@media (max-width: 900px) { .holds-cols { grid-template-columns: 1fr; } .holds-side { border-right: 0; border-bottom: 1px solid var(--line-2); } .kv-3 { grid-template-columns: 1fr; } .kv-3 .kv:not(:last-child) > :nth-last-child(-n + 2) { border-bottom: 1px solid var(--line-2); } }
