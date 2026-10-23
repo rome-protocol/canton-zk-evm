@@ -46,18 +46,19 @@ const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is fals
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
 const ETHERSCAN_QUERY: Query[] = [
-  { name: "module", about: "account, transaction, block or logs (the contract, token, stats, proxy and gastracker modules follow).", values: ["account", "transaction", "block", "logs"] },
-  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs." },
+  { name: "module", about: "account, transaction, block, logs, token, stats or gastracker (the contract and proxy modules follow).", values: ["account", "transaction", "block", "logs", "token", "stats", "gastracker"] },
+  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs. token: tokeninfo, tokenholdercount, tokenholderlist. stats: ethsupply, tokensupply, ethprice. gastracker: gasoracle, gasestimate." },
   { name: "chainid", about: "Optional, and this chain's when given." },
   { name: "apikey", about: "Accepted and ignored." },
   { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs)." },
-  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx)." },
+  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
   { name: "txhash", about: "A transaction's 0x hash (getstatus, gettxreceiptstatus, txlistinternal)." },
   { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same)." },
   { name: "startblock", about: "The first block of a list (txlist, txlistinternal, tokentx and the like)." },
   { name: "endblock", about: "The last block of a list; latest is the newest final block." },
   { name: "page", about: "The page of a list, from 1. page x offset is at most 10,000." },
   { name: "offset", about: "Rows to a page (getLogs: at most 1,000)." },
+  { name: "gasprice", about: "In wei (gasestimate); the estimate is the median time to final, whatever the price." },
   { name: "sort", about: "asc or desc.", values: ["asc", "desc"] },
   { name: "blockno", about: "A block number (getblockreward, getblockcountdown)." },
   { name: "timestamp", about: "Unix seconds (getblocknobytime)." },
