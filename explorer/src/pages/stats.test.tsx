@@ -67,6 +67,20 @@ describe("the stats page", () => {
     expect(ok).toHaveTextContent("99.7%"); expect(ok).toHaveTextContent("16 reverted of 5,899");
   });
 
+  it("shows the all-time total beside the window's transactions, with the block it is as of", async () => {
+    await open("/stats", { summary: () => reply(summary({ txs: { count: 5899, failed: 16, successRate: 5883 / 5899, accepted: 5903, allTime: { total: 6021, asOfBlock: 901, asOf: "2026-10-15T14:07:00.000Z" } } })) });
+    const txs = await tile("Transactions");
+    expect(txs).toHaveTextContent("5,899 6,021 final all time");
+    expect(within(txs).getByText("6,021 final all time")).toHaveAttribute("title", "All time, as of block 901");
+    expect(txs).toHaveTextContent("all time as of block 901");  });
+
+  it("says the all-time total is not counted yet, never 0, when the server cannot say", async () => {
+    await open();
+    const txs = await tile("Transactions");
+    expect(txs).toHaveTextContent("total not counted yet");
+    expect(txs).not.toHaveTextContent("0 all time");
+  });
+
   it("counts every accepted transaction by what became of it, and says none was lost", async () => {
     await open();
     const card = (await screen.findByRole("heading", { name: "Reliability" })).closest("section")!;
@@ -79,6 +93,14 @@ describe("the stats page", () => {
     expect(w.getByText("none lost")).toBeInTheDocument();
     expect(card).toHaveTextContent("Blocks refused by Canton: 0 of 901 attempts");
     expect(card).toHaveTextContent("Empty blocks: 1");
+  });
+
+  it("gives the lost transactions' hashes the hash font, not the figure font", async () => {
+    const hash = "0x" + "ab".repeat(32);
+    await open("/stats?window=7d", { summary: () => reply(summary({ lost: { window: 1, total: 1, listed: [{ txHash: hash, state: "lost", reason: "never made final", at: "2026-10-20T10:00:00.000Z" }] } })) });
+    const card = (await screen.findByText("1 lost")).closest("section")!;
+    expect(within(card).getAllByRole("link")[0]).toHaveClass("mono");
+    expect(within(card).getAllByRole("link")[0]).not.toHaveClass("num");
   });
 
   it("names the lost transactions when there are some, by their hashes and reasons", async () => {
