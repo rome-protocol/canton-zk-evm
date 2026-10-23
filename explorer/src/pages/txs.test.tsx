@@ -361,6 +361,18 @@ describe("the subtitle and the list header add up", () => {
   });
 });
 
+describe("the Transactions card is a panel, as on screen 04", () => {
+  it("is a panel, so the list header has its strip and the table lines run to the card's edges", async () => {
+    await open({});
+    expect(screen.getByRole("region", { name: "Transactions" })).toHaveClass("card", "panel");
+  });
+  it("keeps the panel when the list is switched to Not final yet", async () => {
+    await open({});
+    await userEvent.click(screen.getByRole("button", { name: "Not final yet" }));
+    expect(await screen.findByRole("region", { name: "Transactions not final yet" })).toHaveClass("card", "panel");
+  });
+});
+
 describe("the pages of All: Page x of y and Last", () => {
   const at = "2026-10-04T01:37:58Z";
   const withTotal = (items: ReturnType<typeof txItem>[], next: string | null, total: number | null = 53) => ({ ...page(items, next), total, totalAsOfBlock: total === null ? null : 99, totalAsOf: total === null ? null : at });

@@ -186,6 +186,8 @@ describe("phone width", () => {
     expect(phone).toMatch(/\.sides \{ grid-template-columns: 1fr;/);
     expect(phone).toMatch(/\.kv, \.kv\.wide \{ grid-template-columns: 1fr;/);
     expect(phone).toMatch(/\.facts \{ grid-template-columns: 1fr;/);
+    // block.css spans the wide value over a second column; in one column that would make a hidden column and slip every pair
+    expect(phone).toMatch(/\.facts \.f-v\.wide2 \{ grid-column: auto;/);
     // the two sides come in this order in the page itself, so one column keeps it
     const page = readFileSync(join(root, "src/pages/Block.tsx"), "utf8");
     expect(page.indexOf("<EvmSide")).toBeLessThan(page.indexOf("<CantonPanel"));
@@ -199,5 +201,21 @@ describe("phone width", () => {
   it("turns the table of a block's transactions into one card each, with no column heads", () => {
     expect(phone).toMatch(/\.txs thead \{ display: none; \}/);
     expect(phone).toMatch(/\.txs tr \{ display: grid;[^}]*grid-template-areas: "h h res" "from to to" "did did did"/);
+  });
+  it("keeps a stacked transaction row inside the panel's inset, and a one-wei value whole, on a phone", () => {
+    expect(phone).toMatch(/\.panel \.txs tr \{ padding: 10px 20px; \}/);
+    expect(phone).toMatch(/\.panel \.txs td:first-child, \.panel \.txs td:last-child \{ padding: 0; \}/);
+    expect(phone).toMatch(/\.txs td\.r \{ overflow-wrap: anywhere;/);
+  });
+});
+
+describe("panel notes", () => {
+  it("keeps the padding of a Stats chart message inside a panel: the panel's note rule leaves .chart-msg alone", () => {
+    expect(css).toMatch(/\.panel > p\.muted:not\(\.card-note\):not\(\.chart-msg\) \{ padding: 0 20px; \}/);
+    expect(css).toMatch(/\.chart-msg \{ padding: 18px 20px;/);
+  });
+
+  it("draws the block's cube in the accent on Home", () => {
+    expect(readFileSync(join(root, "src/pages/home.css"), "utf8")).toMatch(/\.idcell\.blk \.ic \{ color: var\(--canton\);/);
   });
 });
