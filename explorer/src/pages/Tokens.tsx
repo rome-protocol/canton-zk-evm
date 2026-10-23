@@ -3,9 +3,11 @@ import { Link } from "react-router-dom";
 import { getTokenList, type TokenListItem, type TokenSort } from "../api.ts";
 import { ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
+import { Icon } from "../components/Icon.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { count } from "../format.ts";
 import { listPoll } from "../stats.ts";
+import { useStatus } from "../useStatus.ts";
 import { noName, Supply } from "./TokenParts.tsx";
 
 const PER = 25;
@@ -36,6 +38,7 @@ export function Tokens() {
   const [sort, setSort] = useState<TokenSort>("holders");
   const p = usePaged(["tokens", sort], (before) => getTokenList(sort, before, PER), listPoll(false));
   const items = p.data?.items;
+  const chain = useStatus().data?.chainName;
   return (
     <>
       <div className="ptitle">
@@ -60,6 +63,10 @@ export function Tokens() {
           {p.data?.derived === false && <p className="muted small">The explorer is still reading blocks, so this list may be missing the newest tokens and their counts.</p>}
         </section>
       )}
+      <div className="legs" role="note">
+        <Icon name="lock" size={14} />
+        <span><b>What a token page shows.</b> Holders and transfers on {chain ?? "this chain"}, read from final blocks. A token's Canton holdings stay private to their parties, so they are never shown here.</span>
+      </div>
     </>
   );
 }

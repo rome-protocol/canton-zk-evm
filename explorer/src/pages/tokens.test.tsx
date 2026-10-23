@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { addr, fakeApi, page, renderApp, reply, route, tokenItem } from "../test-utils.tsx";
 
 const LIST = [tokenItem(0xb1), tokenItem(0xb2, { standard: "ERC-721", name: "Ostia Pass", symbol: "OPASS", decimals: null, totalSupply: "2", holderCount: 2, transferCount: 2 })];
@@ -24,6 +24,27 @@ describe("the tokens page", () => {
     expect(rows()[0]).toHaveTextContent("0xb1b1…b1b1");
     expect(rows()[0]).toHaveTextContent("ERC-20");
     expect(rows()[1]).toHaveTextContent("ERC-721");
+  });
+
+  it("says what a token page shows, and that a token's Canton holdings are private to their parties", async () => {
+    await open();
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("What a token page shows.");
+    expect(note).toHaveTextContent("read from final blocks");
+    expect(note).toHaveTextContent("A token's Canton holdings stay private to their parties, so they are never shown here.");
+    expect(note).toHaveTextContent("Holders and transfers on Ostia");
+  });
+
+  it("does not page with the old sort's cursor while the new sort's first page is still loading", async () => {
+    await open((path) => reply({ ...page(LIST, path.includes("before=") ? null : "21|1"), derived: true }));
+    const ask = globalThis.fetch;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => (input.includes("sort=transfers") ? (await gate, ask(input)) : ask(input))));
+    await userEvent.click(screen.getByRole("button", { name: "Transfers" }));
+    expect(screen.queryByRole("button", { name: "Older page" })).toBeNull();
+    release();
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Older page" })).toBeEnabled());
   });
 
   it("numbers the rows from the first of the page", async () => {
