@@ -186,6 +186,8 @@ describe("phone width", () => {
     expect(phone).toMatch(/\.sides \{ grid-template-columns: 1fr;/);
     expect(phone).toMatch(/\.kv, \.kv\.wide \{ grid-template-columns: 1fr;/);
     expect(phone).toMatch(/\.facts \{ grid-template-columns: 1fr;/);
+    // block.css spans the wide value over a second column; in one column that would make a hidden column and slip every pair
+    expect(phone).toMatch(/\.facts \.f-v\.wide2 \{ grid-column: auto;/);
     // the two sides come in this order in the page itself, so one column keeps it
     const page = readFileSync(join(root, "src/pages/Block.tsx"), "utf8");
     expect(page.indexOf("<EvmSide")).toBeLessThan(page.indexOf("<CantonPanel"));

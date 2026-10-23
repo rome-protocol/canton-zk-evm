@@ -422,6 +422,7 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
   .facts { grid-template-columns: 1fr; gap: 1px; }
   .facts .f-k { margin-top: 7px; }
   .facts .f-k:first-child { margin-top: 0; }
+  .facts .f-v.wide2 { grid-column: auto; } /* the one wide value spans nothing in a single column */
   .steps li { grid-template-columns: 26px 1fr; }
   .steps li::before { left: 12px; }
   .st-n { grid-column: 1; grid-row: 1; }
