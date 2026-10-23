@@ -4,7 +4,15 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { StatsSummary } from "../api.ts";
 import { summary } from "./stats-fixtures.ts";
-import { addr, fakeApi, hash, inFlight, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+import type { Label } from "../api.ts";
+import { addr, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+
+/** The route `base` plus a labels route that answers only the addresses asked, as the server does (so a page that forgot to ask gets no name). */
+const withLabels = (base: (path: string) => { status: number; body: unknown }, items: unknown[]) => {
+  const known = labelsOf(items as Label[]);
+  return Object.assign((path: string) => (path.includes("/api/labels") ? known(path) : base(path)), { routed: true as const });
+};
+const labelsAsked = (calls: string[]) => calls.filter((c) => c.includes("/api/labels")).map((c) => decodeURIComponent(c)).join(" ");
 
 const NOW = Date.parse("2026-10-04T01:38:00Z");
 async function open(h: Parameters<typeof route>[0] = {}) {
@@ -222,7 +230,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
   const moved = { count: 1, more: false, first: { token: addr(0xcb), amount: "100000000", tokenId: null, standard: "ERC-20", decimals: 6 } };
   const labelled = (items: unknown[]) => {
     const base = route({ txs: () => reply(page(items as never[])) });
-    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+    fakeApi(withLabels(base, [usd]));
     renderApp("/txs");
   };
 
@@ -241,7 +249,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     const proving = (value: string) => tx({ hash: hash(0xd2), status: "proving", state: "proving", block: { number: 4, hash: null, updateId: null }, success: null, to: addr(0xcb), value, transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" } });
     const run = async (value: string) => {
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply(proving(value)) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      fakeApi(withLabels(base, [usd]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       expect(await within(row).findByText("100 tUSD")).toHaveClass("tname");
@@ -251,7 +259,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     it("has the coin beside the chip when some is sent", async () => { expect(await run("1000000000000000000")).toHaveTextContent("1 tROME"); });
     it("is reverted, with a cross and no chip, when the receipt says it reverted", async () => {
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: false, logs: [] }) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      fakeApi(withLabels(base, [usd]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       await waitFor(() => expect(row).toHaveTextContent("reverted"));
@@ -261,7 +269,7 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
     it("takes the chip from the Transfer log of the receipt over the decoded input", async () => {
       const logs = [{ address: addr(0xcb), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (7_000_000n).toString(16).padStart(64, "0") }];
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs }) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [usd] }) : base(path)), { routed: true }));
+      fakeApi(withLabels(base, [usd]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       expect(await within(row).findByText("7 tUSD")).toHaveClass("tname");
@@ -271,10 +279,23 @@ describe("the rows, with names, token chips and the screen's cuts", () => {
       const other = { ...usd, address: addr(0xa5), name: "Other USD", symbol: "tOTH" };
       const logs = [{ address: addr(0xa5), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (2_000_000n).toString(16).padStart(64, "0") }];
       const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs, transfer: null }) });
-      fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [other] }) : base(path)), { routed: true }));
+      const calls = fakeApi(withLabels(base, [usd, other]));
       renderApp("/txs");
       const row = (await screen.findAllByRole("row"))[1]!;
       expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+      expect(labelsAsked(calls)).toContain(addr(0xa5));
+    });
+
+    it("asks for the same token in Not final yet, which lists them from their receipts alone", async () => {
+      const other = { ...usd, address: addr(0xa5), name: "Other USD", symbol: "tOTH" };
+      const logs = [{ address: addr(0xa5), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (2_000_000n).toString(16).padStart(64, "0") }];
+      const base = route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: null, transactions: [{ hash: hash(0xd2), stage: "proving", at }] })), tx: () => reply({ ...proving("0"), success: true, logs, transfer: null }) });
+      const calls = fakeApi(withLabels(base, [usd, other]));
+      renderApp("/txs");
+      await userEvent.click(await screen.findByRole("button", { name: "Not final yet" }));
+      const row = (await screen.findAllByRole("row"))[1]!;
+      expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+      expect(labelsAsked(calls)).toContain(addr(0xa5));
     });
   });
 
