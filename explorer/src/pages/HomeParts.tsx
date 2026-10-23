@@ -120,10 +120,10 @@ export function LatestBlocks({ blocks, error }: { blocks: BlockListItem[] | unde
               <tbody>
                 {blocks.map((b) => (
                   <tr key={b.number}>
-                    <td><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></td>
+                    <td><span className="idcell"><Icon name="cube" size={14} /><span><Link className="num" to={`/block/${b.number}`}>{b.number}</Link><span className="ago">{duration(now - b.timestamp * 1000)} ago</span></span></span></td>
                     <td className="r">{b.txCount}</td>
                     <td className="r" title="from the producer's cut to Canton's record time">{b.finalSeconds === null ? <span className="muted">—</span> : span(b.finalSeconds)}</td>
-                    <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} /></td>
+                    <td><HashLink value={b.updateId} kind="update" to={`/canton/${b.updateId}`} plain lead={8} tail={4} /></td>
                     <td><Chip status="final" /></td>
                   </tr>
                 ))}
@@ -168,15 +168,23 @@ export function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: stri
 /** The first topic of an ERC-20 or ERC-721 Transfer. */
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
-/** The first Transfer in a receipt's logs as a move: three topics is an ERC-20 (the amount is the data), four an NFT (the token id is the last topic). Anything else is not read. */
+/**
+ * The first Transfer in a receipt's logs as a move, with the shapes the indexer takes (server `decodeTransfers`): three topics and exactly one 32-byte data word is an
+ * ERC-20 (the amount is the data), four topics and no data is an NFT (the token id is the last topic). A log shaped otherwise is not a move and is skipped.
+ * ERC-1155 moves (TransferSingle, TransferBatch) are not read here: they show once the block is final, when the index has them.
+ */
 function moveOfLogs(logs: ApiTx["logs"]): TokenMove | null {
-  const l = logs.find((x) => x.topics[0]?.toLowerCase() === TRANSFER_TOPIC && (x.topics.length === 3 || x.topics.length === 4));
+  const l = logs.find((x) => x.topics[0]?.toLowerCase() === TRANSFER_TOPIC
+    && ((x.topics.length === 3 && x.data.length === 66) || (x.topics.length === 4 && x.data === "0x")));
   if (!l) return null;
   try {
     if (l.topics.length === 4) return { token: l.address, amount: "1", tokenId: BigInt(l.topics[3]!).toString(), standard: "ERC-721", decimals: null };
-    return { token: l.address, amount: BigInt(l.data.length > 2 ? l.data : "0x0").toString(), tokenId: null, standard: "ERC-20", decimals: null };
+    return { token: l.address, amount: BigInt(l.data).toString(), tokenId: null, standard: "ERC-20", decimals: null };
   } catch { return null; }
 }
+
+/** The token of a receipt's first Transfer, so a row can ask the labels route for its name even when the token is not the transaction's `to`. */
+export const provingToken = (d: Pick<ApiTx, "logs">): string | undefined => moveOfLogs(d.logs)?.token;
 
 /**
  * What a transaction that is not final yet moves, as far as its own page says. A transaction in a block being proven has reth's receipt: when it reverted nothing
@@ -223,7 +231,7 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
   const final = txs ?? [];
   const labels = useLabels([
     ...final.flatMap((t) => [t.from, t.to, t.created, t.tokenMoves?.first?.token]),
-    ...waiting.flatMap((p) => { const d = details[p.hash]; return typeof d === "object" ? [d.from, d.to, d.created] : []; }),
+    ...waiting.flatMap((p) => { const d = details[p.hash]; return typeof d === "object" ? [d.from, d.to, d.created, provingToken(d)] : []; }),
   ]);
   return (
     <section className="card" aria-labelledby="txs-h">

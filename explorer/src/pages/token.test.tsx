@@ -5,18 +5,19 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenDetail } from "../api.ts";
-import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
+import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, status, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
 
 afterEach(() => { vi.useRealTimers(); });
 const A = addr(0xcb);
 const derived = <T,>(items: T[], next: string | null = null, d = true) => reply({ ...page(items, next), derived: d });
 const HOLDERS = [tokenHolder(0xe3, "995000000000"), tokenHolder(0xa1, "2500000000"), tokenHolder(0xa2, "2500000"), tokenHolder(0xa3, "1")];
 
-type Subs = { holders?: (path: string) => ReturnType<typeof reply>; transfers?: (path: string) => ReturnType<typeof reply>; contract?: () => ReturnType<typeof reply> };
+type Subs = { holders?: (path: string) => ReturnType<typeof reply>; transfers?: (path: string) => ReturnType<typeof reply>; contract?: () => ReturnType<typeof reply>; status?: () => ReturnType<typeof reply> };
 async function open(t: TokenDetail = tokenDetail(), subs: Subs = {}, path = `/token/${A}`) {
   const calls = fakeApi(route({
     tokenPages: (_a, sub, p) => (sub === "" ? reply(t) : sub === "holders" ? (subs.holders?.(p) ?? derived(HOLDERS)) : (subs.transfers?.(p) ?? derived([]))),
     contracts: () => subs.contract?.() ?? reply(contractDetail(0xcb)),
+    ...(subs.status ? { status: subs.status } : {}),
   }));
   renderApp(path);
   await screen.findByRole("heading", { level: 1 });
@@ -169,6 +170,24 @@ describe("the token page: holders", () => {
     expect(screen.getByRole("region", { name: "Holder distribution" })).toHaveTextContent("as of final block 3");
   });
 
+  it("names the block the balances are summed through, as the Tokens list does, when the index is behind Canton's final head", async () => {
+    // Canton's final head (9) is ahead of the index (5), which has summed through block 5: the page says 5.
+    const base = status();
+    await open(tokenDetail(), { status: () => reply(status({ final: { ...base.final!, number: 9 }, indexHead: 5, indexLag: 4, deriveCursor: 5 })) });
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("region", { name: "Holder distribution" })).toHaveTextContent("as of final block 5");
+    expect(screen.getByRole("region", { name: "Holder distribution" })).not.toHaveTextContent("as of final block 9");
+  });
+
+  it("shows each balance as a bare number under 'Balance (tUSD)', as screen 09b does, with the symbol in the tooltip", async () => {
+    await open();
+    await screen.findByRole("table", { name: "Token holders" });
+    expect(screen.getByRole("columnheader", { name: "Balance (tUSD)" })).toBeInTheDocument();
+    const first = rows()[0]!;
+    expect(first).not.toHaveTextContent("tUSD");
+    expect(within(first).getByTitle("995,000 tUSD")).toHaveTextContent(/^995,000$/);
+  });
+
   it("names no block while the explorer is still reading, because the list is then short of the newest rows", async () => {
     await open(tokenDetail(), { holders: () => derived(HOLDERS, null, false) });
     await screen.findByRole("table", { name: "Token holders" });
@@ -243,8 +262,10 @@ describe("the token page: transfers", () => {
     const calls = await go([tokenTransfer(0xd1), tokenTransfer(0xd2, { amount: "2500000", from: "0x" + "00".repeat(20) })]);
     expect(calls).toContain(`/api/tokens/${A}/transfers?limit=25`);
     expect(rows("Token transfers")).toHaveLength(2);
-    expect(rows("Token transfers")[0]).toHaveTextContent("100 tUSD");
-    expect(rows("Token transfers")[1]).toHaveTextContent("2.5 tUSD");
+    // A bare number, as screen 09b has it: the unit is the token's own, and the tooltip names it with the exact amount.
+    expect(within(rows("Token transfers")[0]!).getByTitle("100 tUSD")).toHaveTextContent(/^100$/);
+    expect(within(rows("Token transfers")[1]!).getByTitle("2.5 tUSD")).toHaveTextContent(/^2\.5$/);
+    expect(rows("Token transfers")[0]).not.toHaveTextContent("tUSD");
     expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "0xd1d1d1d1…d1d1d1" })).toHaveAttribute("href", `/tx/${"0x" + "d1".repeat(32)}`);
     expect(within(rows("Token transfers")[0]!).getByRole("link", { name: "20" })).toHaveAttribute("href", "/block/20");
   });
@@ -409,7 +430,9 @@ describe("the token page: review fixes", () => {
   it("keeps a token name of the longest stored length inside the page: the title wraps anywhere", async () => {
     await open(tokenDetail(0xcb, { name: "N".repeat(256) }));
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("N".repeat(256));
-    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("N".repeat(256));
+    expect(css).toMatch(/nav\[aria-label="Breadcrumb"\]\s*\{[^}]*overflow-wrap:\s*anywhere/);
     expect(css).toMatch(/\.ptitle h1\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*min-width:\s*0|\.ptitle h1\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
   });
 

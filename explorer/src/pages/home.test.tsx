@@ -5,7 +5,8 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiStatus, BlockListItem, StatsSummary, StatsWindow } from "../api.ts";
 import { series, summary } from "./stats-fixtures.ts";
-import { addr, blockItem, fakeApi, hash, inFlight, page, renderApp, reply, route, status, tokenItem, tx, txItem, update } from "../test-utils.tsx";
+import type { Label } from "../api.ts";
+import { addr, blockItem, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, status, tokenItem, tx, txItem, update } from "../test-utils.tsx";
 
 const NOW = Date.parse("2026-10-04T01:37:27Z");
 const home = async (over: Partial<ApiStatus> = {}, code = 200, blocks?: BlockListItem[]) => {
@@ -166,6 +167,16 @@ describe("the list of latest final blocks", () => {
     expect(rows[0]).toHaveTextContent("11 s ago");
     expect(first.getByText("Final")).toHaveClass("chip-final");
     expect(within(rows[1]!).getAllByRole("cell")[1]).toHaveTextContent("2");
+  });
+
+  it("draws the cube before each block, and the Canton update as plain text with no copy or expand button, as screen 01 does", async () => {
+    await home();
+    const first = rowsOf()[0]!;
+    expect(first.querySelector("td svg.ic")).not.toBeNull();
+    expect(within(first).getAllByRole("cell")[0]!.querySelector(".idcell")).not.toBeNull();
+    expect(within(first).queryByRole("button")).toBeNull();
+    // The update is 8 characters, then 4: "12204594…b509".
+    expect(within(first).getByRole("link", { name: "12200303…0303" })).toBeInTheDocument();
   });
 
   it("gives the time to final from the producer's cut to Canton's record time, and a dash where the producer's log has none", async () => {
@@ -470,9 +481,13 @@ describe("the value of a transaction that is not final yet", () => {
   const at = "2026-10-04T01:37:58Z";
   const usd = { address: addr(0x9b), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
   const proving = (over: Parameters<typeof tx>[0] = {}) => tx({ hash: hash(0xb2), status: "proving", state: "proving", block: null, success: null, logs: [], from: addr(0x71), to: addr(0x9b), value: "0", transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" }, ...over });
+  // The labels fake answers only the addresses the page asked for, as the server does, and records what was asked.
+  let labelCalls: string[] = [];
   const open = async (t: ReturnType<typeof tx>, labels: unknown[] = [usd]) => {
     const base = route({ inFlight: () => reply(inFlight({ transactions: [{ hash: hash(0xb2), stage: "proving", at }] })), tx: () => reply(t) });
-    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: labels }) : base(path)), { routed: true }));
+    const known = labelsOf(labels as Label[]);
+    labelCalls = [];
+    fakeApi(Object.assign((path: string) => { if (path.includes("/api/labels")) { labelCalls.push(decodeURIComponent(path)); return known(path); } return base(path); }, { routed: true }));
     renderApp("/");
     const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
     return (await region.findAllByRole("row"))[1]!;
@@ -516,6 +531,40 @@ describe("the value of a transaction that is not final yet", () => {
     // The symbol stands in a <bdi> inside the name, so the name's text is read whole.
     await waitFor(() => expect(row.querySelector(".tname")).toHaveTextContent("tNFT #3"));
     expect(row.querySelector(".tname bdi")).toHaveTextContent("tNFT");
+  });
+
+  const topic = (b: number) => "0x" + "0".repeat(24) + b.toString(16).padStart(2, "0").repeat(20);
+  const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
+  const done = { block: { number: 4, hash: null, updateId: null }, success: true };
+
+  it("asks the labels route for the token of the receipt's Transfer when it is not the token the transaction was sent to", async () => {
+    const other = { address: addr(0xa5), name: "Other USD", symbol: "tOTH", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
+    const logs = [{ address: addr(0xa5), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(2_000_000n) }];
+    const row = await open(proving({ ...done, to: addr(0x77), logs, transfer: null }), [other]);
+    expect(await within(row).findByText("2 tOTH")).toHaveClass("tname");
+    expect(labelCalls.some((c) => c.includes(addr(0xa5)))).toBe(true);
+  });
+
+  it("takes only the log shapes the indexer takes: 3 topics with one 32-byte word, 4 topics with no data", async () => {
+    const logs = [
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: "0x" },
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(1n) + "00" },
+      { address: addr(0x9c), topics: [TRANSFER, topic(0x71), topic(0x72), word(3n)], data: word(1n) },
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(5_000_000n) },
+    ];
+    const row = await open(proving({ ...done, logs }));
+    expect(await within(row).findByText("5 tUSD")).toBeInTheDocument();
+  });
+
+  it("shows no chip for a receipt whose only Transfer is not shaped as the standards say", async () => {
+    // Each of these has a visible amount under the old rule (a word read from too much or too little data), and none is a Transfer the indexer takes.
+    const logs = [
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72)], data: word(5_000_000n) + "00" },
+      { address: addr(0x9b), topics: [TRANSFER, topic(0x71), topic(0x72), word(3n)], data: word(5_000_000n) },
+    ];
+    const row = await open(proving({ ...done, logs, transfer: null, value: "1000000000000000000" }));
+    await waitFor(() => expect(row).toHaveTextContent("1 tROME"));
+    expect(row.querySelector(".tchip")).toBeNull();
   });
 
   it("shows the coin alone when the transaction decodes to no transfer", async () => {
