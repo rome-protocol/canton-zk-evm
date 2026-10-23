@@ -281,6 +281,23 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     }
   });
 
+  it("lists the logs a contract wrote, newest first, with their transaction and method, and keeps one event kind on a topic", async () => {
+    const [any] = (await sql("select address from logs group by address order by count(*) desc limit 1")).rows;
+    expect(any).toBeDefined();
+    const W = "0x" + (any.address as Buffer).toString("hex");
+    const all = await walk(`/api/contracts/${W}/events`, "before", 2);
+    expect(all.length).toBeGreaterThan(0);
+    same(body(await get(`/api/contracts/${W}/events`)), F.page);
+    for (const e of all) { same(e, F.contractEvent); expect(e.address).toBe(W); }
+    const order = all.map((e) => [e.block, e.logIndex]);
+    expect(order).toEqual([...order].sort((x, y) => y[0] - x[0] || y[1] - x[1]));
+    const topic = all[0]!.topics[0];
+    const kept = await walk(`/api/contracts/${W}/events?topic0=${topic}`, "before", 2);
+    expect(kept.length).toBe(all.filter((e) => e.topics[0] === topic).length);
+    expect((await get(`/api/contracts/${W}/events?topic0=0x12`)).status).toBe(400);
+    expect(body(await get(`/api/contracts/${h(0x99)}/events`)).items).toEqual([]);
+  });
+
   it("answers a token with its numbers, and names the ones it does not hold", async () => {
     expect(body(await get(`/api/tokens/${T1}`))).toMatchObject({ standard: "ERC-20", name: "Test Token", symbol: "TT", decimals: 6, totalSupply: "1000", holderCount: 2, transferCount: 3, firstTransferBlock: 2, balanceMode: "derived" });
     expect(body(await get(`/api/tokens/${T2}`))).toMatchObject({ standard: "ERC-1155", decimals: null, totalSupply: null, gatewayWrapped: false });

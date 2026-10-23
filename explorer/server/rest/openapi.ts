@@ -41,6 +41,7 @@ const txFilter: Query = { name: "filter", about: "all transactions, only the rev
 const txCsv: Query = { name: "format", about: "csv for the newest transactions as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
+const topic0: Query = { name: "topic0", about: "Only the logs whose first topic (the event's signature hash) is this: 0x and 64 hex digits." };
 const paged = [limit, before], pagedAfter = [limit, after];
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
@@ -121,6 +122,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/contracts": { tag: "Contracts", summary: `Contracts. ${DERIVED}`, query: [sort(SORTS.contracts), { name: "verified", about: "true for the contracts whose source is verified, false for the others.", values: ["true", "false"] }, ...paged], page: { items: F.contractItem, derived: true } },
   "/api/contracts/{address}": { tag: "Contracts", summary: "One contract, with its code, proxy and verification.", param: "A 0x address.", object: F.contractDetail },
   "/api/contracts/{address}/source": { tag: "Contracts", summary: "The verified source files and ABI of a contract. Every field after `verified` is empty while nothing is verified.", param: "A 0x address.", object: F.source },
+  "/api/contracts/{address}/events": { tag: "Contracts", summary: "The logs a contract wrote in final blocks, newest first, with the transaction and its method id. They are raw: decode them with the contract's ABI.", param: "A 0x address.", query: [...paged, topic0], page: { items: F.contractEvent, derived: false } },
   "/api/tokens": { tag: "Tokens", summary: `Tokens. ${DERIVED}`, query: [sort(SORTS.tokens), ...paged], page: { items: F.tokenItem, derived: true } },
   "/api/tokens/{address}": { tag: "Tokens", summary: "One token, with its numbers.", param: "A 0x address.", object: F.tokenDetail },
   "/api/tokens/{address}/holders": { tag: "Tokens", summary: `The holders of a token. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.holder, derived: true } },

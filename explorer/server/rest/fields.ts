@@ -85,6 +85,8 @@ export const REST_FIELDS = {
   addressDetail: ["address", "kind", "balance", "balanceBlock", "sentCount", "receivedCount", "internalCount", "tokenTransferCount", "firstSeenBlock", "lastActiveBlock", "token", "createdBy", "derived"],
   /** An address's internal calls: the call, and the transaction it is in. */
   addressInternal: ["txHash", "block", "txIndex", "traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
+  /** A log a contract wrote: the log, the transaction it is in, and that transaction's method id. */
+  contractEvent: ["txHash", "block", "txIndex", "logIndex", "address", "topics", "data", "method"],
   /** A token transfer of an address or of a token, with the transaction it is in. */
   tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "token", "from", "to", "amount", "tokenId"],
   /** What an address holds of one token (or of one id of an ERC-1155), as of the block it last moved. */

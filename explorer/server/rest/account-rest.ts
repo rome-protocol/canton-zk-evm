@@ -26,6 +26,8 @@ export interface AddressInternalItem {
   txHash: string; block: number; txIndex: number; traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null;
   selector: string | null; inputSize: number | null; error: string | null;
 }
+/** A log a contract wrote, with the transaction it is in and that transaction's method (the first 4 bytes of its input, null when it has none). */
+export interface ContractEventItem { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null }
 export interface TokenTransferItem { txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
@@ -148,6 +150,22 @@ export function createAccountRest(pool: Pool) {
     return rows.map((r) => ({
       txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, traceAddress: r.trace_address, callType: r.call_type, from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value,
       gas: r.gas === null ? null : Number(r.gas), gasUsed: r.gas_used === null ? null : Number(r.gas_used), selector: hexOrNull(r.input_selector), inputSize: r.input_size, error: r.error,
+    }));
+  }
+
+  /** The logs written by one contract, newest first, after the key (block, log index); `topic0` keeps one kind of event. The index is (address, block_number). */
+  async function contractEvents(a: string, topic0: string | null, before: Key | null, limit: number): Promise<ContractEventItem[]> {
+    const [bn, li] = before ?? [null, null];
+    const rows = await query(
+      `select l.block_number, l.log_index, l.tx_index, l.address, l.topic0, l.topic1, l.topic2, l.topic3, l.data, t.hash, t.method_id
+       from logs l join transactions t on t.block_number = l.block_number and t.tx_index = l.tx_index
+       where l.address = $1 and ($2::bytea is null or l.topic0 = $2) and ($3::bigint is null or (l.block_number, l.log_index) < ($3::bigint, $4::int))
+       order by l.block_number desc, l.log_index desc limit $5`,
+      [bytes(a), topic0 === null ? null : bytes(topic0), bn, li, limit + 1],
+    );
+    return rows.map((r) => ({
+      txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, address: hex(r.address),
+      topics: [r.topic0, r.topic1, r.topic2, r.topic3].flatMap((t, i, all) => (t !== null && all.slice(0, i).every((x) => x !== null) ? [hex(t)] : [])), data: hex(r.data), method: hexOrNull(r.method_id),
     }));
   }
 
@@ -355,6 +373,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName,
+    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName,
   };
 }
