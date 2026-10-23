@@ -423,6 +423,19 @@ const ratio = (n: number): string => n.toFixed(15).replace(/\.?0+$/, "");
 
 /** What Etherscan's `proxy` module gives for an argument that is missing: the node's own words, as a JSON-RPC error. */
 const rpcError = (code: number, message: string): Raw => new Raw({ jsonrpc: "2.0", id: 1, error: { code, message } });
+/**
+ * Why go-ethereum refuses a string as a hexutil.Uint (common/hexutil: checkNumber, then the 64-bit range), in its words; null when it takes it. Etherscan's
+ * `proxy` module gives the node's refusal back as it is, and tools match on these words, so they are kept to the letter.
+ */
+function uintRefusal(v: string): string | null {
+  if (v === "") return "empty hex string";
+  if (!/^0[xX]/.test(v)) return "hex string without 0x prefix";
+  const digits = v.slice(2);
+  if (digits === "") return 'hex string "0x"';
+  if (digits.length > 1 && digits[0] === "0") return "hex number with leading zero digits";
+  if (!/^[0-9a-fA-F]+$/.test(digits)) return "invalid hex string";
+  return digits.length > 16 ? "hex number > 64 bits" : null;
+}
 const rpcResult = (result: unknown): Raw => new Raw({ jsonrpc: "2.0", id: 1, result });
 type Up = { result?: unknown; error?: unknown };
 const isUp = (v: unknown): v is Up => typeof v === "object" && v !== null;
@@ -473,7 +486,7 @@ const proxy: Record<string, Handler> = {
   async eth_getBlockByNumber(c) {
     const a = need(c, ["tag", "boolean"]);
     if (a instanceof Raw) return a;
-    if (a[1] !== "true" && a[1] !== "false") return rpcError(-32602, "invalid argument 1: boolean must be true or false");
+    if (a[1] !== "true" && a[1] !== "false") return rpcError(-32602, "invalid argument 1: json: cannot unmarshal string into Go value of type bool");
     return new Raw(await viaRpc(c, "eth_getBlockByNumber", [a[0], a[1] === "true"]));
   },
   /** The count is the length of the block's list, so it follows the final-only rule of the block. */
@@ -486,7 +499,8 @@ const proxy: Record<string, Handler> = {
   async eth_getTransactionByBlockNumberAndIndex(c) {
     const index = c.p.get("index");
     if (index === null) return rpcError(-32602, "missing value for required argument 1");
-    if (!/^0x[0-9a-f]+$/i.test(index)) return rpcError(-32602, "invalid argument 1: hex string without 0x prefix");
+    const why = uintRefusal(index);
+    if (why !== null) return rpcError(-32602, `invalid argument 1: json: cannot unmarshal ${why} into Go value of type hexutil.Uint`);
     const b = await blockOf(c, true);
     if (b instanceof Raw) return b;
     const at = BigInt(index);
