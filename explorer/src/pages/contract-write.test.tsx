@@ -129,4 +129,42 @@ describe("the contract page: Write", () => {
     await waitFor(() => expect(w.asked.some((c) => c.method === "eth_sendTransaction")).toBe(true));
     expect((w.asked.find((c) => c.method === "eth_sendTransaction")!.params![0] as { to: string }).to).toBe(addr(0xcb));
   });
+
+  describe("who may call", () => {
+    const OWNED = [
+      ...TOKEN_ABI,
+      { type: "function", name: "transferOwnership", stateMutability: "nonpayable", inputs: [{ name: "newOwner", type: "address" }], outputs: [] },
+      { type: "function", name: "renounceOwnership", stateMutability: "nonpayable", inputs: [], outputs: [] },
+      { type: "function", name: "mint", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [] },
+    ];
+    const word = (a: string) => "0x" + a.slice(2).padStart(64, "0");
+    const rpcOf = (owner: string) => (c: { method: string; params: unknown[] }) => c.method === "eth_blockNumber" ? "0x15" : (c.params[0] as { data: string }).data === "0x8da5cb5b" ? word(owner) : "0x";
+
+    it("names the owner on the functions only an owner calls, by an eth_call to owner() at the final block", async () => {
+      const { rpcCalls } = await open("write", { sources: { [addr(0xcb)]: contractSource(0xcb, { abi: OWNED }) }, rpc: rpcOf(ME) });
+      const t = screen.getByRole("region", { name: "transferOwnership" });
+      expect(await within(t).findByText(`only the owner, ${ME.slice(0, 8)}…${ME.slice(-4)}`)).toBeInTheDocument();
+      expect(within(screen.getByRole("region", { name: "renounceOwnership" })).getByText(/^only the owner, /)).toBeInTheDocument();
+      expect(within(screen.getByRole("region", { name: "transfer" })).queryByText(/only the owner/)).toBeNull();
+      expect(rpcCalls.filter((c) => c.method === "eth_call" && (c.params[0] as { data: string }).data === "0x8da5cb5b")).toHaveLength(1);
+    });
+
+    it("says only that a name like mint is usually limited to the owner, since the ABI cannot show it", async () => {
+      await open("write", { sources: { [addr(0xcb)]: contractSource(0xcb, { abi: OWNED }) }, rpc: rpcOf(ME) });
+      expect(await within(screen.getByRole("region", { name: "mint" })).findByText(`usually only the owner, ${ME.slice(0, 8)}…${ME.slice(-4)}`)).toBeInTheDocument();
+    });
+
+    it("says there is no owner now when ownership was renounced", async () => {
+      await open("write", { sources: { [addr(0xcb)]: contractSource(0xcb, { abi: OWNED }) }, rpc: rpcOf("0x" + "00".repeat(20)) });
+      expect(await within(screen.getByRole("region", { name: "transferOwnership" })).findByText("only the owner, and there is none now (renounced)")).toBeInTheDocument();
+    });
+
+    it("guesses nothing and asks nothing when the ABI has no owner()", async () => {
+      const NO = OWNED.filter((f) => f.name !== "owner");
+      const { rpcCalls } = await open("write", { sources: { [addr(0xcb)]: contractSource(0xcb, { abi: NO }) }, rpc: rpcOf(ME) });
+      await screen.findByRole("region", { name: "transferOwnership" });
+      expect(screen.queryByText(/only the owner/)).toBeNull();
+      expect(rpcCalls.filter((c) => c.method === "eth_call")).toHaveLength(0);
+    });
+  });
 });

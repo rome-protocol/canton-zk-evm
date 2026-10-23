@@ -1,9 +1,11 @@
+import { useQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import { parseUnits } from "viem";
-import { callable, encodeCall, type AbiEntry } from "../abi-call.ts";
+import { callable, decodeOutputs, encodeCall, type AbiEntry } from "../abi-call.ts";
 import type { ApiStatus, ContractDetail } from "../api.ts";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { ethCall, finalBlock } from "../rpc.ts";
 import { useStatus } from "../useStatus.ts";
 import { injected, useWallet, walletWords } from "../wallet.ts";
 import { Fields, Gate, headline, useChoice } from "./ContractCall.tsx";
@@ -12,7 +14,33 @@ import { useAbi } from "./useAbi.ts";
 type Wallet = ReturnType<typeof useWallet>;
 type Coin = ApiStatus["coin"];
 
-function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string; e: AbiEntry; wallet: Wallet; coin: Coin | undefined }) {
+/**
+ * What the ABI cannot say, only a name can. renounceOwnership and transferOwnership are Ownable's own and always owner-only; the others are
+ * often limited to the owner, so they are worded as "usually". Nothing is said at all unless the ABI has owner() and the owner was read.
+ */
+const OWNER_ONLY = new Set(["renounceOwnership", "transferOwnership"]);
+const USUALLY_OWNER = new Set(["mint", "pause", "unpause"]);
+const ZERO = "0x" + "00".repeat(20);
+const isOwnerFn = (f: AbiEntry) => f.type === "function" && f.name === "owner" && (f.inputs ?? []).length === 0 && f.outputs?.length === 1 && f.outputs?.[0]?.type === "address";
+
+/** The owner by an eth_call to owner() at the final block, asked once for the tab; undefined while unknown, and never asked without owner() in the ABI. */
+function useOwner(address: string, entries: AbiEntry[] | null, wanted: boolean): string | undefined {
+  const fn = wanted ? entries?.find(isOwnerFn) : undefined;
+  const q = useQuery({
+    queryKey: ["owner", address],
+    queryFn: async () => { const r = await ethCall(address, encodeCall(fn!, []), await finalBlock()); return decodeOutputs(fn!, r.result)[0]?.value.toLowerCase(); },
+    enabled: fn !== undefined, retry: false, staleTime: 30_000,
+  });
+  return q.data;
+}
+
+function OwnerHint({ name, owner }: { name: string | undefined; owner: string | undefined }) {
+  if (!name || owner === undefined || !(OWNER_ONLY.has(name) || USUALLY_OWNER.has(name))) return null;
+  const text = owner === ZERO ? "only the owner, and there is none now (renounced)" : `${OWNER_ONLY.has(name) ? "only" : "usually only"} the owner, ${owner.slice(0, 8)}…${owner.slice(-4)}`;
+  return <span className="muted small" title={owner === ZERO ? undefined : owner}>{text}</span>;
+}
+
+function WriteItem({ n, address, e, wallet, coin, owner }: { n: number; address: string; e: AbiEntry; wallet: Wallet; coin: Coin | undefined; owner: string | undefined }) {
   const [values, setValues] = useState<string[]>([]);
   const [value, setValue] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
@@ -38,7 +66,7 @@ function WriteItem({ n, address, e, wallet, coin }: { n: number; address: string
   };
   return (
     <section className="fn" aria-label={e.name}>
-      <div className="fn-h"><span className="muted">{n}.</span> <span className="mono fn-name">{headline(e)}</span>{payable && <span className="muted small">payable</span>}</div>
+      <div className="fn-h"><span className="muted">{n}.</span> <span className="mono fn-name">{headline(e)}</span>{payable && <span className="muted small">payable</span>}<OwnerHint name={e.name} owner={owner} /></div>
       <div className="fn-b">
         <Fields e={e} values={values} onChange={(i, v) => setValues((a) => { const b = [...a]; b[i] = v; return b; })} />
         {payable && (
@@ -84,6 +112,7 @@ export function WriteTab({ detail }: { detail: ContractDetail }) {
   const status = useStatus().data;
   const wallet = useWallet(status);
   const fns = entries ? callable(entries, "write") : [];
+  const owner = useOwner(detail.address, entries, fns.some((f) => f.name && (OWNER_ONLY.has(f.name) || USUALLY_OWNER.has(f.name))));
   return (
     <Gate abis={abis} entries={entries} what="Write contract">
       <section className="card" aria-label="Write contract">
@@ -91,7 +120,7 @@ export function WriteTab({ detail }: { detail: ContractDetail }) {
         {note && <p className="small muted card-note">{note}</p>}
         <Connect wallet={wallet} status={status} />
         {fns.length === 0 ? <p className="muted">This contract has no functions that change state.</p>
-          : <div className="fn-cols">{fns.map((e, i) => <WriteItem key={`${e.name}-${i}`} n={i + 1} address={detail.address} e={e} wallet={wallet} coin={status?.coin} />)}</div>}
+          : <div className="fn-cols">{fns.map((e, i) => <WriteItem key={`${e.name}-${i}`} n={i + 1} address={detail.address} e={e} wallet={wallet} coin={status?.coin} owner={owner} />)}</div>}
       </section>
     </Gate>
   );
