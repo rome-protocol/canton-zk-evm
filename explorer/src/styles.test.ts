@@ -54,6 +54,10 @@ describe("fonts and outside requests", () => {
     expect(winner(rules, [".mono"], "font-family", false)).toMatch(/IBM Plex Mono/);
   });
 
+  it("keeps IBM Plex Mono off the numbers in the pages' tables: a right-aligned cell is a number, and is set in the text face", () => {
+    for (const f of sources(join(root, "src")).filter((x) => /\.tsx$/.test(x))) expect(readFileSync(f, "utf8"), f).not.toMatch(/className="r mono"/);
+  });
+
   it("lays the footer's sentence on the left and its links on the right in the muted colour, and stacks them on a phone", () => {
     const rules = rulesOf(css);
     expect(winner(rules, [".foot"], "flex-direction", false)).toBe("row");

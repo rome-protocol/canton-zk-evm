@@ -34,9 +34,9 @@ function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<Address
             : <span title={`${exact(a.balance, coin.decimals)} ${coin.symbol}, as of final block ${a.balanceBlock}, read from reth`}>{units(a.balance, coin.decimals)} {coin.symbol} <span className="muted small">as of final block {a.balanceBlock}</span></span>}
         </Item>
         {a?.token && <Item label="Token tracker"><Link to={`/token/${c.address}`}>{a.token.name ?? a.token.symbol ?? "Token"}{a.token.name && a.token.symbol ? ` (${a.token.symbol})` : ""}</Link></Item>}
-        {a && <Item label="Transactions"><span className="mono">{count(a.sentCount + a.receivedCount)}</span></Item>}
-        {a && <Item label="Internal calls"><span className="mono">{count(a.internalCount)}</span></Item>}
-        <Item label="Interactions"><span className="mono">{count(c.interactionCount)}</span>{c.lastInteractionBlock !== null && <span className="muted small"> · last in block {c.lastInteractionBlock}</span>}</Item>
+        {a && <Item label="Transactions"><span className="num">{count(a.sentCount + a.receivedCount)}</span></Item>}
+        {a && <Item label="Internal calls"><span className="num">{count(a.internalCount)}</span></Item>}
+        <Item label="Interactions"><span className="num">{count(c.interactionCount)}</span>{c.lastInteractionBlock !== null && <span className="muted small"> · last in block {c.lastInteractionBlock}</span>}</Item>
       </Kv>
     </section>
   );
@@ -57,7 +57,7 @@ function Creation({ c }: { c: ContractDetail }) {
           {genesis ? "in the chain's genesis" : c.creationBlock === null ? <Dash /> : <Link className="num" to={`/block/${c.creationBlock}`}>Block {c.creationBlock}</Link>}
         </Item>
         {c.destroyedBlock !== null && <Item label="Destroyed"><span className="fact-bad">Destroyed in block <Link className="num" to={`/block/${c.destroyedBlock}`}>{c.destroyedBlock}</Link></span></Item>}
-        <Item label="Code"><span className="mono">{count(c.codeSize)} bytes</span> · hash <HashLink value={c.codeHash} /></Item>
+        <Item label="Code"><span className="num">{count(c.codeSize)} bytes</span> · hash <HashLink value={c.codeHash} /></Item>
       </Kv>
     </section>
   );

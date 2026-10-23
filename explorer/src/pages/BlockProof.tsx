@@ -33,7 +33,7 @@ function ProofFacts({ c, pins }: { c: CantonSummary; pins: ApiStatus["pins"] | u
         <FactRows label="ZisK release" fact={rootC} match="ZisK 1.3.1" mismatch={pin(pins?.rootC)} />
         <FactRows label="Block hash committed" fact={blockHash} match="this block" mismatch="not this block's hash" />
         <dt className="f-k">Proof</dt>
-        <dd className="f-v wide2"><span className="mono">{count(c.proofBytes)} bytes</span>{c.proofBytes === 1344 && <span className="muted"> · {PARTS}</span>}</dd>
+        <dd className="f-v wide2"><span className="num">{count(c.proofBytes)} bytes</span>{c.proofBytes === 1344 && <span className="muted"> · {PARTS}</span>}</dd>
       </dl>
       {red && <div className="facts-note small muted">The status word stays Final: Canton's confirmers checked the proof against their own pins when the block committed. A red fact means the proof differs from the pins this explorer was given.</div>}
     </>

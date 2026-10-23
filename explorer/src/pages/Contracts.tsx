@@ -25,7 +25,7 @@ function Row({ c, coin }: { c: ContractListItem; coin: { symbol: string; decimal
       <td><MatchChip matchType={c.matchType} /></td>
       <td><span className="chip chip-kind">{c.standard ?? "Contract"}</span></td>
       <td className="r">
-        <span className="mono">{count(c.interactionCount)}</span>
+        <span className="num">{count(c.interactionCount)}</span>
         {c.interactionCount === 0 && c.txCount === 0 && c.internalCount === 0 ? <div className="muted small">no calls yet</div>
           : c.txCount + c.internalCount > 0 && <div className="muted small">{plural(c.txCount, "transaction")} · {plural(c.internalCount, "internal call")}</div>}
       </td>
@@ -36,8 +36,8 @@ function Row({ c, coin }: { c: ContractListItem; coin: { symbol: string; decimal
         {c.destroyedBlock !== null && <div className="small fact-bad">destroyed in block {c.destroyedBlock}</div>}
       </td>
       <td>{c.creator ? <HashLink value={c.creator} to={`/address/${c.creator}`} /> : <Dash />}</td>
-      <td className="r"><span className="mono">{count(c.codeSize)} B</span></td>
-      <td className="r">{c.balance === null ? <span className="muted" title="The explorer has not read this balance yet">—</span> : coin ? <span className="mono" title={`${exact(c.balance, coin.decimals)} ${coin.symbol}`}>{units(c.balance, coin.decimals)}</span> : <span className="muted">…</span>}</td>
+      <td className="r"><span className="num">{count(c.codeSize)} B</span></td>
+      <td className="r">{c.balance === null ? <span className="muted" title="The explorer has not read this balance yet">—</span> : coin ? <span className="num" title={`${exact(c.balance, coin.decimals)} ${coin.symbol}`}>{units(c.balance, coin.decimals)}</span> : <span className="muted">…</span>}</td>
     </tr>
   );
 }

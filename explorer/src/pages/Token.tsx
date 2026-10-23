@@ -58,10 +58,10 @@ function HolderRow({ h, n, t }: { h: TokenHolder; n: number; t: TokenDetail }) {
       <td><HashLink value={h.holder} to={`/address/${h.holder}`} /></td>
       {multi && <td><span className="mono">#{h.tokenId}</span></td>}
       <td className="r">{fungible && t.decimals !== null && t.symbol ? <Amount raw={h.value} decimals={t.decimals} symbol={t.symbol} />
-        : fungible && t.decimals !== null ? <span className="mono" title={exact(h.value, t.decimals)}>{units(h.value, t.decimals)}</span>
+        : fungible && t.decimals !== null ? <span className="num" title={exact(h.value, t.decimals)}>{units(h.value, t.decimals)}</span>
         : t.standard === "ERC-721" ? <NftCount n={h.value} />
-        : <span className="mono" title={fungible ? "The token's decimals are not known, so this is the raw balance" : undefined}>{count(h.value)}</span>}</td>
-      {fungible && <td className="r"><span className="mono">{s ? s.text : "—"}</span></td>}
+        : <span className="num" title={fungible ? "The token's decimals are not known, so this is the raw balance" : undefined}>{count(h.value)}</span>}</td>
+      {fungible && <td className="r"><span className="num">{s ? s.text : "—"}</span></td>}
       {fungible && <td><div className="share" aria-hidden="true"><span style={{ width: `${s ? Math.max(s.bp / 100, s.bp > 0 ? 1 : 0) : 0}%` }} /></div></td>}
     </tr>
   );
@@ -143,8 +143,8 @@ function TransfersTab({ t }: { t: TokenDetail }) {
                   {x.tokenId !== null ? <span className="mono">{x.amount !== null ? `${count(x.amount)} · ` : ""}#{x.tokenId}</span>
                     : x.amount === null ? <Dash />
                     : t.decimals !== null && t.symbol ? <Amount raw={x.amount} decimals={t.decimals} symbol={t.symbol} />
-                    : t.decimals !== null ? <span className="mono" title={exact(x.amount, t.decimals)}>{units(x.amount, t.decimals)}</span>
-                    : <span className="mono" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span>}
+                    : t.decimals !== null ? <span className="num" title={exact(x.amount, t.decimals)}>{units(x.amount, t.decimals)}</span>
+                    : <span className="num" title="The token's decimals are not known, so this is the raw amount">{count(x.amount)}</span>}
                 </td>
                 <td><Chip status="final" /></td>
               </tr>

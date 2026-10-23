@@ -52,7 +52,7 @@ function TxRow({ a, t, now, coin, faucet, chain }: { a: string; t: TxListItem; n
       <td><Way me={a} from={t.from} to={t.to} /></td>
       <td><To t={t} /></td>
       <td className="r"><CoinValue raw={t.value} coin={coin} /></td>
-      <td className="r"><span className="mono" title={`${exact(fee, coin.decimals)} ${coin.symbol}`}>{exact(fee, coin.decimals)}</span></td>
+      <td className="r"><span className="num" title={`${exact(fee, coin.decimals)} ${coin.symbol}`}>{exact(fee, coin.decimals)}</span></td>
       <td><Chip status="final" /></td>
     </tr>
   );
@@ -90,9 +90,9 @@ function TransferRow({ a, x }: { a: string; x: AddressTransferItem }) {
       <td><Way me={a} from={x.from} to={x.to} /></td>
       <td><HashLink value={x.to} to={`/address/${x.to}`} /></td>
       <td className="r">
-        {x.amount === null ? <span className="mono">{sym ? `${sym} ` : ""}{x.tokenId === null ? "—" : `#${x.tokenId}`}</span>
+        {x.amount === null ? <span className="num">{sym ? `${sym} ` : ""}{x.tokenId === null ? "—" : `#${x.tokenId}`}</span>
           : tok?.decimals != null && sym ? <Amount raw={x.amount} decimals={tok.decimals} symbol={sym} />
-          : <span className="mono" title="The token's decimals cannot be read, so this is the raw amount">{x.amount}</span>}
+          : <span className="num" title="The token's decimals cannot be read, so this is the raw amount">{x.amount}</span>}
       </td>
       <td><HashLink value={x.token} to={`/token/${x.token}`} />{sym && <span className="tag">{sym}</span>}{x.tokenId !== null && x.amount !== null && <span className="muted"> id {x.tokenId}</span>}</td>
       <td><Chip status="final" /></td>

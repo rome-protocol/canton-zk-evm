@@ -28,7 +28,7 @@ function Value({ raw, coin }: { raw: string; coin: Coin }) {
   return <span title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{units(raw, coin.decimals)} {coin.symbol}</span>;
 }
 function Fee({ raw, coin }: { raw: string; coin: Coin }) {
-  return <span className="mono" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{exact(raw, coin.decimals)}</span>;
+  return <span className="num" title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{exact(raw, coin.decimals)}</span>;
 }
 const To = ({ t }: { t: { to: string | null; created: string | null } }) =>
   t.to ? <HashLink value={t.to} to={`/address/${t.to}`} /> : t.created ? <span className="muted">Create: <Link className="mono" to={`/address/${t.created}`}>contract</Link></span> : <span className="muted">creates a contract</span>;
