@@ -203,6 +203,8 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .bar-header { background: var(--evm); }
 .bar-transactions { background: #3B82B4; }
 .bar-proof { background: var(--canton); }
+.share { width: 110px; height: 6px; border-radius: 3px; background: var(--line-2); overflow: hidden; }
+.share > span { display: block; height: 100%; background: var(--canton); }
 .bar-key { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .tbl tr.here td { background: var(--surface-2); }
 .bad-alert b { color: var(--bad); }
