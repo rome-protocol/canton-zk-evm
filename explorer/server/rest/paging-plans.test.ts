@@ -94,6 +94,26 @@ describe.skipIf(!TEST_URL)("the keyset pages read through an index", () => {
     expect(await plan(/b\.holder = \$1/)).toMatch(/token_balances_holdings_idx/);
   });
 
+  it("the contract list's last page reads the same indexes backward, in each sort and with the verified filter", async () => {
+    const accounts = createAccountRest(recording());
+    // Newest from the other end reads oldest first and oldest from the other end reads newest first: the one index of the place, both ways. The most-interactions index is read backward.
+    await accounts.contracts("newest", null, [5, 1, addr], 10, "asc");
+    const newest = await plan(/coalesce\(c\.creation_block, 0\) asc, coalesce\(c\.creation_tx_index, 0\) asc, c\.address asc/);
+    expect(newest).toMatch(/Index Cond: \(ROW\(COALESCE\(creation_block/);
+    expect(newest).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("oldest", null, [5, 1, addr], 10, "asc");
+    const oldest = await plan(/coalesce\(c\.creation_block, 0\) desc, coalesce\(c\.creation_tx_index, 0\) desc, c\.address desc/);
+    expect(oldest).toMatch(/Index Cond: \(ROW\(COALESCE\(creation_block/);
+    expect(oldest).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("interactions", null, [5, addr], 10, "asc");
+    const busy = await plan(/order by c\.interaction_count asc, c\.address asc/);
+    expect(busy).toMatch(/Index Scan Backward using contracts_interaction_count_address_idx on contracts/);
+    expect(busy).toMatch(/Index Cond: \(ROW\(interaction_count, address\) >/);
+    expect(busy).not.toMatch(/Seq Scan|Sort Key/);
+    await accounts.contracts("interactions", true, [5, addr], 10, "asc");
+    expect(await plan(/order by c\.interaction_count asc, c\.address asc/)).not.toMatch(/Seq Scan|Sort Key/);
+  });
+
   it("an address's page of transactions reads each of its three keys, sent, received and created, through an index that is the page's own order", async () => {
     await ensurePartitions(pool, { head: 1 }); // the tables of a fresh database have no partition, and a plan over none says nothing
     const accounts = createAccountRest(recording());

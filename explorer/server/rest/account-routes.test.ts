@@ -773,6 +773,23 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       }
     });
 
+    it("pages the contract list from its other end with order=asc and after, for its last page, in each sort and with each filter", async () => {
+      for (const sort of ["interactions", "newest", "oldest"]) {
+        const own = mine(await walk(`/api/contracts?sort=${sort}`, "before", 1));
+        expect(own, sort).toHaveLength(4);
+        expect(mine(await walk(`/api/contracts?sort=${sort}&order=asc`, "after", 1)), sort).toEqual([...own].reverse());
+        expect(mine(await walk(`/api/contracts?sort=${sort}&order=asc&verified=true`, "after", 1)), sort).toEqual(["K"]);
+        expect(mine(await walk(`/api/contracts?sort=${sort}&order=asc&verified=false`, "after", 1)), sort).toEqual(mine(await walk(`/api/contracts?sort=${sort}&verified=false`, "before", 1)).reverse());
+        // The key that closes a page asks for the page after it, the way it was walked.
+        const first = body(await get(`/api/contracts?sort=${sort}&order=asc&limit=1`));
+        expect(first.next).not.toBeNull();
+        expect(body(await get(`/api/contracts?sort=${sort}&order=asc&limit=1&after=${first.next}`)).items).toHaveLength(1);
+      }
+      for (const path of ["/api/contracts?order=up", "/api/contracts?order=ASC", "/api/contracts?order=asc&before=3:1", "/api/contracts?after=2:1", "/api/contracts?order=asc&after=x", "/api/contracts?sort=newest&order=asc&after=1:2"]) {
+        expect((await get(path)).status, path).toBe(400);
+      }
+    });
+
     it("pages a filtered list by keyset in each order, without a repeat or a gap", async () => {
       for (const sort of ["holders", "transfers", "newest"]) {
         for (const standard of ["ERC-20", "ERC-1155"]) {
@@ -877,7 +894,8 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       expect(detail).toMatchObject({ createdCount: 3, createdCountCapped: false, firstSeenBlock: 1, firstSeenTimestamp: ts(1), lastActiveBlock: 3, lastActiveTimestamp: ts(3) });
       expect(body(await get(`/api/addresses/${B}`))).toMatchObject({ createdCount: 0 });
       // An address nothing has touched says what it does not know: no times, no funder, and no contracts made.
-      expect(body(await get(`/api/addresses/${h(0xee)}`))).toMatchObject({ createdCount: 0, firstSeenTimestamp: null, lastActiveTimestamp: null, fundedBy: null });
+      expect(body(await get(`/api/addresses/${h(0xee)}`))).toMatchObject({ createdCount: 0, createdCountCapped: false, firstSeenTimestamp: null, lastActiveTimestamp: null, fundedBy: null });
+      expect(Object.keys(body(await get(`/api/addresses/${h(0xee)}`)))).toContain("createdCountCapped");
     });
 
     it("stops counting the contracts an address made at a ceiling, and says so", async () => {

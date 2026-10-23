@@ -317,21 +317,25 @@ export function createAccountRest(pool: Pool) {
 
   /**
    * The contract list. Interactions: most first. Newest or oldest: by the place of the creation (a genesis contract, which has none, is the oldest). The key is
-   * the sort's own parts and then the address, so that two contracts of one place keep their order.
+   * the sort's own parts and then the address, so that two contracts of one place keep their order. `order` "asc" reads the list from its other end (the key is then the
+   * one the page before it left), for the last page: each index is read backward, as the token list's is.
    */
-  async function contracts(sort: ContractSort, verified: boolean | null, before: Key | null, limit: number): Promise<ContractItem[]> {
+  async function contracts(sort: ContractSort, verified: boolean | null, before: Key | null, limit: number, order: "desc" | "asc" = "desc"): Promise<ContractItem[]> {
     const from = `from contracts c join bytecodes bc on bc.code_hash = c.runtime_code_hash ${withAccount}`;
     const filter = (n: number) => `($${n}::boolean is null or (c.verified_source is not null) = $${n})`;
     const [x, y, z] = before ?? [null, null, null];
+    // The sort's own direction, turned round when the list is read from its other end.
+    const flip = (own: "desc" | "asc"): "desc" | "asc" => (order === "desc" ? own : own === "desc" ? "asc" : "desc");
     if (sort === "interactions") {
+      const d = flip("desc"), past = d === "desc" ? "<" : ">";
       const rows = await query(
-        `select ${contractSelect} ${from} where ($1::bigint is null or (c.interaction_count, c.address) < ($1::bigint, $2::bytea)) and ${filter(4)} order by c.interaction_count desc, c.address desc limit $3`,
+        `select ${contractSelect} ${from} where ($1::bigint is null or (c.interaction_count, c.address) ${past} ($1::bigint, $2::bytea)) and ${filter(4)} order by c.interaction_count ${d}, c.address ${d} limit $3`,
         [x, y === null ? null : bytes(y as string), limit + 1, verified],
       );
       return rows.map(contractItem);
     }
     const place = "(coalesce(c.creation_block, 0), coalesce(c.creation_tx_index, 0), c.address)";
-    const dir = sort === "newest" ? ["<", "desc"] : [">", "asc"];
+    const d = flip(sort === "newest" ? "desc" : "asc"), dir = d === "desc" ? ["<", "desc"] : [">", "asc"];
     const rows = await query(
       `select ${contractSelect} ${from} where ($1::bigint is null or ${place} ${dir[0]} ($1::bigint, $4::int, $2::bytea)) and ${filter(5)}
        order by coalesce(c.creation_block, 0) ${dir[1]}, coalesce(c.creation_tx_index, 0) ${dir[1]}, c.address ${dir[1]} limit $3`,

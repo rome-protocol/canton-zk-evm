@@ -87,7 +87,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     // The balance a tool acts on is reth's at the newest final block, never the database's copy; with no final block yet there is nothing to read it at.
     const [held, balance] = await Promise.all([accounts.address(a), head === null ? Promise.resolve(null) : reth.balanceAt(a, head)]);
     const body = {
-      address: a, kind: "account", sentCount: 0, receivedCount: 0, internalCount: 0, tokenTransferCount: 0, firstSeenBlock: null, firstSeenTimestamp: null, lastActiveBlock: null, lastActiveTimestamp: null, createdCount: 0, fundedBy: null, token: null, createdBy: null, ...held,
+      address: a, kind: "account", sentCount: 0, receivedCount: 0, internalCount: 0, tokenTransferCount: 0, firstSeenBlock: null, firstSeenTimestamp: null, lastActiveBlock: null, lastActiveTimestamp: null, createdCount: 0, createdCountCapped: false, fundedBy: null, token: null, createdBy: null, ...held,
       balance: balance === null ? null : balance.toString(), balanceBlock: head, derived: await isDerived(),
     };
     return cached(ok(pick({ ...body, fundedBy: body.fundedBy && pick(body.fundedBy, F.funding) }, F.addressDetail)), "composite");
@@ -228,8 +228,9 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
 
   async function contractList(q: URLSearchParams): Promise<Answer> {
     const by = sort<ContractSort>(q, SORTS.contracts), limit = limitOf(q.get("limit")), verified = verifiedOf(q.get("verified"));
-    const before = cursorOf(q.get("before"), by === "interactions" ? ["int", "addr"] : ["int", "int4", "addr"]);
-    const [rows, counts] = await Promise.all([accounts.contracts(by, verified, before, limit), accounts.contractCounts()]);
+    const order = orderOf(q);
+    const before = cursorOf(q.get(order === "asc" ? "after" : "before"), by === "interactions" ? ["int", "addr"] : ["int", "int4", "addr"]);
+    const [rows, counts] = await Promise.all([accounts.contracts(by, verified, before, limit, order), accounts.contractCounts()]);
     const key = (c: (typeof rows)[number]) => (by === "interactions" ? keyOf(c.interactionCount, c.address) : keyOf(c.creationBlock ?? 0, c.creationTxIndex ?? 0, c.address));
     const total = verified === null ? counts.all : verified ? counts.verified : counts.notVerified;
     return cached(ok(pick({ ...page(rows, limit, key, F.contractItem, await isDerived()), total, counts }, F.contractPage)), "list");
