@@ -2,6 +2,7 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ApiError, getAddressDetail, getContract, getToken, type AddressDetail, type ContractDetail } from "../api.ts";
 import { ago } from "../block-times.ts";
+import { AddressCell } from "../components/AddressCell.tsx";
 import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -37,7 +38,7 @@ function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<Address
             : !a || a.balance === null || !coin ? <span className="muted" title="Read from reth at the final block">Not known yet</span>
             : <span title={`${exact(a.balance, coin.decimals)} ${coin.symbol}, as of final block ${a.balanceBlock}, read from reth`}>{units(a.balance, coin.decimals)} {coin.symbol} <span className="muted small">as of final block {a.balanceBlock}</span></span>}
         </Item>
-        {a?.token && <Item label="Token tracker"><Link to={`/token/${c.address}`}>{a.token.name ?? a.token.symbol ?? "Token"}{a.token.name && a.token.symbol ? ` (${a.token.symbol})` : ""}</Link>{holders !== undefined && <span className="muted small"> · {plural(holders, "holder")}</span>}</Item>}
+        {a?.token && <Item label="Token tracker"><AddressCell address={c.address} to={`/token/${c.address}`} label={{ address: c.address, name: a.token.name ?? a.token.symbol ?? "Token", symbol: a.token.name ? a.token.symbol : null, kind: "token", standard: null, decimals: a.token.decimals, verified: c.verified }} />{holders !== undefined && <span className="muted small"> · {plural(holders, "holder")}</span>}</Item>}
         {a && <Item label="Transactions"><span className="num">{count(a.sentCount + a.receivedCount)}</span></Item>}
         {a && <Item label="Internal calls"><span className="num">{count(a.internalCount)}</span></Item>}
         <Item label="Interactions"><span className="num">{count(c.interactionCount)}</span>{c.lastInteractionBlock !== null && <span className="muted small"> · last in block {c.lastInteractionBlock}</span>}</Item>

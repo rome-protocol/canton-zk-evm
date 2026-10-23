@@ -270,6 +270,21 @@ describe("the contract page: a token contract", () => {
     expect(row("Token tracker")).toHaveTextContent("Test USD (tUSD)");
   });
 
+  it("shows the token tracker row as the screen does: the document icon, the name, and a tick when the source is verified", async () => {
+    await open({ ...token, detail: contractDetail(0xcb, { verified: true }), token: tokenDetail(0xcb, { holderCount: 5 }) });
+    const cell = await within(card("Overview")).findByRole("link", { name: /Test USD \(tUSD\)/ });
+    expect(cell.querySelector("svg")).not.toBeNull();
+    expect(cell).toHaveAttribute("href", `/token/${A}`);
+    expect(within(row("Token tracker")).getByRole("img", { name: "Verified" })).toBeInTheDocument();
+    expect(row("Token tracker")).toHaveTextContent("5 holders");
+  });
+
+  it("shows no tick on the token tracker row while the source is not verified", async () => {
+    await open({ ...token, detail: contractDetail(0xcb, { verified: false }) });
+    await within(card("Overview")).findByRole("link", { name: /Test USD/ });
+    expect(within(row("Token tracker")).queryByRole("img", { name: "Verified" })).toBeNull();
+  });
+
   it("says one holder in the singular, and shows no count while the token page has not answered", async () => {
     await open({ ...token, token: tokenDetail(0xcb, { holderCount: 1 }) });
     await waitFor(() => expect(row("Token tracker")).toHaveTextContent("1 holder"));
