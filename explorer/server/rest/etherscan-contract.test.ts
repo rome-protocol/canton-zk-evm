@@ -136,7 +136,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
     it("takes standard JSON input in either brace form, and getsourcecode gives it back in the double braces", async () => {
       await running();
       const input = JSON.stringify({ language: "Solidity", sources: { "Box.sol": { content: SOURCE } }, settings: { optimizer: { enabled: true, runs: 200 }, evmVersion: "cancun" } });
-      const sent = await post(single({ codeformat: "solidity-standard-json-input", contractname: "Box.sol:Box", sourceCode: "{" + input + "}", constructorArguements: "0x" + "00".repeat(32) }));
+      const sent = await post(single({ codeformat: "solidity-standard-json-input", contractname: "Box.sol:Box", sourceCode: "{" + input + "}", constructorArguements: "0x" }));
       expect(sent.status).toBe("1");
       await worker().step();
       expect(await get(`/api?module=contract&action=checkverifystatus&guid=${sent.result}`)).toEqual(OK("Pass - Verified"));
