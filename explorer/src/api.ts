@@ -473,6 +473,6 @@ export const getContract = async (a: string) => (await call(at(a), [200])).body 
 export const getContractSource = async (a: string) => (await call(at(a, "/source"), [200])).body as ContractSource;
 
 /** A log a contract wrote, with the transaction it is in and that transaction's method id (null when its input is empty). */
-export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds. */ timestamp: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
+export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds; absent from a server that does not send it yet. */ timestamp?: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
 export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
   (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;

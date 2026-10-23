@@ -34,7 +34,7 @@ function Row({ e, abi, methods, now }: { e: ContractEvent; abi: AbiEntry[]; meth
   const method = e.method === null ? null : (methods.get(e.method) ?? e.method);
   return (
     <tr>
-      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link> · {ago(new Date(e.timestamp * 1000).toISOString(), now)}</div></td>
+      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link>{typeof e.timestamp === "number" && Number.isFinite(e.timestamp) ? <> · {ago(new Date(e.timestamp * 1000).toISOString(), now)}</> : null}</div></td>
       <td>{e.creation ? <span className="tag method" title="This transaction created a contract">Create contract</span> : method === null ? <span className="muted">—</span> : <span className="tag method" title={e.method ?? undefined}>{method}</span>}</td>
       <td>{d ? <span className="mono" title={d.signature}>{d.name}</span> : <span className="muted">Not decoded</span>}<div className="mono small muted" title={e.topics[0]}>{e.topics[0] ? short(e.topics[0]) : "anonymous"}</div></td>
       <td>{d ? <Args d={d} /> : <span className="mono small wrap muted">{e.topics.length > 1 || e.data !== "0x" ? `${e.topics.length - (e.topics[0] ? 1 : 0)} indexed, data ${e.data.length > 66 ? e.data.slice(0, 66) + "…" : e.data}` : "no data"}</span>}</td>
@@ -63,7 +63,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
   const typed = topic !== null && !kinds.some((k) => k.topic0 === topic);
   return (
     <section className="card" aria-label="Events">
-      <CardHead as="h2" title="Events" sub={`${detail.eventCountCapped ? `${count(detail.eventCount)}+ events` : plural(detail.eventCount, "event")} from final blocks, ${isVerified ? "decoded with the verified ABI" : "decoded with standard token events, as the source is not verified"}, newest first`} action={
+      <CardHead as="h2" title="Events" sub={`${typeof detail.eventCount !== "number" ? "Events" : detail.eventCountCapped ? `${count(detail.eventCount)}+ events` : plural(detail.eventCount, "event")} from final blocks, ${isVerified ? "decoded with the verified ABI" : "decoded with standard token events, as the source is not verified"}, newest first`} action={
         <div className="ev-filter">
           <div className="seg" role="group" aria-label="Event kind">
             <button type="button" aria-pressed={topic === null} onClick={() => { setTopic(null); setTyping(false); }}>All events</button>
@@ -85,7 +85,7 @@ export function EventsTab({ detail }: { detail: ContractDetail }) {
         : !p.data ? <LoadingCard>Reading the events…</LoadingCard>
         : p.data.items.length === 0 ? <p className="muted">{topic ? "This contract has written no logs of that kind in a final block." : "This contract has written no logs in a final block."}</p>
         : (
-          <div className="tbl-wrap">
+          <div className="scroll tbl-wrap">
             <table className="tbl">
               <thead><tr><th>Transaction</th><th>Method</th><th>Event</th><th>Decoded</th></tr></thead>
               <tbody>{p.data.items.map((e) => <Row key={`${e.block}-${e.logIndex}`} e={e} abi={abi} methods={methods} now={now} />)}</tbody>

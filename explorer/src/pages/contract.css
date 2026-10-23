@@ -48,3 +48,6 @@ a.btn-line, .code-tab a.btn { text-decoration: none; }
 .code-tab, .code-tab > *, .code-pair > * { min-width: 0; }
 .code-tab .card-note, .code-tab .list-h { overflow-wrap: anywhere; }
 .ev-foot { margin: 0 -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line-2); }
+.ev-filter { max-width: 100%; min-width: 0; }
+.ev-filter .seg { max-width: 100%; overflow-x: auto; }
+.ev-filter .seg button { white-space: nowrap; }

@@ -19,6 +19,20 @@ const verified = { [A]: contractSource(0xcb, { abi: ABI }) };
 afterEach(() => vi.unstubAllGlobals());
 
 describe("the contract page: Events", () => {
+  it("says no count when the server sends none, never \"undefined events\"", async () => {
+    await open("events", { detail: contractDetail(0xcb, { eventCount: undefined as unknown as number }), sources: verified, events: () => page([log(1)]) });
+    await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) });
+    const card = screen.getByRole("region", { name: "Events" });
+    expect(card.querySelector(".card-head")!.textContent).not.toMatch(/undefined|NaN/);
+  });
+
+  it("still draws a row whose server sends no block time, with no age rather than a broken page", async () => {
+    await open("events", { sources: verified, events: () => page([{ ...log(1), timestamp: undefined }]) });
+    const row = (await screen.findByRole("link", { name: new RegExp(`^${ME.slice(0, 8)}`) })).closest("tr")!;
+    expect(within(row).getByRole("link", { name: "19" })).toBeInTheDocument();
+    expect(row.querySelector(".c-hash .small")!.textContent).toBe("block 19");
+  });
+
   it("says under the table that an event of a block still being proven is listed once the block is final", async () => {
     await open("events", { sources: verified, events: () => page([log(1)]) });
     expect(await screen.findByText(/Only events of final blocks are listed.*still being proven.*once the block is final/)).toBeInTheDocument();
