@@ -154,12 +154,14 @@ export function createChainRest(pool: Pool) {
   }
 
   /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. `moves` false leaves their token moves null: a file that does not write them need not read them. */
-  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all", moves = true): Promise<TxListItem[]> {
+  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all", moves = true, order: "desc" | "asc" = "desc"): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
     const where = { all: "", failed: "and t.status = 0", calls: "and t.method_id is not null and t.to_address is not null" }[filter];
+    // The key is the last row shown either way: below it newest first, above it oldest first (the list's last page is the first page of this).
+    const [past, dir] = order === "desc" ? ["<", "desc"] : [">", "asc"];
     const rows = await query(
       `select ${txSelect} from transactions t join blocks b on b.number = t.block_number
-       where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) ${where} order by t.block_number desc, t.tx_index desc limit $3`,
+       where ($1::bigint is null or (t.block_number, t.tx_index) ${past} ($1::bigint, $2::int)) ${where} order by t.block_number ${dir}, t.tx_index ${dir} limit $3`,
       [bn, ix, limit + 1],
     );
     return moves ? withTokenMoves(query, rows.map(txItem)) : rows.map(txItem);

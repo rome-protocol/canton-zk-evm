@@ -8,7 +8,7 @@ import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/
 import { createIndexer } from "../indexer/indexer.ts";
 import { RethTooBig, type Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
-import { createChainRest } from "./chain-rest.ts";
+import { createChainRest, txSelect } from "./chain-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { REST_FIELDS as F } from "./fields.ts";
 import { TAIL_MAX_MS } from "./tx-total.ts";
@@ -544,5 +544,65 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
       await pool.query("delete from tokens where address = $1", [who(0x31)]);
       await pool.query("delete from contracts where address = $1", [who(0x31)]);
     }
+  });
+  describe("the oldest transactions first, for the list's last page", () => {
+    const hashes = (a: Answer) => (body(a).items as { hash: string }[]).map((t) => t.hash);
+
+    it("lists the oldest first with order=asc, and pages on from there with after", async () => {
+      const newest = hashes(await get("/api/txs?limit=100"));
+      expect(newest).toHaveLength(12);
+      const oldest = await get("/api/txs?order=asc&limit=100");
+      expect(oldest.status).toBe(200);
+      same(body(oldest), F.txPage);
+      expect(hashes(oldest)).toEqual([...newest].reverse());
+      expect(body(oldest).next).toBeNull();
+      for (const t of body(oldest).items) same(t, F.txItem);
+      // The total is the same either way, so a client can tell the last page from the count.
+      expect(body(oldest).total).toBe(body(await get("/api/txs")).total);
+      const walked: string[] = [];
+      let next: string | null = null;
+      for (let turns = 0; turns < 20; turns++) {
+        const a = await get(`/api/txs?order=asc&limit=5${next ? `&after=${next}` : ""}`);
+        expect(a.status).toBe(200);
+        walked.push(...hashes(a));
+        next = body(a).next;
+        if (!next) break;
+      }
+      expect(walked).toEqual([...newest].reverse());
+      expect((await get("/api/txs?order=desc&limit=100")).body).toEqual((await get("/api/txs?limit=100")).body);
+    });
+
+    it("keeps the filters and the page size of the newest-first list", async () => {
+      const failed = hashes(await get("/api/txs?filter=failed&limit=100"));
+      expect(hashes(await get("/api/txs?order=asc&filter=failed&limit=100"))).toEqual([...failed].reverse());
+      const calls = hashes(await get("/api/txs?filter=calls&limit=100"));
+      expect(hashes(await get("/api/txs?order=asc&filter=calls&limit=100"))).toEqual([...calls].reverse());
+      const page = body(await get("/api/txs?order=asc&limit=3"));
+      expect(page.items).toHaveLength(3);
+      expect(page.next).not.toBeNull();
+      expect(body(await get("/api/txs?order=asc")).items).toHaveLength(12);
+    });
+
+    it("refuses an order it does not know, before with order=asc, after without it, and a key that is not one", async () => {
+      for (const path of ["/api/txs?order=up", "/api/txs?order=ASC", "/api/txs?order=asc&before=3:1", "/api/txs?after=2:1", "/api/txs?order=asc&after=x", "/api/txs?order=asc&after=1"]) {
+        expect((await get(path)).status, path).toBe(400);
+      }
+    });
+
+    it("reads from the primary key in order, with no sort", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local enable_seqscan = off");
+        for (const key of [[null, null], [2, 3]] as (number | null)[][]) {
+          const plan = (await client.query(
+            `explain select ${txSelect} from transactions t join blocks b on b.number = t.block_number
+             where ($1::bigint is null or (t.block_number, t.tx_index) > ($1::bigint, $2::int)) order by t.block_number, t.tx_index limit 26`, key)).rows.map((r) => r["QUERY PLAN"]).join("\n");
+          expect(plan).toMatch(/Index (Only )?Scan/);
+          expect(plan).not.toMatch(/Sort Key|Seq Scan on transactions/);
+        }
+        await client.query("rollback");
+      } finally { client.release(); }
+    });
   });
 });
