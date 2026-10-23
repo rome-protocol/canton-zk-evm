@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiTx } from "../api.ts";
-import { addr, block, blockSummary, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
+import { addr, block, blockSummary, fakeApi, goneTx, hash, labelsOf, NOT_FOUND, renderApp, reply, route, status, tick, tokenLabel, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
 import type { TxLifecycle } from "../api.ts";
 
 const verifierRun = vi.hoisted(() => ({ line: "" }));
@@ -53,6 +53,17 @@ describe("the transaction page, for a final transaction", () => {
     expect(within(row("From")).getByRole("link", { name: addr(0x5b) })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
     expect(within(row("To")).getByRole("link", { name: addr(0xcb) })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
     expect(within(row("To")).getByText("TKA, a token")).toHaveClass("tag");
+  });
+
+  it("names the contract it went to, with a verified check, and still gives the address in full", async () => {
+    const calls = fakeApi(route({ tx: () => reply(tx()), labels: labelsOf([tokenLabel()]) }));
+    renderApp(`/tx/${H}`);
+    await screen.findByRole("heading", { name: "Transaction" });
+    await waitFor(() => expect(within(row("To")).getByRole("link", { name: "Test token A (TKA)" })).toHaveAttribute("href", `/token/${addr(0xcb)}`));
+    expect(within(row("To")).getByRole("img", { name: "Verified" })).toBeInTheDocument();
+    expect(within(row("To")).getByRole("link", { name: addr(0xcb) })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
+    expect(within(row("To")).queryByText("TKA, a token")).toBeNull();
+    expect(calls.filter((c) => c.startsWith("/api/labels"))).toHaveLength(1);
   });
 
   it("shows the ERC-20 transfer it made, decoded", async () => {

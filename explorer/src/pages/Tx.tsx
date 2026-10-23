@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getBlockSummary, getTx, getTxDetail, type BlockSummary, type ApiStatus, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen } from "../api.ts";
+import { AddressCell, addressPath } from "../components/AddressCell.tsx";
 import { Amount } from "../components/Amount.tsx";
 import { unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
@@ -10,6 +11,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
 import { count, dateTime, gwei, short } from "../format.ts";
+import { labelName, useLabels } from "../labels.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { MethodRows } from "./TxDecoded.tsx";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
@@ -125,7 +127,11 @@ function FeeFacts({ t, coin, block, detail }: { t: ApiTxSeen; coin: Coin | undef
 
 function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coin | undefined; detail: Detail; block: BlockSummary | undefined; read: BlockRead; head: number | undefined }) {
   const waiting = t.status === "waiting";
-  const to = t.to && <><HashLink value={t.to} to={`/${t.toToken ? "token" : "address"}/${t.to}`} full />{t.toToken && <span className="tag">{t.toToken}, a token</span>}</>;
+  // A named contract or token is shown by its name with a check, and its address still in full; one the index holds no name of is the address, with the server's own word for a token.
+  const toLabel = useLabels([t.to]).get(t.to);
+  const to = t.to && (labelName(toLabel)
+    ? <span className="to-named"><AddressCell address={t.to} label={toLabel} /> <HashLink value={t.to} to={addressPath(t.to, toLabel)} full /></span>
+    : <><HashLink value={t.to} to={`/${t.toToken ? "token" : "address"}/${t.to}`} full />{t.toToken && <span className="tag">{t.toToken}, a token</span>}</>);
   const index = detail.data?.index ?? null;
   const finalAt = block?.canton?.recordTime;
   return (

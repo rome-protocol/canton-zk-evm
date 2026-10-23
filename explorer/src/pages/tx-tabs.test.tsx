@@ -193,8 +193,8 @@ describe("the token transfers and the input on Overview", () => {
     expect(within(rows[1]!).getByText("10")).toBeInTheDocument();
     expect(within(rows[2]!).getByText("2.5")).toBeInTheDocument();
     expect(card.getAllByRole("img", { name: "Verified" }).length).toBeGreaterThan(0);
-    // One request for the names of the whole card, not one per row; and none to the address route.
-    expect(used(calls, "/api/labels")).toHaveLength(1);
+    // One request for the names of the whole card (both new addresses together; the token is already known from the To row), not one per row; and none to the address route.
+    expect(used(calls, "/api/labels").filter((c) => c.includes(addr(0x5b)))).toEqual([`/api/labels?addresses=${addr(0x5b)},${addr(0x5a)}`]);
     expect(used(calls, "/api/address/")).toHaveLength(0);
   });
 

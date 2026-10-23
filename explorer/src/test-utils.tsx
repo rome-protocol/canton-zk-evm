@@ -273,7 +273,7 @@ export const legListItem = (n: number, over: Partial<LegListItem> = {}): LegList
 /** A fake /api/labels answering each address asked from `known`, as an address the index holds nothing of when it is not there. */
 export function labelsOf(known: Label[]) {
   return (path: string): Reply => {
-    const asked = new URL(path, "http://x").searchParams.get("addresses")!.split(",");
+    const asked = decodeURIComponent(path.split("addresses=")[1]!).split(",");
     return reply({ items: asked.map((a) => known.find((l) => l.address === a) ?? { address: a, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false }) });
   };
 }
