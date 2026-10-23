@@ -188,6 +188,14 @@ describe("the contracts page", () => {
     expect(rows()[1]).not.toHaveTextContent("Solidity");
   });
 
+  it("reads the compiler as the verifier stores it, with no leading v, and also as given with one", async () => {
+    await open(() => L([contractItem(0xb1, { compilerVersion: "0.8.28+commit.7893614a" }), contractItem(0xb2, { compilerVersion: "v0.8.24+commit.e11b9ed9" }), contractItem(0xb4, { compilerVersion: "vyper:0.4.0" })]));
+    expect(rows()[0]).toHaveTextContent("Solidity v0.8.28");
+    expect(rows()[0]).not.toHaveTextContent("commit");
+    expect(rows()[1]).toHaveTextContent("Solidity v0.8.24");
+    expect(rows()[2]).toHaveTextContent("vyper:0.4.0");
+  });
+
   it("shows how long ago a contract was made under its block", async () => {
     await open(() => L([contractItem(0xb1, { createdAt: new Date(Date.now() - 35.5 * 60_000).toISOString() })]));
     expect(rows()[0]).toHaveTextContent("Block 18");
