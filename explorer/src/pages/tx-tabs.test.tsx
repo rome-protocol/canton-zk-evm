@@ -237,11 +237,18 @@ describe("the Internal calls tab", () => {
     expect(screen.getAllByRole("row")[1]).toHaveTextContent("call 2");
     expect(screen.queryByText(/None of these calls moved/)).toBeNull();
     cleanup();
-    await open({ txTrace: () => reply({ frames: [frame()], truncated: false }) }, tx(), "?tab=internal");
+    // a transaction that moved no token: the note ends after the first sentence, it does not point at a list that holds nothing
+    await open({ txTrace: () => reply({ frames: [frame()], truncated: false }), txTransfers: () => reply({ ...page<TokenTransfer>([]), derived: true }) }, tx(), "?tab=internal");
     await screen.findAllByRole("row");
     expect(screen.getByRole("button", { name: "Only those moving tROME (0)" })).toBeInTheDocument();
-    expect(screen.getByText(/None of these calls moved tROME\. The token moves are on the Token transfers list/)).toBeInTheDocument();
+    const note = screen.getByText(/None of these calls moved tROME\./);
+    expect(note).toHaveTextContent(/^None of these calls moved tROME\.$/);
     expect(screen.queryByText(/address pages/)).toBeNull();
+    cleanup();
+    // one that did move a token: the second sentence is true, and says where
+    await open({ txTrace: () => reply({ frames: [frame()], truncated: false }), txTransfers: () => reply({ ...page([transfer()]), derived: true }) }, tx(), "?tab=internal");
+    await screen.findAllByRole("row");
+    await waitFor(() => expect(screen.getByText(/None of these calls moved tROME\./)).toHaveTextContent("None of these calls moved tROME. The token moves are on the Token transfers list and in the logs."));
     expect(screen.getByText(/No call under the top-level call/)).toBeInTheDocument();
   });
 
