@@ -56,11 +56,12 @@ export function Fields({ e, values, onChange }: { e: AbiEntry; values: string[];
 }
 
 /** A value an ABI function gave, as text; an address links to its page. */
-export function Out({ v }: { v: Shown }) {
+export function Out({ v, unit }: { v: Shown; unit?: { text: string; exact: string } }) {
   return (
     <div className="out">
       <span className="mono wrap">{v.type === "address" && /^0x[0-9a-f]{40}$/.test(v.value) ? <Link to={`/address/${v.value}`}>{v.value}</Link> : v.value}</span>
       {v.name && <span className="muted small"> {v.name}</span>} <span className="muted mono small">{v.type}</span>
+      {unit && <span className="unit" title={unit.exact}> = {unit.text}</span>}
     </div>
   );
 }

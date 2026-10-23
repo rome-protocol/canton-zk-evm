@@ -35,3 +35,5 @@ pre.dark.wrap { white-space: pre-wrap; word-break: break-all; }
 .ev-args > div { overflow-wrap: anywhere; }
 .ct-cell { display: flex; align-items: flex-start; gap: 10px; }
 .ct-ic { display: inline-flex; margin-top: 2px; color: var(--muted); }
+
+.out .unit { margin-left: 6px; }
