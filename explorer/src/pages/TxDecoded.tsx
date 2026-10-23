@@ -49,8 +49,8 @@ function Value({ a, token, labels }: { a: Decoded["args"][number]; token: Label 
   return <span className="mono wrap">{a.value}</span>;
 }
 
-/** The addresses an input names: its arguments that are an address or a list of them. */
-const addressesOf = (d: Decoded | null) => (d ? d.args.flatMap((a) => (a.type === "address" ? [a.value] : a.type === "address[]" ? listOf(a.value) ?? [] : [])) : []);
+/** The addresses an input names that are shown by name: its arguments that are one address. The elements of a list are shown as they are, so none is asked for. */
+const addressesOf = (d: Decoded | null) => (d ? d.args.flatMap((a) => (a.type === "address" ? [a.value] : [])) : []);
 
 /** The decoded call as the screen has it: the function, then a table of its arguments by place, name, type and value. */
 function DecodedCall({ d, id, to, labels }: { d: Decoded; id: string; to: string; labels: Labels }) {
@@ -80,6 +80,8 @@ function Call({ detail, input, id, raw }: { detail: ContractDetail; input: strin
   const [view, setView] = useState<View>("decoded");
   const d = decodeInputOf(abiOrStandard(abi.all), input);
   const labels = useLabels([detail.address, ...addressesOf(d)]);
+  // While the verified source is being read the card says nothing of what read the call: the standard interface is not the answer yet.
+  if (!abi.ready) return <Card><Kv wide><Item label="Input data">{raw}</Item><MethodId id={id} note={false} /></Kv></Card>;
   const rawView = <Kv wide><Item label="Input data">{raw}</Item><MethodId id={id} note={d === null && abi.ready} held={abi.all.length > 0} /></Kv>;
   if (!d) return <Card>{rawView}</Card>;
   const by = abi.all.length > 0 ? `the verified ABI of ${labelName(labels.get(detail.address)) ?? detail.verification?.contractName ?? short(detail.address, 8, 4)}` : "the standard token interface";

@@ -1,17 +1,23 @@
 // @vitest-environment jsdom
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { addr, contractDetail, contractSource, fakeApi, labelsOf, renderApp, reply, route, tokenLabel, tx, unverifiedSource } from "../test-utils.tsx";
 import { TOKEN_ABI } from "./contract-harness.tsx";
 
 const A = addr(0xcb), IMPL = addr(0xdd);
+let seen: string[] = [];
+let slow = false;
 async function open(sources: Record<string, ReturnType<typeof contractSource>>, details: Record<string, unknown> = { [A]: contractDetail() }, input?: string, labels: ReturnType<typeof tokenLabel>[] = []) {
-  fakeApi(route({
+  seen = fakeApi(route({
     tx: () => reply(input ? tx({ input }) : tx()),
     labels: labelsOf(labels),
     contracts: (a, sub) => (sub === "source" ? reply(sources[a] ?? unverifiedSource()) : details[a] ? reply(details[a]) : reply({ error: "none" }, 404)),
   }));
+  if (slow) {
+    const f = fetch;
+    vi.stubGlobal("fetch", async (u: string) => { if (/\/source/.test(u)) await new Promise((r) => setTimeout(r, 150)); return f(u); });
+  }
   renderApp(`/tx/${tx().hash}`);
   await screen.findByRole("heading", { name: "Transaction" });
   return screen.getByRole("region", { name: "Input data" });
@@ -70,6 +76,25 @@ describe("the transaction page: decoded input", () => {
     expect(card.getByText("= 2,500 tUSD")).toBeInTheDocument();
     expect(card.getByRole("link", { name: new RegExp(`^${addr(0x5a)}$`, "i") })).toBeInTheDocument();
     expect(card.getByText(/Function:/)).toHaveTextContent("disperseToken(address token, address[] recipients, uint256[] values)");
+  });
+
+  it("does not say 'standard token interface' while the verified source is still being read", async () => {
+    slow = true;
+    const card = within(await open({ [A]: contractSource(0xcb, { abi: TOKEN_ABI }) }, undefined, undefined, [tokenLabel({ address: A, name: "Test USD", symbol: "tUSD", decimals: 6 })]));
+    slow = false;
+    await new Promise((r) => setTimeout(r, 60));
+    expect(card.queryByText(/standard token interface/)).toBeNull();
+    expect(await card.findByText(/decoded with the verified ABI of/)).toBeInTheDocument();
+    expect(card.queryByText(/standard token interface/)).toBeNull();
+  });
+
+  it("asks for the names of the addresses it names, not of the elements of a list it shows without names", async () => {
+    const abi = [{ type: "function", name: "disperseToken", stateMutability: "nonpayable", inputs: [{ name: "token", type: "address" }, { name: "recipients", type: "address[]" }], outputs: [] }];
+    const { encodeFunctionData } = await import("viem");
+    const input = encodeFunctionData({ abi, functionName: "disperseToken", args: [A as `0x${string}`, [addr(0x5a), addr(0x5b)] as `0x${string}`[]] });
+    const card = within(await open({ [A]: contractSource(0xcb, { abi }) }, undefined, input));
+    await card.findByText(/Function:/);
+    expect(seen.filter((c) => c.includes("/api/labels")).join(" ")).not.toContain(addr(0x5a));
   });
 
   it("says the same for a call to an address that is not a contract", async () => {
