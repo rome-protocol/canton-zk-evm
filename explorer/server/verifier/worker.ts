@@ -77,7 +77,11 @@ export class VerifierWorker {
       clearTimeout(grace);
     }
     if (outcome.status === "retry" || outcome.status === "unknown") {
-      if (age < this.o.giveUpMs && job.attempts + 1 < this.o.maxAttempts) { await this.queue.release(job.guid); return "again"; }
+      if (age < this.o.giveUpMs && job.attempts + 1 < this.o.maxAttempts) {
+        this.o.log(`verifier: job ${job.guid} is put back (try ${job.attempts + 1}): ${outcome.result}`);
+        await this.queue.release(job.guid);
+        return "again";
+      }
       await this.queue.finish(job.guid, "fail", outcome.status === "unknown" ? outcome.result : `Fail - Unable to verify. ${outcome.result}`);
       return "ended";
     }

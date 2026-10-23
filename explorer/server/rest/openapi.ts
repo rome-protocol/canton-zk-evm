@@ -5,7 +5,7 @@
  */
 import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
-import { MAX_VERIFY_BODY, RULES } from "../limits.ts";
+import { MAX_VERIFY_SOURCE, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
 import { SORTS } from "./account-routes.ts";
 import { MODULES } from "./etherscan.ts";
@@ -46,12 +46,25 @@ const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is fals
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
 const ETHERSCAN_QUERY: Query[] = [
-  { name: "module", about: "account, transaction, block, logs, token, stats, proxy or gastracker (the contract module follows).", values: ["account", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"] },
-  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs. token: tokeninfo, tokenholdercount, tokenholderlist. stats: ethsupply, tokensupply, ethprice. proxy: eth_blockNumber, eth_getBlockByNumber, eth_getBlockTransactionCountByNumber, eth_getTransactionByHash, eth_getTransactionByBlockNumberAndIndex, eth_getTransactionCount, eth_sendRawTransaction, eth_getTransactionReceipt, eth_call, eth_getCode, eth_getStorageAt, eth_gasPrice, eth_estimateGas, eth_getUncleByBlockNumberAndIndex (JSON-RPC answers in hex, final blocks only, as /rpc gives them). gastracker: gasoracle, gasestimate." },
+  { name: "module", about: "account, contract, transaction, block, logs, token, stats, proxy or gastracker.", values: ["account", "contract", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"] },
+  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs. token: tokeninfo, tokenholdercount, tokenholderlist. stats: ethsupply, tokensupply, ethprice. proxy: eth_blockNumber, eth_getBlockByNumber, eth_getBlockTransactionCountByNumber, eth_getTransactionByHash, eth_getTransactionByBlockNumberAndIndex, eth_getTransactionCount, eth_sendRawTransaction, eth_getTransactionReceipt, eth_call, eth_getCode, eth_getStorageAt, eth_gasPrice, eth_estimateGas, eth_getUncleByBlockNumberAndIndex (JSON-RPC answers in hex, final blocks only, as /rpc gives them). gastracker: gasoracle, gasestimate. contract: verifysourcecode (a POST), checkverifystatus, getsourcecode, getabi, getcontractcreation, verifyproxycontract, checkproxyverification." },
   { name: "chainid", about: "Optional, and this chain's when given." },
   { name: "apikey", about: "Accepted and ignored." },
-  { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs)." },
-  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
+  { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs; getsourcecode, getabi and verifyproxycontract: the contract)." },
+  { name: "contractaddresses", about: "getcontractcreation: up to 5 contract addresses, comma-separated. A contract in the genesis allocation was made by no transaction: as Etherscan answers for such a contract, its contractCreator is GENESIS, its txHash is GENESIS_ and the address (no 0x), and its block is 0." },
+  { name: "sourceCode", about: "verifysourcecode (a POST): the source, or for codeformat solidity-standard-json-input the standard JSON input (up to 500 KB)." },
+  { name: "codeformat", about: "verifysourcecode: solidity-single-file or solidity-standard-json-input.", values: ["solidity-single-file", "solidity-standard-json-input"] },
+  { name: "contractname", about: "verifysourcecode: the contract to verify (for the standard JSON input, path:Name)." },
+  { name: "compilerversion", about: "verifysourcecode: the compiler's version, as Etherscan writes it (v0.8.28+commit.7893614a)." },
+  { name: "optimizationUsed", about: "verifysourcecode, single file: 1 when the optimizer was on, 0 when off." },
+  { name: "runs", about: "verifysourcecode, single file: the optimizer's runs." },
+  { name: "constructorArguements", about: "verifysourcecode: the constructor's arguments, hex without 0x (the name is Etherscan's spelling)." },
+  { name: "evmversion", about: "verifysourcecode, single file: the EVM version; left out for the compiler's default." },
+  { name: "licenseType", about: "verifysourcecode: Etherscan's license number, 1 to 14 (1 no license, 3 MIT, ...); shown as the SPDX name." },
+  { name: "libraryname1", about: "verifysourcecode, single file: the first library's name (libraryname2 to libraryname10 and libraryaddress1 to libraryaddress10 follow)." },
+  { name: "expectedimplementation", about: "verifyproxycontract: the implementation address the caller expects; the answer is NOTOK when the proxy points elsewhere." },
+  { name: "guid", about: "checkverifystatus and checkproxyverification: the GUID that verifysourcecode or verifyproxycontract answered with." },
+  { name: "contractaddress", about: "A token's 0x address, or for verifysourcecode (a POST) the contract to verify (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
   { name: "txhash", about: "A transaction's 0x hash (getstatus, gettxreceiptstatus, txlistinternal)." },
   { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same); the proxy also takes a hex block number (0x...) that is final." },
   { name: "startblock", about: "The first block of a list (txlist, txlistinternal, tokentx and the like)." },
@@ -81,7 +94,7 @@ const ETHERSCAN_QUERY: Query[] = [
   { name: "topic0", about: "getLogs: a 0x topic of 32 bytes. topic1, topic2 and topic3 are the same." },
   { name: "topic0_1_opr", about: "getLogs: and or or between two topics; topicX_Y_opr for any pair (and when left out).", values: ["and", "or"] },
 ];
-const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. The proxy answers are JSON-RPC {jsonrpc, id, result|error} in hex, as Etherscan's proxy gives them, and final only as on /rpc. Balances are reth's at the newest final block; nothing that is not final is served. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
+const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. The proxy answers are JSON-RPC {jsonrpc, id, result|error} in hex, as Etherscan's proxy gives them, and final only as on /rpc. Balances are reth's at the newest final block; nothing that is not final is served. getsourcecode adds MatchType and MatchNote (not Etherscan's fields) for a partial match. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
 
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },
@@ -214,7 +227,7 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
         pageSize: MAX_LIMIT, ...(info.limits?.rpcPerMinute ? { rpcPerMinute: info.limits.rpcPerMinute } : {}),
         rest: { perSecond: RULES.rest[0].perSecond, burst: RULES.rest[0].capacity },
         etherscan: { perSecond: RULES.etherscan[0].perSecond, perMinute: RULES.etherscan[1].capacity, maxPageBytes: MAX_PAGE_BYTES },
-        verification: { perHour: RULES.verification[0].capacity, maxBodyKb: MAX_VERIFY_BODY / 1024 },
+        verification: { perHour: RULES.verification[0].capacity, maxBodyKb: MAX_VERIFY_SOURCE / 1024 },
         streams: { perClient: PER_CLIENT },
       },
       description: "Read-only. Every list is a keyset page (`next` is the cursor for the following page). Amounts are decimal strings. Times are ISO 8601 UTC.",

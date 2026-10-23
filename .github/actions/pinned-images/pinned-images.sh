@@ -24,7 +24,7 @@ TRIES=${PINNED_IMAGES_TRIES:-3}
 FIRST_DELAY=${PINNED_IMAGES_FIRST_DELAY:-10}
 MAX_DELAY=${PINNED_IMAGES_MAX_DELAY:-30}
 BASE=${PINNED_IMAGES_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pinned-images}
-SLOTS=6   # the action has this many cache slots (tests/ci_images_static.py: the most images a job names is six)
+SLOTS=7   # the action has this many cache slots (tests/ci_images_static.py: the most images a job names is seven)
 
 log() { echo "pinned-images: $*" >&2; }
 fail() { echo "pinned-images: FAIL: $*" >&2; exit 1; }

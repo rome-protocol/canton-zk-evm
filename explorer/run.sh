@@ -48,7 +48,7 @@
 # container left from an earlier run, and starts none. The verifier compiles each contract in a throwaway container with no network, so it needs the Docker program and
 # the Docker socket: the program is the pinned static build (PINS' DOCKER_CLI_VERSION and DOCKER_CLI_SHA256), downloaded once into <state>/explorer-verifier/bin and checked,
 # and mounted read-only; the socket is mounted with its group added (DOCKER_SOCKET, default /var/run/docker.sock). The compilers are kept in <state>/explorer-verifier/solc, mounted at
-# the same path (the Docker daemon must see it there). The sandbox image is PINS' BUSYBOX_IMAGE, which must be on the machine already (docker pull it once). SOLC_LIST_URL (the compiler
+# the same path (the Docker daemon must see it there). The sandbox image is PINS' SOLC_SANDBOX_IMAGE (Debian slim: the official compilers need glibc's shared libraries), which must be on the machine already (docker pull it once). SOLC_LIST_URL (the compiler
 # release list; no default) is required, OUTSIDE_USER_AGENT (default "Rome Protocol rome@romeprotocol.com") is what the compiler download says it is, and SOLC_TIMEOUT_MS, SOLC_MEMORY_MB,
 # SOLC_MAX_OUTPUT_MB, SOLC_MAX_INPUT_KB and SOLC_CACHE_MAX_MB are passed on when set.
 set -euo pipefail
@@ -218,14 +218,14 @@ verifier_args() {
   else
     [ -S "$sock" ] || fail "the Docker socket is not at $sock (DOCKER_SOCKET)"
     gid=$(stat -c %g "$sock" 2> /dev/null || stat -f %g "$sock")
-    docker image inspect "$BUSYBOX_IMAGE" > /dev/null 2>&1 || fail "the sandbox image is not on this machine: docker pull $BUSYBOX_IMAGE"
+    docker image inspect "$SOLC_SANDBOX_IMAGE" > /dev/null 2>&1 || fail "the sandbox image is not on this machine: docker pull $SOLC_SANDBOX_IMAGE"
     verifier_docker_cli
     (umask 077; mkdir -p "$cache")
   fi
   ARGS=(run -d --name "$VERIFIER_NAME" "${HARDEN[@]}" --network host -e HOME=/tmp --group-add "$gid"
     -v "$sock:/var/run/docker.sock" -v "$bin:/usr/local/bin/docker:ro" -v "$cache:$cache"
     -e "GATEWAY_ADDRESS=$GATEWAY_ADDRESS" -e "GATEWAY_SOURCE_FILE=/repo/gateway/Gateway.sol" -e "GATEWAY_COMPILER=$SOLC_VERSION"
-    -e "SOLC_CACHE_DIR=$cache" -e "SANDBOX_IMAGE=$BUSYBOX_IMAGE" -e "SOLC_LIST_URL=$SOLC_LIST_URL" -e "OUTSIDE_USER_AGENT=${OUTSIDE_USER_AGENT:-Rome Protocol rome@romeprotocol.com}")
+    -e "SOLC_CACHE_DIR=$cache" -e "SANDBOX_IMAGE=$SOLC_SANDBOX_IMAGE" -e "SOLC_LIST_URL=$SOLC_LIST_URL" -e "OUTSIDE_USER_AGENT=${OUTSIDE_USER_AGENT:-Rome Protocol rome@romeprotocol.com}")
   for v in SOLC_TIMEOUT_MS SOLC_MEMORY_MB SOLC_MAX_OUTPUT_MB SOLC_MAX_INPUT_KB SOLC_CACHE_MAX_MB; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done

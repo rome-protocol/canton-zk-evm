@@ -1,0 +1,6 @@
+# The Foundry release that the client checks use (forge verify-contract, cast source, cast interface, cast against the Etherscan door). It is not in PINS: the chain has no
+# funded test accounts, and tests/static.sh makes sure PINS pins no Foundry. The SHA-256 of each release asset is the one GitHub lists for it. Read by tests/demo_etherscan_cast.sh,
+# tests/demo_etherscan_contract.sh, .github/workflows/explorer.yml and explorer/server/rest/etherscan-contract-tools.test.ts.
+FOUNDRY_VERSION=v1.8.6
+FOUNDRY_LINUX_AMD64_SHA256=58850106984038f3a7200f38a4182c8cb423d3a4f4c7848eacbc2453e6bc35fc
+FOUNDRY_ALPINE_AMD64_SHA256=1165568a5ae449e9c28bba18f90012b7f89826fa20bd0d0006d4371f5d6dfc3b

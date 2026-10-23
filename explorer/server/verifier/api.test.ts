@@ -5,10 +5,11 @@ import { loadConfig } from "../config.ts";
 import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "../db/testing.ts";
 import type { Reth } from "../reth.ts";
 import { PINS } from "../../test/synthetic-chain.ts";
-import { createVerifyApi } from "./api.ts";
+import { createVerifyApi, PROXY_TEXTS } from "./api.ts";
 import { JobQueue } from "./jobs.ts";
 import { Verifier } from "./verify.ts";
-import { addContract, outputFor, StubCompile } from "./verify-fixtures.ts";
+import { addContract, fakeProbe, outputFor, StubCompile } from "./verify-fixtures.ts";
+import { EIP1967_IMPLEMENTATION_SLOT } from "../indexer/proxies.ts";
 import { VerifierWorker } from "./worker.ts";
 
 checkRequired();
@@ -34,7 +35,7 @@ suite("the verification routes", () => {
   const queue = (limits = {}) => new JobQueue(db.pool, limits);
   const make = (limits = {}) => createApi({
     config, reth: {} as unknown as Reth, ledger: {} as never, chain: createChainDb(db.pool),
-    verify: createVerifyApi({ pool: db.pool, queue: queue(limits), clientHash: (c) => c.padEnd(64, "0").replace(/[^0-9a-f]/g, "0").slice(0, 64) }),
+    verify: createVerifyApi({ pool: db.pool, queue: queue(limits), clientHash: (c) => c.padEnd(64, "0").replace(/[^0-9a-f]/g, "0").slice(0, 64), probe: fakeProbe().probe }),
   });
   const running = () => db.pool.query(
     "insert into health_checks (check_id, status, value, changed_at, checked_at) values ('verifier/compilers', 'ok', '{}'::jsonb, now(), now()) on conflict (check_id) do update set checked_at = now()");
@@ -115,5 +116,28 @@ suite("the verification routes", () => {
     expect(plain.routes).not.toContain("/api/verify");
     expect((await plain("GET", "/api/verify/00000000-0000-4000-8000-000000000000")).status).toBe(404);
     expect((await plain("POST", "/api/verify", body())).status).toBe(404);
+  });
+
+  it("verifies a proxy at once from the slots it reads at the head, records the time, and answers its GUID only to the proxy check", async () => {
+    const fp = fakeProbe();
+    const verify = createVerifyApi({ pool: db.pool, queue: queue({ perClientPerHour: 3 }), clientHash: (c) => c.padEnd(64, "0").replace(/[^0-9a-f]/g, "0").slice(0, 64), probe: fp.probe });
+    const P = "0x" + "b2".repeat(20), IMPL = "0x" + "c3".repeat(20);
+    await addContract(db.pool, P, runtime, creation);
+    const answerOf = async (a: { status: number; body: unknown }) => (await verify.proxyStatus((a.body as { guid: string }).guid)).body as { status: string; result: string };
+    // Not a proxy yet: the implementation was not detected.
+    expect(await answerOf(await verify.proxy(P, null, "1.2.3.4", 9))).toMatchObject({ status: "fail", result: PROXY_TEXTS.none });
+    fp.setSlot(P, EIP1967_IMPLEMENTATION_SLOT, IMPL);
+    // The wrong expectation is refused, and nothing is recorded.
+    expect(await answerOf(await verify.proxy(P, "0x" + "d4".repeat(20), "1.2.3.4", 9))).toMatchObject({ status: "fail", result: PROXY_TEXTS.mismatch(IMPL, "0x" + "d4".repeat(20)) });
+    expect((await db.pool.query("select verified_at from proxies")).rows[0].verified_at).toBeNull();
+    const ok = await verify.proxy(P, IMPL.toUpperCase().replace("0X", "0x"), "1.2.3.4", 9);
+    expect(ok.status).toBe(202);
+    expect(await answerOf(ok)).toEqual({ guid: (ok.body as { guid: string }).guid, status: "pass", result: PROXY_TEXTS.done(P, IMPL) });
+    expect((await db.pool.query("select verified_at, checked_block from proxies")).rows[0]).toMatchObject({ verified_at: expect.any(Date), checked_block: "9" });
+    expect(new Set(fp.heads)).toEqual(new Set([9]));
+    // A source's GUID is not a proxy's, nor the other way round; a contract the index does not hold is 404; the hourly limit counts the three above.
+    expect((await verify.status((ok.body as { guid: string }).guid)).status).toBe(404);
+    expect((await verify.proxy("0x" + "e5".repeat(20), null, "1.2.3.4", 9)).status).toBe(404);
+    expect((await verify.proxy(P, null, "1.2.3.4", 9)).status).toBe(429);
   });
 });

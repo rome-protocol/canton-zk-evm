@@ -94,7 +94,7 @@ describe("a run, with a stand-in for docker", () => {
 // The real thing: a throwaway compiler (a shell script, which the pinned image can run) in a real container. These need Docker and the image
 // that PINS pins for the sandbox. A job that must run them sets EXPLORER_TEST_REQUIRE_SANDBOX=1, so that a missing Docker fails instead of skipping.
 const pins = readFileSync(resolve(import.meta.dirname, "../../../PINS"), "utf8");
-const REAL_IMAGE = /^BUSYBOX_IMAGE=(\S+)$/m.exec(pins)![1]!;
+const REAL_IMAGE = /^SOLC_SANDBOX_IMAGE=(\S+)$/m.exec(pins)![1]!;
 let haveDocker = false;
 try { execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", REAL_IMAGE], { stdio: "pipe" }); haveDocker = true; } catch { /* skipped below */ }
 const REQUIRED = process.env.EXPLORER_TEST_REQUIRE_SANDBOX === "1";
@@ -120,9 +120,9 @@ real("a run in a real container", () => {
   });
 
   it("has no network: no route out exists, and a request to an outside address fails", async () => {
-    const body = "echo tools: $(command -v wget >/dev/null && echo wget-present)\necho routes: $(tail -n +2 /proc/net/route | wc -l)\nif wget -q -T 3 -O /dev/null http://1.1.1.1/ 2>/dev/null; then echo REACHED; else echo NOT-REACHED; fi";
+    const body = "echo tools: $(command -v perl >/dev/null && echo perl-present)\necho routes: $(tail -n +2 /proc/net/route | wc -l)\nif perl -MIO::Socket::INET -e 'exit(IO::Socket::INET->new(PeerAddr => q(1.1.1.1:80), Timeout => 3) ? 0 : 1)' 2>/dev/null; then echo REACHED; else echo NOT-REACHED; fi";
     const r = await sandbox().run(program("net", body), [], "");
-    expect(r.stdout).toContain("tools: wget-present");
+    expect(r.stdout).toContain("tools: perl-present");
     expect(r.stdout).toContain("routes: 0\n");
     expect(r.stdout).toContain("NOT-REACHED");
     expect(r.stdout).not.toMatch(/(^|\n)REACHED/);

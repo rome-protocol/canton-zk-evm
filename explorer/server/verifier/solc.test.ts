@@ -12,7 +12,7 @@ import { SolcRunner } from "./solc.ts";
 // The store and the sandbox together, with compilers that are shell scripts served by a mirror on this machine's loopback: the compiler is
 // downloaded, checked and cached by the store, and run by a real container. Needs Docker and the pinned image (see sandbox.test.ts).
 const pins = readFileSync(resolve(import.meta.dirname, "../../../PINS"), "utf8");
-const IMAGE = /^BUSYBOX_IMAGE=(\S+)$/m.exec(pins)![1]!;
+const IMAGE = /^SOLC_SANDBOX_IMAGE=(\S+)$/m.exec(pins)![1]!;
 let haveDocker = false;
 try { execFileSync("docker", ["image", "inspect", "--format", "{{.Id}}", IMAGE], { stdio: "pipe" }); haveDocker = true; } catch { /* skipped below */ }
 const real = haveDocker || process.env.EXPLORER_TEST_REQUIRE_SANDBOX === "1" ? describe : describe.skip;
