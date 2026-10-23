@@ -358,10 +358,29 @@ describe("the numbers, from the stats routes", () => {
     expect(tile("Success rate")).toHaveTextContent("no transaction in 24 h");
   });
 
+  it("gives every card an icon before its label, as screen 01 does", async () => {
+    await withStats()();
+    const cards = Array.from(screen.getByRole("region", { name: "Numbers" }).querySelectorAll(".stat"));
+    expect(cards).toHaveLength(10);
+    for (const c of cards) expect(c.querySelector(".stat-k > svg.ic"), c.textContent!).not.toBeNull();
+  });
+
+  it("adds how many are stuck to what is not final yet, and says nothing of it while the stats are unread", async () => {
+    await withStats({ hour: { acceptedNotFinal: { ...summary().acceptedNotFinal, stuck: 2 } } })();
+    expect(tile("Not final yet")).toHaveTextContent("pool count not known · 2 stuck");
+  });
+
+  it("says nothing of stuck transactions when the stats cannot be read", async () => {
+    await withStats({ failing: true })();
+    expect(tile("Not final yet")).toHaveTextContent("pool count not known");
+    expect(tile("Not final yet")).not.toHaveTextContent("stuck");
+  });
+
   it("says none are lost, in green, and says how many and where to look when some are", async () => {
     await withStats()();
     expect(tile("Lost transactions").querySelector(".stat-v")!.textContent).toBe("0");
     expect(tile("Lost transactions").querySelector(".stat-v")).toHaveClass("ok");
+    expect(tile("Lost transactions")).toHaveClass("stat-ok");
     expect(tile("Lost transactions")).toHaveTextContent("Accepted by Ostia and never made final");
   });
 
@@ -370,14 +389,15 @@ describe("the numbers, from the stats routes", () => {
     const t = tile("Lost transactions");
     expect(t.querySelector(".stat-v")!.textContent).toBe("2");
     expect(t.querySelector(".stat-v")).toHaveClass("bad");
+    expect(t).not.toHaveClass("stat-ok");
     expect(within(t).getByRole("link", { name: /Stats/ })).toHaveAttribute("href", "/stats");
   });
 
   it("draws the median time to final of the last 72 hours, one bar an hour, with a gap for an hour with no block", async () => {
     await withStats({ series: (i) => (i % 10 === 3 ? null : 8 + (i % 4)) })();
     const t = tile("Time to final · 72 h");
-    expect(t.querySelectorAll("svg rect")).toHaveLength(65); // the last 72 of 168 hourly points, and 7 of them (every 10th from 103) have no block
-    expect(t.querySelector("svg")).toHaveAccessibleName(/last 72 hours/);
+    expect(t.querySelectorAll(".stat-v svg rect")).toHaveLength(65); // the last 72 of 168 hourly points, and 7 of them (every 10th from 103) have no block
+    expect(t.querySelector(".stat-v svg")).toHaveAccessibleName(/last 72 hours/);
     expect(t).toHaveTextContent("median per hour; gaps are hours with no blocks");
   });
 

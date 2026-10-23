@@ -8,3 +8,8 @@
 .strip-last { font-size: 13px; color: var(--muted); }
 .strip-last .num, .strip-last b { color: var(--ink); font-weight: 600; }
 .strip-last .num { color: var(--link); }
+
+/* home: the cards */
+.stat-k { display: flex; align-items: center; gap: 7px; }
+.stat-k .ic { color: var(--muted); flex: none; }
+.stat-ok { background: var(--ok-tint); border-color: var(--ok-line); }
