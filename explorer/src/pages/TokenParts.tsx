@@ -14,13 +14,16 @@ export function NftCount({ n }: { n: string }) {
   return <span><span className="mono">{count(n)}</span> {n === "1" ? "token" : "tokens"}</span>;
 }
 
-/** The total supply: in whole tokens with the token's decimals, a count for an NFT, the raw count when the decimals are not known, and a dash when the contract has not told it. */
-export function Supply({ t }: { t: Pick<TokenListItem, "standard" | "decimals" | "symbol" | "totalSupply"> }) {
+/**
+ * The total supply: in whole tokens with the token's decimals, a count for an NFT, the raw count when the decimals are not known, and a dash when the contract has not told it.
+ * With `bare` the symbol is left off, for a card that names it on the line under the number.
+ */
+export function Supply({ t, bare = false }: { t: Pick<TokenListItem, "standard" | "decimals" | "symbol" | "totalSupply">; bare?: boolean }) {
   const s = t.totalSupply;
   if (s === null) return <span className="muted" title="The contract has not told its supply">—</span>;
   if (t.standard === "ERC-721") return <NftCount n={s} />;
   if (t.decimals === null) return <span className="mono" title="The token's decimals are not known, so this is the raw count">{count(s)}</span>;
-  if (!t.symbol) return <span className="mono" title={exact(s, t.decimals)}>{units(s, t.decimals)}</span>;
+  if (!t.symbol || bare) return <span className="mono" title={`${exact(s, t.decimals)}${t.symbol ? ` ${t.symbol}` : ""}`}>{units(s, t.decimals)}</span>;
   return <Amount raw={s} decimals={t.decimals} symbol={t.symbol} />;
 }
 

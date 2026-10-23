@@ -11,6 +11,8 @@ import { Pager, usePaged } from "../components/Pager.tsx";
 import { count, exact, units } from "../format.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
 import { failedNote, NftCount, noName, Supply } from "./TokenParts.tsx";
+import "./token.css";
+import "./tx.css";
 
 const PER = 25;
 const ZERO = "0x" + "00".repeat(20);
@@ -27,8 +29,8 @@ const Gap = ({ derived, n, none }: { derived: boolean | undefined; n: number; no
   derived !== false ? (n === 0 ? <p className="muted">{none}</p> : null)
     : <p className="muted small">{n === 0 ? "The explorer has not read these blocks yet, so this list is not known to be empty." : "The explorer is still reading blocks, so this list may be missing the newest rows."}</p>;
 
-function Stat({ k, v, sub }: { k: string; v: React.ReactNode; sub: React.ReactNode }) {
-  return <div className="card stat"><span className="stat-k">{k}</span><span className="stat-v">{v}</span><span className="small muted">{sub}</span></div>;
+function Stat({ k, v, sub, hash = false }: { k: string; v: React.ReactNode; sub: React.ReactNode; hash?: boolean }) {
+  return <div className="card stat"><span className="stat-k">{k}</span><span className={`stat-v${hash ? " stat-hash" : ""}`}>{v}</span><span className="small muted">{sub}</span></div>;
 }
 
 function Cards({ t }: { t: TokenDetail }) {
@@ -36,12 +38,12 @@ function Cards({ t }: { t: TokenDetail }) {
   const fungible = t.standard === "ERC-20";
   const supplySub = [t.totalSupply !== null && fungible ? t.symbol : null, t.totalSupplyBlock !== null ? `as of block ${t.totalSupplyBlock}` : t.totalSupply === null ? "the contract has not told it" : null].filter(Boolean).join(" · ");
   return (
-    <div className="stats six">
-      <Stat k="Total supply" v={<Supply t={t} />} sub={supplySub || " "} />
+    <div className="stats six tok-stats">
+      <Stat k="Total supply" v={<Supply t={t} bare={fungible && t.symbol !== null} />} sub={supplySub || " "} />
       <Stat k="Holders" v={count(t.holderCount)} sub="addresses holding any" />
       <Stat k="Transfers" v={count(t.transferCount)} sub="in final blocks" />
       <Stat k="Decimals" v={fungible && t.decimals !== null ? t.decimals : <Dash />} sub={fungible ? (t.decimals !== null ? "read from the contract" : "not read") : `${t.standard} has none`} />
-      <Stat k="Contract" v={<HashLink value={t.address} to={`/contract/${t.address}`} />} sub={c ? (c.origin === "genesis" ? "in the genesis allocation" : c.creationBlock !== null ? `created in block ${c.creationBlock}` : " ") : " "} />
+      <Stat k="Contract" hash v={<HashLink value={t.address} to={`/contract/${t.address}`} />} sub={c ? (c.origin === "genesis" ? "in the genesis allocation" : c.creationBlock !== null ? `created in block ${c.creationBlock}` : " ") : " "} />
     </div>
   );
 }
@@ -76,7 +78,7 @@ function Distribution({ items, t, final }: { items: TokenHolder[]; t: TokenDetai
   if (!lead) return null;
   return (
     <section className="card holds" aria-label="Holder distribution">
-      <div className="list-h"><h2>Holder distribution</h2>{final !== null && <span className="muted small">as of final block {final}</span>}</div>
+      <div className="card-h"><h2>Holder distribution{final !== null && <span className="muted">as of final block {final}</span>}</h2></div>
       <div>
         <span className="muted small">Share held by the top holder</span>
         <div className="stat-v">{lead.text}</div>
@@ -160,7 +162,7 @@ function TransfersTab({ t }: { t: TokenDetail }) {
 function Information({ t }: { t: TokenDetail }) {
   return (
     <section className="card" aria-label="Token information">
-      <div className="list-h"><h2>Token information</h2><span className="muted small">read from the contract</span></div>
+      <div className="card-h"><h2>Token information <span className="muted">read from the contract</span></h2></div>
       <Kv>
         <Item label="Name">{t.name ?? <span className="muted">{noName(t)}</span>}</Item>
         <Item label="Symbol">{t.symbol ?? <Dash />}</Item>
