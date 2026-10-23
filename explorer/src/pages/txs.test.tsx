@@ -366,6 +366,11 @@ describe("the Transactions card is a panel, as on screen 04", () => {
     await open({});
     expect(screen.getByRole("region", { name: "Transactions" })).toHaveClass("card", "panel");
   });
+  it("keeps the panel when the list is switched to Not final yet", async () => {
+    await open({});
+    await userEvent.click(screen.getByRole("button", { name: "Not final yet" }));
+    expect(await screen.findByRole("region", { name: "Transactions not final yet" })).toHaveClass("card", "panel");
+  });
 });
 
 describe("the pages of All: Page x of y and Last", () => {

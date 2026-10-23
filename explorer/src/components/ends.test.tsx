@@ -27,4 +27,28 @@ describe("useBothEnds on the end walk while the total grows", () => {
     expect(result.current.page).toBe(3);
     expect(result.current.items?.length).toBe(3);
   });
+  it("takes the page count and the last page's size from the same total when Last is clicked again from further back", async () => {
+    let total = 78;
+    const newest = async () => ({ items: [1], next: "n", total });
+    const oldest = async (_c: string | null, limit: number) => ({ items: Array.from({ length: limit }, (_, i) => i), next: "o", total });
+    const c = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useBothEnds(["t2"], 25, newest, oldest, false), { wrapper: wrap(c) });
+    await waitFor(() => expect(result.current.pages).toBe(4));
+    act(() => { result.current.go(4); });
+    await waitFor(() => expect(result.current.items?.length).toBe(3));
+    act(() => { result.current.go(3); });
+    await waitFor(() => expect(result.current.page).toBe(3));
+    await waitFor(() => expect(result.current.items?.length).toBe(25));
+    act(() => { result.current.go(2); });
+    await waitFor(() => expect(result.current.page).toBe(2));
+    await waitFor(() => expect(result.current.items?.length).toBe(25));
+    // The chain grew to 101: five pages, the last holding one row.
+    total = 101;
+    await act(async () => { await c.invalidateQueries(); });
+    await waitFor(() => expect(c.isFetching()).toBe(0));
+    act(() => { result.current.go(4); });
+    await waitFor(() => expect(result.current.pages).toBe(5));
+    await waitFor(() => expect(result.current.items?.length).toBe(1));
+    expect(result.current.page).toBe(5);
+  });
 });

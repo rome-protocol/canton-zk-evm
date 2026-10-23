@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
+import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AddressTransferItem, ContractDetail, ContractSource, TokenDetail } from "../api.ts";
-import { addr, addressDetail, contractDetail, contractSource, fakeApi, page, renderApp, reply, route, tokenDetail, tokenTransfer, unverifiedSource } from "../test-utils.tsx";
+import { addr, addressDetail, contractDetail, contractSource, fakeApi, page, renderApp, reply, route, tick, tokenDetail, tokenTransfer, unverifiedSource } from "../test-utils.tsx";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 const A = addr(0xcb);
 const BAD = "Give an address as 0x and 40 hex digits.";
 const derived = <T,>(items: T[]) => reply({ ...page(items), derived: true });
@@ -326,6 +327,35 @@ describe("the contract page: a token contract", () => {
     await open({ addressError: 503 }, `/contract/${A}?tab=token-transfers`);
     expect(await screen.findByText("Cannot read the chain")).toBeInTheDocument();
     expect(screen.getByText("The page tries again in a few seconds.")).toBeInTheDocument();
+    expect(screen.queryByText("Reading the transfers…")).toBeNull();
+  });
+
+  it("reads address-detail again by itself after an error, and the list mounts when it answers", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const seen: Seen = { addressError: 503, account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }, token: tokenDetail(0xcb) };
+    const calls = await open(seen, `/contract/${A}?tab=token-transfers`);
+    expect(await screen.findByText("Cannot read the chain")).toBeInTheDocument();
+    const reads = () => calls.filter((c) => c === `/api/addresses/${A}`).length;
+    const before = reads();
+    seen.addressError = 0;
+    await tick(5000);
+    expect(reads()).toBeGreaterThan(before);
+    await waitFor(() => expect(screen.queryByText("Cannot read the chain")).toBeNull());
+    await waitFor(() => expect(calls.some((c) => c.startsWith(`/api/tokens/${A}/transfers`))).toBe(true));
+  });
+
+  it("keeps a working Token transfers list when a later read of address-detail fails", async () => {
+    const seen: Seen = { account: { kind: "token", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }, token: tokenDetail(0xcb) };
+    const calls = await open(seen, `/contract/${A}?tab=token-transfers`);
+    await waitFor(() => expect(calls.some((c) => c.startsWith(`/api/tokens/${A}/transfers`))).toBe(true));
+    await waitFor(() => expect(screen.queryByText("Reading the transfers…")).toBeNull());
+    const reads = () => calls.filter((c) => c === `/api/addresses/${A}`).length;
+    const before = reads();
+    seen.addressError = 503;
+    // The window comes back into view: the stale address-detail is read again, and the read fails.
+    await act(async () => { window.dispatchEvent(new Event("visibilitychange")); await new Promise((r) => setTimeout(r, 50)); });
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    expect(screen.queryByText("Cannot read the chain")).toBeNull();
     expect(screen.queryByText("Reading the transfers…")).toBeNull();
   });
 

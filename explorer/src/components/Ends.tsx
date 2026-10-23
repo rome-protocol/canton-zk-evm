@@ -6,7 +6,7 @@ import type { Page } from "../api.ts";
  * A list with a known last page, read from both ends. The API pages by a key (the `next` of the page before), so a page is reached by walking: from the top (newest or most
  * first) by `newest`, and the last page by reading from the other end (`oldest`, `order=asc`) with exactly what the last page holds (the total modulo the page size, or a whole
  * page when it divides), so that the two ends never overlap. From the last page, back is further along that end's key, and the rows are drawn in the list's own order.
- * `go(n)` reaches the first and last pages and the one beside this: the ones the buttons ask for. The page count is the total the server gave over the page size.
+ * `go(n)` reaches the first and last pages and the one beside this: the ones the buttons ask for. The page count is the total the server gave over the page size; on the end walk it stays the one taken when Last was clicked (the total grows with the chain), and a click on Last again takes a fresh count and last-page size from one total.
  * `firstKey`, when given, is the query key of the first page read from the top, so a caller that reads that page itself (for a total shown elsewhere) shares one read with the list.
  */
 export function useBothEnds<P extends Page<unknown> & { total?: number | null }>(
@@ -41,7 +41,8 @@ export function useBothEnds<P extends Page<unknown> & { total?: number | null }>
     // A page beside this one is walked to; only the last page from further off is read from the other end.
     if (n === page + 1 && (cur.end ? cur.keys.length > 1 : next !== null)) return set(cur.end, cur.end ? cur.keys.slice(0, -1) : [...cur.keys, next]);
     if (n === page - 1 && (cur.end ? next !== null : cur.keys.length > 1)) return set(cur.end, cur.end ? [...cur.keys, next] : cur.keys.slice(0, -1));
-    return n === pages ? set(true, [null], total % per || per, pages) : undefined;
+    // The page count and the last page's size come from the same total, so a click from a far end page never mixes two counts.
+    return n === pages ? set(true, [null], total % per || per, Math.max(1, Math.ceil(total / per))) : undefined;
   };
   return { data: q.data, items, error: q.error, page, pages, from: (page - 1) * per, go };
 }

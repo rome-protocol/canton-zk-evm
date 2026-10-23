@@ -350,7 +350,7 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .panel > .card-head { margin: 0; } /* a panel has no padding, so its header must not pull itself out past the card's edge */
 .panel > .list-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
 .panel > .sec-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
-.panel > p.muted:not(.card-note) { padding: 0 20px; }
+.panel > p.muted:not(.card-note):not(.chart-msg) { padding: 0 20px; }
 .panel > .tbl-foot { margin: 0; padding: 12px 20px 16px; border-top: 1px solid var(--line-2); }
 .panel .card-note { padding: 0 20px 14px; margin: 10px 0 0; }
 .cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }

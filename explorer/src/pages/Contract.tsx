@@ -162,7 +162,7 @@ export function Contract({ addr: given }: { addr?: string } = {}) {
           : tab === "read" ? <ReadTab detail={c} />
           : tab === "write" ? <WriteTab detail={c} />
           : tab === "events" ? <EventsTab detail={c} />
-          : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : read.isError ? <ErrorCard message={read.error instanceof Error ? read.error.message : "The explorer cannot read the chain right now."} retrying /> : !a ? <LoadingCard>Reading the transfers…</LoadingCard> : a.token ? <TokenTransfers address={c.address} /> : <TransfersTab a={c.address} />}
+          : !st ? null : tab === "transactions" ? <TxsTab a={c.address} st={st} now={now} /> : !a ? (read.isError ? <ErrorCard message={read.error instanceof Error ? read.error.message : "The explorer cannot read the chain right now."} retrying /> : <LoadingCard>Reading the transfers…</LoadingCard>) : a.token ? <TokenTransfers address={c.address} /> : <TransfersTab a={c.address} />}
       </div>
     </>
   );

@@ -225,7 +225,7 @@ function NotFinalOnly({ st, now, faucet, notFinal, all }: { st: ApiStatus | unde
     : shown.length === 0 ? `${more(all)} not final yet, none listed.`
     : unlisted > 0 ? `The newest ${count(shown.length)} of ${more(all)} not final yet` : `${count(shown.length)} not final yet`;
   return (
-    <section className="card" aria-label="Transactions not final yet">
+    <section className="card panel" aria-label="Transactions not final yet">
       <div className="list-h"><span className="muted">{label}</span></div>
       {shown.length > 0 && <div className="scroll"><table className="tbl txs">{head(st.coin)}<tbody>{shown.map((f, i) => <NotFinalRow key={f.hash} f={f} t={details[i]} c={c} />)}</tbody></table></div>}
       {shown.length > 0 && unlisted > 0 && <p className="muted small">{all.atLeast ? "At least " : ""}{count(unlisted)} more, older than these, are not listed.</p>}
