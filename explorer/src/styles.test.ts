@@ -50,7 +50,7 @@ describe("fonts and outside requests", () => {
   it("lines the header, the top bar and the footer up with the page's column", () => {
     const column = "max(32px, calc((100% - 1216px) / 2))";
     expect(/\.main \{[^}]*max-width: 1280px[^}]*padding: 26px 32px/.exec(css)).not.toBeNull();
-    for (const sel of [".top", ".topbar", ".foot"]) expect(new RegExp(`\\n\\${sel} \\{[^}]*${column.replace(/[()*/+]/g, "\\$&")}`).test(css), sel).toBe(true);
+    for (const sel of [".top", ".topbar", ".foot"]) expect(new RegExp(`\\n\\${sel} \\{[^}]*${column.replace(/[\\()*/+]/g, "\\$&")}`).test(css), sel).toBe(true);
   });
 
   it("draws the network as a filled pill in the brand's purple on pink", () => {
