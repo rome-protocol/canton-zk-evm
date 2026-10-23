@@ -79,6 +79,19 @@ suite("the verification routes", () => {
     expect((await db.pool.query("select 1 from verification_jobs")).rowCount).toBe(0);
   });
 
+  it("records that a submission came through /api/verify, and the tool it names: none when it names none, 'unknown' for one that is not forge, hardhat or remix", async () => {
+    await running();
+    const seen = async () => (await db.pool.query("select method, tool from verification_jobs order by created_at")).rows;
+    for (const [tool, want] of [[undefined, null], ["forge", "forge"], ["Foundry", "forge"], ["hardhat", "hardhat"], ["Remix IDE", "remix"], ["my-script", "unknown"]] as const) {
+      await db.pool.query("truncate verification_jobs");
+      expect((await api("POST", "/api/verify", body(tool === undefined ? {} : { tool }), "203.0.113.5")).status).toBe(202);
+      expect(await seen(), String(tool)).toEqual([{ method: "api", tool: want }]);
+    }
+    await db.pool.query("truncate verification_jobs");
+    expect((await api("POST", "/api/verify", body({ tool: 5 }))).status).toBe(400);
+    expect((await db.pool.query("select 1 from verification_jobs")).rowCount).toBe(0);
+  });
+
   it("refuses a body that is not what it needs, before the queue is touched", async () => {
     await running();
     for (const text of ["", "nope", "[]", body({ sourceCode: "" }), body({ address: 5 }), body({ libraries: "x" })]) {

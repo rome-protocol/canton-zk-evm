@@ -7,7 +7,7 @@
  */
 import type { Pool } from "pg";
 import type { JobQueue } from "./jobs.ts";
-import { RequestError, type VerifyRequest } from "./request.ts";
+import { RequestError, type Via, type VerifyRequest } from "./request.ts";
 import type { Outcome } from "./verify.ts";
 
 export interface WorkerOptions {
@@ -35,9 +35,9 @@ export type Step = "idle" | "ended" | "again";
 export class VerifierWorker {
   private readonly pool: Pool;
   private readonly queue: JobQueue;
-  private readonly verifier: { verify(req: VerifyRequest, opts?: { signal?: AbortSignal }): Promise<Outcome> };
+  private readonly verifier: { verify(req: VerifyRequest, opts?: { signal?: AbortSignal; via?: Via | null }): Promise<Outcome> };
   private readonly o: Required<Omit<WorkerOptions, "cacheUsable">> & Pick<WorkerOptions, "cacheUsable">;
-  constructor(pool: Pool, queue: JobQueue, verifier: { verify(req: VerifyRequest, opts?: { signal?: AbortSignal }): Promise<Outcome> }, opts: WorkerOptions) {
+  constructor(pool: Pool, queue: JobQueue, verifier: { verify(req: VerifyRequest, opts?: { signal?: AbortSignal; via?: Via | null }): Promise<Outcome> }, opts: WorkerOptions) {
     this.pool = pool;
     this.queue = queue;
     this.verifier = verifier;
@@ -57,7 +57,7 @@ export class VerifierWorker {
     let grace: NodeJS.Timeout | undefined;
     try {
       outcome = await new Promise<Outcome>((ok, no) => {
-        this.verifier.verify(job.request, { signal: stop.signal }).then(ok, no);
+        this.verifier.verify(job.request, { signal: stop.signal, via: job.via }).then(ok, no);
         timer = setTimeout(() => {
           stop.abort(new Error("timeout"));
           // The job is waited for a little: it stops by itself, or it had finished its write.

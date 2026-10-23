@@ -7,15 +7,15 @@ import type { Pool } from "pg";
 import { clientKey } from "../faucet.ts";
 import type { JobQueue } from "./jobs.ts";
 import { SubmitRefused } from "./jobs.ts";
-import type { VerifyRequest } from "./request.ts";
+import { toolOf, type Via, type VerifyRequest } from "./request.ts";
 import { refreshProxy, type ProxyProbe } from "../indexer/proxies.ts";
 
 export interface VerifyAnswer { status: number; body: unknown }
 export interface VerifyApi {
   submit(body: string | undefined, ip: string | undefined): Promise<VerifyAnswer>;
   status(guid: string): Promise<VerifyAnswer>;
-  /** What `submit` does after the body is read: for the Etherscan door, which has parsed the request's fields itself. */
-  enqueue(req: VerifyRequest, ip: string | undefined): Promise<VerifyAnswer>;
+  /** What `submit` does after the body is read: for the Etherscan door, which has parsed the request's fields itself. `via` is how it came in, which the job records. */
+  enqueue(req: VerifyRequest, ip: string | undefined, via?: Via): Promise<VerifyAnswer>;
   /**
    * `verifyproxycontract`: answers 202 with a GUID of an ended job. The proxy's slots (EIP-1967 implementation and beacon, EIP-1822) and its beacon's `implementation()` are read
    * at block `head` (the final head) and written to `proxies` first, so a proxy upgraded without a log is seen; the answer is about what was read.
@@ -38,7 +38,8 @@ const NO_SUCH = "No such verification. A finished one is kept for a while, and i
 const fail = (status: number, error: string): VerifyAnswer => ({ status, body: { error } });
 const text = (v: unknown): string | undefined => (typeof v === "string" ? v : typeof v === "number" || typeof v === "boolean" ? String(v) : undefined);
 
-function parse(body: string | undefined): VerifyRequest | string {
+/** The request and the tool it names (null when it names none). */
+function parse(body: string | undefined): { req: VerifyRequest; tool: Via["tool"] } | string {
   let given: unknown;
   try { given = JSON.parse(body ?? ""); } catch { return "Send a JSON body with the address, codeFormat, sourceCode, contractName and compilerVersion of the contract."; }
   if (typeof given !== "object" || given === null || Array.isArray(given)) return "The body must be a JSON object.";
@@ -46,6 +47,7 @@ function parse(body: string | undefined): VerifyRequest | string {
   for (const k of ["address", "codeFormat", "sourceCode", "contractName", "compilerVersion"] as const) {
     if (typeof g[k] !== "string" || g[k] === "") return `${k} is needed, as text.`;
   }
+  if (g.tool !== undefined && typeof g.tool !== "string") return "tool is the name of the tool that sent this, as text.";
   let libraries: { name: string; address: string }[] | undefined;
   if (g.libraries !== undefined) {
     if (!Array.isArray(g.libraries) || g.libraries.length > 50) return "libraries must be a list of at most 50 {name, address}.";
@@ -56,19 +58,19 @@ function parse(body: string | undefined): VerifyRequest | string {
       libraries.push({ name: o.name, address: o.address });
     }
   }
-  return {
+  return { tool: toolOf(g.tool), req: {
     address: g.address as string, codeFormat: g.codeFormat as string, sourceCode: g.sourceCode as string, contractName: g.contractName as string, compilerVersion: g.compilerVersion as string,
     optimizationUsed: text(g.optimizationUsed), runs: text(g.runs), evmVersion: text(g.evmVersion), licenseType: text(g.licenseType), constructorArguments: text(g.constructorArguments), libraries,
-  };
+  } };
 }
 
 export function createVerifyApi(o: { pool: Pool; queue: JobQueue; clientHash: (client: string) => string; probe: ProxyProbe }): VerifyApi {
   const self: VerifyApi = {
-    async enqueue(req, ip) {
+    async enqueue(req, ip, via) {
       const running = await o.pool.query("select 1 from health_checks where check_id = 'verifier/compilers' and checked_at > now() - make_interval(secs => $1)", [ROLE_FRESH_SECONDS]);
       if (running.rowCount === 0) return fail(503, "Verification is not running.");
       try {
-        const guid = await o.queue.submit(req, Buffer.from(o.clientHash(clientKey(ip) ?? "unknown"), "hex"));
+        const guid = await o.queue.submit(req, Buffer.from(o.clientHash(clientKey(ip) ?? "unknown"), "hex"), via ?? null);
         return { status: 202, body: { guid } };
       } catch (e) {
         if (e instanceof SubmitRefused) return fail(e.status, e.message);
@@ -77,7 +79,7 @@ export function createVerifyApi(o: { pool: Pool; queue: JobQueue; clientHash: (c
     },
     async submit(body, ip) {
       const req = parse(body);
-      return typeof req === "string" ? fail(400, req) : self.enqueue(req, ip);
+      return typeof req === "string" ? fail(400, req) : self.enqueue(req.req, ip, { method: "api", tool: req.tool });
     },
     async status(guid) {
       const job = await o.queue.status(guid);

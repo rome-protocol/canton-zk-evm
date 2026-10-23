@@ -316,7 +316,8 @@ export type TxFilter = "all" | "failed" | "calls";
 export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
 /**
  * The transactions oldest first, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page count is `total` over the page
- * size where the total is known. The page is in the order the server gives it, oldest first.
+ * size where the total is known. Open the last page with `limit` = `total` % size || size (the full size when that is 0), so that it does not repeat rows of the page before;
+ * then page on with `after` and the normal size. The page is in the order the server gives it, oldest first.
  */
 export const getTxPageOldest = async (after: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?order=asc&limit=${limit}${cursor("after", after)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
 /** The newest final transactions of the filter as a file, with the list's columns. */
@@ -354,15 +355,22 @@ export const getTxReceipt = async (hash: string) => (await call(`/api/txs/${enco
 /** An address of the list: the balance is the database's copy, as of `balanceBlock`; the page of one address reads reth's own. */
 export interface AddressListItem { address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null; txCount: number }
 export type AddressSort = "balance" | "txs";
+/** The first transaction that sent an address value: who, which transaction, when and how much. */
+export interface AddressFunding { from: string; txHash: string; block: number; timestamp: number; value: string }
 /** One address. `balance` is reth's at the final block `balanceBlock`, null when there is no final block to read it at; the counters are the explorer's, complete as far as `derived`. */
 export interface AddressDetail {
   address: string; kind: "account" | "contract" | "token"; balance: string | null; balanceBlock: number | null;
-  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
+  sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
+  /** The contracts it made. */
+  createdCount: number;
+  /** True when `createdCount` stopped at its ceiling: the address made more. */
+  createdCountCapped: boolean;
+  /** Who sent it its first coin, null when the explorer cannot say (no such transaction held, the address was there before it, or a token transfer reached it first). */
+  fundedBy: AddressFunding | null;
   token: { name: string | null; symbol: string | null; decimals: number | null } | null; createdBy: { txHash: string | null; block: number } | null; derived: boolean;
 }
 export interface AddressInternalItem extends InternalCall { txHash: string; block: number; txIndex: number }
 export interface AddressTransferItem extends TokenTransfer { txHash: string; block: number; txIndex: number }
-/** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
 /** The indexer's own spelling of a token standard. */
 export type TokenStandard = "ERC-20" | "ERC-721" | "ERC-1155";
 /** What an address holds of a token: `totalSupply` and `decimals` are the token's, null where it has none. */
@@ -391,7 +399,11 @@ const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`
 export interface TokenListPage extends DerivedPage<TokenListItem> { total: number; counts: Record<TokenStandard, number>; gatewayCount: number }
 /** The tokens in the order of `sort`, a page at a time; of one standard and/or only those the gateway wrapped when asked. */
 export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
-/** The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page is in the order the server gives it, the reverse of the list's. */
+/**
+ * The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. Open it with `limit` = `total` % size || size
+ * (the full size when that is 0), so that the last page does not repeat rows of the page before; then page on with `after` and the normal size. The page is in the order the
+ * server gives it, the reverse of the list's.
+ */
 export const getTokenListOldest = async (sort: TokenSort, after: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&order=asc&limit=${limit}${cursor("after", after)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
 export const getToken = async (a: string) => (await call(tk(a), [200])).body as TokenDetail;
 export const getTokenHolders = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/holders")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenHolder>;
@@ -399,8 +411,9 @@ export const getTokenTransfers = async (a: string, before: string | null, limit 
 export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
 export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
-export interface TransferFilter { token?: string; standard?: TokenStandard }
-const transferFilter = (f: TransferFilter) => `${f.token ? `&token=${f.token}` : ""}${f.standard ? `&standard=${f.standard}` : ""}`;
+/** An address's transfers also take `nft`: ERC-721 and ERC-1155 together, in one list. */
+export interface TransferFilter { token?: string; standard?: TokenStandard | "nft" }
+const transferFilter = (f: TransferFilter) => `${f.token ? `&token=${encodeURIComponent(f.token)}` : ""}${f.standard ? `&standard=${f.standard}` : ""}`;
 export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE, filter: TransferFilter = {}) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}${transferFilter({ token: filter.token, standard: filter.standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
 /** The newest token transfers of an address as a CSV file (up to 1,000), kept to the filter. */
 export const addressTransfersCsvPath = (a: string, filter: TransferFilter = {}) => `${of(a, "/token-transfers")}?format=csv${transferFilter(filter)}`;
@@ -409,22 +422,35 @@ export const tokenTransfersCsvPath = (a: string) => `${tk(a, "/transfers")}?form
 /** The transfers of every token, newest first, of one standard when asked. */
 export const getAllTokenTransfers = async (before: string | null, limit = PAGE, standard?: TokenStandard) => (await call(`/api/token-transfers?limit=${limit}${cursor("before", before)}${transferFilter({ standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
+/** The contracts an address made, newest first. */
+export const getAddressContracts = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/contracts")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<ContractListItem>;
 export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
 
 /** A contract in the list. `origin` is "genesis" for a contract the chain's genesis holds (made by no transaction, so no creator and no creation block) or "create". `matchType` is full, partial, or similar (the same code verified at another address). */
 export interface ContractListItem {
-  address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null; interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
+  address: string; name: string | null; origin: "genesis" | "create"; creator: string | null; creationBlock: number | null;
+  /** When its creation's block was made (ISO), null for a contract the explorer did not see made; `compilerVersion` is its verified source's, null while it has none. */
+  createdAt: string | null; compilerVersion: string | null;
+  interactionCount: number; verified: boolean; matchType: "full" | "partial" | "similar" | null;
   codeSize: number; destroyedBlock: number | null;
   /** The token standard when the contract is a token. The balance and the counts are the explorer's copy, as of `balanceBlock`; null or 0 for a contract it has not seen move. */
   standard: string | null; balance: string | null; balanceBlock: number | null; txCount: number; internalCount: number;
 }
+export type VerificationMethod = "etherscan" | "api";
+export type VerificationTool = "forge" | "hardhat" | "remix" | "unknown";
+/** The contract list's page: `total` is the list's own count (of the `verified` filter asked, or of all), `counts` is each filter's, whatever is asked. */
+export interface ContractListPage extends DerivedPage<ContractListItem> { total: number; counts: { all: number; verified: number; notVerified: number } }
 export type ContractSort = "interactions" | "newest" | "oldest";
 export interface ContractDetail extends ContractListItem {
   creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
+  /** How many logs it wrote, counted up to a ceiling; `eventCountCapped` says the count stopped there. */
+  eventCount: number; eventCountCapped: boolean;
   proxy: { kind: string; implementation: string | null; beacon: string | null; checkedBlock: number } | null;
   verification: {
     language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null;
     license: string | null; verifiedAt: string; matchNote: string | null;
+    /** How it was verified and the tool its submitter named; null for a source verified before this was kept. */
+    method: VerificationMethod | null; tool: VerificationTool | null;
   } | null;
   derived: boolean;
 }
@@ -432,15 +458,15 @@ export interface ContractDetail extends ContractListItem {
 export interface ContractSource {
   address: string; verified: boolean; matchType: "full" | "partial" | null; language: string | null; compilerVersion: string | null; codeFormat: string | null; contractPath: string | null; contractName: string | null;
   optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null; license: string | null; settings: unknown; files: { path: string; content: string }[]; abi: unknown;
-  constructorArgs: string | null; libraries: unknown; verifiedAt: string | null; matchNote: string | null;
+  constructorArgs: string | null; libraries: unknown; verifiedAt: string | null; matchNote: string | null; method: VerificationMethod | null; tool: VerificationTool | null;
 }
 const at = (a: string, sub = "") => `/api/contracts/${encodeURIComponent(a)}${sub}`;
 export const getContractList = async (sort: ContractSort, verified: boolean | null, before: string | null, limit = PAGE) =>
-  (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as DerivedPage<ContractListItem>;
+  (await call(`/api/contracts?sort=${sort}&limit=${limit}${verified === null ? "" : `&verified=${verified}`}${cursor("before", before)}`, [200])).body as ContractListPage;
 export const getContract = async (a: string) => (await call(at(a), [200])).body as ContractDetail;
 export const getContractSource = async (a: string) => (await call(at(a, "/source"), [200])).body as ContractSource;
 
 /** A log a contract wrote, with the transaction it is in and that transaction's method id (null when its input is empty). */
-export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
+export interface ContractEvent { txHash: string; block: number; txIndex: number; logIndex: number; /** The block's time, epoch seconds. */ timestamp: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
 export const getContractEvents = async (a: string, topic0: string | null, before: string | null, limit = PAGE) =>
   (await call(`${at(a, "/events")}?limit=${limit}${topic0 ? `&topic0=${topic0}` : ""}${cursor("before", before)}`, [200])).body as Page<ContractEvent>;

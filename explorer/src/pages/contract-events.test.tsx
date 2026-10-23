@@ -12,7 +12,7 @@ const SIG = "Transfer(address,address,uint256)";
 const ABI = [...TOKEN_ABI, { type: "event", name: "Transfer", inputs: [{ name: "from", type: "address", indexed: true }, { name: "to", type: "address", indexed: true }, { name: "value", type: "uint256", indexed: false }] }];
 const pad = (a: string) => "0x" + a.slice(2).padStart(64, "0");
 const log = (n: number, over: Partial<ContractEvent> = {}): ContractEvent => ({
-  txHash: hash(n), block: 20 - n, txIndex: 0, logIndex: n, address: A, topics: [toEventSelector(SIG), pad(ME), pad(YOU)],
+  txHash: hash(n), block: 20 - n, txIndex: 0, logIndex: n, timestamp: 1_760_000_000 - n, address: A, topics: [toEventSelector(SIG), pad(ME), pad(YOU)],
   data: encodeAbiParameters([{ type: "uint256" }], [BigInt(n) * 100n]), method: "0xa9059cbb", creation: false, ...over,
 });
 const verified = { [A]: contractSource(0xcb, { abi: ABI }) };

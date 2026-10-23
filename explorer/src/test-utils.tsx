@@ -102,7 +102,7 @@ export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
 export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {
   return {
     address: addr(0x5b), kind: "account", balance: "9997910000000000000", balanceBlock: 21, sentCount: 3, receivedCount: 1, internalCount: 0, tokenTransferCount: 0,
-    firstSeenBlock: 2, lastActiveBlock: 20, token: null, createdBy: null, derived: true, ...over,
+    firstSeenBlock: 2, firstSeenTimestamp: T0, lastActiveBlock: 20, lastActiveTimestamp: T0 + 96, createdCount: 0, createdCountCapped: false, fundedBy: null, token: null, createdBy: null, derived: true, ...over,
   };
 }
 export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
@@ -227,18 +227,18 @@ export function txDetail(over: Partial<ApiTxDetail> = {}): ApiTxDetail {
 
 /** A verified contract made by a transaction in block 18, as the list gives it. */
 export const contractItem = (n: number, over: Partial<ContractListItem> = {}): ContractListItem => ({
-  address: addr(n), name: "TestUSD", origin: "create", creator: addr(0xe3), creationBlock: 18, interactionCount: 9, verified: true, matchType: "full", codeSize: 3318, destroyedBlock: null,
+  address: addr(n), name: "TestUSD", origin: "create", creator: addr(0xe3), creationBlock: 18, createdAt: "2026-10-20T17:20:00.000Z", compilerVersion: "v0.8.28+commit.7893614a", interactionCount: 9, verified: true, matchType: "full", codeSize: 3318, destroyedBlock: null,
   standard: "ERC-20", balance: "0", balanceBlock: 21, txCount: 5, internalCount: 4, ...over,
 });
 /** A contract of the chain's genesis: no creator, no creation block, no creation transaction. */
 export const genesisContract = (n: number, over: Partial<ContractListItem> = {}): ContractListItem =>
-  contractItem(n, { name: null, origin: "genesis", creator: null, creationBlock: null, interactionCount: 0, verified: false, matchType: null, codeSize: 100, standard: null, balance: null, balanceBlock: null, txCount: 0, internalCount: 0, ...over });
+  contractItem(n, { name: null, origin: "genesis", creator: null, creationBlock: null, createdAt: null, compilerVersion: null, interactionCount: 0, verified: false, matchType: null, codeSize: 100, standard: null, balance: null, balanceBlock: null, txCount: 0, internalCount: 0, ...over });
 
 const COMPILE = { language: "Solidity", compilerVersion: "v0.8.28+commit.7893614a", codeFormat: "solidity-standard-json-input", contractPath: "src/TestUSD.sol", contractName: "TestUSD", optimizerEnabled: true, optimizerRuns: 200, evmVersion: "cancun", license: "MIT" };
 export function contractDetail(n = 0xcb, over: Partial<ContractDetail> = {}): ContractDetail {
   return {
-    ...contractItem(n), creationTxHash: hash(0xd7), lastInteractionBlock: 20, codeHash: hash(0xde), code: "0x6080604052" + "00".repeat(8), proxy: null,
-    verification: { ...COMPILE, verifiedAt: "2026-10-20T17:24:10.000Z", matchNote: null }, derived: true, ...over,
+    ...contractItem(n), creationTxHash: hash(0xd7), lastInteractionBlock: 20, eventCount: 0, eventCountCapped: false, codeHash: hash(0xde), code: "0x6080604052" + "00".repeat(8), proxy: null,
+    verification: { ...COMPILE, verifiedAt: "2026-10-20T17:24:10.000Z", matchNote: null, method: null, tool: null }, derived: true, ...over,
   };
 }
 export function contractSource(n = 0xcb, over: Partial<ContractSource> = {}): ContractSource {
@@ -246,12 +246,12 @@ export function contractSource(n = 0xcb, over: Partial<ContractSource> = {}): Co
     address: addr(n), verified: true, matchType: "full", ...COMPILE, settings: { language: "Solidity", settings: { optimizer: { enabled: true, runs: 200 } } },
     files: [{ path: "src/TestUSD.sol", content: "// SPDX-License-Identifier: MIT\npragma solidity 0.8.28;\ncontract TestUSD {}\n" }, { path: "@openzeppelin/contracts/token/ERC20/ERC20.sol", content: "contract ERC20 {}\n" }],
     abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "", type: "uint256" }] }],
-    constructorArgs: "0x" + "00".repeat(12) + "e3".repeat(20), libraries: null, verifiedAt: "2026-10-20T17:24:10.000Z", matchNote: null, ...over,
+    constructorArgs: "0x" + "00".repeat(12) + "e3".repeat(20), libraries: null, verifiedAt: "2026-10-20T17:24:10.000Z", matchNote: null, method: null, tool: null, ...over,
   };
 }
 export const unverifiedSource = (n = 0xcb): ContractSource => ({
   address: addr(n), verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null,
-  evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, libraries: null, verifiedAt: null, matchNote: null,
+  evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, libraries: null, verifiedAt: null, matchNote: null, method: null, tool: null,
 });
 
 /** Test USD as the token list gives it: an ERC-20 of 6 decimals with a million in supply, 5 holders and 6 transfers. */

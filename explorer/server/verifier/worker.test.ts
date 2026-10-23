@@ -23,7 +23,7 @@ suite("the verifier role", () => {
   let db: TestDatabase;
   const stub = new StubCompile();
   const queue = () => new JobQueue(db.pool);
-  const worker = (verifier: { verify(r: VerifyRequest): Promise<never> | Promise<any> }, extra = {}) =>
+  const worker = (verifier: { verify(r: VerifyRequest, o?: any): Promise<never> | Promise<any> }, extra = {}) =>
     new VerifierWorker(db.pool, queue(), verifier, { cacheUsable: async () => null, log: () => undefined, ...extra });
   beforeAll(async () => { db = await makeDatabase(true); });
   afterAll(async () => { await db.drop(); });
@@ -42,6 +42,12 @@ suite("the verifier role", () => {
     expect(await q.status(guid)).toMatchObject({ status: "pass" });
     expect((await db.pool.query("select match_type from verified_sources where address = $1", [Buffer.from(A.slice(2), "hex")])).rowCount).toBe(1);
     expect(await w.step()).toBe("idle");
+  });
+
+  it("carries how a job came in from the queue to the stored source", async () => {
+    await queue().submit(req(A), key, { method: "api", tool: "remix" });
+    expect(await worker(new Verifier(db.pool, stub)).step()).toBe("ended");
+    expect((await db.pool.query("select method, tool from verified_sources")).rows).toEqual([{ method: "api", tool: "remix" }]);
   });
 
   it("answers Already Verified for a second submission, without compiling", async () => {
