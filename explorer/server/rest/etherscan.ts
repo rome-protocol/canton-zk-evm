@@ -568,9 +568,17 @@ function verifyRequest(c: Ctx) {
   }
   return {
     address, codeFormat, sourceCode, contractName, compilerVersion, optimizationUsed: c.p.get("optimizationUsed") ?? undefined, runs: c.p.get("runs") ?? undefined,
-    evmVersion: c.p.get("evmversion") ?? undefined, licenseType: c.p.get("licenseType") ?? undefined, constructorArguments: args === "" ? undefined : args, libraries: libraries.length > 0 ? libraries : undefined,
+    evmVersion: c.p.get("evmversion") ?? undefined, licenseType: licenseOf(c.p.get("licenseType")), constructorArguments: args === "" ? undefined : args, libraries: libraries.length > 0 ? libraries : undefined,
   };
 }
+
+/** Etherscan's licenseType codes 1 to 14, as the SPDX names the pages show. */
+export const LICENSES: Record<string, string> = {
+  "1": "UNLICENSED", "2": "Unlicense", "3": "MIT", "4": "GPL-2.0", "5": "GPL-3.0", "6": "LGPL-2.1", "7": "LGPL-3.0",
+  "8": "BSD-2-Clause", "9": "BSD-3-Clause", "10": "MPL-2.0", "11": "OSL-3.0", "12": "Apache-2.0", "13": "AGPL-3.0", "14": "BUSL-1.1",
+};
+/** The license a `licenseType` code names; anything else is left out, and the verifier takes the source's own SPDX line. */
+const licenseOf = (v: string | null): string | undefined => (v === null ? undefined : LICENSES[v.trim()]);
 
 /**
  * The contract module. A verification is the verifier's: `verifysourcecode` queues the job and answers its GUID, and the answers about it are the job's texts. What is read

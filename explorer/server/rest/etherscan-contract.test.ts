@@ -131,12 +131,31 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect(src.message).toBe("OK");
       expect(src.result).toHaveLength(1);
       expect(Object.keys(src.result[0])).toEqual(FIELDS);
-      expect(src.result[0]).toMatchObject({ SourceCode: SOURCE, ContractName: "Box", CompilerVersion: VERSION, OptimizationUsed: "1", Runs: "200", ConstructorArguments: "", Library: "Lib:0x" + "11".repeat(20), Proxy: "0", Implementation: "", SwarmSource: "" });
+      expect(src.result[0]).toMatchObject({ SourceCode: SOURCE, ContractName: "Box", CompilerVersion: VERSION, OptimizationUsed: "1", Runs: "200", ConstructorArguments: "", LicenseType: "MIT", Library: "Lib:0x" + "11".repeat(20), Proxy: "0", Implementation: "", SwarmSource: "" });
       const abi = await get(`/api?module=contract&action=getabi&address=${A}`);
       expect(abi).toEqual(OK(src.result[0].ABI));
       expect(JSON.parse(abi.result)[1]).toMatchObject({ name: "get" });
       // Once it is verified, another submission is refused up front.
       expect(await post(single())).toEqual(NOTOK("Contract source code already verified"));
+    });
+
+    it("turns Etherscan's licenseType codes into SPDX names, and takes the source's own line for anything else", async () => {
+      await running();
+      const licenseOf = async (over: Record<string, string>, ip: string) => {
+        const sent = await post(single(over), ip);
+        expect(sent.status).toBe("1");
+        await worker().step();
+        const row = (await get(`/api?module=contract&action=getsourcecode&address=${A}`)).result[0];
+        // Back to an unverified contract, as before each test.
+        await sql("truncate verification_jobs, verified_sources, contracts, bytecodes cascade");
+        await addContract(pool, A, runtime, creation);
+        await sql("update contracts set creation_block = 2, creation_tx_index = 0 where address = $1", [Buffer.from(A.slice(2), "hex")]);
+        return row.LicenseType;
+      };
+      expect(await licenseOf({ licenseType: "5" }, "203.0.113.11")).toBe("GPL-3.0");
+      expect(await licenseOf({ licenseType: "14" }, "203.0.113.12")).toBe("BUSL-1.1");
+      expect(await licenseOf({ licenseType: "99" }, "203.0.113.13")).toBe("MIT");
+      expect(await licenseOf({ licenseType: "Apache-2.0" }, "203.0.113.14")).toBe("MIT");
     });
 
     it("takes standard JSON input in either brace form, and getsourcecode gives it back in the double braces", async () => {
