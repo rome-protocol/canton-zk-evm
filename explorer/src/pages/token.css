@@ -3,3 +3,15 @@
 .tok-stats .stat-v { min-width: 0; overflow-wrap: anywhere; line-height: 1.2; }
 .tok-stats .stat-hash { font-size: 14px; font-weight: 500; line-height: 1.6; padding-top: 6px; }
 .tok-stats .stat-hash .hl { white-space: normal; }
+
+/* The tokens list: the avatar and name of a token in one cell, and the two notes side by side. */
+.tok-cell { display: flex; align-items: center; gap: 12px; }
+.tok-av { flex: none; width: 34px; height: 34px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+.tok-id { min-width: 0; }
+.tok-id .hl { font-size: 12.5px; }
+.tok-sym { margin-left: 6px; }
+.tok-id .verified { display: inline-flex; vertical-align: middle; margin-left: 5px; color: var(--ok); }
+.tok-notes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 14px; }
+.tok-notes .legs { margin: 0; }
+.tbl .arrow { padding-left: 0; padding-right: 0; text-align: center; }
+@media (max-width: 720px) { .tok-notes { grid-template-columns: 1fr; } }
