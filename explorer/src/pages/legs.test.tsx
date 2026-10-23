@@ -2,7 +2,7 @@
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { LEGS_THIS_BLOCK } from "../copy.ts";
+import { LEGS_THESE_BLOCKS, LEGS_THIS_BLOCK } from "../copy.ts";
 import { addr, blockSummary, fakeApi, hash, legListItem, page, renderApp, reply, route, update } from "../test-utils.tsx";
 
 const TOKEN = (a: string) => reply({ address: a, standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, derived: true });
@@ -42,8 +42,17 @@ describe("the gateway legs page", () => {
     fakeApi(route({ legs: () => reply(page([legListItem(0)])), tokens: (a) => reply({ address: a, standard: "ERC-20", name: null, symbol: null, decimals: null, derived: true }) }));
     renderApp("/legs");
     await screen.findByRole("table");
-    expect(rows()[0]).toHaveTextContent("2500000");
+    expect(rows()[0]).toHaveTextContent("2,500,000");
     expect(rows()[0]).not.toHaveTextContent("2.5");
+  });
+
+  it("shows the amount in whole tokens, with the exact value in its title, when the decimals are known but the symbol is not", async () => {
+    fakeApi(route({ legs: () => reply(page([legListItem(0)])), tokens: (a) => reply({ address: a, standard: "ERC-20", name: null, symbol: null, decimals: 6, derived: true }) }));
+    renderApp("/legs");
+    await screen.findByRole("table");
+    const amount = await within(rows()[0]!).findByText("2.5");
+    expect(amount).toHaveAttribute("title", "2.5");
+    expect(rows()[0]).not.toHaveTextContent("2,500,000");
   });
 
   it("shows a dash for a transaction the explorer has not stored", async () => {
@@ -51,9 +60,10 @@ describe("the gateway legs page", () => {
     expect(rows()[0]!.querySelectorAll("td")[3]).toHaveTextContent("—");
   });
 
-  it("states that the Daml side is not public", async () => {
+  it("states that the Daml side is not public, in the words of a list of many blocks", async () => {
     await openList();
-    expect(screen.getByRole("note")).toHaveTextContent(LEGS_THIS_BLOCK);
+    expect(screen.getByRole("note")).toHaveTextContent(LEGS_THESE_BLOCKS);
+    expect(screen.getByRole("note")).not.toHaveTextContent("this block");
   });
 
   it("pages by the cursor the server gave", async () => {

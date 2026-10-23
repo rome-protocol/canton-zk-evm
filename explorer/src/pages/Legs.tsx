@@ -30,7 +30,7 @@ export function Legs() {
   return (
     <>
       <div className="ptitle"><h1>Gateway legs</h1></div>
-      <LegsPrivacy />
+      <LegsPrivacy many />
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the legs…</LoadingCard> : (
         <section className="card" aria-label="Gateway legs">
           <div className="list-h"><span className="muted">{items.length ? `Showing ${count(items.length)} on this page` : "No legs yet."}</span><Pager p={p} label="Pages of legs" /></div>
