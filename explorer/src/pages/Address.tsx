@@ -36,13 +36,13 @@ function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | und
 }
 
 function HoldingRow({ h }: { h: Holding }) {
-  const nft = h.standard !== "erc20";
+  const nft = h.standard !== "ERC-20";
   const name = h.name ?? h.symbol;
   return (
     <div className="hold">
       <div>
         {name ? <Link to={`/token/${h.token}`}>{name}</Link> : <HashLink value={h.token} to={`/token/${h.token}`} />}
-        <div className="muted small">{h.symbol && <>{h.symbol}{nft && ` #${h.tokenId}`} · </>}{h.standard.toUpperCase()} · as of block {h.updatedBlock}</div>
+        <div className="muted small">{h.symbol && <>{h.symbol}{nft && ` #${h.tokenId}`} · </>}{h.standard} · as of block {h.updatedBlock}</div>
       </div>
       <div className="r">
         {nft ? <span className="mono">{h.value === "1" ? "1" : h.value}</span>

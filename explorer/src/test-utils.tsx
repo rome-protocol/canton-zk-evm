@@ -99,7 +99,7 @@ export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail 
     firstSeenBlock: 2, lastActiveBlock: 20, token: null, createdBy: null, derived: true, ...over,
   };
 }
-export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "erc20", name: "Test USD", symbol: "tUSD", decimals: 6, tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
+export const holding = (over: Partial<Holding> = {}): Holding => ({ token: addr(0xcb), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, tokenId: "0", value: "995000000000", updatedBlock: 20, ...over });
 export const page = <T,>(items: T[], next: string | null = null): Page<T> => ({ items, next });
 
 /** What the in-flight route answers while block 4 is being proven (the producer cut it at T0 + 16, built it in 0.2 s and began its proof 0.4 s after that), with one more transaction in reth's pool. */

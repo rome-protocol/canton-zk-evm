@@ -334,7 +334,9 @@ export interface AddressDetail {
 export interface AddressInternalItem extends InternalCall { txHash: string; block: number; txIndex: number }
 export interface AddressTransferItem extends TokenTransfer { txHash: string; block: number; txIndex: number }
 /** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
-export interface Holding { token: string; standard: string; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
+/** The indexer's own spelling of a token standard. */
+export type TokenStandard = "ERC-20" | "ERC-721" | "ERC-1155";
+export interface Holding { token: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 const of = (a: string, sub = "") => `/api/addresses/${encodeURIComponent(a)}${sub}`;
 export const getAddressList = async (sort: AddressSort, before: string | null, limit = PAGE) => (await call(`/api/addresses?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressListItem>;

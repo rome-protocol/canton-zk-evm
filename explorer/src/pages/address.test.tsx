@@ -94,10 +94,12 @@ describe("the address page: token holdings", () => {
   const withHoldings = (items: ReturnType<typeof holding>[], d = true) => ({ tokens: () => derived(items, null, d) });
 
   it("lists what the address holds, with each balance as of the block it last moved", async () => {
-    await open(addressDetail(), withHoldings([holding(), holding({ token: addr(0xcc), standard: "erc721", name: "Ostia Pass", symbol: "OPASS", decimals: null, tokenId: "3", value: "1", updatedBlock: 22 })]));
+    await open(addressDetail(), withHoldings([holding(), holding({ token: addr(0xcc), standard: "ERC-721", name: "Ostia Pass", symbol: "OPASS", decimals: null, tokenId: "3", value: "1", updatedBlock: 22 })]));
     const card = await screen.findByRole("region", { name: "Token holdings" });
     await within(card).findByText("Test USD");
     expect(card).toHaveTextContent("995,000 tUSD");
+    expect(card).not.toHaveTextContent("tUSD #0");
+    expect(card).toHaveTextContent("ERC-20");
     expect(card).toHaveTextContent("as of block 20");
     expect(within(card).getByRole("link", { name: "Test USD" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
     expect(card).toHaveTextContent("OPASS #3");
