@@ -202,7 +202,7 @@ describe("the stats page", () => {
 
   it("gives the rule's p95 time to final by the hour, as the server counts it: the worst hour, and how many were above 20 s", async () => {
     // a 7 d window drawn by the hour; the rule is read from the summary's `rule`, not from the series (which a 30 d window draws by the day)
-    const rule = { ...summary().rule, hoursCounted: 168, hoursMeasured: 160, hoursAbove: 2, worstHourP95: 31.2, worstHourAt: "2026-10-18T14:00:00.000Z" };
+    const rule = { ...summary().rule!, hoursCounted: 168, hoursMeasured: 160, hoursAbove: 2, worstHourP95: 31.2, worstHourAt: "2026-10-18T14:00:00.000Z" };
     await open("/stats?window=30d", { summary: () => reply(summary({ window: "30d", rule })) });
     const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
     expect(card).toHaveTextContent("31.2 s by the hour (the worst), 18 Oct 14:00");
@@ -212,15 +212,22 @@ describe("the stats page", () => {
   });
 
   it("says no hour was measured when none was, and gives the window's p95 as that and nothing more", async () => {
-    const rule = { ...summary().rule, hoursCounted: 2, hoursMeasured: 0, hoursAbove: null, worstHourP95: null, worstHourAt: null };
+    const rule = { ...summary().rule!, hoursCounted: 2, hoursMeasured: 0, hoursAbove: null, worstHourP95: null, worstHourAt: null };
     await open("/stats?window=24h", { summary: () => reply(summary({ window: "24h", rule })) });
     const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
     expect(card).toHaveTextContent("over this window · no whole hour with a final transaction yet");
     expect(card).not.toHaveTextContent("above 20 s");
   });
 
+  it("keeps the page when a server older than this page sends no `rule`: the p95 is the window's, and the days are not counted", async () => {
+    await open("/stats?window=7d", { summary: () => reply({ ...summary(), rule: undefined }) });
+    const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+    expect(card).toHaveTextContent("over this window");
+    expect(card).not.toHaveTextContent("days with more than one");
+  });
+
   it("counts the days that met the rule's second half: more than one ten-minute window above 60% in a UTC day", async () => {
-    const rule = { ...summary().rule, windowsOverByDay: [{ day: "2026-10-17", windowsOver: 0, windowsCounted: 144 }, { day: "2026-10-18", windowsOver: 1, windowsCounted: 144 }, { day: "2026-10-19", windowsOver: 12, windowsCounted: 144 }] };
+    const rule = { ...summary().rule!, windowsOverByDay: [{ day: "2026-10-17", windowsOver: 0, windowsCounted: 144 }, { day: "2026-10-18", windowsOver: 1, windowsCounted: 144 }, { day: "2026-10-19", windowsOver: 12, windowsCounted: 144 }] };
     await open("/stats?window=7d", { summary: () => reply(summary({ rule })) });
     const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
     expect(card).toHaveTextContent("1 of 3 days with more than one");

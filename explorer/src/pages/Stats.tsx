@@ -97,15 +97,15 @@ function PerBlock({ s }: { s: StatsSummary }) {
 }
 
 function Rule({ s }: { s: StatsSummary }) {
-  const p = s.prover, r = s.rule;
+  const p = s.prover, r = s.rule ?? null;
   // The rule of design 2.7, as the server counts it: by the hour for the time to final, by the UTC day for the ten-minute windows (more than one window of a day above the line makes the day count).
-  const days = r.windowsOverByDay, daysOver = days.filter((d) => d.windowsOver > 1).length;
+  const days = r?.windowsOverByDay ?? [], daysOver = days.filter((d) => d.windowsOver > 1).length;
   return (
     <div className="rule">
       <h4>The two numbers the block-cutting rule watches</h4>
       <dl className="kv wide">
         <dt className="kv-k">p95 time to final</dt>
-        <dd className="kv-v">{r.worstHourP95 !== null ? <><b>{sec(r.worstHourP95)}</b> <span className="muted small">by the hour (the worst){r.worstHourAt ? `, ${pointTime(r.worstHourAt, false)}` : ""} · {plural(r.hoursAbove ?? 0, "hour")} of {count(r.hoursMeasured)} above {r.slowAboveSeconds} s{r.hoursMeasured < r.hoursCounted ? ` · ${plural(r.hoursCounted - r.hoursMeasured, "hour")} with no final transaction` : ""}{s.timeToFinal ? ` · ${sec(s.timeToFinal.p95)} over the whole window` : ""}</span></> : s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window · no whole hour with a final transaction yet</span></> : DASH}</dd>
+        <dd className="kv-v">{r && r.worstHourP95 !== null ? <><b>{sec(r.worstHourP95)}</b> <span className="muted small">by the hour (the worst){r.worstHourAt ? `, ${pointTime(r.worstHourAt, false)}` : ""} · {plural(r.hoursAbove ?? 0, "hour")} of {count(r.hoursMeasured)} above {r.slowAboveSeconds} s{r.hoursMeasured < r.hoursCounted ? ` · ${plural(r.hoursCounted - r.hoursMeasured, "hour")} with no final transaction` : ""}{s.timeToFinal ? ` · ${sec(s.timeToFinal.p95)} over the whole window` : ""}</span></> : s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window · no whole hour with a final transaction yet</span></> : DASH}</dd>
         <dt className="kv-k">Busiest ten minutes</dt>
         <dd className="kv-v">{p.maxBusyRatio10m !== null ? <><b>{pct(p.maxBusyRatio10m)}</b> <span className="muted small">of what one prover can carry · {count(p.windowsOver)} of {count(p.windowsCounted)} ten-minute windows above {pct(p.loadedAbove)}{days.length > 0 ? ` · ${count(daysOver)} of ${plural(days.length, "day")} with more than one` : ""}</span></> : DASH}</dd>
         <dt className="kv-k">Cutting now</dt>
