@@ -82,7 +82,7 @@ describe("the card header", () => {
 
 describe("the transaction page on a phone, as screen 14 has it", () => {
   const block = (width: number) => { const m = new RegExp(`@media \\(max-width: ${width}px\\) \\{([\\s\\S]*?)\\n\\}`).exec(tx); return m ? m[1]! : ""; };
-  const body = (css: string, sel: string) => new RegExp(`${sel.replace(/[.[\]()]/g, "\\$&")}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  const body = (css: string, sel: string) => new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
   it("shows no delta under a step's time", () => {
     expect(body(block(900), ".how-steps.way-steps .way-delta")).toMatch(/display:\s*none/);
   });
