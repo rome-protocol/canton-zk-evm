@@ -9,8 +9,8 @@ import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { count, exact, units } from "../format.ts";
-import { useFollowing } from "../useStatus.ts";
-import { noName, Supply } from "./TokenParts.tsx";
+import { useFollowing, useStatus } from "../useStatus.ts";
+import { failedNote, NftCount, noName, Supply } from "./TokenParts.tsx";
 
 const PER = 25;
 const ZERO = "0x" + "00".repeat(20);
@@ -49,13 +49,16 @@ function Cards({ t }: { t: TokenDetail }) {
 function HolderRow({ h, n, t }: { h: TokenHolder; n: number; t: TokenDetail }) {
   const fungible = t.standard === "ERC-20";
   const s = fungible ? share(h.value, t.totalSupply) : null;
+  // An ERC-721 is keyed by id 0 with the holder's count as the value; only an ERC-1155 balance is of one id.
+  const multi = t.standard === "ERC-1155";
   return (
     <tr>
       <td className="muted">{n}</td>
       <td><HashLink value={h.holder} to={`/address/${h.holder}`} /></td>
-      {!fungible && <td><span className="mono">#{h.tokenId}</span></td>}
+      {multi && <td><span className="mono">#{h.tokenId}</span></td>}
       <td className="r">{fungible && t.decimals !== null && t.symbol ? <Amount raw={h.value} decimals={t.decimals} symbol={t.symbol} />
         : fungible && t.decimals !== null ? <span className="mono" title={exact(h.value, t.decimals)}>{units(h.value, t.decimals)}</span>
+        : t.standard === "ERC-721" ? <NftCount n={h.value} />
         : <span className="mono" title={fungible ? "The token's decimals are not known, so this is the raw balance" : undefined}>{count(h.value)}</span>}</td>
       {fungible && <td className="r"><span className="mono">{s ? s.text : "—"}</span></td>}
       {fungible && <td><div className="share" aria-hidden="true"><span style={{ width: `${s ? Math.max(s.bp / 100, s.bp > 0 ? 1 : 0) : 0}%` }} /></div></td>}
@@ -63,19 +66,45 @@ function HolderRow({ h, n, t }: { h: TokenHolder; n: number; t: TokenDetail }) {
   );
 }
 
+const SEG = ["var(--canton)", "#3B82B4", "#C27BA8", "#4FA58A", "#C9A227"];
+const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+
+/** The share of the supply the biggest holders have, from the first page of holders and the total supply. */
+function Distribution({ items, t, final }: { items: TokenHolder[]; t: TokenDetail; final: number | null }) {
+  const top = items.slice(0, SEG.length).map((h) => ({ h, s: share(h.value, t.totalSupply) }));
+  const lead = top[0]?.s;
+  if (!lead) return null;
+  return (
+    <section className="card holds" aria-label="Holder distribution">
+      <div className="list-h"><h2>Holder distribution</h2>{final !== null && <span className="muted small">as of final block {final}</span>}</div>
+      <div>
+        <span className="muted small">Share held by the top holder</span>
+        <div className="stat-v">{lead.text}</div>
+        <div className="bar" aria-hidden="true">{top.map(({ h, s }, i) => s && s.bp > 0 && <span key={h.holder} style={{ width: `${s.bp / 100}%`, background: SEG[i] }} />)}</div>
+        <div className="bar-key small">{top.map(({ h, s }, i) => <span key={h.holder}><span className="dot" style={{ background: SEG[i] }} aria-hidden="true" /> {short(h.holder)} {s?.text}</span>)}</div>
+      </div>
+    </section>
+  );
+}
+
 function HoldersTab({ t }: { t: TokenDetail }) {
   const p = usePaged(["token-holders", t.address], (before) => getTokenHolders(t.address, before, PER), 5000);
   const d = p.data;
   const fungible = t.standard === "ERC-20";
+  const status = useStatus().data;
   if (p.error && !d) return <ErrorCard message={p.error.message} retrying />;
   if (!d) return <LoadingCard>Reading the holders…</LoadingCard>;
+  // The balances are as of the final block only while the explorer has read up to it.
+  const final = d.derived !== false ? (status?.final?.number ?? null) : null;
   return (
+    <>
+    {fungible && t.totalSupply !== null && p.page === 1 && d.derived !== false && <Distribution items={d.items} t={t} final={final} />}
     <section className="card" aria-label="Holders">
-      <div className="list-h"><span className="muted">{d.items.length ? `Showing ${count(d.items.length)} on this page, largest balance first` : ""}</span><Pager p={p} label="Pages of holders" /></div>
+      <div className="list-h"><span className="muted">{d.items.length ? `Showing ${count(d.items.length)} on this page, largest balance first${final !== null ? ` · as of final block ${final}` : ""}` : ""}</span><Pager p={p} label="Pages of holders" /></div>
       {d.items.length > 0 && (
         <div className="scroll">
           <table className="tbl">
-            <thead><tr><th>#</th><th>Holder</th>{!fungible && <th>Token id</th>}<th className="r">Balance{fungible && t.symbol ? ` (${t.symbol})` : ""}</th>{fungible && <th className="r">Share</th>}{fungible && <th aria-hidden="true" />}</tr></thead>
+            <thead><tr><th>#</th><th>Holder</th>{t.standard === "ERC-1155" && <th>Token id</th>}<th className="r">Balance{fungible && t.symbol ? ` (${t.symbol})` : ""}</th>{fungible && <th className="r">Share</th>}{fungible && <th aria-hidden="true" />}</tr></thead>
             <tbody>{d.items.map((h, i) => <HolderRow key={`${h.holder}-${h.tokenId}`} h={h} n={(p.page - 1) * PER + i + 1} t={t} />)}</tbody>
           </table>
         </div>
@@ -86,6 +115,7 @@ function HoldersTab({ t }: { t: TokenDetail }) {
         {fungible && t.totalSupply !== null ? " A share is the balance over the total supply above." : ""}
       </p>
     </section>
+    </>
   );
 }
 
@@ -168,8 +198,7 @@ export function Token() {
       </div>
       <div className="bighash"><HashLink value={t.address} full /></div>
       {t.metadataStatus !== "read" && (
-        <aside className="card note" role="note"><p className="small">{t.metadataStatus === "failed"
-          ? "The explorer could not read this token's name, symbol or decimals from the contract, so amounts are shown raw. The token and its transfers are real; only its labels are missing."
+        <aside className="card note" role="note"><p className="small">{t.metadataStatus === "failed" ? failedNote(t)
           : "The explorer has not read this token's name, symbol or decimals from the contract yet, so amounts are shown raw until it has."}</p></aside>
       )}
       <Cards t={t} />

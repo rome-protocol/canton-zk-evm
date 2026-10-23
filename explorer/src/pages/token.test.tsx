@@ -57,9 +57,18 @@ describe("the token page: the overview", () => {
   it("says the metadata could not be read, and shows the raw supply, when the contract did not answer", async () => {
     await open(tokenDetail(0xcb, { name: null, symbol: null, decimals: null, totalSupply: "12345", metadataStatus: "failed" }));
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Name not read");
-    expect(screen.getByText(/could not read this token's name, symbol or decimals/)).toBeInTheDocument();
+    expect(screen.getByText(/could not read this token's name, symbol and decimals/)).toBeInTheDocument();
+    expect(screen.getByText(/so amounts are shown raw/)).toBeInTheDocument();
     expect(card("Total supply")).toHaveTextContent("12,345");
     expect(card("Decimals")).toHaveTextContent("—");
+  });
+
+  it("names only what could not be read: a failed supply does not claim the amounts are raw when the decimals are known", async () => {
+    await open(tokenDetail(0xcb, { totalSupply: null, totalSupplyBlock: null, metadataStatus: "failed" }));
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("could not read this token's total supply");
+    expect(note).not.toHaveTextContent("name");
+    expect(note).not.toHaveTextContent("raw");
   });
 
   it("says a supply the contract has not told is not known", async () => {
@@ -115,12 +124,59 @@ describe("the token page: holders", () => {
     expect(rows()[0]!.querySelector("td")).toHaveTextContent("26");
   });
 
-  it("shows no share for an NFT, and the id each holder holds", async () => {
-    await open(tokenDetail(0xcb, { standard: "ERC-721", decimals: null, totalSupply: "2" }), { holders: () => derived([tokenHolder(0xa1, "1", { tokenId: "3" }), tokenHolder(0xa2, "1", { tokenId: "1" })]) });
+  it("shows an ERC-721 holder's balance as a count of tokens, as the API gives it, with no share and no token id", async () => {
+    await open(tokenDetail(0xcb, { standard: "ERC-721", decimals: null, totalSupply: "3" }), { holders: () => derived([tokenHolder(0xa1, "2"), tokenHolder(0xa2, "1")]) });
     await screen.findByRole("table");
     expect(screen.queryByRole("columnheader", { name: "Share" })).toBeNull();
-    expect(screen.getByRole("columnheader", { name: "Token id" })).toBeInTheDocument();
-    expect(rows()[0]).toHaveTextContent("#3");
+    expect(screen.queryByRole("columnheader", { name: "Token id" })).toBeNull();
+    expect(rows()[0]).toHaveTextContent("2 tokens");
+    expect(rows()[1]).toHaveTextContent("1 token");
+    expect(screen.queryByText(/#0/)).toBeNull();
+  });
+
+  it("names the final block the holders are as of, and says nothing of it while the explorer is still reading", async () => {
+    await open();
+    await screen.findByRole("table");
+    expect(screen.getByLabelText("Holders")).toHaveTextContent("as of final block 3");
+  });
+
+  it("names no block while the explorer is still reading, because the list is then short of the newest rows", async () => {
+    await open(tokenDetail(), { holders: () => derived(HOLDERS, null, false) });
+    await screen.findByRole("table");
+    expect(screen.getByLabelText("Holders")).not.toHaveTextContent("as of final block");
+    expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
+  });
+
+  it("shows how much of the supply the top holder has, with a bar and a key for the biggest holders", async () => {
+    await open();
+    await screen.findByRole("table");
+    const box = screen.getByRole("region", { name: "Holder distribution" });
+    expect(box).toHaveTextContent("Share held by the top holder");
+    expect(box).toHaveTextContent("99.50%");
+    expect(box).toHaveTextContent("0xe3e3…e3e3 99.50%");
+    expect(box).toHaveTextContent("0xa1a1…a1a1 0.25%");
+    expect(box).toHaveTextContent("as of final block 3");
+  });
+
+  it("shows no distribution for an NFT", async () => {
+    await open(tokenDetail(0xcb, { standard: "ERC-721", decimals: null, totalSupply: "3" }), { holders: () => derived([tokenHolder(0xa1, "2")]) });
+    await screen.findByRole("table");
+    expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
+  });
+
+  it("shows no distribution when the supply is not known", async () => {
+    await open(tokenDetail(0xcb, { totalSupply: null, totalSupplyBlock: null }));
+    await screen.findByRole("table");
+    expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
+  });
+
+  it("shows the distribution on the first page only", async () => {
+    await open(tokenDetail(), { holders: (p) => derived(HOLDERS.slice(0, 2), p.includes("before=") ? null : "cursor") });
+    await screen.findByRole("table");
+    expect(screen.getByRole("region", { name: "Holder distribution" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Older page" }));
+    await screen.findByText("Page 2");
+    expect(screen.queryByRole("region", { name: "Holder distribution" })).toBeNull();
   });
 
   it("shows an ERC-1155 balance by id with no share, because the supply of one id is not known", async () => {
