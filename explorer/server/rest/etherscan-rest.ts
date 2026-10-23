@@ -6,6 +6,7 @@
 import type { Pool, PoolClient } from "pg";
 import { ChainDbError } from "../chain-db.ts";
 import { bytes, hex, hexOrNull } from "./chain-rest.ts";
+import { createContractRest } from "./etherscan-contract-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -328,6 +329,7 @@ export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS, m
   }
 
   return {
+    ...createContractRest(query),
     heads, txlist, internalOf, internalOfTx, internalInBlocks, tokenMoves, mined, txSuccess, blockReward, blockAtTime, rhythm, logs, genesisSupply, burntFees, tokenInfo, holders, feeSample,
     medianSecondsToFinal,
   };
