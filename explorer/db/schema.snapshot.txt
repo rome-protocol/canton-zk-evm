@@ -121,6 +121,7 @@ table blocks
   column record_time timestamp with time zone not null
   column attempt_id bigint
   column indexed_at timestamp with time zone not null
+  column burnt_total numeric(78,0) not null default 0
   constraint blocks_hash_key UNIQUE (hash)
   constraint blocks_pkey PRIMARY KEY (number)
   constraint blocks_update_id_fkey FOREIGN KEY (update_id) REFERENCES canton_updates(update_id)

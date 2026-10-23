@@ -250,7 +250,8 @@ export function createEtherscanRest(pool: Pool, { timeoutMs = READ_TIMEOUT_MS, m
 
   /** The fees burnt in all final blocks up to `head`, in wei. */
   async function burntFees(head: number): Promise<string> {
-    const [r] = await query("select coalesce(sum(burnt_fees), 0)::text as burnt from blocks where number <= $1", [head]);
+    // One row: each block keeps the running total of the fees burnt up to it (migration 0029), so the cost does not grow with the chain.
+    const [r] = await query("select burnt_total::text as burnt from blocks where number <= $1 order by number desc limit 1", [head]);
     return r?.burnt ?? "0";
   }
 

@@ -143,6 +143,21 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the token, stats and 
       await sql("update blocks set burnt_fees = number * 1000000000");
     });
 
+    it("keeps each block's running total of burnt fees, so that ethsupply reads one row (migration 0029)", async () => {
+      const totals = async () => (await sql("select number::int, burnt_total::text as t from blocks order by number")).rows.map((r) => [r.number, r.t]);
+      expect(await totals()).toEqual([[1, "1000000000"], [2, "3000000000"], [3, "6000000000"]]);
+      // A reindex that changes block 1 moves the totals after it, and a removed block takes its fees out of the later totals.
+      await sql("update blocks set burnt_fees = 5000000000 where number = 1");
+      expect(await totals()).toEqual([[1, "5000000000"], [2, "7000000000"], [3, "10000000000"]]);
+      await sql("update blocks set burnt_fees = 1000000000 where number = 1");
+      // A block written above the others adds to the last total, and one written below the others moves them.
+      await sql("insert into blocks select 4, $1::bytea, parent_hash, timestamp, fee_recipient, gas_limit, gas_used, base_fee_per_gas, 7000000000, priority_fees, tx_count, log_count, size_bytes, state_root, transactions_root, receipts_root, extra_data, legs_count, legs_hash, update_id, record_time, attempt_id, indexed_at, 0 from blocks where number = 3", [Buffer.alloc(32, 4)]);
+      try {
+        expect((await totals()).at(-1)).toEqual([4, "13000000000"]);
+      } finally { await sql("delete from blocks where number = 4"); }
+      expect(await totals()).toEqual([[1, "1000000000"], [2, "3000000000"], [3, "6000000000"]]);
+    });
+
     it("refuses ethsupply while the database does not hold the genesis allocation", async () => {
       await sql("delete from meta where key = 'genesis_supply'");
       try {
