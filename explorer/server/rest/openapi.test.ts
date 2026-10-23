@@ -91,6 +91,9 @@ describe("the API description", () => {
       expect(doc.paths[door].get.tags).toEqual(["Etherscan"]);
       const names = doc.paths[door].get.parameters.map((q: { name: string }) => q.name);
       for (const n of ["module", "action", "address", "fromBlock", "topic0", "topic0_1_opr", "blockno", "txhash"]) expect(names).toContain(n);
+      // The proxy module's parameters are described too, and the note says its answers are JSON-RPC in hex.
+      for (const n of ["boolean", "index", "hex", "to", "data", "position", "from", "value", "gas", "gasLimit", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas"]) expect(names).toContain(n);
+      expect(doc.paths[door].get.responses["200"].description).toMatch(/proxy answers are JSON-RPC \{jsonrpc, id, result\|error\} in hex/);
     }
     // The API page reads the module table from `x-modules` of /api's GET; it is the table the door answers from.
     expect(doc.paths["/api"].get["x-modules"]).toEqual(Object.fromEntries(Object.entries(MODULES).map(([m, a]) => [m, Object.keys(a)])));
