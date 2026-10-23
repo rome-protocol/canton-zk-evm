@@ -314,6 +314,11 @@ export const blocksCsvPath = (filter: BlockFilter) => `/api/blocks?format=csv&fi
 export type TxFilter = "all" | "failed" | "calls";
 /** The final transactions, newest first, a page at a time; `filter` keeps the reverted ones or the calls into contracts (a transaction with input). */
 export const getTxPage = async (before: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?limit=${limit}${cursor("before", before)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
+/**
+ * The transactions oldest first, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page count is `total` over the page
+ * size where the total is known. The page is in the order the server gives it, oldest first.
+ */
+export const getTxPageOldest = async (after: string | null, limit = PAGE, filter: TxFilter = "all") => (await call(`/api/txs?order=asc&limit=${limit}${cursor("after", after)}${filter === "all" ? "" : `&filter=${filter}`}`, [200])).body as TxsPage;
 /** The newest final transactions of the filter as a file, with the list's columns. */
 export const txsCsvPath = (filter: TxFilter) => `/api/txs?format=csv&filter=${filter}`;
 /** A block's record as Canton holds it, read only when Verify is pressed. */
@@ -333,7 +338,8 @@ export const getUpdatesAround = async (id: string) => (await call(`/api/canton/u
 export interface TxLog { logIndex: number; /** Its place among the transaction's own logs, from 0. */ position: number; address: string; topics: string[]; data: string; decoded: { name: string; signature: string; args: { name: string; type: string; value: string }[] } | null }
 /** A call that moved value, from the transaction's trace. `traceAddress` places it in the call tree ("t0-1" is the second call of the first call). */
 export interface InternalCall { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number; error: string | null }
-export interface TokenTransfer { logIndex: number; batchIndex: number; token: string; from: string; to: string; amount: string | null; tokenId: string | null }
+/** `methodId` and `timestamp` are the transaction's (no method for a creation, and `creation` says it was one); `standard` is the token's, null where the explorer holds no row for it. */
+export interface TokenTransfer { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: TokenStandard | null; from: string; to: string; amount: string | null; tokenId: string | null }
 /** A page of a list read from the derived stage: `derived` is false while the explorer has not read the transaction's block, and the page is empty. */
 export type DerivedPage<T> = Page<T> & { derived?: boolean };
 const afterTx = (hash: string, sub: string, after: string | null, limit: number) => `/api/txs/${encodeURIComponent(hash)}/${sub}?limit=${limit}${cursor("after", after)}`;
@@ -359,7 +365,8 @@ export interface AddressTransferItem extends TokenTransfer { txHash: string; blo
 /** What an address holds of a token (of one id for an NFT), as of `updatedBlock`, the block it last moved. */
 /** The indexer's own spelling of a token standard. */
 export type TokenStandard = "ERC-20" | "ERC-721" | "ERC-1155";
-export interface Holding { token: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null; tokenId: string; value: string; updatedBlock: number }
+/** What an address holds of a token: `totalSupply` and `decimals` are the token's, null where it has none. */
+export interface Holding { token: string; standard: TokenStandard; name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; tokenId: string; value: string; updatedBlock: number }
 export interface CoinPoint { block: number; balance: string }
 const of = (a: string, sub = "") => `/api/addresses/${encodeURIComponent(a)}${sub}`;
 export const getAddressList = async (sort: AddressSort, before: string | null, limit = PAGE) => (await call(`/api/addresses?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressListItem>;
@@ -369,20 +376,38 @@ export const getTokenInfo = async (a: string) => (await call(`/api/tokens/${enco
 /** A token of the list: counts are the explorer's, complete as far as `derived`. `metadataStatus` is read, pending or failed; name, symbol, decimals and supply are null until the contract has answered. */
 export interface TokenListItem extends TokenInfo {
   totalSupply: string | null; holderCount: number; transferCount: number; firstTransferBlock: number; gatewayWrapped: boolean; metadataStatus: "read" | "pending" | "failed";
+  /** Who made the token's contract, in which block and when (ISO time): all null for a contract of the genesis state, which no creation made. `verified` is whether its source is. */
+  creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
 }
 export type TokenSort = "holders" | "transfers" | "newest";
 /** One token: `balanceMode` says whether its balances are summed from the Transfer logs ("derived") or read with balanceOf. */
 export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean }
 export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
 const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;
-export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenListItem>;
+/**
+ * The token list's page: `total` is the list's own count (of the standard and/or the gateway filter asked, or of all), `counts` is each standard's and `gatewayCount` is the gateway-wrapped
+ * tokens' (the From Canton tab), both whatever is asked.
+ */
+export interface TokenListPage extends DerivedPage<TokenListItem> { total: number; counts: Record<TokenStandard, number>; gatewayCount: number }
+/** The tokens in the order of `sort`, a page at a time; of one standard and/or only those the gateway wrapped when asked. */
+export const getTokenList = async (sort: TokenSort, before: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&limit=${limit}${cursor("before", before)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
+/** The same list from its other end, after a key (`next` of the page before) or from the first: the way to open the list's last page. The page is in the order the server gives it, the reverse of the list's. */
+export const getTokenListOldest = async (sort: TokenSort, after: string | null, limit = PAGE, standard?: TokenStandard, gateway = false) => (await call(`/api/tokens?sort=${sort}&order=asc&limit=${limit}${cursor("after", after)}${standard ? `&standard=${standard}` : ""}${gateway ? "&gateway=true" : ""}`, [200])).body as TokenListPage;
 export const getToken = async (a: string) => (await call(tk(a), [200])).body as TokenDetail;
 export const getTokenHolders = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/holders")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<TokenHolder>;
 export const getTokenTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${tk(a, "/transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getAddressDetail = async (a: string) => (await call(of(a), [200])).body as AddressDetail;
 export const getAddressTxs = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/txs")}?limit=${limit}${cursor("before", before)}`, [200])).body as Page<TxListItem>;
 export const getAddressInternal = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/internal")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressInternalItem>;
-export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<AddressTransferItem>;
+export interface TransferFilter { token?: string; standard?: TokenStandard }
+const transferFilter = (f: TransferFilter) => `${f.token ? `&token=${f.token}` : ""}${f.standard ? `&standard=${f.standard}` : ""}`;
+export const getAddressTransfers = async (a: string, before: string | null, limit = PAGE, filter: TransferFilter = {}) => (await call(`${of(a, "/token-transfers")}?limit=${limit}${cursor("before", before)}${transferFilter({ token: filter.token, standard: filter.standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
+/** The newest token transfers of an address as a CSV file (up to 1,000), kept to the filter. */
+export const addressTransfersCsvPath = (a: string, filter: TransferFilter = {}) => `${of(a, "/token-transfers")}?format=csv${transferFilter(filter)}`;
+/** The newest transfers of one token as a CSV file (up to 1,000). */
+export const tokenTransfersCsvPath = (a: string) => `${tk(a, "/transfers")}?format=csv`;
+/** The transfers of every token, newest first, of one standard when asked. */
+export const getAllTokenTransfers = async (before: string | null, limit = PAGE, standard?: TokenStandard) => (await call(`/api/token-transfers?limit=${limit}${cursor("before", before)}${transferFilter({ standard })}`, [200])).body as DerivedPage<AddressTransferItem>;
 export const getHoldings = async (a: string, after: string | null, limit = PAGE) => (await call(`${of(a, "/tokens")}?limit=${limit}${cursor("after", after)}`, [200])).body as DerivedPage<Holding>;
 export const getCoinHistory = async (a: string, before: string | null, limit = PAGE) => (await call(`${of(a, "/coin-history")}?limit=${limit}${cursor("before", before)}`, [200])).body as DerivedPage<CoinPoint>;
 

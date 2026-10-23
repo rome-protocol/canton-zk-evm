@@ -8,7 +8,7 @@ import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/
 import { createIndexer } from "../indexer/indexer.ts";
 import { RethTooBig, type Reth } from "../reth.ts";
 import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.ts";
-import { createChainRest } from "./chain-rest.ts";
+import { createChainRest, txSelect } from "./chain-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { REST_FIELDS as F } from "./fields.ts";
 import { TAIL_MAX_MS } from "./tx-total.ts";
@@ -519,5 +519,93 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("gives a transaction's token transfers its method and time and the token's standard", async () => {
+    const who = (n: number) => Buffer.alloc(20, n);
+    const [call] = (await pool.query("select t.block_number, t.tx_index, t.method_id, extract(epoch from b.timestamp)::bigint as ts from transactions t join blocks b on b.number = t.block_number where t.block_number = 2 and t.tx_index = 1")).rows;
+    const [made] = (await pool.query("select t.block_number, t.tx_index, extract(epoch from b.timestamp)::bigint as ts from tx_hashes h join transactions t on t.block_number = h.block_number and t.tx_index = h.tx_index join blocks b on b.number = t.block_number where h.hash = $1", [Buffer.from(tx(3, 6).slice(2), "hex")])).rows;
+    await addToken(who(0x31), "ERC-721", "Nft", "NFT", null, 3);
+    await pool.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, token_id, from_address, to_address) values ($1, 95, 0, $2, $3, 1, $4, $5)", [made.block_number, made.tx_index, who(0x31), who(4), who(5)]);
+    try {
+      const a = body(await get(`/api/txs/${tx(2, 1)}/token-transfers`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(a.length).toBeGreaterThan(0);
+      for (const t of a) {
+        expect(t.methodId).toBe(call.method_id === null ? null : "0x" + call.method_id.toString("hex"));
+        expect(t.timestamp).toBe(Number(call.ts));
+        expect(t.standard === null || typeof t.standard === "string").toBe(true);
+      }
+      // The creation has no method (its first input bytes are code), and the token in the row is an ERC-721.
+      const b = (body(await get(`/api/txs/${tx(3, 6)}/token-transfers`)).items as Record<string, any>[])[0]!; // eslint-disable-line @typescript-eslint/no-explicit-any
+      same(b, F.transfer);
+      expect(b).toMatchObject({ methodId: null, creation: true, timestamp: Number(made.ts), standard: "ERC-721", tokenId: "1" });
+      for (const t of a) expect(t.creation).toBe(false);
+    } finally {
+      await pool.query("delete from token_transfers where block_number = $1 and log_index = 95", [made.block_number]);
+      await pool.query("delete from tokens where address = $1", [who(0x31)]);
+      await pool.query("delete from contracts where address = $1", [who(0x31)]);
+    }
+  });
+  describe("the oldest transactions first, for the list's last page", () => {
+    const hashes = (a: Answer) => (body(a).items as { hash: string }[]).map((t) => t.hash);
+
+    it("lists the oldest first with order=asc, and pages on from there with after", async () => {
+      const newest = hashes(await get("/api/txs?limit=100"));
+      expect(newest).toHaveLength(12);
+      const oldest = await get("/api/txs?order=asc&limit=100");
+      expect(oldest.status).toBe(200);
+      same(body(oldest), F.txPage);
+      expect(hashes(oldest)).toEqual([...newest].reverse());
+      expect(body(oldest).next).toBeNull();
+      for (const t of body(oldest).items) same(t, F.txItem);
+      // The total is the same either way, so a client can tell the last page from the count.
+      expect(body(oldest).total).toBe(body(await get("/api/txs")).total);
+      const walked: string[] = [];
+      let next: string | null = null;
+      for (let turns = 0; turns < 20; turns++) {
+        const a = await get(`/api/txs?order=asc&limit=5${next ? `&after=${next}` : ""}`);
+        expect(a.status).toBe(200);
+        walked.push(...hashes(a));
+        next = body(a).next;
+        if (!next) break;
+      }
+      expect(walked).toEqual([...newest].reverse());
+      expect((await get("/api/txs?order=desc&limit=100")).body).toEqual((await get("/api/txs?limit=100")).body);
+    });
+
+    it("keeps the filters and the page size of the newest-first list", async () => {
+      const failed = hashes(await get("/api/txs?filter=failed&limit=100"));
+      expect(hashes(await get("/api/txs?order=asc&filter=failed&limit=100"))).toEqual([...failed].reverse());
+      const calls = hashes(await get("/api/txs?filter=calls&limit=100"));
+      expect(hashes(await get("/api/txs?order=asc&filter=calls&limit=100"))).toEqual([...calls].reverse());
+      const page = body(await get("/api/txs?order=asc&limit=3"));
+      expect(page.items).toHaveLength(3);
+      expect(page.next).not.toBeNull();
+      expect(body(await get("/api/txs?order=asc")).items).toHaveLength(12);
+    });
+
+    it("refuses an order it does not know, before with order=asc, after without it, and a key that is not one", async () => {
+      for (const path of ["/api/txs?order=up", "/api/txs?order=ASC", "/api/txs?order=asc&before=3:1", "/api/txs?after=2:1", "/api/txs?order=asc&after=x", "/api/txs?order=asc&after=1", "/api/txs?format=csv&order=bogus", "/api/txs?format=csv&order=asc"]) {
+        expect((await get(path)).status, path).toBe(400);
+      }
+      // The file is newest first, and says so by taking order=desc as it does the list.
+      expect((await get("/api/txs?format=csv&order=desc")).status).toBe(200);
+    });
+
+    it("reads from the primary key in order, with no sort", async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("begin");
+        await client.query("set local enable_seqscan = off");
+        for (const key of [[null, null], [2, 3]] as (number | null)[][]) {
+          const plan = (await client.query(
+            `explain select ${txSelect} from transactions t join blocks b on b.number = t.block_number
+             where ($1::bigint is null or (t.block_number, t.tx_index) > ($1::bigint, $2::int)) order by t.block_number, t.tx_index limit 26`, key)).rows.map((r) => r["QUERY PLAN"]).join("\n");
+          expect(plan).toMatch(/Index (Only )?Scan/);
+          expect(plan).not.toMatch(/Sort Key|Seq Scan on transactions/);
+        }
+        await client.query("rollback");
+      } finally { client.release(); }
+    });
   });
 });

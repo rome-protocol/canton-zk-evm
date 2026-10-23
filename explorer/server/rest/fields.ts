@@ -56,6 +56,8 @@ export const REST_FIELDS = {
   page: ["items", "next"],
   /** A page of a list that stage 2 fills: `derived` is false while the derive cursor has not reached the block, and the list is then empty, not final. */
   derivedPage: ["derived", "items", "next"],
+  /** The token list: the page, the list's own total and each standard's count. */
+  tokenPage: ["derived", "items", "next", "total", "counts", "gatewayCount"],
   /** The newest transactions: a page, with how many the chain holds (from the rollups; null when they cannot say, and for a filtered list) and when that was counted to. */
   txPage: ["items", "next", "total", "totalAsOfBlock", "totalAsOf"],
   blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "baseFee", "updateId", "recordTime", "proofSeconds", "finalSeconds", "commitSeconds"],
@@ -80,7 +82,7 @@ export const REST_FIELDS = {
   log: ["logIndex", "position", "address", "topics", "data", "decoded"],
   rawLog: ["logIndex", "address", "topics", "data"],
   internal: ["traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
-  transfer: ["logIndex", "batchIndex", "token", "from", "to", "amount", "tokenId"],
+  transfer: ["logIndex", "batchIndex", "methodId", "creation", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
   trace: ["frames", "truncated"],
   frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
   updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block"],
@@ -99,9 +101,9 @@ export const REST_FIELDS = {
   /** A log a contract wrote: the log, the transaction it is in, and that transaction's method id. */
   contractEvent: ["txHash", "block", "txIndex", "logIndex", "address", "topics", "data", "method", "creation"],
   /** A token transfer of an address or of a token, with the transaction it is in. */
-  tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "token", "from", "to", "amount", "tokenId"],
+  tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "methodId", "creation", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
   /** What an address holds of one token (or of one id of an ERC-1155), as of the block it last moved. */
-  holding: ["token", "standard", "name", "symbol", "decimals", "tokenId", "value", "updatedBlock"],
+  holding: ["token", "standard", "name", "symbol", "decimals", "totalSupply", "tokenId", "value", "updatedBlock"],
   coinPoint: ["block", "balance"],
   contractItem: ["address", "name", "origin", "creator", "creationBlock", "interactionCount", "verified", "matchType", "codeSize", "destroyedBlock", "standard", "balance", "balanceBlock", "txCount", "internalCount"],
   contractDetail: [
@@ -116,9 +118,9 @@ export const REST_FIELDS = {
     "license", "settings", "files", "abi", "constructorArgs", "libraries", "verifiedAt", "matchNote",
   ],
   sourceFile: ["path", "content"],
-  tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus"],
+  tokenItem: ["address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified"],
   tokenDetail: [
-    "address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus",
+    "address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified",
     "totalSupplyBlock", "balanceMode", "derived",
   ],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
