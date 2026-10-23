@@ -10,10 +10,14 @@ import { Blocks } from "./pages/Blocks.tsx";
 import { Block } from "./pages/Block.tsx";
 import { CantonUpdate, CantonUpdates } from "./pages/Canton.tsx";
 import { Faucet } from "./pages/Faucet.tsx";
+import { Leg } from "./pages/Leg.tsx";
+import { Legs } from "./pages/Legs.tsx";
 import { Home } from "./pages/Home.tsx";
 import { Search } from "./pages/Search.tsx";
 import { ApiDocs } from "./pages/ApiDocs.tsx";
 import { Stats } from "./pages/Stats.tsx";
+import { Token } from "./pages/Token.tsx";
+import { Tokens } from "./pages/Tokens.tsx";
 import { Tx } from "./pages/Tx.tsx";
 import { Txs } from "./pages/Txs.tsx";
 
@@ -34,7 +38,10 @@ export function App() {
           <Route path="/contracts" element={<Contracts />} />
           <Route path="/contract/:addr" element={<Contract />} />
           <Route path="/address/:addr" element={<Address />} />
-          <Route path="/token/:addr" element={<Address tracker />} />
+          <Route path="/tokens" element={<Tokens />} />
+          <Route path="/token/:addr" element={<Token />} />
+          <Route path="/legs" element={<Legs />} />
+          <Route path="/leg/:id" element={<Leg />} />
           <Route path="/txs" element={<Txs />} />
           <Route path="/tx/:hash" element={<Tx />} />
           <Route path="/search" element={<Search />} />

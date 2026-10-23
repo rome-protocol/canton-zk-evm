@@ -9,17 +9,17 @@ describe("the header", () => {
     renderApp("/faucet");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
     expect(nav.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
-      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Contracts", "/contracts"], ["Canton", "/canton"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
+      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Contracts", "/contracts"], ["Tokens", "/tokens"], ["Canton", "/canton"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
     ]);
     expect(nav.getByRole("link", { name: "Faucet" })).toHaveClass("active");
     expect(nav.getByRole("link", { name: "Home" })).not.toHaveClass("active");
   });
 
-  it("draws no link to a page that has no route, so that no header link leads to Not found", async () => {
+  it("links the Tokens page now that it has a route", async () => {
     fakeApi(route({}));
     renderApp("/");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
-    for (const gone of ["Tokens"]) expect(nav.queryByRole("link", { name: gone })).toBeNull();
+    expect(nav.getByRole("link", { name: "Tokens" })).toHaveAttribute("href", "/tokens");
   });
 
   it("has the search box in the header on every page but the home page, where the big one is", async () => {

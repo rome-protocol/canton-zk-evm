@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -119,8 +119,8 @@ export function route(h: {
   status?: () => Reply; block?: (id: string) => Reply; tx?: (hash: string) => Reply; address?: (a: string) => Reply; search?: (q: string) => Reply;
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
-  addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
-  blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
+  addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
+  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -133,7 +133,9 @@ export function route(h: {
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "addresses") return h.addresses ? h.addresses(decodeURIComponent(arg), sub, path) : gone();
-    if (kind === "tokens" && arg && !sub) return h.tokens ? h.tokens(decodeURIComponent(arg)) : gone();
+    if (kind === "legs") return h.legs ? h.legs(decodeURIComponent(arg), path) : gone();
+    if (kind === "tokens" && arg && !sub && !h.tokenPages) return h.tokens ? h.tokens(decodeURIComponent(arg)) : gone();
+    if (kind === "tokens") return h.tokenPages ? h.tokenPages(decodeURIComponent(arg), sub, path) : gone();
     if (kind === "contracts") return h.contracts ? h.contracts(decodeURIComponent(arg), sub, path) : gone();
     if (kind === "faucet") return h.faucet ? h.faucet() : gone();
     if (kind === "txs" && arg) {
@@ -239,4 +241,20 @@ export function contractSource(n = 0xcb, over: Partial<ContractSource> = {}): Co
 export const unverifiedSource = (n = 0xcb): ContractSource => ({
   address: addr(n), verified: false, matchType: null, language: null, compilerVersion: null, codeFormat: null, contractPath: null, contractName: null, optimizerEnabled: null, optimizerRuns: null,
   evmVersion: null, license: null, settings: null, files: [], abi: null, constructorArgs: null, libraries: null, verifiedAt: null, matchNote: null,
+});
+
+/** Test USD as the token list gives it: an ERC-20 of 6 decimals with a million in supply, 5 holders and 6 transfers. */
+export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenListItem => ({
+  address: addr(n), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", holderCount: 5, transferCount: 6, firstTransferBlock: 19,
+  gatewayWrapped: false, metadataStatus: "read", ...over,
+});
+export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, ...over });
+export const tokenHolder = (n: number, value: string, over: Partial<TokenHolder> = {}): TokenHolder => ({ holder: addr(n), tokenId: "0", value, updatedBlock: 20, ...over });
+export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}): AddressTransferItem => ({
+  txHash: hash(n), block: 20, txIndex: 0, logIndex: n, batchIndex: 0, token: addr(0xcb), from: addr(0xa1), to: addr(0xa2), amount: "100000000", tokenId: null, ...over,
+});
+
+/** A gateway leg as /api/legs gives it: leg n of block 21, made by transaction n. */
+export const legListItem = (n: number, over: Partial<LegListItem> = {}): LegListItem => ({
+  block: 21, txHash: hash(0xd0 + n), legIndex: n, txIndex: n, logIndex: n + 1, kind: "deposit", legId: hash(0xe0 + n), token: addr(0xb1), account: addr(0xa1), amount: "2500000", ...over,
 });

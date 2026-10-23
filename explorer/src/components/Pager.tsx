@@ -14,7 +14,8 @@ export function usePaged<P extends Page<unknown>>(key: readonly unknown[], read:
   if (seen !== listKey) { setSeen(listKey); setCursors([null]); }
   const at = seen !== listKey ? null : (cursors[cursors.length - 1] ?? null);
   const q = useQuery({ queryKey: [...key, at], queryFn: () => read(at), placeholderData: keepPreviousData, refetchInterval });
-  const next = q.data?.next ?? null;
+  // Placeholder data is the list before this one: its cursor belongs to that list, so it is never paged with.
+  const next = q.isPlaceholderData ? null : (q.data?.next ?? null);
   return {
     data: q.data, error: q.error, isLoading: q.isLoading,
     page: seen !== listKey ? 1 : cursors.length,

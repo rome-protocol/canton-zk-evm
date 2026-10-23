@@ -72,19 +72,6 @@ describe("the address page: the head and the overview", () => {
     expect(within(more).getByText("First seen", { selector: "dt" }).nextElementSibling).toHaveTextContent("—");
   });
 
-  it("names the transaction and the block that created a contract", async () => {
-    await open(addressDetail({ kind: "contract", createdBy: { txHash: hash(0xf5), block: 2 } }), {}, `/token/${addressDetail().address}`);
-    expect(kind()).toHaveTextContent("Contract");
-    expect(row("Created by")).toHaveTextContent("0xf5f5…f5f5 in block 2");
-    expect(within(row("Created by")).getByRole("link", { name: "0xf5f5…f5f5" })).toHaveAttribute("href", `/tx/${hash(0xf5)}`);
-  });
-
-  it("names a token by its own name and symbol, and shows them as text", async () => {
-    await open(addressDetail({ address: addr(0xcb), kind: "token", token: { name: "<img src=x onerror=alert(1)>", symbol: "TKA", decimals: 18 } }), {}, `/token/${addr(0xcb)}`, "<img src=x onerror=alert(1)> (TKA)");
-    expect(kind()).toHaveTextContent("Token");
-    expect(document.querySelector("img[src='x']")).toBeNull();
-  });
-
   it("says a count is partial while the explorer has not read every block", async () => {
     await open(addressDetail({ derived: false }));
     expect(screen.getByText(/still reading blocks/)).toBeInTheDocument();
@@ -95,7 +82,7 @@ describe("the address page: token holdings", () => {
   const withHoldings = (items: ReturnType<typeof holding>[], d = true) => ({ tokens: () => derived(items, null, d) });
 
   it("lists what the address holds, with each balance as of the block it last moved", async () => {
-    await open(addressDetail(), withHoldings([holding(), holding({ token: addr(0xcc), standard: "ERC-721", name: "Ostia Pass", symbol: "OPASS", decimals: null, tokenId: "3", value: "1", updatedBlock: 22 })]));
+    await open(addressDetail(), withHoldings([holding(), holding({ token: addr(0xcc), standard: "ERC-721", name: "Ostia Pass", symbol: "OPASS", decimals: null, tokenId: "0", value: "2", updatedBlock: 22 }), holding({ token: addr(0xcd), standard: "ERC-1155", name: null, symbol: "ITEM", decimals: null, tokenId: "7", value: "40", updatedBlock: 23 })]));
     const card = await screen.findByRole("region", { name: "Token holdings" });
     await within(card).findByText("Test USD");
     expect(card).toHaveTextContent("995,000 tUSD");
@@ -103,7 +90,10 @@ describe("the address page: token holdings", () => {
     expect(card).toHaveTextContent("ERC-20");
     expect(card).toHaveTextContent("as of block 20");
     expect(within(card).getByRole("link", { name: "Test USD" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
-    expect(card).toHaveTextContent("OPASS #3");
+    expect(card).toHaveTextContent("OPASS · ERC-721");
+    expect(card).toHaveTextContent("2 tokens");
+    expect(card).not.toHaveTextContent("OPASS #0");
+    expect(card).toHaveTextContent("ITEM #7");
     expect(card).toHaveTextContent("as of block 22");
   });
 

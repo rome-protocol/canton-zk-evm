@@ -1,2 +1,4 @@
 /** Said on every block page. It says what Canton keeps from the public, and who does see it. It gives no count of legs: a count could point at one public transfer. */
 export const LEGS_THIS_BLOCK = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
+/** The same, for a list of the legs of many blocks. */
+export const LEGS_THESE_BLOCKS = "Daml legs settled with these blocks are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
