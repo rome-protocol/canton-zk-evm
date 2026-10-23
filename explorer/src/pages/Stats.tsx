@@ -118,11 +118,16 @@ function Rule({ s }: { s: StatsSummary }) {
   );
 }
 
+/** A window as the screen writes it: 24 h, 10 min, 90 s. */
+const period = (seconds: number) => (seconds % 3600 === 0 ? `${seconds / 3600} h` : seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds} s`);
+
 /** The line under the turned-away count: why, or since when it was not recorded. Only reasons that had a refusal are named. */
-function turnedAwaySub(f: StatsSummary["faucet"]): string {
+function turnedAwaySub(f: StatsSummary["faucet"], info?: { perAddressSeconds?: number; perIpSeconds?: number } | null): string {
   if (f.turnedAway === null) return f.turnedAwaySince ? `not recorded before ${utcMinute(Date.parse(f.turnedAwaySince))}` : "not recorded";
   const r = f.turnedAway.byReason;
-  const parts = [[r.address, "same address in 24 h: "], [r.ip, "same network address in 10 min: "], [r.hour, "hourly cap: "], [r.captcha, "failed check: "]].filter(([n]) => (n as number) > 0).map(([n, w]) => `${w}${count(n as number)}`);
+  // The windows are the ones the faucet runs with; until they are read, only the kind of address is named.
+  const within = (seconds: number | undefined) => (typeof seconds === "number" && seconds > 0 ? ` in ${period(seconds)}` : "");
+  const parts = [[r.address, `same address${within(info?.perAddressSeconds)}: `], [r.ip, `same network address${within(info?.perIpSeconds)}: `], [r.hour, "hourly cap: "], [r.captcha, "failed check: "]].filter(([n]) => (n as number) > 0).map(([n, w]) => `${w}${count(n as number)}`);
   return parts.length ? parts.join(" · ") : "requests the limits refused";
 }
 
@@ -135,9 +140,9 @@ function FaucetCard({ s, faucetOn, coin }: { s: StatsSummary; faucetOn: boolean;
       <div className="cells">
         <Cell k="Requests" v={count(f.requests)} sub="in this window" />
         <Cell k="Sent" v={count(f.sent)} sub={`${f.final === f.sent ? "all final" : `${count(f.final)} final`}${f.failed ? ` · ${count(f.failed)} failed` : ""}`} />
-        <Cell k="Turned away by the limits" v={f.turnedAway === null ? "Not recorded" : count(f.turnedAway.total)} sub={turnedAwaySub(f)} />
+        <Cell k="Turned away by the limits" v={f.turnedAway === null ? "Not recorded" : count(f.turnedAway.total)} sub={turnedAwaySub(f, info)} />
         <Cell k="Time to final, faucet sends" v={f.timeToFinal ? sec(f.timeToFinal.median) : DASH} sub={f.timeToFinal ? `median · p95 ${sec(f.timeToFinal.p95)}` : "no faucet send was final in this window"} />
-        <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol}${typeof info.balanceBlock === "number" ? `, as of block ${count(info.balanceBlock)}` : ""} · queue now ${info.queue ?? 0}` : faucetOn ? "reading…" : "the faucet is off"} />
+        <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol}${typeof info.balanceBlock === "number" ? `, as of block ${count(info.balanceBlock)}` : info.balanceBlock === null ? ", as of the newest block, which may not be final" : ""} · queue now ${info.queue ?? 0}` : faucetOn ? "reading…" : "the faucet is off"} />
       </div>
     </section>
   );
