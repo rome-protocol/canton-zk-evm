@@ -62,6 +62,7 @@ function Row({ c, coin, now }: { c: ContractListItem; coin: { symbol: string; de
 
 function listLabel(shown: number, from: number, d: ContractListPage | undefined): string {
   if (shown === 0) return d?.derived === false ? "The explorer has not read this far yet." : "No contracts yet.";
+  if (d && typeof d.total !== "number") return `Showing ${count(from + 1)}–${count(from + shown)} contracts`;
   if (!d || d.total <= shown) return `Showing all ${plural(shown, "contract")}`;
   return `Showing ${count(from + 1)}–${count(from + shown)} of ${count(d.total)} contracts`;
 }

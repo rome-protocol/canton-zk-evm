@@ -217,4 +217,10 @@ describe("the contracts page", () => {
     await open();
     expect(screen.queryByText("System")).toBeNull();
   });
+
+  it("never writes 'undefined' when an older explorer sends no total: it shows the rows it has", async () => {
+    await open(() => L([contractItem(0x30), contractItem(0x31)], "d1", { total: undefined as unknown as number }));
+    expect(await screen.findByText("Showing 1–2 contracts")).toBeInTheDocument();
+    expect(screen.queryByText(/undefined/)).toBeNull();
+  });
 });
