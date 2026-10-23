@@ -513,7 +513,9 @@ describe("the value of a transaction that is not final yet", () => {
     const logs = [{ address: addr(0x9c), topics: [TRANSFER, "0x" + "0".repeat(64), "0x" + "0".repeat(24) + "72".repeat(20), "0x" + (3).toString(16).padStart(64, "0")], data: "0x" }];
     const nft = { address: addr(0x9c), name: "Test NFT", symbol: "tNFT", kind: "token", standard: "ERC-721", decimals: null, verified: true };
     const row = await open(proving({ to: addr(0x9c), block: { number: 4, hash: null, updateId: null }, success: true, logs, transfer: null }), [nft]);
-    expect(await within(row).findByText("tNFT #3")).toHaveClass("tname");
+    // The symbol stands in a <bdi> inside the name, so the name's text is read whole.
+    await waitFor(() => expect(row.querySelector(".tname")).toHaveTextContent("tNFT #3"));
+    expect(row.querySelector(".tname bdi")).toHaveTextContent("tNFT");
   });
 
   it("shows the coin alone when the transaction decodes to no transfer", async () => {

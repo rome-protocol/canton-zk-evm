@@ -9,7 +9,7 @@ import type { Label, TokenMove } from "../api.ts";
 import { useLabels } from "../labels.ts";
 import { addr, fakeApi, reply } from "../test-utils.tsx";
 import { AddressCell } from "./AddressCell.tsx";
-import { TokenChip } from "./Amount.tsx";
+import { Amount, TokenChip } from "./Amount.tsx";
 import { ICON_NAMES } from "./Icon.tsx";
 
 const usd: Label = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
@@ -86,15 +86,15 @@ describe("a token amount chip", () => {
 
   it("shows a token id as 'OPASS #3'", () => {
     render(<TokenChip move={move({ token: pass.address, amount: null, tokenId: "3", standard: "ERC-721", decimals: null })} label={pass} />);
-    expect(screen.getByText("OPASS #3")).toBeInTheDocument();
+    expect(document.querySelector(".tname")!.textContent).toBe("OPASS #3");
   });
 
   it("shows the number of a many-copies token before its id, and says nothing of one copy", () => {
     const { unmount } = render(<TokenChip move={move({ token: pass.address, amount: "5", tokenId: "3", standard: "ERC-1155", decimals: null })} label={{ ...pass, standard: "ERC-1155" }} />);
-    expect(screen.getByText("5 × OPASS #3")).toBeInTheDocument();
+    expect(document.querySelector(".tname")!.textContent).toBe("5 × OPASS #3");
     unmount();
     render(<TokenChip move={move({ token: pass.address, amount: "1", tokenId: "3", standard: "ERC-1155", decimals: null })} label={{ ...pass, standard: "ERC-1155" }} />);
-    expect(screen.getByText("OPASS #3")).toBeInTheDocument();
+    expect(document.querySelector(".tname")!.textContent).toBe("OPASS #3");
   });
 
   it("names a token it has no label for by its short address, and says so", () => {
@@ -153,5 +153,30 @@ describe("the icons the cells use", () => {
   it("has the funnel and the coin", () => {
     expect(ICON_NAMES).toContain("funnel");
     expect(ICON_NAMES).toContain("coin");
+  });
+});
+
+describe("an amount", () => {
+  it("sets the symbol apart in its own bdi", () => {
+    const { container } = render(<Amount raw="5000000" decimals={6} symbol={"\u202Eevil"} />);
+    expect([...container.querySelectorAll("bdi")].map((b) => b.textContent)).toEqual(["\u202Eevil"]);
+  });
+});
+
+describe("a token chip with a hostile symbol", () => {
+  const evil = { ...pass, symbol: "\u202EOPASS" };
+  it("keeps the token id outside the symbol's bdi, so the symbol cannot reorder it", () => {
+    const { container } = render(<TokenChip move={move({ token: pass.address, amount: null, tokenId: "12", standard: "ERC-721", decimals: null })} label={evil} />);
+    const bdis = [...container.querySelectorAll("bdi")];
+    expect(bdis.map((b) => b.textContent)).toEqual(["\u202EOPASS"]);
+    const wrap = container.querySelector(".tname")!;
+    expect(wrap.textContent).toBe("\u202EOPASS #12");
+    expect(bdis[0]!.textContent).not.toContain("#12");
+  });
+
+  it("keeps the number of copies and the amount outside the symbol's bdi", () => {
+    const { container } = render(<TokenChip move={move({ token: pass.address, amount: "5", tokenId: "12", standard: "ERC-1155", decimals: null })} label={evil} />);
+    expect(container.querySelector(".tname")!.textContent).toBe("5 \u00D7 \u202EOPASS #12");
+    expect(container.querySelector("bdi")!.textContent).toBe("\u202EOPASS");
   });
 });

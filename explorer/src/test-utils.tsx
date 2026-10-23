@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -126,10 +126,12 @@ export function route(h: {
   blocks?: (path: string) => Reply; txs?: () => Reply; inFlight?: () => Reply; stats?: (path: string) => Reply; openapi?: () => Reply;
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
+  labels?: (path: string) => Reply;
   legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
+    if (kind === "labels") return h.labels ? h.labels(path) : gone();
     if (kind === "status") return h.status ? h.status() : reply(status());
     if (kind === "blocks" && arg && sub === "transactions") return h.blockTxs ? h.blockTxs(decodeURIComponent(arg), path) : reply(page([]));
     if (kind === "blocks" && arg && sub === "legs") return h.blockLegs ? h.blockLegs(decodeURIComponent(arg), path) : reply(page([]));
@@ -267,3 +269,12 @@ export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}
 export const legListItem = (n: number, over: Partial<LegListItem> = {}): LegListItem => ({
   block: 21, txHash: hash(0xd0 + n), legIndex: n, txIndex: n, logIndex: n + 1, kind: "deposit", legId: hash(0xe0 + n), token: addr(0xb1), account: addr(0xa1), amount: "2500000", ...over,
 });
+
+/** A fake /api/labels answering each address asked from `known`, as an address the index holds nothing of when it is not there. */
+export function labelsOf(known: Label[]) {
+  return (path: string): Reply => {
+    const asked = decodeURIComponent(path.split("addresses=")[1]!).split(",");
+    return reply({ items: asked.map((a) => known.find((l) => l.address === a) ?? { address: a, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false }) });
+  };
+}
+export const tokenLabel = (over: Partial<Label> = {}): Label => ({ address: addr(0xcb), name: "Test token A", symbol: "TKA", kind: "token", standard: "ERC-20", decimals: 18, verified: true, ...over });

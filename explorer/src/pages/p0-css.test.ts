@@ -79,3 +79,21 @@ describe("the card header", () => {
     expect(tx).not.toMatch(/\.card-h\b/);
   });
 });
+
+describe("the transaction page on a phone, as screen 14 has it", () => {
+  const block = (width: number) => { const m = new RegExp(`@media \\(max-width: ${width}px\\) \\{([\\s\\S]*?)\\n\\}`).exec(tx); return m ? m[1]! : ""; };
+  const body = (css: string, sel: string) => new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  it("shows no delta under a step's time", () => {
+    expect(body(block(900), ".how-steps.way-steps .way-delta")).toMatch(/display:\s*none/);
+  });
+  it("sets the footer's lines one under another, left-aligned", () => {
+    expect(body(block(900), ".way-foot-l, .way-foot-r")).toMatch(/text-align:\s*left/);
+    expect(body(block(900), ".way-foot")).toMatch(/flex-direction:\s*column/);
+  });
+  it("stacks each argument of the input data instead of scrolling a table sideways", () => {
+    const phone = block(720);
+    expect(body(phone, ".args-table thead")).toMatch(/display:\s*none/);
+    expect(body(phone, ".args-table tr")).toMatch(/display:\s*grid/);
+    expect(body(phone, ".args-table td:nth-child(4)")).toMatch(/grid-column:\s*1 \/ -1/);
+  });
+});
