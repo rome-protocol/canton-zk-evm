@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # L5 of the nightly load test: the tools developers verify and read contracts with, pointed at the explorer's Etherscan-compatible API. The steps, in the order
 # tests/demo_nightly_chain.sh runs them (probe, tools and prepare on the runner; build and verify in the pinned browser image, which has glibc and Node 24):
-#   l5.sh probe                     DOOR (in this folder) says whether the Etherscan-compatible API is there; the probe GET /api?module=proxy&action=eth_blockNumber must agree:
-#                                   exit 0 there and answering (L5 runs), 3 absent and not answering (a skip), 4 anything else (a failure) (EXPLORER)
+#   l5.sh probe                     whether the Etherscan-compatible API is there, from GET /api/openapi.json (paths['/api'].get['x-modules'], never a live call to the API):
+#                                   exit 0 and the modules in it on stdout (L5 runs), 3 no /api door in the description (a skip), 4 the description cannot be read (a failure) (EXPLORER)
 #   l5.sh skipped                   the JSON of a skip
 #   l5.sh tools <folder>            Foundry, the release and SHA-256 in TOOLS, into <folder>
 #   l5.sh prepare <folder>          this directory, with foundry.toml filled in for the chain, into <folder> (L5_EXPLORER, L5_CHAIN_ID)
 #   l5.sh build                     in <folder>/project: npm ci, forge build, and the contract's creation code to <folder>/creation.hex
-#   l5.sh verify                    in <folder>/project: the checks of l5.mjs against the deployed contracts
+#   l5.sh verify                    in <folder>/project: the checks of l5.mjs against the deployed contracts, those of the modules in L5_MODULES (the contract module's are SKIPPED, never passed, while it is not there)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 UA='Rome Protocol rome@romeprotocol.com'
@@ -20,32 +20,32 @@ export L5_SOLC_VERSION
 case "${1:-}" in
   probe)
     : "${EXPLORER:?EXPLORER is not set}"
-    # Whether the API's door is there is fixed in the repo, in DOOR ("absent" or "present"): whoever lands E8b (the proxy module) and E9b (the contract module) sets it
-    # to "present". A live probe alone must not decide it, because a timeout, a 429 or a regressed module would then be a skip, and a skip is a green job.
-    marker=$(tr -d '[:space:]' < "${L5_DOOR_FILE:-$HERE/DOOR}")
-    [ "$marker" = present ] || [ "$marker" = absent ] || fail "DOOR says '$marker': it must be 'absent' or 'present'"
-    answered=0
+    # Whether the Etherscan-compatible API is there is read from the explorer's own description of itself, GET /api/openapi.json: paths['/api'].get['x-modules'] is the table
+    # of modules the door answers from, so it lists what exists and cannot drift. A live call to the API decides nothing: a timeout, a 429 or a regressed module must not be
+    # a skip, and a skip is a green job. The description itself is retried; when it cannot be read the explorer is broken and L5 FAILS (exit 4).
+    # Exit 0 and the modules, comma separated, on stdout: the door is there and L5 runs the checks of the modules in it. Exit 3: the description has no /api door (a skip).
+    spec=""
     for try in $(seq 1 "${L5_PROBE_TRIES:-3}"); do
-      out=$(curl -s -m 20 -A "$UA" -w '\n%{http_code}' "$EXPLORER/api?module=proxy&action=eth_blockNumber" || true)
+      out=$(curl -s -m 20 -A "$UA" -w '\n%{http_code}' "$EXPLORER/api/openapi.json" || true)
       code=${out##*$'\n'}; body=${out%$'\n'*}
-      if [ "$code" = 200 ] && jq -e '.result | strings | test("^0x[0-9a-fA-F]+$")' <<<"$body" >/dev/null 2>&1; then answered=1; break; fi
-      [ "$marker" = absent ] && break
+      if [ "$code" = 200 ] && jq -e '.paths | type == "object"' <<<"$body" >/dev/null 2>&1; then spec=$body; break; fi
       [ "$try" = "${L5_PROBE_TRIES:-3}" ] || sleep "${L5_PROBE_WAIT:-5}"
     done
-    if [ "$marker" = present ]; then
-      [ "$answered" = 1 ] && exit 0
-      echo "L5 FAIL: DOOR says the Etherscan-compatible API is there, but GET /api?module=proxy&action=eth_blockNumber answered HTTP $code: ${body:0:200}" >&2
+    if [ -z "$spec" ]; then
+      echo "L5 FAIL: GET /api/openapi.json answered HTTP $code and no OpenAPI document: ${body:0:200}" >&2
       exit 4
     fi
-    if [ "$answered" = 1 ]; then
-      echo "L5 FAIL: the explorer answers GET /api?module=proxy&action=eth_blockNumber, but DOOR still says 'absent': set it to 'present' so that L5 runs" >&2
-      exit 4
+    if ! jq -e '(.paths["/api"].get["x-modules"] // null) | type == "object"' <<<"$spec" >/dev/null 2>&1; then
+      exit 3   # no /api door in the explorer's description: a skip
     fi
-    exit 3   # absent, and nothing answers: a skip
+    modules=$(jq -r '.paths["/api"].get["x-modules"] | keys_unsorted | join(",")' <<<"$spec")
+    [ -n "$modules" ] || { echo "L5 FAIL: /api/openapi.json lists the /api door with no modules" >&2; exit 4; }
+    echo "$modules"
+    exit 0
     ;;
   skipped)
     # The results of a skip. It is not a pass: the status says "skipped" and the reason says what is missing.
-    jq -n '{status: "skipped", reason: "SKIPPED: E8b/E9b not landed", checks: [], failures: []}'
+    jq -n '{status: "skipped", reason: "SKIPPED: /api/openapi.json has no Etherscan-compatible /api door (paths[\"/api\"].get[\"x-modules\"])", checks: [], failures: []}'
     ;;
   tools)
     dir=${2:?the folder for Foundry}

@@ -1,16 +1,23 @@
 /**
  * L5's verdict, as pure code so a test holds it without a chain. L5 asks the explorer's Etherscan-compatible API to do what developers' tools ask of Etherscan.
- * Until that API exists (E8b for the proxy module, E9b for the contract module) every check would fail for a reason that is not a defect, so `l5.sh probe` decides
- * first, from DOOR in this folder and a live probe that must agree with it. A skip is never a pass: the results say "skipped" and the job summary says so.
- * Once the door is there, any check that fails fails the job.
+ * `l5.sh probe` decides first, from /api/openapi.json (paths['/api'].get['x-modules']), whether the door is there and which modules are in it. Once the door is there,
+ * any check that fails fails the job. A module that is not in the door yet (today the contract module, E9b) has its checks reported as skipped, naming the module:
+ * a skip is never a pass, so a run with skips is "partial", and the job summary says so.
  */
-export interface Check { name: string; ok: boolean; seconds: number; detail: string }
-export type Status = "passed" | "failed";
-export interface Summary { status: Status; checks: Check[]; failures: string[] }
+export interface Check { name: string; ok: boolean; seconds: number; detail: string; /** the module the check needs and the door lacks; the check did not run */ skipped?: string }
+export type Status = "passed" | "partial" | "failed" | "skipped";
+export interface Summary { status: Status; checks: Check[]; failures: string[]; skipped: string[] }
 
-/** The summary of a run. Whether L5 runs at all is decided before, by `l5.sh probe` (DOOR and a live probe); a skip is written by `l5.sh skipped`, never from here. */
+/**
+ * The summary of a run. "failed": a check ran and failed, or none ran at all with the door there is a defect too. "passed": every check ran and passed. "partial": the checks that ran
+ * passed and some were skipped. "skipped": every check was skipped (no module of the door is one L5 tests).
+ */
 export function summarize(checks: Check[]): Summary {
-  const failures = checks.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`);
-  if (checks.length === 0) return { status: "failed", checks, failures: ["no check ran"] };
-  return { status: failures.length ? "failed" : "passed", checks, failures };
+  const ran = checks.filter((c) => c.skipped === undefined);
+  const skipped = checks.filter((c) => c.skipped !== undefined).map((c) => `${c.name}: SKIPPED, the ${c.skipped} module is not in the door`);
+  const failures = ran.filter((c) => !c.ok).map((c) => `${c.name}: ${c.detail}`);
+  if (checks.length === 0) return { status: "failed", checks, failures: ["no check ran"], skipped };
+  if (failures.length) return { status: "failed", checks, failures, skipped };
+  if (ran.length === 0) return { status: "skipped", checks, failures, skipped };
+  return { status: skipped.length ? "partial" : "passed", checks, failures, skipped };
 }

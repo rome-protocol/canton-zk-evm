@@ -1,5 +1,6 @@
-"""What decides whether the nightly's L5 runs, tested where it is decided: `explorer/test/l5/l5.sh probe` (DOOR, and a live probe that must agree with it) against
-a fake explorer. Exit 0 runs L5, 3 skips it, 4 fails the job. Needs bash, curl and jq."""
+"""What decides whether the nightly's L5 runs, tested where it is decided: `explorer/test/l5/l5.sh probe`, which reads the explorer's /api/openapi.json
+(paths['/api'].get['x-modules']) and never calls the API itself, against a fake explorer. Exit 0 and the modules runs L5, 3 skips it, 4 fails the job.
+Needs bash, curl and jq."""
 import http.server
 import json
 import subprocess
@@ -30,45 +31,49 @@ def serve(status, body):
 
 
 class Probe(unittest.TestCase):
-    def probe(self, marker, status, body):
+    def probe(self, status, body):
         server = serve(status, body)
         try:
-            with tempfile.TemporaryDirectory() as d:
-                door = Path(d) / "DOOR"
-                door.write_text(marker + "\n")
-                run = subprocess.run(["bash", str(L5 / "l5.sh"), "probe"], capture_output=True, text=True, timeout=60,
-                                     env={"PATH": __import__("os").environ["PATH"], "EXPLORER": f"http://127.0.0.1:{server.server_port}", "L5_DOOR_FILE": str(door),
-                                          "L5_PROBE_TRIES": "2", "L5_PROBE_WAIT": "0"})
-                return run.returncode, run.stderr
+            run = subprocess.run(["bash", str(L5 / "l5.sh"), "probe"], capture_output=True, text=True, timeout=60,
+                                 env={"PATH": __import__("os").environ["PATH"], "EXPLORER": f"http://127.0.0.1:{server.server_port}",
+                                      "L5_PROBE_TRIES": "2", "L5_PROBE_WAIT": "0"})
+            return run.returncode, run.stdout.strip(), run.stderr
         finally:
             server.shutdown()
             server.server_close()
 
-    OK = '{"jsonrpc":"2.0","id":83,"result":"0x1f"}'
+    @staticmethod
+    def spec(modules=None, door=True):
+        paths = {"/api/block/{id}": {"get": {}}}
+        if door:
+            get = {"tags": ["Etherscan"]}
+            if modules is not None:
+                get["x-modules"] = modules
+            paths["/api"] = {"get": get}
+        return json.dumps({"openapi": "3.1.0", "paths": paths})
 
-    def test_the_repo_says_absent(self):
-        self.assertEqual((L5 / "DOOR").read_text().strip(), "absent")
+    MODULES = {"account": ["balance"], "transaction": ["getstatus"], "proxy": ["eth_blockNumber"]}
 
-    def test_absent_and_not_answering_is_a_skip(self):
-        for status, body in [(404, '{"error":"not found"}'), (200, "<!doctype html>"), (200, '{"status":"0","result":"Invalid module"}'), (200, '{"result":null}')]:
-            self.assertEqual(self.probe("absent", status, body)[0], 3, (status, body))
+    def test_the_door_in_the_description_runs_l5_with_its_modules(self):
+        code, out, _ = self.probe(200, self.spec(self.MODULES))
+        self.assertEqual((code, out), (0, "account,transaction,proxy"))
 
-    def test_absent_but_answering_is_a_failure(self):
-        code, err = self.probe("absent", 200, self.OK)
-        self.assertEqual(code, 4)
-        self.assertIn("DOOR still says 'absent'", err)
+    def test_the_contract_module_appears_when_it_lands(self):
+        code, out, _ = self.probe(200, self.spec({**self.MODULES, "contract": ["getabi"]}))
+        self.assertEqual((code, out), (0, "account,transaction,proxy,contract"))
 
-    def test_present_and_answering_runs(self):
-        self.assertEqual(self.probe("present", 200, self.OK)[0], 0)
+    def test_no_door_in_the_description_is_a_skip(self):
+        self.assertEqual(self.probe(200, self.spec(door=False))[0], 3)
+        self.assertEqual(self.probe(200, self.spec(None))[0], 3)  # /api without x-modules
 
-    def test_present_and_not_answering_is_a_failure_not_a_skip(self):
-        for status, body in [(404, "{}"), (429, '{"error":"slow down"}'), (200, '{"status":"0","result":"Invalid module"}'), (500, "")]:
-            code, err = self.probe("present", status, body)
+    def test_a_description_that_cannot_be_read_is_a_failure_not_a_skip(self):
+        for status, body in [(404, "{}"), (429, '{"error":"slow down"}'), (500, ""), (200, "<!doctype html>"), (200, '{"openapi":"3.1.0"}')]:
+            code, _, err = self.probe(status, body)
             self.assertEqual(code, 4, (status, body))
             self.assertIn("L5 FAIL", err)
 
-    def test_a_marker_that_is_neither_is_refused(self):
-        self.assertNotIn(self.probe("maybe", 200, self.OK)[0], (0, 3))
+    def test_a_door_with_no_modules_is_a_failure(self):
+        self.assertEqual(self.probe(200, self.spec({}))[0], 4)
 
     def test_the_skip_is_not_a_pass(self):
         out = json.loads(subprocess.run(["bash", str(L5 / "l5.sh"), "skipped"], capture_output=True, text=True, check=True).stdout)

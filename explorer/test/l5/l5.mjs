@@ -2,11 +2,13 @@
  * L5 of the nightly load test: what developers' tools ask of the explorer's Etherscan-compatible API, with three Counter contracts the chain script deployed.
  * Run by `l5.sh verify` inside the pinned browser image, in <work folder>/project, once the probe has seen the API.
  *
- *   Foundry   forge verify-contract (standard JSON input) of the first contract and with --flatten (the single-file format) of the second; cast source and cast interface
- *   Hardhat   hardhat verify of the third
- *   ethers    an EtherscanProvider pointed at the explorer: the block number, balance, code, a transaction and its receipt, an eth_call, and the verified contract's ABI
+ *   proxy module     (the explorer's door, asked with plain fetch: ethers' EtherscanProvider refuses any chain that is not in its built-in list) the block number, the code, a
+ *                    transaction and its receipt and an eth_call, each against reth through ethers' JsonRpcProvider; account&action=balance against reth
+ *   contract module  Foundry: forge verify-contract (standard JSON input) of the first contract and with --flatten (the single-file format) of the second, cast source and
+ *                    cast interface; Hardhat: hardhat verify of the third; the verified contract's ABI (getabi)
  *
- * Reads L5_EXPLORER, L5_RPC, L5_CHAIN_ID, L5_ADDRS (three addresses, comma separated), L5_ARGS (the constructor argument of each, comma separated), L5_TX (the first
+ * Each group runs when its module is in L5_MODULES (the door's x-modules, from `l5.sh probe`); the checks of a module that is not there yet are SKIPPED naming the module,
+ * never passed. Reads L5_MODULES, L5_EXPLORER, L5_RPC, L5_CHAIN_ID, L5_ADDRS (three addresses, comma separated), L5_ARGS (the constructor argument of each, comma separated), L5_TX (the first
  * contract's creation transaction) and L5_OUT (the results file). Every check that fails is in the results, and the exit is 1 when any did.
  */
 import { spawnSync } from "node:child_process";
@@ -22,6 +24,7 @@ const [A, B, C] = (process.env.L5_ADDRS ?? "").split(",");
 const [ARG_A, ARG_B, ARG_C] = (process.env.L5_ARGS ?? "").split(",");
 const TX = process.env.L5_TX ?? "";
 const OUT = process.env.L5_OUT ?? "l5.json";
+const MODULES = (process.env.L5_MODULES ?? "").split(",").filter(Boolean);
 if (!EXPLORER || !RPC || !(CHAIN_ID > 0) || ![A, B, C, ARG_A, ARG_B, ARG_C, TX].every(Boolean)) {
   console.error("FAIL: L5_EXPLORER, L5_RPC, L5_CHAIN_ID, L5_ADDRS, L5_ARGS and L5_TX must be set");
   process.exit(1);
@@ -49,6 +52,19 @@ async function check(name, fn) {
   checks.push({ name, ok, seconds: (Date.now() - t0) / 1000, detail });
   console.log(`L5 ${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `: ${detail}`}`);
 }
+/** The group of checks of one module: they run when the door has the module, and are skipped, naming it, when it does not. */
+const SKIP_NOTE = { contract: "verifysourcecode, getabi and getsourcecode; E9b" };
+async function inModule(module, list) {
+  if (MODULES.includes(module)) {
+    for (const [name, fn] of list) await check(name, fn);
+    return;
+  }
+  for (const [name] of list) {
+    const detail = `SKIPPED: the ${module} module (${SKIP_NOTE[module] ?? module}) is not in /api/openapi.json's x-modules`;
+    checks.push({ name, ok: true, seconds: 0, detail, skipped: module });
+    console.log(`L5 SKIP ${name}: ${detail}`);
+  }
+}
 const must = (r, what) => {
   if (!r.ok) throw new Error(`${what} failed:\n${r.tail}`);
   return r;
@@ -66,54 +82,66 @@ const forgeVerify = (address, arg, extra) => {
   );
 };
 
-await check("forge verify-contract, standard JSON input", () => forgeVerify(A, ARG_A, []).tail);
-await check("forge verify-contract --flatten, the single-file format", () => forgeVerify(B, ARG_B, ["--flatten"]).tail);
-await check("cast source", () => {
-  const r = must(sh("cast", ["source", A, "--chain", String(CHAIN_ID), "--etherscan-api-key", "rome", "--explorer-api-url", API, "--explorer-url", EXPLORER]), "cast source");
-  if (!/contract\s+Counter\b/.test(r.text)) throw new Error(`the source has no Counter:\n${r.tail}`);
-});
-await check("cast interface", () => {
-  const r = must(sh("cast", ["interface", A, "--chain", String(CHAIN_ID), "--etherscan-api-key", "rome", "--explorer-api-url", API, "--explorer-url", EXPLORER]), "cast interface");
-  for (const fn of ["bump()", "count()"]) if (!r.text.includes(fn)) throw new Error(`the interface has no ${fn}:\n${r.tail}`);
-});
-await check("hardhat verify", () => must(sh("npx", ["hardhat", "verify", "--network", "rome", C, ARG_C]), "hardhat verify").tail);
-
-const { EtherscanProvider, Network, JsonRpcProvider, Interface } = createRequire(join(process.cwd(), "package.json"))("ethers");
-class Door extends EtherscanProvider {
-  getBaseUrl() {
-    return API;
-  }
-}
+const { Network, JsonRpcProvider, Interface } = createRequire(join(process.cwd(), "package.json"))("ethers");
 const network = new Network("rome", CHAIN_ID);
-const door = new Door(network, "rome");
 const reth = new JsonRpcProvider(RPC, network, { staticNetwork: network });
 const equal = (what, got, want) => {
   if (String(got) !== String(want)) throw new Error(`${what}: the explorer says ${got}, reth says ${want}`);
 };
-await check("ethers EtherscanProvider: block number, balance and code", async () => {
-  const [d, r] = [await door.getBlockNumber(), await reth.getBlockNumber()];
-  if (!(Math.abs(d - r) <= 10)) throw new Error(`block number: the explorer says ${d}, reth says ${r}`);
-  equal("balance", await door.getBalance(A), await reth.getBalance(A));
-  const code = await door.getCode(A);
-  if (code === "0x") throw new Error("no code at the contract");
-  equal("code", code, await reth.getCode(A));
-});
-await check("ethers EtherscanProvider: transaction, receipt and eth_call", async () => {
-  const tx = await door.getTransaction(TX);
-  if (!tx) throw new Error("no transaction");
-  equal("transaction hash", tx.hash, TX);
-  const receipt = await door.getTransactionReceipt(TX);
-  equal("receipt status", receipt?.status, 1);
-  const iface = new Interface(["function count() view returns (uint256)"]);
-  const out = await door.call({ to: A, data: iface.encodeFunctionData("count") });
-  equal("count()", iface.decodeFunctionResult("count", out)[0], ARG_A);
-});
-await check("ethers EtherscanProvider: the verified contract's ABI", async () => {
-  const abi = JSON.parse(await door.fetch("contract", { action: "getabi", address: A }));
-  if (!JSON.stringify(abi).includes("bump")) throw new Error("the ABI has no bump");
-});
+/** One call of the explorer's Etherscan-compatible API, the way a client asks Etherscan: a GET with module, action and the action's parameters. */
+async function door(module, action, params = {}) {
+  const url = `${API}?${new URLSearchParams({ module, action, ...params, apikey: "rome" })}`;
+  const res = await fetch(url, { headers: { "user-agent": "Rome Protocol rome@romeprotocol.com" }, signal: AbortSignal.timeout(30_000) });
+  if (!res.ok) throw new Error(`GET ${module}&action=${action}: HTTP ${res.status}`);
+  const body = await res.json();
+  if (body.error) throw new Error(`${module}&action=${action}: ${JSON.stringify(body.error)}`);
+  if (module !== "proxy" && body.status !== "1") throw new Error(`${module}&action=${action}: ${JSON.stringify(body).slice(0, 200)}`);
+  return body.result;
+}
+
+await inModule("proxy", [
+  ["proxy: block number and account balance", async () => {
+    const [d, r] = [Number(BigInt(await door("proxy", "eth_blockNumber"))), await reth.getBlockNumber()];
+    if (!(Math.abs(d - r) <= 10)) throw new Error(`block number: the explorer says ${d}, reth says ${r}`);
+    equal("balance", await door("account", "balance", { address: A, tag: "latest" }), await reth.getBalance(A));
+  }],
+  ["proxy: code", async () => {
+    const code = await door("proxy", "eth_getCode", { address: A, tag: "latest" });
+    if (code === "0x") throw new Error("no code at the contract");
+    equal("code", code, await reth.getCode(A));
+  }],
+  ["proxy: transaction, receipt and eth_call", async () => {
+    const tx = await door("proxy", "eth_getTransactionByHash", { txhash: TX });
+    if (!tx) throw new Error("no transaction");
+    equal("transaction hash", tx.hash, TX);
+    const receipt = await door("proxy", "eth_getTransactionReceipt", { txhash: TX });
+    equal("receipt status", receipt?.status, "0x1");
+    const iface = new Interface(["function count() view returns (uint256)"]);
+    const out = await door("proxy", "eth_call", { to: A, data: iface.encodeFunctionData("count"), tag: "latest" });
+    equal("count()", iface.decodeFunctionResult("count", out)[0], ARG_A);
+  }],
+]);
+
+await inModule("contract", [
+  ["forge verify-contract, standard JSON input", () => forgeVerify(A, ARG_A, []).tail],
+  ["forge verify-contract --flatten, the single-file format", () => forgeVerify(B, ARG_B, ["--flatten"]).tail],
+  ["cast source", () => {
+    const r = must(sh("cast", ["source", A, "--chain", String(CHAIN_ID), "--etherscan-api-key", "rome", "--explorer-api-url", API, "--explorer-url", EXPLORER]), "cast source");
+    if (!/contract\s+Counter\b/.test(r.text)) throw new Error(`the source has no Counter:\n${r.tail}`);
+  }],
+  // cast interface has no --explorer-api-url: it finds the explorer by --chain in the [etherscan] table of foundry.toml, in this folder
+  ["cast interface", () => {
+    const r = must(sh("cast", ["interface", A, "--chain", String(CHAIN_ID), "--etherscan-api-key", "rome"]), "cast interface");
+    for (const fn of ["bump()", "count()"]) if (!r.text.includes(fn)) throw new Error(`the interface has no ${fn}:\n${r.tail}`);
+  }],
+  ["hardhat verify", () => must(sh("npx", ["hardhat", "verify", "--network", "rome", C, ARG_C]), "hardhat verify").tail],
+  ["contract getabi", async () => {
+    const abi = JSON.parse(await door("contract", "getabi", { address: A }));
+    if (!JSON.stringify(abi).includes("bump")) throw new Error("the ABI has no bump");
+  }],
+]);
 
 const summary = summarize(checks);
-writeFileSync(OUT, JSON.stringify({ explorer: EXPLORER, chainId: CHAIN_ID, ...summary }, null, 2));
+writeFileSync(OUT, JSON.stringify({ explorer: EXPLORER, chainId: CHAIN_ID, modules: MODULES, ...summary }, null, 2));
 for (const f of summary.failures) console.error(`L5 FAIL: ${f.split("\n")[0]}`);
-process.exit(summary.status === "passed" ? 0 : 1);
+process.exit(summary.status === "failed" ? 1 : 0);
