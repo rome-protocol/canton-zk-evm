@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIELDS } from "../server/api.ts";
 import { REST_FIELDS } from "../server/rest/fields.ts";
 import {
-  ApiError, addressTransfersCsvPath, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getContractList, getContractListOldest, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
+  ApiError, addressTransfersCsvPath, addressTxsCsvPath, getAddressTxs, blocksCsvPath, getAddressContracts, getAddressTransfers, getAllTokenTransfers, getBlocks, getContractList, getContractListOldest, getInFlight, getStatsSeries, getStatsSummary, getStatus, getTokenList, getTokenListOldest, getTokenTransfers,
   getFaucetFacts, getTxPage, getTxPageOldest, getTxs, search, tokenTransfersCsvPath, txsCsvPath,
 } from "./api.ts";
 import { account, block, blockItem, holding, inFlight, status, tokenAddress, tokenItem, tokenTransfer, tx, txItem } from "./test-utils.tsx";
@@ -140,6 +140,13 @@ describe("the API client", () => {
     await getAddressTransfers(A, null, 10, { token: "x&standard=ERC-20" });
     expect(urls()).toEqual([`/api/addresses/${A}/token-transfers?limit=10`, `/api/addresses/${A}/token-transfers?limit=10&before=1%3A2%3A3&token=${T}&standard=ERC-20`, `/api/tokens/${T}/transfers?limit=10`,
       `/api/addresses/${A}/token-transfers?limit=10&standard=nft`, `/api/addresses/${A}/token-transfers?limit=10&token=${encodeURIComponent("x&standard=ERC-20")}`]);
+    answer(200, { items: [], next: null });
+    await getAddressTxs(A, null, 10);
+    await getAddressTxs(A, K, 10, "sent");
+    await getAddressTxs(A, null, 10, "received");
+    expect(urls()).toEqual([`/api/addresses/${A}/txs?limit=10`, `/api/addresses/${A}/txs?limit=10&before=1%3A2%3A3&direction=sent`, `/api/addresses/${A}/txs?limit=10&direction=received`]);
+    expect(addressTxsCsvPath(A)).toBe(`/api/addresses/${A}/txs?format=csv`);
+    expect(addressTxsCsvPath(A, "received")).toBe(`/api/addresses/${A}/txs?format=csv&direction=received`);
     answer(200, { items: [], next: null });
     await getAddressContracts(A, null, 10);
     await getAddressContracts(A, K, 10);
