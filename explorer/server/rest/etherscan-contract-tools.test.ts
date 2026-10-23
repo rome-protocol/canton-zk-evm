@@ -55,6 +55,9 @@ const foundryTool = (path: string | undefined, name: string): string | null => (
 const FORGE = foundryTool(process.env.EXPLORER_TEST_FORGE, "forge");
 const CAST = foundryTool(process.env.EXPLORER_TEST_CAST, "cast");
 const HARDHAT = existsSync(join(HARDHAT_DIR, "node_modules/.bin/hardhat")) ? join(HARDHAT_DIR, "node_modules/.bin/hardhat") : null;
+// The script of tests/demo_etherscan_contract.sh needs bash, jq and curl: the CI job runs these tests in the alpine Node image, which has none of them, so there the
+// rehearsal (tests/demo_rehearsal.sh, which runs the script on the runner) is what runs it.
+const HAVE_SHELL = ["bash", "jq", "curl"].every((c) => attempt(c, ["--version"]) !== null);
 const haveDocker = attempt("docker", ["image", "inspect", "--format", "{{.Id}}", IMAGE]) !== null;
 const ready = Boolean(TEST_URL) && haveDocker && existsSync(SOLC) && existsSync(TOOLS_SOLC);
 const require = process.env.EXPLORER_TEST_REQUIRE_CLIENTS === "1";
@@ -227,7 +230,7 @@ describe.skipIf(!ready || !(FORGE || HARDHAT))("Foundry and Hardhat against the 
       expect(none.out).toMatch(/not verified/i);
     });
 
-    it("tests/demo_etherscan_contract.sh, the script the rehearsal runs: forge in both formats, cast source and cast interface", async () => {
+    it.skipIf(!HAVE_SHELL)("tests/demo_etherscan_contract.sh, the script the rehearsal runs: forge in both formats, cast source and cast interface", async () => {
       const script = join(root, "tests/demo_etherscan_contract.sh");
       const tools = { SOLC: TOOLS_SOLC, FORGE: FORGE!, CAST: CAST! };
       // The script builds the two Box contracts (they differ in their optimizer runs, so neither is a similar match of the other) and says what to deploy.
