@@ -13,11 +13,17 @@ import type { Answer } from "../api.ts";
 import type { PublicRpc } from "../public-rpc.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
+import type { VerifyApi } from "../verifier/api.ts";
+import { NOT_VERIFIED, sourceCodeFields } from "./etherscan-contract-rest.ts";
 import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
 
 /** `page × offset` may be no more than this, as Etherscan's window is. */
 export const RESULT_WINDOW = 10_000;
 export const MAX_BALANCES = 20;
+/** `getcontractcreation` takes at most this many addresses. */
+export const MAX_CREATIONS = 5;
+/** Etherscan's `libraryname1` to `libraryname10`. */
+const MAX_LIBRARIES = 10;
 
 export const TEXTS = {
   module: "Error! Missing Or invalid Module name",
@@ -57,6 +63,9 @@ export const TEXTS = {
   gasprice: "Error! Invalid gasprice",
   noFinalTx: "Error! No transaction has reached final yet, so there is no time to estimate by",
   contract: "Error! Invalid contractaddress format",
+  tooManyCreations: `Error! Max ${MAX_CREATIONS} addresses per call`,
+  unknownGuid: "Unknown UID",
+  notRunning: "Verification is not running.",
 } as const;
 
 /** A refusal: `status` "0", `message` "NOTOK" and the reason as the result, unless a text is given for the message instead (Etherscan words some refusals that way). */
@@ -82,15 +91,19 @@ export class Params {
   private readonly all: URLSearchParams[];
   constructor(query: URLSearchParams, body?: string) { this.all = body ? [query, new URLSearchParams(body)] : [query]; }
   get(name: string): string | null {
+    return this.raw(name)?.trim() ?? null;
+  }
+  /** The value as it was sent, with its white space: a source's trailing newline is part of what the compiler hashes. */
+  raw(name: string): string | null {
     for (const q of this.all) {
       const v = q.get(name);
-      if (v !== null && v.trim() !== "") return v.trim();
+      if (v !== null && v.trim() !== "") return v;
     }
     return null;
   }
 }
 
-interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; rpc: PublicRpc | undefined; ip: string; heads: () => Promise<{ head: number | null; cursor: number }> }
+interface Ctx { p: Params; rest: EtherscanRest; verify: VerifyApi | undefined; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; rpc: PublicRpc | undefined; ip: string; heads: () => Promise<{ head: number | null; cursor: number }> }
 type Handler = (c: Ctx) => Promise<Result>;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/, HASH = /^0x[0-9a-fA-F]{64}$/, WHOLE = /^[0-9]{1,15}$/;
@@ -518,11 +531,109 @@ const gastracker: Record<string, Handler> = {
   },
 };
 
+/** What a refusal of the verifier's (its HTTP status and its words) is to Etherscan's door: the words, as a NOTOK. */
+const refused = (a: { status: number; body: unknown }): NotOk => new NotOk((a.body as { error?: string }).error ?? TEXTS.broken);
+const guidOf = (a: { body: unknown }): string => (a.body as { guid: string }).guid;
+const verifier = (c: Ctx): VerifyApi => {
+  if (!c.verify) throw new NotOk(TEXTS.notRunning);
+  return c.verify;
+};
+/** The job's answer, as Etherscan gives `checkverifystatus` and `checkproxyverification`: status 1 for a pass, 0 for the rest (the text says which), the job's text as the result. */
+const jobAnswer = (a: { status: number; body: unknown }): Result => {
+  if (a.status !== 200) throw new NotOk(TEXTS.unknownGuid);
+  const j = a.body as { status: string; result: string };
+  if (j.status === "pass") return j.result;
+  throw new NotOk(j.result);
+};
+
+/** Etherscan's `verifysourcecode` fields, as the verifier takes them. Etherscan spells the constructor field `constructorArguements`; the right spelling is accepted too. */
+function verifyRequest(c: Ctx) {
+  const address = addressOf(c.p.get("contractaddress"));
+  const need = (name: string): string => {
+    const v = c.p.raw(name);
+    if (v === null) throw new NotOk(`Missing or invalid ${name}`);
+    return v;
+  };
+  const sourceCode = need("sourceCode"), contractName = need("contractname").trim(), compilerVersion = need("compilerversion").trim();
+  const codeFormat = c.p.get("codeformat") ?? "solidity-single-file";
+  if (codeFormat !== "solidity-single-file" && codeFormat !== "solidity-standard-json-input") throw new NotOk(TEXTS.unsupported);
+  const args = c.p.get("constructorArguements") ?? c.p.get("constructorArguments") ?? "";
+  if (!/^(0x)?([0-9a-fA-F]{2})*$/.test(args)) throw new NotOk("Missing or invalid constructorArguements");
+  const libraries: { name: string; address: string }[] = [];
+  for (let i = 1; i <= MAX_LIBRARIES; i++) {
+    const name = c.p.get(`libraryname${i}`), at = c.p.get(`libraryaddress${i}`);
+    if (name === null && at === null) continue;
+    if (name === null || at === null || !ADDRESS.test(at)) throw new NotOk(`Missing or invalid libraryaddress${i}`);
+    libraries.push({ name, address: at });
+  }
+  return {
+    address, codeFormat, sourceCode, contractName, compilerVersion, optimizationUsed: c.p.get("optimizationUsed") ?? undefined, runs: c.p.get("runs") ?? undefined,
+    evmVersion: c.p.get("evmversion") ?? undefined, licenseType: c.p.get("licenseType") ?? undefined, constructorArguments: args === "" ? undefined : args, libraries: libraries.length > 0 ? libraries : undefined,
+  };
+}
+
+/**
+ * The contract module. A verification is the verifier's: `verifysourcecode` queues the job and answers its GUID, and the answers about it are the job's texts. What is read
+ * is read from the indexer's rows (the verified source, the proxies table, the contracts' creations), final blocks only. A proxy check is answered at once from the proxies table.
+ */
+const contract: Record<string, Handler> = {
+  async verifysourcecode(c) {
+    const v = verifier(c);
+    const req = verifyRequest(c);
+    const found = await c.rest.contractSource(req.address);
+    // A contract the index does not hold yet (its block is not final) is what Etherscan says for an address it does not know; the tools take it as "try again later".
+    if (!found.held) throw new NotOk(`Unable to locate ContractCode at ${req.address}`);
+    if (found.verified?.matchType === "full") throw new NotOk("Contract source code already verified");
+    const a = await v.enqueue(req, c.ip);
+    if (a.status !== 202) throw refused(a);
+    return guidOf(a);
+  },
+  async checkverifystatus(c) {
+    return jobAnswer(await verifier(c).status(c.p.get("guid") ?? ""));
+  },
+  async getsourcecode(c) {
+    return [sourceCodeFields(await c.rest.contractSource(addressOf(c.p.get("address"))))];
+  },
+  async getabi(c) {
+    const s = await c.rest.contractSource(addressOf(c.p.get("address")));
+    if (s.verified === null) throw new NotOk(NOT_VERIFIED);
+    return JSON.stringify(s.verified.abi);
+  },
+  /**
+   * A contract in the genesis allocation was made by no transaction. Etherscan's answer for such a contract (on the chains that have them) names the creator `GENESIS` and the
+   * transaction `GENESIS_` and the address, with block 0; the design said "empty", but a tool that reads the creator as an address is as lost with an empty text as with this one,
+   * and this one is Etherscan's. A contract made by a factory has the factory in `contractFactory` and the sender of the transaction as its creator.
+   */
+  async getcontractcreation(c) {
+    const list = (c.p.get("contractaddresses") ?? "").split(",").map((a) => a.trim()).filter((a) => a !== "");
+    if (list.length === 0) throw new NotOk(TEXTS.address);
+    if (list.length > MAX_CREATIONS) throw new NotOk(TEXTS.tooManyCreations);
+    const rows = await c.rest.contractCreations(list.map((a) => addressOf(a)));
+    if (rows.length === 0) throw new Empty(TEXTS.noData);
+    return rows.map((r) => ({
+      contractAddress: r.address, contractCreator: r.genesis ? "GENESIS" : (r.creator ?? ""), txHash: r.genesis ? `GENESIS_${r.address.slice(2)}` : (r.txHash ?? ""), blockNumber: String(r.block ?? 0),
+      timestamp: String(r.timestamp ?? 0), contractFactory: r.factory ?? "", creationBytecode: r.creationCode ?? "",
+    }));
+  },
+  async verifyproxycontract(c) {
+    const v = verifier(c);
+    const address = addressOf(c.p.get("address"));
+    const expected = c.p.get("expectedimplementation");
+    if (expected !== null) addressOf(expected);
+    const a = await v.proxy(address, expected, c.ip);
+    if (a.status !== 202) throw refused(a);
+    return guidOf(a);
+  },
+  async checkproxyverification(c) {
+    return jobAnswer(await verifier(c).proxyStatus(c.p.get("guid") ?? ""));
+  },
+};
+
 /** The last second of year 9999. */
 const MAX_TIMESTAMP = 253_402_300_799;
 
 /** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
-export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs, token, stats, proxy, gastracker };
+export const MODULES: Record<string, Record<string, Handler>> = { account, contract, transaction, block, logs, token, stats, proxy, gastracker };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
   account: ["balancehistory", "addresstokenbalance", "addresstokennftbalance", "addresstokennftinventory", "fundedby", "txnbridge"],
@@ -538,14 +649,16 @@ export interface EtherscanDeps {
   rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; chainId: number;
   /** The public RPC, which the `proxy` module asks, so that it keeps the rules of `/rpc`. Without it the module answers "not supported on Ostia". */
   rpc?: PublicRpc;
+  /** The verifier's API, which the contract module queues verifications with. Without it a verification answers "Verification is not running."; the reads of the module need no verifier. */
+  verify?: VerifyApi;
 }
 
 /** The door: a request's parameters in, Etherscan's answer out. */
-export function etherscan({ rest, reth, chainId, rpc }: EtherscanDeps) {
+export function etherscan({ rest, reth, chainId, rpc, verify }: EtherscanDeps) {
   return async (query: URLSearchParams, body?: string, ip = "unknown"): Promise<Answer> => {
     const p = new Params(query, body);
     let heads: ReturnType<EtherscanRest["heads"]> | undefined;
-    const ctx: Ctx = { p, rest, reth, rpc, ip, heads: () => (heads ??= rest.heads()) };
+    const ctx: Ctx = { p, rest, verify, reth, rpc, ip, heads: () => (heads ??= rest.heads()) };
     try {
       const id = p.get("chainid");
       if (id !== null && id !== String(chainId)) throw new NotOk(TEXTS.chainid);
