@@ -243,7 +243,7 @@ export interface StatsSummary {
   dropped: { window: number; total: number; listed: StatsLostItem[] };
   replaced: { window: number; total: number };
   cutting: { strategy: string; since: string } | null;
-  faucet: { requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null; turnedAway: number | null };
+  faucet: { requests: number; sent: number; final: number; failed: number; timeToFinal: StatsSpread | null; turnedAway: number | null; /** Present in every answer the server gives now; the page that reads `turnedAway` as `StatsTurnedAway` (see `StatsSummaryFaucet`) takes the type over. */ turnedAwaySince?: string | null };
 }
 export type StatsMetric = "txs" | "tps" | "busiest_minute_tps" | "blocks" | "empty_blocks" | "txs_per_block" | "success_rate" | "time_to_final_p50" | "time_to_final_p95" | "proof_time_p50" | "proof_time_p95" | "busy_ratio";
 export interface StatsSeries { metric: string; unit: string; window: StatsWindow; step: "1m" | "10m" | "1h" | "1d"; from: string; to: string; asOf: string | null; points: { at: string; value: number | null }[] }
