@@ -12,7 +12,7 @@ import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/
 import type { BlockRecord, Ledger } from "../ledger.ts";
 import { RethError } from "../reth.ts";
 import { IndexerStop, Paused, RethBehind } from "./errors.ts";
-import { seedGenesis } from "./genesis.ts";
+import { recordGenesisSupply, seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth, type HealthRow } from "./health.ts";
 import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
@@ -161,6 +161,7 @@ export function createIndexer(o: IndexerOptions) {
       try {
         const seeded = await seedGenesis(o.pool, o.reads, o.genesisFile, o.gateway);
         if (seeded > 0) log(`indexer: seeded ${seeded} genesis contracts`);
+        await recordGenesisSupply(o.pool, o.genesisFile);
         await clearStops(o.pool, ["genesis"]);
       } catch (e) {
         if (e instanceof IndexerStop) throw await stop(e);

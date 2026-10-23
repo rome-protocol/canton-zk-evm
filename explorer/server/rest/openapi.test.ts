@@ -91,10 +91,17 @@ describe("the API description", () => {
       expect(doc.paths[door].get.tags).toEqual(["Etherscan"]);
       const names = doc.paths[door].get.parameters.map((q: { name: string }) => q.name);
       for (const n of ["module", "action", "address", "fromBlock", "topic0", "topic0_1_opr", "blockno", "txhash"]) expect(names).toContain(n);
+      // The proxy module's parameters are described too, and the note says its answers are JSON-RPC in hex.
+      for (const n of ["boolean", "index", "hex", "to", "data", "position", "from", "value", "gas", "gasLimit", "gasPrice", "maxFeePerGas", "maxPriorityFeePerGas"]) expect(names).toContain(n);
+      expect(doc.paths[door].get.responses["200"].description).toMatch(/proxy answers are JSON-RPC \{jsonrpc, id, result\|error\} in hex/);
     }
     // The API page reads the module table from `x-modules` of /api's GET; it is the table the door answers from.
     expect(doc.paths["/api"].get["x-modules"]).toEqual(Object.fromEntries(Object.entries(MODULES).map(([m, a]) => [m, Object.keys(a)])));
-    expect(Object.keys(doc.paths["/api"].get["x-modules"])).toEqual(["account", "transaction", "block", "logs"]);
+    expect(Object.keys(doc.paths["/api"].get["x-modules"])).toEqual(["account", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"]);
+    expect(doc.paths["/api"].get["x-modules"]).toMatchObject({
+      token: ["tokeninfo", "tokenholdercount", "tokenholderlist"], stats: ["ethsupply", "tokensupply", "ethprice"], gastracker: ["gasoracle", "gasestimate"],
+      proxy: ["eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockTransactionCountByNumber", "eth_getTransactionByHash", "eth_getTransactionByBlockNumberAndIndex", "eth_getTransactionCount", "eth_sendRawTransaction", "eth_getTransactionReceipt", "eth_call", "eth_getCode", "eth_getStorageAt", "eth_gasPrice", "eth_estimateGas", "eth_getUncleByBlockNumberAndIndex"],
+    });
     expect(doc.paths["/v2/api"].get["x-modules"]).toBeUndefined();
     expect(doc.paths["/api"].get.parameters.find((q: { name: string }) => q.name === "action").description).toContain("getLogs");
   });

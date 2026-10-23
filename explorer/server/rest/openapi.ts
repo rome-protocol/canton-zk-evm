@@ -46,18 +46,32 @@ const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is fals
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
 const ETHERSCAN_QUERY: Query[] = [
-  { name: "module", about: "account, transaction, block or logs (the contract, token, stats, proxy and gastracker modules follow).", values: ["account", "transaction", "block", "logs"] },
-  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs." },
+  { name: "module", about: "account, transaction, block, logs, token, stats, proxy or gastracker (the contract module follows).", values: ["account", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"] },
+  { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs. token: tokeninfo, tokenholdercount, tokenholderlist. stats: ethsupply, tokensupply, ethprice. proxy: eth_blockNumber, eth_getBlockByNumber, eth_getBlockTransactionCountByNumber, eth_getTransactionByHash, eth_getTransactionByBlockNumberAndIndex, eth_getTransactionCount, eth_sendRawTransaction, eth_getTransactionReceipt, eth_call, eth_getCode, eth_getStorageAt, eth_gasPrice, eth_estimateGas, eth_getUncleByBlockNumberAndIndex (JSON-RPC answers in hex, final blocks only, as /rpc gives them). gastracker: gasoracle, gasestimate." },
   { name: "chainid", about: "Optional, and this chain's when given." },
   { name: "apikey", about: "Accepted and ignored." },
   { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs)." },
-  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx)." },
+  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
   { name: "txhash", about: "A transaction's 0x hash (getstatus, gettxreceiptstatus, txlistinternal)." },
-  { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same)." },
+  { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same); the proxy also takes a hex block number (0x...) that is final." },
   { name: "startblock", about: "The first block of a list (txlist, txlistinternal, tokentx and the like)." },
   { name: "endblock", about: "The last block of a list; latest is the newest final block." },
   { name: "page", about: "The page of a list, from 1. page x offset is at most 10,000." },
   { name: "offset", about: "Rows to a page (getLogs: at most 1,000)." },
+  { name: "gasprice", about: "In wei (gasestimate); the estimate is the median time to final, whatever the price." },
+  { name: "boolean", about: "proxy eth_getBlockByNumber: true for the full transactions, false for their hashes.", values: ["true", "false"] },
+  { name: "index", about: "proxy eth_getTransactionByBlockNumberAndIndex and eth_getUncleByBlockNumberAndIndex: the position in the block, hex (0x0)." },
+  { name: "hex", about: "proxy eth_sendRawTransaction: the signed transaction, 0x hex (send it by POST when it is long, up to 256 KB)." },
+  { name: "to", about: "proxy eth_call and eth_estimateGas: the 0x address called." },
+  { name: "from", about: "proxy eth_call and eth_estimateGas: the 0x address the call is from." },
+  { name: "data", about: "proxy eth_call and eth_estimateGas: the call's 0x data." },
+  { name: "value", about: "proxy eth_call and eth_estimateGas: the value sent, hex." },
+  { name: "gas", about: "proxy eth_call and eth_estimateGas: the gas of the call, hex (gasLimit is the same)." },
+  { name: "gasLimit", about: "proxy eth_call and eth_estimateGas: the same as gas." },
+  { name: "gasPrice", about: "proxy eth_call and eth_estimateGas: the gas price, hex." },
+  { name: "maxFeePerGas", about: "proxy eth_call and eth_estimateGas: the fee cap, hex." },
+  { name: "maxPriorityFeePerGas", about: "proxy eth_call and eth_estimateGas: the tip cap, hex." },
+  { name: "position", about: "proxy eth_getStorageAt: the storage slot, hex." },
   { name: "sort", about: "asc or desc.", values: ["asc", "desc"] },
   { name: "blockno", about: "A block number (getblockreward, getblockcountdown)." },
   { name: "timestamp", about: "Unix seconds (getblocknobytime)." },
@@ -67,7 +81,7 @@ const ETHERSCAN_QUERY: Query[] = [
   { name: "topic0", about: "getLogs: a 0x topic of 32 bytes. topic1, topic2 and topic3 are the same." },
   { name: "topic0_1_opr", about: "getLogs: and or or between two topics; topicX_Y_opr for any pair (and when left out).", values: ["and", "or"] },
 ];
-const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. Balances are reth's at the newest final block; nothing that is not final is served. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
+const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\" or \"0\". Numbers are decimal strings, except in getLogs, whose quantities are hex as Etherscan's are. The proxy answers are JSON-RPC {jsonrpc, id, result|error} in hex, as Etherscan's proxy gives them, and final only as on /rpc. Balances are reth's at the newest final block; nothing that is not final is served. Etherscan's own rate limit applies (10 a second, 600 a minute for each client).";
 
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },

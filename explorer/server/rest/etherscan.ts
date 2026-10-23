@@ -10,6 +10,7 @@
  * partly written. The texts of the answers are Etherscan's where the module's documentation and its answers give one, and are held by tests with recorded answers.
  */
 import type { Answer } from "../api.ts";
+import type { PublicRpc } from "../public-rpc.ts";
 import { ChainDbError } from "../chain-db.ts";
 import { RethError, type Reth } from "../reth.ts";
 import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
@@ -50,6 +51,12 @@ export const TEXTS = {
   tooLarge: "Result too large; ask for a smaller offset",
   timeout: "Query Timeout occured. Please select a smaller result dataset",
   noRecords: "No records found",
+  noData: "No data found",
+  noPrice: "Error! A test coin has no price, so Ostia gives none",
+  noGenesis: "Error! The explorer does not hold the genesis allocation yet",
+  gasprice: "Error! Invalid gasprice",
+  noFinalTx: "Error! No transaction has reached final yet, so there is no time to estimate by",
+  contract: "Error! Invalid contractaddress format",
 } as const;
 
 /** A refusal: `status` "0", `message` "NOTOK" and the reason as the result, unless a text is given for the message instead (Etherscan words some refusals that way). */
@@ -61,10 +68,12 @@ export class NotOk extends Error {
 /** A list that has no rows, with its module's own words: Etherscan's `logs` module says "No records found" where its account lists say "No transactions found". */
 export class Empty extends Error {}
 /** What a handler gives back; a list with no rows is Etherscan's "No transactions found". */
-type Result = string | object[] | object;
+type Result = string | object[] | object | Raw;
+/** A JSON-RPC answer passed through as it is: the `proxy` module has no `status` and `message`, as Etherscan's has none. */
+export class Raw { readonly body: object; constructor(body: object) { this.body = body; } }
 const answer = (body: unknown): Answer => ({ status: 200, body });
 const okBody = (result: Result): Answer =>
-  answer(Array.isArray(result) && result.length === 0 ? { status: "0", message: TEXTS.noRows, result: [] } : { status: "1", message: "OK", result });
+  result instanceof Raw ? answer(result.body) : answer(Array.isArray(result) && result.length === 0 ? { status: "0", message: TEXTS.noRows, result: [] } : { status: "1", message: "OK", result });
 const empty = (e: Empty): Answer => answer({ status: "0", message: e.message, result: [] });
 const notOk = (e: NotOk): Answer => answer(e.inMessage ? { status: "0", message: e.reason, result: null } : { status: "0", message: "NOTOK", result: e.reason });
 
@@ -81,7 +90,7 @@ export class Params {
   }
 }
 
-interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt">; heads: () => Promise<{ head: number | null; cursor: number }> }
+interface Ctx { p: Params; rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; rpc: PublicRpc | undefined; ip: string; heads: () => Promise<{ head: number | null; cursor: number }> }
 type Handler = (c: Ctx) => Promise<Result>;
 
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/, HASH = /^0x[0-9a-fA-F]{64}$/, WHOLE = /^[0-9]{1,15}$/;
@@ -336,24 +345,207 @@ const logs: Record<string, Handler> = {
   },
 };
 
+/** `contractaddress` of the token and stats modules: required, and an address. */
+const contractOf = (v: string | null): string => {
+  if (v === null || !ADDRESS.test(v)) throw new NotOk(TEXTS.contract);
+  return v.toLowerCase();
+};
+
+const TOKEN_TYPE: Record<TokenStandard, string> = { "ERC-20": "ERC20", "ERC-721": "ERC721", "ERC-1155": "ERC1155" };
+const NO_LINKS = ["description", "website", "email", "blog", "reddit", "slack", "facebook", "twitter", "bitcointalk", "github", "telegram", "wechat", "linkedin", "discord", "whitepaper"];
+
+/** The token module. The indexer's token rows answer it, so a token's holders are as far on as stage 2 is; an address that is no token has no data. */
+const token: Record<string, Handler> = {
+  async tokeninfo(c) {
+    const t = await c.rest.tokenInfo(contractOf(c.p.get("contractaddress")));
+    if (t === null) throw new Empty(TEXTS.noData);
+    // Etherscan's `divisor` is the token's decimals; a token's links are not known to Ostia, so they are empty, as Etherscan's are for a token it knows nothing about.
+    return [{
+      contractAddress: t.address, tokenName: dec(t.name), symbol: dec(t.symbol), divisor: t.decimals === null ? "" : String(t.decimals), tokenType: TOKEN_TYPE[t.standard], totalSupply: dec(t.totalSupply),
+      blueCheckmark: "false", ...Object.fromEntries(NO_LINKS.map((k) => [k, ""])), tokenPriceUSD: "",
+    }];
+  },
+  async tokenholdercount(c) {
+    const t = await c.rest.tokenInfo(contractOf(c.p.get("contractaddress")));
+    if (t === null) throw new Empty(TEXTS.noData);
+    return String(t.holders);
+  },
+  async tokenholderlist(c) {
+    const a = contractOf(c.p.get("contractaddress"));
+    const w = windowOf(c.p, null);
+    const t = await c.rest.tokenInfo(a);
+    if (t === null) throw new Empty(TEXTS.noData);
+    // An ERC-1155 balance is by token id, and has no single holder quantity.
+    if (t.standard === "ERC-1155") throw new NotOk(TEXTS.unsupported);
+    return (await c.rest.holders(a, w)).map((h) => ({ TokenHolderAddress: h.holder, TokenHolderQuantity: h.value }));
+  },
+};
+
+/** The stats module's free actions. A test coin has no price, and the paid daily statistics are not served (UNSUPPORTED). */
+const stats: Record<string, Handler> = {
+  /** The genesis allocation minus the fees burnt in the final blocks (nothing mints coins later). */
+  async ethsupply(c) {
+    const head = await finalHead(c);
+    const genesis = await c.rest.genesisSupply();
+    if (genesis === null) throw new NotOk(TEXTS.noGenesis);
+    return (BigInt(genesis) - BigInt(await c.rest.burntFees(head))).toString();
+  },
+  async tokensupply(c) {
+    const t = contractOf(c.p.get("contractaddress"));
+    return (await c.reth.tokenSupplyAt(t, await finalHead(c))).toString();
+  },
+  async ethprice() {
+    throw new NotOk(TEXTS.noPrice);
+  },
+};
+
+/** Wei as Etherscan writes a price: in gwei, with the digits it needs and no more. */
+export function gwei(wei: bigint | string): string {
+  const v = BigInt(wei);
+  const whole = v / 1_000_000_000n, frac = (v % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return frac === "" ? String(whole) : `${whole}.${frac}`;
+}
+const ratio = (n: number): string => n.toFixed(15).replace(/\.?0+$/, "");
+
+/** What Etherscan's `proxy` module gives for an argument that is missing: the node's own words, as a JSON-RPC error. */
+const rpcError = (code: number, message: string): Raw => new Raw({ jsonrpc: "2.0", id: 1, error: { code, message } });
+const rpcResult = (result: unknown): Raw => new Raw({ jsonrpc: "2.0", id: 1, result });
+type Up = { result?: unknown; error?: unknown };
+const isUp = (v: unknown): v is Up => typeof v === "object" && v !== null;
+
+/** One call of the public RPC: its rules (final only, the tracker for a send, the limits of a client) are the proxy's. The JSON-RPC answer is given back as it is. */
+async function viaRpc(c: Ctx, method: string, params: unknown[]): Promise<Up> {
+  if (!c.rpc) throw new NotOk(TEXTS.unsupported);
+  const a = await c.rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), c.ip);
+  if (!isUp(a.body)) throw new NotOk(TEXTS.broken);
+  return a.body;
+}
+/** The named parameters in order, or the JSON-RPC error of the first one missing. A `tag` that is left out is the newest, as Etherscan has it (ethers leaves it out of a call). */
+function need(c: Ctx, names: string[]): string[] | Raw {
+  const out: string[] = [];
+  for (const [i, n] of names.entries()) {
+    const v = c.p.get(n) ?? (n === "tag" ? "latest" : null);
+    if (v === null) return rpcError(-32602, `missing value for required argument ${i}`);
+    out.push(v);
+  }
+  return out;
+}
+/** The call a client describes, in Etherscan's names (`gas`) and in ethers' (`gasLimit`), with the fields that were sent and no others. */
+function callObject(c: Ctx): Record<string, string> {
+  const call: Record<string, string> = {};
+  for (const [param, field] of [["to", "to"], ["from", "from"], ["data", "data"], ["value", "value"], ["gasPrice", "gasPrice"], ["gas", "gas"], ["gasLimit", "gas"], ["maxFeePerGas", "maxFeePerGas"], ["maxPriorityFeePerGas", "maxPriorityFeePerGas"]] as const) {
+    const v = c.p.get(param);
+    if (v !== null && !(field in call)) call[field] = v;
+  }
+  return call;
+}
+/** A call whose parameters are the named ones, as strings. */
+const plain = (method: string, names: string[]): Handler => async (c) => {
+  const a = need(c, names);
+  if (a instanceof Raw) return a;
+  return new Raw(await viaRpc(c, method, a));
+};
+/** The block the public RPC gives for a tag, whose transactions the two block actions below count and pick from. A block that is not final is null, as it is on `/rpc`. */
+async function blockOf(c: Ctx, full: boolean): Promise<Raw | { block: { transactions?: unknown[] } | null }> {
+  const a = need(c, ["tag"]);
+  if (a instanceof Raw) return a;
+  const r = await viaRpc(c, "eth_getBlockByNumber", [a[0], full]);
+  if (r.error !== undefined || !("result" in r)) return new Raw(r);
+  return { block: typeof r.result === "object" ? (r.result as { transactions?: unknown[] } | null) : null };
+}
+
+const proxy: Record<string, Handler> = {
+  eth_blockNumber: plain("eth_blockNumber", []),
+  async eth_getBlockByNumber(c) {
+    const a = need(c, ["tag", "boolean"]);
+    if (a instanceof Raw) return a;
+    if (a[1] !== "true" && a[1] !== "false") return rpcError(-32602, "invalid argument 1: boolean must be true or false");
+    return new Raw(await viaRpc(c, "eth_getBlockByNumber", [a[0], a[1] === "true"]));
+  },
+  /** The count is the length of the block's list, so it follows the final-only rule of the block. */
+  async eth_getBlockTransactionCountByNumber(c) {
+    const b = await blockOf(c, false);
+    if (b instanceof Raw) return b;
+    return rpcResult(b.block === null ? null : "0x" + (b.block.transactions?.length ?? 0).toString(16));
+  },
+  eth_getTransactionByHash: plain("eth_getTransactionByHash", ["txhash"]),
+  async eth_getTransactionByBlockNumberAndIndex(c) {
+    const index = c.p.get("index");
+    if (index === null) return rpcError(-32602, "missing value for required argument 1");
+    if (!/^0x[0-9a-f]+$/i.test(index)) return rpcError(-32602, "invalid argument 1: hex string without 0x prefix");
+    const b = await blockOf(c, true);
+    if (b instanceof Raw) return b;
+    const at = BigInt(index);
+    return rpcResult(b.block?.transactions?.[at > 0xffffffffn ? -1 : Number(at)] ?? null);
+  },
+  eth_getTransactionCount: plain("eth_getTransactionCount", ["address", "tag"]),
+  eth_sendRawTransaction: plain("eth_sendRawTransaction", ["hex"]),
+  eth_getTransactionReceipt: plain("eth_getTransactionReceipt", ["txhash"]),
+  async eth_call(c) {
+    const a = need(c, ["to", "data", "tag"]);
+    if (a instanceof Raw) return a;
+    return new Raw(await viaRpc(c, "eth_call", [callObject(c), a[2]]));
+  },
+  eth_getCode: plain("eth_getCode", ["address", "tag"]),
+  eth_getStorageAt: plain("eth_getStorageAt", ["address", "position", "tag"]),
+  eth_gasPrice: plain("eth_gasPrice", []),
+  /** The call as the node gets it: the fields that were sent, and no block, so the public RPC reads it at the final block. */
+  async eth_estimateGas(c) {
+    return new Raw(await viaRpc(c, "eth_estimateGas", [callObject(c)]));
+  },
+  /** There are no uncles on Ostia. */
+  async eth_getUncleByBlockNumberAndIndex() { return rpcResult(null); },
+};
+
+const gastracker: Record<string, Handler> = {
+  /** Three prices over the base fee of the newest final block: it plus the 25th, the 50th and the 75th percentile of the priority fees paid in the last 20 blocks. */
+  async gasoracle(c) {
+    const f = await c.rest.feeSample();
+    if (f === null) throw new NotOk(TEXTS.noFinal);
+    const base = BigInt(f.baseFee), tips = f.tips ?? ["0", "0", "0"];
+    return {
+      LastBlock: String(f.block), SafeGasPrice: gwei(base + BigInt(tips[0])), ProposeGasPrice: gwei(base + BigInt(tips[1])), FastGasPrice: gwei(base + BigInt(tips[2])),
+      suggestBaseFee: gwei(base), gasUsedRatio: f.usedRatios.map(ratio).join(","),
+    };
+  },
+  /** The median time to final, in whole seconds, whatever the price offered: a block is cut for a waiting transaction, and every transaction waits for the proof. */
+  async gasestimate(c) {
+    const price = c.p.get("gasprice");
+    if (price !== null && !/^[0-9]{1,78}$/.test(price)) throw new NotOk(TEXTS.gasprice);
+    const seconds = await c.rest.medianSecondsToFinal();
+    if (seconds === null) throw new NotOk(TEXTS.noFinalTx);
+    return String(Math.max(1, Math.ceil(seconds)));
+  },
+};
+
 /** The last second of year 9999. */
 const MAX_TIMESTAMP = 253_402_300_799;
 
 /** The actions of Etherscan's modules that Ostia answers; a later part of the API adds its modules here. */
-export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs };
+export const MODULES: Record<string, Record<string, Handler>> = { account, transaction, block, logs, token, stats, proxy, gastracker };
 /** What Etherscan has in the modules above and Ostia does not (its paid or other-chain actions). */
 const UNSUPPORTED: Record<string, readonly string[]> = {
   account: ["balancehistory", "addresstokenbalance", "addresstokennftbalance", "addresstokennftinventory", "fundedby", "txnbridge"],
+  token: ["toptokenholders", "tokensupplyhistory", "tokenbalancehistory", "tokenholderlisthistory"],
+  stats: [
+    "ethsupply2", "ethdailyprice", "chainsize", "nodecount", "dailyblkcount", "dailyblockrewards", "dailyavgblocktime", "dailyuncleblkcount", "dailyavgblocksize", "dailytxnfee", "dailynewaddress",
+    "dailynetutilization", "dailyavghashrate", "dailytx", "dailyavggasprice", "dailygasused", "dailyavggaslimit", "dailynetdifficulty", "tokencsupply", "tokensupplyhistory",
+  ],
+  gastracker: ["dailyavggaslimit", "dailygasused", "dailyavggasprice"],
 };
 
-export interface EtherscanDeps { rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt">; chainId: number }
+export interface EtherscanDeps {
+  rest: EtherscanRest; reth: Pick<Reth, "balanceAt" | "tokenBalanceAt" | "tokenSupplyAt">; chainId: number;
+  /** The public RPC, which the `proxy` module asks, so that it keeps the rules of `/rpc`. Without it the module answers "not supported on Ostia". */
+  rpc?: PublicRpc;
+}
 
 /** The door: a request's parameters in, Etherscan's answer out. */
-export function etherscan({ rest, reth, chainId }: EtherscanDeps) {
-  return async (query: URLSearchParams, body?: string): Promise<Answer> => {
+export function etherscan({ rest, reth, chainId, rpc }: EtherscanDeps) {
+  return async (query: URLSearchParams, body?: string, ip = "unknown"): Promise<Answer> => {
     const p = new Params(query, body);
     let heads: ReturnType<EtherscanRest["heads"]> | undefined;
-    const ctx: Ctx = { p, rest, reth, heads: () => (heads ??= rest.heads()) };
+    const ctx: Ctx = { p, rest, reth, rpc, ip, heads: () => (heads ??= rest.heads()) };
     try {
       const id = p.get("chainid");
       if (id !== null && id !== String(chainId)) throw new NotOk(TEXTS.chainid);

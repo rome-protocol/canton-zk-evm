@@ -32,6 +32,8 @@ export class RethTooBig extends RethError {
 
 /** The most bytes of one reth answer the explorer reads. */
 export const MAX_ANSWER_BYTES = 32 * 1024 * 1024;
+/** The gas a token read (name, symbol, decimals, balanceOf, totalSupply) may use: a view call, so a contract that burns gas is stopped at 200,000. */
+const VIEW_GAS = "0x30d40";
 
 /** Reads a response body as text, and gives up past `limit` bytes. */
 async function textCapped(res: Response, limit: number, method: string): Promise<string> {
@@ -186,7 +188,7 @@ export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_
   /** One ERC-20 read. A revert means "not a token"; an unreachable reth is still an error. */
   async function erc20(to: string, sel: string): Promise<string | null> {
     try {
-      return await read("eth_call", [{ to, data: sel }, "latest"], data);
+      return await read("eth_call", [{ to, data: sel, gas: VIEW_GAS }, "latest"], data);
     } catch (e) {
       if (e instanceof RethError && e.answered) return null;
       throw e;
@@ -216,7 +218,17 @@ export function createReth(url: string, timeoutMs: number, maxAnswerBytes = MAX_
     async tokenBalanceAt(token: string, holder: string, block: number): Promise<bigint> {
       const call = "0x70a08231" + holder.toLowerCase().replace(/^0x/, "").padStart(64, "0");
       try {
-        const out = await read("eth_call", [{ to: token, data: call }, tag(block)], data);
+        const out = await read("eth_call", [{ to: token, data: call, gas: VIEW_GAS }, tag(block)], data);
+        return out.length >= 66 ? BigInt(out.slice(0, 66)) : 0n;
+      } catch (e) {
+        if (e instanceof RethError && e.answered) return 0n;
+        throw e;
+      }
+    },
+    /** An ERC-20 token's `totalSupply()` as of one block (for the Etherscan `tokensupply`): 0 when the address is no token, as Etherscan gives. */
+    async tokenSupplyAt(token: string, block: number): Promise<bigint> {
+      try {
+        const out = await read("eth_call", [{ to: token, data: "0x18160ddd", gas: VIEW_GAS }, tag(block)], data);
         return out.length >= 66 ? BigInt(out.slice(0, 66)) : 0n;
       } catch (e) {
         if (e instanceof RethError && e.answered) return 0n;

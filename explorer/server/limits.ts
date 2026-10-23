@@ -71,6 +71,19 @@ export const ETHERSCAN_REFUSED = { status: "0", message: "NOTOK", result: "Max r
 export const verificationRefused = (seconds: number) => ({ status: "0", message: "NOTOK", result: `Verification limit reached: 30 requests an hour for each client. Try again in ${seconds} s.` });
 export const verificationTooBig = () => ({ status: "0", message: "NOTOK", result: `The request is too big: a verification request is at most ${MAX_VERIFY_BODY / 1024} KB.` });
 
+/** What an Etherscan proxy request may weigh: the public RPC's own body limit (a contract creation sent with ethers goes by POST). */
+export const MAX_PROXY_BODY = 256 * 1024;
+/** The JSON-RPC answer to a proxy request over that limit, in the shape ethers reads. */
+export const proxyTooBig = () => ({ jsonrpc: "2.0", id: 1, error: { code: -32600, message: `The request is too big: a proxy request is at most ${MAX_PROXY_BODY / 1024} KB.` } });
+
+/** True when an Etherscan request is for the proxy module (the module may be in the query or in the form body). */
+export function isProxy(query: URLSearchParams, body: string | undefined): boolean {
+  const mod = (q: URLSearchParams) => (q.get("module") ?? "").toLowerCase();
+  if (mod(query) === "proxy") return true;
+  if (!body) return false;
+  try { return mod(new URLSearchParams(body)) === "proxy"; } catch { return false; }
+}
+
 /** True when an Etherscan request asks to verify a contract (the action may be in the query or in the form body). */
 export function isVerification(query: URLSearchParams, body: string | undefined): boolean {
   const names = new Set(["verifysourcecode", "verifyproxycontract"]);
