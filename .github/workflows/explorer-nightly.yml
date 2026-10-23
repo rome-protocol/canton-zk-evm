@@ -7,7 +7,7 @@ name: explorer-nightly
 #   l1     blocks of 0 to 5,000 transactions through both stages of the indexer, held to B1 and B2
 #   l2     the API at scale: 10,000,000 transactions and 600 s of the mixed load by default (B3, B4, B6, B7)
 #   chain  the rehearsal's real chain (reth, Canton, the real builder, a stand-in prover) with W1, the worst-case block, then L3 (a flood of blocks of plain transfers),
-#          L4 (the pages in a cold browser on a slow link) and L5 (the contract tools against the Etherscan-compatible API; skipped, never passed, while that API is not there)
+#          L4 (the pages in a cold browser on a slow link) and L5 (the tools against the Etherscan-compatible API: the checks of a module that is not in its door yet are skipped, never passed)
 on:
   pull_request:
     paths: [".github/workflows/explorer-nightly.yml", ".github/actions/pinned-images/**", "tests/demo_nightly_*", "tests/test_demo_nightly_*", "tests/demo_rehearsal.sh", "explorer/test/l4/**", "explorer/test/l5/**", "PINS"]
