@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createApi, NOT_FOUND, type Answer } from "../api.ts";
 import { createChainDb } from "../chain-db.ts";
@@ -221,6 +221,39 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(mine(await walk("/api/tokens?sort=newest", "before", 1))).toEqual(["T2", "T1"]);
   });
 
+  it("keeps an address's transactions to the ones it sent or the ones it received, and gives them as a bounded CSV", async () => {
+    const at = async (target: string) => (body(await get(target)).items as { block: number; index: number }[]).map((t) => [t.block, t.index]);
+    expect(await at(`/api/addresses/${A}/txs?direction=sent`)).toEqual([[3, 2], [2, 1], [2, 0]]);
+    // Received is what it was the recipient of, and the contract creations that made it.
+    expect(await at(`/api/addresses/${A}/txs?direction=received`)).toEqual([[3, 2], [3, 1], [3, 0]]);
+    expect(await at(`/api/addresses/${A}/txs?direction=all`)).toEqual(await at(`/api/addresses/${A}/txs`));
+    // The filter pages like the list: by the same key, from the same cursor.
+    const first = body(await get(`/api/addresses/${A}/txs?direction=sent&limit=2`));
+    expect(first.items).toHaveLength(2);
+    expect(await at(`/api/addresses/${A}/txs?direction=sent&limit=2&before=${first.next}`)).toEqual([[2, 0]]);
+    expect(await at(`/api/addresses/${B}/txs?direction=sent`)).toEqual([]);
+    for (const bad of ["direction=out", "direction=", "direction=SENT", "format=json"]) expect((await get(`/api/addresses/${A}/txs?${bad}`)).status, bad).toBe(400);
+    const csv = await get(`/api/addresses/${A}/txs?format=csv&direction=sent`);
+    expect(csv.status).toBe(200);
+    expect(csv.headers?.["content-type"]).toMatch(/^text\/csv/);
+    expect(csv.headers?.["content-disposition"]).toBe(`attachment; filename="transactions-${A}.csv"`);
+    expect(csv.headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+    const lines = String(csv.body).trim().split("\r\n");
+    expect(lines[0]).toBe("hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success,direction");
+    expect(lines.slice(1).map((l) => l.split(",").slice(1, 3))).toEqual([["3", "2"], ["2", "1"], ["2", "0"]]);
+    expect(lines.slice(1).map((l) => l.split(",")[12])).toEqual(["sent", "sent", "sent"]);
+    // Without a direction a transaction an address sent to itself is one row, called sent; a receive and a creation are received.
+    const both = String(( await get(`/api/addresses/${A}/txs?format=csv`)).body).trim().split("\r\n");
+    expect(both.slice(1).map((l) => l.split(",").slice(1, 3).join(":") + ":" + l.split(",")[12])).toEqual(["3:2:sent", "3:1:received", "3:0:received", "2:1:sent", "2:0:sent"]);
+    // With a direction, the column is that direction: a transaction sent to itself is listed under received and reads received.
+    const received = String((await get(`/api/addresses/${A}/txs?format=csv&direction=received`)).body).trim().split("\r\n");
+    expect(received.slice(1).map((l) => l.split(",")[12])).toEqual(["received", "received", "received"]);
+    // A limit under the page's cap gives that many rows; the file never holds more than the cap of 1,000 even when asked for more.
+    expect((String((await get(`/api/addresses/${A}/txs?format=csv&limit=2`)).body).trim().split("\r\n")).length - 1).toBe(2);
+    expect((await get(`/api/addresses/${A}/txs?format=csv&limit=abc`)).status).toBe(400);
+    expect((await get(`/api/addresses/0x12/txs?format=csv`)).status).toBe(400);
+  });
+
   it("refuses a key that is not the list's, a limit that is not a count, and a sort or filter it does not know", async () => {
     for (const bad of [`/api/addresses/${A}/txs?before=5`, `/api/addresses/${A}/txs?before=a:b`, `/api/addresses/${A}/internal?before=2:2:0`, "/api/contracts?sort=interactions&before=1:2:3", "/api/legs?before=x",
       `/api/addresses/${A}/txs?limit=0`, "/api/contracts?sort=popular", "/api/contracts?verified=maybe", "/api/tokens?sort=newest&limit=-1", `/api/addresses/${A}/tokens?after=1`]) {
@@ -428,5 +461,97 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(await get(`/api/search?q=${"x".repeat(80)}`)).toEqual({ status: 404, body: { error: NOT_FOUND } });
     expect(await path(A)).toEqual({ path: `/address/${A}`, matches: [] });
     expect(await path("9")).toEqual(await get("/api/search?q=9").then(body));
+  });
+  it("names many addresses at once: a token by its name, symbol and standard, a verified contract by its name, and an address nothing is known of by nothing", async () => {
+    const nobody = h(0x77);
+    const a = await get(`/api/labels?addresses=${T1},${K},${T2},${nobody},${C},${T1}`);
+    expect(a.status).toBe(200);
+    expect(a.headers?.["cache-control"]).toBe(CACHE_CONTROL.list);
+    same(body(a), ["items"]);
+    for (const l of body(a).items) same(l, F.label);
+    // In the order asked, each address once.
+    expect(body(a).items).toEqual([
+      { address: T1, name: "Test Token", symbol: "TT", kind: "token", standard: "ERC-20", decimals: 6, verified: false },
+      { address: K, name: "Vault", symbol: null, kind: "contract", standard: null, decimals: null, verified: true },
+      { address: T2, name: "Gadget", symbol: "GDG", kind: "token", standard: "ERC-1155", decimals: null, verified: false },
+      { address: nobody, name: null, symbol: null, kind: null, standard: null, decimals: null, verified: false },
+      { address: C, name: null, symbol: null, kind: "contract", standard: null, decimals: null, verified: false },
+    ]);
+  });
+
+  it("calls an address an account only when the index holds it, and a contract a final creation names even before stage 2 derives it", async () => {
+    const fresh = h(0x78);
+    const [t] = (await pool.query("select block_number, tx_index from transactions where block_number = 3 and tx_index = 5")).rows;
+    await pool.query("update transactions set created_contract = $3 where block_number = $1 and tx_index = $2", [t.block_number, t.tx_index, Buffer.from(fresh.slice(2), "hex")]);
+    try {
+      const items = body(await get(`/api/labels?addresses=${B},${fresh},${h(0x79)}`)).items;
+      expect(items.map((l: { address: string; kind: string | null }) => [l.address, l.kind])).toEqual([[B, "account"], [fresh, "contract"], [h(0x79), null]]);
+    } finally {
+      await pool.query("update transactions set created_contract = null where block_number = $1 and tx_index = $2", [t.block_number, t.tx_index]);
+    }
+  });
+
+  it("leaves the token moves out of an address's CSV, which does not write them", async () => {
+    const reads = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.filter((c) => /token_transfers/.test(String(typeof c[0] === "string" ? c[0] : (c[0] as { text?: string }).text))).length;
+    const spy = vi.spyOn(pool, "query");
+    try {
+      expect((await get(`/api/addresses/${A}/txs?format=csv`)).status).toBe(200);
+      expect(reads(spy)).toBe(0);
+      spy.mockClear();
+      expect((await get(`/api/addresses/${A}/txs`)).status).toBe(200);
+      expect(reads(spy)).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("takes at most 100 addresses to label, each a lowercase 0x address, and at least one", async () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => "0x" + (i + 1).toString(16).padStart(40, "0")).join(",");
+    expect((await get(`/api/labels?addresses=${many(100)}`)).status).toBe(200);
+    expect(body(await get(`/api/labels?addresses=${many(100)}`)).items).toHaveLength(100);
+    for (const query of ["", "?addresses=", `?addresses=${many(101)}`, `?addresses=${A},nope`, `?addresses=0x${"A".repeat(40)}`, `?addresses=${A},,${B}`]) {
+      const a = await get(`/api/labels${query}`);
+      expect(a.status, query.slice(0, 40)).toBe(400);
+      expect(a.headers?.["cache-control"]).toBeUndefined();
+    }
+  });
+
+  it("gives each transaction of an address the token moves of its logs: the count, and the first move with its standard", async () => {
+    const txs = body(await get(`/api/addresses/${A}/txs`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const at = (b: number, i: number) => txs.find((t) => t.hash === txHash(b, i))!;
+    for (const t of txs) {
+      same(t, F.txItem);
+      same(t.tokenMoves, F.tokenMoves);
+      if (t.tokenMoves.first) same(t.tokenMoves.first, F.tokenMove);
+    }
+    expect(at(2, 0).tokenMoves).toEqual({ count: 2, more: false, first: { token: T1, amount: "10", tokenId: null, standard: "ERC-20", decimals: 6 } });
+    // A batch: two moves of one token, the first with its id.
+    expect(at(3, 1).tokenMoves).toEqual({ count: 2, more: false, first: { token: T2, amount: "7", tokenId: "1", standard: "ERC-1155", decimals: null } });
+    expect(at(2, 1).tokenMoves).toEqual({ count: 0, more: false, first: null });
+  });
+
+  it("says a token move is not known for a block stage 2 has not reached, rather than that there is none", async () => {
+    await setCursor(2);
+    try {
+      const txs = body(await get(`/api/addresses/${A}/txs`)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const t of txs) {
+        if (t.block === 3) expect(t.tokenMoves).toBeNull();
+        else expect(t.tokenMoves).not.toBeNull();
+      }
+      expect(txs.some((t) => t.block === 3)).toBe(true);
+    } finally {
+      await setCursor(3);
+    }
+  });
+
+  it("reads the token moves of a page in one query, not one for each row", async () => {
+    const seen: string[] = [];
+    const spy = { query: (text: string, values?: unknown[]) => (seen.push(text), pool.query(text, values)) } as unknown as Pool;
+    const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
+    const reth = { code: async () => "0x6080", token: async () => null, block: async () => undefined, transaction: async () => null, balanceAt: async () => 0n } as unknown as Reth;
+    const api = createApi({ config, reth, ledger: { ledgerEnd: async () => 1 } as never, chain: createChainDb(pool), accounts: createAccountRest(spy) });
+    const a = await api("GET", `/api/addresses/${A}/txs?limit=100`);
+    expect((a.body as { items: unknown[] }).items.length).toBeGreaterThan(3);
+    expect(seen.filter((t) => /from token_transfers/.test(t))).toHaveLength(1);
   });
 });

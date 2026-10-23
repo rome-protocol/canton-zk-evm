@@ -8,8 +8,8 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import type { AccountRest, AddressSort, ContractSort, TokenSort } from "./account-rest.ts";
-import { REST_FIELDS as F, pick } from "./fields.ts";
+import { TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type TokenSort, type TxDirection } from "./account-rest.ts";
+import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import type { Reth } from "../reth.ts";
@@ -26,6 +26,8 @@ export const NO_ADDRESS = "An address is 0x and 40 hex digits.";
 export const NO_CONTRACT = "No contract is held at that address.";
 export const NO_TOKEN = "No token is held at that address.";
 export const NO_LEG = "No gateway leg has that id.";
+/** Most addresses one request may ask the labels of. */
+export const MAX_LABELS = 100;
 /** What the first part of a name search may be: it is matched as text, never as a pattern, and a very short or very long one is not a name. */
 const NAME = /^.{2,64}$/s;
 
@@ -91,12 +93,35 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return cached(ok(pick(body, F.addressDetail)), "composite");
   }
 
+  const CSV_MAX = 1000;
+  const csvCell = (v: string | number | null) => (v === null ? "" : String(v));
+  const directionOf = (q: URLSearchParams): TxDirection => {
+    const d = q.get("direction") ?? "all";
+    if (!(TX_DIRECTIONS as readonly string[]).includes(d)) throw new BadRequest(`direction is one of ${TX_DIRECTIONS.join(", ")}.`);
+    return d as TxDirection;
+  };
+
   async function addressTxs(a: string, q: URLSearchParams): Promise<Answer> {
     addressOf(a);
+    const direction = directionOf(q), format = q.get("format");
+    if (format !== null && format !== "csv") throw new BadRequest("format is csv, or left out for JSON.");
+    if (format === "csv") return addressTxsCsv(a, q, direction);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
-    const rows = await accounts.addressTxs(a, before, limit);
+    const rows = await accounts.addressTxs(a, before, limit, direction);
     const p = pageOf(rows, limit, (t) => keyOf(t.block, t.index));
-    return cached(ok(pick({ items: p.items.map((t) => pick(t, F.txItem)), next: p.next }, F.page)), "list");
+    return cached(ok(pick({ items: p.items.map(pickTx), next: p.next }, F.page)), "list");
+  }
+
+  /** The newest transactions of an address as a file, with the columns of the list and which way each went: a bounded export (the cap of the other CSVs), not a way to walk its history. */
+  async function addressTxsCsv(a: string, q: URLSearchParams, direction: TxDirection): Promise<Answer> {
+    const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
+    const rows = (await accounts.addressTxs(a, null, limit, direction, false)).slice(0, limit);
+    const lines = ["hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success,direction"];
+    for (const t of rows) {
+      lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false", direction === "all" ? (t.from === a ? "sent" : "received") : direction].map(csvCell).join(","));
+    }
+    const answer = ok(lines.join("\r\n") + "\r\n");
+    return cached({ ...answer, headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="transactions-${a}.csv"` } }, "list");
   }
 
   async function addressInternal(a: string, q: URLSearchParams): Promise<Answer> {
@@ -203,6 +228,15 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return l ? cached(ok(pick(l, F.legItem)), "composite") : fail(404, NO_LEG);
   }
 
+  /** The names of up to MAX_LABELS addresses at once, for the pages that show a contract or a token by name. Each address is answered once, in the order it was first asked. */
+  async function labelList(q: URLSearchParams): Promise<Answer> {
+    const raw = q.get("addresses");
+    const asked = raw === null || raw === "" ? [] : raw.split(",");
+    if (asked.length === 0 || asked.length > MAX_LABELS || !asked.every((a) => ADDRESS.test(a))) throw new BadRequest(`addresses is 1 to ${MAX_LABELS} lowercase 0x addresses of 40 hex digits, joined by ",".`);
+    const items = (await accounts.labels([...new Set(asked)])).map((l) => pick(l, F.label));
+    return cached(ok(pick({ items }, F.labels)), "list");
+  }
+
   /** What was typed, as a place to open. A block, a hash, an address or a Canton update id go the way they always did; the start of a token's or a verified contract's name lists its matches. */
   async function find(q: string): Promise<Answer> {
     const text = q.trim().toLowerCase();
@@ -231,6 +265,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/tokens/{address}", (a) => oneToken(a)],
     ["/api/tokens/{address}/holders", (a, q) => tokenHolders(a, q)],
     ["/api/tokens/{address}/transfers", (a, q) => tokenTransfers(a, q)],
+    ["/api/labels", (_, q) => labelList(q)],
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
     ["/api/search", (_, q) => find(q.get("q") ?? "")],

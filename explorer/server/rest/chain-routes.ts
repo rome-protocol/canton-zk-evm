@@ -5,9 +5,9 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import type { ChainRest } from "./chain-rest.ts";
+import type { ChainRest, TxListItem } from "./chain-rest.ts";
 import { traceKey } from "./chain-rest.ts";
-import { REST_FIELDS as F, pick } from "./fields.ts";
+import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, aroundOf, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import { traceOf, type CallFrame } from "./trace.ts";
@@ -32,6 +32,11 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     const p = pageOf(rows, limit, key);
     const items = p.items.map((r) => pick(r, fields));
     return derived === undefined ? pick({ items, next: p.next }, F.page) : pick({ derived, items, next: p.next }, F.derivedPage);
+  };
+  /** A page of transactions: each in the fields of its allowlist, token moves included. */
+  const txPage = (rows: TxListItem[], limit: number, key: (r: TxListItem) => string) => {
+    const p = pageOf(rows, limit, key);
+    return pick({ items: p.items.map(pickTx), next: p.next }, F.page);
   };
   const blockKey = (id: string): number | string => {
     if (HASH.test(id)) return id;
@@ -92,7 +97,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   async function blockTxs(id: string, q: URLSearchParams): Promise<Answer> {
     const limit = limitOf(q.get("limit")), after = afterOf(q, ["int4"]), n = await finalBlock(id);
     if (n === undefined) return fail(404, NOT_FOUND_HERE);
-    return cached(ok(page(await rest.blockTxs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (t) => keyOf(t.index), F.txItem)), "composite");
+    return cached(ok(txPage(await rest.blockTxs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (t) => keyOf(t.index))), "composite");
   }
 
   async function blockLegs(id: string, q: URLSearchParams): Promise<Answer> {
@@ -117,13 +122,15 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     const filter = f as (typeof TX_FILTERS)[number];
     if (format === "csv") return txsCsv(q, filter);
     const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
-    return cached(ok(page(await rest.txs(before, limit, filter), limit, (t) => keyOf(t.block, t.index), F.txItem)), "list");
+    const [rows, count] = await Promise.all([rest.txs(before, limit, filter), filter === "all" ? rest.txTotal() : null]);
+    const p = pageOf(rows, limit, (t) => keyOf(t.block, t.index));
+    return cached(ok(pick({ items: p.items.map(pickTx), next: p.next, total: count?.total ?? null, totalAsOfBlock: count?.asOfBlock ?? null, totalAsOf: count ? new Date(count.asOf).toISOString() : null }, F.txPage)), "list");
   }
 
   /** The newest transactions as a file, with the columns of the list: a bounded export, not a way to walk the chain. */
   async function txsCsv(q: URLSearchParams, filter: (typeof TX_FILTERS)[number]): Promise<Answer> {
     const raw = q.get("limit"), limit = raw === null ? CSV_MAX : Math.min(CSV_MAX, Math.max(limitOf(raw), Number(raw)));
-    const rows = (await rest.txs(null, limit, filter)).slice(0, limit);
+    const rows = (await rest.txs(null, limit, filter, false)).slice(0, limit);
     const lines = ["hash,block,index,time,from,to,created_contract,method_id,value_wei,gas_used,gas_price_wei,success"];
     for (const t of rows) {
       lines.push([t.hash, t.block, t.index, new Date(t.timestamp * 1000).toISOString(), t.from, t.to, t.created, t.methodId, t.value, t.gasUsed, t.gasPrice, t.success ? "true" : "false"].map(csvCell).join(","));

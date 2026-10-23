@@ -1,3 +1,5 @@
+import type { TxListItem } from "./chain-rest.ts";
+
 /** The fields of every REST answer and of each object inside one: nothing else is ever sent. The answers are built field by field (`pick`), and the allowlist tests hold every object to these lists. */
 
 /** A copy of an object with the listed fields and no others. */
@@ -54,13 +56,22 @@ export const REST_FIELDS = {
   page: ["items", "next"],
   /** A page of a list that stage 2 fills: `derived` is false while the derive cursor has not reached the block, and the list is then empty, not final. */
   derivedPage: ["derived", "items", "next"],
+  /** The newest transactions: a page, with how many the chain holds (from the rollups; null when they cannot say, and for a filtered list) and when that was counted to. */
+  txPage: ["items", "next", "total", "totalAsOfBlock", "totalAsOf"],
   blockItem: ["number", "hash", "timestamp", "txCount", "gasUsed", "gasLimit", "miner", "legsCount", "baseFee", "updateId", "recordTime", "proofSeconds", "finalSeconds", "commitSeconds"],
   /** One block: what the pages already have, with the legs count, whether stage 2 has derived it, and the producer's times. */
   blockDetail: [...FIELDS.block.filter((f) => f !== "transactions"), "legsCount", "derived", "lifecycle"],
   /** The Canton side of a block as its page shows it: the record's hex is served by /record. */
   cantonSummary: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch"],
   blockLifecycle: ["strategy", "cutReason", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt"],
-  txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId"],
+  txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId", "tokenMoves"],
+  /** What a transaction in a list moved in tokens: how many moves (counted to a cap, `more` past it) and the first; the whole object is null while stage 2 has not reached the block. */
+  tokenMoves: ["count", "more", "first"],
+  /** `amount` is in the token's base units; `decimals` (null where the token's metadata is not held) says how to show it. */
+  tokenMove: ["token", "amount", "tokenId", "standard", "decimals"],
+  /** What is known of an address for showing it by name: nothing here is guessed, and an address nothing is known of has a null name and symbol. */
+  label: ["address", "name", "symbol", "kind", "standard", "decimals", "verified"],
+  labels: ["items"],
   /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived), its place in its block, and the fee caps the sender signed. */
   txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason", "index", "maxFeePerGas", "maxPriorityFeePerGas"],
   leg: ["legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount"],
@@ -129,7 +140,9 @@ export const REST_FIELDS = {
   statsTxsPerBlock: ["mean", "median", "max", "nonEmptyMean", "nonEmptyMedian"],
   statsBlocks: ["count", "empty", "busy", "bySize"],
   statsBlockSize: ["size", "count"],
-  statsTxs: ["count", "failed", "successRate", "accepted"],
+  statsTxs: ["count", "failed", "successRate", "accepted", "allTime"],
+  /** The chain's transactions since its first block, exact through the newest final block `asOfBlock` (its record time is `asOf`); null where the rollups cannot say. */
+  statsAllTime: ["total", "asOfBlock", "asOf"],
   statsAttempts: ["total", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
   statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
   statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],
@@ -150,3 +163,9 @@ export const REST_FIELDS = {
   statsSeries: ["metric", "unit", "window", "step", "from", "to", "asOf", "points"],
   statsPoint: ["at", "value"],
 } as const;
+
+/** A transaction of a list in the fields of the allowlist, with the token moves inside it held to theirs. */
+export const pickTx = (t: TxListItem): Record<string, unknown> => {
+  const m = t.tokenMoves;
+  return { ...pick(t, REST_FIELDS.txItem), tokenMoves: m === null ? null : { ...pick(m, ["count", "more"]), first: m.first === null ? null : pick(m.first, REST_FIELDS.tokenMove) } };
+};

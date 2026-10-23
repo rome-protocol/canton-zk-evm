@@ -117,7 +117,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const name = windowOf(q.get("window"));
     const t = now(), w = WINDOWS[name], span = { minute: MINUTE, hour: HOUR, day: DAY }[w.rows];
     const to = Math.floor(t / span) * span + span, from = to - w.ms;
-    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet] = await Promise.all([
+    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
         "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed", "attempts",
@@ -128,7 +128,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       stats.rows("day", Math.floor(t / DAY) * DAY, Math.floor(t / DAY) * DAY + DAY, ["active_addresses", "new_addresses", "new_contracts", "verified_contracts"]),
       stats.lost(),
       stats.rows("minute", from, Math.floor(t / MINUTE) * MINUTE + MINUTE, ["proof_busy_ms"]),
-      stats.cutting(), stats.faucet(from, to),
+      stats.cutting(), stats.faucet(from, to), stats.txTotal(),
     ]);
 
     const blocks = sum(rows, "blocks"), txs = sum(rows, "txs"), empty = sum(rows, "empty_blocks"), attempts = sum(rows, "attempts");
@@ -163,7 +163,8 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
         count: blocks, empty, busy: sum(rows, "busy_blocks"),
         bySize: SIZE_LABELS.map((size, k) => pick({ size, count: sum(rows, `size_blocks_${k}` as Column) }, F.statsBlockSize)),
       }, F.statsBlocks),
-      txs: pick({ count: txs, failed: sum(rows, "txs_failed"), successRate: ratio(txs - sum(rows, "txs_failed"), txs), accepted: sum(rows, "accepted") }, F.statsTxs),
+      txs: pick({ count: txs, failed: sum(rows, "txs_failed"), successRate: ratio(txs - sum(rows, "txs_failed"), txs), accepted: sum(rows, "accepted"),
+        allTime: allTime && pick({ total: allTime.total, asOfBlock: allTime.asOfBlock, asOf: iso(allTime.asOf) }, F.statsAllTime) }, F.statsTxs),
       attempts: pick({
         total: attempts, refused: sum(rows, "attempts_refused"), failed: sum(rows, "attempts_failed"), notTaken: sum(rows, "attempts_not_taken"),
         refusedShare: ratio(sum(rows, "attempts_refused"), attempts), failedShare: ratio(sum(rows, "attempts_failed"), attempts), notTakenShare: ratio(sum(rows, "attempts_not_taken"), attempts),

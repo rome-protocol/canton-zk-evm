@@ -210,7 +210,7 @@ describe("the stats page", () => {
       summary: () => reply(summary({
         window: "1h", rows: "minute", timeToFinal: null, proofTime: null, commitTime: null, blockTime: null, served: null,
         txsPerBlock: { mean: null, median: null, max: null, nonEmptyMean: null, nonEmptyMedian: null },
-        blocks: { count: 0, empty: 0, busy: 0, bySize: [] }, txs: { count: 0, failed: 0, successRate: null, accepted: 0 }, tps: { now: 0, peak: null, peakAt: null },
+        blocks: { count: 0, empty: 0, busy: 0, bySize: [] }, txs: { count: 0, failed: 0, successRate: null, accepted: 0, allTime: null }, tps: { now: 0, peak: null, peakAt: null },
         attempts: { total: 0, refused: 0, failed: 0, notTaken: 0, refusedShare: null, failedShare: null, notTakenShare: null }, faucet: { requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null },
       })),
     });

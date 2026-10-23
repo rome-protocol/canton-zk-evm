@@ -96,7 +96,7 @@ export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockLi
 }
 /** A final transaction as the list route gives it: the nth, in block n. */
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
-  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, ...over };
+  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, tokenMoves: null, ...over };
 }
 /** One address as /api/addresses/:address gives it: an account that sent 3 transactions, with reth's balance at final block 21. */
 export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {

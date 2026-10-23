@@ -6,7 +6,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
-import { addressOfKey, bytes, hex, hexOrNull, MS, txSelect, type TxListItem, txItem } from "./chain-rest.ts";
+import { addressOfKey, bytes, hex, hexOrNull, MS, txSelect, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Key = (number | string)[];
@@ -17,6 +17,9 @@ export type AddressSort = "balance" | "txs";
 export type ContractSort = "interactions" | "newest" | "oldest";
 export type TokenSort = "holders" | "transfers" | "newest";
 
+/** Which of an address's transactions a list keeps: all, the ones it sent, or the ones it received (as recipient or as the contract a transaction created). */
+export type TxDirection = "all" | "sent" | "received";
+export const TX_DIRECTIONS: readonly TxDirection[] = ["all", "sent", "received"];
 export interface AddressItem { address: string; kind: string; balance: string | null; balanceBlock: number | null; txCount: number }
 export interface AddressDetail {
   address: string; kind: string; sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; firstSeenBlock: number | null; lastActiveBlock: number | null;
@@ -60,6 +63,8 @@ export interface TokenItem {
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
 export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
+/** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
+export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string }
 
 export type AccountRest = ReturnType<typeof createAccountRest>;
@@ -101,6 +106,27 @@ export function createAccountRest(pool: Pool) {
     return rows.map(addressItem);
   }
 
+  /**
+   * The labels of the addresses, in the order asked: a token's name and symbol and its standard, else a contract's name (from its verified source, else the token's) and whether its source is
+   * verified, and the token's decimals. One read for all of them, by keys (the contracts, the tokens, the addresses, and the creations of final transactions); nothing is guessed: an address the index holds nothing of has a null kind.
+   */
+  async function labels(addresses: string[]): Promise<LabelItem[]> {
+    const rows = await query(
+      `select q.address, tk.name as token_name, tk.symbol, tk.standard, tk.decimals, c.name as contract_name, (c.verified_source is not null) as verified, tk.address is not null as is_token, c.address is not null as is_contract,
+         ad.address is not null as is_seen, ad.is_contract as seen_contract,
+         exists (select 1 from transactions t where t.created_contract = q.address) as is_created
+       from unnest($1::bytea[]) with ordinality as q(address, ord) left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address left join addresses ad on ad.address = q.address
+       order by q.ord`,
+      [addresses.map(bytes)],
+    );
+    // A kind is only said where the database holds it: a token, a contract (derived, or named by a final creation that stage 2 has not reached), an address it has seen. Else null.
+    return rows.map((r): LabelItem => ({
+      address: hex(r.address), name: r.token_name ?? r.contract_name, symbol: r.symbol,
+      kind: r.is_token ? "token" : r.is_contract || r.seen_contract || r.is_created ? "contract" : r.is_seen ? "account" : null,
+      standard: r.standard, decimals: num(r.decimals), verified: r.verified === true,
+    }));
+  }
+
   /** What the database holds of an address: the counters, the kind, the token it is and the transaction that made it. Undefined for an address nothing has touched. */
   async function address(a: string): Promise<AddressDetail | undefined> {
     const [r] = await query(
@@ -119,18 +145,22 @@ export function createAccountRest(pool: Pool) {
     };
   }
 
-  /** The transactions an address sent, received or was made by, newest first, after the key (block, index). */
-  async function addressTxs(a: string, before: Key | null, limit: number): Promise<TxListItem[]> {
+  /**
+   * The transactions an address sent, received or was made by, newest first, after the key (block, index). `direction` keeps the ones it sent (it is the sender), or the ones it
+   * received (it is the recipient, or the contract the transaction created); "all" is every one of them.
+   */
+  async function addressTxs(a: string, before: Key | null, limit: number, direction: TxDirection = "all", moves = true): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
     const side = (column: string) =>
       `(select block_number, tx_index from transactions where ${column} = $1 and ($2::bigint is null or (block_number, tx_index) < ($2::bigint, $3::int)) order by block_number desc, tx_index desc limit $4)`;
+    const columns = { all: ["from_address", "to_address", "created_contract"], sent: ["from_address"], received: ["to_address", "created_contract"] }[direction];
     const rows = await query(
-      `with k as (${side("from_address")} union ${side("to_address")} union ${side("created_contract")})
+      `with k as (${columns.map(side).join(" union ")})
        select ${txSelect} from k join transactions t on t.block_number = k.block_number and t.tx_index = k.tx_index join blocks b on b.number = t.block_number
        order by t.block_number desc, t.tx_index desc limit $4`,
       [bytes(a), bn, ix, limit + 1],
     );
-    return rows.map(txItem);
+    return moves ? withTokenMoves(query, rows.map(txItem)) : rows.map(txItem);
   }
 
   /** The internal calls an address is the caller or the callee of, newest first, after the key (block, index, trace address). */
@@ -373,6 +403,6 @@ export function createAccountRest(pool: Pool) {
   }
 
   return {
-    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName,
+    derivedThrough, addresses, address, addressTxs, addressInternal, addressTransfers, contractEvents, holdings, coinHistory, contracts, contract, source, tokens, token, holders, tokenTransfers, legs, leg, byName, labels,
   };
 }

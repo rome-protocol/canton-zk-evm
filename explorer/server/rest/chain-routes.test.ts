@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { createApi, type Answer } from "../api.ts";
 import { createChainDb } from "../chain-db.ts";
@@ -11,6 +11,7 @@ import { CHAIN_ID, GATEWAY, PINS, makeChain } from "../../test/synthetic-chain.t
 import { createChainRest } from "./chain-rest.ts";
 import { CACHE_CONTROL } from "./cache.ts";
 import { REST_FIELDS as F } from "./fields.ts";
+import { TAIL_MAX_MS } from "./tx-total.ts";
 
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const keys = (o: object) => Object.keys(o).sort();
@@ -30,6 +31,12 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
   };
   const tx = (block: number, i: number) => chain.blocks[block - 1]!.block.transactions[i]!.hash;
   const setCursor = (n: number) => pool.query("update cursors set position = $1 where stream = 'derive'", [n]);
+  /** A token as stage 2 holds it: its contract (any code will do here) and its metadata row. */
+  const addToken = async (address: Buffer, standard: string, name: string, symbol: string, decimals: number | null, first: number) => {
+    await pool.query("insert into bytecodes (code_hash, code, size) values ($1, $2, 2) on conflict do nothing", [Buffer.alloc(32, 0x5a), Buffer.from("6080", "hex")]);
+    await pool.query("insert into contracts (address, origin, runtime_code_hash, name) values ($1, 'genesis', $2, $3)", [address, Buffer.alloc(32, 0x5a), name]);
+    await pool.query("insert into tokens (address, standard, name, symbol, decimals, first_transfer_block, metadata_status) values ($1, $2, $3, $4, $5, $6, 'read')", [address, standard, name, symbol, decimals, first]);
+  };
   const body = (a: Answer) => a.body as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
   beforeAll(async () => {
@@ -49,6 +56,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     await pool.query("update transactions set to_address = null, created_contract = $3, method_id = $4 where block_number = $1 and tx_index = $2", [made.block_number, made.tx_index, who(7), Buffer.from("60806040", "hex")]);
     await pool.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount) values ($1, 90, 0, $2, $3, $4, $5, 50), ($1, 91, 1, $2, $3, $4, $5, 7)", [t.block_number, t.tx_index, who(1), who(2), who(3)]);
     await pool.query("insert into internal_calls (block_number, tx_index, trace_address, call_type, from_address, to_address, value) values ($1, $2, '{}', 'call', $3, $4, 9), ($1, $2, '{0,1}', 'call', $4, $3, 4)", [t.block_number, t.tx_index, who(2), who(3)]);
+    // The first move's token is a known ERC-20 with 6 decimals; the 721 and the unknown token of the tests below are added there.
+    await addToken(who(1), "ERC-20", "Test Token", "TT", 6, 2);
   });
   afterAll(async () => { await db?.drop(); });
 
@@ -177,6 +186,79 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const lines = String(csv.body).trim().split("\r\n");
     expect(lines[0]).toMatch(/^hash,block,index,time,from,to,/);
     expect(lines.length - 1).toBe(calls.length);
+  });
+
+  it("gives the total of the transactions exact through the newest final block, and null where the rollups cannot say", async () => {
+    const day = 86_400_000;
+    const { rows: [b] } = await pool.query(
+      `select (extract(epoch from min(record_time)) * 1000)::float8 as first, max(number) as newest, (select (extract(epoch from record_time) * 1000)::float8 from blocks order by number desc limit 1) as newest_at,
+              (select count(*) from transactions)::int as direct, sum(tx_count)::int as held, count(*)::int as blocks from blocks`);
+    const dayOf = Math.floor(Number(b.first) / day) * day, newestAt = Number(b.newest_at);
+    expect(b.blocks).toBeGreaterThanOrEqual(3);
+    expect(b.direct).toBeGreaterThan(0);
+    expect(b.held).toBe(b.direct);
+    const seed = (bucket: number, txs: number, test: number) => pool.query(
+      `insert into stats_day (bucket, blocks, empty_blocks, busy_blocks, txs, txs_failed, gas_used, argument_bytes, accepted, lost, attempts_refused, attempts_failed, busy_gap_hist, time_to_final_hist, proof_hist, commit_hist, test_txs)
+       values ($1, 0, 0, 0, $2, 0, 0, 0, 0, 0, 0, 0, '{}', '{}', '{}', '{}', $3)`, [new Date(bucket), txs, test]);
+    const reset = async () => { await pool.query("delete from stats_day"); await pool.query("delete from cursors where stream = 'stats_rollup'"); };
+    const cursor = (at: number) => pool.query("insert into cursors (stream, position, detail, updated_at) values ('stats_rollup', $1, '{}', $2)", [at, new Date(at + 60_000)]);
+    /** Day rows seeded by hand (no minute rows), holding the blocks before a minute ahead of the cursor, the cut the total reads from; the test runs' two of them, in the first block's day. The real rollup is tested in stats-routes.test.ts. */
+    const rolled = async (at: number) => {
+      const { rows: [r] } = await pool.query("select coalesce(sum(tx_count), 0)::int as n from blocks where record_time < $1", [new Date(at - 60_000)]);
+      await seed(dayOf, r.n - Math.min(2, r.n), Math.min(2, r.n));
+      await cursor(at);
+      return r.n as number;
+    };
+    try {
+      await reset();
+      // No rollup has run: the total is not known, and the page says so rather than counting.
+      let p = body(await get("/api/txs"));
+      same(p, F.txPage);
+      expect([p.total, p.totalAsOfBlock, p.totalAsOf]).toEqual([null, null, null]);
+      // Rollups that begin after the first block leave the early days uncounted: not a total.
+      await seed(dayOf + day, 9, 0);
+      await cursor(newestAt - 3000);
+      p = body(await get("/api/txs"));
+      expect([p.total, p.totalAsOfBlock, p.totalAsOf]).toEqual([null, null, null]);
+      await reset();
+      // The cursor a minute after the newest block (the day rows hold the blocks before the newest, the tail that block, once): the sum plus the tail is the direct count of the transactions, as of the newest block.
+      const cut = newestAt + 60_000;
+      const rollupSum = await rolled(cut);
+      expect(rollupSum).toBeLessThan(b.direct);
+      expect(rollupSum).toBeGreaterThan(0);
+      p = body(await get("/api/txs"));
+      expect(p.total).toBe(b.direct);
+      expect(p.totalAsOfBlock).toBe(Number(b.newest));
+      expect(p.totalAsOf).toBe(new Date(newestAt).toISOString());
+      expect(body(await get("/api/txs?limit=1&before=3:0")).total).toBe(b.direct);
+      // A cursor a block earlier: more is in the tail and less in the rollups, the same total.
+      await reset();
+      await rolled(newestAt - 3000);
+      expect(body(await get("/api/txs")).total).toBe(b.direct);
+      // A cursor two minutes past the newest block: nothing is left in the tail.
+      await reset();
+      await rolled(newestAt + 120_000);
+      p = body(await get("/api/txs"));
+      expect([p.total, p.totalAsOfBlock]).toEqual([b.direct, Number(b.newest)]);
+      // Rollups that trail the newest block by more than the bound (a first build, a rebuild) cannot say: the total is null, not a total through the cursor.
+      await reset();
+      await rolled(newestAt - TAIL_MAX_MS - 1000);
+      p = body(await get("/api/txs"));
+      expect([p.total, p.totalAsOfBlock, p.totalAsOf]).toEqual([null, null, null]);
+      // The same rows without the cursor that says how far they reach cannot be called a total.
+      await reset();
+      await rolled(cut);
+      await pool.query("delete from cursors where stream = 'stats_rollup'");
+      expect(body(await get("/api/txs")).total).toBeNull();
+      await cursor(cut);
+      // A filtered list has no rolled-up count (the failed ones of a test run are not kept apart), so it has no total.
+      for (const f of ["failed", "calls"]) {
+        const x = body(await get(`/api/txs?filter=${f}`));
+        expect([x.total, x.totalAsOfBlock, x.totalAsOf], f).toEqual([null, null, null]);
+      }
+    } finally {
+      await reset();
+    }
   });
 
   it("lists blocks with the proof time and the time to final, filtered, and as a bounded CSV", async () => {
@@ -361,5 +443,81 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
     const api = createApi({ config, reth: {} as Reth, ledger: {} as never, chain: createChainDb(pool) });
     expect((await api("GET", "/api/blocks")).status).toBe(404);
+  });
+  it("gives each transaction of the lists the token moves of its logs, and null for a block stage 2 has not reached", async () => {
+    const who1 = "0x" + "01".repeat(20);
+    const want = { count: 2, more: false, first: { token: who1, amount: "50", tokenId: null, standard: "ERC-20", decimals: 6 } };
+    const none = { count: 0, more: false, first: null };
+    for (const path of ["/api/txs?limit=100", "/api/blocks/2/transactions?limit=100"]) {
+      const items = body(await get(path)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      for (const t of items) {
+        same(t, F.txItem);
+        same(t.tokenMoves, F.tokenMoves);
+        if (t.tokenMoves.first) same(t.tokenMoves.first, F.tokenMove);
+      }
+      expect(items.find((t) => t.hash === tx(2, 1))!.tokenMoves, path).toEqual(want);
+      expect(items.find((t) => t.hash === tx(2, 2))!.tokenMoves, path).toEqual(none);
+    }
+    await setCursor(2);
+    try {
+      const items = body(await get("/api/txs?limit=100")).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(items.filter((t) => t.block === 3).every((t) => t.tokenMoves === null)).toBe(true);
+      expect(items.filter((t) => t.block === 3).length).toBe(7);
+      expect(items.filter((t) => t.block === 2).every((t) => t.tokenMoves !== null)).toBe(true);
+      expect(body(await get("/api/blocks/3/transactions")).items.every((t: any) => t.tokenMoves === null)).toBe(true); // eslint-disable-line @typescript-eslint/no-explicit-any
+    } finally {
+      await setCursor(3);
+    }
+  });
+
+  it("counts at most 100 token moves for a transaction and says there are more", async () => {
+    const [t] = (await pool.query("select block_number, tx_index from tx_hashes where hash = $1", [Buffer.from(tx(3, 0).slice(2), "hex")])).rows;
+    await pool.query(
+      "insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount) select $1, 1000 + g, 0, $2, $3, $4, $5, g from generate_series(1, 150) g",
+      [t.block_number, t.tx_index, Buffer.alloc(20, 9), Buffer.alloc(20, 1), Buffer.alloc(20, 2)],
+    );
+    try {
+      const item = (body(await get("/api/txs?limit=100")).items as Record<string, any>[]).find((x) => x.hash === tx(3, 0))!; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(item.tokenMoves).toMatchObject({ count: 100, more: true, first: { amount: "1" } });
+    } finally {
+      await pool.query("delete from token_transfers where block_number = $1 and log_index >= 1000", [t.block_number]);
+    }
+  });
+
+  it("gives the standard and decimals of the first move's token: an ERC-721's moves carry a token id and no amount, an unknown token's have no standard and no decimals", async () => {
+    const who = (n: number) => Buffer.alloc(20, n), hexOf = (b: Buffer) => "0x" + b.toString("hex");
+    const at = async (h: string) => (await pool.query("select block_number, tx_index from tx_hashes where hash = $1", [Buffer.from(h.slice(2), "hex")])).rows[0];
+    const [t1, t2] = [await at(tx(3, 1)), await at(tx(3, 2))];
+    await addToken(who(4), "ERC-721", "Pass", "OPASS", null, 3);
+    await pool.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, token_id, from_address, to_address) values ($1, 70, 0, $2, $3, 3, $4, $5)", [t1.block_number, t1.tx_index, who(4), who(2), who(3)]);
+    await pool.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount) values ($1, 71, 0, $2, $3, $4, $5, 8)", [t2.block_number, t2.tx_index, who(5), who(2), who(3)]);
+    try {
+      const nft = { count: 1, more: false, first: { token: hexOf(who(4)), amount: null, tokenId: "3", standard: "ERC-721", decimals: null } };
+      const unknown = { count: 1, more: false, first: { token: hexOf(who(5)), amount: "8", tokenId: null, standard: null, decimals: null } };
+      for (const path of ["/api/txs?limit=100", "/api/blocks/3/transactions?limit=100"]) {
+        const items = body(await get(path)).items as Record<string, any>[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+        expect(items.find((x) => x.hash === tx(3, 1))!.tokenMoves, path).toEqual(nft);
+        expect(items.find((x) => x.hash === tx(3, 2))!.tokenMoves, path).toEqual(unknown);
+      }
+      const known = (body(await get("/api/blocks/2/transactions?limit=100")).items as Record<string, any>[]).find((x) => x.hash === tx(2, 1))!; // eslint-disable-line @typescript-eslint/no-explicit-any
+      expect(known.tokenMoves.first).toMatchObject({ standard: "ERC-20", decimals: 6 });
+    } finally {
+      await pool.query("delete from token_transfers where block_number = $1 and log_index in (70, 71)", [t1.block_number]);
+      await pool.query("delete from tokens where address = $1", [who(4)]);
+      await pool.query("delete from contracts where address = $1", [who(4)]);
+    }
+  });
+
+  it("leaves the token moves out of the CSV, which does not write them", async () => {
+    const spy = vi.spyOn(pool, "query");
+    try {
+      expect((await get("/api/txs?format=csv")).status).toBe(200);
+      expect(spy.mock.calls.filter((c) => /token_transfers/.test(String(typeof c[0] === "string" ? c[0] : (c[0] as { text?: string }).text)))).toHaveLength(0);
+      spy.mockClear();
+      expect((await get("/api/txs?limit=5")).status).toBe(200);
+      expect(spy.mock.calls.filter((c) => /token_transfers/.test(String(typeof c[0] === "string" ? c[0] : (c[0] as { text?: string }).text))).length).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

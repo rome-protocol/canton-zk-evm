@@ -7,7 +7,8 @@ import { FIELDS, REST_FIELDS as F } from "./fields.ts";
 import { BUFFER_BLOCKS, PER_CLIENT, TOPICS, TXS_MAX } from "./stream.ts";
 import { MAX_VERIFY_SOURCE, RULES } from "../limits.ts";
 import { MAX_LIMIT, DEFAULT_LIMIT, AROUND_MAX, AROUND_DEFAULT } from "./paging.ts";
-import { SORTS } from "./account-routes.ts";
+import { MAX_LABELS, SORTS } from "./account-routes.ts";
+import { TOKEN_MOVES_CAP } from "./chain-rest.ts";
 import { MODULES } from "./etherscan.ts";
 import { MAX_PAGE_BYTES } from "./etherscan-rest.ts";
 import { DEFAULT_WINDOW, METRICS, STEPS, WINDOWS, WINDOW_STEPS } from "./stats-routes.ts";
@@ -19,8 +20,12 @@ interface Doc {
   query?: Query[];
   /** The fields of a single object. */
   object?: Fields;
+  /** For an object whose `items` are a list of objects: the fields of each item. */
+  items?: Fields;
   /** A page: the fields of each item, and whether the page says if stage 2 had reached it (`derived`). */
-  page?: { items: Fields; derived: boolean };
+  page?: { items: Fields; derived: boolean; /** Fields of the page beside its items, each with what it says. */ extra?: Record<string, unknown> };
+  /** The route can also answer as a CSV file (`format=csv`): the 200 then lists text/csv beside JSON. */
+  csv?: boolean;
   /** For an answer that is not a list of fields. */
   note?: string;
   /** What `{param}` is. */
@@ -42,7 +47,15 @@ const txCsv: Query = { name: "format", about: "csv for the newest transactions a
 const csv: Query = { name: "format", about: "csv for the newest blocks as a file with the list's columns (up to 1000, `limit` sets fewer; no paging); left out for JSON.", values: ["csv"] };
 const around: Query = { name: "n", about: `How many updates on each side: 1 to ${AROUND_MAX}, ${AROUND_DEFAULT} when left out.` };
 const topic0: Query = { name: "topic0", about: "Only the logs whose first topic (the event's signature hash) is this: 0x and 64 hex digits." };
+const direction: Query = { name: "direction", about: "all of the address's transactions, only the ones it sent (it is the sender, `sent`), or only the ones it received (it is the recipient or the contract the transaction created, `received`); all when left out.", values: ["all", "sent", "received"] };
+const addressTxCsv: Query = { name: "format", about: "csv for the address's newest transactions as a file with the list's columns and a `direction` column (the `direction` asked, or sent or received per row when it is all; up to 1000, `limit` sets fewer; no paging; `direction` applies); left out for JSON.", values: ["csv"] };
+const TX_TOTAL = {
+  total: { type: ["integer", "null"], description: "How many transactions the chain holds, exact through the newest final block (`totalAsOfBlock`), never a count over the transactions. The live ones and the test runs' together, as the list holds both. Null when the rollups cannot say (none has run, they begin after the first block's day, or they trail the newest block by more than an hour, as in a first build or a rebuild), and for a filtered list." },
+  totalAsOfBlock: { type: ["integer", "null"], description: "The newest final block that `total` holds; null where total is." },
+  totalAsOf: { type: ["string", "null"], description: "The record time of that block (ISO time); null where total is." },
+};
 const paged = [limit, before], pagedAfter = [limit, after];
+const TOKEN_MOVES = `Each carries \`tokenMoves\`: how many token moves its logs hold (\`count\`, at most ${TOKEN_MOVES_CAP}, with \`more\` true past that) and the first (\`first\`: token, amount or tokenId, standard when the token is known), read from stage 2's transfers. A move carries the token's \`decimals\` (null where the token's metadata is not held), which say how to show its amount; its symbol is not in the move, ask /api/labels for it. \`tokenMoves\` is null, not empty, for a block stage 2 has not reached.`;
 const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is false for a block it has not reached, and what it writes is then empty or null, not final.";
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
@@ -100,10 +113,10 @@ const ETHERSCAN_NOTE = "Always HTTP 200: {status, message, result}, status \"1\"
 export const DOCS: Record<string, Doc> = {
   "/api/blocks": { tag: "Blocks", summary: "The newest final blocks, with the proof time and the time to final where the producer's journal has them.", query: [...paged, blockFilter, csv], page: { items: F.blockItem, derived: false } },
   "/api/blocks/{id}": { tag: "Blocks", summary: "One block, by number or 0x hash.", param: "The block's number or its 0x hash.", object: F.blockDetail },
-  "/api/blocks/{id}/transactions": { tag: "Blocks", summary: "The transactions of a block, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
+  "/api/blocks/{id}/transactions": { tag: "Blocks", summary: `The transactions of a block, in order. ${TOKEN_MOVES}`, param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.txItem, derived: false } },
   "/api/blocks/{id}/legs": { tag: "Blocks", summary: "The gateway legs a block recorded, in order.", param: "The block's number or its 0x hash.", query: pagedAfter, page: { items: F.leg, derived: false } },
   "/api/blocks/{id}/record": { tag: "Blocks", summary: "The Canton record of a block: header, transactions and proof, as hex.", param: "The block's number or its 0x hash.", object: F.record },
-  "/api/txs": { tag: "Transactions", summary: "The newest final transactions.", query: [...paged, txFilter, txCsv], page: { items: F.txItem, derived: false } },
+  "/api/txs": { tag: "Transactions", summary: `The newest final transactions. ${TOKEN_MOVES}`, query: [...paged, txFilter, txCsv], csv: true, page: { items: F.txItem, derived: false, extra: TX_TOTAL } },
   "/api/txs/{hash}": { tag: "Transactions", summary: "One transaction. Its stage 2 fields are null until its block is derived. `raw=1` is the receipt of a final transaction as reth gave it, which never changes.", param: "The transaction's 0x hash.", query: [raw], object: F.txDetail },
   "/api/txs/{hash}/logs": { tag: "Transactions", summary: "The logs of a transaction, with the events that can be decoded.", param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.log, derived: false } },
   "/api/txs/{hash}/internal": { tag: "Transactions", summary: `The internal calls that moved value. ${DERIVED}`, param: "The transaction's 0x hash.", query: [...pagedAfter, raw], page: { items: F.internal, derived: true } },
@@ -114,11 +127,12 @@ export const DOCS: Record<string, Doc> = {
   "/api/canton/updates/{updateId}/around": { tag: "Canton", summary: "The Canton updates around one, newest first: up to n newer, the update itself and up to n older, by the list's own key (record time, update id). `submittedTemplate`, `submittedChoice` and `txCount` are the producer log's and the block's; null where the log or the block does not hold them.", param: "The update id (1220 and 64 hex digits).", query: [around], note: "An object with `items`, each with the fields in the item list of this route.", object: F.updateAround },
   "/api/addresses": { tag: "Accounts", summary: `Addresses by balance or by transactions. The balance is the database's copy, as of its \`balanceBlock\`. ${DERIVED}`, query: [sort(SORTS.addresses), ...paged], page: { items: F.addressItem, derived: true } },
   "/api/addresses/{address}": { tag: "Accounts", summary: "One address. Its balance is reth's at the newest final block; the counters are the database's. A token's address says so.", param: "A 0x address.", object: F.addressDetail },
-  "/api/addresses/{address}/txs": { tag: "Accounts", summary: "The transactions that an address sent, received or created.", param: "A 0x address.", query: paged, page: { items: F.txItem, derived: false } },
+  "/api/addresses/{address}/txs": { tag: "Accounts", summary: `The transactions that an address sent, received or created. ${TOKEN_MOVES}`, param: "A 0x address.", query: [...paged, direction, addressTxCsv], csv: true, page: { items: F.txItem, derived: false } },
   "/api/addresses/{address}/internal": { tag: "Accounts", summary: `The internal calls that moved value to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.addressInternal, derived: true } },
   "/api/addresses/{address}/token-transfers": { tag: "Accounts", summary: `The token transfers to or from an address. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.tokenTransferItem, derived: true } },
   "/api/addresses/{address}/tokens": { tag: "Accounts", summary: `What an address holds, token by token. ${DERIVED}`, param: "A 0x address.", query: pagedAfter, page: { items: F.holding, derived: true } },
   "/api/addresses/{address}/coin-history": { tag: "Accounts", summary: `An address's balance at the blocks where it changed. ${DERIVED}`, param: "A 0x address.", query: paged, page: { items: F.coinPoint, derived: true } },
+  "/api/labels": { tag: "Accounts", summary: `The name of each address asked, for showing a token or a contract by name: its name and symbol (a token's, else a verified contract's name), its kind (token, contract, or account for an address the index has seen), the token standard and decimals (null where the token's metadata is not held) and whether its source is verified. Up to ${MAX_LABELS} addresses, in the order asked and each once; an address the index holds nothing of has a null kind and no name, and nothing is guessed.`, query: [{ name: "addresses", about: `1 to ${MAX_LABELS} lowercase 0x addresses, joined by commas.` }], note: "An object with `items`, each with the fields in the item list of this route.", object: F.labels, items: F.label },
   "/api/contracts": { tag: "Contracts", summary: `Contracts. The balance and the counters are the database's copy, as of \`balanceBlock\`; reth's balance of one is at /api/addresses/{address}. ${DERIVED}`, query: [sort(SORTS.contracts), { name: "verified", about: "true for the contracts whose source is verified, false for the others.", values: ["true", "false"] }, ...paged], page: { items: F.contractItem, derived: true } },
   "/api/contracts/{address}": { tag: "Contracts", summary: "One contract, with its code, proxy and verification. Its balance and counters are the database's copy, as of `balanceBlock`, not reth's: read the balance at /api/addresses/{address}.", param: "A 0x address.", object: F.contractDetail },
   "/api/contracts/{address}/source": { tag: "Contracts", summary: "The verified source files and ABI of a contract. Every field after `verified` is empty while nothing is verified.", param: "A 0x address.", object: F.source },
@@ -131,7 +145,7 @@ export const DOCS: Record<string, Doc> = {
   "/api/legs/{id}": { tag: "Gateway", summary: "One gateway leg, by its id.", param: "The leg's 0x id.", object: F.legItem },
   "/api/search": { tag: "Search", summary: "Where a text leads: a block number or hash, a transaction hash, an address, a Canton update id, or the start of a token's or a verified contract's name.", query: [{ name: "q", about: "The text to look for." }], object: F.search },
   "/api/stats/summary": {
-    tag: "Stats", summary: "The numbers of the stats page over a window, and what is live now. A window is the last whole buckets of the rows it is read from (1h and 6h: minutes; 24h and 7d: hours; 30d: days), the open one included; `from` and `to` are the buckets read. Times are seconds, read from buckets 5% apart: a percentile is at most 5% above the truth. A time or a rate with nothing behind it is null. Runs marked as tests are counted in `test` and left out of everything else. `asOf` is when the rollups last ran.",
+    tag: "Stats", summary: "The numbers of the stats page over a window, and what is live now. A window is the last whole buckets of the rows it is read from (1h and 6h: minutes; 24h and 7d: hours; 30d: days), the open one included; `from` and `to` are the buckets read. Times are seconds, read from buckets 5% apart: a percentile is at most 5% above the truth. A time or a rate with nothing behind it is null. Runs marked as tests are counted in `test` and left out of everything else. `asOf` is when the rollups last ran. `txs.allTime` is the chain's transactions since its first block, exact through the newest final block (`asOfBlock`, with its record time `asOf`); it is null where the rollups cannot say, and it does not depend on the window.",
     query: [{ name: "window", about: `The window: ${Object.keys(WINDOWS).join(", ")}; ${DEFAULT_WINDOW} when left out.`, values: Object.keys(WINDOWS) }], object: F.statsSummary,
   },
   "/api/stats/series": {
@@ -172,9 +186,11 @@ const fail = (description: string) => ({ description, content: { "application/js
 function schemaOf(d: Doc): unknown {
   if (d.page) {
     const props: Record<string, unknown> = { items: { type: "array", items: object(d.page.items) }, next: { type: ["string", "null"], description: "The key to pass as the next page's cursor; null on the last page." } };
+    Object.assign(props, d.page.extra);
     if (d.page.derived) props.derived = { type: "boolean", description: "True when stage 2 has reached the newest final block." };
     return { type: "object", additionalProperties: false, properties: props, required: Object.keys(props) };
   }
+  if (d.object && d.items) return object(d.object, { properties: { items: { type: "array", items: object(d.items) } } });
   return d.object ? object(d.object) : {};
 }
 
@@ -211,7 +227,7 @@ export function buildOpenApi(paths: readonly string[], info: { title: string; li
     const get: Record<string, unknown> = {
       tags: [d.tag], summary: d.summary, parameters,
       responses: {
-        200: { description: d.note ?? "The answer.", content: { [type]: { schema: schemaOf(d) } } },
+        200: { description: d.note ?? "The answer.", content: { [type]: { schema: schemaOf(d) }, ...(d.csv ? { "text/csv": { schema: { type: "string", description: "One header row, then a row for each transaction, CRLF-ended." } } } : {}) } },
         ...(parameters.length ? { 400: fail("The request is wrong; the message says how.") } : {}),
         ...(d.param ? { 404: fail("Nothing is held for that.") } : {}),
         429: fail("Too many requests; Retry-After says when to try again."),

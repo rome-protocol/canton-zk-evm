@@ -4,6 +4,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
+import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export const hex = (b: Buffer): string => "0x" + b.toString("hex");
@@ -27,7 +28,16 @@ export interface TxListItem {
   hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null;
   /** The input's first 4 bytes as 0x hex; null for a transaction with no input (a plain transfer or a creation with no arguments). */
   methodId: string | null;
+  /**
+   * The token moves of the transaction's logs (stage 2's rows): how many, and the first. Null while stage 2 has not reached the transaction's block, which is not the same as
+   * none: `count` is 0 and `first` null for a transaction that moved no token. A count stops at TOKEN_MOVES_CAP; `more` says there are more than that.
+   */
+  tokenMoves: TokenMoves | null;
 }
+export interface TokenMove { token: string; amount: string | null; tokenId: string | null; standard: string | null; decimals: number | null }
+export interface TokenMoves { count: number; more: boolean; first: TokenMove | null }
+/** The most token moves counted for one transaction in a list; a transaction with more says `more`. */
+export const TOKEN_MOVES_CAP = 100;
 export interface BlockExtras {
   legsCount: number;
   /** The producer's attempt that made the block, from its journal; null before the journal is loaded. */
@@ -53,8 +63,40 @@ export const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from 
   t.effective_gas_price::text as price, t.status, t.created_contract, t.method_id`;
 export const txItem = (r: Row): TxListItem => ({
   hash: hex(r.hash), block: Number(r.block_number), index: r.tx_index, timestamp: Number(r.ts), from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value, nonce: Number(r.nonce),
-  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract), methodId: hexOrNull(r.method_id),
+  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract), methodId: hexOrNull(r.method_id), tokenMoves: null,
 });
+
+/**
+ * The items with their token moves: one query for the whole page (the rows of the transactions' own blocks that belong to them, each transaction's first CAP + 1 by log), never one
+ * for each item. An item in a block above the derive cursor keeps `tokenMoves` null: stage 2 has not written its transfers, so none is not known.
+ */
+export async function withTokenMoves(query: (sql: string, values?: unknown[]) => Promise<Row[]>, items: TxListItem[]): Promise<TxListItem[]> {
+  if (items.length === 0) return items;
+  const [c] = await query("select position from cursors where stream = 'derive'");
+  const cursor = c ? Number(c.position) : 0;
+  const ready = items.filter((t) => t.block <= cursor);
+  if (ready.length === 0) return items;
+  const rows = await query(
+    `select m.block_number, m.tx_index, m.n, m.token, m.amount, m.token_id, tk.standard, tk.decimals
+     from (select x.block_number, x.tx_index, row_number() over (partition by x.block_number, x.tx_index order by x.log_index, x.batch_index) as n, x.token, x.amount::text as amount, x.token_id::text as token_id
+           from token_transfers x join unnest($1::bigint[], $2::int[]) as k(block_number, tx_index) on x.block_number = k.block_number and x.tx_index = k.tx_index) m
+       left join tokens tk on tk.address = m.token
+     where m.n <= $3 order by m.block_number, m.tx_index, m.n`,
+    [ready.map((t) => t.block), ready.map((t) => t.index), TOKEN_MOVES_CAP + 1],
+  );
+  const by = new Map<string, TokenMoves>();
+  for (const r of rows) {
+    const key = `${r.block_number}:${r.tx_index}`;
+    const n = Number(r.n);
+    if (n === 1) by.set(key, { count: 1, more: false, first: { token: hex(r.token), amount: r.amount, tokenId: r.token_id, standard: r.standard, decimals: r.decimals === null || r.decimals === undefined ? null : Number(r.decimals) } });
+    else {
+      const m = by.get(key) as TokenMoves;
+      m.count = Math.min(n, TOKEN_MOVES_CAP);
+      m.more = n > TOKEN_MOVES_CAP;
+    }
+  }
+  return items.map((t) => (t.block <= cursor ? { ...t, tokenMoves: by.get(`${t.block}:${t.index}`) ?? { count: 0, more: false, first: null } } : t));
+}
 
 export type ChainRest = ReturnType<typeof createChainRest>;
 
@@ -111,8 +153,8 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. */
-  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all"): Promise<TxListItem[]> {
+  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. `moves` false leaves their token moves null: a file that does not write them need not read them. */
+  async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all", moves = true): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
     const where = { all: "", failed: "and t.status = 0", calls: "and t.method_id is not null and t.to_address is not null" }[filter];
     const rows = await query(
@@ -120,8 +162,11 @@ export function createChainRest(pool: Pool) {
        where ($1::bigint is null or (t.block_number, t.tx_index) < ($1::bigint, $2::int)) ${where} order by t.block_number desc, t.tx_index desc limit $3`,
       [bn, ix, limit + 1],
     );
-    return rows.map(txItem);
+    return moves ? withTokenMoves(query, rows.map(txItem)) : rows.map(txItem);
   }
+
+  /** How many transactions the chain holds, exact through the newest final block: see tx-total.ts. */
+  const txTotal = (): Promise<TxTotal | null> => totalOf(query);
 
   /** One block's transactions in order, after the index when one is given. */
   async function blockTxs(number: number, after: number | null, limit: number): Promise<TxListItem[]> {
@@ -129,7 +174,7 @@ export function createChainRest(pool: Pool) {
       `select ${txSelect} from transactions t join blocks b on b.number = t.block_number where t.block_number = $1 and ($2::int is null or t.tx_index > $2) order by t.tx_index limit $3`,
       [number, after, limit + 1],
     );
-    return rows.map(txItem);
+    return withTokenMoves(query, rows.map(txItem));
   }
 
   async function blockLegs(number: number, after: number | null, limit: number): Promise<LegItem[]> {
@@ -263,5 +308,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, txTotal, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
 }
