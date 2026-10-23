@@ -70,7 +70,7 @@ export function BlockLegs({ id }: { id: string }) {
   return (
     <section className="card" aria-labelledby="legs-h">
       <div className="list-h">
-        <div className="sec-h"><h3 id="legs-h">Gateway legs</h3><span className="muted small">recorded by this block, in order</span></div>
+        <div className="sec-h"><h3 id="legs-h">Gateway legs</h3><span className="muted small">recorded by this block, in order</span><Link className="small" to="/legs">All gateway legs</Link></div>
         <Pager p={p} label="Pages of legs" />
       </div>
       <div className="scroll">

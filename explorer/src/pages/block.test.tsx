@@ -271,6 +271,7 @@ describe("the block page, for a final block", () => {
     expect(within(r).getByRole("link", { name: "0xcbcb…cbcb" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
     expect(r).toHaveTextContent("250");
     expect(within(r).getByRole("link", { name: "0" })).toHaveAttribute("href", `/leg/${hash(0x1e)}`);
+    expect(within(await screen.findByRole("region", { name: "Gateway legs" })).getByRole("link", { name: "All gateway legs" })).toHaveAttribute("href", "/legs");
   });
 
   it("has no legs section for a block with none", async () => {
