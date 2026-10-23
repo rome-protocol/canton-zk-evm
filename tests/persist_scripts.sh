@@ -50,6 +50,16 @@ echo "ok: down.sh --wipe wipes what persist.env names"
 [ ! -e "$WORK/state/builder/kept-transactions.json" ] || fail "the builder's record of the wiped chain is still there"
 [ -e "$WORK/state/builder/status.json" ] || fail "down.sh --wipe removed a file of the builder's that is not its record"
 echo "ok: down.sh --wipe removes the builder's in-doubt record and kept transactions, and only them"
+# The builder keeps them in CZE_WORK_DIR when that is set: down.sh --wipe removes those two files there, and the folder at the default place stays as it is.
+fresh; record
+mkdir "$WORK/custom"; echo '{}' > "$WORK/custom/unresolved.json"; echo '[]' > "$WORK/custom/kept-transactions.json"; echo '{}' > "$WORK/custom/status.json"
+run env CZE_WORK_DIR="$WORK/custom" "$WORK/repo/network/down.sh" --wipe > /dev/null 2>&1 || fail "down.sh --wipe with CZE_WORK_DIR failed"
+[ ! -e "$WORK/custom/unresolved.json" ] || fail "the record in CZE_WORK_DIR is still there after a wipe"
+[ ! -e "$WORK/custom/kept-transactions.json" ] || fail "the kept transactions in CZE_WORK_DIR are still there after a wipe"
+[ -e "$WORK/custom/status.json" ] || fail "down.sh --wipe removed a file of CZE_WORK_DIR that is not the record"
+[ -e "$WORK/state/builder/unresolved.json" ] && [ -e "$WORK/state/builder/kept-transactions.json" ] || fail "down.sh --wipe removed files of the default folder when CZE_WORK_DIR names another"
+rm -rf "$WORK/custom"
+echo "ok: down.sh --wipe removes the record where CZE_WORK_DIR says the builder keeps it"
 # A persistent chain that is only stopped keeps them.
 fresh; record
 run "$WORK/repo/network/down.sh" > /dev/null 2>&1 || fail "down.sh of a persistent chain failed"

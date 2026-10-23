@@ -5,7 +5,7 @@
 #                    explorer/run.sh made for a network that is not persistent goes with the chain.
 #   down.sh --wipe   removes a persistent network's data as well: the databases (the explorer's too), reth's data, the passwords and the party list. The chain is gone.
 # A chain that goes (--wipe, or a network that is not persistent) also loses the builder's in-doubt command and kept transactions
-# ($STATE/builder/unresolved.json and kept-transactions.json); a persistent chain that is only stopped keeps them.
+# (unresolved.json and kept-transactions.json in $CZE_WORK_DIR, or $STATE/builder when that is not set); a persistent chain that is only stopped keeps them.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 STATE=${CZE_STATE_DIR:-$ROOT/state}
@@ -13,7 +13,7 @@ NET=$STATE/net
 PROVER=${CZE_PROVER_STATE:-$STATE/prover}
 # The builder's in-doubt command and the transactions it kept belong to one chain. When that chain goes, they go with it (their exact paths, nothing else
 # in the builder's folder): a new chain must not meet them, and the builder refuses a record made on another chain.
-forget_builder_record() { rm -f "$STATE/builder/unresolved.json" "$STATE/builder/kept-transactions.json"; }
+forget_builder_record() { rm -f "${CZE_WORK_DIR:-$STATE/builder}/unresolved.json" "${CZE_WORK_DIR:-$STATE/builder}/kept-transactions.json"; }
 WIPE=0
 case ${1:-} in
   "") ;;
