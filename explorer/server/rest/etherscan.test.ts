@@ -502,30 +502,45 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the account module", 
   });
 
   describe("the cost of the token lists and of a read that runs too long", () => {
-    // Each standard's side reads the index of its own standard, so an address with a million ERC-20 transfers costs the NFT lists nothing. Seq scans are off, so that the plan
+    // Each standard's side reads the index of its own standard, so an address with a million ERC-20 transfers costs the NFT lists nothing. Seq scans and bitmap scans are off, so that the plan
     // shows which index the side would use on a table of any size.
     const sides: [TokenStandard, string][] = [["ERC-20", "WHERE (token_id IS NULL)"], ["ERC-721", "WHERE (amount IS NULL)"], ["ERC-1155", "WHERE ((amount IS NOT NULL) AND (token_id IS NOT NULL))"]];
-    /** The definitions of the indexes that the sides of a page read the address's rows from (not the primary key that the page's rows are joined by). */
+    /** The definitions of the indexes that the sides of a page read the address's rows from (not the primary key that the page's rows are joined by), in the partition that holds the rows: the others are empty, and what the planner picks for them says nothing. */
     const indexesOf = async (standard: TokenStandard, a: string | null, token: string | null) => {
       const { sql, values } = tokenMovesSql(standard, a, token, { start: 0, end: 100, sort: "desc", skip: 0, limit: 25 });
       const client = await pool.connect();
       try {
         await client.query("begin");
         await client.query("set local enable_seqscan = off");
+        await client.query("set local enable_bitmapscan = off");
         const text = (await client.query(`explain ${sql}`, values)).rows.map((r) => r["QUERY PLAN"]).join("\n");
-        const names = [...text.matchAll(/Index (?:Only )?Scan(?: Backward)? using (\S+) on token_transfers_p/g)].map((m) => m[1]!).filter((n) => !n.endsWith("_pkey"));
+        const names = [...text.matchAll(/Index (?:Only )?Scan(?: Backward)? using (\S+) on token_transfers_p/g)].map((m) => m[1]!).filter((n) => !n.endsWith("_pkey") && n.startsWith("token_transfers_p000000_"));
         return (await client.query("select indexdef from pg_indexes where indexname = any($1)", [names])).rows.map((r) => r.indexdef as string);
       } finally { await client.query("rollback"); client.release(); }
     };
+    /** Runs `fn` with rows in the table that the planner can tell the indexes apart by: many ERC-20 transfers over many senders and fewer of each NFT kind, the address among the senders and the receivers (with no rows, its pick of an index says nothing). The rows have their own log indexes and go out again. */
+    const withRows = async (fn: () => Promise<void>) => {
+      const rows = (token: number, amount: string, id: string, count: number) => pool.query(
+        `insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id)
+         select 1, $2::int + g, 0, 0, decode(repeat(lpad(to_hex($1::int), 2, '0'), 20), 'hex'), case when g % 40 = 0 then $3::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end,
+           case when (g + 7) % 40 = 0 then $3::bytea else decode(repeat(lpad(to_hex(16 + (g + 7) % 40), 2, '0'), 20), 'hex') end, ${amount}, ${id} from generate_series(1, $4::int) g`,
+        [token, 500000 + token * 10000, who(0xa1), count],
+      );
+      await rows(0xc1, "1", "null", 3000);
+      await rows(0xc2, "null", "g", 60);
+      await rows(0xc3, "1", "g", 60);
+      await pool.query("analyze token_transfers");
+      try { await fn(); } finally { await pool.query("delete from token_transfers where block_number = 1 and log_index >= 500000"); }
+    };
     for (const [standard, predicate] of sides) {
-      it(`reads ${standard} transfers of an address from the partial indexes of that standard, both ways`, async () => {
+      it(`reads ${standard} transfers of an address from the partial indexes of that standard, both ways`, () => withRows(async () => {
         const defs = await indexesOf(standard, A, null);
         expect(defs.length).toBeGreaterThanOrEqual(2);
-        // An ERC-1155 side may read the NFT group's index (every transfer with a token id) as well as its own: neither holds an ERC-20 transfer.
-        for (const d of defs) expect(d.includes(predicate) || (standard === "ERC-1155" && d.includes("WHERE (token_id IS NOT NULL)")), d).toBe(true);
+        // Each side reads the partial index of its own standard: the ERC-1155 query does not go through the NFT group's index, which would read the address's ERC-721 rows and filter them out.
+        for (const d of defs) expect(d.includes(predicate), d).toBe(true);
         expect(defs.some((d) => d.includes("(from_address,"))).toBe(true);
         expect(defs.some((d) => d.includes("(to_address,"))).toBe(true);
-      });
+      }));
     }
     it("reads an address and one token together from an index that carries the token next to the address, or the standard's own", async () => {
       const defs = await indexesOf("ERC-20", A, T1);
