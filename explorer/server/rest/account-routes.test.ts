@@ -709,7 +709,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     });
   });
   describe("tokens: the standard filter, the counts, who made each, and the supply of a holding; token transfers as CSV", () => {
-    const tokenKeys = [...F.derivedPage, "total", "counts"];
+    const tokenKeys = [...F.derivedPage, "total", "counts", "gatewayCount"];
     const ts = async (block: number) => Number((await sql("select extract(epoch from timestamp)::bigint as ts from blocks where number = $1", [block])).rows[0].ts);
 
     it("tells the list's total and each standard's count, which a filter does not change, and keeps to the standard asked", async () => {
@@ -728,6 +728,49 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       expect(none.counts).toEqual(all.counts);
       expect((await get("/api/tokens?standard=ERC-99")).status).toBe(400);
       expect((await get("/api/tokens?standard=erc-20")).status).toBe(400);
+    });
+
+    it("counts the tokens wrapped by the gateway, keeps the list to them with gateway=true, and leaves the other counts alone", async () => {
+      const before = body(await get("/api/tokens"));
+      expect(before.gatewayCount).toBe(0);
+      expect(body(await get("/api/tokens?gateway=true")).items).toEqual([]);
+      expect(body(await get("/api/tokens?gateway=true")).total).toBe(0);
+      await sql("update tokens set gateway_wrapped = true where address = $1", [who(0xb2)]);
+      try {
+        const all = body(await get("/api/tokens"));
+        expect(all.gatewayCount).toBe(1);
+        expect(all.counts).toEqual(before.counts);
+        expect(all.total).toBe(2);
+        const g = body(await get("/api/tokens?gateway=true"));
+        same(g, tokenKeys);
+        expect(mine(g.items)).toEqual(["T2"]);
+        expect(g.total).toBe(1);
+        expect(g.gatewayCount).toBe(1);
+        expect(g.counts).toEqual(before.counts);
+        // With a standard: the gateway tokens of that standard, and their own total.
+        expect(mine(body(await get("/api/tokens?gateway=true&standard=ERC-1155")).items)).toEqual(["T2"]);
+        const none = body(await get("/api/tokens?gateway=true&standard=ERC-20"));
+        expect(none.items).toEqual([]);
+        expect(none.total).toBe(0);
+        for (const sort of ["holders", "transfers", "newest"]) expect(mine(await walk(`/api/tokens?gateway=true&sort=${sort}`, "before", 1)), sort).toEqual(["T2"]);
+      } finally { await sql("update tokens set gateway_wrapped = false where address = $1", [who(0xb2)]); }
+      for (const v of ["false", "1", "TRUE", ""]) expect((await get(`/api/tokens?gateway=${v}`)).status, v).toBe(400);
+    });
+
+    it("pages the list oldest first with order=asc and after, for its last page, in each order and with each filter", async () => {
+      for (const sort of ["holders", "transfers", "newest"]) {
+        const desc = mine(await walk(`/api/tokens?sort=${sort}`, "before", 1));
+        expect(desc).toHaveLength(2);
+        expect(mine(await walk(`/api/tokens?sort=${sort}&order=asc`, "after", 1)), sort).toEqual([...desc].reverse());
+        expect(mine(await walk(`/api/tokens?sort=${sort}&order=asc&standard=ERC-20`, "after", 1)), sort).toEqual(["T1"]);
+        // The key that closes a page asks for the page after it, the way it was walked.
+        const first = body(await get(`/api/tokens?sort=${sort}&order=asc&limit=1`));
+        expect(first.next).not.toBeNull();
+        expect(body(await get(`/api/tokens?sort=${sort}&order=asc&limit=1&after=${first.next}`)).items).toHaveLength(1);
+      }
+      for (const path of ["/api/tokens?order=up", "/api/tokens?order=ASC", "/api/tokens?order=asc&before=3:1", "/api/tokens?after=2:1", "/api/tokens?order=asc&after=x"]) {
+        expect((await get(path)).status, path).toBe(400);
+      }
     });
 
     it("pages a filtered list by keyset in each order, without a repeat or a gap", async () => {

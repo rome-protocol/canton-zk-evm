@@ -140,6 +140,15 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return cached(ok(pick({ items: p.items.map((e) => pick(e, F.contractEvent)), next: p.next }, F.page)), "list");
   }
 
+  /** A key belongs to the way it was given: `before` pages newest first (or most first), `after` pages from the other end, with order=asc; a key of the other way is a mistake, not a page. */
+  const orderOf = (q: URLSearchParams): "desc" | "asc" => {
+    const order = q.get("order") ?? "desc";
+    if (order !== "desc" && order !== "asc") throw new BadRequest("order is desc (the list's own order) or asc (from the other end).");
+    if (order === "asc" && q.has("before")) throw new BadRequest("before pages the list's own way; with order=asc the key is after.");
+    if (order === "desc" && q.has("after")) throw new BadRequest("after pages from the other end, with order=asc; the key of the list's own way is before.");
+    return order;
+  };
+
   /** `standard` is one of the three, spelt as the lists spell it; a value that is none of them is a mistake, not an empty list. */
   const standardOf = (q: URLSearchParams): TokenStandard | null => {
     const v = q.get("standard");
@@ -229,12 +238,17 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   }
 
   async function tokenList(q: URLSearchParams): Promise<Answer> {
-    const by = sort<TokenSort>(q, SORTS.tokens), limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "addr"]), standard = standardOf(q);
-    const [rows, counts] = await Promise.all([accounts.tokens(by, before, limit, standard), accounts.tokenCounts()]);
+    const by = sort<TokenSort>(q, SORTS.tokens), limit = limitOf(q.get("limit")), standard = standardOf(q);
+    const wrapped = q.get("gateway");
+    if (wrapped !== null && wrapped !== "true") throw new BadRequest("gateway is true, for the tokens the gateway wrapped, or left out.");
+    const gateway = wrapped === "true", order = orderOf(q);
+    const before = cursorOf(q.get(order === "asc" ? "after" : "before"), ["int", "addr"]);
+    const [rows, { counts, gateway: wrappedCounts }] = await Promise.all([accounts.tokens(by, before, limit, standard, gateway, order), accounts.tokenCounts()]);
     const key = (t: (typeof rows)[number]) => keyOf(by === "holders" ? t.holderCount : by === "transfers" ? t.transferCount : t.firstTransferBlock, t.address);
-    // `counts` are every standard's, whatever is asked (they label the tabs); `total` is the list's own.
-    const total = standard === null ? counts["ERC-20"] + counts["ERC-721"] + counts["ERC-1155"] : counts[standard];
-    return cached(ok(pick({ ...page(rows, limit, key, F.tokenItem, await isDerived()), total, counts }, F.tokenPage)), "list");
+    // `counts` and `gatewayCount` are every standard's, whatever is asked (they label the tabs); `total` is the list's own.
+    const own = gateway ? wrappedCounts : counts, sum = (c: Record<TokenStandard, number>) => c["ERC-20"] + c["ERC-721"] + c["ERC-1155"];
+    const total = standard === null ? sum(own) : own[standard], gatewayCount = sum(wrappedCounts);
+    return cached(ok(pick({ ...page(rows, limit, key, F.tokenItem, await isDerived()), total, counts, gatewayCount }, F.tokenPage)), "list");
   }
 
   async function oneToken(a: string): Promise<Answer> {

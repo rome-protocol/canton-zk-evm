@@ -357,22 +357,30 @@ export function createAccountRest(pool: Pool) {
     creator: hexOrNull(r.creator), creationBlock: num(r.creation_block), createdAt: r.created_ts === null || r.created_ts === undefined ? null : new Date(Number(r.created_ts) * 1000).toISOString(), verified: r.verified === true,
   });
 
-  /** The token list: most holders, most transfers, or newest (by the block of its first transfer), then by address, after the key; of one standard when it is given. */
-  async function tokens(sort: TokenSort, before: Key | null, limit: number, standard: TokenStandard | null = null): Promise<TokenItem[]> {
+  /**
+   * The token list: most holders, most transfers, or newest (by the block of its first transfer), then by address, after the key; of one standard and/or only the tokens the gateway wrapped
+   * when asked. `order` "asc" reads the same list from its other end (the key is then the one the page before it left), for the last page: each index is read backward.
+   */
+  async function tokens(sort: TokenSort, before: Key | null, limit: number, standard: TokenStandard | null = null, gateway = false, order: "desc" | "asc" = "desc"): Promise<TokenItem[]> {
     const column = { holders: "tk.holder_count", transfers: "tk.transfer_count", newest: "tk.first_transfer_block" }[sort];
     const [x, y] = before ?? [null, null];
+    const [past, dir] = order === "desc" ? ["<", "desc"] : [">", "asc"];
+    const values: unknown[] = [x, y === null ? null : bytes(y as string), limit + 1];
+    const more = [standard === null ? "" : (values.push(standard), `and tk.standard = $${values.length}`), gateway ? "and tk.gateway_wrapped" : ""].filter(Boolean).join(" ");
     const rows = await query(
-      `select ${tokenSelect} ${tokenFrom} where ($1::bigint is null or (${column}, tk.address) < ($1::bigint, $2::bytea)) ${standard === null ? "" : "and tk.standard = $4"} order by ${column} desc, tk.address desc limit $3`,
-      [x, y === null ? null : bytes(y as string), limit + 1, ...(standard === null ? [] : [standard])],
+      `select ${tokenSelect} ${tokenFrom} where ($1::bigint is null or (${column}, tk.address) ${past} ($1::bigint, $2::bytea)) ${more} order by ${column} ${dir}, tk.address ${dir} limit $3`,
+      values,
     );
     return rows.map(tokenItem);
   }
 
-  /** How many tokens each standard has (a standard with none is 0), from one grouped count of the tokens table, which is small: the list's tabs and total. */
-  async function tokenCounts(): Promise<Record<TokenStandard, number>> {
-    const counts = { "ERC-20": 0, "ERC-721": 0, "ERC-1155": 0 };
-    for (const r of await query("select standard, count(*) as n from tokens group by standard")) if (r.standard in counts) counts[r.standard as TokenStandard] = Number(r.n);
-    return counts;
+  /** How many tokens each standard has, and how many of those the gateway wrapped (a standard with none is 0), from one grouped count of the tokens table, which is small: the list's tabs and totals. */
+  async function tokenCounts(): Promise<{ counts: Record<TokenStandard, number>; gateway: Record<TokenStandard, number> }> {
+    const counts = { "ERC-20": 0, "ERC-721": 0, "ERC-1155": 0 }, gateway = { "ERC-20": 0, "ERC-721": 0, "ERC-1155": 0 };
+    for (const r of await query("select standard, count(*) as n, count(*) filter (where gateway_wrapped) as g from tokens group by standard")) {
+      if (r.standard in counts) { counts[r.standard as TokenStandard] = Number(r.n); gateway[r.standard as TokenStandard] = Number(r.g); }
+    }
+    return { counts, gateway };
   }
 
   async function token(a: string): Promise<TokenDetail | undefined> {
