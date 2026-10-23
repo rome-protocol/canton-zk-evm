@@ -13,7 +13,7 @@ import { ago } from "../block-times.ts";
 import { count, dateTime, gwei, short } from "../format.ts";
 import { labelName, useLabels } from "../labels.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
-import { MethodRows } from "./TxDecoded.tsx";
+import { InputData } from "./TxDecoded.tsx";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
 import { CantonRecord, ProofSide } from "./TxSides.tsx";
 import { InternalTab, LogsTab, Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
@@ -179,18 +179,8 @@ function Input({ data }: { data: string }) {
   );
 }
 
-/** The input as it was sent, with its 4-byte method id, and its call by name when the contract called is verified. */
-function InputCard({ t }: { t: ApiTxSeen }) {
-  const method = t.input.length >= 10 ? t.input.slice(0, 10) : null;
-  return (
-    <section className="card" aria-label="Input data">
-      <Kv wide>
-        <Item label="Input data"><Input data={t.input} /></Item>
-        {method && <MethodRows to={t.to} input={t.input} />}
-      </Kv>
-    </section>
-  );
-}
+/** The input as it was sent, with its 4-byte method id, and its call by name when the contract called has an interface to read it with. */
+const InputCard = ({ t }: { t: ApiTxSeen }) => <InputData to={t.to} input={t.input} raw={<Input data={t.input} />} />;
 
 /** The stage in plain words. It is the first thing the page says. */
 export function stageText(t: ApiTx): string {

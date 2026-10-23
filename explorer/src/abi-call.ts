@@ -108,7 +108,8 @@ export function decodeOutputs(e: AbiEntry, data: string): Shown[] {
   return list(outs, outs.length === 1 ? [r] : (r as unknown[]));
 }
 
-export interface Decoded { name: string; signature: string; args: Shown[] }
+/** `indexed` is set for an event: which of the arguments sit in the topics. */
+export interface Decoded { name: string; signature: string; args: Shown[]; indexed?: boolean[] }
 const sig = (e: AbiEntry) => `${e.name}(${(e.inputs ?? []).map(typeOf).join(",")})`;
 
 /** A transaction's input read with the ABI, or null when it is not a call of a function in it. */
@@ -130,7 +131,7 @@ export function decodeEventOf(abi: AbiEntry[], topics: string[], data: string): 
     if (!e) return null;
     const a = d.args as Record<string, unknown> | unknown[] | undefined;
     const vals = (e.inputs ?? []).map((p, i) => (Array.isArray(a) ? a[i] : (a as Record<string, unknown> | undefined)?.[p.name ?? ""]));
-    return { name: e.name!, signature: sig(e), args: list(e.inputs, vals) };
+    return { name: e.name!, signature: sig(e), args: list(e.inputs, vals), indexed: (e.inputs ?? []).map((p) => p.indexed === true) };
   } catch { return null; }
 }
 

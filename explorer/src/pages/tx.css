@@ -42,3 +42,8 @@
 .ev-filter .btn-line { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
 .ev-filter .btn-line[aria-pressed="true"] { border-color: var(--canton-line); background: var(--canton-tint); color: var(--canton); }
 .to-named { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.sec-r { margin-left: auto; }
+.fn-box { margin: 4px 0 0; padding: 12px 14px; background: var(--canton-tint); border: 1px solid var(--line); border-bottom: 0; border-radius: 8px 8px 0 0; overflow-wrap: anywhere; }
+.fn-name { color: var(--canton); }
+.args-table { border: 1px solid var(--line); border-radius: 0 0 8px 8px; }
+.args-table th { font-size: 12px; font-weight: 600; color: var(--muted); }
