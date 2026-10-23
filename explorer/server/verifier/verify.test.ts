@@ -60,6 +60,17 @@ suite("verifying a contract", () => {
     expect(Number(c.verified_source)).toBeGreaterThan(0);
   });
 
+  it("keeps how the verification came in and the tool it named, and nothing when it was not said", async () => {
+    await addContract(db.pool, A, runtime, creation);
+    await v.verify(req(A), { via: { method: "etherscan", tool: "hardhat" } });
+    const get = async () => (await db.pool.query("select method, tool from verified_sources")).rows;
+    expect(await get()).toEqual([{ method: "etherscan", tool: "hardhat" }]);
+    await db.pool.query("update contracts set verified_source = null, match_type = null");
+    await db.pool.query("delete from verified_sources");
+    await v.verify(req(A));
+    expect(await get()).toEqual([{ method: null, tool: null }]);
+  });
+
   it("answers 'already' for a second submission, with no new work", async () => {
     await addContract(db.pool, A, runtime, creation);
     await v.verify(req(A));
