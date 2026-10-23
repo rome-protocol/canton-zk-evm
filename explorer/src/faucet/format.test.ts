@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCoin, formatPeriod, formatWait, shortHash } from "./format.ts";
+import { formatCoin, formatCount, formatMoment, formatPeriod, formatTiny, formatWait, shortHash } from "./format.ts";
 
 describe("formatCoin", () => {
   it("shows whole coins with thousands separators", () => {
@@ -56,4 +56,21 @@ describe("shortHash", () => {
   it("leaves a short value alone", () => {
     expect(shortHash("0x1234")).toBe("0x1234");
   });
+});
+
+describe("formatTiny", () => {
+  it("keeps two significant digits, cut and never rounded", () => {
+    expect(formatTiny("1413300000000", 18)).toBe("0.0000014");
+    expect(formatTiny("1999999999999", 18)).toBe("0.0000019");
+    expect(formatTiny("1000000000000", 18)).toBe("0.000001");
+    expect(formatTiny("0", 18)).toBe("0");
+    expect(formatTiny("1500000000000000000", 18)).toBe("1.5");
+  });
+});
+
+describe("formatMoment and formatCount", () => {
+  it("writes a moment in UTC", () => {
+    expect(formatMoment(Date.UTC(2026, 9, 24, 17, 57, 31))).toBe("24 Oct, 17:57 UTC");
+  });
+  it("counts with separators", () => expect(formatCount(1005)).toBe("1,005"));
 });

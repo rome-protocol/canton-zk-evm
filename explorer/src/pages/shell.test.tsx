@@ -200,10 +200,12 @@ describe("the Faucet route", () => {
   it("shows the faucet page: the form, with the coin from the status, and the faucet's address and balance from /api/faucet", async () => {
     const calls = faucetApi({ on: true, address: FAUCET, balance: "999997000000000000000000" });
     renderApp("/faucet");
-    expect(await screen.findByText("tROME is this chain's test coin. It has no value. The faucet sends 1 tROME to an address, once a day.")).toBeInTheDocument();
+    expect(await screen.findByText("tROME is this chain's test coin. It has no value.")).toBeInTheDocument();
+    expect(document.querySelector(".lead")).toHaveTextContent("The faucet sends 1 tROME to an address, once a day.");
     expect(screen.getByRole("button", { name: "Request 1 tROME" })).toBeEnabled();
-    const line = screen.getByRole("link", { name: /^0xfafa/ }).closest("li")!;
-    expect(line).toHaveTextContent("holds 999,997 tROME.");
+    const line = screen.getByRole("link", { name: /^0xfafa/ }).closest("div")!;
+    expect(line).toHaveTextContent("Address");
+    expect(screen.getByRole("heading", { name: "The faucet" }).closest("section")).toHaveTextContent("Balance999,997 tROME");
     expect(screen.getByRole("link", { name: /^0xfafa/ })).toHaveAttribute("href", `/address/${FAUCET}`);
     expect(calls).toContain("/api/faucet");
     expect(screen.getAllByRole("heading", { name: "Faucet" })).toHaveLength(1);

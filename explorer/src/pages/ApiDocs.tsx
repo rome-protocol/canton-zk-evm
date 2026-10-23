@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
-import { getOpenApi, type OpenApiDoc } from "../api.ts";
-import { AddToWallet } from "../components/AddToWallet.tsx";
+import { Fragment, useRef, useState } from "react";
+import { getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
+import { addNetwork, rpcUrl } from "../wallet.ts";
 import { copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useStatus } from "../useStatus.ts";
@@ -23,6 +23,42 @@ function Code({ title, note, label, text }: { title: string; note?: string; labe
         }}><Icon name={copied ? "check" : "copy"} size={13} />{copied ? "Copied" : "Copy"}</button>
       </header>
       <pre className="api-pre mono" aria-label={`${title} setup`}>{text}</pre>
+    </section>
+  );
+}
+
+/** Words from the server that are drawn in a line of one: bounded, so that a long one cannot widen the page. */
+const clip = (v: string, n = 40) => (v.length > n ? `${v.slice(0, n - 1)}…` : v);
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const DECIMAL = /^\d{1,80}$/;
+
+/** The network's details, the way a wallet asks for them, and the button that asks the wallet to add it. Nothing where the explorer serves no public RPC. */
+function WalletCard({ status }: { status: ApiStatus }) {
+  const [note, setNote] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  if (!status.publicRpc) return null;
+  const url = rpcUrl(), name = clip(status.chainName);
+  const add = async () => setNote(await addNetwork(status, name, "above"));
+  const rows: [string, React.ReactNode][] = [
+    ["Network name", `${name} ${clip(status.networkName ?? "", 20)}`.trim()],
+    ["RPC address", <><span className="mono">{url}</span><button type="button" className="copy" aria-label={copied ? "Copied" : "Copy the RPC address"} onClick={async () => {
+      if (!(await copyText(url))) return;
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }}><Icon name={copied ? "check" : "copy"} size={13} /></button></>],
+    ["Chain id", <>{status.chainId} <span className="muted small">· 0x{status.chainId.toString(16)}</span></>],
+    ["Coin", `${clip(status.coin.symbol, 12)}, ${status.coin.decimals} decimals`],
+    ["Explorer", <span className="mono">{location.origin}</span>],
+    ["Final only", "\"latest\" is the newest final block; a block being proven is not served"],
+  ];
+  return (
+    <section className="card api-wallet" aria-labelledby="rpc-h">
+      <header className="api-head"><h2 id="rpc-h">Add {name} to your wallet</h2></header>
+      <table className="api-table api-details" aria-label="Wallet details"><tbody>
+        {rows.map(([k, v]) => <tr key={k}><td className="muted">{k}</td><td>{v}</td></tr>)}
+      </tbody></table>
+      <div className="api-add"><button type="button" className="rpc-btn" onClick={add}>Add {name} to your wallet</button><span className="muted small">asks your wallet to add the network</span></div>
+      <div className="rpc-msg" role="status">{note}</div>
     </section>
   );
 }
@@ -84,11 +120,16 @@ export function ApiDocs() {
   const st = useStatus();
   const doc = useQuery({ queryKey: ["openapi"], queryFn: getOpenApi, retry: false, staleTime: 60_000 });
   const s = st.data, origin = location.origin, id = s?.chainId, modules = etherscanDoor(doc.data);
-  const name = s?.chainName ?? "this chain";
-  const request = `GET ${origin}/api\n    ?module=account&action=balance\n    &address=<address>\n    &tag=latest`;
-  const answer = `{\n  "status": "1",\n  "message": "OK",\n  "result": "<balance in wei, a decimal string>"\n}`;
+  const name = clip(s?.chainName ?? "this chain");
+  // The faucet's own address and its balance at the final head are real, so the example is a real answer; where the faucet is off the examples keep placeholders.
+  const f = useQuery({ queryKey: ["faucet-info"], queryFn: getFaucetInfo, staleTime: 30_000 }).data;
+  const example = f?.on && f.address && ADDRESS.test(f.address) ? f.address : null;
+  // The route answers from the final head, so only a balance read at a named final block is the answer it would give.
+  const exBalance = example && f?.balance && typeof f.balanceBlock === "number" && DECIMAL.test(f.balance) ? f.balance : null;
+  const request = `GET ${origin}/api\n    ?module=account&action=balance\n    &address=${example ?? "<address>"}\n    &tag=latest`;
+  const answer = `{\n  "status": "1",\n  "message": "OK",\n  "result": "${exBalance ?? "<balance in wei, a decimal string>"}"\n}`;
   const foundry = `# verify a contract, as on Etherscan\nforge verify-contract <address> \\\n  src/<File>.sol:<Contract> \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
-  const hardhat = `etherscan: {\n  apiKey: { ${name.toLowerCase().replace(/\W+/g, "") || "chain"}: "any" },\n  customChains: [{\n    network: "${name.toLowerCase().replace(/\W+/g, "") || "chain"}", chainId: ${id ?? ""},\n    urls: { apiURL: "${origin}/api", browserURL: "${origin}" }\n  }]\n}`;
+  const hardhat = `etherscan: {\n  apiKey: { ${name.toLowerCase().replace(/\W+/g, "") || "chain"}: "any" },\n  customChains: [{\n    network: "${name.toLowerCase().replace(/\W+/g, "") || "chain"}", chainId: ${id ?? ""},\n    urls: { apiURL: "${origin}/api",\n            browserURL: "${origin}" }\n  }]\n}`;
   return (
     <>
       <div className="ptitle"><h1>API</h1> <span className="muted">No keys. Every answer is built only from final data, except where it says not final.</span></div>
@@ -101,11 +142,11 @@ export function ApiDocs() {
         <div className="api-eth-main">
           <header className="api-head"><h2 id="eth-h">Etherscan-compatible API</h2>
             <span className="muted mono small">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span></header>
-          <table className="api-table" aria-label="Etherscan-compatible modules"><tbody>
+          <div className="scroll"><table className="api-table" aria-label="Etherscan-compatible modules"><tbody>
             {modules.map(([m, actions]) => (
-              <tr key={m}><td className="mod mono">{m}</td><td>{actions.map((a) => <span key={a} className="mchip mono">{a}</span>)}</td></tr>
+              <tr key={m}><td className="mod mono">{m}</td><td>{actions.map((a) => <Fragment key={a}><span className="mchip mono">{clip(a, 60)}</span>{" "}</Fragment>)}</td></tr>
             ))}
-          </tbody></table>
+          </tbody></table></div>
         </div>
         <div className="api-eth-side">
           <p className="muted small">Example: an address&apos;s balance</p>
@@ -123,7 +164,7 @@ export function ApiDocs() {
       <div className="api-two api-lower">
         <Rest doc={doc.data} failed={doc.isError} />
         <div className="api-side">
-          {s && <AddToWallet status={s} />}
+          {s && <WalletCard status={s} />}
           <Limits doc={doc.data} rpc={!!s?.publicRpc} />
         </div>
       </div>
