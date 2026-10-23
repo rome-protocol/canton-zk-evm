@@ -25,6 +25,19 @@ async function open(h: { openapi?: () => Reply; rpc?: boolean; faucet?: () => Re
 }
 afterEach(() => vi.unstubAllGlobals());
 
+describe("the Etherscan-compatible header", () => {
+  it("is one head row across the card with the note beside the title, above the modules and the example", async () => {
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })) });
+    const section = (await screen.findByRole("region", { name: "Etherscan-compatible API" }));
+    const head = section.querySelector(":scope > .card-head")!;
+    expect(head).not.toBeNull();
+    const title = head.querySelector(".card-title")!;
+    expect(within(title as HTMLElement).getByRole("heading", { name: "Etherscan-compatible API" })).toBeInTheDocument();
+    expect(title.querySelector(".muted")!.textContent).toMatch(/apikey is accepted and ignored/);
+    expect(section.querySelector(":scope > .api-eth-grid table")).not.toBeNull();
+  });
+});
+
 describe("the API page", () => {
   it("opens at /docs/api with the three ways in, and the header link to it is marked", async () => {
     await open();

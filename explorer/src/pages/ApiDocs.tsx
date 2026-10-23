@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Fragment, useRef, useState } from "react";
 import { getContract, getContractList, getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
 import { addNetwork, rpcUrl } from "../wallet.ts";
+import { CardHead } from "../components/Cards.tsx";
 import { copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useStatus } from "../useStatus.ts";
@@ -144,9 +145,10 @@ export function ApiDocs() {
         <div className="card"><h2><Icon name="link" size={15} /> JSON-RPC</h2><p className="muted small">Standard Ethereum JSON-RPC at <span className="mono">/rpc</span>. It serves final blocks only, and sends your transactions on.</p></div>
       </div>
       {modules && <section className="card api-eth" aria-labelledby="eth-h">
+        <CardHead title={<span id="eth-h">Etherscan-compatible API</span>}
+          sub={<span className="mono">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span>} />
+        <div className="api-eth-grid">
         <div className="api-eth-main">
-          <header className="api-head"><h2 id="eth-h">Etherscan-compatible API</h2>
-            <span className="muted mono small">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span></header>
           <div className="scroll"><table className="api-table" aria-label="Etherscan-compatible modules"><tbody>
             {modules.map(([m, actions]) => (
               <tr key={m}><td className="mod mono">{m}</td><td>{actions.map((a) => <Fragment key={a}><span className="mchip mono">{clip(a, 60)}</span>{" "}</Fragment>)}</td></tr>
@@ -159,6 +161,7 @@ export function ApiDocs() {
           <p className="muted small">Answer</p>
           <pre className="api-pre mono" aria-label="Example answer">{answer}</pre>
           <p className="muted small">Balances are read from the chain at the newest final block. Numbers are decimal strings, as Etherscan gives them.</p>
+        </div>
         </div>
       </section>}
       {/* The blocks carry the chain id, so they wait for the status rather than show a blank one. */}

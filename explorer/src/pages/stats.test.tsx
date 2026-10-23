@@ -358,4 +358,17 @@ describe("the stats page", () => {
     await waitFor(() => expect(busy).toHaveTextContent("This chart cannot be read right now"));
     expect(await tile("Time to final")).toHaveTextContent("8.4 s");
   });
+
+  it("puts every card's grey subtitle in the head row beside its title, as on the approved screens", async () => {
+    await open();
+    await screen.findByRole("heading", { name: "Reliability" });
+    const heads = Array.from(document.querySelectorAll(".panel > .card-head"));
+    expect(heads.length).toBeGreaterThanOrEqual(5);
+    for (const h of heads) {
+      const title = h.querySelector(".card-title")!;
+      expect(title.querySelector("h3"), h.textContent ?? "").not.toBeNull();
+      expect(title.querySelector(".muted"), h.textContent ?? "").not.toBeNull();
+    }
+    expect(document.querySelectorAll(".panel > .list-h").length).toBe(0);
+  });
 });
