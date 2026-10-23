@@ -36,7 +36,7 @@ export interface FaucetStore {
   refused?(reason: Refused, at: number): void;
   /** Writes the counts held in memory, one upsert that adds each (minute, reason) count to its row. It never throws: a count that cannot be written is logged and kept for the next flush. */
   flushRefusals?(): Promise<void>;
-  /** The payouts sent at or after `from` (milliseconds), how many of those are final, and how many are being proven now (sent and not yet final, whatever day), all instances together. */
+  /** The payouts sent at or after `from` (milliseconds), how many of those are final, and how many are in a block being proven now (sent, followed, and the tracker says proving; whatever day), all instances together. */
   payouts?(from: number): Promise<{ sent: number; final: number; beingProven: number }>;
   /** Tickets another instance wrote since the last call. */
   changes?(): Promise<Ticket[]>;
@@ -319,7 +319,7 @@ export function databaseFaucetStore(pool: Pool, amountWei: bigint, now: () => nu
     async payouts(from) {
       const { rows } = await pool.query<{ sent: number; final: number; proving: number }>(
         `select count(*)::int as sent, (count(*) filter (where state = 'final'))::int as final,
-                (select count(*)::int from faucet_requests where state = 'sent') as proving
+                (select count(*)::int from faucet_requests r join tx_lifecycle l on l.tx_hash = r.tx_hash where r.state = 'sent' and r.reason is null and l.state = 'proving') as proving
            from faucet_requests where sent_at >= $1`,
         [new Date(from)],
       );

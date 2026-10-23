@@ -142,10 +142,11 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e VERIFY_WASM="/repo/$WASM" -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
             sh -c "npm ci --ignore-scripts && npx vitest run src/verify src/pages/block.test.tsx && npm run build && cmp dist/verify/zk_explorer_verify.wasm verify/target/wasm32-unknown-unknown/release/zk_explorer_verify.wasm"
 
-  # The explorer's database: the migrations and the partition maintenance, against the PostgreSQL that PINS pins (the same image
+  # The explorer's database: the migrations, the partition maintenance and every server test, against the PostgreSQL that PINS pins (the same image
   # network/explorer-db.sh runs). The tests make a database of their own for each case. EXPLORER_TEST_REQUIRE_DATABASE makes a
   # missing database a failure instead of a skip. The tracker's and the faucet's own tests run again with the database in the files' place
   # (EXPLORER_TEST_STORE=database), and storage.test.ts has the two-instance and import cases. The command line is run twice, to see that the second run changes nothing.
+  # The two files that need the verifier's sandbox are the verifier-sandbox job's; server/db-ci-coverage.test.ts fails when a file that reads the database is in neither job.
   database:
     runs-on: ubuntu-latest
     steps:
@@ -175,7 +176,7 @@ jobs:
             -e EXPLORER_TEST_REQUIRE_DATABASE=1 -e EXPLORER_TEST_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
             -e EXPLORER_DATABASE_URL=postgres://explorer:$PGPW@127.0.0.1:5432/explorer \
             -v "$PWD:/repo" -w /repo/explorer "$EXPLORER_NODE_IMAGE" \
-            sh -c "npm ci --ignore-scripts && npx vitest run server/db server/indexer server/rest server/storage.test.ts server/store-races.test.ts server/api.test.ts server/api-indexed.test.ts && EXPLORER_TEST_STORE=database npx vitest run server/tracker.test.ts server/faucet.test.ts && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"
+            sh -c "npm ci --ignore-scripts && npx vitest run server --exclude 'server/verifier/**' --exclude server/rest/etherscan-contract-tools.test.ts && EXPLORER_TEST_STORE=database npx vitest run server/tracker.test.ts server/faucet.test.ts && node server/db/cli.ts migrate && node server/db/cli.ts migrate | grep 'no new migrations'"
       # The image keeps its data in an anonymous volume; -v removes it with the container, so a runner that outlives the job keeps nothing.
       - name: Remove the PostgreSQL and its volume
         if: always()

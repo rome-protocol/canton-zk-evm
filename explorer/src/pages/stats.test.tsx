@@ -229,12 +229,12 @@ describe("the stats page", () => {
     expect(within(card).getByText("Faucet balance").parentElement).toHaveTextContent("queue now 0");
   });
 
-  it("says not recorded before the day the counting began for a window that starts earlier, and plain not recorded where it never began", async () => {
+  it("says not recorded before the minute the counting began for a window that starts earlier, and plain not recorded where it never began", async () => {
     await open("/stats?window=7d", { summary: () => reply(summary({ faucet: { ...summary().faucet, turnedAway: null, turnedAwaySince: "2026-10-23T12:01:00.000Z" } })) });
     const card = (await screen.findByRole("heading", { name: "Faucet" })).closest("section")!;
     const cell = within(card).getByText("Turned away by the limits").parentElement!;
     expect(cell).toHaveTextContent("Not recorded");
-    expect(cell).toHaveTextContent("not recorded before 2026-10-23");
+    expect(cell).toHaveTextContent("not recorded before 2026-10-23 12:01 UTC");
     expect(card).not.toHaveTextContent("[object Object]");
   });
 

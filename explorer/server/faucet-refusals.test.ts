@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generatePrivateKey } from "viem/accounts";
 import { checkRequired, makeDatabase, TEST_URL, type TestDatabase } from "./db/testing.ts";
 import { createFaucet, type Faucet, type FaucetOptions } from "./faucet.ts";
-import { clientHasher, databaseFaucetStore, fileFaucetStore } from "./faucet-store.ts";
+import { clientHasher, databaseFaucetStore, fileFaucetStore, type FaucetStore } from "./faucet-store.ts";
 
 checkRequired();
 
@@ -221,9 +221,12 @@ describe("what the faucet says about itself", () => {
   });
 
   it("reads the payout counts and the chain in parallel, so the answer waits for the slowest and not for the sum", async () => {
-    const f = await faucet({ reth: reth({ block: async () => { await new Promise((r) => setTimeout(r, 150)); return { number: 3 }; }, balanceAt: async () => { await new Promise((r) => setTimeout(r, 150)); return COIN; } }) });
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    // The count takes 300 ms, and the two reads of reth 150 ms each. Together they take about 300 ms; one after the other, 600 ms.
+    const store: FaucetStore = { load: () => ({ addresses: [], ips: [], hourly: [], tickets: [] }), save: async () => true, payouts: async () => { await wait(300); return { sent: 1, final: 1, beingProven: 0 }; } };
+    const f = await faucet({ store, reth: reth({ block: async () => { await wait(150); return { number: 3 }; }, balanceAt: async () => { await wait(150); return COIN; } }) }, null);
     const t = Date.now();
-    await f.info();
+    expect(await f.info()).toMatchObject({ sentToday: 1, balanceBlock: 3 });
     expect(Date.now() - t).toBeLessThan(450);
   });
 
@@ -234,15 +237,18 @@ describe("what the faucet says about itself", () => {
 });
 
 describe.skipIf(!TEST_URL)("payouts made today", () => {
-  async function paid(f: Faucet, to: number, at: number, status: "sent" | "final" | "failed" | "queued") {
+  const hashOf = (n: number) => "0x" + n.toString(16).padStart(64, "0");
+  /** A ticket in the store. `lifecycle` is the tracker's word for its hash (a row in tx_lifecycle), when there is one. */
+  async function paid(f: Faucet, to: number, at: number, status: "sent" | "final" | "failed" | "queued", lifecycle?: "pending" | "proving", reason: string | null = null) {
     const store = databaseFaucetStore(db!.pool, COIN, () => at);
-    await store.save([{ id: to.toString(16).padStart(24, "0"), to: addr(to), ip: null, at, status, hash: null, block: null, reason: null, tries: 0 }], () => ({ addresses: [], ips: [], hourly: [] }));
+    await store.save([{ id: to.toString(16).padStart(24, "0"), to: addr(to), ip: null, at, status, hash: lifecycle ? hashOf(to) : null, block: null, reason, tries: 0 }], () => ({ addresses: [], ips: [], hourly: [] }));
+    if (lifecycle) await db!.pool.query("insert into tx_lifecycle (tx_hash, state, updated_at) values ($1, $2, now())", [Buffer.from(hashOf(to).slice(2), "hex"), lifecycle]);
     return f;
   }
   it("counts the payouts sent since the start of the UTC day, and no others", async () => {
     const f = await faucet();
     const dayStart = Date.UTC(2026, 9, 23);
-    await paid(f, 1, dayStart + 1000, "sent");
+    await paid(f, 1, dayStart + 1000, "sent", "proving");
     await paid(f, 2, dayStart + 2000, "final");
     await paid(f, 3, dayStart - 1000, "final"); // yesterday, 23:59:59
     await paid(f, 4, dayStart + 3000, "queued"); // not sent yet
@@ -251,13 +257,16 @@ describe.skipIf(!TEST_URL)("payouts made today", () => {
     expect(await f.info()).toMatchObject({ sentToday: 0, finalToday: 0, beingProven: 1 }); // a payout still being proven stays, whatever day it went out
   });
 
-  it("counts the payouts being proven across every instance, and not the ones that are final or failed", async () => {
+  it("counts only the payouts in a block being proven, across every instance: not the pool's, the abandoned, the final or the failed", async () => {
     const f = await faucet();
     const at = Date.UTC(2026, 9, 20);
-    await paid(f, 1, at, "sent");
-    await paid(f, 2, at, "sent");
-    await paid(f, 3, at, "final");
-    await paid(f, 4, at, "failed");
+    await paid(f, 1, at, "sent", "proving");
+    await paid(f, 2, at, "sent", "proving");
+    await paid(f, 3, at, "sent", "pending"); // still in reth's pool
+    await paid(f, 4, at, "sent"); // reth took it, the tracker has not named it yet
+    await paid(f, 5, at, "sent", "proving", "The faucet stopped following this transfer after two days without it being final. Look up the hash on the chain."); // given up
+    await paid(f, 6, at, "final");
+    await paid(f, 7, at, "failed");
     expect((await f.info()).beingProven).toBe(2);
   });
 

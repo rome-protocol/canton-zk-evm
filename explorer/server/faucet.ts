@@ -55,7 +55,7 @@ export interface FaucetAnswer { status: number; body: unknown; headers?: Record<
 /** What the faucet page shows about the faucet itself. */
 export interface FaucetInfo {
   on: boolean; address: string | null; balance: string | null;
-  /** The block the balance was read at, or null when reth could not name one. The balance is of the newest block, which may not be final. */
+  /** The final head the balance was read at; null when reth cannot name one, and then the balance is the newest block's, which may not be final. */
   balanceBlock: number | null;
   amount: string; perAddressSeconds: number; perIpSeconds: number; maxPerHour: number;
   /** How many requests are waiting for a batch. */
@@ -66,7 +66,7 @@ export interface FaucetInfo {
   sentToday: number | null;
   /** Of those, how many are final (null as for `sentToday`). */
   finalToday: number | null;
-  /** Payouts sent and not yet final, whatever day they went out (null as for `sentToday`). */
+  /** Payouts sent and now in a block being proven, whatever day they went out: not the ones still waiting in reth's pool, and not tickets the faucet gave up on (null as for `sentToday`). */
   beingProven: number | null;
   captcha: { siteKey: string; scriptUrl: string; widgetClass: string } | null;
 }

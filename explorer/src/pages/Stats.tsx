@@ -4,7 +4,7 @@ import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type Sta
 import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { count, pct, plural, sec, short, span, trim, units, utcDate } from "../format.ts";
+import { count, pct, plural, sec, short, span, trim, units, utcMinute } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 
 const DEFAULT_WINDOW: StatsWindow = "24h";
@@ -120,7 +120,7 @@ function Rule({ s }: { s: StatsSummary }) {
 
 /** The line under the turned-away count: why, or since when it was not recorded. Only reasons that had a refusal are named. */
 function turnedAwaySub(f: StatsSummary["faucet"]): string {
-  if (f.turnedAway === null) return f.turnedAwaySince ? `not recorded before ${utcDate(Date.parse(f.turnedAwaySince))}` : "not recorded";
+  if (f.turnedAway === null) return f.turnedAwaySince ? `not recorded before ${utcMinute(Date.parse(f.turnedAwaySince))}` : "not recorded";
   const r = f.turnedAway.byReason;
   const parts = [[r.address, "same address"], [r.ip, "same network"], [r.hour, "hourly cap"], [r.captcha, "failed check"]].filter(([n]) => (n as number) > 0).map(([n, w]) => `${count(n as number)} ${w}`);
   return parts.length ? parts.join(" · ") : "requests the limits refused";
