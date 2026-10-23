@@ -95,7 +95,8 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .tabs .count { font-size: 11.5px; background: var(--line); border-radius: 9px; padding: 0 7px; margin-left: 6px; }
 .sec-h { display: flex; align-items: baseline; gap: 14px; margin-bottom: 12px; flex-wrap: wrap; }
 .ptitle { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.ptitle h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.ptitle h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; min-width: 0; overflow-wrap: anywhere; } /* a long name wraps inside the page */
+nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a long name in the trail wraps too */
 
 /* hashes: shortened, with a button to copy and one to read in full */
 .hl { display: inline; white-space: nowrap; }
@@ -335,6 +336,7 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .updid { font-size: 13.5px; word-break: break-all; margin: 4px 0 14px; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .seg button { border: 0; border-right: 1px solid var(--line); padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 500; background: transparent; color: var(--ink); cursor: pointer; }
+.seg button { white-space: nowrap; } /* a tab's label never breaks inside itself */
 .seg button:last-child { border-right: 0; }
 .seg button[aria-pressed="true"] { background: var(--canton-tint); color: var(--canton); font-weight: 600; }
 .csv { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font-size: 13px; background: var(--surface); color: var(--ink); text-decoration: none; }
@@ -345,6 +347,7 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .stats-sub { margin-left: 10px; font-size: 14px; }
 .stats.six { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 14px; }
 .panel { padding: 0; margin-bottom: 14px; overflow: hidden; }
+.panel > .card-head { margin: 0; } /* a panel has no padding, so its header must not pull itself out past the card's edge */
 .panel > .list-h { padding: 14px 20px; margin: 0; border-bottom: 1px solid var(--line-2); }
 .panel .card-note { padding: 0 20px 14px; margin: 10px 0 0; }
 .cells { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
@@ -438,3 +441,4 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 @media (max-width: 720px) { .topbar { padding: 7px 16px; } .cols { grid-template-columns: minmax(0, 1fr); gap: 14px; } .stats, .stats.six, .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); } .top { flex-wrap: wrap; } }
 @media (max-width: 720px) { .cell { border-right: 0; border-bottom: 1px solid var(--line-2); } .sizes li { grid-template-columns: 90px 1fr 80px; } }
 @media (max-width: 720px) { .tabs { margin-left: -2px; -webkit-overflow-scrolling: touch; } }
+@media (max-width: 720px) { .ptitle .seg { max-width: 100%; overflow-x: auto; } } /* a row of tabs scrolls inside itself on a phone */

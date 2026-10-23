@@ -34,9 +34,3 @@
 .kv-3 .kv-k, .kv-3 .kv-v { padding: 9px 0; border-bottom: 1px solid var(--line-2); }
 .kv-3 .kv > :nth-last-child(-n + 2) { border-bottom: 0; }
 @media (max-width: 900px) { .holds-cols { grid-template-columns: 1fr; } .holds-side { border-right: 0; border-bottom: 1px solid var(--line-2); } .kv-3 { grid-template-columns: 1fr; } .kv-3 .kv:not(:last-child) > :nth-last-child(-n + 2) { border-bottom: 1px solid var(--line-2); } }
-
-/* Review fixes: the feed card is a panel, so its header sits at the card's own padding; a long name wraps; the tabs keep their labels whole. */
-.panel > .card-head { margin: 0; }
-.ptitle h1 { min-width: 0; overflow-wrap: anywhere; }
-.seg button { white-space: nowrap; }
-@media (max-width: 720px) { .ptitle .seg { max-width: 100%; overflow-x: auto; } }

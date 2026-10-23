@@ -409,7 +409,9 @@ describe("the token page: review fixes", () => {
   it("keeps a token name of the longest stored length inside the page: the title wraps anywhere", async () => {
     await open(tokenDetail(0xcb, { name: "N".repeat(256) }));
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("N".repeat(256));
-    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("N".repeat(256));
+    expect(css).toMatch(/nav\[aria-label="Breadcrumb"\]\s*\{[^}]*overflow-wrap:\s*anywhere/);
     expect(css).toMatch(/\.ptitle h1\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*min-width:\s*0|\.ptitle h1\s*\{[^}]*min-width:\s*0[^}]*overflow-wrap:\s*anywhere/);
   });
 

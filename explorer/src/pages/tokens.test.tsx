@@ -207,7 +207,7 @@ describe("the tokens page to the screen", () => {
 
   it("gives the feed card a header that sits inside the card (a panel card pulls no header out of its edge)", async () => {
     await open();
-    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
     expect(css).toMatch(/\.panel\s*>\s*\.card-head\s*\{[^}]*margin:\s*0/);
     const card = screen.getByRole("region", { name: "Latest token transfers" });
     expect(card).toHaveClass("panel");
@@ -215,7 +215,7 @@ describe("the tokens page to the screen", () => {
   });
 
   it("keeps the standard tabs whole on a narrow screen: a label never breaks inside itself", () => {
-    const css = readFileSync(resolve(__dirname, "token.css"), "utf8");
+    const css = readFileSync(resolve(__dirname, "..", "styles.css"), "utf8");
     expect(css).toMatch(/\.seg button\s*\{[^}]*white-space:\s*nowrap/);
   });
 
