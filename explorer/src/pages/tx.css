@@ -53,3 +53,16 @@
 .ctype { display: inline-block; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--canton); border: 1px solid var(--canton-line); background: var(--canton-tint); border-radius: 5px; padding: 1px 7px; }
 .calls-table .call-top td { background: var(--canton-tint); }
 .calls-table .nest { margin-right: 2px; }
+.logrow .log { background: none; border: 0; padding: 0; margin: 0; grid-template-columns: 100px minmax(0, 1fr); }
+@media (max-width: 720px) {
+  /* Each transfer is two lines, as on the phone screen: from, to and the amount, then the token. */
+  .xfer-table thead { display: none; }
+  .xfer-table, .xfer-table tbody { display: block; }
+  .xfer-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: baseline; padding: 10px 0; border-top: 1px solid var(--line); }
+  .xfer-table td { border: 0; padding: 0; min-width: 0; }
+  .xfer-table td:last-child { grid-column: 1 / -1; }
+  .sec-h .sec-r { margin-left: 0; }
+  .fn-box { font-size: 13px; }
+  .logrow { grid-template-columns: 1fr; gap: 8px; }
+  .logrow .log { grid-template-columns: 1fr; }
+}

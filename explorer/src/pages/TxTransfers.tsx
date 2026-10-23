@@ -47,7 +47,7 @@ export function TransfersCard({ hash }: { hash: string }) {
       <div className="sec-h"><h2 className="tx-h">Token transfers</h2>{!gap && items.length > 0 && <span className="muted small">{more ? `${countWords(items)} on this page` : countWords(items)}, read from the logs</span>}</div>
       {gap ? <p className="muted">not derived yet</p> : items.length === 0 ? <p className="muted">This transaction moved no tokens.</p> : (
         <div className="tx-scroll">
-          <table className="tx-table">
+          <table className="tx-table xfer-table">
             <thead><tr><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Amount</th><th>Token</th></tr></thead>
             <tbody>{items.map((x) => <Row key={`${x.logIndex}-${x.batchIndex}`} x={x} labels={labels} />)}</tbody>
           </table>
