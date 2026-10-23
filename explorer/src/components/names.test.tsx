@@ -9,7 +9,7 @@ import type { Label, TokenMove } from "../api.ts";
 import { useLabels } from "../labels.ts";
 import { addr, fakeApi, reply } from "../test-utils.tsx";
 import { AddressCell } from "./AddressCell.tsx";
-import { TokenChip } from "./Amount.tsx";
+import { Amount, TokenChip } from "./Amount.tsx";
 import { ICON_NAMES } from "./Icon.tsx";
 
 const usd: Label = { address: addr(0xcb), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
@@ -153,5 +153,18 @@ describe("the icons the cells use", () => {
   it("has the funnel and the coin", () => {
     expect(ICON_NAMES).toContain("funnel");
     expect(ICON_NAMES).toContain("coin");
+  });
+});
+
+describe("an amount", () => {
+  it("sets the symbol and the token id apart, each in its own bdi, so a hostile symbol cannot reorder the id", () => {
+    const { container } = render(<Amount raw="5000000" decimals={6} symbol={"\u202Eevil"} tokenId="42" />);
+    const isolated = [...container.querySelectorAll("bdi")].map((b) => b.textContent);
+    expect(isolated).toEqual(["\u202Eevil", "#42"]);
+  });
+
+  it("shows no id bdi where there is no token id", () => {
+    const { container } = render(<Amount raw="5000000" decimals={6} symbol="tUSD" />);
+    expect([...container.querySelectorAll("bdi")].map((b) => b.textContent)).toEqual(["tUSD"]);
   });
 });

@@ -3,9 +3,16 @@ import { count, exact, short, units } from "../format.ts";
 import { labelName } from "../labels.ts";
 import { Icon } from "./Icon.tsx";
 
-/** An amount in whole coins or tokens, with the exact amount in its tooltip. */
-export function Amount({ raw, decimals, symbol }: { raw: string; decimals: number; symbol: string }) {
-  return <span title={`${exact(raw, decimals)} ${symbol}`}><span className="num">{units(raw, decimals)}</span> {symbol}</span>;
+/**
+ * An amount in whole coins or tokens, with the exact amount in its tooltip. The symbol is the contract's own words, and so is a token id
+ * beside it (when `tokenId` is given): each is set apart in its own bdi, so a hostile right-to-left symbol cannot reorder the id.
+ */
+export function Amount({ raw, decimals, symbol, tokenId }: { raw: string; decimals: number; symbol: string; tokenId?: string | null }) {
+  return (
+    <span title={`${exact(raw, decimals)} ${symbol}${tokenId ? ` #${tokenId}` : ""}`}>
+      <span className="num">{units(raw, decimals)}</span> <bdi>{symbol}</bdi>{tokenId ? <> <bdi>{`#${tokenId}`}</bdi></> : null}
+    </span>
+  );
 }
 
 /**
