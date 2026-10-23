@@ -44,6 +44,10 @@ describe("a journal line", () => {
     expect(parseLine(JSON.stringify({ v: 2, run: RUN1, seq: 1, time: "2026-10-21T00:00:00.000Z", event: "x" }))).toEqual({ bad: "version" });
     expect(parseLine(JSON.stringify({ v: 1, run: "not-a-uuid", seq: 1, time: "2026-10-21T00:00:00.000Z", event: "x" }))).toEqual({ bad: "malformed" });
     expect(parseLine("[1]")).toEqual({ bad: "malformed" });
+    // A time that is not a moment after 1970 (no time, an unreadable one, the epoch itself, a date before it) is no line: the rollups and the pages would carry it as a date.
+    for (const time of [undefined, "", "yesterday", "1970-01-01T00:00:00.000Z", "1969-12-31T23:59:59.999Z", "0001-01-01T00:00:00.000Z", 1792784000000])
+      expect(parseLine(JSON.stringify({ v: 1, run: RUN1, seq: 1, time, event: "x" })), String(time)).toEqual({ bad: "malformed" });
+    expect(parseLine(JSON.stringify({ v: 1, run: RUN1, seq: 1, time: "1970-01-01T00:00:00.001Z", event: "x" }))).toHaveProperty("line");
   });
 });
 

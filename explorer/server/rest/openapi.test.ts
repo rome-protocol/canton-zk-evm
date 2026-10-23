@@ -149,12 +149,19 @@ describe("the API description", () => {
     // `order` and `sort` say which end that is; the parameter does not claim an order of its own
     expect(text("/api/tokens")).not.toMatch(/oldest|newest/);
   });
+  it("says what the transaction filter `calls` selects: a method named in at least 4 bytes of input, sent to an address, never a creation", async () => {
+    const doc = await body(full(), "/api/openapi.json");
+    const filter = (doc.paths["/api/txs"].get.parameters as { name: string; description?: string }[]).find((p) => p.name === "filter")!;
+    const text = filter.description as string;
+    for (const f of ["4 bytes", "creation", "plain value transfer"]) expect(text, f).toContain(f);
+    expect(text).not.toContain("calls into contracts");
+  });
   it("documents the faucet's facts and the turned-away counts it reads", async () => {
     const doc = await body(full(), "/api/openapi.json");
     const info = doc.paths["/api/faucet"].get;
     for (const f of ["sentToday", "finalToday", "beingProven", "balanceBlock", "batch", "final head"]) expect(info.summary, f).toContain(f);
     const stats = doc.paths["/api/stats/summary"].get.summary as string;
-    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded", "cool-down"]) expect(stats, f).toContain(f);
+    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded", "cool-down", "hoursAbove", "worstHourP95", "windowsOverByDay"]) expect(stats, f).toContain(f);
     // the field lists of both answers carry the new fields
     expect(Object.keys(info.responses["200"].content["application/json"].schema.properties)).toEqual(expect.arrayContaining(["sentToday", "finalToday", "beingProven", "balanceBlock", "batch"]));
   });

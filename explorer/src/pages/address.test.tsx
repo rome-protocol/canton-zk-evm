@@ -390,7 +390,7 @@ describe("the address page: the header facts", () => {
     const calls = await open(addressDetail({ lastActiveBlock: 25 }), { txs: (p) => reply(page(p.includes("direction=sent") ? [txItem(20, { from: A })] : [])) });
     expect(row("First seen")).toHaveTextContent(/Block 2\s*· .* ago/);
     await waitFor(() => expect(row("Last sent")).toHaveTextContent(/Block 20\s*· .* ago/));
-    expect(row("Last sent")).not.toHaveTextContent("25");
+    expect(row("Last sent")).not.toHaveTextContent(/Block 25\b/); // the last active block, not its age (an age such as "476 h 25 min ago" holds "25")
     expect(calls).toContain(`/api/addresses/${A}/txs?limit=1&direction=sent`);
   });
   it("does not say it has sent nothing while the counts may be short", async () => {

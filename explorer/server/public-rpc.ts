@@ -1,5 +1,6 @@
 import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from "viem";
 import type { Tracker } from "./tracker.ts";
+import { isHexBytes } from "./hex.ts";
 
 /**
  * The public RPC: what a wallet or a script sees of the chain. It forwards to reth, but it shows only what is final on Canton.
@@ -192,7 +193,7 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
 
   async function sendRaw(params: unknown[]): Promise<Up> {
     const raw = params[0];
-    if (params.length !== 1 || typeof raw !== "string" || !/^0x([0-9a-f]{2})+$/i.test(raw)) return err(-32602, "Send the signed transaction as one 0x hex string.");
+    if (params.length !== 1 || typeof raw !== "string" || !isHexBytes(raw, { upper: true, empty: false })) return err(-32602, "Send the signed transaction as one 0x hex string.");
     let tx: ReturnType<typeof parseTransaction>, from: string;
     try {
       tx = parseTransaction(raw as Hex);

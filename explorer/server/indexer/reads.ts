@@ -4,6 +4,7 @@
  * RethError that names its method.
  */
 import { RethError } from "../reth.ts";
+import { isHexBytes } from "../hex.ts";
 
 export const FINAL_READ_METHODS: ReadonlySet<string> = new Set([
   "eth_getBlockByNumber", "eth_getBlockReceipts", "trace_replayBlockTransactions", "eth_getStorageAt", "eth_getCode", "eth_call", "eth_getBalance",
@@ -85,7 +86,7 @@ const bad = (what: string): never => { throw new Error(`${what} is not valid`); 
 const re = (r: RegExp, what: string) => (v: unknown): string => (typeof v === "string" && r.test(v) ? v : bad(what));
 const hash = re(/^0x[0-9a-f]{64}$/, "a hash");
 const address = re(/^0x[0-9a-f]{40}$/, "an address");
-const data = re(/^0x([0-9a-f]{2})*$/, "a byte string");
+const data = (v: unknown): string => (typeof v === "string" && isHexBytes(v) ? v : bad("a byte string"));
 const quantity = re(/^0x(0|[1-9a-f][0-9a-f]*)$/, "a quantity");
 const big = (v: unknown) => BigInt(quantity(v));
 const num = (v: unknown): number => { const n = big(v); return n <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(n) : bad("a quantity"); };

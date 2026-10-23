@@ -82,8 +82,9 @@ export function createStatsRest(pool: Pool): StatsRest {
     });
   }
 
+  /** The busiest minute that had a transaction: a window of minutes with blocks and none has no peak (null), not one of 0. */
   async function peak(from: number, to: number) {
-    const [r] = await query("select extract(epoch from bucket)::float8 * 1000 as at, txs from stats_minute where bucket >= $1 and bucket < $2 order by txs desc, bucket limit 1", [new Date(from), new Date(to)]);
+    const [r] = await query("select extract(epoch from bucket)::float8 * 1000 as at, txs from stats_minute where bucket >= $1 and bucket < $2 and txs > 0 order by txs desc, bucket limit 1", [new Date(from), new Date(to)]);
     return r ? { at: Number(r.at), txs: Number(r.txs) } : null;
   }
 

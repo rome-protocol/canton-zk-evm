@@ -17,6 +17,7 @@ import type { VerifyApi } from "../verifier/api.ts";
 import { toolOf } from "../verifier/request.ts";
 import { NOT_VERIFIED, sourceCodeFields } from "./etherscan-contract-rest.ts";
 import { PageTooLarge, QueryTimeout, type Closest, type EtherscanRest, type InternalRow, type LogFilter, type TokenMoveRow, type TokenStandard, type TxRow, type Window } from "./etherscan-rest.ts";
+import { isHexBytes } from "../hex.ts";
 
 /** `page × offset` may be no more than this, as Etherscan's window is. */
 export const RESULT_WINDOW = 10_000;
@@ -423,6 +424,18 @@ const ratio = (n: number): string => n.toFixed(15).replace(/\.?0+$/, "");
 
 /** What Etherscan's `proxy` module gives for an argument that is missing: the node's own words, as a JSON-RPC error. */
 const rpcError = (code: number, message: string): Raw => new Raw({ jsonrpc: "2.0", id: 1, error: { code, message } });
+/**
+ * Why go-ethereum refuses a string as a hexutil.Uint (common/hexutil: checkNumberText, then the length, then the digits), in its words; null when it takes it (an empty value never arrives: the parameter is then missing). Etherscan's
+ * `proxy` module gives the node's refusal back as it is, and tools match on these words, so they are kept to the letter.
+ */
+function uintRefusal(v: string): string | null {
+  if (!/^0[xX]/.test(v)) return "hex string without 0x prefix";
+  const digits = v.slice(2);
+  if (digits === "") return 'hex string "0x"';
+  if (digits.length > 1 && digits[0] === "0") return "hex number with leading zero digits";
+  if (digits.length > 16) return "hex number > 64 bits"; // before the digits, as in hexutil.Uint64.UnmarshalText
+  return /^[0-9a-fA-F]+$/.test(digits) ? null : "invalid hex string";
+}
 const rpcResult = (result: unknown): Raw => new Raw({ jsonrpc: "2.0", id: 1, result });
 type Up = { result?: unknown; error?: unknown };
 const isUp = (v: unknown): v is Up => typeof v === "object" && v !== null;
@@ -473,7 +486,7 @@ const proxy: Record<string, Handler> = {
   async eth_getBlockByNumber(c) {
     const a = need(c, ["tag", "boolean"]);
     if (a instanceof Raw) return a;
-    if (a[1] !== "true" && a[1] !== "false") return rpcError(-32602, "invalid argument 1: boolean must be true or false");
+    if (a[1] !== "true" && a[1] !== "false") return rpcError(-32602, "invalid argument 1: json: cannot unmarshal string into Go value of type bool");
     return new Raw(await viaRpc(c, "eth_getBlockByNumber", [a[0], a[1] === "true"]));
   },
   /** The count is the length of the block's list, so it follows the final-only rule of the block. */
@@ -486,7 +499,8 @@ const proxy: Record<string, Handler> = {
   async eth_getTransactionByBlockNumberAndIndex(c) {
     const index = c.p.get("index");
     if (index === null) return rpcError(-32602, "missing value for required argument 1");
-    if (!/^0x[0-9a-f]+$/i.test(index)) return rpcError(-32602, "invalid argument 1: hex string without 0x prefix");
+    const why = uintRefusal(index);
+    if (why !== null) return rpcError(-32602, `invalid argument 1: json: cannot unmarshal ${why} into Go value of type hexutil.Uint`);
     const b = await blockOf(c, true);
     if (b instanceof Raw) return b;
     const at = BigInt(index);
@@ -559,7 +573,7 @@ function verifyRequest(c: Ctx) {
   const codeFormat = c.p.get("codeformat") ?? "solidity-single-file";
   if (codeFormat !== "solidity-single-file" && codeFormat !== "solidity-standard-json-input") throw new NotOk(TEXTS.unsupported);
   const args = c.p.get("constructorArguements") ?? c.p.get("constructorArguments") ?? "";
-  if (!/^(0x)?([0-9a-fA-F]{2})*$/.test(args)) throw new NotOk("Missing or invalid constructorArguements");
+  if (!isHexBytes(args, { prefix: "optional", upper: true })) throw new NotOk("Missing or invalid constructorArguements");
   const libraries: { name: string; address: string }[] = [];
   for (let i = 1; i <= MAX_LIBRARIES; i++) {
     const name = c.p.get(`libraryname${i}`), at = c.p.get(`libraryaddress${i}`);
@@ -631,6 +645,8 @@ const contract: Record<string, Handler> = {
     if (expected !== null) addressOf(expected);
     // The slots are read at the final head, whatever the indexer's last upgrade log said.
     const a = await v.proxy(address, expected, c.ip, await finalHead(c));
+    // An address with no contract is answered in the `message` (status 0, result null), as Remix reads it: it compares that text, and shows a failure with it.
+    if (a.status === 404) throw new NotOk(refused(a).reason, true);
     if (a.status !== 202) throw refused(a);
     return guidOf(a);
   },

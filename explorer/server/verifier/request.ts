@@ -4,6 +4,8 @@
  * choose (the output selection, and any source that names a file or an address instead of holding its text).
  */
 
+import { isHexBytes } from "../hex.ts";
+
 /** A request that cannot be run at all: the reason is for the person who sent it. */
 export class RequestError extends Error {}
 
@@ -76,7 +78,7 @@ export function unwrapStandardJson(text: string): string {
 function parseArguments(raw: string | undefined): Buffer | null {
   const h = (raw ?? "").trim().replace(/^0x/i, "");
   if (h === "") return null;
-  if (!/^([0-9a-fA-F]{2})+$/.test(h)) throw new RequestError("the constructor arguments are not hex");
+  if (!isHexBytes(h, { prefix: "none", upper: true, empty: false })) throw new RequestError("the constructor arguments are not hex");
   return Buffer.from(h, "hex");
 }
 

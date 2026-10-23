@@ -10,7 +10,8 @@ import { series, summary, wave } from "./stats-fixtures.ts";
 type Handlers = { summary?: (w: string) => Reply; series?: (metric: StatsMetric, window: StatsWindow, path: string) => Reply; faucetOn?: boolean; faucet?: () => Reply };
 const ordinary = (metric: StatsMetric, window: StatsWindow) => {
   const base = { time_to_final_p50: 8.4, time_to_final_p95: 9.5, proof_time_p50: 7.1, proof_time_p95: 7.6, tps: 0.2, busiest_minute_tps: 0.9, blocks: 5, busy_ratio: 0.012 }[metric as string] ?? 1;
-  return reply(series(metric, wave(base), { window }));
+  // The server draws busy_ratio in 10 minutes in the last hour (it has no minute step).
+  return reply(series(metric, wave(base), { window, ...(metric === "busy_ratio" && window === "1h" ? { step: "10m" as const } : {}) }));
 };
 async function open(path = "/stats?window=7d", h: Handlers = {}) {
   const base = route({ status: h.faucetOn ? () => reply(status({ faucet: { on: true } })) : undefined, faucet: h.faucet });
@@ -199,11 +200,53 @@ describe("the stats page", () => {
     expect(card.querySelector("table")).toHaveClass("tbl");
   });
 
-  it("gives the rule's p95 time to final by the step of the window: the worst one, and how many were above 20 s", async () => {
-    await open("/stats?window=7d", { series: (m, w) => m === "time_to_final_p95" ? reply(series(m, (i) => (i === 10 ? 25 : i === 11 ? 31 : 9), { window: w })) : ordinary(m, w) });
+  it("gives the rule's p95 time to final by the hour, as the server counts it: the worst hour, and how many were above 20 s", async () => {
+    // a 7 d window drawn by the hour; the rule is read from the summary's `rule`, not from the series (which a 30 d window draws by the day)
+    const rule = { ...summary().rule!, hoursCounted: 168, hoursMeasured: 160, hoursAbove: 2, worstHourP95: 31.2, worstHourAt: "2026-10-18T14:00:00.000Z" };
+    await open("/stats?window=30d", { summary: () => reply(summary({ window: "30d", rule })) });
     const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
-    await waitFor(() => expect(card).toHaveTextContent("31.0 s by the hour"));
-    expect(card).toHaveTextContent("2 steps above 20 s");
+    expect(card).toHaveTextContent("31.2 s by the hour (the worst), 18 Oct 14:00");
+    expect(card).toHaveTextContent("2 hours of 160 above 20 s");
+    expect(card).toHaveTextContent("8 hours with no final transaction");
+    expect(card).not.toHaveTextContent("by the day");
+  });
+
+  it("says no hour was measured when none was, and gives the window's p95 as that and nothing more", async () => {
+    const rule = { ...summary().rule!, hoursCounted: 2, hoursMeasured: 0, hoursAbove: null, worstHourP95: null, worstHourAt: null };
+    await open("/stats?window=24h", { summary: () => reply(summary({ window: "24h", rule })) });
+    const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+    expect(card).toHaveTextContent("over this window · no whole hour with a final transaction yet");
+    expect(card).not.toHaveTextContent("above 20 s");
+  });
+
+  it("keeps the page when a server older than this page sends no `rule`: the p95 is the window's, and the days are not counted", async () => {
+    await open("/stats?window=7d", { summary: () => reply({ ...summary(), rule: undefined }) });
+    const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+    expect(card).toHaveTextContent("over this window");
+    expect(card).not.toHaveTextContent("days with more than one");
+  });
+
+  it("counts the days that met the rule's second half: more than one ten-minute window above 60% in a UTC day", async () => {
+    const rule = { ...summary().rule!, windowsOverByDay: [{ day: "2026-10-17", windowsOver: 0, windowsCounted: 144 }, { day: "2026-10-18", windowsOver: 1, windowsCounted: 144 }, { day: "2026-10-19", windowsOver: 12, windowsCounted: 144 }] };
+    await open("/stats?window=7d", { summary: () => reply(summary({ rule })) });
+    const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+    expect(card).toHaveTextContent("1 of 3 days with more than one");
+  });
+
+  it.each([[1, "0.017"], [2, "0.033"]] as const)("shows a busiest minute of %i transaction(s) as %s tx/s, not 0, and says how many it was", async (txs, rate) => {
+    await open("/stats?window=1h", { summary: () => reply(summary({ window: "1h", tps: { now: 0, peak: txs / 60, peakAt: "2026-10-20T12:10:00.000Z" } })) });
+    const peak = await tile("Peak rate");
+    expect(peak).toHaveTextContent(`${rate} tx/s`);
+    expect(peak).toHaveTextContent(`${txs} tx in the busiest minute`);
+    expect(peak.querySelector(".stat-v")?.textContent ?? peak.textContent).not.toMatch(/(^|\s)0 tx\/s/);
+  });
+
+  it("labels the last hour's prover chart by the step the series answers with: 10 minutes, not the minute the other charts use", async () => {
+    await open("/stats?window=1h");
+    const busy = (await screen.findByRole("heading", { name: "Prover busy" })).closest("section")!;
+    await waitFor(() => expect(busy).toHaveTextContent("share of each 10 minutes the prover spent proving"));
+    expect(within(busy).getByRole("img", { name: "Prover busy, per 10 minutes" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Blocks per minute" })).toBeInTheDocument();
   });
 
   it("gives the faucet's requests, what it sent, its time to final, and says what it did not record", async () => {

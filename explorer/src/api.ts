@@ -232,6 +232,8 @@ export interface StatsSummary {
   canton: { argumentBytesPerBlock: number | null; argumentBytesPerTx: number | null; trafficBytesPerBlock: number | null; trafficReported: number };
   prover: { maxBusyRatio10m: number | null; windowsOver: number; windowsCounted: number; windowSeconds: number; loadedAbove: number; meanBusyRatio: number; busyMs: number };
   quality: { withoutAcceptanceTime: number; clockSkew: number };
+  /** Absent from a server older than this page: the page then shows the rule's p95 as unknown. */
+  rule?: { slowAboveSeconds: number; hoursCounted: number; hoursMeasured: number; hoursAbove: number | null; worstHourP95: number | null; worstHourAt: string | null; windowsOverByDay: { day: string; windowsOver: number; windowsCounted: number }[] };
   test: { blocks: number; txs: number; attempts: number; proverBusyMs: number };
   today: { date: string; activeAddresses: number | null; newAddresses: number | null; newContracts: number | null; verifiedContracts: number | null; countedAt: string | null } | null;
   waiting: { open: number; pool: { waiting: number; at: string; ageSeconds: number } | null };

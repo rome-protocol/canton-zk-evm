@@ -78,6 +78,18 @@ describe("transactions", () => {
     expect(rc).toMatchObject({ success: false, gasUsed: 21000, contractAddress: A("9") });
   });
 
+  it("reads a transaction whose input is 12 MB of hex: a long value is data, not a stack overflow", async () => {
+    const input = "0x" + "ab".repeat(12 * 1024 * 1024);
+    const r = await reth({ eth_getTransactionByHash: { ...RAW_TX, input } });
+    expect((await r.transaction(H("d")))?.input).toHaveLength(input.length);
+  });
+
+  it("names a byte string with a bad digit at the end of 12 MB as bad data (RethError)", async () => {
+    const input = "0x" + "ab".repeat(12 * 1024 * 1024) + "zz";
+    const r = await reth({ eth_getTransactionByHash: { ...RAW_TX, input } });
+    await expect(r.transaction(H("d"))).rejects.toThrow(/not a valid byte string/);
+  });
+
   it("shows a transaction that is only in reth's pool with no block number", async () => {
     const r = await reth({ eth_getTransactionByHash: { ...RAW_TX, blockNumber: null, blockHash: null, transactionIndex: null } });
     expect(await r.transaction(H("d"))).toMatchObject({ blockNumber: null, blockHash: null, index: null });

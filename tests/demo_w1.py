@@ -10,7 +10,7 @@
   demo_w1.py flood <address> <kind> <count>  <count> calls of explorer/test/fixtures/Flood.sol, each as heavy as the gas below allows; print the hashes.
                                            kind: transfers (Flood: ERC-20 transfers to new holders), mint (Multi: 4,096 ERC-1155 ids to the Multi contract, once, in an earlier block),
                                            batches (Multi: 18 ERC-1155 batches of 4,096 ids that share one array, from the holder of the ids to new holders)
-                                           or spawn (Flood: new tokens that need their metadata read, a third of them Burners whose reads spend all their gas, and one a FatReturn whose reads answer 680 KB)
+                                           or spawn (Flood: new tokens that need their metadata read, a third of them Burners whose reads spend all their gas, and one a FatReturn whose reads answer 170 KB)
 
   demo_w1.py plain <count>                 <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
                                            (the nightly load test's flood, tests/demo_nightly_l3.py)

@@ -24,6 +24,7 @@ export function summary(over: Partial<StatsSummary> = {}): StatsSummary {
     canton: { argumentBytesPerBlock: 4100, argumentBytesPerTx: 630, trafficBytesPerBlock: null, trafficReported: 0 },
     prover: { maxBusyRatio10m: 0.035, windowsOver: 0, windowsCounted: 1008, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0.012, busyMs: 7_300_000 },
     quality: { withoutAcceptanceTime: 0, clockSkew: 0 },
+    rule: { slowAboveSeconds: 20, hoursCounted: 168, hoursMeasured: 168, hoursAbove: 0, worstHourP95: 9.5, worstHourAt: "2026-10-18T14:00:00.000Z", windowsOverByDay: [{ day: "2026-10-17", windowsOver: 0, windowsCounted: 144 }, { day: "2026-10-18", windowsOver: 0, windowsCounted: 144 }] },
     test: { blocks: 0, txs: 0, attempts: 0, proverBusyMs: 0 },
     today: { date: "2026-10-20", activeAddresses: 14, newAddresses: 3, newContracts: 1, verifiedContracts: 0, countedAt: "2026-10-20T16:00:00.000Z" },
     waiting: { open: 4, pool: { waiting: 1, at: "2026-10-20T16:29:50.000Z", ageSeconds: 10 } },

@@ -56,7 +56,8 @@ describe("the proxy module, as Etherscan's: a JSON-RPC answer, in hex, as the pu
     expect(await b.get({ action: "eth_getBlockByNumber", tag: "0x4", boolean: "true" })).toEqual(rpcOk(block(4, true)));
     expect(await b.get({ action: "eth_getBlockByNumber", tag: "latest", boolean: "false" })).toEqual(rpcOk(block(FINAL, false)));
     expect(await b.get({ action: "eth_getBlockByNumber", tag: "0x6", boolean: "false" })).toEqual(rpcOk(null));
-    expect((await b.get({ action: "eth_getBlockByNumber", tag: "0x4", boolean: "maybe" })).error.code).toBe(-32602);
+    // The words are the node's own (go-ethereum's, which Etherscan's proxy gives back), because tools match on them.
+    expect((await b.get({ action: "eth_getBlockByNumber", tag: "0x4", boolean: "maybe" })).error).toEqual({ code: -32602, message: "invalid argument 1: json: cannot unmarshal string into Go value of type bool" });
   });
 
   it("eth_getBlockTransactionCountByNumber counts a final block's transactions in hex", async () => {
@@ -71,8 +72,22 @@ describe("the proxy module, as Etherscan's: a JSON-RPC answer, in hex, as the pu
     expect(await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x4", index: "0x1" })).toEqual(rpcOk(TXS[1]));
     expect(await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x4", index: "0x2" })).toEqual(rpcOk(null));
     expect(await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x6", index: "0x0" })).toEqual(rpcOk(null));
-    expect(await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x4", index: "0xffffffffffffffffff" })).toEqual(rpcOk(null));
-    expect((await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x4", index: "1" })).error.code).toBe(-32602);
+    expect(await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x4", index: "0xffffffffffffffff" })).toEqual(rpcOk(null));
+  });
+
+  it("eth_getTransactionByBlockNumberAndIndex refuses a bad index in go-ethereum's words for a hexutil.Uint", async () => {
+    const b = await boot();
+    const refusal = async (index: string) => (await b.get({ action: "eth_getTransactionByBlockNumberAndIndex", tag: "0x4", index })).error;
+    const words = (why: string) => ({ code: -32602, message: `invalid argument 1: json: cannot unmarshal ${why} into Go value of type hexutil.Uint` });
+    expect(await refusal("1")).toEqual(words("hex string without 0x prefix"));
+    expect(await refusal("0x")).toEqual(words('hex string "0x"'));
+    expect(await refusal("0x01")).toEqual(words("hex number with leading zero digits"));
+    expect(await refusal("0xzz")).toEqual(words("invalid hex string"));
+    expect(await refusal("0x10000000000000000")).toEqual(words("hex number > 64 bits"));
+    // The length is checked before the digits, as common/hexutil does: 17 characters with a bad one are out of range, not a syntax error.
+    expect(await refusal("0x1000000000000000z")).toEqual(words("hex number > 64 bits"));
+    expect(await refusal("0xzzzzzzzzzzzzzzzzzzzz")).toEqual(words("hex number > 64 bits"));
+    expect(await refusal("0x1000000000000zz")).toEqual(words("invalid hex string"));
   });
 
   it("eth_getTransactionByHash shows a transaction of a block still being proven with no block yet, and null for one unknown", async () => {

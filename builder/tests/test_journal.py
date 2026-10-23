@@ -349,6 +349,29 @@ class Traffic(Lines):
         self.assertEqual(self.run_one(s)["traffic_bytes"], 100)
         self.assertEqual(s.ledger.completion_queries, [])
 
+    def test_a_participant_with_a_traffic_state_never_falls_back_to_the_completion(self):   # one run, one measure: the state's delta, or nothing
+        for name, states in (("the reads fail", []), ("one read only", [{"extraTrafficConsumed": 5}]), ("it went down", [{"extraTrafficConsumed": 9}, {"extraTrafficConsumed": 3}])):
+            with self.subTest(name):
+                s = self.setup({ALICE: [tx(ALICE, 0)]})
+                s.cfg.traffic_url = s.ledger.url + "/traffic"
+                s.ledger.traffic = list(states)
+                s.ledger.paid = 5861
+                answered = self.run_one(s)
+                self.assertEqual((answered["outcome"], answered["traffic_bytes"]), ("committed", None))
+                self.assertNotIn("trafficBytes", self.reports[-1])
+                self.assertEqual(s.ledger.completion_queries, [])
+
+    def test_a_participant_with_a_traffic_state_gets_no_completion_read_while_another_block_is_in_flight(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.cfg.traffic_url = s.ledger.url + "/traffic"
+        s.ledger.traffic = [{"extraTrafficConsumed": 1}, {"extraTrafficConsumed": 2}]
+        s.ledger.paid = 5700
+        attempt = b.Attempt(b.Journal(Path(s.dir) / "j", clock=lambda: 1_000_000.0), 1, in_flight=1)
+        b.build_block(s.cfg, journal=attempt)
+        lines = [json.loads(l) for f in sorted((Path(s.dir) / "j").glob("*.jsonl")) for l in f.read_text().splitlines()]
+        self.assertEqual([l["traffic_bytes"] for l in lines if l["event"] == "answered"], [None])
+        self.assertEqual(s.ledger.completion_queries, [])
+
     def test_a_completion_read_that_finds_nothing_or_fails_leaves_the_traffic_null_and_the_block_committed(self):
         for name, setup in (("no completion", lambda l: None), ("the read fails", lambda l: setattr(l, "completions_fail", True)),
                             ("not a number", lambda l: setattr(l, "paid", "lots")), ("negative", lambda l: setattr(l, "paid", -5)),

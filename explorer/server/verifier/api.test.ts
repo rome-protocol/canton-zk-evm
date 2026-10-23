@@ -141,7 +141,7 @@ suite("the verification routes", () => {
     expect(await answerOf(await verify.proxy(P, null, "1.2.3.4", 9))).toMatchObject({ status: "fail", result: PROXY_TEXTS.none });
     fp.setSlot(P, EIP1967_IMPLEMENTATION_SLOT, IMPL);
     // The wrong expectation is refused, and nothing is recorded.
-    expect(await answerOf(await verify.proxy(P, "0x" + "d4".repeat(20), "1.2.3.4", 9))).toMatchObject({ status: "fail", result: PROXY_TEXTS.mismatch(IMPL, "0x" + "d4".repeat(20)) });
+    expect(await answerOf(await verify.proxy(P, "0x" + "d4".repeat(20), "1.2.3.4", 9))).toMatchObject({ status: "fail", result: "The provided expected results are different than the retrieved implementation address!" });
     expect((await db.pool.query("select verified_at from proxies")).rows[0].verified_at).toBeNull();
     const ok = await verify.proxy(P, IMPL.toUpperCase().replace("0X", "0x"), "1.2.3.4", 9);
     expect(ok.status).toBe(202);

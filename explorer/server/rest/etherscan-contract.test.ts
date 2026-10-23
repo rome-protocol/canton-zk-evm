@@ -52,7 +52,7 @@ describe("the contract module's table", () => {
 describe("getsourcecode's fields", () => {
   const verified = (over: Partial<NonNullable<ContractSourceRow["verified"]>> = {}): ContractSourceRow => ({
     held: true, implementation: null,
-    verified: { matchType: "full", format: "solidity-single-file", contractName: "Box", compilerVersion: VERSION, optimizer: true, runs: 200, evmVersion: null, license: "MIT", settings: {}, sources: { "Box.sol": SOURCE }, abi: [{ type: "function", name: "v" }], constructorArgs: null, libraries: null, ...over },
+    verified: { matchType: "full", sourceMatch: "full", format: "solidity-single-file", contractName: "Box", compilerVersion: VERSION, optimizer: true, runs: 200, evmVersion: null, license: "MIT", settings: {}, sources: { "Box.sol": SOURCE }, abi: [{ type: "function", name: "v" }], constructorArgs: null, libraries: null, ...over },
   });
   it("gives a single file as it is, and standard JSON between a second pair of braces", () => {
     expect(sourceCodeFields(verified())).toEqual({
@@ -70,7 +70,9 @@ describe("getsourcecode's fields", () => {
   });
   it("flags a partial match with the pages' note in two extra fields, and a full match carries neither", () => {
     expect(Object.keys(sourceCodeFields(verified()))).toEqual(FIELDS);
-    expect(sourceCodeFields(verified({ matchType: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    expect(sourceCodeFields(verified({ matchType: "partial", sourceMatch: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    expect(sourceCodeFields(verified({ matchType: "similar", sourceMatch: "partial" }))).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    expect(Object.keys(sourceCodeFields(verified({ matchType: "similar", sourceMatch: "full" })))).toEqual(FIELDS);
   });
   it("is the same fields, empty, with the text in ABI, for a contract that is not verified, and carries the proxy", () => {
     const empty = sourceCodeFields({ held: true, verified: null, implementation: IMPL });
@@ -272,6 +274,20 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect(a.ConstructorArguments).toBe("00ff");
       expect(b).toMatchObject({ SourceCode: SOURCE, ContractName: "Box", ConstructorArguments: "" });
     });
+    it("carries the partial-match note to a similar match of a partial source, because the code there is read from that source", async () => {
+      await running();
+      await post(single({ constructorArguements: "" }));
+      await worker().step();
+      await addContract(pool, B, runtime, creation);
+      await sql("update contracts set verified_source = (select verified_source from contracts where address = $1), match_type = 'similar', name = 'Box' where address = $2", [Buffer.from(A.slice(2), "hex"), Buffer.from(B.slice(2), "hex")]);
+      const [full] = (await get(`/api?module=contract&action=getsourcecode&address=${B}`)).result;
+      expect(full).not.toHaveProperty("MatchNote");
+      await sql("update verified_sources set match_type = 'partial'");
+      await sql("update contracts set match_type = 'partial' where address = $1", [Buffer.from(A.slice(2), "hex")]);
+      const [a] = (await get(`/api?module=contract&action=getsourcecode&address=${A}`)).result, [b] = (await get(`/api?module=contract&action=getsourcecode&address=${B}`)).result;
+      expect(a).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+      expect(b).toMatchObject({ MatchType: "partial", MatchNote: PARTIAL_MATCH_NOTE });
+    });
   });
 
   describe("getcontractcreation", () => {
@@ -314,7 +330,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       probes.setSlot(P, EIP1967_IMPLEMENTATION_SLOT, IMPL);
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${none.result}`)).toEqual(NOTOK(PROXY_TEXTS.none));
       const wrong = await proxy({ expectedimplementation: B });
-      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${wrong.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch(IMPL, B)));
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${wrong.result}`)).toEqual(NOTOK("The provided expected results are different than the retrieved implementation address!"));
       expect((await sql("select verified_at from proxies")).rows[0].verified_at).toBeNull();
       const good = await proxy({ expectedimplementation: IMPL });
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${good.result}`)).toEqual(OK(PROXY_TEXTS.done(P, IMPL)));
@@ -331,7 +347,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       probes.setSlot(P, EIP1822_SLOT, NEW);
       probes.heads.length = 0;
       const stale = await proxy({ expectedimplementation: IMPL });
-      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${stale.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch(NEW, IMPL)));
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${stale.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch));
       const fresh = await proxy({ expectedimplementation: NEW });
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${fresh.result}`)).toEqual(OK(PROXY_TEXTS.done(P, NEW)));
       const row = (await sql("select encode(implementation, 'hex') as i, kind, checked_block from proxies")).rows;
@@ -362,7 +378,8 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       expect(await get(`/api?module=contract&action=checkverifystatus&guid=${p.result}`)).toEqual(NOTOK("Unknown UID"));
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${s.result}`)).toEqual(NOTOK("Unknown UID"));
       expect(await post({ action: "verifyproxycontract", address: "0x12" })).toEqual(NOTOK(TEXTS.address));
-      expect(await post({ action: "verifyproxycontract", address: B })).toEqual(NOTOK(`Unable to locate ContractCode at ${B}`));
+      // Remix compares this text in `message` (EtherscanVerifier.verifyProxy) and shows a failure with it
+      expect(await post({ action: "verifyproxycontract", address: B })).toEqual({ status: "0", message: "Smart-contract not found or is not verified", result: null });
       expect(await proxy({ expectedimplementation: "0x12" })).toEqual(NOTOK(TEXTS.address));
       expect(await get("/api?module=contract&action=checkproxyverification")).toEqual(NOTOK("Unknown UID"));
     });

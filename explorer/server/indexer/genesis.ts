@@ -10,6 +10,7 @@ import { keccak256 } from "viem";
 import type { Pool } from "pg";
 import { IndexerStop } from "./errors.ts";
 import type { FinalReads } from "./reads.ts";
+import { isHexBytes } from "../hex.ts";
 
 export interface GenesisContract { address: string; code: string }
 
@@ -28,7 +29,7 @@ export function genesisContracts(file: string): GenesisContract[] {
     const code = (account as { code?: unknown } | null)?.code;
     if (!/^0x[0-9a-f]{40}$/.test(address)) throw new IndexerStop("genesis", `the genesis file has an account named "${key}", which is not an address`, null);
     if (code === undefined || code === null || code === "" || code === "0x") continue;
-    if (typeof code !== "string" || !/^0x([0-9a-fA-F]{2})+$/.test(code)) throw new IndexerStop("genesis", `the code of ${address} in the genesis file is not hex`, null);
+    if (typeof code !== "string" || !isHexBytes(code, { upper: true, empty: false })) throw new IndexerStop("genesis", `the code of ${address} in the genesis file is not hex`, null);
     out.push({ address, code: code.toLowerCase() });
   }
   return out.sort((a, b) => (a.address < b.address ? -1 : 1));

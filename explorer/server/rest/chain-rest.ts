@@ -153,7 +153,7 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls into contracts. `moves` false leaves their token moves null: a file that does not write them need not read them. */
+  /** All transactions, newest first, after the key (block, index) when one is given; `filter` keeps the reverted ones or the calls that name a method (a `to` and at least 4 bytes of input). `moves` false leaves their token moves null: a file that does not write them need not read them. */
   async function txs(before: (number | string)[] | null, limit: number, filter: TxFilter = "all", moves = true, order: "desc" | "asc" = "desc"): Promise<TxListItem[]> {
     const [bn, ix] = before ?? [null, null];
     const where = { all: "", failed: "and t.status = 0", calls: "and t.method_id is not null and t.to_address is not null" }[filter];

@@ -159,6 +159,32 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     expect(days).toEqual([[0, 5], [DAY, 1]]);
   }));
 
+  it("after midnight the lookback rebuilds yesterday's row on every run, but yesterday's extras are counted once, and again only when a late fact repairs that day", () => inDb(async (pool) => {
+    const midnight = T0 + 12 * HOUR;
+    await block(pool, 1, 100);
+    await block(pool, 2, 43_000);
+    await ins(pool, "addresses", { address: hex(0xa1), first_seen_block: 1, last_active_block: 1 });
+    const day0 = async () => (await pool.query("select new_addresses from stats_day where bucket = $1", [new Date(Math.floor(T0 / DAY) * DAY)])).rows[0].new_addresses;
+    await rollupStats(pool, { now: () => midnight - 30_000 });
+    expect(await day0()).toBe(1); // today's extras, computed while the day runs
+    await ins(pool, "addresses", { address: hex(0xa2), first_seen_block: 2, last_active_block: 2 });
+    await rollupStats(pool, { now: () => midnight + 10_000 });
+    expect(await day0()).toBe(2); // the first run after midnight closes the day
+    await ins(pool, "addresses", { address: hex(0xa3), first_seen_block: 2, last_active_block: 2 });
+    for (const sec of [20, 30, 40, 50]) await rollupStats(pool, { now: () => midnight + sec * 1000 }); // the 15-minute lookback rebuilds yesterday's row each time
+    expect(await day0()).toBe(2); // not counted again
+    // A late block of that day marks it dirty: its extras are counted again.
+    await block(pool, 3, 200);
+    await rollupStats(pool, { now: () => midnight + 60_000 });
+    expect(await day0()).toBe(3);
+    await ins(pool, "addresses", { address: hex(0xa4), first_seen_block: 2, last_active_block: 2 });
+    await rollupStats(pool, { now: () => midnight + 70_000 });
+    expect(await day0()).toBe(3);
+    // A rebuild of the whole history counts every day's extras again.
+    await rebuildStats(pool, { now: () => midnight + 80_000 });
+    expect(await day0()).toBe(4);
+  }));
+
   it("late facts, however old, are rolled up by the next run, and the rows equal a rebuild's (the data, not the clock, moves the rollup)", () => inDb(async (pool) => {
     await block(pool, 1, 10);
     await rollupStats(pool, { now: () => T0 + 30 * MINUTE });
