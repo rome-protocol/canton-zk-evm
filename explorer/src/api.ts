@@ -338,8 +338,8 @@ export const getUpdatesAround = async (id: string) => (await call(`/api/canton/u
 export interface TxLog { logIndex: number; /** Its place among the transaction's own logs, from 0. */ position: number; address: string; topics: string[]; data: string; decoded: { name: string; signature: string; args: { name: string; type: string; value: string }[] } | null }
 /** A call that moved value, from the transaction's trace. `traceAddress` places it in the call tree ("t0-1" is the second call of the first call). */
 export interface InternalCall { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number; error: string | null }
-/** `methodId` and `timestamp` are the transaction's (no method for a creation); `standard` is the token's, null where the explorer holds no row for it. */
-export interface TokenTransfer { logIndex: number; batchIndex: number; methodId: string | null; timestamp: number; token: string; standard: TokenStandard | null; from: string; to: string; amount: string | null; tokenId: string | null }
+/** `methodId` and `timestamp` are the transaction's (no method for a creation, and `creation` says it was one); `standard` is the token's, null where the explorer holds no row for it. */
+export interface TokenTransfer { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: TokenStandard | null; from: string; to: string; amount: string | null; tokenId: string | null }
 /** A page of a list read from the derived stage: `derived` is false while the explorer has not read the transaction's block, and the page is empty. */
 export type DerivedPage<T> = Page<T> & { derived?: boolean };
 const afterTx = (hash: string, sub: string, after: string | null, limit: number) => `/api/txs/${encodeURIComponent(hash)}/${sub}?limit=${limit}${cursor("after", after)}`;

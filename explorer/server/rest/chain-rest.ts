@@ -46,7 +46,7 @@ export interface BlockExtras {
 export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
 export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
-export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
+export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface TxPlace { block: number; index: number }
 export interface TxTrace { callCount: number; revertReason: string | null; revertData: string | null }
 export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null }
@@ -249,7 +249,7 @@ export function createChainRest(pool: Pool) {
       [at.block, at.index, li, bi, limit + 1],
     );
     return rows.map((r) => ({
-      logIndex: r.log_index, batchIndex: r.batch_index, methodId: r.tx_to === null ? null : hexOrNull(r.method_id), timestamp: Number(r.ts), token: hex(r.token), standard: r.standard,
+      logIndex: r.log_index, batchIndex: r.batch_index, methodId: r.tx_to === null ? null : hexOrNull(r.method_id), creation: r.tx_to === null, timestamp: Number(r.ts), token: hex(r.token), standard: r.standard,
       from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id,
     }));
   }

@@ -538,7 +538,8 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
       // The creation has no method (its first input bytes are code), and the token in the row is an ERC-721.
       const b = (body(await get(`/api/txs/${tx(3, 6)}/token-transfers`)).items as Record<string, any>[])[0]!; // eslint-disable-line @typescript-eslint/no-explicit-any
       same(b, F.transfer);
-      expect(b).toMatchObject({ methodId: null, timestamp: Number(made.ts), standard: "ERC-721", tokenId: "1" });
+      expect(b).toMatchObject({ methodId: null, creation: true, timestamp: Number(made.ts), standard: "ERC-721", tokenId: "1" });
+      for (const t of a) expect(t.creation).toBe(false);
     } finally {
       await pool.query("delete from token_transfers where block_number = $1 and log_index = 95", [made.block_number]);
       await pool.query("delete from tokens where address = $1", [who(0x31)]);

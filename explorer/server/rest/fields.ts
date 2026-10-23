@@ -82,7 +82,7 @@ export const REST_FIELDS = {
   log: ["logIndex", "position", "address", "topics", "data", "decoded"],
   rawLog: ["logIndex", "address", "topics", "data"],
   internal: ["traceAddress", "callType", "from", "to", "value", "gas", "gasUsed", "selector", "inputSize", "error"],
-  transfer: ["logIndex", "batchIndex", "methodId", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
+  transfer: ["logIndex", "batchIndex", "methodId", "creation", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
   trace: ["frames", "truncated"],
   frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
   updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block"],
@@ -101,7 +101,7 @@ export const REST_FIELDS = {
   /** A log a contract wrote: the log, the transaction it is in, and that transaction's method id. */
   contractEvent: ["txHash", "block", "txIndex", "logIndex", "address", "topics", "data", "method", "creation"],
   /** A token transfer of an address or of a token, with the transaction it is in. */
-  tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "methodId", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
+  tokenTransferItem: ["txHash", "block", "txIndex", "logIndex", "batchIndex", "methodId", "creation", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
   /** What an address holds of one token (or of one id of an ERC-1155), as of the block it last moved. */
   holding: ["token", "standard", "name", "symbol", "decimals", "totalSupply", "tokenId", "value", "updatedBlock"],
   coinPoint: ["block", "balance"],

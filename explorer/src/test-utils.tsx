@@ -260,7 +260,7 @@ export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenLi
 export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, ...over });
 export const tokenHolder = (n: number, value: string, over: Partial<TokenHolder> = {}): TokenHolder => ({ holder: addr(n), tokenId: "0", value, updatedBlock: 20, ...over });
 export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}): AddressTransferItem => ({
-  txHash: hash(n), block: 20, txIndex: 0, logIndex: n, batchIndex: 0, methodId: null, timestamp: 1700000000, token: addr(0xcb), standard: "ERC-20", from: addr(0xa1), to: addr(0xa2), amount: "100000000", tokenId: null, ...over,
+  txHash: hash(n), block: 20, txIndex: 0, logIndex: n, batchIndex: 0, methodId: null, creation: false, timestamp: 1700000000, token: addr(0xcb), standard: "ERC-20", from: addr(0xa1), to: addr(0xa2), amount: "100000000", tokenId: null, ...over,
 });
 
 /** A gateway leg as /api/legs gives it: leg n of block 21, made by transaction n. */

@@ -587,6 +587,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
         expect(t.methodId).toBe(r.to_address === null || r.method_id === null ? null : "0x" + r.method_id.toString("hex"));
         expect(t.timestamp).toBe(Number(r.ts));
         expect(t.standard).toBe(r.standard);
+        expect(t.creation).toBe(r.to_address === null);
       }
       expect(moved.map((t) => t.standard)).toEqual(["ERC-1155", "ERC-1155", "ERC-20", "ERC-20", "ERC-20"]);
       expect(moved.some((t) => t.methodId !== null)).toBe(true);
@@ -600,7 +601,12 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
       try {
         const t = (body(await get(`/api/addresses/${A}/token-transfers`)).items as Record<string, any>[]).find((x) => x.block === 2 && x.logIndex === 500)!; // eslint-disable-line @typescript-eslint/no-explicit-any
         expect(t.methodId).toBeNull();
+        expect(t.creation).toBe(true);
         expect(t.standard).toBeNull();
+        // The same row on the feed carries the flag too; a call does not.
+        const f = (body(await get("/api/token-transfers?limit=100")).items as Record<string, any>[]).filter((x) => x.block === 2 && x.logIndex === 500); // eslint-disable-line @typescript-eslint/no-explicit-any
+        expect(f.map((x) => x.creation)).toEqual([true]);
+        expect((body(await get(`/api/addresses/${A}/token-transfers`)).items as Record<string, any>[]).filter((x) => x.block !== 2 || x.txIndex !== 0).every((x) => x.creation === false)).toBe(true); // eslint-disable-line @typescript-eslint/no-explicit-any
       } finally {
         await sql("update transactions set to_address = $1, created_contract = $2 where block_number = 2 and tx_index = 0", [was.to_address, was.created_contract]);
         await sql(

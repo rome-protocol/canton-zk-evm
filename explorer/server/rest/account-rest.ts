@@ -31,9 +31,9 @@ export interface AddressInternalItem {
 }
 /** A log a contract wrote, with the transaction it is in and that transaction's method (the first 4 bytes of its input, null when it has none). A transaction that creates a contract has no method, because its input is init code; `creation` says so. */
 export interface ContractEventItem { txHash: string; block: number; txIndex: number; logIndex: number; address: string; topics: string[]; data: string; method: string | null; creation: boolean }
-/** `methodId` and `timestamp` are the transaction's (the method is null for a creation, whose first four bytes of input are code); `standard` is the token's, null when the explorer has no row for it. */
+/** `methodId` and `timestamp` are the transaction's (the method is null for a creation, whose first four bytes of input are code, and `creation` says so, as a call with no input has a null method too); `standard` is the token's, null when the explorer has no row for it. */
 export interface TokenTransferItem {
-  txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; methodId: string | null; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null;
+  txHash: string; block: number; txIndex: number; logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null;
 }
 export const TOKEN_STANDARDS = ["ERC-20", "ERC-721", "ERC-1155"] as const;
 export type TokenStandard = (typeof TOKEN_STANDARDS)[number];
@@ -215,7 +215,7 @@ export function createAccountRest(pool: Pool) {
   // One join each for the transaction, its block and the token, whatever the page's size.
   const transferJoins = `join transactions t on t.block_number = x.block_number and t.tx_index = x.tx_index join blocks b on b.number = x.block_number left join tokens tk on tk.address = x.token`;
   const transferItem = (r: Row): TokenTransferItem => ({
-    txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, batchIndex: r.batch_index, methodId: r.tx_to === null ? null : hexOrNull(r.method_id), timestamp: Number(r.ts),
+    txHash: hex(r.hash), block: Number(r.block_number), txIndex: r.tx_index, logIndex: r.log_index, batchIndex: r.batch_index, methodId: r.tx_to === null ? null : hexOrNull(r.method_id), creation: r.tx_to === null, timestamp: Number(r.ts),
     token: hex(r.token), standard: r.standard, from: hex(r.from_address), to: hex(r.to_address), amount: r.amount, tokenId: r.token_id,
   });
 
