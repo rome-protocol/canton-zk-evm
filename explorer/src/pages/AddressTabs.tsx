@@ -50,7 +50,7 @@ function TxRow({ a, t, now, coin, faucet, chain, labels }: { a: string; t: TxLis
   const fee = (BigInt(t.gasUsed) * BigInt(t.gasPrice)).toString();
   return (
     <tr>
-      <td className="c-hash"><HashLink value={t.hash} to={`/tx/${t.hash}`} plain />{!t.success && <span className="fact-bad" role="img" aria-label="Failed (reverted)" title="Failed (reverted)"><Icon name="cross" size={13} /></span>}</td>
+      <td><HashLink value={t.hash} to={`/tx/${t.hash}`} plain />{!t.success && <span className="fact-bad" role="img" aria-label="Failed (reverted)" title="Failed (reverted)"><Icon name="cross" size={13} /></span>}</td>
       <td><span className="tag method">{methodOf(t)}</span></td>
       <td><Link className="num" to={`/block/${t.block}`}>{t.block}</Link></td>
       <td title={new Date(t.timestamp * 1000).toISOString()}>{duration(now - t.timestamp * 1000)} ago</td>
@@ -86,7 +86,7 @@ export function TxsTab({ a, st, now }: { a: string; st: ApiStatus; now: number }
       </div>
       {items && items.length > 0 && (
         <div className="scroll">
-          <table className="tbl txs">
+          <table className="tbl">
             <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Value</th><th className="r">{`Fee (${st.coin.symbol})`}</th><th>Stage</th></tr></thead>
             <tbody>{items.map((t) => <TxRow key={t.hash} a={a} t={t} now={now} coin={st.coin} faucet={faucet} chain={st.chainName} labels={labels} />)}</tbody>
           </table>
@@ -153,7 +153,7 @@ function TransferRow({ a, x, now, labels }: { a: string; x: AddressTransferItem;
   const token = labels.get(x.token);
   return (
     <tr>
-      <td className="c-hash"><HashLink value={x.txHash} to={`/tx/${x.txHash}`} plain /></td>
+      <td><HashLink value={x.txHash} to={`/tx/${x.txHash}`} plain /></td>
       <td><span className="tag method">{methodOf({ methodId: x.methodId, to: x.creation ? null : x.to, created: x.creation ? x.token : null, value: "0" })}</span></td>
       <td><Link className="num" to={`/block/${x.block}`}>{x.block}</Link></td>
       <td title={new Date(x.timestamp * 1000).toISOString()}>{duration(now - x.timestamp * 1000)} ago</td>
@@ -200,7 +200,7 @@ export function TransfersTab({ a, nft = false }: { a: string; nft?: boolean }) {
       </div>
       {d && d.items.length > 0 && (
         <div className="scroll">
-          <table className="tbl txs">
+          <table className="tbl">
             <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Amount</th><th>Token</th><th>Stage</th></tr></thead>
             <tbody>{d.items.map((x) => <TransferRow key={`${x.txHash}-${x.logIndex}-${x.batchIndex}`} a={a} x={x} now={now} labels={labels} />)}</tbody>
           </table>
