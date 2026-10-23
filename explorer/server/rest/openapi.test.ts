@@ -20,7 +20,7 @@ const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS
 const unreachable = new Proxy({}, { get: (_t, name) => () => { throw new Error(`the database was read (${String(name)})`); } }) as unknown as Pool;
 const reth = {} as unknown as Reth;
 const withRpc = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt", PUBLIC_RPC: "1" }, () => settings);
-const full = (cfg = config): RoutedApi => createApi({ config: cfg, reth, ledger: {} as never, chain: createChainDb(unreachable), rest: createChainRest(unreachable), accounts: createAccountRest(unreachable), etherscanRest: createEtherscanRest(unreachable), stats: createStatsRest(unreachable), live: true, verify: { submit: async () => ({ status: 202, body: { guid: "g" } }), status: async () => ({ status: 404, body: {} }) } });
+const full = (cfg = config): RoutedApi => createApi({ config: cfg, reth, ledger: {} as never, chain: createChainDb(unreachable), rest: createChainRest(unreachable), accounts: createAccountRest(unreachable), etherscanRest: createEtherscanRest(unreachable), stats: createStatsRest(unreachable), live: true, verify: { submit: async () => ({ status: 202, body: { guid: "g" } }), status: async () => ({ status: 404, body: {} }), enqueue: async () => ({ status: 202, body: { guid: "g" } }), proxy: async () => ({ status: 202, body: { guid: "g" } }), proxyStatus: async () => ({ status: 404, body: {} }) } });
 const plain = (): RoutedApi => createApi({ config, reth, ledger: {} as never, chain: createChainDb(unreachable) });
 const sample: Record<string, string> = {
   id: "1", hash: "0x" + "00".repeat(32), updateId: "1220" + "00".repeat(32), address: "0x" + "00".repeat(20), ticket: "t1", guid: "00000000-0000-4000-8000-000000000000",
