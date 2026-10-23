@@ -3,14 +3,15 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AddressDetail } from "../api.ts";
-import { addr, addressDetail, fakeApi, hash, holding, NOT_FOUND, page, renderApp, reply, route, tick, txItem } from "../test-utils.tsx";
+import { T0, addr, addressDetail, contractItem, fakeApi, hash, holding, NOT_FOUND, page, renderApp, reply, route, tick, txItem } from "../test-utils.tsx";
 
 const A = addr(0x5b);
-type Subs = Partial<Record<"txs" | "internal" | "token-transfers" | "tokens" | "coin-history", (path: string) => ReturnType<typeof reply>>>;
+type Subs = Partial<Record<"txs" | "contracts" | "internal" | "token-transfers" | "tokens" | "coin-history", (path: string) => ReturnType<typeof reply>>>;
 const derived = <T,>(items: T[], next: string | null = null, d = true) => reply({ ...page(items, next), derived: d });
 
-async function open(d: AddressDetail = addressDetail(), subs: Subs = {}, path = `/address/${d.address}`, title = "Address") {
+async function open(d: AddressDetail = addressDetail(), subs: Subs = {}, path = `/address/${d.address}`, title = "Address", extra: Parameters<typeof route>[0] = {}) {
   const calls = fakeApi(route({
+    ...extra,
     tokens: (a) => reply({ address: a, standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, derived: true }),
     addresses: (a, sub, p) => {
       if (a !== d.address) return reply(addressDetail({ address: a, kind: "contract", token: { name: "Test USD", symbol: "tUSD", decimals: 6 } }));
@@ -250,5 +251,117 @@ describe("an address that cannot be shown", () => {
     healthy = true;
     await tick();
     expect(screen.getByRole("heading", { name: "Address" })).toBeInTheDocument();
+  });
+});
+
+describe("the address page: the header facts", () => {
+  const chip = () => screen.queryByRole("link", { name: /^Created / });
+
+  it("says how many contracts it created, and that it made more when the count stopped at its ceiling", async () => {
+    await open(addressDetail({ createdCount: 3 }));
+    expect(chip()).toHaveTextContent("Created 3 contracts");
+    expect(chip()).toHaveAttribute("href", `/address/${A}?tab=contracts`);
+  });
+  it("says one contract in the singular", async () => {
+    await open(addressDetail({ createdCount: 1 }));
+    expect(chip()).toHaveTextContent("Created 1 contract");
+  });
+  it("says 100,000+ at the ceiling", async () => {
+    await open(addressDetail({ createdCount: 100000, createdCountCapped: true }));
+    expect(chip()).toHaveTextContent("Created 100,000+ contracts");
+    expect(tab(/Contracts created/)).toHaveTextContent("100,000+");
+  });
+  it("shows no chip for an address that made none", async () => {
+    await open(addressDetail({ createdCount: 0 }));
+    expect(chip()).toBeNull();
+  });
+
+  it("names the faucet that funded it, with the block and the transaction", async () => {
+    const f = { from: addr(0x77), txHash: hash(0xf1), block: 16, timestamp: T0, value: "1000000000000000000" };
+    await open(addressDetail({ fundedBy: f }), {}, `/address/${A}`, "Address", { faucet: () => reply({ address: addr(0x77) }) });
+    const more = screen.getByRole("region", { name: "More information" });
+    const funded = await waitFor(() => { const e = row("Funded by"); expect(e).toHaveTextContent("Ostia faucet"); return e; });
+    expect(within(funded).getByRole("link", { name: "block 16" })).toHaveAttribute("href", "/block/16");
+    expect(within(funded).getByRole("link", { name: "0xf1f1f1f1…f1f1f1" })).toHaveAttribute("href", `/tx/${hash(0xf1)}`);
+    expect(more).toBeInTheDocument();
+  });
+  it("says not known when nothing says who funded it", async () => {
+    await open(addressDetail({ fundedBy: null }));
+    expect(row("Funded by")).toHaveTextContent("not known");
+  });
+
+  it("gives the first seen block with its age, and the last sent from its newest sent transaction, not from last active", async () => {
+    const calls = await open(addressDetail({ lastActiveBlock: 25 }), { txs: (p) => reply(page(p.includes("direction=sent") ? [txItem(20, { from: A })] : [])) });
+    expect(row("First seen")).toHaveTextContent(/Block 2\s*· .* ago/);
+    await waitFor(() => expect(row("Last sent")).toHaveTextContent(/Block 20\s*· .* ago/));
+    expect(row("Last sent")).not.toHaveTextContent("25");
+    expect(calls).toContain(`/api/addresses/${A}/txs?limit=1&direction=sent`);
+  });
+  it("says it has sent nothing without asking", async () => {
+    const calls = await open(addressDetail({ sentCount: 0, receivedCount: 1 }));
+    expect(row("Last sent")).toHaveTextContent("Has sent nothing");
+    expect(calls.some((c) => c.includes("direction=sent"))).toBe(false);
+  });
+});
+
+describe("the address page: the tab card", () => {
+  it("holds the tab bar inside the card, with no count for the transfer tabs", async () => {
+    await open(addressDetail({ tokenTransferCount: 4, createdCount: 2 }));
+    const card = screen.getByRole("region", { name: "Activity" });
+    expect(within(card).getByRole("tablist")).toBeInTheDocument();
+    expect(within(card).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers", "Internal calls 0", "Contracts created 2", "Coin history"]);
+  });
+  it("lists the contracts it created", async () => {
+    await open(addressDetail({ createdCount: 2 }), { contracts: () => derived([contractItem(0xc1), contractItem(0xc2, { name: null, verified: false })]) }, `/address/${A}?tab=contracts`);
+    await waitFor(() => expect(rows()).toHaveLength(2));
+    expect(rows()[0]).toHaveTextContent("18");
+    expect(rows()[0]).toHaveTextContent("Verified");
+    expect(rows()[1]).toHaveTextContent("Not verified");
+  });
+  it("lists the NFT transfers apart from the token transfers", async () => {
+    const calls = await open(addressDetail(), {}, `/address/${A}`);
+    await userEvent.click(tab("NFT transfers"));
+    await screen.findByText("No NFT transfers.");
+    expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&standard=nft`);
+    await userEvent.click(tab("Token transfers"));
+    await screen.findByText("No token transfers.");
+    expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&standard=ERC-20`);
+  });
+});
+
+describe("the address page: sent and received", () => {
+  it("filters the transactions by direction and offers the CSV for the filter", async () => {
+    const calls = await open(addressDetail(), { txs: (p) => reply(page(p.includes("direction=received") ? [txItem(2, { from: addr(0x77), to: A })] : [txItem(3, { from: A }), txItem(2, { from: addr(0x77), to: A })])) });
+    await screen.findByText("Showing all 2 transactions, newest first");
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/txs?format=csv`);
+    await userEvent.click(screen.getByRole("button", { name: "Received" }));
+    await screen.findByText("Showing all 1 received transaction, newest first");
+    expect(calls).toContain(`/api/addresses/${A}/txs?limit=25&direction=received`);
+    expect(screen.getByRole("link", { name: "CSV" })).toHaveAttribute("href", `/api/addresses/${A}/txs?format=csv&direction=received`);
+    expect(screen.getByRole("button", { name: "Received" })).toHaveAttribute("aria-pressed", "true");
+  });
+  it("does not say all when there are more pages", async () => {
+    await open(addressDetail(), { txs: () => reply(page([txItem(3, { from: A })], "3:0")) });
+    await screen.findByText("Showing 1 on this page, newest first");
+  });
+});
+
+describe("the address page: the holdings' amounts", () => {
+  const card = async () => screen.findByRole("region", { name: "Token holdings" });
+  const holds = (h: Partial<ReturnType<typeof holding>>) => ({ tokens: () => derived([holding(h)]) });
+  it("shows whole units with the exact amount in the title when only the decimals are known", async () => {
+    await open(addressDetail(), holds({ symbol: null, name: null, decimals: 6, value: "995000123456" }));
+    const v = await within(await card()).findByText("995,000.12345");
+    expect(v).toHaveAttribute("title", "995,000.123456");
+  });
+  it("groups an ERC-1155 value and shows no share of supply for an NFT", async () => {
+    await open(addressDetail(), holds({ standard: "ERC-1155", decimals: null, totalSupply: null, tokenId: "7", value: "1234567" }));
+    const c = await card();
+    await within(c).findByText("1,234,567");
+    expect(c).not.toHaveTextContent("of supply");
+  });
+  it("shows no share when the supply is not known", async () => {
+    await open(addressDetail(), holds({ totalSupply: null }));
+    expect(await card()).not.toHaveTextContent("of supply");
   });
 });
