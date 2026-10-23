@@ -2,7 +2,7 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
+import { contractDetail, contractItem, fakeApi, page, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
 
 const LIMITS = { pageSize: 100, rpcPerMinute: 300, rest: { perSecond: 20, burst: 60 }, etherscan: { perSecond: 10, perMinute: 600 }, verification: { perHour: 30, maxBodyKb: 500 }, streams: { perClient: 4 } };
 const door = { "/api": { get: { summary: "Etherscan-compatible: the module and the action are in the query.", "x-modules": {
@@ -18,8 +18,8 @@ const doc = (over: Record<string, unknown> = {}) => ({
   },
   ...over,
 });
-async function open(h: { openapi?: () => Reply; rpc?: boolean; faucet?: () => Reply } = {}) {
-  const calls = fakeApi(route({ faucet: h.faucet, openapi: h.openapi ?? (() => reply(doc())), status: () => reply(status({ publicRpc: h.rpc ?? true })) }));
+async function open(h: { openapi?: () => Reply; rpc?: boolean; faucet?: () => Reply; contracts?: (arg: string, sub: string, path: string) => Reply } = {}) {
+  const calls = fakeApi(route({ faucet: h.faucet, contracts: h.contracts, openapi: h.openapi ?? (() => reply(doc())), status: () => reply(status({ publicRpc: h.rpc ?? true })) }));
   renderApp("/docs/api");
   return calls;
 }
@@ -155,6 +155,28 @@ describe("the API page", () => {
     await screen.findByLabelText("Example request");
     expect(screen.getByLabelText("Example request").textContent).toContain("&address=<address>");
     expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
+  });
+
+  it("fills the Foundry example with a verified contract of the chain, and keeps the placeholders where there is none", async () => {
+    const A = "0x" + "cb".repeat(20);
+    const held = (over = {}) => (arg: string) => (arg === "" ? reply(page([contractItem(0xcb)])) : arg === A ? reply(contractDetail(0xcb, over)) : reply({ error: "No contract is held at that address." }, 404));
+    const path = (h: Parameters<typeof open>[0]) => open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), ...h });
+    const calls = await path({ contracts: held() });
+    await waitFor(() => expect(screen.getByLabelText("Foundry setup").textContent).toContain(`forge verify-contract ${A}`));
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("src/TestUSD.sol:TestUSD");
+    expect(screen.getByLabelText("Foundry setup").textContent).not.toMatch(/<address>|<File>|<Contract>/);
+    expect(calls).toContain("/api/contracts?sort=interactions&limit=1&verified=true");
+    cleanup();
+    await path({});
+    await screen.findByLabelText("Foundry setup");
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("forge verify-contract <address>");
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("src/<File>.sol:<Contract>");
+    cleanup();
+    // A source path or name that is not plain text is not put into the example.
+    await path({ contracts: held({ verification: { ...contractDetail().verification!, contractPath: "src/a.sol; rm -rf /", contractName: "<b>" } }) });
+    await screen.findByLabelText("Foundry setup");
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("src/<File>.sol:<Contract>");
+    expect(screen.getByLabelText("Foundry setup").textContent).not.toContain("rm -rf");
   });
 
   it("keeps the placeholder answer when the faucet's balance is not of a final block, because the route answers from the final head", async () => {

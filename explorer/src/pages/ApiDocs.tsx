@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useRef, useState } from "react";
-import { getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
+import { getContract, getContractList, getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
 import { addNetwork, rpcUrl } from "../wallet.ts";
 import { copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -31,6 +31,7 @@ function Code({ title, note, label, text }: { title: string; note?: string; labe
 const clip = (v: string, n = 40) => (v.length > n ? `${v.slice(0, n - 1)}…` : v);
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL = /^\d{1,80}$/;
+const SOURCE_PATH = /^[\w@./-]{1,120}$/, SOURCE_NAME = /^\w{1,80}$/;
 
 /** The network's details, the way a wallet asks for them, and the button that asks the wallet to add it. Nothing where the explorer serves no public RPC. */
 function WalletCard({ status }: { status: ApiStatus }) {
@@ -126,9 +127,13 @@ export function ApiDocs() {
   const example = f?.on && f.address && ADDRESS.test(f.address) ? f.address : null;
   // The route answers from the final head, so only a balance read at a named final block is the answer it would give.
   const exBalance = example && f?.balance && typeof f.balanceBlock === "number" && DECIMAL.test(f.balance) ? f.balance : null;
+  // The verify example is a real one: the chain's most used verified contract, by its address and the source path and name it was verified with. Nothing is named where there is none.
+  const top = useQuery({ queryKey: ["api-verified-contract"], queryFn: async () => { const [c] = (await getContractList("interactions", true, null, 1)).items; return c && ADDRESS.test(c.address) ? getContract(c.address) : null; }, staleTime: 60_000, retry: false }).data;
+  const v = top?.verification;
+  const verified = top && v && SOURCE_PATH.test(v.contractPath) && SOURCE_NAME.test(v.contractName) ? { address: top.address, file: `${v.contractPath}:${v.contractName}` } : null;
   const request = `GET ${origin}/api\n    ?module=account&action=balance\n    &address=${example ?? "<address>"}\n    &tag=latest`;
   const answer = `{\n  "status": "1",\n  "message": "OK",\n  "result": "${exBalance ?? "<balance in wei, a decimal string>"}"\n}`;
-  const foundry = `# verify a contract, as on Etherscan\nforge verify-contract <address> \\\n  src/<File>.sol:<Contract> \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
+  const foundry = `# verify a contract, as on Etherscan\nforge verify-contract ${verified?.address ?? "<address>"} \\\n  ${verified?.file ?? "src/<File>.sol:<Contract>"} \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
   const hardhat = `etherscan: {\n  apiKey: { ${name.toLowerCase().replace(/\W+/g, "") || "chain"}: "any" },\n  customChains: [{\n    network: "${name.toLowerCase().replace(/\W+/g, "") || "chain"}", chainId: ${id ?? ""},\n    urls: { apiURL: "${origin}/api",\n            browserURL: "${origin}" }\n  }]\n}`;
   return (
     <>
