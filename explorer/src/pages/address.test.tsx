@@ -114,6 +114,29 @@ describe("the address page: token holdings", () => {
     expect(card).not.toHaveTextContent(/\b1 token\b/);
   });
 
+  it("says NFTs: none held when the whole list is read and holds only fungible tokens", async () => {
+    await open(addressDetail(), withHoldings([holding()]));
+    const card = await screen.findByRole("region", { name: "Token holdings" });
+    expect(await within(card).findByText("NFTs: none held.")).toBeInTheDocument();
+  });
+
+  it("does not say it when an NFT is held", async () => {
+    await open(addressDetail(), withHoldings([holding(), holding({ token: addr(0xcc), standard: "ERC-721", name: "Ostia Pass", symbol: "OPASS", decimals: null, tokenId: "0", value: "1", updatedBlock: 22 })]));
+    await screen.findByText("Ostia Pass");
+    expect(screen.queryByText(/NFTs: none held/)).toBeNull();
+  });
+  it("does not say it while the explorer is behind", async () => {
+    await open(addressDetail(), withHoldings([holding()], false));
+    await screen.findByText(/may be missing/);
+    expect(screen.queryByText(/NFTs: none held/)).toBeNull();
+  });
+  it("does not say it when the list has a next page", async () => {
+    await open(addressDetail(), { tokens: () => derived([holding()], "next-key", true) });
+    await screen.findByRole("region", { name: "Token holdings" });
+    await screen.findByText("Test USD");
+    expect(screen.queryByText(/NFTs: none held/)).toBeNull();
+  });
+
   it("says so when it holds nothing", async () => {
     await open(addressDetail(), withHoldings([]));
     expect(await screen.findByText("This address holds no tokens.")).toBeInTheDocument();
