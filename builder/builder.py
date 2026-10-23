@@ -14,7 +14,7 @@ not known whether it committed ("committed": null; reth is left where it is: an 
 README.md), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, json, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
+import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -222,7 +222,7 @@ def load_unresolved(cfg: Config) -> dict | None:
     try:
         found = json.loads(unresolved_path(cfg).read_text())
         if isinstance(found.get("commandId"), str) and isinstance(found.get("hash"), str) and type(found.get("begin")) is int \
-                and type(found.get("submittedAt")) in (int, float):   # the window starts there: a record with no time is not one to settle by it
+                and type(found.get("submittedAt")) in (int, float) and math.isfinite(found["submittedAt"]) and found["submittedAt"] > 0:   # the window starts there: a record with no time (or NaN, infinity, zero, a negative one) is not one to settle by it
             return found
     except FileNotFoundError:
         return None
@@ -984,7 +984,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))
-    if traffic is None and command_id and type(report["completionOffset"]) is int:   # no traffic state to measure from (a participant on the Canton Network has none): what the completion says it paid
+    if traffic is None and not cfg.traffic_url and command_id and type(report["completionOffset"]) is int:   # no traffic state is configured to measure from (a participant on the Canton Network has none): what the completion says it paid. With a state configured and this block's delta unknown, traffic stays null: one run does not mix two measures
         traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
     if traffic is not None:
         report["trafficBytes"] = traffic

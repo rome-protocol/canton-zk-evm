@@ -1390,10 +1390,10 @@ class NoAnswer(Case):
         self.assertEqual(synced, [False, True])   # the file, then the folder that now holds it
         self.assertEqual(b.load_unresolved(s.cfg)["commandId"], "c")
 
-    def test_a_record_with_no_number_for_submitted_at_is_not_an_unresolved_command(self):
+    def test_a_record_with_no_finite_positive_number_for_submitted_at_is_not_an_unresolved_command(self):
         s = self.setup({})
         good = {"commandId": "c", "hash": "0x1", "begin": 1, "submittedAt": 1.5}
-        for bad in ({k: v for k, v in good.items() if k != "submittedAt"}, {**good, "submittedAt": True}, {**good, "submittedAt": "1.5"}, {**good, "submittedAt": None}):
+        for bad in ({k: v for k, v in good.items() if k != "submittedAt"}, {**good, "submittedAt": True}, {**good, "submittedAt": "1.5"}, {**good, "submittedAt": None}, {**good, "submittedAt": 0}, {**good, "submittedAt": -5}, {**good, "submittedAt": float("nan")}, {**good, "submittedAt": float("inf")}):   # json.loads reads NaN and Infinity: a window that never closes, or one already closed
             b.unresolved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
             b.unresolved_path(s.cfg).write_text(json.dumps(bad))
             with self.assertRaises(b.BuilderError, msg=bad) as raised:
