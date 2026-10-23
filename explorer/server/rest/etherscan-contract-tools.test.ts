@@ -42,7 +42,7 @@ import { createEtherscanRest } from "./etherscan-rest.ts";
  */
 const root = resolve(import.meta.dirname, "../../..");
 const pinned = (file: string, key: string): string => new RegExp(`^${key}=(\\S+)$`, "m").exec(readFileSync(join(root, file), "utf8"))![1]!;
-const IMAGE = pinned("PINS", "BUSYBOX_IMAGE");
+const IMAGE = pinned("PINS", "SOLC_SANDBOX_IMAGE");
 const FOUNDRY = pinned("tests/FOUNDRY", "FOUNDRY_VERSION").replace(/^v/, "");
 const SOLC = process.env.EXPLORER_TEST_SOLC ?? join(root, "state/solc-0.8.28/solc");
 const TOOLS_SOLC = process.env.EXPLORER_TEST_TOOLS_SOLC ?? SOLC;
@@ -61,7 +61,10 @@ const HAVE_SHELL = ["bash", "jq", "curl"].every((c) => attempt(c, ["--version"])
 const haveDocker = attempt("docker", ["image", "inspect", "--format", "{{.Id}}", IMAGE]) !== null;
 const ready = Boolean(TEST_URL) && haveDocker && existsSync(SOLC) && existsSync(TOOLS_SOLC);
 const require = process.env.EXPLORER_TEST_REQUIRE_CLIENTS === "1";
-if (require && !(ready && FORGE && CAST && HARDHAT)) throw new Error("this run needs the database, Docker with the pinned sandbox image, EXPLORER_TEST_SOLC, the pinned Foundry (EXPLORER_TEST_FORGE and EXPLORER_TEST_CAST) and Hardhat (npm ci in explorer/clients/hardhat)");
+if (require && !(ready && FORGE && CAST && HARDHAT)) {
+  const missing = [["the database", Boolean(TEST_URL)], ["Docker with the pinned sandbox image", haveDocker], ["EXPLORER_TEST_SOLC", existsSync(SOLC) && existsSync(TOOLS_SOLC)], ["the pinned forge", Boolean(FORGE)], ["the pinned cast", Boolean(CAST)], ["Hardhat (npm ci in explorer/clients/hardhat)", Boolean(HARDHAT)]].filter(([, ok]) => !ok).map(([n]) => n);
+  throw new Error(`this run needs the database, Docker with the pinned sandbox image, EXPLORER_TEST_SOLC, the pinned Foundry (EXPLORER_TEST_FORGE and EXPLORER_TEST_CAST) and Hardhat (npm ci in explorer/clients/hardhat); missing: ${missing.join(", ")}`);
+}
 checkRequired();
 
 const BOX = readFileSync(FIXTURE, "utf8");
