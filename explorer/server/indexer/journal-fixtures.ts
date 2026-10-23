@@ -6,6 +6,7 @@ import type { SyntheticChain } from "../../test/synthetic-chain.ts";
 
 export const RUN1 = "11111111-1111-4111-8111-111111111111";
 export const RUN2 = "22222222-2222-4222-8222-222222222222";
+export const RUN3 = "33333333-3333-4333-8333-333333333333";
 
 const made: string[] = [];
 /** A folder of its own; `removeFolders` removes exactly the ones made here. */
