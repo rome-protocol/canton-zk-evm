@@ -1,6 +1,6 @@
 /* The token page. A card in the grid may shrink below its content, and what is in it wraps, so a long supply or address stays inside. */
 .tok-stats .stat { min-width: 0; overflow: hidden; }
-.tok-stats .stat-v { min-width: 0; overflow-wrap: break-word; line-height: 1.2; }
+.tok-stats .stat-v { min-width: 0; overflow-wrap: anywhere; line-height: 1.2; }
 .tok-stats .stat-hash { font-size: 14px; font-weight: 500; line-height: 1.6; padding-top: 6px; }
 .tok-stats .stat-hash .hl { white-space: normal; }
 
@@ -25,6 +25,8 @@
 .holds-tbl { min-width: 0; }
 .holds-card .holds-tbl .list-h { padding: 10px 20px 0; }
 .holds-card .holds-tbl .tbl th:first-child, .holds-card .holds-tbl .tbl td:first-child { padding-left: 20px; }
+.holds-card .holds-tbl .tbl th:last-child, .holds-card .holds-tbl .tbl td:last-child { padding-right: 20px; }
+.holds-card .holds-tbl > p { padding: 0 20px; }
 .dot.sq { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 8px; }
 .holds-foot { margin-top: 10px; }
 .kv-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 40px; }
