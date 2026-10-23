@@ -59,7 +59,7 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
       {l === null && <p className="way-foot muted small">The producer's journal has no row for this transaction, so Accepted, In block and Proof done have no times.</p>}
       {l !== null && (l.timeToFinalMs !== null || l.attempts > 1 || l.leftOutReason) && (
         <div className="way-foot small">
-          {l.timeToFinalMs !== null && final && <span>Final <b className="mono">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
+          {l.timeToFinalMs !== null && final && <span>Final <b className="num">{secs(l.timeToFinalMs)}</b> after Ostia accepted it.</span>}
           {l.attempts > 1 && <span className="muted"> It took {l.attempts} attempts.</span>}
           {l.leftOutReason && <span className="muted"> Left out of an earlier block: {l.leftOutReason}.</span>}
         </div>

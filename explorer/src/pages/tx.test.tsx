@@ -412,6 +412,7 @@ describe("the way to final", () => {
       "+0.41 sFinal on Canton01:37:23.412000Canton record time",
     ]);
     expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
+    expect(way().getByText("8.91 s")).toHaveClass("num");
   });
 
   it("says when the producer's journal has no row, shows a dash for each time it would hold, and still gives Canton's record time", async () => {

@@ -93,6 +93,7 @@ describe("one Canton update", () => {
     expect(row(c, "Command id")).toHaveTextContent("advance-3-1");
     expect(within(row(c, "Command id")).getByText("producer log")).toHaveClass("tag");
     expect(row(c, "Carried")).toHaveTextContent("2,080 bytes in the argument");
+    expect(within(row(c, "Carried")).getByText("2,080")).toHaveClass("num");
   });
 
   it("says the template and the choice are not in the producer's log when the log does not hold the update, and shows no command id", async () => {
