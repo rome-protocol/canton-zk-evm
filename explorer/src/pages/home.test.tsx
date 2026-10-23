@@ -466,9 +466,10 @@ describe("the numbers, from the stats routes", () => {
 });
 
 describe("the value of a transaction that is not final yet", () => {
+  const TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
   const at = "2026-10-04T01:37:58Z";
   const usd = { address: addr(0x9b), name: "Test USD", symbol: "tUSD", kind: "token", standard: "ERC-20", decimals: 6, verified: true };
-  const proving = (over: Parameters<typeof tx>[0] = {}) => tx({ hash: hash(0xb2), status: "proving", state: "proving", block: null, from: addr(0x71), to: addr(0x9b), value: "0", transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" }, ...over });
+  const proving = (over: Parameters<typeof tx>[0] = {}) => tx({ hash: hash(0xb2), status: "proving", state: "proving", block: null, success: null, logs: [], from: addr(0x71), to: addr(0x9b), value: "0", transfer: { symbol: "tUSD", decimals: 6, to: addr(0x72), value: "100000000" }, ...over });
   const open = async (t: ReturnType<typeof tx>, labels: unknown[] = [usd]) => {
     const base = route({ inFlight: () => reply(inFlight({ transactions: [{ hash: hash(0xb2), stage: "proving", at }] })), tx: () => reply(t) });
     fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: labels }) : base(path)), { routed: true }));
@@ -492,6 +493,27 @@ describe("the value of a transaction that is not final yet", () => {
   it("names the token by the symbol the transaction route read when the index does not know it yet", async () => {
     const row = await open(proving(), []);
     expect(await within(row).findByText("100 tUSD")).toBeInTheDocument();
+  });
+
+  it("shows a reverted transfer as reverted, with no chip built from its input", async () => {
+    const row = await open(proving({ block: { number: 4, hash: null, updateId: null }, success: false }));
+    await waitFor(() => expect(row).toHaveTextContent("reverted"));
+    expect(row.querySelector(".tchip")).toBeNull();
+    expect(row).not.toHaveTextContent("100 tUSD");
+  });
+
+  it("builds the chip from the Transfer in the receipt when there is one, not from the input", async () => {
+    const logs = [{ address: addr(0x9b), topics: [TRANSFER, "0x" + "0".repeat(24) + "71".repeat(20), "0x" + "0".repeat(24) + "72".repeat(20)], data: "0x" + (7_000_000n).toString(16).padStart(64, "0") }];
+    const row = await open(proving({ block: { number: 4, hash: null, updateId: null }, success: true, logs }));
+    expect(await within(row).findByText("7 tUSD")).toHaveClass("tname");
+    expect(row).not.toHaveTextContent("100 tUSD");
+  });
+
+  it("reads an NFT mint from the receipt's four-topic Transfer", async () => {
+    const logs = [{ address: addr(0x9c), topics: [TRANSFER, "0x" + "0".repeat(64), "0x" + "0".repeat(24) + "72".repeat(20), "0x" + (3).toString(16).padStart(64, "0")], data: "0x" }];
+    const nft = { address: addr(0x9c), name: "Test NFT", symbol: "tNFT", kind: "token", standard: "ERC-721", decimals: null, verified: true };
+    const row = await open(proving({ to: addr(0x9c), block: { number: 4, hash: null, updateId: null }, success: true, logs, transfer: null }), [nft]);
+    expect(await within(row).findByText("tNFT #3")).toHaveClass("tname");
   });
 
   it("shows the coin alone when the transaction decodes to no transfer", async () => {

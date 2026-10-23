@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { ApiTx, BlockListItem, InFlightTx, StatsSeries, StatsSpread, StatsSummary, TxListItem } from "../api.ts";
+import type { ApiTx, BlockListItem, InFlightTx, StatsSeries, StatsSpread, StatsSummary, TokenMove, TxListItem } from "../api.ts";
 import { AddressCell } from "../components/AddressCell.tsx";
 import { Amount, TokenChip } from "../components/Amount.tsx";
 import { Chip } from "../components/Chip.tsx";
@@ -165,24 +165,44 @@ export function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: stri
   );
 }
 
+/** The first topic of an ERC-20 or ERC-721 Transfer. */
+const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+/** The first Transfer in a receipt's logs as a move: three topics is an ERC-20 (the amount is the data), four an NFT (the token id is the last topic). Anything else is not read. */
+function moveOfLogs(logs: ApiTx["logs"]): TokenMove | null {
+  const l = logs.find((x) => x.topics[0]?.toLowerCase() === TRANSFER_TOPIC && (x.topics.length === 3 || x.topics.length === 4));
+  if (!l) return null;
+  try {
+    if (l.topics.length === 4) return { token: l.address, amount: "1", tokenId: BigInt(l.topics[3]!).toString(), standard: "ERC-721", decimals: null };
+    return { token: l.address, amount: BigInt(l.data.length > 2 ? l.data : "0x0").toString(), tokenId: null, standard: "ERC-20", decimals: null };
+  } catch { return null; }
+}
+
 /**
- * What a transaction that is not final yet moves, as far as its own page says: when `to` is a known token and the input is a transfer, the transaction route
- * decodes it (`transfer`), and that is the chip, with the coin beside it when any is sent. A mint or a transfer of an NFT is not read here: the lists build their
- * summary from final logs only, and the receipt logs of a block being proven are not decoded in the browser. `d.value` is not null (the caller checks).
+ * What a transaction that is not final yet moves, as far as its own page says. A transaction in a block being proven has reth's receipt: when it reverted nothing
+ * moved, so it shows no chip and says so; otherwise the chip is built from the Transfer in the receipt's logs (an ERC-20 amount or an NFT id), as the final lists do.
+ * A transaction still waiting has no receipt: when `to` is a known token and the input is a transfer, the transaction route decodes it (`transfer`), and that is
+ * the chip. The coin is beside the chip when any is sent. `d.value` is not null (the caller checks).
  */
 export function ProvingMoved({ d, coin, labels }: { d: ApiTx & { value: string }; coin: { symbol: string; decimals: number }; labels: Labels }) {
+  if (d.success === false) return <span className="muted" title="The transaction reverted, so it moved nothing">reverted</span>;
+  const coinAmount = BigInt(d.value) > 0n && <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
+  if (d.success === true) {
+    const m = moveOfLogs(d.logs);
+    if (!m) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
+    const known = labels.get(m.token);
+    // The transaction route read the symbol and decimals of the token it was sent to from the contract; they stand in for a token the index does not know yet.
+    const own = d.transfer && d.to && d.to.toLowerCase() === m.token.toLowerCase() ? d.transfer : null;
+    const label = known?.symbol || !own ? known : { address: m.token, name: known?.name ?? null, symbol: own.symbol, kind: known?.kind ?? "token" as const, standard: known?.standard ?? null, decimals: own.decimals, verified: known?.verified ?? false };
+    return <span className="moved"><TokenChip move={{ ...m, decimals: own?.decimals ?? null }} label={label} />{coinAmount}</span>;
+  }
   const t = d.transfer;
   if (!t || !d.to) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
   const move = { token: d.to, amount: t.value, tokenId: null, standard: null, decimals: t.decimals };
   // The index may not know a token yet that was just made; its own symbol, as the transaction route read it from the contract, then stands in.
   const known = labels.get(d.to);
   const label = known?.symbol ? known : { address: d.to, name: known?.name ?? null, symbol: t.symbol, kind: known?.kind ?? "token" as const, standard: known?.standard ?? null, decimals: t.decimals, verified: known?.verified ?? false };
-  return (
-    <span className="moved">
-      <TokenChip move={move} label={label} />
-      {BigInt(d.value) > 0n && <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />}
-    </span>
-  );
+  return <span className="moved"><TokenChip move={move} label={label} />{coinAmount}</span>;
 }
 
 /** The cell of a transaction: its icon, its hash cut as the screen cuts it (8 and 4), and how long ago. */

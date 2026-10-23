@@ -70,7 +70,7 @@ function NotFinalRow({ f, t, c }: { f: InFlightTx; t: ApiTx | undefined; c: Ctx 
   const seen = t && t.value !== null ? t : undefined;
   return (
     <tr className="row-proving">
-      <td className="c-hash"><HashLink value={f.hash} to={`/tx/${f.hash}`} plain /></td>
+      <td className="c-hash"><HashLink value={f.hash} to={`/tx/${f.hash}`} plain />{t?.success === false && <span className="fact-bad" role="img" aria-label="Failed (reverted)" title="Failed (reverted)"><Icon name="cross" size={13} /></span>}</td>
       <td>{seen ? <span className="tag method">{methodOf({ methodId: seen.input.length >= 10 ? seen.input.slice(0, 10) : null, to: seen.to, created: seen.created, value: seen.value })}</span> : <Dash />}</td>
       <td>{t?.block ? <Link className="num" to={`/block/${t.block.number}`}>{t.block.number}</Link> : <span className="muted">pool</span>}</td>
       <td title={f.at}>{duration(c.now - Date.parse(f.at))} ago</td>
@@ -97,7 +97,13 @@ const totalOf = (f: InFlight | undefined, asOfBlock?: number | null, asOf?: stri
   const c = notFinalCounts(f);
   // The final total counts every block up to asOfBlock, so an attempt at or below it (its block was indexed after the in-flight read) is already in that total.
   const inBlocks = typeof asOfBlock === "number" ? f.attempts.reduce((n, a) => n + (a.number > asOfBlock ? (a.txCount ?? 0) : 0), 0) : c.inBlocks;
-  const about = !!asOf && !!f.poolWaiting && c.waiting !== null && c.waiting > 0 && Date.parse(f.poolWaiting.at) < Date.parse(asOf);
+  // The two reads are from different moments, and that matters only when something can have changed between them: a transaction waiting in the pool (it may be final
+  // in the total by now) or an attempt whose block the total already holds. With neither, the figure is exact and says no "about".
+  // Known and left as it is: when the in-flight read is the NEWER one, a block that became final between the two reads is in neither the total (as of asOfBlock) nor the
+  // attempts (it is final now), so "in all" is short by that block's transactions until the next poll (a few seconds); the two reads share no snapshot to tell it by.
+  const overlap = typeof asOfBlock === "number" && f.attempts.some((a) => a.number <= asOfBlock && (a.txCount ?? 0) > 0);
+  const poolOlder = !!asOf && !!f.poolWaiting && c.waiting !== null && c.waiting > 0 && Date.parse(f.poolWaiting.at) < Date.parse(asOf);
+  const about = poolOlder || overlap;
   return { total: inBlocks + (c.waiting ?? 0), atLeast: c.waiting === null, inBlocks, about };
 };
 const more = (t: Total) => `${t.atLeast ? "at least " : t.about ? "about " : ""}${count(t.total)}`;
