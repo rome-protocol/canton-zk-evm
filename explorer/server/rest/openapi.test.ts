@@ -140,6 +140,24 @@ describe("the API description", () => {
     expect(checked).toBeGreaterThan(40);
   });
 
+  it("words the shared `after` parameter for every sort it is used with, not for one order", async () => {
+    const doc = await body(full(), "/api/openapi.json");
+    const text = (path: string) => doc.paths[path].get.parameters.find((q: { name: string }) => q.name === "after").description as string;
+    for (const path of ["/api/tokens", "/api/contracts", "/api/txs"]) {
+      expect(text(path), path).toBe("The `next` of the page before: this page is the rows after that key, from the list's other end. Leave out for the first page.");
+    }
+    // `order` and `sort` say which end that is; the parameter does not claim an order of its own
+    expect(text("/api/tokens")).not.toMatch(/oldest|newest/);
+  });
+  it("documents the faucet's facts and the turned-away counts it reads", async () => {
+    const doc = await body(full(), "/api/openapi.json");
+    const info = doc.paths["/api/faucet"].get;
+    for (const f of ["sentToday", "balanceBlock", "batch"]) expect(info.summary, f).toContain(f);
+    const stats = doc.paths["/api/stats/summary"].get.summary as string;
+    for (const f of ["turnedAway", "turnedAwaySince", "byReason", "not recorded"]) expect(stats, f).toContain(f);
+    // the field lists of both answers carry the new fields
+    expect(Object.keys(info.responses["200"].content["application/json"].schema.properties)).toEqual(expect.arrayContaining(["sentToday", "balanceBlock", "batch"]));
+  });
   it("lists as paged exactly the routes whose pages say so", () => {
     for (const [path, d] of Object.entries(DOCS)) {
       const names = (d.query ?? []).map((q) => q.name), paging = names.filter((n) => n === "before" || n === "after");
