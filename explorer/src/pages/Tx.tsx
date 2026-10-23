@@ -1,22 +1,27 @@
 import { useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { getBlockSummary, getTx, getTxDetail, type BlockSummary, type ApiStatus, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen } from "../api.ts";
+import { getBlockSummary, getTx, getTxDetail, getTxTransfers, type BlockSummary, type ApiStatus, type ApiTx, type ApiTxDetail, type ApiTxSeen, type ApiTxUnseen } from "../api.ts";
+import { AddressCell, addressPath } from "../components/AddressCell.tsx";
 import { Amount } from "../components/Amount.tsx";
+import { usePaged } from "../components/Pager.tsx";
 import { unready } from "../components/Cards.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { ago } from "../block-times.ts";
-import { count, gwei, short, utc, utcDate } from "../format.ts";
+import { count, dateTime, exact, feeOf, gwei, short } from "../format.ts";
+import { labelName, useLabels } from "../labels.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
-import { MethodRows } from "./TxDecoded.tsx";
+import { InputData } from "./TxDecoded.tsx";
 import { TxFinal, type BlockRead } from "./TxFinal.tsx";
 import { CantonRecord, ProofSide } from "./TxSides.tsx";
-import { InternalTab, LogsTab, Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
+import { LogsTab } from "./TxLogs.tsx";
+import { InternalTab } from "./TxCalls.tsx";
+import { Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
 import { RawTab, TreeTab } from "./TxTrace.tsx";
-import { TransfersCard } from "./TxTransfers.tsx";
+import { AmountCell, TransfersCard } from "./TxTransfers.tsx";
 import "./tx.css";
 
 const TYPES: Record<number, string> = { 0: "legacy", 1: "EIP-2930", 2: "EIP-1559", 3: "EIP-4844", 4: "EIP-7702" };
@@ -51,6 +56,10 @@ function NotFinal({ t }: { t: ApiTxSeen }) {
 const InCoin = ({ raw, coin }: { raw: string; coin: Coin | undefined }) =>
   coin ? <Amount raw={raw} decimals={coin.decimals} symbol={coin.symbol} /> : <span className="muted">…</span>;
 
+/** A fee in the chain's coin to ten decimals, cut and never rounded (the exact fee in the tooltip). */
+const FeeIn = ({ raw, coin }: { raw: string; coin: Coin | undefined }) =>
+  coin ? <span title={`${exact(raw, coin.decimals)} ${coin.symbol}`}><span className="num">{feeOf(raw, coin.decimals)}</span> <bdi>{coin.symbol}</bdi></span> : <span className="muted">…</span>;
+
 /** What the transaction's ERC-20 transfer did. A reverted one moved nothing, and says so. */
 function TransferItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
   const tr = t.transfer;
@@ -63,6 +72,37 @@ function TransferItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
   return <Item label="Token moved">{amount} from {from} to {to}</Item>;
 }
 
+/** How many transfers the Overview row lists; the card below lists them all, a page at a time. */
+const OVERVIEW_TRANSFERS = 5;
+
+/** The transfers of a final transaction, by name with their amounts, as the Overview of the screen lists them. Where none can be read, the one transfer /api/tx decoded, if any. */
+function FinalTransfersItem({ t }: { t: ApiTxSeen }) {
+  const p = usePaged(["tx-transfers", t.hash], (after) => getTxTransfers(t.hash, after));
+  const items = p.data?.items ?? [];
+  // The same addresses as the card below asks for, so the names are one request.
+  const labels = useLabels(items.flatMap((x) => [x.from, x.to, x.token]));
+  if (items.length === 0 || p.data?.derived === false) return <TransferItem t={t} waiting={false} />;
+  const shown = items.slice(0, OVERVIEW_TRANSFERS);
+  const rest = items.length - shown.length;
+  return (
+    <Item label="Token transfers">
+      <div className="xfer-list">
+        {shown.map((x) => (
+          <div key={`${x.logIndex}-${x.batchIndex}`} className="xfer-line">
+            <AddressCell address={x.from} label={labels.get(x.from)} /> <span className="muted" aria-hidden="true">→</span> <AddressCell address={x.to} label={labels.get(x.to)} />{" "}
+            <AmountCell x={x} label={labels.get(x.token)} /> <AddressCell address={x.token} label={labels.get(x.token)} to={`/token/${x.token}`} />
+          </div>
+        ))}
+        {(rest > 0 || p.hasNext) && <div className="muted small">{rest > 0 ? `and ${rest} more` : "and more"} in the Token transfers list below</div>}
+      </div>
+    </Item>
+  );
+}
+
+function TransfersItem({ t, waiting }: { t: ApiTxSeen; waiting: boolean }) {
+  return t.status === "final" ? <FinalTransfersItem t={t} /> : <TransferItem t={t} waiting={waiting} />;
+}
+
 function BlockItem({ t, head }: { t: ApiTxSeen; head: number | undefined }) {
   if (!t.block) return <span className="muted">None yet</span>;
   const link = <Link className="num" to={`/block/${t.block.number}`}>{t.block.number}</Link>;
@@ -70,7 +110,7 @@ function BlockItem({ t, head }: { t: ApiTxSeen; head: number | undefined }) {
   return t.block.updateId ? <>{link}, final on Canton in update <HashLink value={t.block.updateId} kind="update" />{tail}</> : <>{link}, {t.status === "unindexed" ? "final on Canton, not indexed yet" : "not on Canton yet"}{tail}</>;
 }
 
-/** Every call the transaction made, as the trace counts them (the Internal calls tab lists only those that moved value). A block the explorer has not derived yet says so, and gives no count. */
+/** Every call the transaction made, as the trace counts them (the Internal calls tab lists every one of them). A block the explorer has not derived yet says so, and gives no count. */
 function CallsItem({ t, detail }: { t: ApiTxSeen; detail: Detail }) {
   if (t.status !== "final") return null;
   const d = detail.data;
@@ -97,7 +137,7 @@ const burnt = (baseFee: string | null, gasUsed: number | null) => (baseFee !== n
 function TimeItem({ t, block, read }: { t: ApiTxSeen; block: BlockSummary | undefined; read: BlockRead }) {
   if (!t.block) return null;
   const ms = block ? block.timestamp * 1000 : null;
-  return <Item label="Time"><FromBlock read={read}>{ms !== null && <><span className="mono">{utcDate(ms)} {utc(ms)}</span> <span className="muted">· {ago(new Date(ms).toISOString())}</span></>}</FromBlock></Item>;
+  return <Item label="Time"><FromBlock read={read}>{ms !== null && <><span className="mono">{dateTime(ms)}</span> <span className="muted">· {ago(new Date(ms).toISOString())}</span></>}</FromBlock></Item>;
 }
 
 /** The price and the fee caps and the burnt fees: what the block and the detail route add after the gas. Each is left out when it cannot be known, and "reading" while it is being read. */
@@ -118,14 +158,18 @@ function FeeFacts({ t, coin, block, detail }: { t: ApiTxSeen; coin: Coin | undef
           </>}
         </Item>
       )}
-      {burn !== null && <Item label="Burnt fees"><InCoin raw={burn} coin={coin} /></Item>}
+      {burn !== null && <Item label="Burnt fees"><FeeIn raw={burn} coin={coin} /></Item>}
     </>
   );
 }
 
 function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coin | undefined; detail: Detail; block: BlockSummary | undefined; read: BlockRead; head: number | undefined }) {
   const waiting = t.status === "waiting";
-  const to = t.to && <><HashLink value={t.to} to={`/${t.toToken ? "token" : "address"}/${t.to}`} full />{t.toToken && <span className="tag">{t.toToken}, a token</span>}</>;
+  // A named contract or token is shown by its name with a check, and its address still in full; one the index holds no name of is the address, with the server's own word for a token.
+  const toLabel = useLabels([t.to]).get(t.to);
+  const to = t.to && (labelName(toLabel)
+    ? <span className="to-named"><AddressCell address={t.to} label={toLabel} /> <HashLink value={t.to} to={addressPath(t.to, toLabel)} full /></span>
+    : <><HashLink value={t.to} to={`/${t.toToken ? "token" : "address"}/${t.to}`} full />{t.toToken && <span className="tag">{t.toToken}, a token</span>}</>);
   const index = detail.data?.index ?? null;
   const finalAt = block?.canton?.recordTime;
   return (
@@ -134,16 +178,18 @@ function Facts({ t, coin, detail, block, read, head }: { t: ApiTxSeen; coin: Coi
         <Item label="Status">
           {waiting ? <span className="muted">Not run yet</span> : t.success === null ? <span className="muted">Not known</span> : t.success ? <Good>Success</Good> : <Bad>Failed (reverted)</Bad>}
         </Item>
-        <Item label="Stage"><Chip status={t.status} />{finalAt && t.status === "final" && <span className="muted"> · committed on Canton {ago(finalAt)}</span>}</Item>
+        <Item label="Stage">
+          {t.status === "final" ? <><Chip status="final" label="Final on Canton" />{finalAt && <span className="muted"> · final {ago(finalAt)} · nothing to confirm beyond final</span>}</> : <Chip status={t.status} />}
+        </Item>
         <Item label="Block"><BlockItem t={t} head={t.status === "final" ? head : undefined} /></Item>
         <TimeItem t={t} block={block} read={read} />
         <Item label="From"><HashLink value={t.from} to={`/address/${t.from}`} full /></Item>
         <Item label="To">{to || <span className="muted">none, this transaction created a contract</span>}</Item>
         {t.created && <Item label="Created contract"><HashLink value={t.created} to={`/address/${t.created}`} full /></Item>}
-        <TransferItem t={t} waiting={waiting} />
+        <TransfersItem t={t} waiting={waiting} />
         <Item label="Value"><InCoin raw={t.value} coin={coin} /></Item>
         <Item label="Transaction fee">
-          {t.fee !== null ? <InCoin raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}
+          {t.fee !== null ? <FeeIn raw={t.fee} coin={coin} /> : <span className="muted">Known once a block holds it</span>}
         </Item>
         {t.gasPrice !== null && <Item label="Gas price"><span className="num">{gwei(t.gasPrice)}</span></Item>}
         {t.gasUsed === null ? <Item label="Gas limit"><span className="num">{count(t.gas)}</span></Item>
@@ -173,18 +219,8 @@ function Input({ data }: { data: string }) {
   );
 }
 
-/** The input as it was sent, with its 4-byte method id, and its call by name when the contract called is verified. */
-function InputCard({ t }: { t: ApiTxSeen }) {
-  const method = t.input.length >= 10 ? t.input.slice(0, 10) : null;
-  return (
-    <section className="card" aria-label="Input data">
-      <Kv wide>
-        <Item label="Input data"><Input data={t.input} /></Item>
-        {method && <MethodRows to={t.to} input={t.input} />}
-      </Kv>
-    </section>
-  );
-}
+/** The input as it was sent, with its 4-byte method id, and its call by name when the contract called has an interface to read it with. */
+const InputCard = ({ t }: { t: ApiTxSeen }) => <InputData to={t.to} input={t.input} raw={<Input data={t.input} />} />;
 
 /** The stage in plain words. It is the first thing the page says. */
 export function stageText(t: ApiTx): string {
@@ -192,7 +228,7 @@ export function stageText(t: ApiTx): string {
     case "pending": return "Waiting to go into a block";
     case "proving": return "In a block that is being proven";
     case "unindexed": return t.block ? `Final on Canton in block ${t.block.number}, which the explorer has not indexed yet` : "Final on Canton, not indexed yet";
-    case "final": return t.block ? `Final on Canton in block ${t.block.number}` : "Final on Canton";
+    case "final": return "Final on Canton";
     case "replaced": return "Replaced by another transaction with the same nonce";
     case "dropped": return `Dropped: ${t.reason ?? "no reason was given"}`;
   }
@@ -200,8 +236,16 @@ export function stageText(t: ApiTx): string {
 
 const settled = (t: ApiTx) => t.state === "final" || t.state === "replaced" || t.state === "dropped";
 
+/**
+ * A final transaction says so in the chip beside the title, and the page does not say it twice in sight. The live region stays in the page across
+ * the change, so a screen reader hears a pending transaction become final: the words it holds then are only for the ear.
+ */
 function Stage({ t }: { t: ApiTx }) {
-  return <p className={`stage s-${t.state}`} aria-live="polite" data-state={t.state}>{stageText(t)}</p>;
+  return (
+    <div className="stage-live" aria-live="polite">
+      {t.state === "final" ? <span className="sr-only">This transaction is now final on Canton.</span> : <p className={`stage s-${t.state}`} data-state={t.state}>{stageText(t)}</p>}
+    </div>
+  );
 }
 
 /** A transaction that reth no longer holds: all that is known is who sent it, and its nonce. */
@@ -237,7 +281,7 @@ export function Tx() {
   return (
     <>
       <nav className="crumbs" aria-label="Breadcrumb"><Link to="/txs">Transactions</Link> / <span className="mono">{short(t.hash, 8, 6)}</span></nav>
-      <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} /><Result t={t} /></div>
+      <div className="ptitle"><h1>Transaction</h1><Chip status={t.status} label={t.status === "final" ? "Final on Canton" : undefined} /><Result t={t} /></div>
       <div className="bighash"><HashLink value={t.hash} full /></div>
       <Stage t={t} />
       {t.value === null && <Unseen t={t} />}
@@ -258,7 +302,7 @@ function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin |
     { id: "overview", label: "Overview" },
     { id: "logs", label: "Logs", count: t.logs.length },
     ...(final ? [
-      { id: "internal" as const, label: "Internal calls" },
+      { id: "internal" as const, label: "Internal calls", count: detail.data?.derived && detail.data.callCount !== null ? detail.data.callCount : null },
       { id: "tree" as const, label: "Call tree" },
       { id: "raw" as const, label: "Raw" },
     ] : []),
@@ -286,7 +330,7 @@ function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin |
       <Panel id={tab}>
         {tab === "overview" && <>{overview}{below}</>}
         {tab === "logs" && <LogsTab t={t} />}
-        {tab === "internal" && <InternalTab t={t} coin={coin} />}
+        {tab === "internal" && <InternalTab t={t} coin={coin} callCount={detail.data?.derived ? detail.data.callCount : null} />}
         {tab === "tree" && <TreeTab hash={t.hash} coin={coin} />}
         {tab === "raw" && <RawTab hash={t.hash} />}
       </Panel>

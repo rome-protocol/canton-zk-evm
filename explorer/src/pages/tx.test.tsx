@@ -2,8 +2,8 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ApiTx } from "../api.ts";
-import { addr, block, blockSummary, fakeApi, goneTx, hash, NOT_FOUND, renderApp, reply, route, status, tick, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
+import type { ApiTx, TokenTransfer } from "../api.ts";
+import { addr, block, page, blockSummary, fakeApi, goneTx, hash, labelsOf, NOT_FOUND, renderApp, reply, route, status, tick, tokenLabel, tx, txDetail, update, updateDetail, waitingTx } from "../test-utils.tsx";
 import type { TxLifecycle } from "../api.ts";
 
 const verifierRun = vi.hoisted(() => ({ line: "" }));
@@ -31,7 +31,7 @@ describe("the transaction page, for a final transaction", () => {
   it("says it is final, and shows its own hash in full with a button to copy it", async () => {
     const user = userEvent.setup();
     await open();
-    expect(chip()).toHaveTextContent("Final");
+    expect(chip()).toHaveTextContent("Final on Canton");
     expect(chip()).toHaveClass("chip-final");
     const own = screen.getByText(H);
     expect(own).toBeInTheDocument();
@@ -55,6 +55,17 @@ describe("the transaction page, for a final transaction", () => {
     expect(within(row("To")).getByText("TKA, a token")).toHaveClass("tag");
   });
 
+  it("names the contract it went to, with a verified check, and still gives the address in full", async () => {
+    const calls = fakeApi(route({ tx: () => reply(tx()), labels: labelsOf([tokenLabel()]) }));
+    renderApp(`/tx/${H}`);
+    await screen.findByRole("heading", { name: "Transaction" });
+    await waitFor(() => expect(within(row("To")).getByRole("link", { name: "Test token A (TKA)" })).toHaveAttribute("href", `/token/${addr(0xcb)}`));
+    expect(within(row("To")).getByRole("img", { name: "Verified" })).toBeInTheDocument();
+    expect(within(row("To")).getByRole("link", { name: addr(0xcb) })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
+    expect(within(row("To")).queryByText("TKA, a token")).toBeNull();
+    expect(calls.filter((c) => c.startsWith("/api/labels"))).toHaveLength(1);
+  });
+
   it("shows the ERC-20 transfer it made, decoded", async () => {
     await open();
     expect(row("Token moved")).toHaveTextContent("10 TKA from 0x5b5b…5b5b to 0x5a5a…5a5a");
@@ -64,7 +75,7 @@ describe("the transaction page, for a final transaction", () => {
   it("shows the value, the fee, the gas price, the gas with its share used, the nonce and the type", async () => {
     await open();
     expect(row("Value")).toHaveTextContent("0 tROME");
-    expect(row("Transaction fee")).toHaveTextContent("0.0000863 tROME");
+    expect(row("Transaction fee")).toHaveTextContent("0.0000863356 tROME");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     expect(row("Gas used")).toHaveTextContent("51,698 of 100,000 (51.70%)");
     expect(row("Nonce and position")).toHaveTextContent("1");
@@ -105,7 +116,7 @@ describe("the transaction page, for a final transaction", () => {
 
   it("is final and failed when it reverted", async () => {
     await open(tx({ success: false, logs: [] }));
-    expect(chip()).toHaveTextContent("Final");
+    expect(chip()).toHaveTextContent("Final on Canton");
     expect(row("Status")).toHaveTextContent("Failed (reverted)");
     expect(row("Status").firstElementChild).toHaveClass("fact-bad");
     expect(screen.queryByText("Not final yet.", { exact: false })).toBeNull();
@@ -210,7 +221,7 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(row("Status")).toHaveTextContent("Success");
     answer = tx({ block: { number: 4, hash: hash(4), updateId: update(4) } });
     await tick();
-    expect(chip()).toHaveTextContent("Final");
+    expect(chip()).toHaveTextContent("Final on Canton");
     expect(screen.queryByRole("status")).toBeNull();
     expect(row("Block")).toHaveTextContent("4, final on Canton in update 12200404…0404");
     const seen = asked();
@@ -291,8 +302,7 @@ describe("the stage, in plain words", () => {
       [waitingTx({ state: "pending" }), "pending", "Waiting to go into a block"],
       [tx({ status: "proving", state: "proving", block: { number: 4, hash: hash(4), updateId: null } }), "proving", "In a block that is being proven"],
       [tx({ status: "unindexed", block: { number: 4, hash: hash(4), updateId: null } }), "unindexed", "Final on Canton in block 4, which the explorer has not indexed yet"],
-      [tx({ state: "final" }), "final", "Final on Canton in block 3"],
-      [goneTx({ status: "replaced", state: "replaced", reason: "Another transaction from the same sender took nonce 7." }), "replaced", "Replaced by another transaction with the same nonce"],
+            [goneTx({ status: "replaced", state: "replaced", reason: "Another transaction from the same sender took nonce 7." }), "replaced", "Replaced by another transaction with the same nonce"],
       [goneTx({ status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: insufficient funds." }), "dropped", "Dropped: The chain refused it 5 times in a row: insufficient funds."],
     ];
     for (const [t, state, words] of cases) {
@@ -304,9 +314,28 @@ describe("the stage, in plain words", () => {
     }
   });
 
-  it("says Final without a block number when the server gave none, and a dropped one without a reason", async () => {
+  it("does not repeat in a green line under the title that a final transaction is final: the chip says it", async () => {
+    await open(tx({ state: "final" }));
+    expect(chip()).toHaveTextContent("Final on Canton");
+    expect(stage()).toBeNull();
+    expect(screen.queryByText("Final on Canton in block 3")).toBeNull();
+  });
+
+  it("keeps one polite live region in the page whatever the state, so a change to final is announced, with words only for the ear once it is final", async () => {
+    await open(waitingTx({ state: "pending" }));
+    expect(document.querySelectorAll("[aria-live=polite]")).toHaveLength(1);
+    expect(document.querySelector("[aria-live=polite] .stage")).toHaveTextContent("Waiting to go into a block");
+    cleanup();
+    await open(tx({ state: "final" }));
+    const live = document.querySelectorAll("[aria-live=polite]");
+    expect(live).toHaveLength(1);
+    expect(live[0]).toHaveTextContent("This transaction is now final on Canton.");
+    expect(live[0]!.querySelector(".sr-only")).not.toBeNull();
+  });
+
+  it("says nothing under the title for a final one with no block, and a dropped one without a reason", async () => {
     await open(tx({ state: "final", block: null }));
-    expect(stage()).toHaveTextContent(/^Final on Canton$/);
+    expect(stage()).toBeNull();
     cleanup();
     await open(goneTx({ reason: null }));
     expect(stage()).toHaveTextContent("Dropped: no reason was given");
@@ -382,7 +411,7 @@ describe("the block's answers, kept by one cache for every page", () => {
   it("opens the block page from a transaction page and shows the block, though the transaction page has read the block's summary", async () => {
     const user = userEvent.setup();
     await openFinal(undefined, { block: () => reply(block()) });
-    await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
+    await waitFor(() => expect(row("Time")).toHaveTextContent("04 Oct 2026, 01:37:16 UTC"));
     await user.click(within(row("Block")).getByRole("link", { name: "3" }));
     expect(await screen.findByRole("heading", { name: "Block #3" })).toBeInTheDocument();
     expect(screen.queryByText(/something went wrong|cannot read/i)).toBeNull();
@@ -413,6 +442,30 @@ describe("the way to final", () => {
     ]);
     expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
     expect(way().getByText("8.91 s")).toHaveClass("num");
+  });
+
+  it("adds the median time to final of the last hour, and says it was not refused or left out of any earlier block when the journal shows no earlier attempt", async () => {
+    const calls = await openFinal(undefined, { stats: (p) => (p.includes("/summary") ? reply({ timeToFinal: { median: 8.5, p95: 8.9, samples: 12, capped: false } }) : reply({}, 404)) });
+    await waitFor(() => expect(way().getByText(/The median for the last hour is 8\.5 s\./)).toBeInTheDocument());
+    expect(calls.some((c) => c.startsWith("/api/stats/summary?window=1h"))).toBe(true);
+    expect(way().getByText("Not refused or left out of any earlier block.")).toBeInTheDocument();
+  });
+
+  it("says no median when the hour has no final transaction or the stats cannot be read, and never says 'not refused' for a transaction that was", async () => {
+    await openFinal(undefined, { stats: () => reply({ timeToFinal: null }) });
+    await waitFor(() => expect(way().getByText(/after Ostia accepted it/)).toBeInTheDocument());
+    expect(way().queryByText(/median/i)).toBeNull();
+    cleanup();
+    await openFinal(tx({ lifecycle: journal({ attempts: 3 }) }), { stats: () => reply({ error: "down" }, 503) });
+    await waitFor(() => expect(way().getByText(/It took 3 attempts\./)).toBeInTheDocument());
+    expect(way().queryByText(/median/i)).toBeNull();
+    expect(way().queryByText(/Not refused/)).toBeNull();
+  });
+
+  it("says nothing of 'not refused' when the journal counts no attempt at all: that is no evidence", async () => {
+    await openFinal(tx({ lifecycle: journal({ attempts: 0 }) }));
+    await waitFor(() => expect(way().getByText(/after Ostia accepted it/)).toBeInTheDocument());
+    expect(way().queryByText(/Not refused/)).toBeNull();
   });
 
   it("says when the producer's journal has no row, shows a dash for each time it would hold, and still gives Canton's record time", async () => {
@@ -548,13 +601,13 @@ describe("the internal calls row, and the stage 2 gap", () => {
 describe("the facts the block and the detail add to the overview", () => {
   it("shows the time of its block, the stage, the final head, the gas price, the fees, the burnt fees and its position", async () => {
     await openFinal(undefined, { txDetail: () => reply(txDetail({ index: 2 })) });
-    await waitFor(() => expect(row("Time")).toHaveTextContent("2026-10-04 01:37:16 UTC"));
-    expect(row("Stage")).toHaveTextContent(/^Final · committed on Canton /);
+    await waitFor(() => expect(row("Time")).toHaveTextContent("04 Oct 2026, 01:37:16 UTC"));
+    expect(row("Stage")).toHaveTextContent(/^Final on Canton · final .* ago · nothing to confirm beyond final$/);
     expect(row("Block")).toHaveTextContent("final head is 3");
     expect(row("Gas price")).toHaveTextContent("1.67 gwei");
     await waitFor(() => expect(row("Fees")).toHaveTextContent("Base 0.67 gwei · Max 2 gwei · Max priority 1 gwei"));
     // 0.67 gwei x 51,698 gas
-    expect(row("Burnt fees")).toHaveTextContent("0.0000346 tROME");
+    expect(row("Burnt fees")).toHaveTextContent("0.0000346376 tROME");
     expect(row("Nonce and position")).toHaveTextContent("1 · position 2 in block 3");
   });
 
@@ -571,5 +624,35 @@ describe("the facts the block and the detail add to the overview", () => {
     cleanup();
     await open(waitingTx());
     for (const l of ["Time", "Gas price", "Fees", "Burnt fees"]) expect(screen.queryByText(l, { selector: "dt" })).toBeNull();
+  });
+});
+
+describe("the footer of the way to final", () => {
+  it("is not drawn when none of its lines has anything to say", async () => {
+    // Final, no time to final, no median for the hour, no attempt on record: nothing to put in it.
+    await openFinal(tx({ lifecycle: journal({ timeToFinalMs: null, attempts: 0 }) }), { stats: () => reply({ timeToFinal: null }) });
+    await waitFor(() => expect(way().getByText("Canton record time")).toBeInTheDocument());
+    expect(document.querySelector(".way-foot")).toBeNull();
+  });
+});
+
+describe("the Token transfers row of the overview", () => {
+  const xfer = (i: number, over: Partial<TokenTransfer> = {}): TokenTransfer => ({ logIndex: i, batchIndex: 0, methodId: null, creation: false, timestamp: 1700000000, token: addr(0xcb), standard: "ERC-20", from: addr(0x5b), to: addr(0x60 + i), amount: "10000000000000000000", tokenId: null, ...over });
+  const usd = tokenLabel({ address: addr(0xcb), name: "Test USD", symbol: "tUSD", decimals: 18 });
+
+  it("lists the transfers of a final transaction by name with their amounts, the first few, and points to the list below for the rest", async () => {
+    const items = Array.from({ length: 7 }, (_, i) => xfer(i));
+    const calls = await openFinal(tx({ transfer: null, lifecycle: journal() }), { labels: labelsOf([usd]), txTransfers: () => reply({ ...page(items), derived: true }) });
+    await waitFor(() => expect(row("Token transfers")).toHaveTextContent("10"));
+    const r = row("Token transfers");
+    expect(r.querySelectorAll(".xfer-line")).toHaveLength(5);
+    await waitFor(() => expect(r).toHaveTextContent("tUSD"));
+    expect(r).toHaveTextContent("and 2 more in the Token transfers list below");
+    expect(calls.filter((c) => c.includes("/token-transfers"))).toHaveLength(1);
+  });
+
+  it("falls back to the one transfer /api/tx decoded where the list holds none", async () => {
+    await openFinal(tx({ lifecycle: journal() }), { txTransfers: () => reply({ ...page([]), derived: true }) });
+    await waitFor(() => expect(row("Token moved")).toHaveTextContent("10 TKA"));
   });
 });

@@ -2,6 +2,7 @@
 export const STATUS_WORDS = { final: "Final", building: "Being built", proving: "Being proven", unindexed: "Not indexed yet", waiting: "Waiting", genesis: "Genesis", replaced: "Replaced", dropped: "Dropped" } as const;
 export type Status = keyof typeof STATUS_WORDS;
 
-export function Chip({ status }: { status: Status }) {
-  return <span className={`chip chip-${status}`}><i className="dot" />{STATUS_WORDS[status]}</span>;
+/** `label` replaces the usual word where a page says more ("Final on Canton" in the title of a transaction). */
+export function Chip({ status, label }: { status: Status; label?: string }) {
+  return <span className={`chip chip-${status}`}><i className="dot" />{label ?? STATUS_WORDS[status]}</span>;
 }
