@@ -1,14 +1,18 @@
-/** The methods that most transactions call, by the first 4 bytes of their input. */
-const KNOWN: Record<string, string> = {
-  "0xa9059cbb": "Transfer", "0x23b872dd": "Transfer from", "0x095ea7b3": "Approve", "0x40c10f19": "Mint", "0x42966c68": "Burn",
-};
+import { methodNames } from "./abi-call.ts";
+import { abiOrStandard, type AbiEntry } from "./abi.ts";
+
+const standard = methodNames(abiOrStandard(null));
 
 /**
- * What a transaction did, in a word. With no input it is a creation (no recipient), a transfer of coin (a value) or a plain call. With input it is the
- * token method that the first 4 bytes name, and any other method shows those bytes, because nothing here knows its name.
+ * What a transaction did, in a word. With no input it is a creation (no recipient), a transfer of coin (a value) or a plain call. With input it
+ * is the function the first 4 bytes name in the contract's verified ABI, or in the standard ABI when there is none (lowercase, as the source
+ * writes it: "transfer", "safeMint"), and any other method shows those bytes, because nothing here knows its name. "Transfer" is only a plain
+ * send of coin, so that it is never taken for a token's `transfer`.
  */
-export function methodOf(t: { methodId: string | null; to: string | null; created: string | null; value: string }): string {
-  if (t.to === null || t.created !== null) return "Create";
+export function methodOf(t: { methodId: string | null; to: string | null; created: string | null; value: string }, verified?: AbiEntry[] | null): string {
+  if (t.to === null || t.created !== null) return "Create contract";
   if (t.methodId === null) return BigInt(t.value) > 0n ? "Transfer" : "Call";
-  return KNOWN[t.methodId] ?? t.methodId;
+  const id = t.methodId.toLowerCase();
+  const names = verified && verified.length > 0 ? methodNames(verified) : standard;
+  return names.get(id) ?? t.methodId;
 }
