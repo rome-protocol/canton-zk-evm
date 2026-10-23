@@ -14,7 +14,7 @@ pre.src { margin: 0; padding: 12px 0; background: var(--surface-2); border: 1px 
 pre.src div { padding: 0 14px 0 0; white-space: pre; }
 pre.src .ln { display: inline-block; width: 3em; padding-right: 1em; text-align: right; color: var(--faint); user-select: none; }
 pre.dark { margin: 0; padding: 14px 16px; background: #1b1620; color: #e9e3ef; border-radius: 10px; overflow: auto; max-height: 420px; font-size: 12.5px; line-height: 1.55; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
-pre.light { margin: 0; padding: 14px 16px; background: var(--surface-2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; overflow: auto; max-height: 420px; font-size: 12.5px; line-height: 1.55; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
+pre.light { margin: 0; padding: 14px 16px; background: var(--surface-2); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; overflow: auto; max-height: 420px; font-size: 12.5px; line-height: 1.55; font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; }
 pre.dark.wrap, pre.light.wrap { white-space: pre-wrap; word-break: break-all; }
 .row-gap { display: inline-flex; align-items: center; gap: 8px; }
 a.btn-line, .code-tab a.btn { text-decoration: none; }
