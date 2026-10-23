@@ -1,5 +1,6 @@
 /**
- * How many transactions the chain holds: the day rollups' sum through their cursor, plus the transactions of the final blocks newer than the cursor.
+ * How many transactions the chain holds: the day rollups' sum, less the minute rows from the cursor on, plus the transactions of the final blocks from the cursor on.
+ * The cursor means "recompute from here", not "complete through here": a run writes the open minute (and a repair the minutes it remakes) into the minute, hour and day rows and leaves the cursor at the start of them, so the day sum already holds the blocks from the cursor on that the tail counts again. The minute rows from the cursor on (a key range of a few rows, the cursor is minute-aligned) are taken off, so each transaction is counted once.
  * The newest block is the one of the latest record time, the axis the rollups and the tail are cut on (the number rises with it on a real chain). One statement, so the two halves come from one snapshot. Neither half is a count over the transactions: the rollups are a few hundred rows however long the chain
  * is, and the tail is a range of the record-time index, a few minutes of blocks while the rollups run.
  */
@@ -20,7 +21,8 @@ export async function txTotal(query: TxTotalQuery): Promise<TxTotal | null> {
   const [r] = await query(
     `with cur as (select position::bigint as p from cursors where stream = 'stats_rollup'),
           newest as (select number, record_time from blocks order by record_time desc, number desc limit 1)
-     select (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_day) as n,
+     select (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_day)
+            - (select coalesce(sum(txs::bigint + test_txs), 0)::float8 from stats_minute where bucket >= timestamptz 'epoch' + (select p from cur) * interval '1 millisecond') as n,
             (select extract(epoch from min(bucket))::float8 * 1000 from stats_day) as since,
             (select extract(epoch from min(record_time))::float8 * 1000 from blocks) as first,
             (select p::float8 from cur) as at,

@@ -47,9 +47,9 @@ export interface StatsRest {
   lost(): Promise<{ lost: { total: number; items: LostItem[] }; dropped: { total: number; items: LostItem[] }; replaced: number }>;
   /** The newest run of the producer that is not a test run: its strategy and when it started. Null when no run is known. */
   cutting(): Promise<{ strategy: string; since: number } | null>;
-  /** The faucet's requests made in [from, to): by state, and the time from request to final as a time histogram (empty when none is final). */
   /** The chain's transactions since its first block, exact through the newest final block (one function with /api/txs); null where the rollups cannot say. */
   txTotal(): Promise<TxTotal | null>;
+  /** The faucet's requests made in [from, to): by state, and the time from request to final as a time histogram (empty when none is final). */
   faucet(from: number, to: number): Promise<{ requests: number; sent: number; final: number; failed: number; hist: number[] }>;
 }
 
