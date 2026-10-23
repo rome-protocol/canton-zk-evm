@@ -330,7 +330,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       probes.setSlot(P, EIP1967_IMPLEMENTATION_SLOT, IMPL);
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${none.result}`)).toEqual(NOTOK(PROXY_TEXTS.none));
       const wrong = await proxy({ expectedimplementation: B });
-      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${wrong.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch(IMPL, B)));
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${wrong.result}`)).toEqual(NOTOK("The provided expected results are different than the retrieved implementation address!"));
       expect((await sql("select verified_at from proxies")).rows[0].verified_at).toBeNull();
       const good = await proxy({ expectedimplementation: IMPL });
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${good.result}`)).toEqual(OK(PROXY_TEXTS.done(P, IMPL)));
@@ -347,7 +347,7 @@ describe.skipIf(!TEST_URL)("the Etherscan-compatible /api: the contract module",
       probes.setSlot(P, EIP1822_SLOT, NEW);
       probes.heads.length = 0;
       const stale = await proxy({ expectedimplementation: IMPL });
-      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${stale.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch(NEW, IMPL)));
+      expect(await get(`/api?module=contract&action=checkproxyverification&guid=${stale.result}`)).toEqual(NOTOK(PROXY_TEXTS.mismatch));
       const fresh = await proxy({ expectedimplementation: NEW });
       expect(await get(`/api?module=contract&action=checkproxyverification&guid=${fresh.result}`)).toEqual(OK(PROXY_TEXTS.done(P, NEW)));
       const row = (await sql("select encode(implementation, 'hex') as i, kind, checked_block from proxies")).rows;
