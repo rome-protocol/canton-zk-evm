@@ -43,7 +43,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 if [ -z "${FORGE:-}" ] || { [ "$mode" = verify ] && [ -z "${CAST:-}" ]; }; then
   [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] || fail "the pinned Foundry is the Linux x86-64 build; set FORGE and CAST to use another"
-  curl -sSfL -o "$WORK/foundry.tar.gz" "https://github.com/foundry-rs/foundry/releases/download/$FOUNDRY_VERSION/foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
+  curl -sSfL -A "Rome Protocol rome@romeprotocol.com" -o "$WORK/foundry.tar.gz" "https://github.com/foundry-rs/foundry/releases/download/$FOUNDRY_VERSION/foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
   echo "$FOUNDRY_LINUX_AMD64_SHA256  $WORK/foundry.tar.gz" | sha256sum -c -
   mkdir "$WORK/bin"
   tar -xzf "$WORK/foundry.tar.gz" -C "$WORK/bin" forge cast

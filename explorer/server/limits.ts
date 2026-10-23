@@ -92,7 +92,7 @@ export function isProxy(query: URLSearchParams, body: string | undefined): boole
 /** True when an Etherscan request asks to verify a contract (the action may be in the query or in the form body). */
 export function isVerification(query: URLSearchParams, body: string | undefined): boolean {
   const names = new Set(["verifysourcecode", "verifyproxycontract"]);
-  const action = (q: URLSearchParams) => (q.get("action") ?? "").toLowerCase();
+  const action = (q: URLSearchParams) => (q.get("action") ?? "").trim().toLowerCase();
   if (names.has(action(query))) return true;
   if (!body) return false;
   try { return names.has(action(new URLSearchParams(body))); } catch { return false; }

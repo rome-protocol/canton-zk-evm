@@ -178,6 +178,15 @@ describe("the verification limit: 30 an hour, 500 KB a request", () => {
     expect(await (await at("/api?module=contract&action=getabi&address=0x1")).json()).toEqual({ ok: true });
   });
 
+  it("counts an action with white space around it, as the door reads it", async () => {
+    await start();
+    for (let i = 0; i < 40; i++) {
+      await at(i % 2 ? "/api?module=contract&action=verifysourcecode+" : "/api?module=contract&action=verifyproxycontract%20", { method: "POST", body: "address=0x1" });
+      clock.advance(150);
+    }
+    expect(calls).toHaveLength(30);
+  });
+
   it("takes a body of the raw cap (three times the source, and room for the other fields), and refuses it and a byte, without calling the API", async () => {
     await start();
     const head = "module=contract&action=verifysourcecode&sourceCode=";
