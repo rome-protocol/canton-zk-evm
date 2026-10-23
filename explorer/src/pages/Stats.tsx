@@ -4,7 +4,7 @@ import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type Sta
 import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { count, pct, plural, sec, short, span, trim, units } from "../format.ts";
+import { count, pct, plural, sec, short, span, trim, units, utcDate } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 
 const DEFAULT_WINDOW: StatsWindow = "24h";
@@ -118,6 +118,14 @@ function Rule({ s }: { s: StatsSummary }) {
   );
 }
 
+/** The line under the turned-away count: why, or since when it was not recorded. Only reasons that had a refusal are named. */
+function turnedAwaySub(f: StatsSummary["faucet"]): string {
+  if (f.turnedAway === null) return f.turnedAwaySince ? `not recorded before ${utcDate(Date.parse(f.turnedAwaySince))}` : "not recorded";
+  const r = f.turnedAway.byReason;
+  const parts = [[r.address, "same address"], [r.ip, "same network"], [r.hour, "hourly cap"], [r.captcha, "failed check"]].filter(([n]) => (n as number) > 0).map(([n, w]) => `${count(n as number)} ${w}`);
+  return parts.length ? parts.join(" · ") : "requests the limits refused";
+}
+
 function FaucetCard({ s, faucetOn, coin }: { s: StatsSummary; faucetOn: boolean; coin: { symbol: string; decimals: number } | undefined }) {
   const f = s.faucet;
   const info = useQuery({ queryKey: ["faucet-info"], queryFn: getFaucetInfo, enabled: faucetOn, refetchInterval: 30_000 }).data;
@@ -127,7 +135,7 @@ function FaucetCard({ s, faucetOn, coin }: { s: StatsSummary; faucetOn: boolean;
       <div className="cells">
         <Cell k="Requests" v={count(f.requests)} sub="in this window" />
         <Cell k="Sent" v={count(f.sent)} sub={`${f.final === f.sent ? "all final" : `${count(f.final)} final`}${f.failed ? ` · ${count(f.failed)} failed` : ""}`} />
-        <Cell k="Turned away by the limits" v={f.turnedAway === null ? "Not recorded" : count(f.turnedAway)} sub={f.turnedAway === null ? "refusals by a limit are not stored" : "requests the limits refused"} />
+        <Cell k="Turned away by the limits" v={f.turnedAway === null ? "Not recorded" : count(f.turnedAway.total)} sub={turnedAwaySub(f)} />
         <Cell k="Time to final, faucet sends" v={f.timeToFinal ? sec(f.timeToFinal.median) : DASH} sub={f.timeToFinal ? `median · p95 ${sec(f.timeToFinal.p95)}` : "no faucet send was final in this window"} />
         <Cell k="Faucet balance" v={info?.balance != null && coin ? units(info.balance, coin.decimals) : DASH} sub={info && coin ? `${coin.symbol} · queue now ${info.queue ?? 0}` : faucetOn ? "reading…" : "the faucet is off"} />
       </div>
