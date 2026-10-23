@@ -177,7 +177,7 @@ export function TransfersTab({ a, nft = false }: { a: string; nft?: boolean }) {
   const p = usePaged(["address-transfers", a, standard, tok], (before) => getAddressTransfers(a, before, undefined, { standard, token: tok ?? undefined }), 5000);
   const d = p.data;
   // The tokens to filter by are the ones this address's unfiltered list has shown; a filtered list could only ever show its own.
-  const seen = tok === null && d ? d.items.map((x) => x.token) : [];
+  const seen = tok === null && d ? [...new Set(d.items.map((x) => x.token))] : [];
   const fresh = seen.filter((t) => !known.includes(t));
   useEffect(() => { if (fresh.length > 0) setKnown((k) => [...k, ...fresh.filter((t) => !k.includes(t))]); }, [fresh.join()]);
   const labels = useLabels([...(d?.items ?? []).flatMap((x) => [x.from, x.to, x.token]), ...known]);

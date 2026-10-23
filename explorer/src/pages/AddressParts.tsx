@@ -16,7 +16,7 @@ const Dash = () => <span className="muted">—</span>;
 
 /** The chip under the title: how many contracts the address made, "100,000+" when the count stopped at its ceiling. Nothing when it made none. */
 export function CreatedChip({ a, to }: { a: AddressDetail; to: string }) {
-  if (a.createdCount === 0) return null;
+  if (!(a.createdCount > 0)) return null;
   const n = `${count(a.createdCount)}${a.createdCountCapped ? "+" : ""}`;
   return <Link className="chip chip-made" to={to} title="The contracts this address made">Created {n} {a.createdCount === 1 && !a.createdCountCapped ? "contract" : "contracts"}</Link>;
 }
@@ -93,7 +93,7 @@ export function Holdings({ addr }: { addr: string }) {
   );
 }
 
-const Ago = ({ ts, now }: { ts: number | null; now: number }) => (ts === null ? null : <span className="muted small" title={new Date(ts * 1000).toISOString()}> · {duration(now - ts * 1000)} ago</span>);
+const Ago = ({ ts, now }: { ts: number | null; now: number }) => (ts == null ? null : <span className="muted small" title={new Date(ts * 1000).toISOString()}> · {duration(now - ts * 1000)} ago</span>);
 
 /** When it last sent a transaction: read from its newest sent one, as "last active" counts what it received too. */
 function LastSent({ a, now }: { a: AddressDetail; now: number }) {

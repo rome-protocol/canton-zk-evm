@@ -230,6 +230,14 @@ describe("the address page: the other tabs", () => {
     await screen.findByText("2 ERC-20 transfers to or from this address");
   });
 
+  it("offers each token once in the filter, however many rows it has", async () => {
+    const t = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: null, creation: false, timestamp: T0, token: addr(0xcb), standard: "ERC-20", from: A, to: addr(0x77), amount: "5", tokenId: null };
+    await open(addressDetail({ tokenTransferCount: 3 }), { "token-transfers": () => derived([t, { ...t, txHash: hash(0xe2) }, { ...t, txHash: hash(0xe3) }]) });
+    await userEvent.click(tab("Token transfers"));
+    await waitFor(() => expect(rows()).toHaveLength(3));
+    expect(within(screen.getByRole("group", { name: "Show tokens" })).getAllByRole("button")).toHaveLength(2);
+  });
+
   it("lists the NFT transfers with method, age and an ERC-1155 count before its id", async () => {
     const n = { txHash: hash(0xe1), block: 20, txIndex: 0, logIndex: 1, batchIndex: 0, methodId: "0xa1448194", creation: false, timestamp: T0, token: addr(0xcc), standard: "ERC-1155", from: "0x" + "00".repeat(20), to: A, amount: "1500", tokenId: "7" };
     const calls = await open(addressDetail(), { "token-transfers": () => derived([n]) });
@@ -390,6 +398,16 @@ describe("the address page: the tab card", () => {
     await userEvent.click(tab("Token transfers"));
     await screen.findByText("No token transfers.");
     expect(calls).toContain(`/api/addresses/${A}/token-transfers?limit=25&standard=ERC-20`);
+  });
+});
+
+describe("the address page: an older API", () => {
+  it("shows what it is given and no chip or age for what the API does not serve", async () => {
+    const old = addressDetail() as unknown as Record<string, unknown>;
+    delete old.createdCount; delete old.createdCountCapped; delete old.firstSeenTimestamp; delete old.lastActiveTimestamp; delete old.fundedBy;
+    await open(old as unknown as AddressDetail);
+    expect(screen.queryByText(/Created .* contract/)).toBeNull();
+    expect(screen.getByRole("region", { name: "More information" })).toHaveTextContent("Funded by");
   });
 });
 
