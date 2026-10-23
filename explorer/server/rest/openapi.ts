@@ -46,12 +46,14 @@ const DERIVED = "Stage 2 of the indexer may be behind stage 1: `derived` is fals
 
 /** Etherscan's door: one URL, a `module` and an `action`. What it answers, action by action, is in design 6.2; the parameters below are the ones its modules read. */
 const ETHERSCAN_QUERY: Query[] = [
-  { name: "module", about: "account, transaction, block, logs, token, stats, proxy or gastracker (the contract module follows).", values: ["account", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"] },
+  { name: "module", about: "account, contract, transaction, block, logs, token, stats, proxy or gastracker.", values: ["account", "contract", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"] },
   { name: "action", about: "account: balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks. transaction: getstatus, gettxreceiptstatus. block: getblockreward, getblocknobytime, getblockcountdown. logs: getLogs. token: tokeninfo, tokenholdercount, tokenholderlist. stats: ethsupply, tokensupply, ethprice. proxy: eth_blockNumber, eth_getBlockByNumber, eth_getBlockTransactionCountByNumber, eth_getTransactionByHash, eth_getTransactionByBlockNumberAndIndex, eth_getTransactionCount, eth_sendRawTransaction, eth_getTransactionReceipt, eth_call, eth_getCode, eth_getStorageAt, eth_gasPrice, eth_estimateGas, eth_getUncleByBlockNumberAndIndex (JSON-RPC answers in hex, final blocks only, as /rpc gives them). gastracker: gasoracle, gasestimate." },
   { name: "chainid", about: "Optional, and this chain's when given." },
   { name: "apikey", about: "Accepted and ignored." },
-  { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs)." },
-  { name: "contractaddress", about: "A token's 0x address (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
+  { name: "address", about: "A 0x address (balancemulti: up to 20, comma-separated; getLogs: the contract that emitted the logs; getsourcecode, getabi and verifyproxycontract: the contract)." },
+  { name: "contractaddresses", about: "getcontractcreation: up to 5 contract addresses, comma-separated." },
+  { name: "guid", about: "checkverifystatus and checkproxyverification: the GUID that verifysourcecode or verifyproxycontract answered with." },
+  { name: "contractaddress", about: "A token's 0x address, or for verifysourcecode (a POST) the contract to verify (tokenbalance, tokentx, tokennfttx, token1155tx, tokeninfo, tokenholdercount, tokenholderlist, tokensupply)." },
   { name: "txhash", about: "A transaction's 0x hash (getstatus, gettxreceiptstatus, txlistinternal)." },
   { name: "tag", about: "latest, which is the newest final block (safe and finalized mean the same); the proxy also takes a hex block number (0x...) that is final." },
   { name: "startblock", about: "The first block of a list (txlist, txlistinternal, tokentx and the like)." },

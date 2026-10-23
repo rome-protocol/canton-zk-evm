@@ -97,8 +97,9 @@ describe("the API description", () => {
     }
     // The API page reads the module table from `x-modules` of /api's GET; it is the table the door answers from.
     expect(doc.paths["/api"].get["x-modules"]).toEqual(Object.fromEntries(Object.entries(MODULES).map(([m, a]) => [m, Object.keys(a)])));
-    expect(Object.keys(doc.paths["/api"].get["x-modules"])).toEqual(["account", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"]);
+    expect(Object.keys(doc.paths["/api"].get["x-modules"])).toEqual(["account", "contract", "transaction", "block", "logs", "token", "stats", "proxy", "gastracker"]);
     expect(doc.paths["/api"].get["x-modules"]).toMatchObject({
+      contract: ["verifysourcecode", "checkverifystatus", "getsourcecode", "getabi", "getcontractcreation", "verifyproxycontract", "checkproxyverification"],
       token: ["tokeninfo", "tokenholdercount", "tokenholderlist"], stats: ["ethsupply", "tokensupply", "ethprice"], gastracker: ["gasoracle", "gasestimate"],
       proxy: ["eth_blockNumber", "eth_getBlockByNumber", "eth_getBlockTransactionCountByNumber", "eth_getTransactionByHash", "eth_getTransactionByBlockNumberAndIndex", "eth_getTransactionCount", "eth_sendRawTransaction", "eth_getTransactionReceipt", "eth_call", "eth_getCode", "eth_getStorageAt", "eth_gasPrice", "eth_estimateGas", "eth_getUncleByBlockNumberAndIndex"],
     });

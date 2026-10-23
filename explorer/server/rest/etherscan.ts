@@ -4,7 +4,7 @@
  * Etherscan's is; a refusal is `status` "0". `apikey` is never read: the tools insist on sending one, and there are no keys (design 6.6).
  *
  * This file is the account module (balance, balancemulti, tokenbalance, txlist, txlistinternal, tokentx, tokennfttx, token1155tx, getminedblocks), the transaction module
- * (getstatus, gettxreceiptstatus), the block module (getblockreward, getblocknobytime, getblockcountdown), the logs module (getLogs) and the door itself; the other
+ * (getstatus, gettxreceiptstatus), the contract module (verifysourcecode, checkverifystatus, getsourcecode, getabi, getcontractcreation, verifyproxycontract, checkproxyverification), the block module (getblockreward, getblocknobytime, getblockcountdown), the logs module (getLogs) and the door itself; the other
  * modules register their actions in `MODULES` as they land. What is final is all that is served: every row is from a final block, a balance is reth's at the newest
  * final block (never the database's copy), and a list that stage 2 writes (internal calls, token transfers) stops at the block stage 2 has reached, so it is never
  * partly written. The texts of the answers are Etherscan's where the module's documentation and its answers give one, and are held by tests with recorded answers.
