@@ -26,7 +26,7 @@ CHAIN_ID=$(grep -o '"chainId": *[0-9]*' config.json | grep -o '[0-9]*$')
 RPC=${RPC:-$(grep -o '"rpc": *"[^"]*"' config.json | cut -d'"' -f4)}
 EXPLORER_API=$(grep -o '"explorerApi": *"[^"]*"' config.json | cut -d'"' -f4)
 
-node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir \
+node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} \
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
 forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
 
@@ -53,7 +53,7 @@ case ${1:-} in
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
   smoke) shift; node_c node scripts/smoke.mjs "$@" ;;
-  load) shift; node_c node scripts/load.mjs "$@" ;;
+  load) shift; if [ "${1:-}" = report ]; then shift; node_c node scripts/load-report.mjs "$@"; else node_c node scripts/load.mjs "$@"; fi ;;
   verify)
     node_c node scripts/verify.mjs list
     # The explorer takes 30 verifications an hour from one client: a submission that is refused is tried again after the pause it asks for.
