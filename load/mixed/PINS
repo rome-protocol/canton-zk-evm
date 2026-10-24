@@ -1,4 +1,4 @@
 # What the kit runs in. Plain key=value, read by run.sh. The Node image is the repo's own (../../PINS, EXPLORER_NODE_IMAGE); Foundry is pinned here
 # (the repo's PINS must not pin Foundry, tests/static.sh).
-FOUNDRY_IMAGE=ghcr.io/foundry-rs/foundry@sha256:2a4c7c28807504292da7f76a069dae6d027e7993e9b274f6bf01eb41b0f4bdc6
-FOUNDRY_VERSION=v1.5.0
+FOUNDRY_IMAGE=ghcr.io/foundry-rs/foundry@sha256:4a16a86f41d30418fbdca47ce2868121bbb0aeaa0a34bde2dd1e2911c4be2464
+FOUNDRY_VERSION=v1.8.6
