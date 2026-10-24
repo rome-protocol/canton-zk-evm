@@ -125,13 +125,13 @@ The hour that was run, and what it measured, is in [`RESULTS-2026-10-24.md`](RES
 
 ## An example run
 
-On Ostia DevNet (chain 770101), 24 October 2026. The deployer account is `0x5156D75f11D49990ae94Df0C92aFb7288be9FcBe`. It was funded with 20,000 tROME in one transfer, [`0x8f0926d20c71ff7f7be6a430f3e21da6b29dc3dd7f610257d21c179f8ac5ae58`](https://ostia.devnet.romeprotocol.xyz/tx/0x8f0926d20c71ff7f7be6a430f3e21da6b29dc3dd7f610257d21c179f8ac5ae58), sent from the faucet's account by the operator on the machine that runs the chain's services (the faucet service itself gives 1 tROME a day); the transfer went through the public RPC.
+On Ostia DevNet (chain 770101), 24 October 2026. The deployer account is `0x5156D75f11D49990ae94Df0C92aFb7288be9FcBe`. It was funded with 20,000 tROME in one transfer, [`0x8f0926d20c71ff7f7be6a430f3e21da6b29dc3dd7f610257d21c179f8ac5ae58`](https://ostia.devnet.romeprotocol.xyz/tx/0x8f0926d20c71ff7f7be6a430f3e21da6b29dc3dd7f610257d21c179f8ac5ae58), sent from the faucet's account by Rome on the machine that runs the chain's services (the faucet service itself gives 1 tROME a day); the transfer went through the public RPC.
 
 **What is left over, on purpose not hidden.** The deploy was run more than once on the way, and the chain keeps every contract:
 
 - A second `UniswapV2Factory` (block 44) and a `UniswapV2Router02` (block 45) from the first attempt; the router was built with the original Uniswap pair hash and never worked, and the router is unverified.
 - The first `WtROME` (block 35) was a line-for-line port of Dapphub's WETH9, which is GPL-3.0-or-later, labelled Apache-2.0 by mistake. It is replaced by the wrapper on OpenZeppelin's ERC20 in this folder, deployed again (block 178 on) with its own factory, router and two pools before the hour-long traffic started; the old `WtROME`, factory, router and pools are in the table "Deployed and not used" and nothing calls them. A first try of the new set against the old factory also left one router that cannot work (the factory's pair code came from a different build, see the pair hash above).
-- The explorer used to show the first `WtROME`'s source (`0xf5df8b56…2fb9`) as verified, labelled Apache-2.0. On 2026-10-24 the lead removed that verified-source record from the explorer, so the contract now shows as unverified; the file was never on `main`.
+- The explorer used to show the first `WtROME`'s source (`0xf5df8b56…2fb9`) as verified, labelled Apache-2.0. On 2026-10-24 Rome removed that verified-source record from the explorer, so the contract now shows as unverified; the file was never on `main`.
 
 **Verification result.** See the end of this section; every contract in use shows `verified: true` at `/api/contracts/<address>`. Matches are full, similar (copies made by a factory share the code of the first) or partial (only the metadata differs: the kit compiles without the metadata hash on purpose, as the pair hash needs a build that is the same byte for byte). Verified through the explorer's Etherscan API, paced under its 30 an hour; `Merces` through its JSON route (see Verification).
 
