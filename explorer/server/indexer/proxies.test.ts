@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addressOfWord, EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT, minimalProxyTarget } from "./proxies.ts";
+import { addressOfWord, EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT, TREX_AUTHORITY_SLOT, TREX_GETTERS, minimalProxyTarget, trexGetter } from "./proxies.ts";
 
 describe("proxy detection", () => {
   it("looks in the slots the standards name", () => {
@@ -20,5 +20,17 @@ describe("proxy detection", () => {
     expect(minimalProxyTarget(code + "00")).toBeNull();
     expect(minimalProxyTarget("0x363d3d373d3d3d363d74" + "bc".repeat(20) + "5af43d82803e903d91602b57fd5bf3")).toBeNull();
     expect(minimalProxyTarget("0x6001")).toBeNull();
+  });
+
+  it("looks for the implementation authority of T-REX and ONCHAINID proxies in their own slot, and asks the getter their code names", () => {
+    expect(TREX_AUTHORITY_SLOT).toBe("0x821f3e4d3d679f19eacc940c87acf846ea6eae24a63058ea750304437a62aafc");
+    expect(TREX_GETTERS).toHaveLength(7);
+    expect(new Set(TREX_GETTERS).size).toBe(7);
+    // a token proxy pushes the selector of getTokenImplementation() before its call; a code that pushes none of them has no getter
+    expect(trexGetter("0x608060405263" + TREX_GETTERS[0]!.slice(2) + "5afa")).toBe(TREX_GETTERS[0]);
+    expect(trexGetter("0X6080" + "63" + TREX_GETTERS[2]!.slice(2).toUpperCase() + "00")).toBe(TREX_GETTERS[2]);
+    expect(trexGetter("0x6080604052" + TREX_GETTERS[6]!.slice(2))).toBeNull(); // the bytes are there but not pushed
+    expect(trexGetter("0x6080")).toBeNull();
+    expect(trexGetter("0x")).toBeNull();
   });
 });

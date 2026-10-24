@@ -18,6 +18,7 @@ import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
 import { legsSlot } from "./legs.ts";
 import { notify } from "./notify.ts";
+import { repairTrexProxies } from "./proxies.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { rollupStats, type RollupResult } from "./stats.ts";
 import { markNightly, nightlyDue, nightlyWindow, runAudit, type AuditKind, type AuditResult } from "./audit.ts";
@@ -171,6 +172,13 @@ export function createIndexer(o: IndexerOptions) {
     // A database indexed before the chain instance was kept has it from block 1's record.
     await o.pool.query("insert into meta (key, value) select 'chain_instance', update_id from blocks where number = 1 on conflict do nothing");
     await o.pool.query("insert into cursors (stream, position, updated_at) values ('derive', 0, now()) on conflict do nothing");
+    // The proxies of an implementation authority (ERC-3643, ONCHAINID) that were made before the indexer knew them: looked at once.
+    try {
+      const repaired = await repairTrexProxies(o.pool, o.reads);
+      if (repaired > 0) log(`indexer: found ${repaired} proxies of an implementation authority among the contracts made before`);
+    } catch (e) {
+      log(`indexer: the look at earlier implementation-authority proxies failed and is tried again at the next start: ${(e as Error).message}`);
+    }
     // The participant is read from Canton when the walk first needs it (runOnce), not here: a rebuild from a file does not need Canton.
   }
 

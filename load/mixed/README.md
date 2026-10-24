@@ -72,7 +72,7 @@ The GPL contracts are compiled into the bytecode that is deployed (so are RedSto
 
 The explorer's front proxy takes 300 KB a request. Forge's url-encoded body for `Merces` (23 source files, 265 KB of standard JSON) is 450 KB and gets `413`; `run.sh verify` then sends the same input to the explorer's JSON route (`POST /api/verify`, `scripts/verify-large.mjs`, 265 KB) and that passes.
 
-**Known gap: ERC-3643 calls are not decoded on the explorer.** The T-REX token, identity registry and the ONCHAINID identities are verified as the proxies they are (`TokenProxy`, `IdentityRegistryProxy`, `IdentityProxy`); the explorer's proxy detection knows EIP-1967, EIP-1822, beacon and EIP-1167 proxies but not T-REX's implementation-authority proxies, so inputs of `transfer`, `batchMint`, `batchRegisterIdentity` and `addClaim` on them show as raw data. Supporting that proxy kind would be a change to the explorer, not to this kit.
+**ERC-3643 calls on the explorer.** The T-REX token, identity registry and the ONCHAINID identities are proxies of one kind: they keep the address of an implementation authority in a fixed slot and ask it, at each call, for the implementation (`getTokenImplementation()`, `getIRImplementation()` and so on; `getImplementation()` for an identity). The explorer follows them (kind `trex`, the authority in `beacon`) from the change that closed this gap on, so inputs of `transfer`, `batchMint`, `batchRegisterIdentity` and `addClaim` on them show as decoded methods. The run of 2026-10-24 was read before that change, when they showed as raw data (see the results).
 
 ## Layout
 

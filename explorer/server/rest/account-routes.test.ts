@@ -278,6 +278,15 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(body(await get(`/api/contracts/${C}`))).toMatchObject({ balance: "3000000000000000000000000", txCount: 1009 });
   });
 
+  it("answers the proxy of an implementation authority (T-REX, ONCHAINID) with its implementation, and the authority in `beacon`", async () => {
+    await sql("insert into proxies (proxy, kind, implementation, beacon, checked_block) values ($1, 'trex', $2, $3, 3)", [who(0xb2), who(0xa3), who(0xa4)]);
+    try {
+      expect(body(await get(`/api/contracts/${h(0xb2)}`))).toMatchObject({ proxy: { kind: "trex", implementation: h(0xa3), beacon: h(0xa4), checkedBlock: 3 } });
+    } finally {
+      await sql("delete from proxies where proxy = $1", [who(0xb2)]);
+    }
+  });
+
   it("answers a contract with its code, proxy and verification, and its source with every file", async () => {
     const vault = body(await get(`/api/contracts/${K}`));
     expect(vault).toMatchObject({

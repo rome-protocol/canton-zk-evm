@@ -71,6 +71,7 @@ export interface ContractDetail extends ContractItem {
   creationTxHash: string | null; lastInteractionBlock: number | null; codeHash: string; code: string;
   /** How many logs it wrote, counted up to EVENT_COUNT_CAP; `eventCountCapped` says the count stopped there. */
   eventCount: number; eventCountCapped: boolean;
+  /** `kind` is eip1967, eip1822, beacon, eip1167 or trex. `beacon` is the beacon of a beacon proxy, and for trex (ERC-3643 and ONCHAINID proxies) the implementation authority that names the implementation. */
   proxy: { kind: string; implementation: string | null; beacon: string | null; checkedBlock: number } | null;
   verification: {
     language: string; compilerVersion: string; codeFormat: string; contractPath: string; contractName: string; optimizerEnabled: boolean | null; optimizerRuns: number | null; evmVersion: string | null;
