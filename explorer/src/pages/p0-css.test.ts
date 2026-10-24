@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -144,5 +144,29 @@ describe("final polish: the 21-screen check", () => {
 
   it("lets the wallet table's cells shrink to the card (anywhere, the last resort after the <wbr> break points), so no width needs a sideways scroll", () => {
     expect(get(api, ".api-details td")).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});
+
+describe("the address page's direction tag and the transaction page's way-to-final card do not share a class", () => {
+  const sheets = readdirSync(join(import.meta.dirname, "..")).concat(readdirSync(import.meta.dirname).map((f) => `pages/${f}`))
+    .filter((f) => f.endsWith(".css")).map((f) => [f, read(`../${f}`)] as const);
+  const classesOfLast = (sel: string) => (sel.trim().split(/[\s>+~]+/).pop()!.match(/\.[\w-]+/g) ?? []).map((c) => c.slice(1));
+  const all = (css: string) => [...rules(css), ...rules(css, true)];
+
+  it("styles the .way class only in tx.css, where the card is", () => {
+    for (const [f, css] of sheets) {
+      if (f === "pages/tx.css") continue;
+      for (const [s] of all(css)) expect(s, `${f}: ${s}`).not.toMatch(/\.way(?![\w-])/);
+    }
+  });
+
+  it("has no rule of the tag's that an element with the card's classes (card way) can match", () => {
+    const address = all(read("address.css"));
+    expect(address.some(([s]) => s === ".dir-tag")).toBe(true);
+    for (const [s] of address) {
+      const cls = classesOfLast(s);
+      expect(cls.includes("way") && cls.every((c) => c === "card" || c === "way"), s).toBe(false);
+    }
+    expect(read("AddressTabs.tsx")).not.toMatch(/className="[^"]*\bway\b/);
   });
 });

@@ -6,10 +6,10 @@
 .hold { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line-2); }
 .hold:last-of-type { border-bottom: 0; }
 .hold .r { text-align: right; }
-.way { font-size: 11px; font-weight: 600; border-radius: 5px; padding: 1px 7px; border: 1px solid var(--line); }
-.way-out { color: var(--warn, #8a5a00); background: var(--warn-tint, #fdf3dc); }
-.way-in { color: var(--ok); background: var(--ok-tint, #e6f5ea); }
-.way-self { color: var(--muted); background: var(--surface-2); }
+.dir-tag { font-size: 11px; font-weight: 600; border-radius: 5px; padding: 1px 7px; border: 1px solid var(--line); }
+.dir-out { color: var(--warn, #8a5a00); background: var(--warn-tint, #fdf3dc); }
+.dir-in { color: var(--ok); background: var(--ok-tint, #e6f5ea); }
+.dir-self { color: var(--muted); background: var(--surface-2); }
 .chip-made { color: var(--canton); background: var(--canton-tint); border-color: var(--canton-tint); text-decoration: none; }
 .chip-made:hover { border-color: var(--canton); }
 .chip-count { font-weight: 400; }

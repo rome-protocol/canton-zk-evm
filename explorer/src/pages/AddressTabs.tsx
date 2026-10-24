@@ -25,8 +25,8 @@ const same = (a: string, b: string | null) => b !== null && a.toLowerCase() === 
 /** Which way a row went for this address. A row that is neither (a call that merely passed through) has no badge. */
 export function Way({ me, from, to }: { me: string; from: string; to: string | null }) {
   const out = same(me, from), into = same(me, to);
-  if (out && into) return <span className="way way-self">SELF</span>;
-  return out ? <span className="way way-out">OUT</span> : into ? <span className="way way-in">IN</span> : null;
+  if (out && into) return <span className="dir-tag dir-self">SELF</span>;
+  return out ? <span className="dir-tag dir-out">OUT</span> : into ? <span className="dir-tag dir-in">IN</span> : null;
 }
 
 const CoinValue = ({ raw, coin }: { raw: string; coin: Coin }) => <span title={`${exact(raw, coin.decimals)} ${coin.symbol}`}>{units(raw, coin.decimals)} {coin.symbol}</span>;
