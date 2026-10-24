@@ -22,10 +22,12 @@ for (let i = 0; i < n; i++) {
   out.push(row);
   await new Promise((r) => setTimeout(r, 5000));
 }
-// a view call with the payload: the value of 2 tETH in USD
-const v = await dataWithPrices(vault, "usdValueOfEth", [ethers.parseEther("2")]);
-const usd = ethers.AbiCoder.defaultAbiCoder().decode(["uint256"], await provider.call({ to: addr, data: v.data }))[0];
-log(`eth_call usdValueOfEth(2 tETH) = ${Number(usd) / 1e8} USD`);
-state.redstone = { vault: addr, recordings: out };
+if (n > 0) {
+  // a view call with the payload: the value of 2 tETH in USD
+  const v = await dataWithPrices(vault, "usdValueOfEth", [ethers.parseEther("2")]);
+  const usd = ethers.AbiCoder.defaultAbiCoder().decode(["uint256"], await provider.call({ to: addr, data: v.data }))[0];
+  log(`eth_call usdValueOfEth(2 tETH) = ${Number(usd) / 1e8} USD`);
+}
+state.redstone = { vault: addr, recordings: [...(state.redstone?.recordings ?? []), ...out] };
 save();
 writeFileSync(`${RUN}/redstone.json`, JSON.stringify(state.redstone, null, 2) + "\n");
