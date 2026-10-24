@@ -100,7 +100,7 @@ The explorer's front proxy takes 300 KB a request. Forge's url-encoded body for 
 
 **What happened in the example run: the vault recorded no price.** `PriceVault` is deployed and verified (block 97) and its one transaction is its creation. The driver asked RedStone's gateways 80 times during the hour and got signed prices 0 times, so it sent no `record` call (about 120 were planned), and no price was read from the vault. RedStone's public gateways reject anonymous requests (`public_gateway_rejected`, HTTP 403). To get prices, the oracle needs a data-service access arrangement with RedStone (a gateway address and API key); none is part of this kit and none was used. The wording "RedStone `record` calls" in the driver's mix is a kind that was planned and could not be built, not one that ran.
 
-RedStone is switching its public gateways off: they refuse requests in windows that grow each day and stop for good on 2026-10-29. A refused request is tried again every 45 seconds for `REDSTONE_WAIT_MIN` minutes (default 30). After that date the same step works with a gateway address and API key passed to the SDK's `authenticatedGateways`; none is part of this kit.
+RedStone is switching its public gateways off: they refuse requests in windows that grow each day and stop for good on 2026-10-29. A refused request is tried again every 45 seconds for `REDSTONE_WAIT_MIN` minutes (default 30). After that date the step needs a RedStone gateway and an API key, wired into `scripts/oracle.mjs` through the SDK's `authenticatedGateways`; that has not been built or tried.
 
 ## Private transfers (Merces, client side only)
 
@@ -133,7 +133,7 @@ On Ostia DevNet (chain 770101), 24 October 2026. The deployer account is `0x5156
 - The first `WtROME` (block 35) was a line-for-line port of Dapphub's WETH9, which is GPL-3.0-or-later, labelled Apache-2.0 by mistake. It is replaced by the wrapper on OpenZeppelin's ERC20 in this folder, deployed again (block 178 on) with its own factory, router and two pools before the hour-long traffic started; the old `WtROME`, factory, router and pools are in the table "Deployed and not used" and nothing calls them. A first try of the new set against the old factory also left one router that cannot work (the factory's pair code came from a different build, see the pair hash above).
 - The explorer used to show the first `WtROME`'s source (`0xf5df8b56…2fb9`) as verified, labelled Apache-2.0. On 2026-10-24 Rome removed that verified-source record from the explorer, so the contract now shows as unverified; the file was never on `main`.
 
-**Verification result.** See the end of this section; every contract in use shows `verified: true` at `/api/contracts/<address>`. Matches are full, similar (copies made by a factory share the code of the first) or partial (only the metadata differs: the kit compiles without the metadata hash on purpose, as the pair hash needs a build that is the same byte for byte). Verified through the explorer's Etherscan API, paced under its 30 an hour; `Merces` through its JSON route (see Verification).
+**Verification result.** Every contract in use shows `verified: true` at `/api/contracts/<address>`. Matches are full, similar (copies made by a factory share the code of the first) or partial (only the metadata differs: the kit compiles without the metadata hash on purpose, as the pair hash needs a build that is the same byte for byte). Verified through the explorer's Etherscan API, paced under its 30 an hour; `Merces` through its JSON route (see Verification).
 
 ### Contracts in use
 
