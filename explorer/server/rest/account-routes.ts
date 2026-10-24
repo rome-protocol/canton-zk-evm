@@ -87,7 +87,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     // The balance a tool acts on is reth's at the newest final block, never the database's copy; with no final block yet there is nothing to read it at.
     const [held, balance] = await Promise.all([accounts.address(a), head === null ? Promise.resolve(null) : reth.balanceAt(a, head)]);
     const body = {
-      address: a, kind: "account", sentCount: 0, receivedCount: 0, internalCount: 0, tokenTransferCount: 0, firstSeenBlock: null, firstSeenTimestamp: null, lastActiveBlock: null, lastActiveTimestamp: null, createdCount: 0, createdCountCapped: false, fundedBy: null, token: null, createdBy: null, ...held,
+      address: a, kind: "account", sentCount: 0, receivedCount: 0, internalCount: 0, tokenTransferCount: 0, erc20TransferCount: 0, nftTransferCount: 0, firstSeenBlock: null, firstSeenTimestamp: null, lastActiveBlock: null, lastActiveTimestamp: null, createdCount: 0, createdCountCapped: false, fundedBy: null, token: null, createdBy: null, ...held,
       balance: balance === null ? null : balance.toString(), balanceBlock: head, derived: await isDerived(),
     };
     return cached(ok(pick({ ...body, fundedBy: body.fundedBy && pick(body.fundedBy, F.funding) }, F.addressDetail)), "composite");

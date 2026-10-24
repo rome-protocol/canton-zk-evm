@@ -239,7 +239,7 @@ function Around({ id }: { id: string }) {
                 {items.map((x) => (
                   <tr key={x.updateId} aria-current={x.updateId === id ? "true" : undefined} className={x.updateId === id ? "here" : undefined}>
                     <td className="num">{x.offset}</td>
-                    <td><HashLink value={x.updateId} kind="update" to={`/canton/${x.updateId}`} /></td>
+                    <td><HashLink value={x.updateId} kind="update" to={`/canton/${x.updateId}`} plain /></td>
                     <td className="mono">{x.recordTime}</td>
                     <td className="mono">{x.submittedTemplate ? `${x.submittedTemplate}${x.submittedChoice ? ` · ${x.submittedChoice}` : ""}` : NOT_LOGGED}</td>
                     <td>{x.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${x.block}`}>Block {x.block}</Link>}</td>

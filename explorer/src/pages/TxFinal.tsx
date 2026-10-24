@@ -28,7 +28,7 @@ export function stepsOf(t: ApiTx, block: BlockSummary | undefined, read: BlockRe
     { name: "Accepted", reached: l?.acceptedAt != null || inBlock || t.status === "waiting", time: l?.acceptedAt ?? null, digits: 3, note: via(l?.acceptedVia ?? null), source: l?.acceptedAt ? "producer log" : null },
     { name: inBlock ? `In block ${t.block!.number}` : "In a block", reached: inBlock, time: l?.includedAt ?? null, digits: 3, note: where, source: l?.includedAt ? "producer log" : null },
     { name: "Proof done", reached: proofDone || final || t.status === "unindexed" || canton !== null, time: l?.proofEndedAt ?? null, digits: 3, note: proofNote, source: l?.proofEndedAt ? "producer log" : null },
-    { name: "Final on Canton", reached: final || t.status === "unindexed", time: canton?.recordTime ?? null, digits: 6, note: null, source: canton ? "Canton record time" : null },
+    { name: "Final on Canton", reached: final || t.status === "unindexed", time: canton?.recordTime ?? null, digits: 6, note: canton ? "Canton record time" : null, source: canton ? "Canton record time" : null },
   ];
 }
 
@@ -56,12 +56,11 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
           const last = i === steps.length - 1;
           return (
             <li key={s.name} className={s.reached ? (last ? "got last" : "got") : "none"}>
-              <i className="how-dot" aria-hidden="true" />
+              <i className="how-dot" aria-hidden="true">{s.reached && <Icon name="check" size={13} />}</i>
               {delta && <span className="way-delta mono small muted">{delta}</span>}
               <b className="how-n">{s.name}</b>
-              <span className="how-t mono">{s.time ? clock(s.time, s.digits) : NONE}</span>
+              <span className="how-t mono" title={s.source ?? undefined}>{s.time ? clock(s.time, s.digits) : NONE}</span>
               <span className="how-d muted small">{s.note ?? (s.reached || s.time ? "" : "not reached yet")}</span>
-              {s.source && <span className="tag how-src">{s.source}</span>}
             </li>
           );
         })}

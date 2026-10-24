@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useRef, useState } from "react";
-import { getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
+import { getContract, getContractList, getFaucetInfo, getOpenApi, type ApiStatus, type OpenApiDoc } from "../api.ts";
 import { addNetwork, rpcUrl } from "../wallet.ts";
+import { CardHead } from "../components/Cards.tsx";
 import { copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { useStatus } from "../useStatus.ts";
@@ -31,6 +32,12 @@ function Code({ title, note, label, text }: { title: string; note?: string; labe
 const clip = (v: string, n = 40) => (v.length > n ? `${v.slice(0, n - 1)}…` : v);
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL = /^\d{1,80}$/;
+const SOURCE_PATH = /^[\w@./-]{1,120}$/, SOURCE_NAME = /^\w{1,80}$/;
+
+/** A URL with break points after "//", each "." and each "/", so a narrow cell wraps between words and cuts one only when a single word is wider than the cell. */
+function BreakableUrl({ url }: { url: string }) {
+  return <>{(url.match(/[^./]*(?:\/\/|[./])|[^./]+$/g) ?? [url]).map((part, i, all) => <Fragment key={i}>{part}{i < all.length - 1 ? <wbr /> : null}</Fragment>)}</>;
+}
 
 /** The network's details, the way a wallet asks for them, and the button that asks the wallet to add it. Nothing where the explorer serves no public RPC. */
 function WalletCard({ status }: { status: ApiStatus }) {
@@ -41,14 +48,14 @@ function WalletCard({ status }: { status: ApiStatus }) {
   const add = async () => setNote(await addNetwork(status, name, "above"));
   const rows: [string, React.ReactNode][] = [
     ["Network name", `${name} ${clip(status.networkName ?? "", 20)}`.trim()],
-    ["RPC address", <><span className="mono">{url}</span><button type="button" className="copy" aria-label={copied ? "Copied" : "Copy the RPC address"} onClick={async () => {
+    ["RPC address", <><span className="mono"><BreakableUrl url={url} /></span><button type="button" className="copy" aria-label={copied ? "Copied" : "Copy the RPC address"} onClick={async () => {
       if (!(await copyText(url))) return;
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     }}><Icon name={copied ? "check" : "copy"} size={13} /></button></>],
     ["Chain id", <>{status.chainId} <span className="muted small">· 0x{status.chainId.toString(16)}</span></>],
     ["Coin", `${clip(status.coin.symbol, 12)}, ${status.coin.decimals} decimals`],
-    ["Explorer", <span className="mono">{location.origin}</span>],
+    ["Explorer", <span className="mono"><BreakableUrl url={location.origin} /></span>],
     ["Final only", "\"latest\" is the newest final block; a block being proven is not served"],
   ];
   return (
@@ -126,9 +133,13 @@ export function ApiDocs() {
   const example = f?.on && f.address && ADDRESS.test(f.address) ? f.address : null;
   // The route answers from the final head, so only a balance read at a named final block is the answer it would give.
   const exBalance = example && f?.balance && typeof f.balanceBlock === "number" && DECIMAL.test(f.balance) ? f.balance : null;
+  // The verify example is a real one: the chain's most used verified contract, by its address and the source path and name it was verified with. Nothing is named where there is none.
+  const top = useQuery({ queryKey: ["api-verified-contract"], queryFn: async () => { const [c] = (await getContractList("interactions", true, null, 1)).items; return c && ADDRESS.test(c.address) ? getContract(c.address) : null; }, staleTime: 60_000, retry: false }).data;
+  const v = top?.verification;
+  const verified = top && v && SOURCE_PATH.test(v.contractPath) && SOURCE_NAME.test(v.contractName) ? { address: top.address, file: `${v.contractPath}:${v.contractName}` } : null;
   const request = `GET ${origin}/api\n    ?module=account&action=balance\n    &address=${example ?? "<address>"}\n    &tag=latest`;
   const answer = `{\n  "status": "1",\n  "message": "OK",\n  "result": "${exBalance ?? "<balance in wei, a decimal string>"}"\n}`;
-  const foundry = `# verify a contract, as on Etherscan\nforge verify-contract <address> \\\n  src/<File>.sol:<Contract> \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
+  const foundry = `# verify a contract, as on Etherscan\nforge verify-contract ${verified?.address ?? "<address>"} \\\n  ${verified?.file ?? "src/<File>.sol:<Contract>"} \\\n  --chain-id ${id ?? ""} \\\n  --verifier etherscan \\\n  --verifier-url ${origin}/api \\\n  --etherscan-api-key any`;
   const hardhat = `etherscan: {\n  apiKey: { ${name.toLowerCase().replace(/\W+/g, "") || "chain"}: "any" },\n  customChains: [{\n    network: "${name.toLowerCase().replace(/\W+/g, "") || "chain"}", chainId: ${id ?? ""},\n    urls: { apiURL: "${origin}/api",\n            browserURL: "${origin}" }\n  }]\n}`;
   return (
     <>
@@ -139,9 +150,10 @@ export function ApiDocs() {
         <div className="card"><h2><Icon name="link" size={15} /> JSON-RPC</h2><p className="muted small">Standard Ethereum JSON-RPC at <span className="mono">/rpc</span>. It serves final blocks only, and sends your transactions on.</p></div>
       </div>
       {modules && <section className="card api-eth" aria-labelledby="eth-h">
+        <CardHead as="h2" title={<span id="eth-h">Etherscan-compatible API</span>}
+          sub={<span className="mono">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span>} />
+        <div className="api-eth-grid">
         <div className="api-eth-main">
-          <header className="api-head"><h2 id="eth-h">Etherscan-compatible API</h2>
-            <span className="muted mono small">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span></header>
           <div className="scroll"><table className="api-table" aria-label="Etherscan-compatible modules"><tbody>
             {modules.map(([m, actions]) => (
               <tr key={m}><td className="mod mono">{m}</td><td>{actions.map((a) => <Fragment key={a}><span className="mchip mono">{clip(a, 60)}</span>{" "}</Fragment>)}</td></tr>
@@ -154,6 +166,7 @@ export function ApiDocs() {
           <p className="muted small">Answer</p>
           <pre className="api-pre mono" aria-label="Example answer">{answer}</pre>
           <p className="muted small">Balances are read from the chain at the newest final block. Numbers are decimal strings, as Etherscan gives them.</p>
+        </div>
         </div>
       </section>}
       {/* The blocks carry the chain id, so they wait for the status rather than show a blank one. */}

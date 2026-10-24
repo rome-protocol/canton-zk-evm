@@ -208,11 +208,13 @@ describe("the block page, for a final block", () => {
     const table = within(await screen.findByRole("region", { name: "Transactions" }));
     expect(table.getByRole("heading", { name: "Transactions" }).nextElementSibling).toHaveTextContent("2 in this block, in order");
     expect(calls).toContain("/api/blocks/3/transactions?limit=10");
-    await table.findByRole("link", { name: "0xf6f6…f6f6" });
+    await table.findByRole("link", { name: "0xf6f6f6f6…f6f6f6" });
+    expect(table.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(table.queryByRole("button", { name: /full/i })).toBeNull();
     const rows = table.getAllByRole("row").slice(1);
     const cells = within(rows[0]!);
-    expect(cells.getByRole("link", { name: "0xf6f6…f6f6" })).toHaveAttribute("href", `/tx/${hash(0xf6)}`);
-    expect(cells.getByRole("link", { name: "0x5b5b…5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
+    expect(cells.getByRole("link", { name: "0xf6f6f6f6…f6f6f6" })).toHaveAttribute("href", `/tx/${hash(0xf6)}`);
+    expect(cells.getByRole("link", { name: "0x5b5b5b5b…5b5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
     expect(rows[0]).toHaveTextContent("0.25 tROME");
     expect(rows[0]).toHaveTextContent("0.000035 tROME");
     expect(cells.getByText("Success")).toBeInTheDocument();
@@ -233,21 +235,21 @@ describe("the block page, for a final block", () => {
       },
     });
     const nav = () => within(screen.getByRole("navigation", { name: "Pages of transactions" }));
-    await screen.findByRole("link", { name: "0x8080…8080" });
+    await screen.findByRole("link", { name: "0x80808080…808080" });
     expect(nav().getByText("Page 1 of 3")).toBeInTheDocument();
     expect(nav().getByRole("button", { name: "First" })).toBeDisabled();
     await user.click(nav().getByRole("button", { name: "Next page" }));
-    await screen.findByRole("link", { name: "0x8a8a…8a8a" });
+    await screen.findByRole("link", { name: "0x8a8a8a8a…8a8a8a" });
     expect(calls).toContain("/api/blocks/3/transactions?limit=10&after=9");
     expect(screen.getByText("Showing 11–20 of 25")).toBeInTheDocument();
     await user.click(nav().getByRole("button", { name: "Last" }));
-    await screen.findByRole("link", { name: "0x9494…9494" });
+    await screen.findByRole("link", { name: "0x94949494…949494" });
     expect(calls).toContain("/api/blocks/3/transactions?limit=10&after=19");
     expect(nav().getByText("Page 3 of 3")).toBeInTheDocument();
     expect(screen.getByText("Showing 21–25 of 25")).toBeInTheDocument();
     expect(nav().getByRole("button", { name: "Next page" })).toBeDisabled();
     await user.click(nav().getByRole("button", { name: "First" }));
-    await screen.findByRole("link", { name: "0x8080…8080" });
+    await screen.findByRole("link", { name: "0x80808080…808080" });
   });
 
   it("names the faucet as the sender of its transactions", async () => {

@@ -96,6 +96,15 @@ describe("the stats page", () => {
     expect(card).toHaveTextContent("Empty blocks: 1");
   });
 
+  it("does not add Accepted up to Final: it says Final counts every transaction in a final block, sent through Ostia or not", async () => {
+    await open();
+    const card = (await screen.findByRole("heading", { name: "Reliability" })).closest("section")!;
+    const w = within(card);
+    expect(w.getByText("Final").parentElement).toHaveTextContent("every transaction in a final block, whether or not Ostia accepted it");
+    expect(w.getByText("Accepted").parentElement).toHaveTextContent("only those sent through Ostia's RPC or the faucet");
+    expect(card).not.toHaveTextContent("every transaction Ostia accepted, by what became of it");
+  });
+
   it("gives the lost transactions' hashes the hash font, not the figure font", async () => {
     const hash = "0x" + "ab".repeat(32);
     await open("/stats?window=7d", { summary: () => reply(summary({ lost: { window: 1, total: 1, listed: [{ txHash: hash, state: "lost", reason: "never made final", at: "2026-10-20T10:00:00.000Z" }] } })) });
@@ -348,5 +357,18 @@ describe("the stats page", () => {
     const busy = (await screen.findByRole("heading", { name: "Prover busy" })).closest("section")!;
     await waitFor(() => expect(busy).toHaveTextContent("This chart cannot be read right now"));
     expect(await tile("Time to final")).toHaveTextContent("8.4 s");
+  });
+
+  it("puts every card's grey subtitle in the head row beside its title, as on the approved screens", async () => {
+    await open();
+    await screen.findByRole("heading", { name: "Reliability" });
+    const heads = Array.from(document.querySelectorAll(".panel > .card-head"));
+    expect(heads.length).toBeGreaterThanOrEqual(5);
+    for (const h of heads) {
+      const title = h.querySelector(".card-title")!;
+      expect(title.querySelector("h3"), h.textContent ?? "").not.toBeNull();
+      expect(title.querySelector(".muted"), h.textContent ?? "").not.toBeNull();
+    }
+    expect(document.querySelectorAll(".panel > .list-h").length).toBe(0);
   });
 });

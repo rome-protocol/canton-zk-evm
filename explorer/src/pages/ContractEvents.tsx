@@ -41,7 +41,7 @@ function Row({ e, abi, methods, now, coin }: { e: ContractEvent; abi: AbiEntry[]
   const method = e.method === null ? null : (methods.get(e.method) ?? e.method);
   return (
     <tr>
-      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link>{typeof e.timestamp === "number" && Number.isFinite(e.timestamp) ? <> · {ago(new Date(e.timestamp * 1000).toISOString(), now)}</> : null}</div></td>
+      <td className="c-hash"><HashLink value={e.txHash} to={`/tx/${e.txHash}`} plain /><div className="small muted">block <Link className="num" to={`/block/${e.block}`}>{e.block}</Link>{typeof e.timestamp === "number" && Number.isFinite(e.timestamp) ? <> · {ago(new Date(e.timestamp * 1000).toISOString(), now)}</> : null}</div></td>
       <td>{e.creation ? <span className="tag method" title="This transaction created a contract">Create contract</span> : method === null ? <span className="muted">—</span> : <span className="tag method" title={e.method ?? undefined}>{method}</span>}</td>
       <td>{d ? <span className="mono" title={d.signature}>{d.name}</span> : <span className="muted">Not decoded</span>}<div className="mono small muted" title={e.topics[0]}>{e.topics[0] ? short(e.topics[0]) : "anonymous"}</div></td>
       <td>{d ? <Args d={d} coin={coin} /> : <span className="mono small wrap muted">{e.topics.length > 1 || e.data !== "0x" ? `${e.topics.length - (e.topics[0] ? 1 : 0)} indexed, data ${e.data.length > 66 ? e.data.slice(0, 66) + "…" : e.data}` : "no data"}</span>}</td>

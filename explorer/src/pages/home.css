@@ -12,7 +12,7 @@
 /* home: the cards */
 .stat-k { display: flex; align-items: center; gap: 7px; }
 .stat-k .ic { color: var(--muted); flex: none; }
-.stat-ok { background: var(--ok-tint); border-color: var(--ok-line); }
+.card.stat-ok { background: var(--ok-tint); border-color: var(--ok-line); } /* two classes: the shared .card has one and may load later */
 
 /* home: the hero and the lock banner */
 .hero p { max-width: 760px; margin: 8px 0 16px; font-size: 15px; }

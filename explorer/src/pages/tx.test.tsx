@@ -173,6 +173,8 @@ describe("a transaction that reth holds in its pool, reached by its hash", () =>
     expect(steps.map((x) => x.querySelector(".how-n")!.textContent)).toEqual(["Accepted", "In a block", "Proof done", "Final on Canton"]);
     expect(steps[0]).toHaveClass("got");
     expect(steps.slice(1).every((x) => x.classList.contains("none"))).toBe(true);
+    expect(steps[0]!.querySelector(".how-dot svg")).not.toBeNull();
+    expect(steps.slice(1).every((x) => x.querySelector(".how-dot svg") === null)).toBe(true);
   });
 
   it("says a transaction in a block that Canton holds and the indexer has not read is final but not indexed, and keeps looking", async () => {
@@ -435,13 +437,24 @@ describe("the way to final", () => {
     await openFinal();
     await waitFor(() => expect(way().getByText("position 0 of 1")).toBeInTheDocument());
     expect(steps()).toEqual([
-      "Accepted01:37:14.500by Ostia's RPCproducer log",
-      "+1.50 sIn block 301:37:16.000position 0 of 1producer log",
-      "+7.00 sProof done01:37:23.000ZisK, 1,344 bytesproducer log",
+      "Accepted01:37:14.500by Ostia's RPC",
+      "+1.50 sIn block 301:37:16.000position 0 of 1",
+      "+7.00 sProof done01:37:23.000ZisK, 1,344 bytes",
       "+0.41 sFinal on Canton01:37:23.412000Canton record time",
     ]);
     expect(way().getByText(/Final/, { selector: "span" })).toHaveTextContent("Final 8.91 s after Ostia accepted it.");
     expect(way().getByText("8.91 s")).toHaveClass("num");
+  });
+
+  it("marks each reached step with a check circle, keeps where a time comes from as its title, and draws no source tag", async () => {
+    await openFinal();
+    await waitFor(() => expect(way().getByText("position 0 of 1")).toBeInTheDocument());
+    const items = way().getAllByRole("listitem");
+    for (const li of items) expect(li.querySelector(".how-dot svg")).not.toBeNull();
+    expect(items[3]).toHaveClass("last");
+    expect(items[0]!.querySelector(".how-t")).toHaveAttribute("title", "producer log");
+    expect(items[3]!.querySelector(".how-t")).toHaveAttribute("title", "Canton record time");
+    expect(document.querySelector(".way .how-src")).toBeNull();
   });
 
   it("adds the median time to final of the last hour, and says it was not refused or left out of any earlier block when the journal shows no earlier attempt", async () => {
@@ -511,6 +524,8 @@ describe("the Canton record and the proof of the transaction's block", () => {
     expect(side("Canton record", "Command id")).toHaveTextContent("cmd-1 producer log");
     expect(within(side("Canton record", "Block")).getByRole("link", { name: "Block 3" })).toHaveAttribute("href", "/block/3");
     const card = within(screen.getByRole("region", { name: "Canton record" }));
+    expect(card.getByRole("link", { name: "Open the Canton record →" })).toHaveClass("side-link");
+    expect(card.getByRole("link", { name: "Open block 3 →" })).toHaveClass("side-link");
     expect(card.getByRole("link", { name: /Open the Canton record/ })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(card.getByRole("link", { name: /Open block 3/ })).toHaveAttribute("href", "/block/3");
   });
@@ -522,12 +537,28 @@ describe("the Canton record and the proof of the transaction's block", () => {
     expect(side("Canton record", "Command id")).toHaveTextContent("not in the producer's log");
   });
 
-  it("shows the proof's facts, read from its bytes, with the pins", async () => {
+  it("shows the proof in its compact form: Program key, ZisK release and Block hash as rows, no inner box, and Verify inline with the proof's size", async () => {
     await openFinal();
     await screen.findByText("Program key");
+    const region = screen.getByRole("region", { name: "The proof" });
+    const proof = within(region);
+    expect(proof.getAllByText(/./, { selector: "dt" }).map((d) => d.textContent)).toEqual(["Program key", "ZisK release", "Block hash"]);
+    expect(proof.getAllByText(/ours|ZisK 1\.3\.1|block 3/).length).toBeGreaterThanOrEqual(3);
+    expect(region.querySelector(".facts")).toBeNull();
+    expect(proof.queryByText(/proof 768/)).toBeNull();
+    expect(proof.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(region.querySelector(".side-h")).toHaveTextContent("of block 3");
+    const verify = proof.getByRole("button", { name: /Verify block 3 in your browser/ });
+    expect(verify.parentElement).toHaveTextContent("1,344-byte proof");
+  });
+
+  it("says in the compact proof card which fact does not match the explorer's pins, and keeps the status word", async () => {
+    const base = blockSummary();
+    await openFinal(undefined, { blockDetail: () => reply({ ...base, canton: { ...base.canton!, proof: { ...base.canton!.proof!, rootC: { value: hash(9), ok: false } } } }) });
+    await screen.findByText("Program key");
     const proof = within(screen.getByRole("region", { name: "The proof" }));
-    expect(proof.getAllByText(/ours|ZisK 1\.3\.1|this block/).length).toBeGreaterThanOrEqual(3);
-    expect(proof.getByText("1,344 bytes")).toBeInTheDocument();
+    expect(proof.getByText(/does not match this explorer's pin/)).toBeInTheDocument();
+    expect(proof.getByText(/The status word stays Final/)).toBeInTheDocument();
   });
 
   it("says a block that is not on Canton yet has no record and no proof, and greys Verify", async () => {
@@ -649,6 +680,15 @@ describe("the Token transfers row of the overview", () => {
     await waitFor(() => expect(r).toHaveTextContent("tUSD"));
     expect(r).toHaveTextContent("and 2 more in the Token transfers list below");
     expect(calls.filter((c) => c.includes("/token-transfers"))).toHaveLength(1);
+  });
+
+  it("reads each transfer as a sentence: From X to Y for N Token (SYM)", async () => {
+    await openFinal(tx({ transfer: null, lifecycle: journal() }), { labels: labelsOf([usd]), txTransfers: () => reply({ ...page([xfer(1)]), derived: true }) });
+    await waitFor(() => expect(row("Token transfers")).toHaveTextContent("tUSD"));
+    const line = row("Token transfers").querySelector(".xfer-line")!;
+    expect(line.textContent).toMatch(/^From \S+ to \S+ for [\d.,]+ .*Test USD \(tUSD\)/);
+    expect(line.textContent).not.toContain("→");
+    expect([...line.querySelectorAll(".muted")].map((x) => x.textContent)).toEqual(["From", "to", "for"]);
   });
 
   it("gives no number when the transfers run past the first page, since the page cannot count what it has not read", async () => {

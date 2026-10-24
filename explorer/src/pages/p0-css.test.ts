@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -56,8 +56,11 @@ describe("the way to final: tx.css wins over block.css whichever sheet comes las
   it("puts the step's dot above its name: room above the text, and the dot and the line lower than block.css's", () => {
     const get = (s: string) => rules(tx).find(([x]) => x === s)?.[1] ?? "";
     expect(get(".how-steps.way-steps li")).toMatch(/padding-top: 40px/);
-    expect(get(".how-steps.way-steps .how-dot")).toMatch(/top: 22px/);
-    expect(get(".how-steps.way-steps li::before")).toMatch(/top: 28px/);
+    expect(get(".how-steps.way-steps .how-dot")).toMatch(/top: 18px/);
+    // The tick is the ink of a filled accent (white in light, dark in dark), not a fixed white that is faint on the pale dark-mode circles.
+    expect(get(".how-steps.way-steps .how-dot")).toMatch(/color: var\(--btn-ink\)/);
+    expect(get(".how-steps.way-steps .how-dot")).not.toMatch(/#fff/i);
+    expect(get(".how-steps.way-steps li::before")).toMatch(/top: 29px/);
   });
 });
 
@@ -110,5 +113,65 @@ describe("the transaction page on a phone, as screen 14 has it", () => {
     expect(body(phone, ".args-table thead")).toMatch(/display:\s*none/);
     expect(body(phone, ".args-table tr")).toMatch(/display:\s*grid/);
     expect(body(phone, ".args-table td:nth-child(4)")).toMatch(/grid-column:\s*1 \/ -1/);
+  });
+});
+
+describe("final polish: the 21-screen check", () => {
+  const home = read("home.css"), api = read("api-docs.css");
+  const get = (css: string, sel: string, media = false) => rules(css, media).find(([x]) => x === sel)?.[1] ?? "";
+
+  it("tints the Lost card green with a rule that beats the shared .card, whichever sheet comes last", () => {
+    const tint = rules(home).find(([s]) => s.includes("stat-ok"))!;
+    expect(tint[1]).toMatch(/background:\s*var\(--ok-tint\)/);
+    expect(beats(spec(tint[0]), spec(".card"))).toBe(true);
+  });
+
+  it("lets a figure break only at its commas (the <wbr> points) unless one group alone is wider than the card, and keeps `anywhere` for the hashes", () => {
+    expect(get(token, ".tok-stats .stat-v:not(.stat-hash)")).toMatch(/overflow-wrap:\s*break-word/);
+    expect(get(token, ".tok-stats .stat-v")).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+
+  it("keeps the token page's supply in one piece on a phone: a smaller figure, not a break inside the number", () => {
+    expect(get(token, ".tok-stats .stat-v:not(.stat-hash)", true)).toMatch(/font-size:\s*(2[0-4]px|clamp\()/);
+  });
+
+  it("wraps the API page's method chips on a phone instead of cutting them", () => {
+    expect(get(api, ".mchip")).toMatch(/max-width:\s*100%/);
+    expect(get(api, ".mchip")).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(get(api, ".api-table td")).toMatch(/min-width:\s*0/);
+    expect(get(api, ".api-eth-main .api-table td", true)).toMatch(/display:\s*block/);
+  });
+
+  it("lets the wallet table's cells shrink to the card (anywhere, the last resort after the <wbr> break points), so no width needs a sideways scroll", () => {
+    expect(get(api, ".api-details td")).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+
+  it("sets the wallet URLs in a 12px mono and gives the wallet column room, so each fits one line at laptop widths", () => {
+    expect(get(api, ".api-details .mono")).toMatch(/font-size:\s*12px/);
+    expect(get(api, ".api-lower")).toMatch(/minmax\(0, 1\.5fr\) minmax\(0, 1fr\)/);
+  });
+});
+
+describe("the address page's direction tag and the transaction page's way-to-final card do not share a class", () => {
+  const sheets = readdirSync(join(import.meta.dirname, "..")).concat(readdirSync(import.meta.dirname).map((f) => `pages/${f}`))
+    .filter((f) => f.endsWith(".css")).map((f) => [f, read(`../${f}`)] as const);
+  const classesOfLast = (sel: string) => (sel.trim().split(/[\s>+~]+/).pop()!.match(/\.[\w-]+/g) ?? []).map((c) => c.slice(1));
+  const all = (css: string) => [...rules(css), ...rules(css, true)];
+
+  it("styles the .way class only in tx.css, where the card is", () => {
+    for (const [f, css] of sheets) {
+      if (f === "pages/tx.css") continue;
+      for (const [s] of all(css)) expect(s, `${f}: ${s}`).not.toMatch(/\.way(?![\w-])/);
+    }
+  });
+
+  it("has no rule of the tag's that an element with the card's classes (card way) can match", () => {
+    const address = all(read("address.css"));
+    expect(address.some(([s]) => s === ".dir-tag")).toBe(true);
+    for (const [s] of address) {
+      const cls = classesOfLast(s);
+      expect(cls.includes("way") && cls.every((c) => c === "card" || c === "way"), s).toBe(false);
+    }
+    expect(read("AddressTabs.tsx")).not.toMatch(/className="[^"]*\bway\b/);
   });
 });

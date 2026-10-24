@@ -49,9 +49,9 @@ function Transactions({ rows }: { rows: BlockRow[] }) {
             <tbody>
               {rows.map((r) => (
                 <tr key={r.hash}>
-                  <td className="c-hash"><HashLink value={r.hash} to={`/tx/${r.hash}`} /></td>
-                  <td className="c-from"><HashLink value={r.from} to={`/address/${r.from}`} /></td>
-                  <td className="c-to">{r.to ? <><HashLink value={r.to} to={`/${r.transfer ? "token" : "address"}/${r.to}`} />{r.transfer && <span className="tag">{r.transfer.symbol}</span>}</> : <span className="muted">none</span>}</td>
+                  <td className="c-hash"><HashLink value={r.hash} to={`/tx/${r.hash}`} plain /></td>
+                  <td className="c-from"><HashLink value={r.from} to={`/address/${r.from}`} plain /></td>
+                  <td className="c-to">{r.to ? <><HashLink value={r.to} to={`/${r.transfer ? "token" : "address"}/${r.to}`} plain />{r.transfer && <span className="tag">{r.transfer.symbol}</span>}</> : <span className="muted">none</span>}</td>
                   <td className="c-did"><What row={r} /></td>
                   <td className="c-res"><Result success={r.success} /></td>
                 </tr>

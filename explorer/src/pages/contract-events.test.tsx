@@ -124,6 +124,13 @@ describe("the contract page: Events", () => {
     expect(row.textContent).toMatch(/block 19 · 10 min ago/);
   });
 
+  it("shows the transaction of an event as a plain hash, with no copy or expand button", async () => {
+    await open("events", { detail: contractDetail(0xcb, { eventCount: 7 }), sources: verified, events: () => page([log(1)]) });
+    const row = (await screen.findByRole("link", { name: "19" })).closest("tr")!;
+    expect(within(row).queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /full/i })).toBeNull();
+  });
+
   it("says 100,000+ in the tab and the words when the count stopped at its ceiling", async () => {
     await open("events", { detail: contractDetail(0xcb, { eventCount: 100000, eventCountCapped: true }), sources: verified, events: () => page([log(1)]) });
     expect(await screen.findByText(/^100,000\+ events from final blocks/)).toBeInTheDocument();

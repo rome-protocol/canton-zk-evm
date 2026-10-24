@@ -78,6 +78,8 @@ export function Holdings({ addr }: { addr: string }) {
   const labels = useLabels(d?.items.map((h) => h.token) ?? []);
   const tokens = d ? new Set(d.items.map((h) => h.token)).size : 0;
   const atLeast = !!d && (p.hasPrev || p.hasNext || d.derived === false);
+  // Only a whole list, read to the end from final blocks, can say that none of it is an NFT.
+  const noNft = !!d && d.derived !== false && !atLeast && d.items.length > 0 && d.items.every((h) => h.standard === "ERC-20");
   return (
     <section className="card" aria-label="Token holdings">
       <CardHead as="h2" title="Token holdings" sub={st?.deriveCursor != null ? `as of block ${st.deriveCursor}` : undefined} action={d && tokens > 0 ? <span className="chip chip-kind chip-count">{count(tokens)}{atLeast ? "+" : ""} {tokens === 1 && !atLeast ? "token" : "tokens"}</span> : undefined} />
@@ -85,6 +87,7 @@ export function Holdings({ addr }: { addr: string }) {
         <>
           {d.items.map((h) => <HoldingRow key={`${h.token}-${h.tokenId}`} h={h} labels={labels} />)}
           {d.items.length === 0 && d.derived !== false && <p className="muted">This address holds no tokens.</p>}
+          {noNft && <p className="muted small hold-nft">NFTs: none held.</p>}
           {d.derived === false && <p className="small muted">The explorer is still reading blocks, so this list may be missing tokens.</p>}
           <Pager p={p} label="Pages of token holdings" />
         </>

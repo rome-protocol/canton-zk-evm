@@ -114,6 +114,29 @@ describe("the address page: token holdings", () => {
     expect(card).not.toHaveTextContent(/\b1 token\b/);
   });
 
+  it("says NFTs: none held when the whole list is read and holds only fungible tokens", async () => {
+    await open(addressDetail(), withHoldings([holding()]));
+    const card = await screen.findByRole("region", { name: "Token holdings" });
+    expect(await within(card).findByText("NFTs: none held.")).toBeInTheDocument();
+  });
+
+  it("does not say it when an NFT is held", async () => {
+    await open(addressDetail(), withHoldings([holding(), holding({ token: addr(0xcc), standard: "ERC-721", name: "Ostia Pass", symbol: "OPASS", decimals: null, tokenId: "0", value: "1", updatedBlock: 22 })]));
+    await screen.findByText("Ostia Pass");
+    expect(screen.queryByText(/NFTs: none held/)).toBeNull();
+  });
+  it("does not say it while the explorer is behind", async () => {
+    await open(addressDetail(), withHoldings([holding()], false));
+    await screen.findByText(/may be missing/);
+    expect(screen.queryByText(/NFTs: none held/)).toBeNull();
+  });
+  it("does not say it when the list has a next page", async () => {
+    await open(addressDetail(), { tokens: () => derived([holding()], "next-key", true) });
+    await screen.findByRole("region", { name: "Token holdings" });
+    await screen.findByText("Test USD");
+    expect(screen.queryByText(/NFTs: none held/)).toBeNull();
+  });
+
   it("says so when it holds nothing", async () => {
     await open(addressDetail(), withHoldings([]));
     expect(await screen.findByText("This address holds no tokens.")).toBeInTheDocument();
@@ -412,11 +435,23 @@ describe("the address page: the header facts", () => {
 });
 
 describe("the address page: the tab card", () => {
-  it("holds the tab bar inside the card, with no count for the transfer tabs", async () => {
+  it("holds the tab bar inside the card, with a count on a transfer tab only when the server gives an exact one", async () => {
     await open(addressDetail({ tokenTransferCount: 4, createdCount: 2 }));
     const card = screen.getByRole("region", { name: "Activity" });
     expect(within(card).getByRole("tablist")).toBeInTheDocument();
     expect(within(card).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers", "Internal calls 0", "Contracts created 2", "Coin history"]);
+  });
+  it("counts the transfer tabs by the lists they hold, never by the counter of every standard together", async () => {
+    await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: 3, nftTransferCount: 0 }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers 3", "NFT transfers 0", "Internal calls 0", "Contracts created 0", "Coin history"]);
+  });
+  it("gives a transfer tab no count when the server does not (past its ceiling, or an older server)", async () => {
+    await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: null, nftTransferCount: 5 }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers 5", "Internal calls 0", "Contracts created 0", "Coin history"]);
+  });
+  it("gives the transfer tabs no count while the derive stage is behind, as a count then holds only the blocks derived so far", async () => {
+    await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: 3, nftTransferCount: 2, derived: false }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers", "Internal calls 0", "Contracts created 0", "Coin history"]);
   });
   it("lists the contracts it created", async () => {
     await open(addressDetail({ createdCount: 2 }), { contracts: () => derived([contractItem(0xc1), contractItem(0xc2, { name: null, verified: false })]) }, `/address/${A}?tab=contracts`);

@@ -124,6 +124,15 @@ function winner(rules: Rule[], selectors: string[], prop: string, phone: boolean
   return hits.at(-1)?.decls[prop];
 }
 
+describe("a long id in a key/value cell", () => {
+  it("may break, so a copy button wraps with it and no page scrolls sideways (the Canton card at laptop widths)", () => {
+    expect(/\n\.hl \{([^}]*)\}/.exec(css)?.[1]).toMatch(/white-space:\s*nowrap/);
+    expect(/\n\.kv-v \.hl, \.kv-v \.hl \.hx \{([^}]*)\}/.exec(css)?.[1]).toMatch(/white-space:\s*normal/);
+    expect(/\n\.kv-v \{([^}]*)\}/.exec(css)?.[1]).toMatch(/overflow-wrap:\s*anywhere/);
+    expect(/\n\.kv-v \{([^}]*)\}/.exec(css)?.[1]).toMatch(/min-width:\s*0/);
+  });
+});
+
 describe("phone width", () => {
   const phone = /@media \(max-width: 720px\) \{([\s\S]*)\n\}/.exec(css)?.[1] ?? "";
 

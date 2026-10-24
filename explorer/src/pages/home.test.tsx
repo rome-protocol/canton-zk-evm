@@ -186,6 +186,11 @@ describe("the list of latest final blocks", () => {
     expect(cells).toEqual(["8.09 s", "1 min 29 s", "—"]);
   });
 
+  it("writes a block's transaction count with a thousands separator", async () => {
+    await home({}, 200, [blockItem(3, { txCount: 1408 })]);
+    expect(within(rowsOf()[0]!).getAllByRole("cell")[1]).toHaveTextContent(/^1,408$/);
+  });
+
   it("reads the columns in a plain order, says each block is one Canton transaction, and leads to all of them", async () => {
     await home();
     expect(within(screen.getByRole("region", { name: "Latest final blocks" })).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Block", "Txs", "Time to final", "Canton update", "Stage"]);

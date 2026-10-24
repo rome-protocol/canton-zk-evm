@@ -19,7 +19,7 @@ function Result({ success }: { success: boolean }) {
 /** The sender's name when it is the chain's faucet, which is the one address the explorer knows by name. */
 export function Sender({ address, faucet, chain }: { address: string; faucet: string | null | undefined; chain: string }) {
   const named = faucet !== null && faucet !== undefined && faucet.toLowerCase() === address.toLowerCase();
-  return named ? <Link to={`/address/${address}`} title={address}>{chain} faucet</Link> : <HashLink value={address} to={`/address/${address}`} />;
+  return named ? <Link to={`/address/${address}`} title={address}>{chain} faucet</Link> : <HashLink value={address} to={`/address/${address}`} plain />;
 }
 
 /** The transactions of a final block, in order, read a page at a time from the block's own route. The block's count is known, so any page can be opened. */
@@ -41,12 +41,12 @@ export function PagedTransactions({ id, total, coin, chain }: { id: string; tota
               <tbody>
                 {rows.map((t) => (
                   <tr key={t.hash}>
-                    <td className="c-hash"><HashLink value={t.hash} to={`/tx/${t.hash}`} /></td>
+                    <td className="c-hash"><HashLink value={t.hash} to={`/tx/${t.hash}`} plain /></td>
                     <td className="r">{t.index}</td>
                     <td><span className="tag method">{methodOf(t)}</span></td>
                     <td><Sender address={t.from} faucet={faucet.data} chain={chain} /></td>
                     <td className="arrow muted" aria-hidden="true">→</td>
-                    <td>{t.to ? <HashLink value={t.to} to={`/address/${t.to}`} /> : t.created ? <span className="muted">creates <Link className="mono" to={`/address/${t.created}`}>contract</Link></span> : <span className="muted">—</span>}</td>
+                    <td>{t.to ? <HashLink value={t.to} to={`/address/${t.to}`} plain /> : t.created ? <span className="muted">creates <Link className="mono" to={`/address/${t.created}`}>contract</Link></span> : <span className="muted">—</span>}</td>
                     <td className="r">{units(t.value, coin.decimals)} {coin.symbol}</td>
                     <td className="r num">{units(fee(t), coin.decimals)} {coin.symbol}</td>
                     <td><Result success={t.success} /></td>

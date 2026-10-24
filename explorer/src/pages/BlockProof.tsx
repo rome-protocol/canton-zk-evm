@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ApiStatus, CantonSummary, Fact } from "../api.ts";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
+import { Item, Kv } from "../components/Kv.tsx";
 import { count, short } from "../format.ts";
 import { Bad, Good } from "./BlockSides.tsx";
 import "./block.css";
@@ -17,6 +18,27 @@ function FactRows({ label, fact, match, mismatch }: { label: string; fact: Fact;
       <dt className="f-k">{label}</dt>
       <dd className="f-v">{fact.value === null ? <span className="muted">none in its public values</span> : <HashLink value={fact.value} />}</dd>
       <dd className="f-s">{fact.ok ? <Good>{match}</Good> : <Bad>{mismatch}</Bad>}</dd>
+    </>
+  );
+}
+
+/** The compact form of a transaction's page: the three facts as rows of the card, value and verdict on one line, with nothing around them. */
+function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; block: number }) {
+  if (!c.proof) return <div className="alert bad-alert flat facts-gap"><Icon name="cross" size={15} /><div>{PROOF_LENGTH}</div></div>;
+  const { programVK, rootC, blockHash } = c.proof;
+  const pin = (v: string | undefined) => <>does not match this explorer's pin{v && <> <span className="mono">{short(v)}</span></>}</>;
+  const row = (label: string, fact: Fact, match: string, mismatch: ReactNode) => (
+    <Item label={label}>{fact.value === null ? <span className="muted">none in its public values</span> : <HashLink value={fact.value} plain lead={8} tail={4} />} {fact.ok ? <Good>{match}</Good> : <Bad>{mismatch}</Bad>}</Item>
+  );
+  const red = !(programVK.ok && rootC.ok && blockHash.ok);
+  return (
+    <>
+      <Kv wide label="Facts read from the proof">
+        {row("Program key", programVK, "ours", pin(pins?.programVK))}
+        {row("ZisK release", rootC, "ZisK 1.3.1", pin(pins?.rootC))}
+        {row("Block hash", blockHash, `block ${block}`, "not this block's hash")}
+      </Kv>
+      {red && <div className="facts-note small muted">The status word stays Final: Canton's confirmers checked the proof against their own pins when the block committed. A red fact means the proof differs from the pins this explorer was given.</div>}
     </>
   );
 }
@@ -41,11 +63,12 @@ function ProofFacts({ c, pins }: { c: CantonSummary; pins: ApiStatus["pins"] | u
 }
 
 /** "The proof": what the proof's own bytes say, next to this explorer's pins, with the in-browser check under it. */
-export function ProofCard({ c, pins, children }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; children: ReactNode }) {
+export function ProofCard({ c, pins, children, compactFor }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; children: ReactNode; /** A transaction's page passes its block's number and gets the compact form. */ compactFor?: number }) {
+  const compact = compactFor !== undefined;
   return (
-    <section className="card side canton proof" aria-labelledby="proof-h">
-      <div className="side-h"><span className="side-l" id="proof-h">The proof</span><span className="muted small">read from the proof's own bytes, compared with this explorer's pins{pins?.file && <>, from <span className="mono">{pins.file}</span></>}</span></div>
-      <ProofFacts c={c} pins={pins} />
+    <section className={`card side canton proof${compact ? " compact" : ""}`} aria-labelledby="proof-h">
+      <div className="side-h"><span className="side-l" id="proof-h">The proof</span><span className="muted small">{compact ? `of block ${compactFor}` : <>read from the proof's own bytes, compared with this explorer's pins{pins?.file && <>, from <span className="mono">{pins.file}</span></>}</>}</span></div>
+      {compact ? <CompactFacts c={c} pins={pins} block={compactFor} /> : <ProofFacts c={c} pins={pins} />}
       <div className="proof-verify">{children}</div>
     </section>
   );

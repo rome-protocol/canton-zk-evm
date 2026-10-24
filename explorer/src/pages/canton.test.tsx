@@ -228,6 +228,13 @@ describe("one Canton update", () => {
     expect(box.getByText(/Canton's public scan does not list Ostia's activity; this page is read through the chain's own reader party/)).toBeInTheDocument();
   });
 
+  it("shows the update ids around this one as plain hashes, with no copy or expand button", async () => {
+    await open();
+    const t = within(await screen.findByRole("region", { name: "Canton updates around this one" }));
+    expect(t.queryByRole("button", { name: "Copy" })).toBeNull();
+    expect(t.queryByRole("button", { name: /full/i })).toBeNull();
+  });
+
   it("lists the Canton updates around this one by the route's own window, marks this one, and leads to all of them", async () => {
     const calls = await open();
     const t = within(await screen.findByRole("region", { name: "Canton updates around this one" }));

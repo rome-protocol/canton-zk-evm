@@ -32,6 +32,14 @@ describe("the blocks page", () => {
     expect(within(r[3]!).getByRole("link", { name: "0" })).toHaveAttribute("href", "/block/0");
   });
 
+  it("shows the Canton update of a row as a plain hash, with no copy or expand button", async () => {
+    await open();
+    for (const r of rows()) {
+      expect(within(r).queryByRole("button", { name: "Copy" })).toBeNull();
+      expect(within(r).queryByRole("button", { name: /full/i })).toBeNull();
+    }
+  });
+
   it("ends the last page of All with the genesis row: no record, named as parent by block 1's record, the Genesis chip", async () => {
     await open();
     const g = (await screen.findByText("genesis")).closest("tr")!;
@@ -93,6 +101,11 @@ describe("the blocks page", () => {
     expect(r).toHaveTextContent("7.24 s");
     expect(r).toHaveTextContent("8.09 s");
     expect(within(r).getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
+  });
+
+  it("writes a block's transaction count with a thousands separator", async () => {
+    await open({ blocks: () => reply(page([blockItem(3, { txCount: 1408 })])) });
+    expect(within(rows()[1]!).getAllByRole("cell")[2]).toHaveTextContent(/^1,408$/);
   });
 
   it("flags a slow proof, and writes minutes past one", async () => {

@@ -2,7 +2,7 @@
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fakeApi, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
+import { contractDetail, contractItem, fakeApi, page, renderApp, reply, route, status, type Reply } from "../test-utils.tsx";
 
 const LIMITS = { pageSize: 100, rpcPerMinute: 300, rest: { perSecond: 20, burst: 60 }, etherscan: { perSecond: 10, perMinute: 600 }, verification: { perHour: 30, maxBodyKb: 500 }, streams: { perClient: 4 } };
 const door = { "/api": { get: { summary: "Etherscan-compatible: the module and the action are in the query.", "x-modules": {
@@ -18,12 +18,29 @@ const doc = (over: Record<string, unknown> = {}) => ({
   },
   ...over,
 });
-async function open(h: { openapi?: () => Reply; rpc?: boolean; faucet?: () => Reply } = {}) {
-  const calls = fakeApi(route({ faucet: h.faucet, openapi: h.openapi ?? (() => reply(doc())), status: () => reply(status({ publicRpc: h.rpc ?? true })) }));
+async function open(h: { openapi?: () => Reply; rpc?: boolean; faucet?: () => Reply; contracts?: (arg: string, sub: string, path: string) => Reply } = {}) {
+  const calls = fakeApi(route({ faucet: h.faucet, contracts: h.contracts, openapi: h.openapi ?? (() => reply(doc())), status: () => reply(status({ publicRpc: h.rpc ?? true })) }));
   renderApp("/docs/api");
   return calls;
 }
 afterEach(() => vi.unstubAllGlobals());
+
+describe("the Etherscan-compatible header", () => {
+  it("is one head row across the card with the note beside the title, above the modules and the example", async () => {
+    await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })) });
+    const section = (await screen.findByRole("region", { name: "Etherscan-compatible API" }));
+    const head = section.querySelector(":scope > .card-head")!;
+    expect(head).not.toBeNull();
+    const title = head.querySelector(".card-title")!;
+    expect(within(title as HTMLElement).getByRole("heading", { name: "Etherscan-compatible API", level: 2 })).toBeInTheDocument();
+    // a sibling of the other cards: every card heading on the page is an h2, under the one h1
+    const levels = screen.getAllByRole("heading").map((h) => h.tagName);
+    expect(levels.filter((t) => t === "H1")).toHaveLength(1);
+    expect(levels.filter((t) => t !== "H1" && t !== "H2")).toEqual([]);
+    expect(title.querySelector(".muted")!.textContent).toMatch(/apikey is accepted and ignored/);
+    expect(section.querySelector(":scope > .api-eth-grid table")).not.toBeNull();
+  });
+});
 
 describe("the API page", () => {
   it("opens at /docs/api with the three ways in, and the header link to it is marked", async () => {
@@ -145,6 +162,19 @@ describe("the API page", () => {
     expect(within(card).getByRole("button", { name: /Add .* to your wallet/ })).toBeInTheDocument();
   });
 
+  it("marks the wallet table's URLs with break points after '//', each '.' and each '/', so a narrow cell wraps between words", async () => {
+    await open();
+    const card = await screen.findByRole("region", { name: /to your wallet/ });
+    const t = within(card).getByRole("table", { name: "Wallet details" });
+    for (const k of ["RPC address", "Explorer"]) {
+      const m = within(t).getByText(k).closest("tr")!.querySelector(".mono")!;
+      const wbrs = m.querySelectorAll("wbr").length;
+      expect(wbrs, k).toBeGreaterThanOrEqual(1);
+      expect(m.innerHTML.replace(/<wbr>/g, "")).toBe(m.textContent);
+      expect(m.innerHTML).toMatch(/\/\/<wbr>/);
+    }
+  });
+
   it("uses the faucet's own address and balance in the balance example, and a placeholder where the faucet is off", async () => {
     const addr = "0x" + "fa".repeat(20);
     await open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), faucet: () => reply({ on: true, address: addr, balance: "998996990000000000000000", amount: "1", perAddressSeconds: 1, balanceBlock: 21 }) });
@@ -155,6 +185,28 @@ describe("the API page", () => {
     await screen.findByLabelText("Example request");
     expect(screen.getByLabelText("Example request").textContent).toContain("&address=<address>");
     expect(screen.getByLabelText("Example answer").textContent).toContain("<balance in wei");
+  });
+
+  it("fills the Foundry example with a verified contract of the chain, and keeps the placeholders where there is none", async () => {
+    const A = "0x" + "cb".repeat(20);
+    const held = (over = {}) => (arg: string) => (arg === "" ? reply(page([contractItem(0xcb)])) : arg === A ? reply(contractDetail(0xcb, over)) : reply({ error: "No contract is held at that address." }, 404));
+    const path = (h: Parameters<typeof open>[0]) => open({ openapi: () => reply(doc({ paths: { ...doc().paths, ...door } })), ...h });
+    const calls = await path({ contracts: held() });
+    await waitFor(() => expect(screen.getByLabelText("Foundry setup").textContent).toContain(`forge verify-contract ${A}`));
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("src/TestUSD.sol:TestUSD");
+    expect(screen.getByLabelText("Foundry setup").textContent).not.toMatch(/<address>|<File>|<Contract>/);
+    expect(calls).toContain("/api/contracts?sort=interactions&limit=1&verified=true");
+    cleanup();
+    await path({});
+    await screen.findByLabelText("Foundry setup");
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("forge verify-contract <address>");
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("src/<File>.sol:<Contract>");
+    cleanup();
+    // A source path or name that is not plain text is not put into the example.
+    await path({ contracts: held({ verification: { ...contractDetail().verification!, contractPath: "src/a.sol; rm -rf /", contractName: "<b>" } }) });
+    await screen.findByLabelText("Foundry setup");
+    expect(screen.getByLabelText("Foundry setup").textContent).toContain("src/<File>.sol:<Contract>");
+    expect(screen.getByLabelText("Foundry setup").textContent).not.toContain("rm -rf");
   });
 
   it("keeps the placeholder answer when the faucet's balance is not of a final block, because the route answers from the final head", async () => {

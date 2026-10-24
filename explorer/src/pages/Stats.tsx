@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import { getFaucetInfo, getStatsSeries, getStatsSummary, STATS_WINDOWS, type StatsMetric, type StatsSeries, type StatsSpread, type StatsSummary, type StatsWindow } from "../api.ts";
-import { DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
+import { CardHead, DownloadLink, ErrorCard, LoadingCard } from "../components/Cards.tsx";
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { count, pct, peakCount, plural, rate, sec, short, span, trim, units, utcMinute } from "../format.ts";
@@ -41,11 +41,11 @@ function Reliability({ s }: { s: StatsSummary }) {
   const a = s.acceptedNotFinal, lost = s.lost.total;
   return (
     <section className="card panel">
-      <div className="list-h"><div><h3>Reliability</h3> <span className="muted small">every transaction Ostia accepted, by what became of it · {STEP_NAME[s.window]}</span></div>
-        <span className={`chip ${lost ? "chip-bad" : "chip-final"}`}>{lost ? `${count(lost)} lost` : "none lost"}</span></div>
+      <CardHead title="Reliability" sub={<>what became of the transactions Ostia accepted; Final counts the whole chain · {STEP_NAME[s.window]}</>}
+        action={<span className={`chip ${lost ? "chip-bad" : "chip-final"}`}>{lost ? `${count(lost)} lost` : "none lost"}</span>} />
       <div className="cells">
-        <Cell k="Accepted" v={count(s.txs.accepted)} sub="by Ostia's RPC or the faucet" />
-        <Cell k="Final" v={count(s.txs.count)} sub="their block is final on Canton" />
+        <Cell k="Accepted" v={count(s.txs.accepted)} sub="only those sent through Ostia's RPC or the faucet" />
+        <Cell k="Final" v={count(s.txs.count)} sub="every transaction in a final block, whether or not Ostia accepted it" />
         <Cell k="Not final yet" v={count(s.waiting.open)} sub={`${count(a.beingProven)} being proven · ${count(a.waiting)} waiting · ${count(a.stuck)} stuck`} />
         <Cell k="Replaced or dropped" v={count(s.replaced.window + s.dropped.window)} sub={`replaced by the sender: ${count(s.replaced.window)} · dropped: ${count(s.dropped.window)}`} />
         <Cell k="Lost" v={count(lost)} tone={lost ? "bad" : "ok"} sub="accepted and never made final, all time" />
@@ -69,8 +69,8 @@ function ChartCard({ title, sub, parts, window, kind, fmt, point, note, legend =
   const first = data[0];
   return (
     <section className="card panel">
-      <div className="list-h"><div><h3>{title}</h3> <span className="muted small">{sub}</span></div>
-        {legend && parts.length > 1 && <span className="legend small muted">{parts.map((p) => <span key={p.name}><i className={`sw ch-${p.tone}`} />{p.name}</span>)}</span>}</div>
+      <CardHead title={title} sub={sub}
+        action={legend && parts.length > 1 ? <span className="legend small muted">{parts.map((p) => <span key={p.name}><i className={`sw ch-${p.tone}`} />{p.name}</span>)}</span> : null} />
       {failed ? <p className="muted small chart-msg">This chart cannot be read right now. The page tries again in a minute.</p>
         : !ready || !first ? <p className="muted small chart-msg" aria-busy="true">Reading…</p>
         : <Chart kind={kind} fmt={fmt} fmtPoint={point} from={first.from} to={first.to} step={first.step} label={`${title}, ${sub}`}
@@ -86,7 +86,7 @@ function PerBlock({ s }: { s: StatsSummary }) {
   const t = s.txsPerBlock, sizes = s.blocks.bySize, top = Math.max(1, ...sizes.map((x) => x.count)), proof = s.proofTime?.bySize ?? [];
   return (
     <section className="card panel">
-      <div className="list-h"><div><h3>Transactions per block</h3> <span className="muted small">{count(s.blocks.count)} final blocks{t.mean !== null && ` · mean ${trim(t.mean, 1)}`}{t.median !== null && ` · median ${trim(t.median, 1)}`}{t.max !== null && ` · largest ${count(t.max)}`}</span></div></div>
+      <CardHead title="Transactions per block" sub={<>{count(s.blocks.count)} final blocks{t.mean !== null && ` · mean ${trim(t.mean, 1)}`}{t.median !== null && ` · median ${trim(t.median, 1)}`}{t.max !== null && ` · largest ${count(t.max)}`}</>} />
       <ul className="sizes">{sizes.map((x) => <li key={x.size}><span>{sizeLabel(x.size)} txs</span><span className="track"><i style={{ width: `${(x.count / top) * 100}%` }} /></span><b>{plural(x.count, "block")}</b></li>)}</ul>
       <div className="scroll"><table className="tbl">
         <thead><tr><th>Block size</th><th className="r">Blocks</th><th className="r">Proof, median</th><th className="r">Proof, p95</th></tr></thead>
@@ -133,7 +133,7 @@ function FaucetCard({ s, faucetOn, coin }: { s: StatsSummary; faucetOn: boolean;
   const info = useQuery({ queryKey: ["faucet-info"], queryFn: getFaucetInfo, enabled: faucetOn, refetchInterval: 30_000 }).data;
   return (
     <section className="card panel">
-      <div className="list-h"><div><h3>Faucet</h3> <span className="muted small">{STEP_NAME[s.window]}</span></div><Link className="csv" to="/faucet">Open the faucet <Icon name="next" /></Link></div>
+      <CardHead title="Faucet" sub={STEP_NAME[s.window]} action={<Link className="csv" to="/faucet">Open the faucet <Icon name="next" /></Link>} />
       <div className="cells">
         <Cell k="Requests" v={count(f.requests)} sub="in this window" />
         <Cell k="Sent" v={count(f.sent)} sub={`${f.final === f.sent ? "all final" : `${count(f.final)} final`}${f.failed ? ` · ${count(f.failed)} failed` : ""}`} />
@@ -200,7 +200,7 @@ function BusyCard({ s }: { s: StatsSummary }) {
   const word = r.data ? STEP_WORD[r.data.step] : null;
   return (
     <section className="card panel">
-      <div className="list-h"><div><h3>Prover busy</h3> <span className="muted small">share of {word ? `each ${word}` : "each step"} the prover spent proving</span></div></div>
+      <CardHead title="Prover busy" sub={<>share of {word ? `each ${word}` : "each step"} the prover spent proving</>} />
       {r.isError && !r.data ? <p className="muted small chart-msg">This chart cannot be read right now. The page tries again in a minute.</p>
         : !r.data ? <p className="muted small chart-msg" aria-busy="true">Reading…</p>
         : <Chart kind="bars" fmt={(v) => `${trim(v * 100, 1)}%`} fmtPoint={pct} from={r.data.from} to={r.data.to} step={r.data.step} label={`Prover busy, per ${word}`} lines={[{ name: "busy", tone: "b", points: r.data.points }]} />}

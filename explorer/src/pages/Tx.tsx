@@ -89,8 +89,8 @@ function FinalTransfersItem({ t }: { t: ApiTxSeen }) {
       <div className="xfer-list">
         {shown.map((x) => (
           <div key={`${x.logIndex}-${x.batchIndex}`} className="xfer-line">
-            <AddressCell address={x.from} label={labels.get(x.from)} /> <span className="muted" aria-hidden="true">→</span> <AddressCell address={x.to} label={labels.get(x.to)} />{" "}
-            <AmountCell x={x} label={labels.get(x.token)} /> <AddressCell address={x.token} label={labels.get(x.token)} to={`/token/${x.token}`} />
+            <span className="muted">From</span> <AddressCell address={x.from} label={labels.get(x.from)} /> <span className="muted">to</span> <AddressCell address={x.to} label={labels.get(x.to)} />{" "}
+            <span className="muted">for</span> <AmountCell x={x} label={labels.get(x.token)} /> <AddressCell address={x.token} label={labels.get(x.token)} to={`/token/${x.token}`} />
           </div>
         ))}
         {(rest > 0 || p.hasNext) && <div className="muted small">{rest > 0 && !p.hasNext ? `and ${rest} more` : "and more"} in the Token transfers list below</div>}

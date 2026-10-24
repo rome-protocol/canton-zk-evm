@@ -2,11 +2,12 @@ import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ApiError, getAddressDetail, getContract, getToken, type AddressDetail, type ContractDetail } from "../api.ts";
 import { ago } from "../block-times.ts";
+import { AddressCell } from "../components/AddressCell.tsx";
 import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
-import { count, exact, plural, units } from "../format.ts";
+import { count, dateTime, exact, plural, units } from "../format.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
 import { TransfersTab, TxsTab } from "./AddressTabs.tsx";
 import { CodeTab } from "./ContractCode.tsx";
@@ -21,7 +22,6 @@ import "./contract.css";
 import "./tx.css";
 
 const Dash = () => <span className="muted">—</span>;
-const utcStamp = (iso: string) => `${new Date(iso).toISOString().replace("T", " ").slice(0, 19)} UTC`;
 
 /** The balance is reth's at the final block, from the address route; the counts are the explorer's. */
 function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<AddressDetail> }) {
@@ -38,7 +38,7 @@ function Overview({ c, read }: { c: ContractDetail; read: UseQueryResult<Address
             : !a || a.balance === null || !coin ? <span className="muted" title="Read from reth at the final block">Not known yet</span>
             : <span title={`${exact(a.balance, coin.decimals)} ${coin.symbol}, as of final block ${a.balanceBlock}, read from reth`}>{units(a.balance, coin.decimals)} {coin.symbol} <span className="muted small">as of final block {a.balanceBlock}</span></span>}
         </Item>
-        {a?.token && <Item label="Token tracker"><Link to={`/token/${c.address}`}>{a.token.name ?? a.token.symbol ?? "Token"}{a.token.name && a.token.symbol ? ` (${a.token.symbol})` : ""}</Link>{holders !== undefined && <span className="muted small"> · {plural(holders, "holder")}</span>}</Item>}
+        {a?.token && <Item label="Token tracker"><AddressCell address={c.address} to={`/token/${c.address}`} label={{ address: c.address, name: a.token.name ?? a.token.symbol ?? "Token", symbol: a.token.name ? a.token.symbol : null, kind: "token", standard: null, decimals: a.token.decimals, verified: c.verified }} />{holders !== undefined && <span className="muted small"> · {plural(holders, "holder")}</span>}</Item>}
         {a && <Item label="Transactions"><span className="num">{count(a.sentCount + a.receivedCount)}</span></Item>}
         {a && <Item label="Internal calls"><span className="num">{count(a.internalCount)}</span></Item>}
         <Item label="Interactions"><span className="num">{count(c.interactionCount)}</span>{c.lastInteractionBlock !== null && <span className="muted small"> · last in block {c.lastInteractionBlock}</span>}</Item>
@@ -87,7 +87,7 @@ function Verification({ c }: { c: ContractDetail }) {
     <section className="card" aria-label="Verification">
       <div className="list-h"><h2>Verification</h2><MatchChip matchType={c.matchType} /></div>
       <Kv>
-        {v ? <Item label="Verified">{utcStamp(v.verifiedAt)}</Item> : <Item label="Verified"><span className="muted">Not verified</span></Item>}
+        {v ? <Item label="Verified">{dateTime(v.verifiedAt)}</Item> : <Item label="Verified"><span className="muted">Not verified</span></Item>}
         {v && <Item label="How">{howVerified(v.method, v.tool)}</Item>}
         <Item label="Proxy"><Proxy c={c} /></Item>
       </Kv>

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { act } from "@testing-library/react";
@@ -75,7 +76,7 @@ describe("the contract page: the head and the cards", () => {
     await open();
     const v = card("Verification");
     expect(v).toHaveTextContent("Full match");
-    expect(row("Verified")).toHaveTextContent("2026-10-20 17:24:10 UTC");
+    expect(row("Verified")).toHaveTextContent("20 Oct 2026, 17:24:10 UTC");
     expect(row("Proxy")).toHaveTextContent("Not a proxy");
   });
 
@@ -199,6 +200,16 @@ describe("the Code tab of a verified contract", () => {
     expect(code.querySelector("pre")).toHaveTextContent("MSTORE");
   });
 
+  it("shows the deployed code in the light grey box of the screen, not the dark one", async () => {
+    await open();
+    const code = await screen.findByRole("region", { name: "Deployed code" });
+    expect(code.querySelector("pre")).toHaveClass("light");
+    expect(code.querySelector("pre")).not.toHaveClass("dark");
+    await userEvent.click(within(code).getByRole("button", { name: "Opcodes" }));
+    expect(code.querySelector("pre")).toHaveClass("light");
+    expect(readFileSync("src/pages/contract.css", "utf8")).toMatch(/pre\.light\s*\{[^}]*background: var\(--surface-2\)/);
+  });
+
   it("shows the partial-match note on the Code tab", async () => {
     await open({ detail: contractDetail(0xcb, { matchType: "partial" }), source: contractSource(0xcb, { matchType: "partial", matchNote: "Partial match: the metadata differs from this compile." }) });
     const src = await screen.findByRole("region", { name: "Contract source code" });
@@ -268,6 +279,21 @@ describe("the contract page: a token contract", () => {
     await open({ ...token, token: tokenDetail(0xcb, { holderCount: 5 }) });
     await waitFor(() => expect(row("Token tracker")).toHaveTextContent("5 holders"));
     expect(row("Token tracker")).toHaveTextContent("Test USD (tUSD)");
+  });
+
+  it("shows the token tracker row as the screen does: the document icon, the name, and a tick when the source is verified", async () => {
+    await open({ ...token, detail: contractDetail(0xcb, { verified: true }), token: tokenDetail(0xcb, { holderCount: 5 }) });
+    const cell = await within(card("Overview")).findByRole("link", { name: /Test USD \(tUSD\)/ });
+    expect(cell.querySelector("svg")).not.toBeNull();
+    expect(cell).toHaveAttribute("href", `/token/${A}`);
+    expect(within(row("Token tracker")).getByRole("img", { name: "Verified" })).toBeInTheDocument();
+    expect(row("Token tracker")).toHaveTextContent("5 holders");
+  });
+
+  it("shows no tick on the token tracker row while the source is not verified", async () => {
+    await open({ ...token, detail: contractDetail(0xcb, { verified: false }) });
+    await within(card("Overview")).findByRole("link", { name: /Test USD/ });
+    expect(within(row("Token tracker")).queryByRole("img", { name: "Verified" })).toBeNull();
   });
 
   it("says one holder in the singular, and shows no count while the token page has not answered", async () => {
