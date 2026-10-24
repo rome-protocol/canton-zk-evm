@@ -7,6 +7,8 @@ import {PrimaryProdDataServiceConsumerBase} from "@redstone-finance/evm-connecto
 /// and the contract checks the signatures against RedStone's primary data service (`redstone-primary-prod`, 3 of its 5 public signers) and the
 /// timestamp against the block. It keeps the latest ETH/USD and BTC/USD it has seen and tells how much a number of tETH is worth.
 /// The base contract comes from the RedStone package at the version in package.json; it is installed at run time, never copied here.
+/// LICENCE NOTE: this file is Apache-2.0, but the base contract it inherits (and the RedStone contracts it pulls in) is under the Business Source License 1.1,
+/// which allows non-production use only. Using PriceVault on a production chain needs a licence from RedStone.
 contract PriceVault is PrimaryProdDataServiceConsumerBase {
     bytes32 public constant ETH = bytes32("ETH");
     bytes32 public constant BTC = bytes32("BTC");

@@ -1,18 +1,20 @@
 # A realistic mixed load for Ostia
 
-A kit that puts a realistic mix of contracts on an Ostia chain and drives mixed traffic through them, so that the zkVM on Canton is proven on more than transfers of one token. This first part is the deploy: tokens of four kinds, a DEX, and a permissioned token with identities. The oracle consumer and the private transfers are described further down; the traffic driver follows (see [What is still to come](#what-is-still-to-come)).
+A kit that puts a realistic mix of contracts on an Ostia chain and drives mixed traffic through them, so that the zkVM on Canton is proven on more than transfers of one token. It deploys tokens of four kinds, a DEX, a permissioned token with identities, an oracle consumer and a private-transfer contract, then sends about an hour of mixed traffic (about a dozen kinds of action, from 200 wallets, up to the chain's best rate) and writes a report. The oracle consumer, the private transfers and the traffic driver are described further down.
 
 ## What it deploys
 
 | What | Contracts |
 |---|---|
-| ERC-20 | `Test USD` (tUSD, 6 decimals) and `Test Ether` (tETH, 18 decimals), mintable by the deployer; `Wrapped tROME` (WtROME, a WETH9-style wrapper of the chain's coin) |
+| ERC-20 | `Test USD` (tUSD, 6 decimals) and `Test Ether` (tETH, 18 decimals), mintable by the deployer; `Wrapped tROME` (WtROME, a wrapper of the chain's coin written on OpenZeppelin's ERC20: deposit mints, withdraw burns and pays) |
 | ERC-721 | `Ostia Pass` (OPASS), public mint, capped |
 | ERC-1155 | `Ostia Items` (ids 1 to 5), public mint and batch mint |
 | Uniswap V2 | factory and router, with two pools seeded with liquidity: tUSD/WtROME and tETH/tUSD |
+| RedStone | `PriceVault`, a consumer of RedStone's pull model (see below) |
+| Merces (TACEO) | TACEO's private-transfer contracts, deployed as they are; proofs are made client side only (see below) |
 | ERC-3643 (T-REX) | the token `Ostia Gold Bond` (OGB, 6 decimals) with its ONCHAINID identity, identity registry and storage, claim topics registry (topic 1), trusted issuers registry (one issuer), modular compliance, four verified holders (each with an identity and a signed KYC claim) and one unverified address that cannot receive the token |
 
-Our own contracts are in `contracts/` (small, Apache-2.0). Everything else is installed at run time.
+Our own contracts are in `contracts/` (small, Apache-2.0: the test tokens, the wrapper, the NFTs, the vault, the seeder). Everything else is installed or fetched at run time.
 
 ## Run it
 
@@ -22,15 +24,23 @@ You need Docker and a funded account on the chain. Nothing else is installed on 
 cd load/mixed
 mkdir -p -m 0700 runs/mine/keys
 # put the funded key (0x and 64 hex digits) in runs/mine/keys/distributor.key, mode 0600.
-# With config.json as it is the deploy needs a little over 5,100 tROME: 5,000 are wrapped for the first pool, 25 go to the test wallets, the rest is gas.
+# Funding with config.json as it is: the deploy needs about 5,025 tROME (5,000 are wrapped for the first pool, 25 go to the test wallets, the rest is gas);
+# the mixed load then gives each of its 200 wallets 30 tROME (6,000), and the oracle and Merces wallets take about 20 + 4 x 50 more. About 11,500 tROME in all; 12,000 is comfortable.
 export RUN_DIR=$PWD/runs/mine
 ./run.sh build     # npm ci from the lockfile, then forge build (two passes, see below)
 ./run.sh deploy    # deploys, writes $RUN_DIR/addresses.json; run it again and it skips what exists
 ./run.sh smoke     # one action of each kind from the test wallets (writes smoke.json)
 ./run.sh verify    # verifies every contract on the explorer (about an hour: see below)
+./run.sh merces-fetch                          # TACEO's Merces project at the pinned commit, compiled (see below)
+./run.sh node scripts/merces.mjs deploy        # Merces: fund its wallets first, see below
+./run.sh node scripts/redstone.mjs 3           # the oracle consumer (needs RedStone's gateways, see below)
+./run.sh load seed         # 200 test wallets, funded, with tUSD and tETH
+./run.sh load calibrate    # one action of every kind, to learn the gas of each
+./run.sh load run mix1     # the timed hour (about 70 minutes with the drain)
+./run.sh load report mix1  # the numbers: report.json and report.md in the run folder
 ```
 
-`config.json` holds the chain (`rpc`, `explorer`, `explorerApi`, `chainId`) and the sizes of the pools and the token. To use another Ostia RPC, change it there, or set `RPC` for one run. The chain's public RPC answers only for final blocks, so each transaction is waited for until it is final (about 15 seconds each), and a full deploy is about 20 minutes.
+`config.json` holds the chain (`rpc`, `explorer`, `explorerApi`, `chainId`) and the sizes of the pools and the token. To use another Ostia RPC, change it there, or set `RPC` for one run (`RPC=https://… ./run.sh deploy`; it reaches every step). The chain's public RPC answers only for final blocks, so each transaction is waited for until it is final (about 15 seconds each), and a full deploy is about 30 minutes.
 
 The deployer's key and the test wallets' keys stay in `$RUN_DIR/keys/` (a 0700 folder, 0600 files, never printed, ignored by git).
 
@@ -47,14 +57,22 @@ None of this is in the repository. `package.json` pins each package to an exact 
 | `@onchain-id/solidity` | 2.2.1 | ISC | ONCHAINID identities, claim issuers and the identity factory |
 | `@openzeppelin/contracts`, `-upgradeable` | 4.9.6 | MIT | the base contracts of ours and of T-REX |
 | `ethers` | 6.16.0 | MIT | the deploy and the driver |
+| `@redstone-finance/evm-connector`, `-sdk`, `-protocol` | 0.9.0 | **Business Source License 1.1** for the Solidity contracts (their `package.json` says MIT, but the package's `LICENSE` file is BUSL-1.1 and 17 contracts, the consumer base `PrimaryProdDataServiceConsumerBase` among them, carry `SPDX BUSL-1.1`) | the oracle consumer's base contract, the client that fetches and packs signed prices. **Non-production use only**: `PriceVault` inherits the base, so it is BUSL-bound too, and a production chain needs a licence from RedStone |
+| `@taceo/merces1-client` | 1.0.1 | MIT | Merces proofs on the sending machine (only its proof functions are used) |
+| `snarkjs`, `ffjavascript`, `r1csfile`, `fastfile`, `wasmbuilder`, `wasmcurves` | as locked | GPL-3.0 | what `@taceo/merces1-client` needs to make Groth16 proofs; installed by `npm ci`, never copied here |
+| TACEO's Merces contracts and client (`TaceoLabs/merces1-x402`) | commit in `PINS` | MIT in the SPDX header of each contract; the repository has no `LICENSE` file | the Merces contracts, fetched with `./run.sh merces-fetch` and compiled in place (`third_party/`, ignored by git) |
 
-The GPL contracts are compiled into the bytecode that is deployed; their sources are never copied into this repository. Anyone who runs the kit gets them from npm. The explorer's verification stores the source of each deployed contract, GPL ones included, which their licence allows.
+The GPL contracts are compiled into the bytecode that is deployed (so are RedStone's BUSL contracts, in `PriceVault`); their sources are never copied into this repository. Anyone who runs the kit gets them from npm. The explorer's verification stores the source of each deployed contract, GPL ones included, which their licence allows.
 
-**The Uniswap pair hash.** The router finds a pair by CREATE2 with a hash of the pair's creation code written into its library. That hash belongs to the original build of the pair; our build is not byte for byte the same. `scripts/prepare.mjs` reads the pair's code from the first build, writes a copy of the router and its library into `contracts/gen/` (git ignores it) with the hash of our pair, and the second build compiles that. `run.sh build` stops if the pair code differs between the two builds.
+**The Uniswap pair hash.** The router finds a pair by CREATE2 with a hash of the pair's creation code written into its library. That hash belongs to the original build of the pair; our build is not byte for byte the same. `scripts/prepare.mjs` reads the pair's code from the first build, writes a copy of the router and its library into `contracts/gen/` (git ignores it) with the hash of our pair, and the second build compiles that. `run.sh build` stops if the pair code differs between the two builds. The pair's solc 0.5.16 output ends with a source hash that depends on the build settings, so the factory and the router of one deploy must come from the same build: after changing anything in `foundry.toml` or the packages, deploy a new factory and router together (this is why the example run below has a second Uniswap set).
 
 ## Verification
 
 `./run.sh verify` sends every contract to the explorer with `forge verify-contract --verifier etherscan` and asks `/api/contracts/<address>` afterwards. The explorer takes 30 verifications an hour from one client, so the step waits about two minutes between submissions (copies made by a factory, such as the pairs and the identity proxies, share the code of the first and are matched by it). `./run.sh node scripts/verify.mjs check` prints which contracts are verified without submitting anything.
+
+The explorer's front proxy takes 300 KB a request. Forge's url-encoded body for `Merces` (23 source files, 265 KB of standard JSON) is 450 KB and gets `413`; `run.sh verify` then sends the same input to the explorer's JSON route (`POST /api/verify`, `scripts/verify-large.mjs`, 265 KB) and that passes.
+
+**Known gap: ERC-3643 calls are not decoded on the explorer.** The T-REX token, identity registry and the ONCHAINID identities are verified as the proxies they are (`TokenProxy`, `IdentityRegistryProxy`, `IdentityProxy`); the explorer's proxy detection knows EIP-1967, EIP-1822, beacon and EIP-1167 proxies but not T-REX's implementation-authority proxies, so inputs of `transfer`, `batchMint`, `batchRegisterIdentity` and `addClaim` on them show as raw data. Supporting that proxy kind would be a change to the explorer, not to this kit.
 
 ## Layout
 
