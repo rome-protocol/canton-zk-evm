@@ -76,6 +76,8 @@ The oracle consumer (RedStone), the private-transfer client (Merces, client-side
 
 On Ostia DevNet (chain 770101), 24 October 2026. The deployer was funded with 20,000 tROME from the DevNet faucet in one transfer, [`0x8f0926d20c71ff7f7be6a430f3e21da6b29dc3dd7f610257d21c179f8ac5ae58`](https://ostia.devnet.romeprotocol.xyz/tx/0x8f0926d20c71ff7f7be6a430f3e21da6b29dc3dd7f610257d21c179f8ac5ae58). The deployer account is `0x5156D75f11D49990ae94Df0C92aFb7288be9FcBe`.
 
+**Verification result.** `/api/contracts/<address>` says `verified: true` for all 32 contracts: the factory and one pair with a full match, two more copies by a similar match (the second pool's pair and the holders' identity proxies, which share their code with one that has a source), and the rest by a partial match. A partial match means only the metadata differs: the kit compiles without the metadata hash on purpose (the pair hash above needs a build that is the same byte for byte), so a contract's code does not end with the metadata hash that an ordinary build writes.
+
 | Contract | Address | Created in |
 |---|---|---|
 | tUSD | [`0x136c750aE42Be4A24517669745467e48416c1998`](https://ostia.devnet.romeprotocol.xyz/address/0x136c750aE42Be4A24517669745467e48416c1998) | [`0xfab788c9…`](https://ostia.devnet.romeprotocol.xyz/tx/0xfab788c95ebe94709559727a936c150cd8bd9437d60f03e2ec772b49cb49943f) |
