@@ -88,6 +88,20 @@ if (mode === "deploy") {
   };
   saveResults();
   log("summary", json(results.summary).replace(/\s+/g, " "));
+} else if (mode === "probe") {
+  // proves N transfers and asks the chain to verify each one with an eth_call (nothing is sent); a proof the verifier refuses is checked here with snarkjs too
+  const n = Number(process.argv[3] ?? 30);
+  const m = merces();
+  const pks = (await m.getMpcPublicKeys()).map((p) => ({ x: p.x, y: p.y }));
+  const mf = att(await m.getAddress(), "Merces.sol", "Merces", users[0]);
+  const bad = [];
+  for (let i = 0; i < n; i++) {
+    const { args } = await proveTransfer(E("0.1"), pks);
+    try { await mf.transfer.staticCall(users[1].address, ...args, { gasLimit: 2_000_000 }); }
+    catch (e) { bad.push({ i, err: e.shortMessage ?? e.message, args }); }
+  }
+  log(`probe: ${bad.length} of ${n} proofs refused by the verifier`);
+  writeFileSync(`${RUN}/merces-probe.json`, json({ n, refused: bad }) + "\n");
 } else if (mode === "retrieve") {
   const m = merces();
   const bal = await provider.getBalance(await m.getAddress());
