@@ -22,14 +22,14 @@ UIDGID="$(id -u):$(id -g)"
 
 node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir \
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
-forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
+forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
 
 case ${1:-} in
   build)
     node_c npm ci --ignore-scripts --no-audit --no-fund
     mkdir -p gen/pair
     printf '// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity >=0.5.16;\nimport "@uniswap/v2-core/contracts/UniswapV2Pair.sol";\n' > gen/pair/Pair.sol
-    forge_c build --profile pair
+    PROFILE=pair forge_c build
     node_c node scripts/prepare.mjs
     forge_c build
     ;;
