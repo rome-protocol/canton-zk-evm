@@ -211,6 +211,17 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
           answered_at: t, outcome, reason: text(ev.reason), update_id: text(ev.update_id, 200), completion_offset: whole(ev.completion_offset), traffic_bytes: whole(ev.traffic_bytes),
         });
         if (outcome !== null && OUT_BACK.has(outcome)) await putBack(id, t, `the block was ${outcome.replace("_", " ")}`);
+        // The update may be joined to this attempt already: an indexed block settles an attempt whose answered line is not read yet, and the
+        // join copies the command and a traffic that is not known by then (null). The answer's traffic and offset then reach the update here,
+        // since the join does not look at an update that has its command (the mixed load found 209 of 225 blocks with no traffic).
+        if (outcome === "committed") {
+          await c.query(
+            `update canton_updates u set traffic_bytes = coalesce(u.traffic_bytes, a.traffic_bytes), completion_offset = coalesce(u.completion_offset, a.completion_offset)
+               from block_attempts a where a.attempt_id = $1 and u.update_id = a.update_id and u.command_id is not null
+                and (u.traffic_bytes is null and a.traffic_bytes is not null or u.completion_offset is null and a.completion_offset is not null)`,
+            [id],
+          );
+        }
         break;
       }
       case "resolved": {

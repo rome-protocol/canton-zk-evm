@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Pool } from "pg";
 import { migrate } from "../db/migrate.ts";
@@ -310,6 +310,81 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       await ix.loadJournal();
       expect(await one(pool, "select command_id, argument_bytes, traffic_bytes from canton_updates where update_id = $1", [chain.blocks[0]!.record.updateId])).toMatchObject({
         command_id: expect.stringMatching(/^ostia-770101-1-/), traffic_bytes: 5 });
+    });
+  });
+
+  it("the traffic of a block reaches its update when the block is indexed before the producer's answered line is read (the mixed load's gap)", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }, { txs: 1 }]);
+      const dir = makeFolder();
+      const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      const r = new Run(RUN1);
+      r.start(recordMs - 1_000);
+      attemptLines(r, chain, 1, 1, recordMs - 500);
+      attemptLines(r, chain, 2, 2, recordMs - 400);
+      // Canton committed both blocks and the reader has them; the journal's file holds each block's lines up to `submitted` only
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.runOnce();
+      await ix.loadJournal();
+      // the join settled both attempts from the indexed blocks and copied what it knew: no traffic yet
+      expect(await one(pool, "select command_id, argument_bytes, traffic_bytes, completion_offset from canton_updates where update_id = $1", [id(1)])).toMatchObject({
+        command_id: expect.stringMatching(/^ostia-770101-1-/), argument_bytes: 777, traffic_bytes: null, completion_offset: null });
+      // the answered lines come in a later read: the traffic, and the offset, reach the update although its command id is set
+      const r2 = new Run(RUN1);
+      r2.seq = r.seq;
+      r2.add(recordMs + 30, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: id(1), completion_offset: 10, traffic_bytes: 7_001 });
+      r2.add(recordMs + 40, "answered", { attempt: 2, outcome: "committed", reason: null, update_id: id(2), completion_offset: 20, traffic_bytes: null }); // no traffic reported: stays null
+      appendLines(dir, "2026-10-21.jsonl", r2.lines);
+      await ix.loadJournal();
+      expect(await one(pool, "select command_id, traffic_bytes, completion_offset from canton_updates where update_id = $1", [id(1)])).toMatchObject({
+        command_id: expect.stringMatching(/^ostia-770101-1-/), traffic_bytes: 7_001, completion_offset: "10" });
+      expect(await one(pool, "select traffic_bytes, completion_offset from canton_updates where update_id = $1", [id(2)])).toMatchObject({ traffic_bytes: null, completion_offset: "20" });
+    });
+  });
+
+  it("migration 0037 fills in the traffic of updates the join left without it, and only the nulls", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }, { txs: 1 }]);
+      const dir = makeFolder();
+      const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      const r = new Run(RUN1);
+      r.start(recordMs - 1_000);
+      for (const n of [1, 2]) {
+        attemptLines(r, chain, n, n, recordMs - 500);
+        r.add(recordMs + 30, "answered", { attempt: n, outcome: "committed", reason: null, update_id: id(n), completion_offset: n * 10, traffic_bytes: n * 1000 });
+      }
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.runOnce();
+      await ix.loadJournal();
+      // the state the old join left behind: block 1 has the command and no traffic, block 2 has a value of its own
+      await pool.query("update canton_updates set traffic_bytes = null, completion_offset = null where update_id = $1", [id(1)]);
+      await pool.query("update canton_updates set traffic_bytes = 1 where update_id = $1", [id(2)]);
+      await pool.query(readFileSync(new URL("../../db/migrations/0037_backfill_update_traffic.sql", import.meta.url), "utf8"));
+      expect(await one(pool, "select traffic_bytes, completion_offset from canton_updates where update_id = $1", [id(1)])).toMatchObject({ traffic_bytes: 1000, completion_offset: "10" });
+      expect(await one(pool, "select traffic_bytes, completion_offset from canton_updates where update_id = $1", [id(2)])).toMatchObject({ traffic_bytes: 1, completion_offset: "20" });
+    });
+  });
+
+  it("the traffic that is on a block's update is not replaced by a later or repeated answered line", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }]);
+      const dir = makeFolder();
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      const r = new Run(RUN1);
+      r.start(recordMs - 1_000);
+      attemptLines(r, chain, 1, 1, recordMs - 500);
+      r.add(recordMs + 30, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: chain.blocks[0]!.record.updateId, completion_offset: 10, traffic_bytes: 5 });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.runOnce();
+      await ix.loadJournal();
+      await pool.query("update canton_updates set traffic_bytes = 9");
+      await ix.loadJournal();
+      expect(await one(pool, "select traffic_bytes from canton_updates")).toMatchObject({ traffic_bytes: 9 });
     });
   });
 
