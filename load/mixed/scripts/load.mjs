@@ -1,5 +1,5 @@
 // The mixed load driver.
-//   node scripts/load.mjs seed                 makes the test wallets (keys/load-wallets.json, 0600) and gives them their starting tROME, tUSD and tETH through the Seeder contract
+//   node scripts/load.mjs seed                 makes the test wallets (keys/wallets.json, 0600) and gives them their starting tROME, tUSD and tETH through the Seeder contract
 //   node scripts/load.mjs calibrate            one action of every kind, sent and read back one at a time: the gas each uses and whether the deliberate reverts revert
 //   node scripts/load.mjs run [name]           the timed run: the mix in config.json, phase by phase; every transaction is followed until it is in a final block
 //   node scripts/load.mjs report <name>        the numbers of a finished run (report.json and report.md in its folder)
@@ -483,7 +483,7 @@ for (const ph of M.phases) {
   const achieved = (counters.sent + counters.rejected - sentBefore) / ph.minutes / 60;
   phaseResults.push({ name: ph.name, rate, achieved, end, ok: null });
   ev({ e: "phaseEnd", name: ph.name, rate, achieved });
-  // decide whether the phase before this one kept every transaction final (the transactions sent in its last minute are left out: they need time)
+  // decide whether the phase that just ended kept every transaction final (the transactions sent in its last minute are left out: they need time)
   const prev = phaseResults[phaseResults.length - 1];
   const mine = [...sent.values()].filter((r) => r.phase === ph.name && r.sentAt < prev.end - 60_000);
   prev.ok = mine.every((r) => r.finalAt) && prev.achieved >= 0.9 * rate;

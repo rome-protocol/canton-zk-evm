@@ -21,12 +21,13 @@ RUN_DIR=${RUN_DIR:-$HERE/runs/$(date -u +%F)}
 mkdir -p -m 0700 "$RUN_DIR" "$RUN_DIR/keys"
 RUN_DIR=$(cd "$RUN_DIR" && pwd)
 mkdir -p .home .npm-cache
+UA="Rome Protocol rome@romeprotocol.com"
 UIDGID="$(id -u):$(id -g)"
 CHAIN_ID=$(grep -o '"chainId": *[0-9]*' config.json | grep -o '[0-9]*$')
 RPC=${RPC:-$(grep -o '"rpc": *"[^"]*"' config.json | cut -d'"' -f4)}
 EXPLORER_API=$(grep -o '"explorerApi": *"[^"]*"' config.json | cut -d'"' -f4)
 
-node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} ${LOAD_PHASES:+-e LOAD_PHASES} \
+node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir -e "RPC=$RPC" ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} ${LOAD_PHASES:+-e LOAD_PHASES} \
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
 forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
 
@@ -34,7 +35,7 @@ forge_c_in() { local wd=$1; shift; docker run --rm --user "$UIDGID" -e HOME=/w/.
 
 case ${1:-} in
   build)
-    node_c npm ci --ignore-scripts --no-audit --no-fund
+    node_c npm ci --ignore-scripts --no-audit --no-fund --user-agent="$UA"
     rm -rf contracts/gen
     forge_c build
     node_c node scripts/prepare.mjs
@@ -45,10 +46,10 @@ case ${1:-} in
     M=third_party/merces1-x402
     mkdir -p "$M"
     [ -d "$M/.git" ] || { git -C "$M" init -q; git -C "$M" remote add origin "$MERCES_REPO"; }
-    git -C "$M" fetch -q --depth 1 origin "$MERCES_COMMIT"
+    git -C "$M" -c http.userAgent="$UA" fetch -q --depth 1 origin "$MERCES_COMMIT"
     git -C "$M" checkout -q --detach FETCH_HEAD
     [ "$(git -C "$M" rev-parse HEAD)" = "$MERCES_COMMIT" ]
-    git -C "$M" submodule update -q --init --depth 1 contracts/lib/openzeppelin-contracts contracts/lib/forge-std contracts/lib/babyjubjub-solidity
+    git -C "$M" -c http.userAgent="$UA" submodule update -q --init --depth 1 contracts/lib/openzeppelin-contracts contracts/lib/forge-std contracts/lib/babyjubjub-solidity
     docker run --rm --user "$UIDGID" -e HOME=/w/.home -v "$HERE:/w" -w /w/$M/contracts --entrypoint forge "$FOUNDRY_IMAGE" build
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;

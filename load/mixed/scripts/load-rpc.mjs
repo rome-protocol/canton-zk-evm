@@ -31,6 +31,7 @@ async function acquire(n) {
 async function post(body) {
   for (let attempt = 0; ; attempt++) {
     let res;
+    if (attempt > 0) await acquire(Array.isArray(body) ? body.length : 1); // a retry spends the server's budget again
     try {
       res = await fetch(RPC, { method: "POST", headers: { "content-type": "application/json", "user-agent": UA }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) });
     } catch (e) { stats.errors++; if (attempt > 5) throw e; await sleep(1000); continue; }
