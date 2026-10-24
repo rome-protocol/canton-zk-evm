@@ -5,7 +5,7 @@ import { ethers } from "ethers";
 export const cfg = JSON.parse(readFileSync(new URL("../config.json", import.meta.url), "utf8"));
 export const RUN = process.env.RUN_DIR || "./runs/local";
 export const RPC = process.env.RPC || cfg.rpc;
-export const provider = new ethers.JsonRpcProvider(RPC, cfg.chainId, { staticNetwork: true, batchMaxCount: 1 });
+export const provider = new ethers.JsonRpcProvider(RPC, cfg.chainId, { staticNetwork: true, batchMaxCount: 1, cacheTimeout: -1 });
 
 mkdirSync(`${RUN}/keys`, { recursive: true, mode: 0o700 });
 const statePath = `${RUN}/addresses.json`;
