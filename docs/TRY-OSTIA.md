@@ -33,10 +33,10 @@ The payout is sent in the next block, so it arrives when that block is final (se
 
 ```sh
 export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
-forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version paris --broadcast
+forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version london --broadcast
 ```
 
-The kit in `load/mixed/` builds for the `paris` EVM version, which is the one it has been tested with; use it for your own contracts too unless you have checked a newer one.
+What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; its deposits and transfers succeed). `london` is a safe choice for your own contracts; a newer version is not known to fail, but only these three have been tried.
 
 Verify the source on the explorer. It speaks the Etherscan API, so `forge verify-contract` works with the Etherscan verifier and any API key text:
 
@@ -56,7 +56,7 @@ The explorer takes about 30 verifications an hour from one client. If it says so
 ```js
 // hardhat.config.js
 module.exports = {
-  solidity: { version: "0.8.24", settings: { evmVersion: "paris" } },
+  solidity: { version: "0.8.17", settings: { evmVersion: "london" } },
   networks: {
     ostia: {
       url: "https://ostia.devnet.romeprotocol.xyz/rpc",
@@ -81,7 +81,7 @@ The longer timeout is there because a receipt only comes back once the block is 
 3. A zero-knowledge proof of the block is made. In our measurements this took about 7.6 seconds for a small block and about 12.4 seconds for a block of more than a thousand transactions.
 4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In our measurements a transaction was final about 9 seconds after its block was made.
 
-The public RPC only shows final blocks. A transaction you have just sent does not show up in `eth_getTransactionReceipt` until its block is final, so a receipt takes roughly 10 to 25 seconds to appear. Tools that wait for a receipt just wait a little longer than on other chains.
+The public RPC only shows final blocks. A transaction you have just sent does not show up in `eth_getTransactionReceipt` until its block is final, so a receipt takes roughly 10 to 30 seconds to appear. Tools that wait for a receipt just wait a little longer than on other chains.
 
 On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/block/<number>`). The block page shows the Canton update that holds the block's record, the time Canton recorded it, and the proof. Its Verify button checks the proof in your browser, with no server involved. The same data is in the API, for example `GET /api/blocks/<number>` and `GET /api/canton/updates/<update id>`.
 
@@ -89,7 +89,7 @@ On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/bloc
 
 - The RPC allows about 300 calls a minute from one client. A batch counts every call in it, and a batch is at most 20 calls.
 - The nonce of a transaction must follow the account's last one with no gap, or the RPC refuses it.
-- `maxFeePerGas` must be at least the block's base fee (a few hundred wei at the moment). Wallets and tools do this on their own.
+- `maxFeePerGas` must be at least the block's base fee (a few wei at the moment). Wallets and tools do this on their own.
 - The explorer's REST API allows 20 requests a second with bursts of 60, and the Etherscan-compatible API 10 a second and 600 a minute.
 
 ## Something bigger to try
