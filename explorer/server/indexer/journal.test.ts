@@ -383,7 +383,12 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       await ix.runOnce();
       await ix.loadJournal();
       await pool.query("update canton_updates set traffic_bytes = 9");
+      // a second committed answered line for the same attempt, with other traffic, is read after the update has its own
+      const read = r.lines.length;
+      r.add(recordMs + 60, "answered", { attempt: 1, outcome: "committed", reason: null, update_id: chain.blocks[0]!.record.updateId, completion_offset: 10, traffic_bytes: 77 });
+      appendLines(dir, "2026-10-21.jsonl", r.lines.slice(read));
       await ix.loadJournal();
+      expect(await one(pool, "select traffic_bytes from block_attempts")).toMatchObject({ traffic_bytes: 77 }); // the line was read
       expect(await one(pool, "select traffic_bytes from canton_updates")).toMatchObject({ traffic_bytes: 9 });
     });
   });
