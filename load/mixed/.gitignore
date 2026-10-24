@@ -1,0 +1,11 @@
+node_modules/
+out/
+cache/
+gen/
+runs/
+*.key
+out-pair/
+cache-pair/
+contracts/gen/
+.npm-cache/
+.home/

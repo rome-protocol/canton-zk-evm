@@ -1,0 +1,18 @@
+{
+  "chainId": 770101,
+  "rpc": "https://ostia.devnet.romeprotocol.xyz/rpc",
+  "explorer": "https://ostia.devnet.romeprotocol.xyz",
+  "explorerApi": "https://ostia.devnet.romeprotocol.xyz/api",
+  "coin": "tROME",
+  "deploy": {
+    "uniswap": {
+      "wrapTrome": "5000",
+      "poolTusdWtrome": { "tUSD": "50000", "WtROME": "5000" },
+      "poolTethTusd": { "tETH": "100", "tUSD": "300000" }
+    },
+    "pass": { "cap": 100000 },
+    "trex": { "name": "Ostia Gold Bond", "symbol": "OGB", "decimals": 6, "verifiedHolders": 4, "mintPerHolder": "1000", "claimTopic": 1 },
+    "holderGasTrome": "5"
+  },
+  "mix": {}
+}
