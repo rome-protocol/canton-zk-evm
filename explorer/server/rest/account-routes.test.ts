@@ -917,8 +917,9 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
           const p = (await client.query("explain " + text, [A])).rows.map((r) => r["QUERY PLAN"]).join("\n");
           expect(p, list).not.toMatch(/Seq Scan/);
           for (const col of ["from_address", "to_address"]) {
-            // An index-only read by the address, with the predicate left to the index: no row filter after the read.
-            const node = new RegExp(`Index Only Scan using (\\S+) on ${part} [^\\n]*\\n\\s*Index Cond: \\(${col} =`).exec(p);
+            // An index read by the address, with the predicate left to the index: no row filter after the read. Index-only or not is the planner's choice: rows
+            // inserted in this transaction are not yet marked all-visible, so either form can win, and both read the partial index this checks.
+            const node = new RegExp(`Index (?:Only )?Scan using (\\S+) on ${part} [^\\n]*\\n\\s*Index Cond: \\(${col} =`).exec(p);
             expect(node, `${list} ${col}\n${p}`).not.toBeNull();
             // The partition's index has a name of its own, so it is checked by its definition: the partial index of this list.
             const [def] = (await client.query("select indexdef from pg_indexes where indexname = $1", [node![1]])).rows;
