@@ -36,7 +36,7 @@ export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
 forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version london --broadcast
 ```
 
-What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; its deposits and transfers succeed). `london` is a safe choice for your own contracts; a newer version is not known to fail, but only these three have been tried.
+What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; its deposits and transfers succeed). `london` is a safe choice for your own contracts; a newer version is not known to fail, but only these three have been tried.
 
 Verify the source on the explorer. It speaks the Etherscan API, so `forge verify-contract` works with the Etherscan verifier and any API key text:
 
@@ -50,6 +50,8 @@ forge verify-contract <address> src/Counter.sol:Counter \
 ```
 
 The explorer takes about 30 verifications an hour from one client. If it says so, wait and send the request again.
+
+A large multi-file contract can be refused with HTTP 413: the explorer's front proxy takes 300 KB a request, and forge sends its input url-encoded, which is bigger than the files. `POST /api/verify` takes the same input as standard JSON and accepts it (the kit's `load/mixed/scripts/verify-large.mjs` does this for Merces).
 
 ## Deploy with Hardhat
 
@@ -72,14 +74,14 @@ module.exports = {
 npx hardhat run scripts/deploy.js --network ostia
 ```
 
-The longer timeout is there because a receipt only comes back once the block is final (next section).
+A receipt only comes back once the block is final (next section), so a deploy waits for it by polling. Hardhat's `timeout` above applies to each single request, not to that wait.
 
 ## Where a transaction becomes final
 
 1. You send a transaction to the RPC. It is put in the next block.
 2. The block is made, about every 16 seconds while there are transactions. When the chain is quiet, there can be minutes between blocks.
 3. A zero-knowledge proof of the block is made. In our measurements this took about 7.6 seconds for a small block and about 12.4 seconds for a block of more than a thousand transactions.
-4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In our measurements a transaction was final about 9 seconds after its block was made.
+4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In our measurements a block was final about 9 to 12 seconds after it was made (about 9 seconds for a small block, about 11 seconds, at most 13, with 70 transactions in a block).
 
 The public RPC only shows final blocks. A transaction you have just sent does not show up in `eth_getTransactionReceipt` until its block is final, so a receipt takes roughly 10 to 30 seconds to appear. Tools that wait for a receipt just wait a little longer than on other chains.
 
