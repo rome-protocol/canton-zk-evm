@@ -1,0 +1,14 @@
+node_modules/
+out/
+cache/
+gen/
+runs/
+*.key
+
+
+contracts/gen/
+.npm-cache/
+.home/
+third_party/
+out-merces/
+cache-merces/
