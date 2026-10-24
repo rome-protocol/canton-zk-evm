@@ -10,7 +10,7 @@ own is no use); the clock starts at the last poll that could not read it, so a l
            (status final, with the Canton record; one from reth alone says nothing of the indexer) is still waited for, polled every 60 ms, and its delay after `served`
            is reported (api_answer_after_served_s).
   record   how long after the block's Canton record time (canton_updates.record_time, the time the synchronizer gave the update) the block was served: reported
-           beside B1 as an observed number (record_time_to_served_p50_s, _p95_s), as docs/DESIGN.md, Budgets, asks; it is not held to a budget. The record time and the
+           beside B1 as an observed number (record_time_to_served_p50_s, _p95_s), as docs/METRICS.md, 'The nightly load test', reports it; it is not held to a budget. The record time and the
            database's clock are both this machine's wall clock in the rehearsal.
   sse      how long after the block was readable in the database (the last tick that could not see it, an upper bound) a live-stream client receives the block's
            `block` event (B4); every block must reach the client. It is not clamped: an event that came before the tick shows as a negative number, within the error.

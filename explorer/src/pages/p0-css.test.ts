@@ -182,7 +182,7 @@ describe("narrow screens, 320 to 360 px", () => {
     const pair = rules(contract).find(([x]) => x === ".code-pair")?.[1] ?? "";
     expect(pair).toMatch(/minmax\(min\(340px, 100%\), 1fr\)/);
     expect(pair).not.toMatch(/minmax\(340px/);
-    expect(rules(contract).find(([x]) => x === ".code-pair > *")?.[1] ?? rules(contract).map(([, b]) => b).join("")).toMatch(/min-width: 0/);
+    expect(rules(contract).find(([x]) => x === ".code-pair > *")?.[1] ?? "").toMatch(/min-width: 0/);
   });
 
   it("lets the Etherscan card's address line break anywhere, so it cannot widen the page", () => {
