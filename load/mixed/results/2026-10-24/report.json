@@ -1,0 +1,621 @@
+{
+  "kinds": {
+    "erc20Approve": {
+      "sent": 1295,
+      "final": 1295,
+      "success": 1295,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "swapUsdToTrome": {
+      "sent": 694,
+      "final": 694,
+      "success": 694,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "swapTromeToUsd": {
+      "sent": 599,
+      "final": 599,
+      "success": 596,
+      "reverted": 3,
+      "expectedRevert": false
+    },
+    "wrap": {
+      "sent": 770,
+      "final": 770,
+      "success": 770,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "swapEthToUsd": {
+      "sent": 706,
+      "final": 706,
+      "success": 706,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "trexTransfer": {
+      "sent": 907,
+      "final": 907,
+      "success": 907,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "erc20Transfer": {
+      "sent": 2527,
+      "final": 2527,
+      "success": 2527,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "swapUsdToEth": {
+      "sent": 590,
+      "final": 590,
+      "success": 590,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "erc1155MintBatch": {
+      "sent": 570,
+      "final": 570,
+      "success": 570,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "erc721Mint": {
+      "sent": 869,
+      "final": 869,
+      "success": 869,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "unwrap": {
+      "sent": 415,
+      "final": 415,
+      "success": 414,
+      "reverted": 1,
+      "expectedRevert": false
+    },
+    "addLiquidity": {
+      "sent": 559,
+      "final": 559,
+      "success": 559,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "erc1155Mint": {
+      "sent": 569,
+      "final": 569,
+      "success": 569,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "removeLiquidity": {
+      "sent": 437,
+      "final": 437,
+      "success": 437,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "erc721Transfer": {
+      "sent": 695,
+      "final": 695,
+      "success": 695,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "trexRefused": {
+      "sent": 59,
+      "final": 59,
+      "success": 0,
+      "reverted": 59,
+      "expectedRevert": true
+    },
+    "mercesDeposit": {
+      "sent": 59,
+      "final": 59,
+      "success": 59,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "erc1155Transfer": {
+      "sent": 431,
+      "final": 431,
+      "success": 431,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "revert: swap: output below the minimum": {
+      "sent": 57,
+      "final": 57,
+      "success": 57,
+      "reverted": 0,
+      "expectedRevert": true
+    },
+    "revert: ERC-721 not the owner": {
+      "sent": 58,
+      "final": 58,
+      "success": 0,
+      "reverted": 58,
+      "expectedRevert": true
+    },
+    "mercesTransfer": {
+      "sent": 174,
+      "final": 174,
+      "success": 174,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "revert: unwrap more than held": {
+      "sent": 61,
+      "final": 61,
+      "success": 0,
+      "reverted": 61,
+      "expectedRevert": true
+    },
+    "revert: ERC-20 amount over balance": {
+      "sent": 48,
+      "final": 48,
+      "success": 0,
+      "reverted": 48,
+      "expectedRevert": true
+    },
+    "erc1155BatchTransfer": {
+      "sent": 285,
+      "final": 285,
+      "success": 285,
+      "reverted": 0,
+      "expectedRevert": false
+    },
+    "revert: ERC-1155 bad id": {
+      "sent": 62,
+      "final": 62,
+      "success": 0,
+      "reverted": 62,
+      "expectedRevert": true
+    }
+  },
+  "totals": {
+    "accepted": 13496,
+    "rejected": 5,
+    "final": 13496,
+    "lost": 0,
+    "unexpectedFailures": 4,
+    "deliberateRevertsThatSucceeded": 57,
+    "deliberateReverts": 345
+  },
+  "lost": [],
+  "rejections": {
+    "nonce gap: send the missing transactions first. This transaction has nonce 4, an": 2,
+    "nonce gap: send the missing transactions first. This transaction has nonce 5, an": 1,
+    "nonce gap: send the missing transactions first. This transaction has nonce 6, an": 1,
+    "nonce gap: send the missing transactions first. This transaction has nonce 7, an": 1
+  },
+  "unexpectedFailures": [
+    {
+      "hash": "0x82ae5f2c8e7327dc6fab778b8af68b66c66e578d27042b57bdf9567db280b23f",
+      "kind": "swapTromeToUsd",
+      "block": 232
+    },
+    {
+      "hash": "0x0ed2c4e54897fed59c39e02270af265cb0f1dea245339d53d173a369f1b04583",
+      "kind": "swapTromeToUsd",
+      "block": 234
+    },
+    {
+      "hash": "0xe8e5beb3dde7f5dcbdccf08ec057a32edd8dcf5205ad72310a33bcd3551c7673",
+      "kind": "unwrap",
+      "block": 235
+    },
+    {
+      "hash": "0xd822c5082fbafa7273e0590a091264eea50f4ecbdb252db3999fa4c9230ad87c",
+      "kind": "swapTromeToUsd",
+      "block": 244
+    }
+  ],
+  "timeToFinal": {
+    "all": {
+      "n": 13496,
+      "p50": 24.717,
+      "p95": 32.918,
+      "max": 37.951
+    },
+    "byPhase": {
+      "2 tx/s": {
+        "n": 1192,
+        "p50": 21.721,
+        "p95": 28.45,
+        "max": 37.951
+      },
+      "3 tx/s": {
+        "n": 1801,
+        "p50": 23.258,
+        "p95": 30.717,
+        "max": 33.818
+      },
+      "4 tx/s": {
+        "n": 2401,
+        "p50": 24.941,
+        "p95": 32.719,
+        "max": 35.157
+      },
+      "4.5 tx/s": {
+        "n": 2701,
+        "p50": 25.744,
+        "p95": 33.415,
+        "max": 35.43
+      },
+      "best (4.5 tx/s)": {
+        "n": 5401,
+        "p50": 25.421,
+        "p95": 33.162,
+        "max": 35.522
+      }
+    },
+    "byBlockSize": {
+      "1-10": {
+        "n": 8,
+        "p50": 29.09,
+        "p95": 29.755,
+        "max": 29.755
+      },
+      "11-100": {
+        "n": 13488,
+        "p50": 24.715,
+        "p95": 32.918,
+        "max": 37.951
+      },
+      "101-1000": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "over 1000": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      }
+    }
+  },
+  "blocks": {
+    "withOurTxs": 225,
+    "ourTxsPerBlock": {
+      "n": 225,
+      "p50": 69,
+      "p95": 79,
+      "max": 84
+    },
+    "allTxsPerBlock": {
+      "n": 225,
+      "p50": 69,
+      "p95": 79,
+      "max": 84
+    },
+    "gasUsed": {
+      "n": 225,
+      "p50": 5287195,
+      "p95": 6773329,
+      "max": 7886580
+    }
+  },
+  "bySize": {
+    "1-10": {
+      "blocks": 2,
+      "proofSeconds": {
+        "n": 2,
+        "p50": 7.473,
+        "p95": 7.473,
+        "max": 7.473
+      },
+      "finalSeconds": {
+        "n": 2,
+        "p50": 8.615,
+        "p95": 8.615,
+        "max": 8.615
+      },
+      "commitSeconds": {
+        "n": 2,
+        "p50": 1.112,
+        "p95": 1.112,
+        "max": 1.112
+      }
+    },
+    "11-100": {
+      "blocks": 223,
+      "proofSeconds": {
+        "n": 223,
+        "p50": 9.032,
+        "p95": 9.206,
+        "max": 9.964
+      },
+      "finalSeconds": {
+        "n": 223,
+        "p50": 11.005,
+        "p95": 11.947,
+        "max": 12.919
+      },
+      "commitSeconds": {
+        "n": 223,
+        "p50": 2.028,
+        "p95": 2.865,
+        "max": 3.7
+      }
+    },
+    "101-1000": {
+      "blocks": 0,
+      "proofSeconds": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "finalSeconds": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "commitSeconds": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      }
+    },
+    "over 1000": {
+      "blocks": 0,
+      "proofSeconds": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "finalSeconds": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      },
+      "commitSeconds": {
+        "n": 0,
+        "p50": null,
+        "p95": null,
+        "max": null
+      }
+    }
+  },
+  "busiestBlock": {
+    "number": 377,
+    "txCount": 84,
+    "ours": 84,
+    "gasUsed": 6147278,
+    "proofSeconds": 8.952,
+    "finalSeconds": 11.311,
+    "commitSeconds": 2.31,
+    "url": "https://ostia.devnet.romeprotocol.xyz/block/377"
+  },
+  "gas": {
+    "erc20Approve": {
+      "n": 1295,
+      "p50": 46454,
+      "p95": 46573,
+      "max": 46573
+    },
+    "trexTransfer": {
+      "n": 907,
+      "p50": 212068,
+      "p95": 212068,
+      "max": 212068
+    },
+    "erc721Mint": {
+      "n": 869,
+      "p50": 56197,
+      "p95": 73297,
+      "max": 73297
+    },
+    "wrap": {
+      "n": 770,
+      "p50": 34756,
+      "p95": 51856,
+      "max": 51856
+    },
+    "swapEthToUsd": {
+      "n": 706,
+      "p50": 88843,
+      "p95": 99415,
+      "max": 99415
+    },
+    "erc20Transfer": {
+      "n": 2527,
+      "p50": 34312,
+      "p95": 34348,
+      "max": 34348
+    },
+    "swapUsdToTrome": {
+      "n": 694,
+      "p50": 88727,
+      "p95": 105827,
+      "max": 116399
+    },
+    "swapTromeToUsd": {
+      "n": 596,
+      "p50": 88855,
+      "p95": 99427,
+      "max": 99427
+    },
+    "unwrap": {
+      "n": 414,
+      "p50": 42061,
+      "p95": 42061,
+      "max": 42061
+    },
+    "swapUsdToEth": {
+      "n": 590,
+      "p50": 88761,
+      "p95": 99333,
+      "max": 99333
+    },
+    "erc1155MintBatch": {
+      "n": 570,
+      "p50": 57114,
+      "p95": 98139,
+      "max": 98139
+    },
+    "addLiquidity": {
+      "n": 559,
+      "p50": 127921,
+      "p95": 138493,
+      "max": 138523
+    },
+    "erc1155Mint": {
+      "n": 569,
+      "p50": 30258,
+      "p95": 47358,
+      "max": 47358
+    },
+    "erc721Transfer": {
+      "n": 695,
+      "p50": 45768,
+      "p95": 62868,
+      "max": 62880
+    },
+    "removeLiquidity": {
+      "n": 437,
+      "p50": 110576,
+      "p95": 121148,
+      "max": 121148
+    },
+    "mercesDeposit": {
+      "n": 59,
+      "p50": 97142,
+      "p95": 97142,
+      "max": 97142
+    },
+    "erc1155Transfer": {
+      "n": 431,
+      "p50": 39590,
+      "p95": 56690,
+      "max": 56690
+    },
+    "revert: swap: output below the minimum": {
+      "n": 57,
+      "p50": 88809,
+      "p95": 99381,
+      "max": 99381
+    },
+    "mercesTransfer": {
+      "n": 174,
+      "p50": 874436,
+      "p95": 876241,
+      "max": 877164
+    },
+    "erc1155BatchTransfer": {
+      "n": 285,
+      "p50": 54439,
+      "p95": 88639,
+      "max": 88639
+    }
+  },
+  "rpc": {
+    "budgetPerMinute": 285,
+    "peakCallsInAMinute": 276,
+    "calls": 15603,
+    "limitedAnswers": 0,
+    "waitedForBudgetSeconds": 518,
+    "receiptsChecked": 1594,
+    "receiptMismatches": 0
+  },
+  "phases": [
+    {
+      "name": "2 tx/s",
+      "target": 2,
+      "achieved": 1.9933333333333332,
+      "everyTxFinal": true,
+      "minutes": 10
+    },
+    {
+      "name": "3 tx/s",
+      "target": 3,
+      "achieved": 3.0016666666666665,
+      "everyTxFinal": true,
+      "minutes": 10
+    },
+    {
+      "name": "4 tx/s",
+      "target": 4,
+      "achieved": 4.001666666666667,
+      "everyTxFinal": true,
+      "minutes": 10
+    },
+    {
+      "name": "4.5 tx/s",
+      "target": 4.5,
+      "achieved": 4.501666666666667,
+      "everyTxFinal": true,
+      "minutes": 10
+    },
+    {
+      "name": "best (4.5 tx/s)",
+      "target": 4.5,
+      "achieved": 4.5008333333333335,
+      "everyTxFinal": true,
+      "minutes": 20
+    }
+  ],
+  "redstone": {
+    "tried": 80,
+    "gotPrices": 0,
+    "vaultRecords": 0,
+    "vaultReads": 0
+  },
+  "merces": {
+    "proofs": 177,
+    "proofMs": {
+      "n": 177,
+      "p50": 328,
+      "p95": 377,
+      "max": 863
+    }
+  },
+  "run": {
+    "name": "mixed-1",
+    "start": "2026-10-24T12:59:28.441Z",
+    "end": "2026-10-24T13:59:58.939Z",
+    "wallets": 200,
+    "skipped": {
+      "erc721Transfer": 9,
+      "swapTromeToUsd": 3,
+      "erc1155Transfer": 6,
+      "erc1155BatchTransfer": 2,
+      "removeLiquidity": 11,
+      "vaultRecord": 689
+    }
+  },
+  "canton": {
+    "blocksRead": 225,
+    "argumentBytesPerBlock": {
+      "n": 225,
+      "p50": 42403,
+      "p95": 48849,
+      "max": 50573
+    },
+    "argumentBytesPerTx": {
+      "n": 225,
+      "p50": 628.2727272727273,
+      "p95": 770.5172413793103,
+      "max": 7595
+    },
+    "trafficFieldsSeen": [
+      "producerRecord.trafficBytes"
+    ],
+    "trafficValuesPerBlock": {
+      "n": 16,
+      "p50": 15617,
+      "p95": 16655,
+      "max": 16655
+    }
+  }
+}
