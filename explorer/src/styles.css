@@ -101,7 +101,7 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 /* hashes: shortened, with a button to copy and one to read in full */
 .hl { display: inline; white-space: nowrap; }
 /* In a key/value cell (the Canton card beside a transaction or a block) a long id may break, so its copy button wraps with it instead of pushing the page sideways. */
-.kv-v .hl { white-space: normal; }
+.kv-v .hl, .kv-v .hl .hx { white-space: normal; }
 .hx { color: var(--link); white-space: nowrap; }
 .hx .wrap { word-break: break-all; white-space: normal; }
 .wrap { word-break: break-all; white-space: normal; }
