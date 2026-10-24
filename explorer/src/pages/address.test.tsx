@@ -449,6 +449,10 @@ describe("the address page: the tab card", () => {
     await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: null, nftTransferCount: 5 }));
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers 5", "Internal calls 0", "Contracts created 0", "Coin history"]);
   });
+  it("gives the transfer tabs no count while the derive stage is behind, as a count then holds only the blocks derived so far", async () => {
+    await open(addressDetail({ tokenTransferCount: 9, erc20TransferCount: 3, nftTransferCount: 2, derived: false }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Transactions 4", "Token transfers", "NFT transfers", "Internal calls 0", "Contracts created 0", "Coin history"]);
+  });
   it("lists the contracts it created", async () => {
     await open(addressDetail({ createdCount: 2 }), { contracts: () => derived([contractItem(0xc1), contractItem(0xc2, { name: null, verified: false })]) }, `/address/${A}?tab=contracts`);
     await waitFor(() => expect(rows()).toHaveLength(2));

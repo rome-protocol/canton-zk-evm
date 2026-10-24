@@ -24,7 +24,7 @@ export interface AddressItem { address: string; kind: string; balance: string | 
 export interface Funding { from: string; txHash: string; block: number; timestamp: number; value: string }
 export interface AddressDetail {
   address: string; kind: string; sentCount: number; receivedCount: number; internalCount: number; tokenTransferCount: number; erc20TransferCount: number | null; nftTransferCount: number | null; firstSeenBlock: number | null; firstSeenTimestamp: number | null; lastActiveBlock: number | null; lastActiveTimestamp: number | null;
-  /** The ERC-20 transfers its Token transfers list holds and the NFT transfers its NFT transfers list holds (each transfer once, a transfer to itself too), counted up to a ceiling: null when there are more than that, so that a count shown is always exact. `tokenTransferCount` counts every standard together. */
+  /** The ERC-20 transfers its Token transfers list holds and the NFT transfers its NFT transfers list holds (each transfer once, a transfer to itself too), counted up to a ceiling: null when there are more than that. They count derived rows, so they are exact once `derived` is true; while it is false they hold only the blocks derived so far. `tokenTransferCount` counts every standard together. */
   /** The contracts it made (as the direct caller of the creation). */
   createdCount: number;
   /** True when `createdCount` stopped at its ceiling: the address made more. */

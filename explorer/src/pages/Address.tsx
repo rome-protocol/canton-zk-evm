@@ -46,10 +46,12 @@ export function Address() {
   if (a.kind !== "account") return <Contract addr={addr} />;
   const made = typeof a.createdCount === "number" ? `${count(a.createdCount)}${a.createdCountCapped ? "+" : ""}` : undefined;
   // The transfer tabs count the list they hold (the server's own count of each, null past its ceiling), never `tokenTransferCount`, which adds every standard together.
+  // While the derive stage is behind (`derived` is false) a count is only what has been derived so far, so the tabs show none.
+  const exactTransfers = a.derived !== false;
   const tabs: { id: TabId; label: string; n?: number | string }[] = [
     { id: "transactions", label: "Transactions", n: a.sentCount + a.receivedCount },
-    { id: "token-transfers", label: "Token transfers", n: a.erc20TransferCount ?? undefined },
-    { id: "nft-transfers", label: "NFT transfers", n: a.nftTransferCount ?? undefined },
+    { id: "token-transfers", label: "Token transfers", n: exactTransfers ? a.erc20TransferCount ?? undefined : undefined },
+    { id: "nft-transfers", label: "NFT transfers", n: exactTransfers ? a.nftTransferCount ?? undefined : undefined },
     { id: "internal", label: "Internal calls", n: a.internalCount },
     { id: "contracts", label: "Contracts created", n: made },
     { id: "coin-history", label: "Coin history" },
