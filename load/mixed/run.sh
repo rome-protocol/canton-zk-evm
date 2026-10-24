@@ -2,6 +2,7 @@
 # The mixed load's runner. Everything runs in the repo's pinned containers; nothing but Docker is needed on the machine.
 #
 #   run.sh build            install the pinned packages (npm ci) and compile every contract (Foundry, two passes: see scripts/prepare.mjs)
+#   run.sh merces-fetch     fetch TACEO's Merces repository at the pinned commit into third_party/ and compile its contracts with Foundry
 #   run.sh deploy           deploy the contracts and write addresses.json (idempotent: what exists is skipped)
 #   run.sh verify           verify every deployed contract on the explorer
 #   run.sh smoke            one action of each kind from the test wallets (writes smoke.json)
@@ -36,6 +37,16 @@ case ${1:-} in
     node_c node scripts/prepare.mjs
     forge_c build
     node_c node scripts/prepare.mjs check
+    ;;
+  merces-fetch)
+    M=third_party/merces1-x402
+    mkdir -p "$M"
+    [ -d "$M/.git" ] || { git -C "$M" init -q; git -C "$M" remote add origin "$MERCES_REPO"; }
+    git -C "$M" fetch -q --depth 1 origin "$MERCES_COMMIT"
+    git -C "$M" checkout -q --detach FETCH_HEAD
+    [ "$(git -C "$M" rev-parse HEAD)" = "$MERCES_COMMIT" ]
+    git -C "$M" submodule update -q --init --depth 1 contracts/lib/openzeppelin-contracts contracts/lib/forge-std contracts/lib/babyjubjub-solidity
+    docker run --rm --user "$UIDGID" -e HOME=/w/.home -v "$HERE:/w" -w /w/$M/contracts --entrypoint forge "$FOUNDRY_IMAGE" build
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
   smoke) shift; node_c node scripts/smoke.mjs "$@" ;;

@@ -33,7 +33,12 @@ export function wallets(names) {
   return Object.fromEntries(names.map((n) => [n, new ethers.Wallet(all[n], provider)]));
 }
 
-export const artifact = (file, name) => JSON.parse(readFileSync(`out/${file}/${name}.json`, "utf8"));
+// Our own and the npm contracts are built into out/; TACEO's Merces contracts (fetched by `run.sh merces-fetch`) into their own folder.
+export const MERCES_ROOT = "third_party/merces1-x402/contracts";
+export const artifact = (file, name) => {
+  const p = `out/${file}/${name}.json`;
+  return JSON.parse(readFileSync(existsSync(p) ? p : `${MERCES_ROOT}/out/${file}/${name}.json`, "utf8"));
+};
 
 /** Waits for a sent transaction to be in a final block (the public RPC answers only for final blocks) and throws if it failed. */
 export async function done(label, sent) {

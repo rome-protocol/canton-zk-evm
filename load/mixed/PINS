@@ -2,3 +2,6 @@
 # (the repo's PINS must not pin Foundry, tests/static.sh).
 FOUNDRY_IMAGE=ghcr.io/foundry-rs/foundry@sha256:4a16a86f41d30418fbdca47ce2868121bbb0aeaa0a34bde2dd1e2911c4be2464
 FOUNDRY_VERSION=v1.8.6
+# TACEO's public repository with the Merces contracts and the proving client. Fetched at run time by `run.sh build` into third_party/ (git ignores it); nothing of it is copied into this repository.
+MERCES_REPO=https://github.com/TaceoLabs/merces1-x402.git
+MERCES_COMMIT=1dbe16fe8216ae1ad9dde5884df678d86e964940
