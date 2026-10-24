@@ -31,10 +31,25 @@ export const TREX_AUTHORITY_SLOT = "0x821f3e4d3d679f19eacc940c87acf846ea6eae24a6
 const selector = (signature: string): string => keccak256(toHex(signature)).slice(0, 10);
 /** What the authority is asked, by the kind of proxy: the T-REX token, claim topics, identity registry, its storage, trusted issuers and compliance, and an ONCHAINID identity. */
 export const TREX_GETTERS = ["getTokenImplementation()", "getCTRImplementation()", "getIRImplementation()", "getIRSImplementation()", "getTIRImplementation()", "getMCImplementation()", "getImplementation()"].map(selector);
-/** The getter a proxy asks its authority, found in its code (`PUSH4 <selector>`, which the compiler puts before the external call), or null when the code asks none of them. */
+/**
+ * The getter a proxy asks its authority, read from its code. A proxy pushes (PUSH4 <selector>) the getter it calls, and a T-REX proxy also pushes the other getters, because
+ * setImplementationAuthority checks each of them on a new authority; so the getter it asks is the one it pushes most often (its own is pushed once more, for the call in
+ * its fallback). The code is read opcode by opcode, so the data of a PUSH is not taken for an opcode. Null when no getter is pushed, or when two are pushed equally often.
+ */
 export function trexGetter(code: string): string | null {
   const hex = code.toLowerCase().replace(/^0x/, "");
-  return TREX_GETTERS.find((g) => hex.includes("63" + g.slice(2))) ?? null;
+  const count = new Map<string, number>();
+  for (let i = 0; i + 2 <= hex.length;) {
+    const op = parseInt(hex.slice(i, i + 2), 16);
+    if (op === 0x63 && i + 10 <= hex.length) {
+      const g = "0x" + hex.slice(i + 2, i + 10);
+      if (TREX_GETTERS.includes(g)) count.set(g, (count.get(g) ?? 0) + 1);
+    }
+    i += 2 + (op >= 0x60 && op <= 0x7f ? (op - 0x5f) * 2 : 0);
+  }
+  const top = Math.max(0, ...count.values());
+  const best = [...count].filter(([, n]) => n === top);
+  return top > 0 && best.length === 1 ? best[0]![0] : null;
 }
 export type ProxyKind = "eip1967" | "eip1822" | "beacon" | "eip1167" | "trex";
 export interface ProxyRow { proxy: string; kind: ProxyKind; implementation: string | null; beacon: string | null }
@@ -64,7 +79,9 @@ export type ProxyProbe = ProxyReads & { code(account: string, n: number): Promis
 export async function detect(k: CreatedContract, n: number, reads: ProxyReads): Promise<ProxyRow | null> {
   const target = minimalProxyTarget(k.runtimeCode);
   if (target) return { proxy: k.address, kind: "eip1167", implementation: target, beacon: null };
-  const [impl, beacon, logic, authority] = await Promise.all([EIP1967_IMPLEMENTATION_SLOT, EIP1967_BEACON_SLOT, EIP1822_SLOT, TREX_AUTHORITY_SLOT].map((s) => reads.storageAt(k.address, s, n)));
+  // The authority slot is read only for a code that asks an authority's getter, which is a few contracts and not the common case.
+  const getter = trexGetter(k.runtimeCode);
+  const [impl, beacon, logic, authority] = await Promise.all([EIP1967_IMPLEMENTATION_SLOT, EIP1967_BEACON_SLOT, EIP1822_SLOT, ...(getter ? [TREX_AUTHORITY_SLOT] : [])].map((s) => reads.storageAt(k.address, s, n)));
   const implementation = addressOfWord(impl!);
   if (implementation) return { proxy: k.address, kind: "eip1967", implementation, beacon: null };
   const beaconAddress = addressOfWord(beacon!);
@@ -82,8 +99,7 @@ export async function detect(k: CreatedContract, n: number, reads: ProxyReads): 
   }
   const logicAddress = addressOfWord(logic!);
   if (logicAddress) return { proxy: k.address, kind: "eip1822", implementation: logicAddress, beacon: null };
-  const authorityAddress = addressOfWord(authority!);
-  const getter = authorityAddress ? trexGetter(k.runtimeCode) : null;
+  const authorityAddress = authority ? addressOfWord(authority) : null;
   if (authorityAddress && getter) {
     // The authority names the implementation by answering the getter of this kind of proxy; one that does not answer is recorded with no implementation.
     let behind: string | null = null;
@@ -168,12 +184,13 @@ export async function refreshProxy(c: Pick<PoolClient, "query">, address: string
   return found;
 }
 
-const REPAIR_STREAM = "trex_proxies";
+const REPAIR_STREAM = "trex_proxies_2";
 
 /**
  * Once for a database: the proxies of an implementation authority that were made before the indexer knew the kind are looked at (they were looked at when they were
- * made, found to be none, and are not looked at again until a log says so). Every contract with no proxy row whose code asks an authority's getter is read at the derived
- * head; the cursor `trex_proxies` says it was done, so a restart does not repeat it. Returns how many proxies it found.
+ * made, found to be none, and are not looked at again until a log says so). Every contract with no proxy row, or with a row of this kind (an earlier version of this repair took the wrong getter
+ * for most of them), whose code asks an authority's getter is read at the derived head; a row of this kind that the code no longer matches is removed; the cursor
+ * `trex_proxies_2` says it was done, so a restart does not repeat it. Returns how many proxies it found.
  */
 export async function repairTrexProxies(pool: Pool, reads: ProxyReads): Promise<number> {
   if ((await pool.query("select 1 from cursors where stream = $1", [REPAIR_STREAM])).rowCount) return 0;
@@ -184,7 +201,7 @@ export async function repairTrexProxies(pool: Pool, reads: ProxyReads): Promise<
     const candidates = await pool.query(
       `select encode(k.address, 'hex') as a, encode(b.code, 'hex') as code
          from contracts k join bytecodes b on b.code_hash = k.runtime_code_hash
-        where k.destroyed_block is null and coalesce(k.creation_block, 0) <= $1 and not exists (select 1 from proxies p where p.proxy = k.address)
+        where k.destroyed_block is null and coalesce(k.creation_block, 0) <= $1 and not exists (select 1 from proxies p where p.proxy = k.address and p.kind <> 'trex')
           and exists (select 1 from unnest($2::bytea[]) as g(pattern) where position(g.pattern in b.code) > 0)`,
       [derived, patterns],
     );
@@ -192,6 +209,8 @@ export async function repairTrexProxies(pool: Pool, reads: ProxyReads): Promise<
       const rows = await Promise.all(candidates.rows.slice(i, i + WIDTH).map((r) =>
         detect({ address: "0x" + (r.a as string), creator: "0x" + (r.a as string), txIndex: 0, traceAddress: [], runtimeCode: "0x" + (r.code as string), initCode: "0x" }, derived, reads)));
       const here = rows.filter((r): r is ProxyRow => r !== null);
+      const none = candidates.rows.slice(i, i + WIDTH).filter((_, x) => rows[x] === null).map((r) => bytea("0x" + (r.a as string)));
+      if (none.length > 0) await pool.query("delete from proxies where kind = 'trex' and proxy = any($1::bytea[])", [none]);
       if (here.length > 0) {
         const c = await pool.connect();
         try { await upsertProxies(c, derived, here); } finally { c.release(); }

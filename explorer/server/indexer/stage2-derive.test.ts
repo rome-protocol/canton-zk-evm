@@ -292,17 +292,20 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
 
   // A small mock of the implementation-authority pattern (ERC-3643 and ONCHAINID): proxies that hold only the address of an authority in one slot and push the selector
   // of the getter they ask it; an authority that answers each getter. Written for this test; it is no copy of any project's source.
-  const trexCode = (getter: number) => "0x608060405263" + TREX_GETTERS[getter]!.slice(2) + "5afa00";
+  // As the real ones do: a T-REX proxy pushes all six of its getters once (setImplementationAuthority checks each on a new authority) and its own once more, for the call of
+  // its fallback; an identity proxy pushes only its own, twice.
+  const trexCode = (getter: number) => "0x6080604052" + (getter < 6 ? [0, 1, 2, 3, 4, 5] : [6]).map((g) => "63" + TREX_GETTERS[g]!.slice(2) + "5afa").join("") + "63" + TREX_GETTERS[getter]!.slice(2) + "5afa00";
   it("follows an implementation authority: the token, the identity registry and an identity each get the answer of their own getter, and no other contract is called a proxy", async () => {
     await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
       const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
-      // 0xb1 a token proxy, 0xb2 an identity registry proxy, 0xb3 an identity proxy (other authority, other getter), 0xb4 holds an address in the slot but asks no known getter,
+      // 0xb1 a token proxy, 0xb2 an identity registry proxy, 0xb3 an identity proxy (other authority, other getter), 0xb4 holds an address in the slot but asks no known getter, 0xb7 a compliance proxy,
       // 0xb5 asks a getter the authority has not set (it answers the zero address), 0xb6 is a plain contract
-      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(0)), make([1], 0xa1, 0xb2, trexCode(2)), make([2], 0xa1, 0xb3, trexCode(6)), make([3], 0xa1, 0xb4, "0x6080"), make([4], 0xa1, 0xb5, trexCode(1)), make([5], 0xa1, 0xb6)]);
-      for (const [proxy, authority] of [[0xb1, 0xa07], [0xb2, 0xa07], [0xb3, 0xa08], [0xb4, 0xa07], [0xb5, 0xa09]] as const) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(authority);
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(0)), make([1], 0xa1, 0xb2, trexCode(2)), make([2], 0xa1, 0xb3, trexCode(6)), make([3], 0xa1, 0xb4, "0x6080"), make([4], 0xa1, 0xb5, trexCode(1)), make([5], 0xa1, 0xb6), make([6], 0xa1, 0xb7, trexCode(5))]);
+      for (const [proxy, authority] of [[0xb1, 0xa07], [0xb2, 0xa07], [0xb3, 0xa08], [0xb4, 0xa07], [0xb5, 0xa09], [0xb7, 0xa07]] as const) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(authority);
       chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
       chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[2]}`] = word(0x1002);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[5]}`] = word(0x1005);
       chain.reads.callResults[`${A(0xa08)}:${TREX_GETTERS[6]}`] = word(0x1003);
       chain.reads.callResults[`${A(0xa09)}:${TREX_GETTERS[1]}`] = word(0); // an authority with nothing set answers the zero address
       await indexer.runOnce();
@@ -311,6 +314,7 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
         { p: A(0xb2).slice(2), kind: "trex", i: A(0x1002).slice(2), b: A(0xa07).slice(2), c: "1" },
         { p: A(0xb3).slice(2), kind: "trex", i: A(0x1003).slice(2), b: A(0xa08).slice(2), c: "1" },
         { p: A(0xb5).slice(2), kind: "trex", i: null, b: A(0xa09).slice(2), c: "1" },
+        { p: A(0xb7).slice(2), kind: "trex", i: A(0x1005).slice(2), b: A(0xa07).slice(2), c: "1" }, // the compliance proxy: its own getter, not the token's
       ]);
       await indexer.close();
     });
@@ -363,7 +367,7 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(0)), make([1], 0xa1, 0xb2, "0x6080"), make([2], 0xa1, 0xb3, trexCode(0))]);
       await indexer.runOnce();
       expect(await rows(pool, "select count(*) as n from proxies")).toEqual([{ n: "0" }]);
-      await pool.query("delete from cursors where stream = 'trex_proxies'");
+      await pool.query("delete from cursors where stream = 'trex_proxies_2'");
       for (const proxy of [0xb1, 0xb2]) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(0xa07);
       chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
       expect(await repairTrexProxies(pool, chain.reads)).toBe(1);
@@ -374,6 +378,32 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       chain.reads.storage[`${A(0xb3)}:${TREX_AUTHORITY_SLOT}`] = word(0xa07);
       expect(await repairTrexProxies(pool, chain.reads)).toBe(0);
       expect(await rows(pool, "select count(*) as n from proxies")).toEqual([{ n: "1" }]);
+      await indexer.close();
+    });
+  });
+
+  it("corrects at the next start the proxies of this kind an earlier version recorded with the wrong implementation, and drops the ones whose code names no getter", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      // 0xb1 an identity registry proxy and 0xb2 a compliance proxy, both recorded as the token's; 0xb3 a code that pushes all six getters equally often
+      const tie = "0x6080" + [0, 1, 2, 3, 4, 5].map((g) => "63" + TREX_GETTERS[g]!.slice(2) + "5afa").join("");
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(2)), make([1], 0xa1, 0xb2, trexCode(5)), make([2], 0xa1, 0xb3, tie)]);
+      await indexer.runOnce();
+      const row = (proxy: number, impl: number) => pool.query("insert into proxies (proxy, kind, implementation, beacon, checked_block) values ($1, 'trex', $2, $3, 1)",
+        [Buffer.from(A(proxy).slice(2), "hex"), Buffer.from(A(impl).slice(2), "hex"), Buffer.from(A(0xa07).slice(2), "hex")]);
+      await pool.query("delete from proxies");
+      await row(0xb1, 0x1001); await row(0xb2, 0x1001); await row(0xb3, 0x1001);
+      await pool.query("delete from cursors where stream like 'trex_proxies%'");
+      for (const proxy of [0xb1, 0xb2, 0xb3]) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(0xa07);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[2]}`] = word(0x1002);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[5]}`] = word(0x1005);
+      expect(await repairTrexProxies(pool, chain.reads)).toBe(2);
+      expect(await rows(pool, "select encode(proxy, 'hex') as p, kind, encode(implementation, 'hex') as i from proxies order by proxy")).toEqual([
+        { p: A(0xb1).slice(2), kind: "trex", i: A(0x1002).slice(2) },
+        { p: A(0xb2).slice(2), kind: "trex", i: A(0x1005).slice(2) },
+      ]);
       await indexer.close();
     });
   });

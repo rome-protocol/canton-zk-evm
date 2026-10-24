@@ -26,11 +26,20 @@ describe("proxy detection", () => {
     expect(TREX_AUTHORITY_SLOT).toBe("0x821f3e4d3d679f19eacc940c87acf846ea6eae24a63058ea750304437a62aafc");
     expect(TREX_GETTERS).toHaveLength(7);
     expect(new Set(TREX_GETTERS).size).toBe(7);
-    // a token proxy pushes the selector of getTokenImplementation() before its call; a code that pushes none of them has no getter
-    expect(trexGetter("0x608060405263" + TREX_GETTERS[0]!.slice(2) + "5afa")).toBe(TREX_GETTERS[0]);
+    const push = (g: number) => "63" + TREX_GETTERS[g]!.slice(2);
+    // a code that pushes one getter asks that one; a code that pushes none of them has no getter
+    expect(trexGetter("0x6080604052" + push(0) + "5afa")).toBe(TREX_GETTERS[0]);
     expect(trexGetter("0X6080" + "63" + TREX_GETTERS[2]!.slice(2).toUpperCase() + "00")).toBe(TREX_GETTERS[2]);
     expect(trexGetter("0x6080604052" + TREX_GETTERS[6]!.slice(2))).toBeNull(); // the bytes are there but not pushed
-    expect(trexGetter("0x6080")).toBeNull();
+    // a real proxy pushes all six getters once (setImplementationAuthority checks each on the new authority) and its own once more: its own is the one pushed most
+    const six = [0, 1, 2, 3, 4, 5].map(push).join("5afa");
+    expect(trexGetter("0x6080" + six + "00" + push(2) + "5afa")).toBe(TREX_GETTERS[2]);
+    expect(trexGetter("0x6080" + push(5) + "00" + six)).toBe(TREX_GETTERS[5]);
+    expect(trexGetter("0x6080" + six)).toBeNull(); // all pushed the same number of times: the code does not say which it asks
+    // the selector is only counted where an opcode pushes it: not inside the data of another push, and not at an offset that is no byte boundary
+    expect(trexGetter("0x7f" + "00".repeat(27) + push(0) + "6080")).toBeNull();
+    expect(trexGetter("0x5" + push(0) + "0")).toBeNull();
+    expect(trexGetter("0x6080" + "7f" + "00".repeat(27) + push(0) + push(1))).toBe(TREX_GETTERS[1]);
     expect(trexGetter("0x")).toBeNull();
   });
 });
