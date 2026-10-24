@@ -5,7 +5,9 @@ libs = []
 out = "out"
 cache_path = "cache"
 auto_detect_solc = true
-evm_version = "london"
+# solc 0.8.17 has no paris, so forge builds the kit contracts for london; the Uniswap V2 core (solc 0.5.16) falls back to istanbul; Merces is built by its own project (osaka).
+# "paris" is kept because the deployed Uniswap pair code (and so the router's pair hash) comes from exactly this setting.
+evm_version = "paris"
 optimizer = true
 optimizer_runs = 200
 # No metadata hash: the same source always gives the same bytes, which the Uniswap pair hash below relies on.
