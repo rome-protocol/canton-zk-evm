@@ -2,6 +2,7 @@
 .crumbs a { color: inherit; }
 .ptitle { flex-wrap: wrap; }
 .way { margin: 14px 0 18px; }
+.way > .sec-h { margin: -18px -20px 14px; padding: 14px 20px; border-bottom: 1px solid var(--line-2); } /* the hairline under the title row, as the shared card header draws it */
 .how-steps.way-steps { grid-template-columns: repeat(4, 1fr); }
 .how-steps.way-steps li { padding-top: 40px; }
 .how-steps.way-steps .none .how-dot { border: 1.5px dashed var(--faint); width: 21px; height: 21px; outline: 0; }
@@ -9,7 +10,7 @@
 .way-delta { position: absolute; left: calc(-50% - 6px); transform: translateX(-50%); white-space: nowrap; top: 0; }
 .how-steps.way-steps .how-dot { top: 18px; display: grid; place-items: center; width: 24px; height: 24px; border: 0; color: var(--btn-ink); }
 .how-steps.way-steps li::before { top: 29px; left: 24px; right: -12px; }
-.way-foot { margin: 14px -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--canton-tint); border-radius: 0 0 13px 13px; display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
+.way-foot { margin: 14px -20px -18px; padding: 12px 20px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--canton-tint) 65%, transparent); border-radius: 0 0 13px 13px; display: flex; justify-content: space-between; gap: 6px 24px; flex-wrap: wrap; }
 .way-foot-r { text-align: right; }
 .way-foot-l .ic { vertical-align: -2px; margin-right: 5px; color: var(--muted); }
 .tx-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 20px; align-items: start; }
