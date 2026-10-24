@@ -1,5 +1,5 @@
 /**
- * L4's budgets (design section 9, B5), as pure code so a test holds them without a browser: for Home, Block and Transaction the largest contentful paint,
+ * L4's budgets (docs/DESIGN.md, Budgets, B5), as pure code so a test holds them without a browser: for Home, Block and Transaction the largest contentful paint,
  * the gzipped script of the first route and the API calls made before the first paint; Address and Contract are measured and reported, never held.
  * Every page is opened `repeat` times, each in a fresh browser context (a cold cache). The median of the runs is held to the budget (a single run on a
  * shared runner varies by more than the budget's margin); the slowest run is reported beside it.

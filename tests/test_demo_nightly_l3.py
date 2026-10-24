@@ -230,7 +230,7 @@ class Judge(unittest.TestCase):
         self.assertEqual(summary["sse_p95_s"], 0.8)
 
     def test_the_record_time_to_served_is_reported_and_not_held(self):
-        # design section 9: the Canton record time to served is an observed number beside B1; even a very long one breaks no budget
+        # docs/METRICS.md, 'The nightly load test': the Canton record time to served is an observed number beside B1; even a very long one breaks no budget
         blocks = [dict(block(i), record_time_to_served_s=0.5 + i / 100) for i in range(20)] + [dict(block(20), record_time_to_served_s=30.0)]
         summary, failures = l3.judge(blocks, **self.ok)
         self.assertEqual(failures, [])

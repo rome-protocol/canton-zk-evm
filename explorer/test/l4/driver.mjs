@@ -1,5 +1,5 @@
 /**
- * L4 of the explorer's load test (design section 9, B5): the pages in a real browser, cold, on a slow link.
+ * L4 of the explorer's load test (docs/DESIGN.md, Budgets, B5): the pages in a real browser, cold, on a slow link.
  *
  * Home, Block, Transaction, Address and Contract are each opened L4_REPEAT times (5), every time in a fresh browser context (nothing cached), with Chrome's
  * network throttled through the DevTools protocol to 10 Mbit/s each way and a 100 ms round trip. Each run records the first and the largest contentful paint, the

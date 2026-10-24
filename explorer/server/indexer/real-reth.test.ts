@@ -11,7 +11,7 @@
  *    contract made and destroyed in one transaction, a failed creation, work a failing parent undid, a self-destruct in a later block, and a proxy of
  *    each kind. The test indexes the chain and checks the internal calls, contracts and proxies reth's own traces give, then reads blocks again.
  *    Needs the same ledger and database variables as W1.
- * 3. W1 (design section 9). The indexer runs over the whole chain, with reth's own blocks, Canton's own records and a database of its own, and
+ * 3. W1 (docs/METRICS.md, "The indexer on a real chain (W1)"). The indexer runs over the whole chain, with reth's own blocks, Canton's own records and a database of its own, and
  *    the block named by EXPLORER_TEST_W1_BLOCK (test/fixtures/Stress.sol, filling a block under the gas cap) is timed, reads and stages apart.
  *    Needs EXPLORER_TEST_LEDGER_URL, READER_PARTY, GATEWAY_ADDRESS, CHAIN_ID and EXPLORER_TEST_DATABASE_URL. The rehearsal's proofs are stand-ins, so the
  *    pins are what the chain's first proof carries; that is the only thing the stand-in changes.
@@ -175,7 +175,7 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
     const gateway = (process.env.GATEWAY_ADDRESS ?? "").toLowerCase();
     expect(gateway).toMatch(/^0x[0-9a-f]{40}$/);
     // Stage 2 `behind` is the default (W1's worst-case block takes more than B1 for both stages together inline, see docs/METRICS.md); the measurements below are for both
-    // shapes of the design's section 4.3, and the budgets are asserted for the default, `behind`.
+    // shapes of stage 2 (`inline` and `behind`), and the budgets are asserted for the default, `behind`.
     for (const shape of ["inline", "behind"] as const) {
       await withDatabase(async (pool: Pool) => {
         const { migrate } = await import("../db/migrate.ts");
@@ -249,8 +249,8 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
           expect(Number(tok.nft_legs), "the shared-array batches must succeed").toBeGreaterThanOrEqual(70_000);
           expect(Number(tok.read), "the new tokens' metadata must be read in the block").toBeGreaterThanOrEqual(6);
           expect(Number(tok.failed), "the Burners' reads spend all the gas they get and the FatReturn's answer is over 4 KB: all four are read as failed, and stage 2 goes on").toBeGreaterThanOrEqual(4);
-          // The design's budgets (section 9: B1 for stage 1, B2 for both stages), provisional for a block read over the network: a breach fails the rehearsal.
-          // They are asserted for `behind`, the default. `inline` is measured and said above; section 4.3 makes it the default only if both its stages fit B1, and they do not.
+          // The budgets (docs/DESIGN.md, Budgets: B1 for stage 1, B2 for both stages; docs/METRICS.md, 'B1 and B2 on the reference machine and on the runner'), provisional for a block read over the network: a breach fails the rehearsal.
+          // They are asserted for `behind`, the default. `inline` is measured and said above; it would become the default only if both its stages fit B1, and they do not.
           // B2 is the reference-machine budget; this test runs on GitHub's shared runner, so it is a regression check held to B2_RUNNER_MS, 1.25 x B2
           // (docs/METRICS.md). Both numbers and the measured sum are said, so a reader sees how far the run is from each.
           if (shape === "behind") {

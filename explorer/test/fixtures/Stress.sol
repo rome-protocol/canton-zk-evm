@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.24;
 
-/// The costly block of the design's section 9 (W1): a call chain that goes `depth` calls deep, with `logs` logs and `creates` contract
+/// The costly block of W1 (docs/METRICS.md, "The indexer on a real chain (W1)"): a call chain that goes `depth` calls deep, with `logs` logs and `creates` contract
 /// creations at every level. The rehearsal (tests/demo_rehearsal.sh) sends enough of these to fill a block under the gas cap.
 contract Stress {
     event Ping(uint256 indexed level, uint256 indexed index, bytes data);
