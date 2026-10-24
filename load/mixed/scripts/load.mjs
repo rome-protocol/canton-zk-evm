@@ -2,6 +2,7 @@
 //   node scripts/load.mjs seed                 makes the test wallets (keys/wallets.json, 0600) and gives them their starting tROME, tUSD and tETH through the Seeder contract
 //   node scripts/load.mjs calibrate            one action of every kind, sent and read back one at a time: the gas each uses and whether the deliberate reverts revert
 //   node scripts/load.mjs run [name]           the timed run: the mix in config.json, phase by phase; every transaction is followed until it is in a final block
+//   node scripts/load.mjs check-reverts        sends nothing: eth_call of each deliberate-revert case, each must revert (the swap case for its own reason, with a control that goes through)
 //   node scripts/load.mjs report <name>        the numbers of a finished run (report.json and report.md in its folder)
 // Everything goes to the public RPC like any user would send it, under the RPC's own limit (see load-rpc.mjs). Transactions are signed here; nonces are counted here.
 import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -75,6 +76,10 @@ const nonces = new Map(), approved = new Set(), wrapped = new Map(), lp = new Ma
 const wrp = (w) => wrapped.get(w.address) ?? ZERO;
 const addWrp = (w, v) => wrapped.set(w.address, wrp(w) + v);
 const itemsOf = (w) => [...items.entries()].filter(([k, v]) => k.startsWith(w.address) && v > 0n).map(([k, v]) => [Number(k.split(":")[1]), v]);
+/** Bookkeeping is booked when an action is planned, so two actions of one wallet do not use the same funds; `undo` takes it back when the send is refused or the transaction fails. */
+const undoWith = (s, f) => { const prev = s.undo; s.undo = () => { prev?.(); f(); }; };
+const book = (s, w, v) => { addWrp(w, v); undoWith(s, () => addWrp(w, -v)); };
+const bookLp = (s, w, pair, d) => { const k = `${w.address}:${pair}`; lp.set(k, (lp.get(k) ?? 0) + d); undoWith(s, () => lp.set(k, (lp.get(k) ?? 0) - d)); };
 const addItem = (w, id, v) => items.set(`${w.address}:${id}`, (items.get(`${w.address}:${id}`) ?? ZERO) + v);
 
 /** Approval of `spender` for `token`, once per wallet (the first time an action needs it). */
@@ -82,7 +87,7 @@ function approval(w, token, spender, out) {
   const k = `${w.address}:${token}:${spender}`;
   if (approved.has(k)) return;
   approved.add(k);
-  out.push({ kind: "erc20Approve", sub: "lazy", to: token, data: F.tok.encodeFunctionData("approve", [spender, ethers.MaxUint256]), gas: G.erc20Approve });
+  out.push({ kind: "erc20Approve", sub: "lazy", to: token, data: F.tok.encodeFunctionData("approve", [spender, ethers.MaxUint256]), gas: G.erc20Approve, undo: () => approved.delete(k) });
 }
 
 let payload = null; // { hex, at } the newest signed RedStone prices
@@ -104,17 +109,17 @@ function plan(kind, w) {
       tx({ to: A[pick(["tUSD", "tETH"])], data: F.tok.encodeFunctionData("approve", [other(w).address, U(100 * (1 + rnd(9)))]), gas: G.erc20Approve }); break;
     case "wrap":
       if (wrp(w) > E("8")) return null;
-      tx({ to: A.wt, data: F.wt.encodeFunctionData("deposit"), value: E("0.5"), gas: G.wrap }); addWrp(w, E("0.5")); break;
+      tx({ to: A.wt, data: F.wt.encodeFunctionData("deposit"), value: E("0.5"), gas: G.wrap }); book(out.at(-1), w, E("0.5")); break;
     case "unwrap":
       if (wrp(w) < E("0.2")) return null;
-      tx({ to: A.wt, data: F.wt.encodeFunctionData("withdraw", [E("0.2")]), gas: G.unwrap }); addWrp(w, -E("0.2")); break;
+      tx({ to: A.wt, data: F.wt.encodeFunctionData("withdraw", [E("0.2")]), gas: G.unwrap }); book(out.at(-1), w, -E("0.2")); break;
     case "swapUsdToTrome":
       approval(w, A.tUSD, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), 0, [A.tUSD, A.wt], w.address, deadline()]), gas: G.swap }); addWrp(w, E("1")); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), 0, [A.tUSD, A.wt], w.address, deadline()]), gas: G.swap }); book(out.at(-1), w, E("1")); break;
     case "swapTromeToUsd":
       if (wrp(w) < E("0.3")) return null;
       approval(w, A.wt, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.2"), 0, [A.wt, A.tUSD], w.address, deadline()]), gas: G.swap }); addWrp(w, -E("0.2")); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.2"), 0, [A.wt, A.tUSD], w.address, deadline()]), gas: G.swap }); book(out.at(-1), w, -E("0.2")); break;
     case "swapEthToUsd":
       approval(w, A.tETH, A.router, out);
       tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.01"), 0, [A.tETH, A.tUSD], w.address, deadline()]), gas: G.swap }); break;
@@ -125,22 +130,22 @@ function plan(kind, w) {
       if (Math.random() < 0.5 && wrp(w) >= E("0.6")) {
         approval(w, A.tUSD, A.router, out); approval(w, A.wt, A.router, out);
         tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tUSD, A.wt, U(5), E("0.5"), 0, 0, w.address, deadline()]), gas: G.addLiquidity });
-        addWrp(w, -E("0.5")); lp.set(`${w.address}:${A.pairUW}`, 1 + (lp.get(`${w.address}:${A.pairUW}`) ?? 0));
+        book(out.at(-1), w, -E("0.5")); bookLp(out.at(-1), w, A.pairUW, 1);
       } else {
         approval(w, A.tETH, A.router, out); approval(w, A.tUSD, A.router, out);
         tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tETH, A.tUSD, E("0.01"), U(35), 0, 0, w.address, deadline()]), gas: G.addLiquidity });
-        lp.set(`${w.address}:${A.pairET}`, 1 + (lp.get(`${w.address}:${A.pairET}`) ?? 0));
+        bookLp(out.at(-1), w, A.pairET, 1);
       }
       break;
     }
     case "removeLiquidity": {
       const p = [A.pairUW, A.pairET].find((x) => (lp.get(`${w.address}:${x}`) ?? 0) > 0);
       if (!p) return null;
-      lp.set(`${w.address}:${p}`, lp.get(`${w.address}:${p}`) - 1);
       approval(w, p, A.router, out);
       const [a, b] = p === A.pairUW ? [A.tUSD, A.wt] : [A.tETH, A.tUSD];
       tx({ to: A.router, data: F.router.encodeFunctionData("removeLiquidity", [a, b, 1_000_000_000n, 0, 0, w.address, deadline()]), gas: G.removeLiquidity });
-      if (p === A.pairUW) addWrp(w, E("0.01"));
+      bookLp(out.at(-1), w, p, -1);
+      if (p === A.pairUW) book(out.at(-1), w, E("0.01"));
       break;
     }
     case "erc721Mint":
@@ -193,7 +198,7 @@ function plan(kind, w) {
       else if (which === 1) tx({ to: A.items, data: F.items.encodeFunctionData("mint", [99, 1]), gas: G.revert, sub: "ERC-1155 bad id", expectRevert: true });
       else if (which === 2) tx({ to: A.wt, data: F.wt.encodeFunctionData("withdraw", [E("1000000")]), gas: G.revert, sub: "unwrap more than held", expectRevert: true });
       else if (which === 3) tx({ to: A.pass, data: F.pass.encodeFunctionData("transferFrom", [other(w).address, w.address, 999_999]), gas: G.revert, sub: "ERC-721 not the owner", expectRevert: true });
-      else { approval(w, A.tUSD, A.router, out); tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), U(999_999), [A.tUSD, A.tETH], w.address, deadline()]), gas: G.revert, sub: "swap: output below the minimum", expectRevert: true }); }
+      else { approval(w, A.tUSD, A.router, out); tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), E("999999"), [A.tUSD, A.tETH], w.address, deadline()]), gas: G.revert, sub: "swap: output below the minimum", expectRevert: true }); }
       break;
     }
     default: throw new Error("unknown kind " + kind);
@@ -220,21 +225,29 @@ async function resync(w) {
   try { nonces.set(w.address, Number(await rpc("eth_getTransactionCount", [w.address, "pending"]))); } catch {}
 }
 /** Signs and sends one transaction of wallet w. The nonce is taken at once (counted here), so sends of different wallets overlap freely. */
+const sendChain = new Map();
 async function send(w, spec, phase) {
   const nonce = nonces.get(w.address) ?? 0;
   nonces.set(w.address, nonce + 1);
   const { raw, hash } = signed(w, spec, nonce);
-  const rec = { hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: Date.now(), expectRevert: !!spec.expectRevert, after: spec.after, gas: spec.gas };
-  try {
-    await rpc("eth_sendRawTransaction", [raw]);
-    rec.acceptedAt = Date.now(); sent.set(hash, rec); counters.sent++;
-    ev({ e: "sent", hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: rec.sentAt, acceptedAt: rec.acceptedAt, gas: spec.gas, expectRevert: rec.expectRevert });
-  } catch (e) {
-    counters.rejected++;
-    ev({ e: "rejected", hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, err: String(e.message).slice(0, 200), code: e.code });
-    log("rejected", spec.kind, String(e.message).slice(0, 100));
-    await resync(w);
-  }
+  const rec = { hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: Date.now(), expectRevert: !!spec.expectRevert, after: spec.after, undo: spec.undo, gas: spec.gas };
+  // one wallet's transactions go to the RPC in nonce order: two sent at once could pass each other while they wait for the rate budget, and the later one is refused (nonce gap)
+  const go = async () => {
+    try {
+      await rpc("eth_sendRawTransaction", [raw]);
+      rec.acceptedAt = Date.now(); sent.set(hash, rec); counters.sent++;
+      ev({ e: "sent", hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: rec.sentAt, acceptedAt: rec.acceptedAt, gas: spec.gas, expectRevert: rec.expectRevert });
+    } catch (e) {
+      counters.rejected++;
+      try { spec.undo?.(); } catch {}
+      ev({ e: "rejected", hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, err: String(e.message).slice(0, 200), code: e.code });
+      log("rejected", spec.kind, String(e.message).slice(0, 100));
+      await resync(w);
+    }
+  };
+  const mine = (sendChain.get(w.address) ?? Promise.resolve()).then(go);
+  sendChain.set(w.address, mine);
+  await mine;
   return rec;
 }
 
@@ -242,6 +255,31 @@ async function send(w, spec, phase) {
 async function mpcPks() {
   const r = F.merces.decodeFunctionResult("getMpcPublicKeys", await rpc("eth_call", [{ to: A.merces, data: F.merces.encodeFunctionData("getMpcPublicKeys") }, "latest"]));
   return (r.length === 1 ? r[0] : r).map((p) => ({ x: p.x, y: p.y }));
+}
+
+// ---------------------------------------------------------------- check-reverts
+// Sends nothing: eth_call of every deliberate-revert case from one wallet. Each must revert; the swap case must revert for its own reason (output below the minimum)
+// and the same swap with a minimum of 0 must go through (the control), so a missing allowance or balance cannot pass for the right revert.
+if (mode === "check-reverts") {
+  const w = pool[0];
+  const seen = new Map();
+  for (let i = 0; i < 500 && seen.size < 5; i++) for (const sp of plan("revert", w) ?? []) if (sp.expectRevert && !seen.has(sp.sub)) seen.set(sp.sub, sp);
+  if (seen.size < 5) throw new Error("not every deliberate-revert case was planned: " + [...seen.keys()].join(", "));
+  const call = async (sp, data) => { try { await rpc("eth_call", [{ from: w.address, to: sp.to, data, value: sp.value ? ethers.toBeHex(sp.value) : undefined, gas: ethers.toBeHex(sp.gas) }, "latest"]); return null; } catch (e) { return String(e.message); } };
+  let bad = 0;
+  for (const [sub, sp] of seen) {
+    const err = await call(sp, sp.data);
+    let ok = err !== null, note = err ? err.slice(0, 110) : "DID NOT REVERT";
+    if (sub === "swap: output below the minimum") {
+      const [amtIn, , path, to, dl] = F.router.decodeFunctionData("swapExactTokensForTokens", sp.data).toArray();
+      const control = await call(sp, F.router.encodeFunctionData("swapExactTokensForTokens", [amtIn, 0, path, to, dl]));
+      ok = ok && /INSUFFICIENT_OUTPUT_AMOUNT/.test(err) && control === null;
+      note += control === null ? " | control with minimum 0: goes through" : ` | control with minimum 0 FAILED: ${control.slice(0, 80)}`;
+    }
+    if (!ok) bad++;
+    log(ok ? "reverts" : "WRONG", sub, "->", note);
+  }
+  process.exit(bad ? 1 : 0);
 }
 
 // ---------------------------------------------------------------- calibrate
@@ -275,6 +313,7 @@ if (mode === "calibrate") {
         const o = { tx: rec.hash, label: s.sub ?? s.kind, status: rc ? Number(rc.status) : "no receipt", gasUsed: rc ? Number(rc.gasUsed) : null, gasLimit: s.gas };
         if (rc?.logs?.length && k === "erc721Mint") { const l = rc.logs.find((x) => x.topics.length === 4); if (l) nfts.set(w.address, [...(nfts.get(w.address) ?? []), BigInt(l.topics[3])]); }
         if (rc && Number(rc.status) === 1 && s.after) s.after({ success: true, tokenId: null });
+        if (rc && Number(rc.status) !== 1) s.undo?.();
         (result[k] ??= []).push(o);
         log(k, JSON.stringify(o));
       }
@@ -286,7 +325,7 @@ if (mode === "calibrate") {
 }
 
 // ---------------------------------------------------------------- the run
-if (mode !== "run") { console.error("usage: load.mjs seed|calibrate|run [name]|report <name>"); process.exit(2); }
+if (mode !== "run") { console.error("usage: load.mjs seed|calibrate|check-reverts|run [name]|report <name>"); process.exit(2); }
 const NAME = process.argv[3] ?? `run-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`;
 const DIR = `${RUN}/load/${NAME}`;
 mkdirSync(DIR, { recursive: true });
@@ -347,6 +386,7 @@ async function readTxs(rec) {
         if (!r || r.finalAt) continue;
         r.finalAt = rec.finalAt; r.block = rec.n; r.success = t.success; r.gasUsed = t.gasUsed; finalCount++;
         ev({ e: "final", hash: t.hash, block: rec.n, index: t.index, success: t.success, gasUsed: t.gasUsed, methodId: t.methodId, finalAt: rec.finalAt, firstSeenAt: rec.firstSeenAt, sentAt: r.sentAt });
+        if (!t.success && r.undo) { try { r.undo(); } catch {} }
         if (r.after) { try { r.after({ success: t.success, tokenId: t.tokenMoves?.first?.token === A.pass.toLowerCase() && t.tokenMoves.first.tokenId != null ? BigInt(t.tokenMoves.first.tokenId) : null }); } catch {} }
       }
       if (j.next == null) break;
