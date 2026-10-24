@@ -29,6 +29,8 @@ node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
 forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
 
+forge_c_in() { local wd=$1; shift; docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w "$wd" --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
+
 case ${1:-} in
   build)
     node_c npm ci --ignore-scripts --no-audit --no-fund
@@ -53,10 +55,12 @@ case ${1:-} in
   verify)
     node_c node scripts/verify.mjs list
     # The explorer takes 30 verifications an hour from one client: a submission that is refused is tried again after the pause it asks for.
-    while IFS=$'\t' read -r name addr target compiler evm runs args; do
+    while IFS=$'\t' read -r name addr target compiler evm runs root libs args; do
       echo "== $name $addr"
+      wd=/w; [ "$root" = "-" ] || wd=/w/$root
+      libflags=(); if [ "$libs" != "-" ]; then IFS=, read -ra L <<< "$libs"; for l in "${L[@]}"; do libflags+=(--libraries "$l"); done; fi
       for try in 1 2 3 4 5 6 7 8; do
-        out=$(forge_c verify-contract "$addr" "$target" --chain-id "$CHAIN_ID" --verifier etherscan --verifier-url "$EXPLORER_API" --etherscan-api-key any \
+        out=$(forge_c_in "$wd" verify-contract "$addr" "$target" ${libflags[@]+"${libflags[@]}"} --chain-id "$CHAIN_ID" --verifier etherscan --verifier-url "$EXPLORER_API" --etherscan-api-key any \
           --rpc-url "$RPC" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" ${args:+--constructor-args "$args"} --watch --retries 60 --delay 5 2>&1) && rc=0 || rc=$?
         echo "$out" | tail -4 | cut -c1-300
         if echo "$out" | grep -qi "hour\|limit\|429\|Retry"; then echo "rate limit: waiting 130 s"; sleep 130; else break; fi

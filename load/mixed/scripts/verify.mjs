@@ -1,6 +1,7 @@
 // Two helpers for `run.sh verify`.
 //   verify.mjs list    writes verify-list.tsv into the run folder: one line per contract that needs a forge call (one per distinct contract, since a copy with the same
-//                      code is matched by the explorer): name, address, source:Name, compiler version, evm version, optimizer runs, constructor arguments.
+//                      code is matched by the explorer; contracts the explorer already verified are left out): name, address, source:Name, compiler version, evm version, optimizer runs,
+//                      project folder (- for this kit), libraries (- for none), constructor arguments.
 //   verify.mjs check   asks the explorer's /api/contracts/<address> about every deployed contract, prints verified or not, exits 1 if one is not verified.
 import { readFileSync, writeFileSync } from "node:fs";
 import { cfg, RUN, state, artifact } from "./lib.mjs";
@@ -16,14 +17,17 @@ const mode = process.argv[2];
 if (mode === "list") {
   const seen = new Set();
   const rows = [];
+  const isVerified = async (a) => (await (await fetch(`${cfg.explorer}/api/contracts/${a}`, { headers: { "user-agent": UA } })).json()).verified === true;
   for (const [n, c] of Object.entries(state.contracts)) {
     const m = meta(c);
     const key = `${m.path}:${m.name}`;
     if (seen.has(key) && c.ctorArgs === "") continue; // a copy made by a factory: the first of its kind is enough
     seen.add(key);
-    rows.push([n, c.address, key, m.compiler, m.evm, m.runs, c.ctorArgs].join("\t"));
+    if (await isVerified(c.address)) continue; // submitted before: the explorer takes 30 an hour
+    // root: a contract built from the fetched Merces project is verified from inside it; libs: the library addresses it was linked with
+    rows.push([n, c.address, key, m.compiler, m.evm, m.runs, c.root ?? "-", (c.libraries ?? []).join(",") || "-", c.ctorArgs].join("\t"));
   }
-  writeFileSync(`${RUN}/verify-list.tsv`, rows.join("\n") + "\n");
+  writeFileSync(`${RUN}/verify-list.tsv`, rows.length ? rows.join("\n") + "\n" : "");
   console.log(`${rows.length} contracts to submit (of ${Object.keys(state.contracts).length})`);
 } else if (mode === "check") {
   let bad = 0;
