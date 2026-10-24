@@ -60,7 +60,7 @@ export function HashLink({ value, to, kind = "hash", full = false, long = false,
   const body = <span className={`mono${open ? " wrap" : ""}`}>{text}</span>;
   return (
     <span className="hl">
-      {to ? <Link className="hx" to={to}>{body}</Link> : <span className="hx">{body}</span>}
+      {to ? <Link className="hx" to={to} title={open ? undefined : value}>{body}</Link> : <span className="hx" title={open ? undefined : value}>{body}</span>}
       {!plain && <CopyButton value={value} />}
       {!plain && !full && <button type="button" className="copy" aria-label={open ? "Show shortened" : "Show in full"} onClick={() => setOpen(!open)}><Icon name="expand" size={13} /></button>}
     </span>

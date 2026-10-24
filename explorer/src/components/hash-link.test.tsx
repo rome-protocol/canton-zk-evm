@@ -15,6 +15,11 @@ describe("a hash", () => {
     expect(screen.getByRole("link", { name: "0x3535…3535" })).toHaveAttribute("href", `/block/${h}`);
   });
 
+  it("carries the whole value in its title while it is shortened, so a long one can wrap or be cut without losing it", () => {
+    render(<MemoryRouter><HashLink value={h} to={`/block/${h}`} /></MemoryRouter>);
+    expect(screen.getByRole("link", { name: "0x3535…3535" })).toHaveAttribute("title", h);
+  });
+
   it("is plain text when it has nowhere to link to", () => {
     render(<MemoryRouter><HashLink value={h} /></MemoryRouter>);
     expect(screen.queryByRole("link")).toBeNull();
