@@ -75,7 +75,8 @@ export async function deploy(signer, name, [file, cname], args = [], overrides =
   if (s && (await provider.getCode(s.address)).length > 2) return new ethers.Contract(s.address, a.abi, signer);
   const c = await f.deploy(...args, overrides);
   const rc = await done(`deploy ${name}`, Promise.resolve(c.deploymentTransaction()));
-  state.contracts[name] = { address: await c.getAddress(), tx: rc.hash, block: rc.blockNumber, contract: `${file}:${cname}`, ctorArgs: f.interface.encodeDeploy(args).slice(2) };
+  state.contracts[name] = { address: await c.getAddress(), tx: rc.hash, block: rc.blockNumber, gas: rc.gasUsed.toString(), contract: `${file}:${cname}`, ctorArgs: f.interface.encodeDeploy(args).slice(2) };
+  if (!existsSync(`out/${file}`)) state.contracts[name].root = MERCES_ROOT; // built from the fetched Merces repository, not from this kit
   save();
   return c;
 }
