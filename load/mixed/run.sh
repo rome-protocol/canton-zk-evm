@@ -67,11 +67,11 @@ case ${1:-} in
           --rpc-url "$RPC" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" ${args:+--constructor-args "$args"} --watch --retries 60 --delay 5 2>&1) && rc=0 || rc=$?
         echo "$out" | tail -4 | cut -c1-300
         if echo "$out" | grep -q "413 Request Entity Too Large"; then
-          # the front proxy refuses forge's body (Merces has 23 source files): send the same JSON with + for spaces, a third smaller
+          # the front proxy refuses forge's body (Merces has 23 source files): send the same JSON to the explorer's JSON route
           echo "413: sending the standard JSON with scripts/verify-large.mjs"
           forge_c_in "$wd" verify-contract "$addr" "$target" ${libflags[@]+"${libflags[@]}"} --chain-id "$CHAIN_ID" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" \
             --show-standard-json-input > "$RUN_DIR/std.json" 2>/dev/null
-          node_c node scripts/verify-large.mjs "$addr" "$target" /run-dir/std.json "$compiler" "$runs" "${args:--}" 2>&1 | tail -4 && break || true
+          node_c node scripts/verify-large.mjs "$addr" "$target" /run-dir/std.json "$compiler" "$runs" "$evm" "${args:--}" 2>&1 | tail -4 && break || true
         fi
         if echo "$out" | grep -qi "hour\|limit\|429\|Retry"; then echo "rate limit: waiting 130 s"; sleep 130; else break; fi
       done
