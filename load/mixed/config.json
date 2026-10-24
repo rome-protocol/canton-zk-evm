@@ -7,12 +7,112 @@
   "deploy": {
     "uniswap": {
       "wrapTrome": "5000",
-      "poolTusdWtrome": { "tUSD": "50000", "WtROME": "5000" },
-      "poolTethTusd": { "tETH": "100", "tUSD": "300000" }
+      "poolTusdWtrome": {
+        "tUSD": "50000",
+        "WtROME": "5000"
+      },
+      "poolTethTusd": {
+        "tETH": "100",
+        "tUSD": "300000"
+      }
     },
-    "pass": { "cap": 100000 },
-    "trex": { "name": "Ostia Gold Bond", "symbol": "OGB", "decimals": 6, "verifiedHolders": 4, "mintPerHolder": "1000", "claimTopic": 1 },
+    "pass": {
+      "cap": 100000
+    },
+    "trex": {
+      "name": "Ostia Gold Bond",
+      "symbol": "OGB",
+      "decimals": 6,
+      "verifiedHolders": 4,
+      "mintPerHolder": "1000",
+      "claimTopic": 1
+    },
     "holderGasTrome": "5"
   },
-  "mix": {}
+  "mix": {
+    "wallets": 200,
+    "seed": {
+      "tromeEach": "30",
+      "tUsdEach": "3000",
+      "tEthEach": "4",
+      "perTx": 20
+    },
+    "weights": {
+      "erc20Transfer": 18,
+      "erc20Approve": 3,
+      "wrap": 5,
+      "unwrap": 3,
+      "swapUsdToTrome": 5,
+      "swapTromeToUsd": 4,
+      "swapEthToUsd": 5,
+      "swapUsdToEth": 4,
+      "addLiquidity": 4,
+      "removeLiquidity": 3,
+      "erc721Mint": 6,
+      "erc721Transfer": 5,
+      "erc1155Mint": 4,
+      "erc1155MintBatch": 4,
+      "erc1155Transfer": 3,
+      "erc1155BatchTransfer": 2,
+      "trexTransfer": 6
+    },
+    "perMinute": {
+      "trexRefused": 1,
+      "mercesDeposit": 1,
+      "mercesTransfer": 3,
+      "vaultRecord": 2,
+      "vaultRead": 2,
+      "revert": 5
+    },
+    "phases": [
+      {
+        "name": "2 tx/s",
+        "rate": 2,
+        "minutes": 10
+      },
+      {
+        "name": "3 tx/s",
+        "rate": 3,
+        "minutes": 10
+      },
+      {
+        "name": "4 tx/s",
+        "rate": 4,
+        "minutes": 10
+      },
+      {
+        "name": "4.5 tx/s",
+        "rate": 4.5,
+        "minutes": 10
+      },
+      {
+        "name": "best",
+        "rate": "best",
+        "minutes": 20
+      }
+    ],
+    "rpcCallsPerMinute": 285,
+    "drainMinutes": 10,
+    "gasLimit": {
+      "erc20Transfer": 100000,
+      "erc20Approve": 80000,
+      "wrap": 100000,
+      "unwrap": 100000,
+      "swap": 300000,
+      "addLiquidity": 400000,
+      "removeLiquidity": 300000,
+      "erc721Mint": 150000,
+      "erc721Transfer": 120000,
+      "erc1155Mint": 120000,
+      "erc1155MintBatch": 200000,
+      "erc1155Transfer": 120000,
+      "erc1155BatchTransfer": 180000,
+      "trexTransfer": 800000,
+      "trexRefused": 800000,
+      "vaultRecord": 800000,
+      "mercesDeposit": 200000,
+      "mercesTransfer": 1500000,
+      "revert": 300000
+    }
+  }
 }

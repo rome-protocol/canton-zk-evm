@@ -6,6 +6,7 @@
 #   run.sh deploy           deploy the contracts and write addresses.json (idempotent: what exists is skipped)
 #   run.sh verify           verify every deployed contract on the explorer
 #   run.sh smoke            one action of each kind from the test wallets (writes smoke.json)
+#   run.sh load seed|calibrate|run [name]|report <name>   the mixed load (see scripts/load.mjs): wallets, one of each kind, the timed run, its numbers
 #   run.sh node <args...>   run any node command in the kit's Node container (the deploy and the driver are scripts/*.mjs)
 #
 # RUN_DIR (default ./runs/<UTC date>) holds the run's own files: keys/ (0700), addresses.json, txs.json, logs. Keys never leave it and are never printed.
@@ -52,6 +53,7 @@ case ${1:-} in
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
   smoke) shift; node_c node scripts/smoke.mjs "$@" ;;
+  load) shift; node_c node scripts/load.mjs "$@" ;;
   verify)
     node_c node scripts/verify.mjs list
     # The explorer takes 30 verifications an hour from one client: a submission that is refused is tried again after the pause it asks for.
