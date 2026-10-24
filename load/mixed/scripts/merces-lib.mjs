@@ -24,13 +24,21 @@ export function mpcKeys() {
   return sks.map((sk) => babyjubjub.Point.BASE.multiply(BigInt(sk)).toAffine());
 }
 
-/** The arguments of Merces.transfer for `amount` (wei), proved on this machine. The receiver is added by the caller. */
-export async function proveTransfer(amount, pks) {
+/**
+ * The arguments of Merces.transfer for `amount` (wei), proved on this machine. The receiver is added by the caller.
+ * The proof is compressed by the client verifier contract's own compressProof (a view call): the JavaScript client's compression picked the wrong sign
+ * for one point in about two proofs of five (its square root is not the one the contract expects), and the contract refused those.
+ */
+export async function proveTransfer(amount, pks, clientVerifier) {
   const t0 = Date.now();
   const prep = client.prepareTransfer(amount, pks);
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(prep.inputs, await client.fetchWitnessWasm(), await client.fetchZkey());
+  const B = proof.pi_b;
+  // EIP-197 order: A.x, A.y, B.x(imaginary, real), B.y(imaginary, real), C.x, C.y
+  const flat = [proof.pi_a[0], proof.pi_a[1], B[0][1], B[0][0], B[1][1], B[1][0], proof.pi_c[0], proof.pi_c[1]].map(BigInt);
+  const compressed = (await clientVerifier.compressProof(flat)).map(BigInt);
   return {
-    args: [prep.amountCommitment, BigInt(publicSignals[0]), client.encodeCiphertexts(prep.ciphertexts, prep.senderPk), client.compressProof(proof)],
+    args: [prep.amountCommitment, BigInt(publicSignals[0]), client.encodeCiphertexts(prep.ciphertexts, prep.senderPk), compressed],
     proveMs: Date.now() - t0,
   };
 }

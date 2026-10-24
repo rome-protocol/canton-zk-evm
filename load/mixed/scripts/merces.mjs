@@ -38,6 +38,7 @@ async function deployAll() {
   log("Merces", state.merces.address, "queue size:", String(await m.getQueueSize()));
   return m;
 }
+const cverifier = () => att(state.contracts["Merces ClientVerifier"].address, "VerifierClient.sol", "Verifier", dep);
 const merces = () => att(state.contracts.Merces.address, "Merces.sol", "Merces", dep);
 
 async function record(label, rc, extra = {}) {
@@ -62,7 +63,7 @@ if (mode === "deploy") {
   for (let i = 0; i < n; i++) {
     const from = users[i % users.length], to = users[(i + 1) % users.length];
     const amount = E("0.1") * BigInt(1 + (i % 5));
-    const { args, proveMs } = await proveTransfer(amount, pks);
+    const { args, proveMs } = await proveTransfer(amount, pks, cverifier());
     const mf = att(await m.getAddress(), "Merces.sol", "Merces", from);
     const rc = await done(`private transfer ${i + 1}/${n}: ${names[users.indexOf(from) + 1]} to ${names[users.indexOf(to) + 1]} (proved in ${proveMs} ms)`, mf.transfer(to.address, ...args, { gasLimit: 2_000_000 }));
     await record(`private transfer ${i + 1}`, rc, { proveMs, commitment: args[0].toString() });
@@ -96,7 +97,7 @@ if (mode === "deploy") {
   const mf = att(await m.getAddress(), "Merces.sol", "Merces", users[0]);
   const bad = [];
   for (let i = 0; i < n; i++) {
-    const { args } = await proveTransfer(E("0.1"), pks);
+    const { args } = await proveTransfer(E("0.1"), pks, cverifier());
     try { await mf.transfer.staticCall(users[1].address, ...args, { gasLimit: 2_000_000 }); }
     catch (e) { bad.push({ i, err: e.shortMessage ?? e.message, args }); }
   }
