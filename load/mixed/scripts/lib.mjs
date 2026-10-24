@@ -67,16 +67,30 @@ export async function step(name, fn) {
   save();
 }
 
-/** Deploys a contract unless the state file has it and the chain has code at its address. */
-export async function deploy(signer, name, [file, cname], args = [], overrides = {}) {
+/** The creation code with the addresses of the libraries it calls put in (`libs`: library name to address). Foundry leaves holes where they go and lists them in linkReferences. */
+export function link(a, libs = {}) {
+  let code = a.bytecode.object;
+  for (const m of Object.values(a.bytecode.linkReferences ?? {})) {
+    for (const [name, refs] of Object.entries(m)) {
+      if (!libs[name]) throw new Error(`library ${name} has no address`);
+      for (const { start, length } of refs) code = code.slice(0, 2 + start * 2) + libs[name].slice(2).toLowerCase() + code.slice(2 + (start + length) * 2);
+    }
+  }
+  return code;
+}
+
+/** Deploys a contract unless the state file has it and the chain has code at its address. `libs` are the libraries to link, as { name: address }. */
+export async function deploy(signer, name, [file, cname], args = [], overrides = {}, libs = {}) {
   const a = artifact(file, cname);
-  const f = new ethers.ContractFactory(a.abi, a.bytecode.object, signer);
+  const f = new ethers.ContractFactory(a.abi, link(a, libs), signer);
   const s = state.contracts[name];
   if (s && (await provider.getCode(s.address)).length > 2) return new ethers.Contract(s.address, a.abi, signer);
   const c = await f.deploy(...args, overrides);
   const rc = await done(`deploy ${name}`, Promise.resolve(c.deploymentTransaction()));
   state.contracts[name] = { address: await c.getAddress(), tx: rc.hash, block: rc.blockNumber, gas: rc.gasUsed.toString(), contract: `${file}:${cname}`, ctorArgs: f.interface.encodeDeploy(args).slice(2) };
   if (!existsSync(`out/${file}`)) state.contracts[name].root = MERCES_ROOT; // built from the fetched Merces repository, not from this kit
+  const linked = Object.entries(a.bytecode.linkReferences ?? {}).flatMap(([src, m]) => Object.keys(m).map((n) => `${src}:${n}:${libs[n]}`));
+  if (linked.length) state.contracts[name].libraries = linked;
   save();
   return c;
 }

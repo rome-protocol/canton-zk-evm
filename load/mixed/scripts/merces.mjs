@@ -23,11 +23,16 @@ const saveResults = () => writeFileSync(resultsPath, json(results) + "\n");
 async function deployAll() {
   const pks = mpcKeys();
   const big = { gasLimit: 15_000_000 };
+  // the contract calls three libraries: they are deployed first and linked in
+  const libs = {};
+  for (const [n, f] of [["BabyJubJub", "BabyJubJub.sol"], ["ActionQueueLib", "ActionQueue.sol"], ["Poseidon2T2_BN254", "Poseidon2.sol"]]) {
+    libs[n] = await (await deploy(dep, `Merces library ${n}`, [f, n], [], big)).getAddress();
+  }
   const cv = await deploy(dep, "Merces ClientVerifier", ["VerifierClient.sol", "Verifier"], [], big);
   const sv = await deploy(dep, "Merces ServerVerifier", ["VerifierServer.sol", "Verifier"], [], big);
   // token = address(0): the contract holds the chain's own coin. The "MPC address" is a test wallet; no node runs behind it.
   const m = await deploy(dep, "Merces", ["Merces.sol", "Merces"],
-    [await cv.getAddress(), await sv.getAddress(), dep.address, ethers.ZeroAddress, pks[0], pks[1], pks[2], "ostia-devnet"], big);
+    [await cv.getAddress(), await sv.getAddress(), dep.address, ethers.ZeroAddress, pks[0], pks[1], pks[2], "ostia-devnet"], big, libs);
   state.merces = { address: await m.getAddress(), mpcAddress: dep.address, native: true, users: Object.fromEntries(names.slice(1).map((n) => [n, W[n].address])) };
   save();
   log("Merces", state.merces.address, "native:", await m.native(), "queue size:", String(await m.getQueueSize()));
