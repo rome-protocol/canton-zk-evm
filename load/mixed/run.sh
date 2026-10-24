@@ -4,6 +4,7 @@
 #   run.sh build            install the pinned packages (npm ci) and compile every contract (Foundry, two passes: see scripts/prepare.mjs)
 #   run.sh deploy           deploy the contracts and write addresses.json (idempotent: what exists is skipped)
 #   run.sh verify           verify every deployed contract on the explorer
+#   run.sh smoke            one action of each kind from the test wallets (writes smoke.json)
 #   run.sh node <args...>   run any node command in the kit's Node container (the deploy and the driver are scripts/*.mjs)
 #
 # RUN_DIR (default ./runs/<UTC date>) holds the run's own files: keys/ (0700), addresses.json, txs.json, logs. Keys never leave it and are never printed.
@@ -37,6 +38,7 @@ case ${1:-} in
     node_c node scripts/prepare.mjs check
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
+  smoke) shift; node_c node scripts/smoke.mjs "$@" ;;
   verify)
     node_c node scripts/verify.mjs list
     # The explorer takes 30 verifications an hour from one client: a submission that is refused is tried again after the pause it asks for.
