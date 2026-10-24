@@ -18,7 +18,7 @@
 .api-table .mod { color: var(--canton); font-weight: 500; white-space: nowrap; }
 .mchip { display: inline-block; max-width: 100%; overflow-wrap: anywhere; margin: 2px 6px 2px 0; padding: 1px 8px; border-radius: 6px; background: var(--surface-2); font-size: 12px; color: var(--muted); }
 .api-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 18px; margin-bottom: 18px; }
-.api-lower { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); align-items: start; }
+.api-lower { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; }
 .api-side { display: grid; gap: 18px; }
 .api-rest .api-table td:first-child { width: 64px; }
 .api-rest .api-table td:nth-child(2) { white-space: nowrap; font-size: 13px; }
@@ -33,6 +33,7 @@
 .api-code .api-pre { max-width: 100%; }
 .api-details td { overflow-wrap: anywhere; }
 .api-details td:first-child { width: 112px; }
+.api-details .mono { font-size: 12px; }
 .api-details .copy { vertical-align: -2px; }
 .api-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 14px; }
 .api-wallet h2, .api-wallet .rpc-btn { overflow-wrap: anywhere; max-width: 100%; min-width: 0; }

@@ -145,6 +145,11 @@ describe("final polish: the 21-screen check", () => {
   it("lets the wallet table's cells shrink to the card (anywhere, the last resort after the <wbr> break points), so no width needs a sideways scroll", () => {
     expect(get(api, ".api-details td")).toMatch(/overflow-wrap:\s*anywhere/);
   });
+
+  it("sets the wallet URLs in a 12px mono and gives the wallet column room, so each fits one line at laptop widths", () => {
+    expect(get(api, ".api-details .mono")).toMatch(/font-size:\s*12px/);
+    expect(get(api, ".api-lower")).toMatch(/minmax\(0, 1\.5fr\) minmax\(0, 1fr\)/);
+  });
 });
 
 describe("the address page's direction tag and the transaction page's way-to-final card do not share a class", () => {
