@@ -1,6 +1,6 @@
 # A realistic mixed load for Ostia
 
-A kit that puts a realistic mix of contracts on an Ostia chain and drives mixed traffic through them, so that the zkVM on Canton is proven on more than transfers of one token. This first part is the deploy: tokens of four kinds, a DEX, and a permissioned token with identities. The traffic driver, the oracle consumer and the private transfers are added in the parts that follow (see [What is still to come](#what-is-still-to-come)).
+A kit that puts a realistic mix of contracts on an Ostia chain and drives mixed traffic through them, so that the zkVM on Canton is proven on more than transfers of one token. This first part is the deploy: tokens of four kinds, a DEX, and a permissioned token with identities. The oracle consumer and the private transfers are described further down; the traffic driver follows (see [What is still to come](#what-is-still-to-come)).
 
 ## What it deploys
 
@@ -66,11 +66,36 @@ The GPL contracts are compiled into the bytecode that is deployed; their sources
 | `contracts/` | our contracts, and the files that pull third-party contracts into the build |
 | `scripts/deploy.mjs` | the idempotent deploy |
 | `scripts/smoke.mjs` | one action of each kind |
+| `scripts/oracle.mjs`, `scripts/redstone.mjs`, `scripts/merces.mjs`, `scripts/merces-lib.mjs`, `scripts/fund.mjs` | the RedStone client and vault step, the Merces deploy and private transfers, funding a named wallet |
 | `scripts/verify.mjs`, `scripts/prepare.mjs`, `scripts/lib.mjs` | verification lists and checks, the Uniswap hash, shared helpers |
+
+## The oracle consumer (RedStone)
+
+`contracts/PriceVault.sol` is a small consumer of RedStone's pull model: it reads ETH/USD and BTC/USD from signed prices that ride at the end of the call data, checks them against RedStone's `redstone-primary-prod` data service (3 of its 5 public signers) and keeps the latest value. `scripts/oracle.mjs` fetches the signed prices from RedStone's gateways with `@redstone-finance/sdk` and builds the payload; `scripts/redstone.mjs` deploys the vault and records prices in it a few times.
+
+```sh
+./run.sh node scripts/fund.mjs oracle=20       # the oracle step has its own wallet
+./run.sh node scripts/redstone.mjs 3           # deploys PriceVault, records 3 times, writes redstone.json
+```
+
+RedStone is switching its public gateways off: they refuse requests in windows that grow each day and stop for good on 2026-10-29. A refused request is tried again every 45 seconds for `REDSTONE_WAIT_MIN` minutes (default 30). After that date the same step works with a gateway address and API key passed to the SDK's `authenticatedGateways`; none is part of this kit.
+
+## Private transfers (Merces, client side only)
+
+`scripts/merces.mjs` deploys TACEO's Merces contracts as they are (fetched at the commit pinned in `PINS` by `./run.sh merces-fetch`: three libraries, two Groth16 verifiers and `Merces`, holding the chain's own coin) with three MPC public keys that were made for this test and that no MPC node holds. It then runs deposits and private transfers: each transfer's Groth16 proof is made on the machine that sends it, with the published TACEO client (`@taceo/merces1-client`, only its proof functions), and the verifier contract on the chain checks it before the action is queued. Nothing is settled: no MPC cluster runs behind it, so the queue only grows and the held coin stays in the contract until the test's own "MPC address" takes it back with `retrieve`. No message goes to TACEO and nothing of theirs is called.
+
+```sh
+./run.sh merces-fetch
+./run.sh node scripts/merces.mjs deploy
+./run.sh node scripts/merces.mjs demo 8        # 4 deposits, 8 private transfers, a tampered proof that must be refused, a withdraw request
+./run.sh node scripts/merces.mjs probe 30      # proves 30 transfers and asks the chain to verify each with an eth_call
+```
+
+**A fix worth knowing.** The client's own proof compression chose the wrong sign for one curve point in about two proofs of five, and the verifier refused those (the same on a local chain, so it is not the network). The kit compresses with the verifier contract's own `compressProof` view call instead; with it, 30 of 30 proofs are accepted.
 
 ## What is still to come
 
-The oracle consumer (RedStone), the private-transfer client (Merces, client-side only), the traffic driver with its mix and the report, and a short guide for people who want to try the chain follow in later parts of this change.
+The traffic driver with its mix, the report, and a short guide for people who want to try the chain follow in the next part of this change.
 
 ## An example run
 
