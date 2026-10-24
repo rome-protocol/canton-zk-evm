@@ -19,6 +19,9 @@ mkdir -p -m 0700 "$RUN_DIR" "$RUN_DIR/keys"
 RUN_DIR=$(cd "$RUN_DIR" && pwd)
 mkdir -p .home .npm-cache
 UIDGID="$(id -u):$(id -g)"
+CHAIN_ID=$(grep -o '"chainId": *[0-9]*' config.json | grep -o '[0-9]*$')
+RPC=${RPC:-$(grep -o '"rpc": *"[^"]*"' config.json | cut -d'"' -f4)}
+EXPLORER_API=$(grep -o '"explorerApi": *"[^"]*"' config.json | cut -d'"' -f4)
 
 node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir \
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
@@ -34,7 +37,21 @@ case ${1:-} in
     forge_c build
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
-  verify) shift; node_c node scripts/verify.mjs "$@" ;;
+  verify)
+    node_c node scripts/verify.mjs list
+    # The explorer takes 30 verifications an hour from one client: a submission that is refused is tried again after the pause it asks for.
+    while IFS=$'\t' read -r name addr target compiler evm runs args; do
+      echo "== $name $addr"
+      for try in 1 2 3 4 5 6 7 8; do
+        out=$(forge_c verify-contract "$addr" "$target" --chain-id "$CHAIN_ID" --verifier etherscan --verifier-url "$EXPLORER_API" --etherscan-api-key any \
+          --rpc-url "$RPC" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" ${args:+--constructor-args "$args"} --watch --retries 60 --delay 5 2>&1) && rc=0 || rc=$?
+        echo "$out" | tail -4 | cut -c1-300
+        if echo "$out" | grep -qi "hour\|limit\|429\|Retry"; then echo "rate limit: waiting 130 s"; sleep 130; else break; fi
+      done
+      sleep 125
+    done < "$RUN_DIR/verify-list.tsv"
+    node_c node scripts/verify.mjs check
+    ;;
   node) shift; node_c node "$@" ;;
   *) sed -n 2,9p "$0"; exit 2 ;;
 esac
