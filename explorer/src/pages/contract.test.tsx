@@ -86,6 +86,19 @@ describe("the contract page: the head and the cards", () => {
     expect(within(row("Proxy")).getByRole("link", { name: "0xeeee…eeee" })).toHaveAttribute("href", `/contract/${addr(0xee)}`);
   });
 
+  it("names the address behind a T-REX or ONCHAINID proxy an implementation authority, not a beacon, and the kind in words", async () => {
+    await open({ detail: contractDetail(0xcb, { proxy: { kind: "trex", implementation: addr(0xee), beacon: addr(0xaa), checkedBlock: 21 } }) });
+    expect(row("Proxy")).toHaveTextContent("implementation authority proxy (ERC-3643 / ONCHAINID)");
+    expect(row("Proxy")).toHaveTextContent("implementation authority 0xaaaa…aaaa");
+    expect(row("Proxy")).not.toHaveTextContent(/beacon|trex/);
+    expect(within(row("Proxy")).getByRole("link", { name: "0xaaaa…aaaa" })).toHaveAttribute("href", `/address/${addr(0xaa)}`);
+  });
+
+  it("still calls the address behind a beacon proxy a beacon", async () => {
+    await open({ detail: contractDetail(0xcb, { proxy: { kind: "beacon", implementation: addr(0xee), beacon: addr(0xbb), checkedBlock: 21 } }) });
+    expect(row("Proxy")).toHaveTextContent("beacon 0xbbbb…bbbb");
+  });
+
   it("says a contract that is not verified is not verified", async () => {
     await open({ detail: contractDetail(0xcb, { verified: false, matchType: null, verification: null }), source: unverifiedSource() });
     expect(screen.getByText("Source code not verified")).toBeInTheDocument();
