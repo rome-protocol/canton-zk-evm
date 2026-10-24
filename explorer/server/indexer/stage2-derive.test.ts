@@ -10,7 +10,7 @@ import { keccak256, toHex } from "viem";
 import { RethError } from "../reth.ts";
 import { reindexRange } from "./reindex.ts";
 import { stage2 } from "./stage2.ts";
-import { writeProxies, EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT } from "./proxies.ts";
+import { repairTrexProxies, writeProxies, EIP1822_SLOT, EIP1967_BEACON_SLOT, EIP1967_IMPLEMENTATION_SLOT, TREX_AUTHORITY_SLOT, TREX_GETTERS } from "./proxies.ts";
 
 const opened: Indexer[] = [];
 async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
@@ -285,6 +285,124 @@ describe.skipIf(!TEST_URL)("stage 2's internal calls, on the pinned PostgreSQL",
       expect(chain.reads.calls.call! - before).toBe(2);
       expect(await proxies()).toEqual([
         { p: A(0xb1).slice(2), i: A(0x2222).slice(2), c: "2" }, { p: A(0xb2).slice(2), i: A(0x2222).slice(2), c: "2" }, { p: A(0xb3).slice(2), i: A(0x4444).slice(2), c: "1" },
+      ]);
+      await indexer.close();
+    });
+  });
+
+  // A small mock of the implementation-authority pattern (ERC-3643 and ONCHAINID): proxies that hold only the address of an authority in one slot and push the selector
+  // of the getter they ask it; an authority that answers each getter. Written for this test; it is no copy of any project's source.
+  // As the real ones do: a T-REX proxy pushes all six of its getters once (setImplementationAuthority checks each on a new authority) and its own once more, for the call of
+  // its fallback; an identity proxy pushes only its own, twice.
+  const trexCode = (getter: number) => "0x6080604052" + (getter < 6 ? [0, 1, 2, 3, 4, 5] : [6]).map((g) => "63" + TREX_GETTERS[g]!.slice(2) + "5afa").join("") + "63" + TREX_GETTERS[getter]!.slice(2) + "5afa00";
+  it("follows an implementation authority: the token, the identity registry and an identity each get the answer of their own getter, and no other contract is called a proxy", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      // 0xb1 a token proxy, 0xb2 an identity registry proxy, 0xb3 an identity proxy (other authority, other getter), 0xb4 holds an address in the slot but asks no known getter, 0xb7 a compliance proxy,
+      // 0xb5 asks a getter the authority has not set (it answers the zero address), 0xb6 is a plain contract
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(0)), make([1], 0xa1, 0xb2, trexCode(2)), make([2], 0xa1, 0xb3, trexCode(6)), make([3], 0xa1, 0xb4, "0x6080"), make([4], 0xa1, 0xb5, trexCode(1)), make([5], 0xa1, 0xb6), make([6], 0xa1, 0xb7, trexCode(5))]);
+      for (const [proxy, authority] of [[0xb1, 0xa07], [0xb2, 0xa07], [0xb3, 0xa08], [0xb4, 0xa07], [0xb5, 0xa09], [0xb7, 0xa07]] as const) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(authority);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[2]}`] = word(0x1002);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[5]}`] = word(0x1005);
+      chain.reads.callResults[`${A(0xa08)}:${TREX_GETTERS[6]}`] = word(0x1003);
+      chain.reads.callResults[`${A(0xa09)}:${TREX_GETTERS[1]}`] = word(0); // an authority with nothing set answers the zero address
+      await indexer.runOnce();
+      expect(await rows(pool, "select encode(proxy, 'hex') as p, kind, encode(implementation, 'hex') as i, encode(beacon, 'hex') as b, checked_block::text as c from proxies order by proxy")).toEqual([
+        { p: A(0xb1).slice(2), kind: "trex", i: A(0x1001).slice(2), b: A(0xa07).slice(2), c: "1" },
+        { p: A(0xb2).slice(2), kind: "trex", i: A(0x1002).slice(2), b: A(0xa07).slice(2), c: "1" },
+        { p: A(0xb3).slice(2), kind: "trex", i: A(0x1003).slice(2), b: A(0xa08).slice(2), c: "1" },
+        { p: A(0xb5).slice(2), kind: "trex", i: null, b: A(0xa09).slice(2), c: "1" },
+        { p: A(0xb7).slice(2), kind: "trex", i: A(0x1005).slice(2), b: A(0xa07).slice(2), c: "1" }, // the compliance proxy: its own getter, not the token's
+      ]);
+      await indexer.close();
+    });
+  });
+
+  it("looks again at the proxies behind an authority that logs a new version, and at a proxy that logs a new authority, and at no other", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }, { txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(0)), make([1], 0xa1, 0xb2, trexCode(0)), make([2], 0xa1, 0xb3, trexCode(0))]);
+      for (const [proxy, authority] of [[0xb1, 0xa07], [0xb2, 0xa07], [0xb3, 0xa08]] as const) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(authority);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
+      chain.reads.callResults[`${A(0xa08)}:${TREX_GETTERS[0]}`] = word(0x1002);
+      chain.reads.callResults[`${A(0xa09)}:${TREX_GETTERS[0]}`] = word(0x1004);
+      await indexer.runOnce();
+      const proxies = () => rows(pool, "select encode(proxy, 'hex') as p, encode(implementation, 'hex') as i, encode(beacon, 'hex') as b, checked_block::text as c from proxies order by proxy");
+      const log = (address: number, signature: string, index: number) => pool.query("insert into logs (block_number, log_index, tx_index, address, topic0, data) values (2, $3, 0, $1, $2, $4)",
+        [Buffer.from(A(address).slice(2), "hex"), Buffer.from(keccak256(toHex(signature)).slice(2), "hex"), index, Buffer.alloc(0)]);
+      // Block 2: authority 0xa07 takes a new version (and the other authority's answer changes with no log); proxy 0xb3 moves to authority 0xa09 and logs it
+      await log(0xa07, "VersionUpdated((uint8,uint8,uint8))", 9990);
+      await log(0xb3, "ImplementationAuthoritySet(address)", 9991);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x2001);
+      chain.reads.callResults[`${A(0xa08)}:${TREX_GETTERS[0]}`] = word(0x2002);
+      chain.reads.storage[`${A(0xb3)}:${TREX_AUTHORITY_SLOT}`] = word(0xa09);
+      const c = await pool.connect();
+      try { expect(await writeProxies(c, 2, [], chain.reads)).toBe(3); } finally { c.release(); }
+      expect(await proxies()).toEqual([
+        { p: A(0xb1).slice(2), i: A(0x2001).slice(2), b: A(0xa07).slice(2), c: "2" },
+        { p: A(0xb2).slice(2), i: A(0x2001).slice(2), b: A(0xa07).slice(2), c: "2" },
+        { p: A(0xb3).slice(2), i: A(0x1004).slice(2), b: A(0xa09).slice(2), c: "2" },
+      ]);
+      // ONCHAINID's authority logs UpdatedImplementation: the identity proxies behind it are looked at again
+      await pool.query("update proxies set beacon = $1 where proxy = $2", [Buffer.from(A(0xa0a).slice(2), "hex"), Buffer.from(A(0xb2).slice(2), "hex")]);
+      await pool.query("delete from logs");
+      await pool.query("insert into logs (block_number, log_index, tx_index, address, topic0, data) values (3, 1, 0, $1, $2, $3)",
+        [Buffer.from(A(0xa0a).slice(2), "hex"), Buffer.from(keccak256(toHex("UpdatedImplementation(address)")).slice(2), "hex"), Buffer.alloc(0)]);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x3001);
+      const c3 = await pool.connect();
+      try { expect(await writeProxies(c3, 3, [], chain.reads)).toBe(1); } finally { c3.release(); }
+      expect((await proxies()).find((x) => x.p === A(0xb2).slice(2))).toEqual({ p: A(0xb2).slice(2), i: A(0x3001).slice(2), b: A(0xa07).slice(2), c: "3" });
+      await indexer.close();
+    });
+  });
+
+  it("finds once, at the next start, the authority proxies that were made before the indexer knew the kind, and only those", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      // As an older indexer saw them: the token proxy 0xb1 and the contract 0xb2, which holds the address of an authority but asks no getter, were looked at when made and are no proxies
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(0)), make([1], 0xa1, 0xb2, "0x6080"), make([2], 0xa1, 0xb3, trexCode(0))]);
+      await indexer.runOnce();
+      expect(await rows(pool, "select count(*) as n from proxies")).toEqual([{ n: "0" }]);
+      await pool.query("delete from cursors where stream = 'trex_proxies_2'");
+      for (const proxy of [0xb1, 0xb2]) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(0xa07);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
+      expect(await repairTrexProxies(pool, chain.reads)).toBe(1);
+      expect(await rows(pool, "select encode(proxy, 'hex') as p, kind, encode(implementation, 'hex') as i, encode(beacon, 'hex') as b, checked_block::text as c from proxies")).toEqual([
+        { p: A(0xb1).slice(2), kind: "trex", i: A(0x1001).slice(2), b: A(0xa07).slice(2), c: "1" },
+      ]);
+      // done: a later start does not look again
+      chain.reads.storage[`${A(0xb3)}:${TREX_AUTHORITY_SLOT}`] = word(0xa07);
+      expect(await repairTrexProxies(pool, chain.reads)).toBe(0);
+      expect(await rows(pool, "select count(*) as n from proxies")).toEqual([{ n: "1" }]);
+      await indexer.close();
+    });
+  });
+
+  it("corrects at the next start the proxies of this kind an earlier version recorded with the wrong implementation, and drops the ones whose code names no getter", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await setup(pool, [{ txs: 5 }]);
+      const word = (a: number) => "0x" + a.toString(16).padStart(64, "0");
+      // 0xb1 an identity registry proxy and 0xb2 a compliance proxy, both recorded as the token's; 0xb3 a code that pushes all six getters equally often
+      const tie = "0x6080" + [0, 1, 2, 3, 4, 5].map((g) => "63" + TREX_GETTERS[g]!.slice(2) + "5afa").join("");
+      setFrames(chain, 1, 2, [frame([]), make([0], 0xa1, 0xb1, trexCode(2)), make([1], 0xa1, 0xb2, trexCode(5)), make([2], 0xa1, 0xb3, tie)]);
+      await indexer.runOnce();
+      const row = (proxy: number, impl: number) => pool.query("insert into proxies (proxy, kind, implementation, beacon, checked_block) values ($1, 'trex', $2, $3, 1)",
+        [Buffer.from(A(proxy).slice(2), "hex"), Buffer.from(A(impl).slice(2), "hex"), Buffer.from(A(0xa07).slice(2), "hex")]);
+      await pool.query("delete from proxies");
+      await row(0xb1, 0x1001); await row(0xb2, 0x1001); await row(0xb3, 0x1001);
+      await pool.query("delete from cursors where stream like 'trex_proxies%'");
+      for (const proxy of [0xb1, 0xb2, 0xb3]) chain.reads.storage[`${A(proxy)}:${TREX_AUTHORITY_SLOT}`] = word(0xa07);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[0]}`] = word(0x1001);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[2]}`] = word(0x1002);
+      chain.reads.callResults[`${A(0xa07)}:${TREX_GETTERS[5]}`] = word(0x1005);
+      expect(await repairTrexProxies(pool, chain.reads)).toBe(2);
+      expect(await rows(pool, "select encode(proxy, 'hex') as p, kind, encode(implementation, 'hex') as i from proxies order by proxy")).toEqual([
+        { p: A(0xb1).slice(2), kind: "trex", i: A(0x1002).slice(2) },
+        { p: A(0xb2).slice(2), kind: "trex", i: A(0x1005).slice(2) },
       ]);
       await indexer.close();
     });

@@ -73,9 +73,9 @@ function Proxy({ c }: { c: ContractDetail }) {
   if (!p) return <>Not a proxy</>;
   return (
     <>
-      <span className="mono">{p.kind}</span>
+      <span className="mono">{p.kind === "trex" ? "implementation authority proxy (ERC-3643 / ONCHAINID)" : p.kind}</span>
       {p.implementation && <> to <HashLink value={p.implementation} to={`/contract/${p.implementation}`} /></>}
-      {p.beacon && <> · beacon <HashLink value={p.beacon} to={`/address/${p.beacon}`} /></>}
+      {p.beacon && <> · {p.kind === "trex" ? "implementation authority" : "beacon"} <HashLink value={p.beacon} to={`/address/${p.beacon}`} /></>}
       <div className="muted small">as of block {p.checkedBlock}</div>
     </>
   );
