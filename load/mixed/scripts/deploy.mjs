@@ -59,17 +59,19 @@ const trexIA = await deploy(d, "T-REX TREXImplementationAuthority", ["TREXImplem
 await step("trex-version", () => done("add T-REX version 4.0.0", trexIA.addAndUseTREXVersion({ major: 4, minor: 0, patch: 0 },
   { tokenImplementation: impl.token, ctrImplementation: impl.ctr, irImplementation: impl.ir, irsImplementation: impl.irs, tirImplementation: impl.tir, mcImplementation: impl.mc })));
 const trexFactory = await deploy(d, "T-REX TREXFactory", ["TREXFactory.sol", "TREXFactory"], [await A(trexIA), await A(idFactory)]);
-await step("trex-ia-factory", () => done("set the factory on the authority", trexIA.setTREXFactory(await A(trexFactory))));
-await step("idfactory-token-factory", () => done("let the T-REX factory create token identities", idFactory.addTokenFactory(await A(trexFactory))));
+const trexFactoryA = await A(trexFactory);
+await step("trex-ia-factory", async () => done("set the factory on the authority", trexIA.setTREXFactory(trexFactoryA)));
+await step("idfactory-token-factory", async () => done("let the T-REX factory create token identities", idFactory.addTokenFactory(trexFactoryA)));
 const issuer = await deploy(d, "ONCHAINID ClaimIssuer", ["ClaimIssuer.sol", "ClaimIssuer"], [D]);
 const abi = ethers.AbiCoder.defaultAbiCoder();
 const keyOf = (addr) => ethers.keccak256(abi.encode(["address"], [addr]));
 await step("issuer-claim-key", () => done("give the issuer a claim-signing key", issuer.addKey(keyOf(D), 3, 1)));
 
 const salt = "ostia-ogb";
+const issuerA = await A(issuer);
 await step("trex-suite", () => done("deploy the T-REX suite (token, registries, compliance, identity)", trexFactory.deployTREXSuite(salt,
   { owner: D, name: T.name, symbol: T.symbol, decimals: T.decimals, irs: ethers.ZeroAddress, ONCHAINID: ethers.ZeroAddress, irAgents: [D], tokenAgents: [D], complianceModules: [], complianceSettings: [] },
-  { claimTopics: [T.claimTopic], issuers: [await A(issuer)], issuerClaims: [[T.claimTopic]] }, { gasLimit: 16_000_000 })));
+  { claimTopics: [T.claimTopic], issuers: [issuerA], issuerClaims: [[T.claimTopic]] }, { gasLimit: 16_000_000 })));
 const tokenAddr = await trexFactory.getToken(salt);
 const token = att(tokenAddr, "Token.sol", "Token", d);
 const ir = att(await token.identityRegistry(), "IdentityRegistry.sol", "IdentityRegistry", d);
