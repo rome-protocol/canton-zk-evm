@@ -1,0 +1,66 @@
+{
+  "name": "mixed-1",
+  "startedAt": 1792846768004,
+  "endedAt": 1792850398939,
+  "counters": {
+    "sent": 13496,
+    "rejected": 5,
+    "resync": 5
+  },
+  "finalCount": 13496,
+  "notFinal": [],
+  "rpc": {
+    "calls": 15603,
+    "httpLimited": 0,
+    "waits": 70,
+    "waitedMs": 517646,
+    "errors": 0,
+    "budget": 285
+  },
+  "receipts": {
+    "checked": 1594,
+    "mismatched": 0
+  },
+  "vaultReads": 0,
+  "skipped": {
+    "erc721Transfer": 9,
+    "swapTromeToUsd": 3,
+    "erc1155Transfer": 6,
+    "erc1155BatchTransfer": 2,
+    "removeLiquidity": 11,
+    "vaultRecord": 689
+  },
+  "phases": [
+    {
+      "name": "2 tx/s",
+      "rate": 2,
+      "achieved": 1.9933333333333332,
+      "ok": true
+    },
+    {
+      "name": "3 tx/s",
+      "rate": 3,
+      "achieved": 3.0016666666666665,
+      "ok": true
+    },
+    {
+      "name": "4 tx/s",
+      "rate": 4,
+      "achieved": 4.001666666666667,
+      "ok": true
+    },
+    {
+      "name": "4.5 tx/s",
+      "rate": 4.5,
+      "achieved": 4.501666666666667,
+      "ok": true
+    },
+    {
+      "name": "best",
+      "rate": 4.5,
+      "achieved": 4.5008333333333335,
+      "ok": true
+    }
+  ],
+  "wallets": 200
+}
