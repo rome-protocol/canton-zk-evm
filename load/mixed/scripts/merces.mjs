@@ -35,7 +35,7 @@ async function deployAll() {
     [await cv.getAddress(), await sv.getAddress(), dep.address, ethers.ZeroAddress, pks[0], pks[1], pks[2], "ostia-devnet"], big, libs);
   state.merces = { address: await m.getAddress(), mpcAddress: dep.address, native: true, users: Object.fromEntries(names.slice(1).map((n) => [n, W[n].address])) };
   save();
-  log("Merces", state.merces.address, "native:", await m.native(), "queue size:", String(await m.getQueueSize()));
+  log("Merces", state.merces.address, "queue size:", String(await m.getQueueSize()));
   return m;
 }
 const merces = () => att(state.contracts.Merces.address, "Merces.sol", "Merces", dep);
