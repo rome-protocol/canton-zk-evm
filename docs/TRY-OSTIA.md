@@ -33,8 +33,10 @@ The payout is sent in the next block, so it arrives when that block is final (se
 
 ```sh
 export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
-forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --broadcast
+forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version paris --broadcast
 ```
+
+The kit in `load/mixed/` builds for the `paris` EVM version, which is the one it has been tested with; use it for your own contracts too unless you have checked a newer one.
 
 Verify the source on the explorer. It speaks the Etherscan API, so `forge verify-contract` works with the Etherscan verifier and any API key text:
 
@@ -54,7 +56,7 @@ The explorer takes about 30 verifications an hour from one client. If it says so
 ```js
 // hardhat.config.js
 module.exports = {
-  solidity: "0.8.24",
+  solidity: { version: "0.8.24", settings: { evmVersion: "paris" } },
   networks: {
     ostia: {
       url: "https://ostia.devnet.romeprotocol.xyz/rpc",
