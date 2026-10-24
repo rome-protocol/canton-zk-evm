@@ -236,6 +236,12 @@ async function send(w, spec, phase) {
   return rec;
 }
 
+/** The three MPC public keys the Merces contract holds (an eth_call). The contract returns them as three values. */
+async function mpcPks() {
+  const r = F.merces.decodeFunctionResult("getMpcPublicKeys", await rpc("eth_call", [{ to: A.merces, data: F.merces.encodeFunctionData("getMpcPublicKeys") }, "latest"]));
+  return (r.length === 1 ? r[0] : r).map((p) => ({ x: p.x, y: p.y }));
+}
+
 // ---------------------------------------------------------------- calibrate
 if (mode === "calibrate") {
   EVENTS = null;
@@ -246,7 +252,7 @@ if (mode === "calibrate") {
   const { pricePayload } = await import("./oracle.mjs");
   try { process.env.REDSTONE_WAIT_MIN = "0"; const p = await pricePayload(); payload = { hex: p.payload, at: Date.now() }; log("RedStone payload", p.bytes, "bytes"); } catch (e) { log("no RedStone payload:", e.message.slice(0, 100)); }
   const cverifierShim = { compressProof: async (flat) => F.cver.decodeFunctionResult("compressProof", await rpc("eth_call", [{ to: state.contracts["Merces ClientVerifier"].address, data: F.cver.encodeFunctionData("compressProof", [flat]) }, "latest"]))[0] };
-  const pks = F.merces.decodeFunctionResult("getMpcPublicKeys", await rpc("eth_call", [{ to: A.merces, data: F.merces.encodeFunctionData("getMpcPublicKeys") }, "latest"]))[0].map((p) => ({ x: p.x, y: p.y }));
+  const pks = await mpcPks();
   proofs.push((await proveTransfer(E("0.1"), pks, cverifierShim)).args);
   const w = pool[0];
   deposited.add(w.address);
@@ -378,7 +384,7 @@ async function redstoneLoop() {
 }
 const cverShim = { compressProof: async (flat) => F.cver.decodeFunctionResult("compressProof", await rpc("eth_call", [{ to: state.contracts["Merces ClientVerifier"].address, data: F.cver.encodeFunctionData("compressProof", [flat]) }, "latest"]))[0] };
 async function proofLoop() {
-  const pks = F.merces.decodeFunctionResult("getMpcPublicKeys", await rpc("eth_call", [{ to: A.merces, data: F.merces.encodeFunctionData("getMpcPublicKeys") }, "latest"]))[0].map((p) => ({ x: p.x, y: p.y }));
+  const pks = await mpcPks();
   while (running) {
     if (proofs.length < 3) {
       try { const r = await proveTransfer(E("0.1") * BigInt(1 + rnd(5)), pks, cverShim); proofs.push(r.args); ev({ e: "proof", ms: r.proveMs }); }
