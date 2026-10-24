@@ -12,7 +12,17 @@ const statePath = `${RUN}/addresses.json`;
 export const state = existsSync(statePath)
   ? JSON.parse(readFileSync(statePath, "utf8"))
   : { chainId: cfg.chainId, rpc: RPC, contracts: {}, steps: {}, wallets: {} };
-export const save = () => writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+// Two scripts may run at once (the oracle step waits for RedStone's gateways while the private-transfer step runs): a save keeps what the other one wrote meanwhile.
+export const save = () => {
+  if (existsSync(statePath)) {
+    const disk = JSON.parse(readFileSync(statePath, "utf8"));
+    for (const k of Object.keys(disk)) {
+      if (disk[k] && typeof disk[k] === "object" && !Array.isArray(disk[k]) && state[k] && typeof state[k] === "object") state[k] = { ...disk[k], ...state[k] };
+      else if (!(k in state)) state[k] = disk[k];
+    }
+  }
+  writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+};
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 export { log };

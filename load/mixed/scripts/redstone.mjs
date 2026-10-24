@@ -2,11 +2,12 @@
 //   node scripts/redstone.mjs [recordings, default 3]
 import { writeFileSync } from "node:fs";
 import { ethers } from "ethers";
-import { state, save, log, provider, distributor, deploy, att, RUN } from "./lib.mjs";
+import { state, save, log, provider, wallets, deploy, att, RUN } from "./lib.mjs";
 import { dataWithPrices } from "./oracle.mjs";
 
 const n = Number(process.argv[2] ?? 3);
-const d = distributor();
+// its own wallet (fund it first: scripts/fund.mjs oracle=20), so that it can wait for the gateways while other steps send from the distributor
+const d = wallets(["oracle"]).oracle;
 const vault = await deploy(d, "PriceVault", ["PriceVault.sol", "PriceVault"]);
 const addr = await vault.getAddress();
 const out = [];
