@@ -36,10 +36,12 @@ forge_c_in() { local wd=$1; shift; docker run --rm --user "$UIDGID" -e HOME=/w/.
 case ${1:-} in
   build)
     node_c npm ci --ignore-scripts --no-audit --no-fund --user-agent="$UA"
+    # forge would download its compilers under its own User-Agent: fetch them with the project contact instead, checked against the server's sha256 list
+    node_c node scripts/solc-fetch.mjs 0.5.16 0.6.6 0.8.17
     rm -rf contracts/gen
-    forge_c build
+    forge_c build --offline
     node_c node scripts/prepare.mjs
-    forge_c build
+    forge_c build --offline
     node_c node scripts/prepare.mjs check
     ;;
   merces-fetch)
@@ -50,7 +52,8 @@ case ${1:-} in
     git -C "$M" checkout -q --detach FETCH_HEAD
     [ "$(git -C "$M" rev-parse HEAD)" = "$MERCES_COMMIT" ]
     git -C "$M" -c http.userAgent="$UA" submodule update -q --init --depth 1 contracts/lib/openzeppelin-contracts contracts/lib/forge-std contracts/lib/babyjubjub-solidity
-    docker run --rm --user "$UIDGID" -e HOME=/w/.home -v "$HERE:/w" -w /w/$M/contracts --entrypoint forge "$FOUNDRY_IMAGE" build
+    node_c node scripts/solc-fetch.mjs 0.8.37
+    docker run --rm --user "$UIDGID" -e HOME=/w/.home -v "$HERE:/w" -w /w/$M/contracts --entrypoint forge "$FOUNDRY_IMAGE" build --offline
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
   smoke) shift; node_c node scripts/smoke.mjs "$@" ;;
