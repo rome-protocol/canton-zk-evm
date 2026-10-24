@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""L3 of the explorer's design (section 9), the nightly flood on the rehearsal chain: the real reth, Canton, builder and the explorer's indexer, with the
+"""L3 of the explorer's load test (docs/METRICS.md, 'The nightly load test'), the nightly flood on the rehearsal chain: the real reth, Canton, builder and the explorer's indexer, with the
 stand-in proof. It floods the producer with blocks of plain transfers (1,428 fit under the 30 Mgas cap), cut one after another as the builder takes them,
 and measures, for each block, from the moment the update can be read on the reader's participant (the ledger end, polled every 20 ms, reaches the offset the
 update has on that participant, which the indexer stored (canton_updates.reader_offset, found by the update's id; offsets are local to a participant, so the builder's
@@ -10,7 +10,7 @@ own is no use); the clock starts at the last poll that could not read it, so a l
            (status final, with the Canton record; one from reth alone says nothing of the indexer) is still waited for, polled every 60 ms, and its delay after `served`
            is reported (api_answer_after_served_s).
   record   how long after the block's Canton record time (canton_updates.record_time, the time the synchronizer gave the update) the block was served: reported
-           beside B1 as an observed number (record_time_to_served_p50_s, _p95_s), as the design's section 9 asks; it is not held to a budget. The record time and the
+           beside B1 as an observed number (record_time_to_served_p50_s, _p95_s), as docs/METRICS.md, 'The nightly load test', reports it; it is not held to a budget. The record time and the
            database's clock are both this machine's wall clock in the rehearsal.
   sse      how long after the block was readable in the database (the last tick that could not see it, an upper bound) a live-stream client receives the block's
            `block` event (B4); every block must reach the client. It is not clamped: an event that came before the tick shows as a negative number, within the error.
@@ -18,8 +18,8 @@ and, over the whole flood, the growth of the explorer's database per million tra
 lag is an upper bound, over by at most one ledger poll plus one database tick.
 Time to final is NOT measured: the flood's transactions go straight to reth (not through the explorer's RPC, so tx_lifecycle has no accepted_at for them), and
 without a GPU there is no proof to wait for; a block's `final` and `served` would be the same moment.
-Held to B1 (p95 <= 2.75 s, on the shared runner the project's W1-derived B1 of explorer/test/budgets.ts; the design's 1.0 s for a block of
-at most 1,428 transactions is checked on the reference machine, the explorer's DevNet host), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions).
+Held to B1 (p95 <= 2.75 s, on the shared runner the project's W1-derived B1 of explorer/test/budgets.ts; the 1.0 s of docs/DESIGN.md, Budgets, for a block of
+at most 1,428 transactions is the budget on the reference machine, the explorer's DevNet host, where L3 is still to be measured), B4 (p95 <= 0.5 s) and B6 (<= 2.5 GB per million transactions).
 
   demo_nightly_l3.py run <seconds> <transactions per block> <results.json>
 
@@ -43,8 +43,8 @@ import urllib.request
 from pathlib import Path
 
 # B1 for L3 (docs/METRICS.md): L3 runs on a shared GitHub runner (Canton, reth, the builder, PostgreSQL and the explorer share its CPU), so its index
-# lag is held to the W1-derived provisional B1 of explorer/test/budgets.ts (B1_MS = 2750), now that the measurement is precise; the design's 1.0 s is checked on the reference
-# machine (the explorer's DevNet host). test_demo_nightly_l3.py checks that the two files agree.
+# lag is held to the W1-derived provisional B1 of explorer/test/budgets.ts (B1_MS = 2750), now that the measurement is precise; the 1.0 s of docs/DESIGN.md, Budgets, is the budget on the reference
+# machine (the explorer's DevNet host), where L3 is still to be measured. test_demo_nightly_l3.py checks that the two files agree.
 B1_S = 2.75
 B4_S = 0.5
 B6_BYTES = 2.5e9
@@ -204,7 +204,7 @@ class Stream(threading.Thread):
 
 
 class LedgerClock(threading.Thread):
-    """The reader's participant's ledger end, polled every 20 ms (section 9's t0: the update can be read there). Every poll is kept, as (sent at, offset read)."""
+    """The reader's participant's ledger end, polled every 20 ms (t0 of docs/METRICS.md, 'The nightly load test': the update can be read there). Every poll is kept, as (sent at, offset read)."""
     def __init__(self, base):
         super().__init__(daemon=True)
         self.base, self.stop, self.sent, self.offsets, self.misses, self.last_miss = base, False, [], [], 0, None

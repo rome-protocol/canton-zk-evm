@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.24;
 
-/// The token traffic of the W1 block (design section 9), as costly as the gas cap allows: a contract can emit a Transfer log for about 2k gas, so one
+/// The token traffic of the W1 block (docs/METRICS.md, "The indexer on a real chain (W1)"), as costly as the gas cap allows: a contract can emit a Transfer log for about 2k gas, so one
 /// block holds thousands of them. `Flood` sends ERC-20 transfers, each to a holder no block has seen, and spawns new tokens that each need their metadata
 /// read; `Multi` sends ERC-1155 batches of 4,096 ids, in logs that share one array for ids and values, from a holder that holds the ids, `Burner` is a token whose reads spend all their gas, and `FatReturn` one whose reads answer 170 KB. The holders are derived from a seed, so every call names new ones.
 contract Flood {

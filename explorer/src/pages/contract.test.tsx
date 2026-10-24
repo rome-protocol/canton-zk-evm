@@ -184,6 +184,12 @@ describe("the Code tab of a verified contract", () => {
     expect(within(s).getByRole("link", { name: "0xe3e3…e3e3" })).toHaveAttribute("href", `/address/${addr(0xe3)}`);
   });
 
+  it("scrolls the decoded constructor arguments inside their card, so a phone's page does not widen", async () => {
+    await open({ source: contractSource(0xcb, { abi: [{ type: "constructor", stateMutability: "nonpayable", inputs: [{ name: "initialOwner", type: "address" }] }] }) });
+    const s = await screen.findByRole("region", { name: "Compiler settings" });
+    expect(s.querySelector("table.tbl")?.parentElement).toHaveClass("scroll");
+  });
+
   it("shows the constructor arguments as raw hex when the constructor takes a dynamic type", async () => {
     await open({ source: contractSource(0xcb, { abi: [{ type: "constructor", inputs: [{ name: "name", type: "string" }] }], constructorArgs: "0x1234" }) });
     const s = await screen.findByRole("region", { name: "Compiler settings" });

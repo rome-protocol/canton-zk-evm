@@ -388,7 +388,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   });
 });
 
-// The budgets of the design's section 9 (B1, B2) against the fakes: L1. Each size is a chain of one block on a database of its own.
+// The budgets of docs/DESIGN.md, Budgets (B1, B2) against the fakes: L1. Each size is a chain of one block on a database of its own.
 describe.skipIf(!TEST_URL)("L1: synthetic blocks within the ingestion budgets", () => {
   checkRequired();
 

@@ -1,5 +1,5 @@
 /**
- * The load side of L2 (design section 9), a process of its own so that the load does not share an event loop with the server it measures.
+ * The load side of L2 (docs/DESIGN.md, Budgets), a process of its own so that the load does not share an event loop with the server it measures.
  * `node test/l2/drive.ts <config.json>` runs every class of request at its share of the rate (open loop), together, for the time given, with the live-stream clients
  * held open beside them, and prints one JSON document: each class's latencies and answers, and when each stream client received each block.
  * Every request carries its own client address in the trusted header, so that the per-client limits of 6.6 see many clients, as the public does.

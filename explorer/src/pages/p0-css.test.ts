@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const read = (f: string) => readFileSync(join(import.meta.dirname, f), "utf8");
+const contract = read("contract.css"), apiDocs = read("api-docs.css");
 const tx = read("tx.css"), block = read("block.css"), token = read("token.css"), styles = read("../styles.css");
 
 /** The rules of a sheet outside any @media block: [selector, body]. A comma list is split into its selectors. */
@@ -173,5 +174,35 @@ describe("the address page's direction tag and the transaction page's way-to-fin
       expect(cls.includes("way") && cls.every((c) => c === "card" || c === "way"), s).toBe(false);
     }
     expect(read("AddressTabs.tsx")).not.toMatch(/className="[^"]*\bway\b/);
+  });
+});
+
+describe("narrow screens, 320 to 360 px", () => {
+  it("lets the contract's ABI and settings cards shrink below 340 px, as .api-two does", () => {
+    const pair = rules(contract).find(([x]) => x === ".code-pair")?.[1] ?? "";
+    expect(pair).toMatch(/minmax\(min\(340px, 100%\), 1fr\)/);
+    expect(pair).not.toMatch(/minmax\(340px/);
+    expect(rules(contract).find(([x]) => x === ".code-pair > *")?.[1] ?? "").toMatch(/min-width: 0/);
+  });
+
+  it("lets the Etherscan card's address line break anywhere, so it cannot widen the page", () => {
+    const get = (s: string) => rules(apiDocs).find(([x]) => x === s)?.[1] ?? "";
+    expect(get(".api-eth .card-title .muted")).toMatch(/overflow-wrap: anywhere/);
+    expect(get(".api-eth .card-title")).toMatch(/min-width: 0/);
+  });
+});
+
+describe("the way-to-final card against screen 05", () => {
+  const get = (s: string) => rules(tx).find(([x]) => x === s)?.[1] ?? "";
+  it("draws a hairline under the title row, reaching the card's edges like the shared card header", () => {
+    const h = get(".way > .sec-h");
+    expect(h).toMatch(/border-bottom: 1px solid var\(--line-2\)/);
+    expect(h).toMatch(/margin: -18px -20px 14px/);
+    expect(h).toMatch(/padding: 14px 20px/);
+  });
+  it("tints the footer lighter than the page's accent tint", () => {
+    const f = get(".way-foot");
+    expect(f).not.toMatch(/background: var\(--canton-tint\)/);
+    expect(f).toMatch(/background: color-mix\(in srgb, var\(--canton-tint\) \d+%, transparent\)/);
   });
 });

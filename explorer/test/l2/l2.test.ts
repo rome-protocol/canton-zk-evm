@@ -1,5 +1,5 @@
 /**
- * L2, the API at scale (design section 9): a database seeded through the indexer's own write path, then `L2_SECONDS` of the mixed load of the design
+ * L2, the API at scale (docs/DESIGN.md, Budgets): a database seeded through the indexer's own write path, then `L2_SECONDS` of the mixed load of the design
  * (60% single objects, 20% address pages, 10% lists, 5% getLogs, 5% search) at `L2_RATE` requests a second, while ingestion keeps writing blocks of
  * 1,428 transactions every 3 s, with `L2_SSE` live-stream clients and the health route asked throughout. It asserts B3, B4, B6 and B7 and writes the
  * numbers to `L2_RESULTS` (a JSON file) and to the log. It runs only when `L2=1`, on the pinned PostgreSQL; the design's size is
@@ -35,7 +35,7 @@ const TXS = int("L2_TRANSACTIONS", 300_000), SECONDS = int("L2_SECONDS", 60), RA
 /** The design's one address holds 1,000,000 transactions, whatever the size of the run: a smaller database gives it a larger share (up to a half) so that B3's address-page budget is measured against that history. */
 const HOT_TXS = Math.min(int("L2_HOT", 1_000_000), TXS / 2), HOT_EVERY = Math.max(2, Math.floor(TXS / HOT_TXS));
 const BLOCK_TXS = 1428, BLOCK_EVERY_MS = 3000;
-/** The budgets of section 9. B3 and B7 are p95; the load tool reports p97.5, which is the stricter, so that is what is held to them. */
+/** The budgets of docs/DESIGN.md, Budgets. B3 and B7 are p95; the load tool reports p97.5, which is the stricter, so that is what is held to them. */
 export const BUDGET = { singleMs: 100, searchMs: 100, listMs: 200, addressPageMs: 300, txlistDefaultMs: 1000, getLogsMs: 500, sseMs: 500, gigabytesPerMillion: 2.5, healthMs: 50 };
 const HOT = "0x" + "f0f0f0".padStart(40, "0");
 const HOT_LOGS = "0x" + "d000".padStart(40, "0"); // the address the synthetic chain's token transfers log under: a fifth of all transactions

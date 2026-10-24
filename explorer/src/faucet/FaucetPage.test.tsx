@@ -504,7 +504,7 @@ describe("the times of a request", () => {
     await ask(user);
     await waitFor(() => expect(step("Sent")).toHaveTextContent("is in the pool"));
     expect(step("Sent")).not.toHaveTextContent("nonce");
-    for (const name of ["Sent", "Being proven", "Final on Canton"]) expect(step(name)).not.toHaveTextContent(/\d\d:\d\d:\d\d/);
+    for (const name of ["Queued", "Sent", "Being proven", "Final on Canton"]) expect(step(name)).not.toHaveTextContent(/\d\d:\d\d:\d\d/);
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 

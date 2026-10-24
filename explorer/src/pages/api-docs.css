@@ -8,6 +8,8 @@
 .api-copy { display: inline-flex; align-items: center; gap: 6px; align-self: center; border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
 .api-copy:hover { background: var(--surface-2); text-decoration: none; }
 .api-eth { margin-bottom: 18px; }
+.api-eth .card-title { min-width: 0; }
+.api-eth .card-title .muted { overflow-wrap: anywhere; } /* the address line has no space to break at, and must not widen the page at 320 px */
 .api-eth-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: 0 22px; }
 .api-eth-side p { margin: 10px 0 6px; }
 .api-eth-side p:last-child { margin-top: 12px; }

@@ -182,7 +182,7 @@ jobs:
         if: always()
         run: docker rm -f -v explorer-db
 
-  # L2 (design section 9): the API at scale. A database seeded through the indexer's own write path, then two minutes of the mixed load of the design while ingestion
+  # L2 (docs/DESIGN.md, Budgets): the API at scale. A database seeded through the indexer's own write path, then two minutes of the mixed load of the design while ingestion
   # keeps writing blocks and live-stream clients stay open, held to B3, B4, B6 and B7. The design's size (10,000,000 transactions, 600 s) is for the reference machine;
   # this is the scaled run (3,000,000 transactions, with the one address at its million), and docs/METRICS.md says what it measured. The numbers are in the l2-results artifact.
   l2:
