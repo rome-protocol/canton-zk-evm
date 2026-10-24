@@ -11,6 +11,8 @@ import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } fr
 
 const mode = process.argv[2];
 const M = cfg.mix;
+// LOAD_PHASES="2:1,3:1" replaces the phases of config.json with rate:minutes pairs (for a short trial); "best" is allowed as a rate
+if (process.env.LOAD_PHASES) M.phases = process.env.LOAD_PHASES.split(",").map((x, i) => { const [r, m] = x.split(":"); return { name: r === "best" ? "best" : `${r} tx/s`, rate: r === "best" ? "best" : Number(r), minutes: Number(m) }; });
 const E = ethers.parseEther;
 const U = (s) => ethers.parseUnits(String(s), 6);
 const need = (n) => { const c = state.contracts[n]; if (!c) throw new Error(`${n} is not deployed: run deploy first`); return c.address; };
