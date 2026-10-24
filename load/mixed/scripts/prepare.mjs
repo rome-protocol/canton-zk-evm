@@ -1,12 +1,19 @@
-// Run after `forge build --profile pair`: reads the Uniswap V2 pair's creation code, computes its init code hash, and writes contracts/gen/ with a
+// Run after a first `forge build`: reads the Uniswap V2 pair's creation code (out/, the same bytes the factory carries), computes its init code hash, and writes contracts/gen/ with a
 // copy of the periphery router whose library carries that hash (the router finds a pair by CREATE2 from the factory, with the hash of the pair
 // code the factory carries; the published hash belongs to the original build of the pair, not to ours). Nothing is vendored: the copy is made
 // at run time from node_modules, in a folder that git ignores.
 import { readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { keccak256 } from "ethers";
 
-const art = JSON.parse(readFileSync("out-pair/UniswapV2Pair.sol/UniswapV2Pair.json", "utf8"));
+const art = JSON.parse(readFileSync("out/UniswapV2Pair.sol/UniswapV2Pair.json", "utf8"));
 const hash = keccak256(art.bytecode.object).slice(2);
+if (process.argv[2] === "check") {
+  // after the second build: the pair's code is still the code the router's library has the hash of
+  const want = readFileSync("contracts/gen/PAIR_INIT_CODE_HASH", "utf8").trim();
+  if (want !== "0x" + hash) throw new Error(`the pair code changed between the two builds: ${want} then 0x${hash}`);
+  console.log("pair init code hash is the same after the second build: " + want);
+  process.exit(0);
+}
 const src = "node_modules/@uniswap/v2-periphery/contracts";
 const dst = "contracts/gen/periphery";
 rmSync("contracts/gen", { recursive: true, force: true });

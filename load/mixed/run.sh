@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The mixed load's runner. Everything runs in the repo's pinned containers; nothing but Docker is needed on the machine.
 #
-#   run.sh build            install the pinned packages (npm ci) and compile every contract (Foundry, two builds: see scripts/prepare.mjs)
+#   run.sh build            install the pinned packages (npm ci) and compile every contract (Foundry, two passes: see scripts/prepare.mjs)
 #   run.sh deploy           deploy the contracts and write addresses.json (idempotent: what exists is skipped)
 #   run.sh verify           verify every deployed contract on the explorer
 #   run.sh node <args...>   run any node command in the kit's Node container (the deploy and the driver are scripts/*.mjs)
@@ -30,11 +30,11 @@ forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE
 case ${1:-} in
   build)
     node_c npm ci --ignore-scripts --no-audit --no-fund
-    mkdir -p gen/pair
-    printf '// SPDX-License-Identifier: GPL-3.0-or-later\npragma solidity >=0.5.16;\nimport "@uniswap/v2-core/contracts/UniswapV2Pair.sol";\n' > gen/pair/Pair.sol
-    PROFILE=pair forge_c build
+    rm -rf contracts/gen
+    forge_c build
     node_c node scripts/prepare.mjs
     forge_c build
+    node_c node scripts/prepare.mjs check
     ;;
   deploy) shift; node_c node scripts/deploy.mjs "$@" ;;
   verify)
