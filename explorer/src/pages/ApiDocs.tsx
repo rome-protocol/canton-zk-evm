@@ -150,7 +150,7 @@ export function ApiDocs() {
         <div className="card"><h2><Icon name="link" size={15} /> JSON-RPC</h2><p className="muted small">Standard Ethereum JSON-RPC at <span className="mono">/rpc</span>. It serves final blocks only, and sends your transactions on.</p></div>
       </div>
       {modules && <section className="card api-eth" aria-labelledby="eth-h">
-        <CardHead title={<span id="eth-h">Etherscan-compatible API</span>}
+        <CardHead as="h2" title={<span id="eth-h">Etherscan-compatible API</span>}
           sub={<span className="mono">{origin}/api · apikey is accepted and ignored{id ? ` · chainid, if given, must be ${id}` : ""}</span>} />
         <div className="api-eth-grid">
         <div className="api-eth-main">

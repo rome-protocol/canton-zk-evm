@@ -32,7 +32,11 @@ describe("the Etherscan-compatible header", () => {
     const head = section.querySelector(":scope > .card-head")!;
     expect(head).not.toBeNull();
     const title = head.querySelector(".card-title")!;
-    expect(within(title as HTMLElement).getByRole("heading", { name: "Etherscan-compatible API" })).toBeInTheDocument();
+    expect(within(title as HTMLElement).getByRole("heading", { name: "Etherscan-compatible API", level: 2 })).toBeInTheDocument();
+    // a sibling of the other cards: every card heading on the page is an h2, under the one h1
+    const levels = screen.getAllByRole("heading").map((h) => h.tagName);
+    expect(levels.filter((t) => t === "H1")).toHaveLength(1);
+    expect(levels.filter((t) => t !== "H1" && t !== "H2")).toEqual([]);
     expect(title.querySelector(".muted")!.textContent).toMatch(/apikey is accepted and ignored/);
     expect(section.querySelector(":scope > .api-eth-grid table")).not.toBeNull();
   });
