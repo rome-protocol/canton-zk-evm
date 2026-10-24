@@ -9,3 +9,6 @@ runs/
 contracts/gen/
 .npm-cache/
 .home/
+third_party/
+out-merces/
+cache-merces/
