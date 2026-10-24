@@ -86,10 +86,10 @@ function Constructor({ s }: { s: ContractSource }) {
       <h3>Constructor arguments</h3>
       {ctor && <div className="ctor"><code className="mono">{signature(ctor)}</code></div>}
       {decoded
-        ? <table className="tbl"><tbody>{decoded.map((a, i) => (
+        ? <div className="scroll"><table className="tbl"><tbody>{decoded.map((a, i) => (
           <tr key={i}><td className="muted">{i}</td><td className="mono">{a.name}</td><td className="muted mono">{a.type}</td>
             <td>{a.type === "address" ? <HashLink value={a.value} to={`/address/${a.value}`} /> : <span className="mono wrap">{a.value}</span>}</td></tr>
-        ))}</tbody></table>
+        ))}</tbody></table></div>
         : <><p className="muted small">These cannot be read word by word here, so this is the raw value.</p><pre className="dark wrap">{s.constructorArgs}</pre></>}
     </>
   );
