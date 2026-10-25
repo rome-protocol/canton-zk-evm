@@ -5,10 +5,12 @@
 //   node scripts/load.mjs check-reverts        sends nothing: eth_call of each deliberate-revert case, each must revert (the swap case for its own reason, with a control that goes through)
 //   node scripts/load.mjs report <name>        the numbers of a finished run (report.json and report.md in its folder)
 // Everything goes to the public RPC like any user would send it, under the RPC's own limit (see load-rpc.mjs). Transactions are signed here; nonces are counted here.
-import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from "node:fs";
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
 import { fees } from "./fee.mjs";
+import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, refillEvents, pickWallet, readAllOnce, wtAllowed, wtDelta } from "./refill.mjs";
+import { classify, emptyTally, tallyLine, passes, reasonFromError, reasonFinder } from "./classify.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
 const mode = process.argv[2];
@@ -55,6 +57,7 @@ if (mode === "seed") {
 const W = wallets([...names, ...HOLDERS, "unverified"]);
 const pool = names.map((n) => W[n]);
 const holders = HOLDERS.map((n) => W[n]);
+function wallets_addr(n) { return W[n].address; }
 const A = {
   tUSD: need("tUSD"), tETH: need("tETH"), wt: need("WtROME"), pass: need("OstiaPass"), items: need("OstiaItems"),
   router: need("UniswapV2Router02"), pairUW: need("UniswapV2Pair tUSD/WtROME"), pairET: need("UniswapV2Pair tETH/tUSD"),
@@ -72,14 +75,26 @@ const other = (w, list = pool) => { let o; do o = pick(list); while (o.address =
 const deadline = () => Math.floor(Date.now() / 1000) + 3600;
 const ZERO = 0n;
 
+// slippage: a swap's minimum output comes from a fresh reading of the pool's reserves, less a tolerance (config mix.slippage). With no fresh reading the minimum is 0.
+const SL = M.slippage, RF = M.refill;
+const quotes = new QuoteBook(SL.quoteMaxAgeSeconds * 1000);
+const minOut = (tokenIn, tokenOut, amountIn) => quotes.minOut(tokenIn, tokenOut, amountIn, SL.tolerancePercent);
+// what each wallet is thought to hold (see refill.mjs); the holders carry gas only here, their T-REX balance is kept below
+const ledger = new Ledger({ trome: E(M.seed.tromeEach), tUSD: U(M.seed.tUsdEach), tETH: E(M.seed.tEthEach) });
+for (const h of holders) ledger.set(h.address, { trome: E(cfg.deploy.holderGasTrome) });
+const refillStats = emptyRefillStats();
+const trexBal = new Map(HOLDERS.map((n) => [wallets_addr(n), U(cfg.deploy.trex.mintPerHolder)]));
+
 // wallets' bookkeeping, kept here (no reads from the chain): nonces, approvals, what a wallet holds of what it made
-const nonces = new Map(), approved = new Set(), wrapped = new Map(), lp = new Map(), nfts = new Map(), items = new Map(), deposited = new Set(), busy = new Set();
-const wrp = (w) => wrapped.get(w.address) ?? ZERO;
-const addWrp = (w, v) => wrapped.set(w.address, wrp(w) + v);
+const nonces = new Map(), approved = new Set(), lp = new Map(), nfts = new Map(), items = new Map(), deposited = new Set(), busy = new Set();
+// wrapped tROME: the books lean low (see refill.mjs), are corrected from the real balance whenever the refill reads a wallet, and a kind is allowed only by them
+const wbooks = new WrappedBooks();
+const wrp = (w) => wbooks.get(w.address);
 const itemsOf = (w) => [...items.entries()].filter(([k, v]) => k.startsWith(w.address) && v > 0n).map(([k, v]) => [Number(k.split(":")[1]), v]);
 /** Bookkeeping is booked when an action is planned, so two actions of one wallet do not use the same funds; `undo` takes it back when the send is refused or the transaction fails. */
 const undoWith = (s, f) => { const prev = s.undo; s.undo = () => { prev?.(); f(); }; };
-const book = (s, w, v) => { addWrp(w, v); undoWith(s, () => addWrp(w, -v)); };
+const doneWith = (s, f) => { const prev = s.done; s.done = () => { prev?.(); f(); }; };
+const book = (s, w, v) => { wbooks.book(w.address, v); undoWith(s, () => wbooks.settle(w.address, v, false)); doneWith(s, () => wbooks.settle(w.address, v, true)); };
 const bookLp = (s, w, pair, d) => { const k = `${w.address}:${pair}`; lp.set(k, (lp.get(k) ?? 0) + d); undoWith(s, () => lp.set(k, (lp.get(k) ?? 0) - d)); };
 const addItem = (w, id, v) => items.set(`${w.address}:${id}`, (items.get(`${w.address}:${id}`) ?? ZERO) + v);
 
@@ -102,39 +117,42 @@ function plan(kind, w) {
   const tx = (o) => out.push({ kind, ...o });
   switch (kind) {
     case "erc20Transfer": {
-      const t = pick(["tUSD", "tUSD", "tETH"]);
+      const t = pick(["tUSD", "tUSD", "tETH"].filter((k) => ledger.canSpend(w.address, [k])));
+      if (!t) return null; // the wallet is known low in both tokens: another wallet or kind
       const amt = t === "tUSD" ? U(1 + rnd(10)) : E("0.001") * BigInt(1 + rnd(9));
-      tx({ to: A[t], data: F.tok.encodeFunctionData("transfer", [other(w).address, amt]), gas: G.erc20Transfer }); break;
+      tx({ to: A[t], data: F.tok.encodeFunctionData("transfer", [other(w).address, amt]), gas: G.erc20Transfer, spend: { [t]: amt } }); break;
     }
     case "erc20Approve": // a plain approval of a friend, a finite amount
       tx({ to: A[pick(["tUSD", "tETH"])], data: F.tok.encodeFunctionData("approve", [other(w).address, U(100 * (1 + rnd(9)))]), gas: G.erc20Approve }); break;
     case "wrap":
-      if (wrp(w) > E("8")) return null;
-      tx({ to: A.wt, data: F.wt.encodeFunctionData("deposit"), value: E("0.5"), gas: G.wrap }); book(out.at(-1), w, E("0.5")); break;
+      if (!wtAllowed("wrap", wrp(w))) return null;
+      tx({ to: A.wt, data: F.wt.encodeFunctionData("deposit"), value: E("0.5"), gas: G.wrap }); book(out.at(-1), w, wtDelta("wrap")); break;
     case "unwrap":
-      if (wrp(w) < E("0.2")) return null;
-      tx({ to: A.wt, data: F.wt.encodeFunctionData("withdraw", [E("0.2")]), gas: G.unwrap }); book(out.at(-1), w, -E("0.2")); break;
-    case "swapUsdToTrome":
+      if (!wtAllowed("unwrap", wrp(w))) return null;
+      tx({ to: A.wt, data: F.wt.encodeFunctionData("withdraw", [E("0.2")]), gas: G.unwrap }); book(out.at(-1), w, wtDelta("unwrap")); break;
+    case "swapUsdToTrome": {
       approval(w, A.tUSD, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), 0, [A.tUSD, A.wt], w.address, deadline()]), gas: G.swap }); book(out.at(-1), w, E("1")); break;
+      const mo = minOut(A.tUSD, A.wt, U(20)); // what the swap gets at least: the wallet is booked only that much WtROME, the rest shows when its real balance is read
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), mo, [A.tUSD, A.wt], w.address, deadline()]), gas: G.swap, spend: { tUSD: U(20) } }); book(out.at(-1), w, wtDelta("swapUsdToTrome", mo)); break;
+    }
     case "swapTromeToUsd":
-      if (wrp(w) < E("0.3")) return null;
+      if (!wtAllowed("swapTromeToUsd", wrp(w))) return null;
       approval(w, A.wt, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.2"), 0, [A.wt, A.tUSD], w.address, deadline()]), gas: G.swap }); book(out.at(-1), w, -E("0.2")); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.2"), minOut(A.wt, A.tUSD, E("0.2")), [A.wt, A.tUSD], w.address, deadline()]), gas: G.swap, spend: {} }); book(out.at(-1), w, wtDelta("swapTromeToUsd")); break;
     case "swapEthToUsd":
       approval(w, A.tETH, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.01"), 0, [A.tETH, A.tUSD], w.address, deadline()]), gas: G.swap }); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.01"), minOut(A.tETH, A.tUSD, E("0.01")), [A.tETH, A.tUSD], w.address, deadline()]), gas: G.swap, spend: { tETH: E("0.01") } }); break;
     case "swapUsdToEth":
       approval(w, A.tUSD, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(30), 0, [A.tUSD, A.tETH], w.address, deadline()]), gas: G.swap }); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(30), minOut(A.tUSD, A.tETH, U(30)), [A.tUSD, A.tETH], w.address, deadline()]), gas: G.swap, spend: { tUSD: U(30) } }); break;
     case "addLiquidity": {
-      if (Math.random() < 0.5 && wrp(w) >= E("0.6")) {
+      if (Math.random() < 0.5 && wtAllowed("addLiquidity", wrp(w))) {
         approval(w, A.tUSD, A.router, out); approval(w, A.wt, A.router, out);
-        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tUSD, A.wt, U(5), E("0.5"), 0, 0, w.address, deadline()]), gas: G.addLiquidity });
-        book(out.at(-1), w, -E("0.5")); bookLp(out.at(-1), w, A.pairUW, 1);
+        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tUSD, A.wt, U(5), E("0.5"), 0, 0, w.address, deadline()]), gas: G.addLiquidity, spend: { tUSD: U(5) } });
+        book(out.at(-1), w, wtDelta("addLiquidity")); bookLp(out.at(-1), w, A.pairUW, 1);
       } else {
         approval(w, A.tETH, A.router, out); approval(w, A.tUSD, A.router, out);
-        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tETH, A.tUSD, E("0.01"), U(35), 0, 0, w.address, deadline()]), gas: G.addLiquidity });
+        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tETH, A.tUSD, E("0.01"), U(35), 0, 0, w.address, deadline()]), gas: G.addLiquidity, spend: { tETH: E("0.01"), tUSD: U(35) } });
         bookLp(out.at(-1), w, A.pairET, 1);
       }
       break;
@@ -146,7 +164,7 @@ function plan(kind, w) {
       const [a, b] = p === A.pairUW ? [A.tUSD, A.wt] : [A.tETH, A.tUSD];
       tx({ to: A.router, data: F.router.encodeFunctionData("removeLiquidity", [a, b, 1_000_000_000n, 0, 0, w.address, deadline()]), gas: G.removeLiquidity });
       bookLp(out.at(-1), w, p, -1);
-      if (p === A.pairUW) book(out.at(-1), w, E("0.01"));
+      if (p === A.pairUW) book(out.at(-1), w, wtDelta("removeLiquidity")); // a removal returns a negligible amount (1e9 LP wei): nothing is booked
       break;
     }
     case "erc721Mint":
@@ -156,6 +174,7 @@ function plan(kind, w) {
       if (!mine.length) return null;
       const id = mine.shift(); const to = other(w);
       tx({ to: A.pass, data: F.pass.encodeFunctionData("safeTransferFrom(address,address,uint256)", [w.address, to.address, id]), gas: G.erc721Transfer,
+        undo: () => nfts.set(w.address, [id, ...(nfts.get(w.address) ?? [])]),
         after: (it) => { if (it.success) nfts.set(to.address, [...(nfts.get(to.address) ?? []), id]); } }); break;
     }
     case "erc1155Mint": {
@@ -170,18 +189,27 @@ function plan(kind, w) {
       const mine = itemsOf(w); if (!mine.length) return null;
       const [id, have] = pick(mine); const amt = 1n; const to = other(w);
       items.set(`${w.address}:${id}`, have - amt);
-      tx({ to: A.items, data: F.items.encodeFunctionData("safeTransferFrom", [w.address, to.address, id, amt, "0x"]), gas: G.erc1155Transfer, after: (it) => { if (it.success) addItem(to, id, amt); } }); break;
+      tx({ to: A.items, data: F.items.encodeFunctionData("safeTransferFrom", [w.address, to.address, id, amt, "0x"]), gas: G.erc1155Transfer, undo: () => addItem(w, id, amt), after: (it) => { if (it.success) addItem(to, id, amt); } }); break;
     }
     case "erc1155BatchTransfer": {
       const mine = itemsOf(w); if (mine.length < 2) return null;
       const two = mine.slice(0, 2); const to = other(w);
       for (const [id, have] of two) items.set(`${w.address}:${id}`, have - 1n);
       tx({ to: A.items, data: F.items.encodeFunctionData("safeBatchTransferFrom", [w.address, to.address, two.map((x) => x[0]), two.map(() => 1n), "0x"]), gas: G.erc1155BatchTransfer,
+        undo: () => { for (const [id] of two) addItem(w, id, 1n); },
         after: (it) => { if (it.success) for (const [id] of two) addItem(to, id, 1n); } }); break;
     }
-    case "trexTransfer":
-      tx({ to: A.trex, data: F.trex.encodeFunctionData("transfer", [other(w, holders).address, U(1 + rnd(5))]), gas: G.trexTransfer }); break;
-    case "trexRefused": // to the address that has no identity in the registry: the token refuses it, the transaction reverts on purpose
+    case "trexTransfer": { // only from a holder that holds enough; the books follow the move and take it back if it fails
+      const amt = U(1 + rnd(5)), have = trexBal.get(w.address) ?? ZERO;
+      if (have < amt) return null;
+      const to = other(w, holders);
+      trexBal.set(w.address, have - amt);
+      tx({ to: A.trex, data: F.trex.encodeFunctionData("transfer", [to.address, amt]), gas: G.trexTransfer,
+        undo: () => trexBal.set(w.address, (trexBal.get(w.address) ?? ZERO) + amt),
+        after: (it) => { if (it.success) trexBal.set(to.address, (trexBal.get(to.address) ?? ZERO) + amt); } }); break;
+    }
+    case "trexRefused": // (a holder with no T-REX left would revert for another reason, so it does not send this) to the address that has no identity in the registry: the token refuses it, the transaction reverts on purpose
+      if ((trexBal.get(w.address) ?? ZERO) < U(1)) return null;
       tx({ to: A.trex, data: F.trex.encodeFunctionData("transfer", [W.unverified.address, U(1)]), gas: G.trexRefused, expectRevert: true }); break;
     case "vaultRecord":
       if (!fresh()) return null;
@@ -214,6 +242,23 @@ let EVENTS = null;
 const ev = (o) => { if (EVENTS) appendFileSync(EVENTS, JSON.stringify({ t: Date.now(), ...o }) + "\n"); };
 const sent = new Map(); // hash -> record
 const counters = { sent: 0, rejected: 0, resync: 0 };
+// what became of the transactions that are final: success / reverted on purpose / unexpected revert (see classify.mjs)
+const outcomes = emptyTally();
+// the reason of an unexpected revert: the same call replayed with eth_call from the same wallet at the block before the one it was in (so a wallet that a
+// top-up has since refilled still shows its own reason), a few per kind (the RPC budget is shared). Only an unexpected revert keeps its call (see readTxs).
+const findReason = reasonFinder(async (r) => {
+  const call = { from: r.from, to: r.call.to, data: r.call.data, value: r.call.value ? ethers.toBeHex(r.call.value) : undefined, gas: ethers.toBeHex(r.gas) };
+  const at = async (block) => { try { await rpc("eth_call", [call, block]); return null; } catch (e) { return e; } };
+  const parent = r.block > 0 ? "0x" + (r.block - 1).toString(16) : "latest";
+  let e = await at(parent);
+  if (e === null) return "the replay at the block before went through (the revert came from state of its own block)";
+  if (!(typeof e.data === "string" && e.data.length >= 10) && !/revert/i.test(String(e.message))) { // the node did not serve that block's state: fall back to the latest
+    const e2 = await at("latest");
+    return e2 === null ? "the replay went through at the latest block (state has changed since)" : reasonFromError(e2);
+  }
+  return reasonFromError(e);
+});
+const reasonJobs = [];
 
 function signed(w, spec, nonce) {
   const t = ethers.Transaction.from({ type: 2, chainId: cfg.chainId, nonce, to: spec.to, data: spec.data, value: spec.value ?? 0n, gasLimit: spec.gas,
@@ -231,12 +276,13 @@ async function send(w, spec, phase) {
   const nonce = nonces.get(w.address) ?? 0;
   nonces.set(w.address, nonce + 1);
   const { raw, hash } = signed(w, spec, nonce);
-  const rec = { hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: Date.now(), expectRevert: !!spec.expectRevert, after: spec.after, undo: spec.undo, gas: spec.gas };
+  const rec = { hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: Date.now(), expectRevert: !!spec.expectRevert, after: spec.after, undo: spec.undo, done: spec.done, gas: spec.gas, call: { to: spec.to, data: spec.data, value: spec.value } };
   // one wallet's transactions go to the RPC in nonce order: two sent at once could pass each other while they wait for the rate budget, and the later one is refused (nonce gap)
   const go = async () => {
     try {
       await rpc("eth_sendRawTransaction", [raw]);
       rec.acceptedAt = Date.now(); sent.set(hash, rec); counters.sent++;
+      ledger.spend(w.address, { trome: (spec.value ?? ZERO) + BigInt(spec.gas) * gasPrice, ...spec.spend });
       ev({ e: "sent", hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: rec.sentAt, acceptedAt: rec.acceptedAt, gas: spec.gas, expectRevert: rec.expectRevert });
     } catch (e) {
       counters.rejected++;
@@ -386,8 +432,12 @@ async function readTxs(rec) {
         const r = sent.get(t.hash);
         if (!r || r.finalAt) continue;
         r.finalAt = rec.finalAt; r.block = rec.n; r.success = t.success; r.gasUsed = t.gasUsed; finalCount++;
-        ev({ e: "final", hash: t.hash, block: rec.n, index: t.index, success: t.success, gasUsed: t.gasUsed, methodId: t.methodId, finalAt: rec.finalAt, firstSeenAt: rec.firstSeenAt, sentAt: r.sentAt });
+        r.class = classify({ success: t.success, expectRevert: r.expectRevert }); outcomes[r.class]++;
+        ev({ e: "final", hash: t.hash, block: rec.n, index: t.index, success: t.success, class: r.class, gasUsed: t.gasUsed, methodId: t.methodId, finalAt: rec.finalAt, firstSeenAt: rec.firstSeenAt, sentAt: r.sentAt });
+        if (r.class === "unexpectedRevert") reasonJobs.push(findReason(r).then((reason) => { ev({ e: "revertReason", hash: t.hash, kind: r.kind, sub: r.sub, reason }); log("UNEXPECTED revert", r.sub ?? r.kind, "->", reason); }).finally(() => { r.call = null; }));
+        else r.call = null; // the call is kept only to replay an unexpected revert: a long soak does not hold every transaction's calldata
         if (!t.success && r.undo) { try { r.undo(); } catch {} }
+        if (t.success && r.done) { try { r.done(); } catch {} }
         if (r.after) { try { r.after({ success: t.success, tokenId: t.tokenMoves?.first?.token === A.pass.toLowerCase() && t.tokenMoves.first.tokenId != null ? BigInt(t.tokenMoves.first.tokenId) : null }); } catch {} }
       }
       if (j.next == null) break;
@@ -440,8 +490,8 @@ async function misc() {
   while (running) {
     await sleep(15_000); n++;
     if (n % 2 === 0) await refreshGasPrice();
-    if (n % 4 === 0) ev({ e: "rpcMinute", used: used(), calls: rpcStats.calls, httpLimited: rpcStats.httpLimited, waitedMs: rpcStats.waitedMs, sent: counters.sent, rejected: counters.rejected, final: finalCount, queue: queue.length, inflight });
-    if (n % 4 === 0) log(`sent ${counters.sent}  final ${finalCount}  rejected ${counters.rejected}  rpc ${used()}/min  proofs ${proofs.length}  prices ${fresh() ? "fresh" : "none"}  blocks ${blocks.size}`);
+    if (n % 4 === 0) ev({ e: "rpcMinute", used: used(), calls: rpcStats.calls, httpLimited: rpcStats.httpLimited, waitedMs: rpcStats.waitedMs, sent: counters.sent, rejected: counters.rejected, final: finalCount, outcomes: { ...outcomes }, queue: queue.length, inflight });
+    if (n % 4 === 0) log(`sent ${counters.sent}  final ${finalCount}  ${tallyLine(outcomes)}  rejected ${counters.rejected}  ${refillLine(refillStats)}  rpc ${used()}/min  proofs ${proofs.length}  prices ${fresh() ? "fresh" : "none"}  blocks ${blocks.size}`);
   }
 }
 let vaultReads = 0;
@@ -464,11 +514,12 @@ const weights = Object.entries(M.weights);
 const totalW = weights.reduce((a, [, v]) => a + v, 0);
 const weighted = () => { let r = Math.random() * totalW; for (const [k, v] of weights) { if ((r -= v) < 0) return k; } return weights[0][0]; };
 const skipped = {};
-const free = (list) => { for (let i = 0; i < 40; i++) { const w = pick(list); if (!busy.has(w.address)) return w; } return null; };
+// a wallet sends only once its real balance has been read, and not while it is known low in what the action spends (until a top-up has gone out)
+const free = (list, kind) => pickWallet({ list, kind, busy, ledger, pick });
 const walletFor = (kind) => {
-  if (kind.startsWith("trex")) return free(holders);
-  if (kind === "mercesTransfer") { const l = pool.filter((w) => deposited.has(w.address)); return l.length ? free(l) : null; }
-  return free(pool);
+  if (kind.startsWith("trex")) return free(holders, kind);
+  if (kind === "mercesTransfer") { const l = pool.filter((w) => deposited.has(w.address)); return l.length ? free(l, kind) : null; }
+  return free(pool, kind);
 };
 function tryKind(kind) {
   for (let i = 0; i < 25; i++) {
@@ -502,9 +553,137 @@ async function dispatchOne(phase) {
   send(it.w, it.spec, phase).finally(() => { inflight--; });
 }
 
+// ---------------------------------------------------------------- refill: the wallets keep what they spend, and a swap's price is read fresh
+// The distributor (the funded deploy key) may be in use for other load while a soak runs, so the top-ups are not sent from it: they come from the refill key, made once
+// (keys/refill.key, 0600, never printed) and funded by the distributor in bundles (a few transactions each time, see planTopUp in refill.mjs). Nothing else may send from it.
+const D = RF.enabled ? distributor() : null;
+function refillKey() {
+  const p = `${RUN}/keys/refill.key`;
+  if (!existsSync(p)) { writeFileSync(p, ethers.Wallet.createRandom().privateKey + "\n", { mode: 0o600 }); chmodSync(p, 0o600); }
+  const k = readFileSync(p, "utf8").trim();
+  return new ethers.Wallet(k.startsWith("0x") ? k : "0x" + k, provider);
+}
+const R = RF.enabled ? refillKey() : null;
+const seederAddr = state.contracts.Seeder?.address;
+const F2 = { seeder: I("Seeder.sol", "Seeder"), pair: I("UniswapV2Pair.sol", "UniswapV2Pair") };
+/** One transaction from the distributor or the refill key, waited for until it has a receipt. The nonce is read fresh every time (the key may have other senders), and a refused
+ *  nonce is read again, twice. Throws when it is refused, reverts or has no receipt in 75 s. */
+async function wsend(w, spec, who) {
+  let hash;
+  for (let attempt = 0; ; attempt++) {
+    const nonce = Number(await rpc("eth_getTransactionCount", [w.address, "pending"]));
+    const t = signed(w, spec, nonce); hash = t.hash;
+    try { await rpc("eth_sendRawTransaction", [t.raw]); break; }
+    catch (e) { if (attempt < 2 && /nonce|underpriced|already known/i.test(String(e?.message))) { await sleep(1000); continue; } throw e; }
+  }
+  for (let i = 0; i < 25; i++) {
+    await sleep(3000);
+    const r = await rpc("eth_getTransactionReceipt", [hash]);
+    if (r) { if (Number(r.status) !== 1) throw new Error(`the ${who}'s transaction reverted`); return r; }
+  }
+  throw new Error(`no receipt for the ${who}'s transaction in 75 s`);
+}
+const bal = (data, to) => ["eth_call", [{ to, data }, "latest"]];
+/** Real balances of tROME and, with `tokens`, of tUSD, tETH and WtROME (wt). A wallet whose reads failed is left out. */
+const readBalances = async (addrs, tokens = true) => {
+  const calls = addrs.flatMap((a) => tokens
+    ? [["eth_getBalance", [a, "latest"]], ...[A.tUSD, A.tETH, A.wt].map((t) => bal(F.tok.encodeFunctionData("balanceOf", [a]), t))]
+    : [["eth_getBalance", [a, "latest"]]]);
+  const per = tokens ? 4 : 1, out = new Map();
+  const res = [];
+  for (let i = 0; i < calls.length; i += 20) res.push(...await rpcBatch(calls.slice(i, i + 20)));
+  addrs.forEach((a, i) => {
+    const r = res.slice(i * per, i * per + per);
+    if (r.some((x) => !x.result)) return;
+    out.set(a, tokens ? { trome: BigInt(r[0].result), tUSD: BigInt(r[1].result), tETH: BigInt(r[2].result), wt: BigInt(r[3].result) } : { trome: BigInt(r[0].result) });
+  });
+  return out;
+};
+let approvedSeeder = false;
+/** One Seeder call from the refill key: each wallet gets only the kinds it was low in (the others are sent as 0). The refill key is brought up to a bundle first when it is short. */
+async function topUp(g, addrs, kinds) {
+  const n = BigInt(addrs.length), amt = (k) => (kinds.includes(k) ? g.topUp[k] ?? ZERO : ZERO);
+  const each = { trome: amt("trome"), tUSD: amt("tUSD"), tETH: amt("tETH") };
+  const m = await readBalances([R.address, D.address]);
+  if (!m.get(R.address) || !m.get(D.address)) throw new Error("could not read the refill key's or the distributor's balances");
+  const { fund, short } = planTopUp({ each, full: g.topUp, n, mine: m.get(R.address), distributorTrome: m.get(D.address).trome, fundTopUps: RF.fundTopUps, minTrome: E(RF.distributorMinTrome), gasMargin: E(RF.refillGasMarginTrome) });
+  if (short) { refillStats.distributorShort++; log(`refill: the distributor is short of ${cfg.coin} (${ethers.formatEther(m.get(D.address).trome)}); ${g.name} wallets wait`); return false; }
+  for (const [key, addr] of [["tUSD", A.tUSD], ["tETH", A.tETH]]) { // the distributor owns the test tokens: it mints straight to the refill key
+    if (!fund[key]) continue;
+    const rc = await wsend(D, { to: addr, data: F.tok.encodeFunctionData("mint", [R.address, fund[key]]), gas: 300_000 }, "distributor");
+    refillStats.minted++; log(`refill: minted ${key} for the refill key`); ev(refillEvents.mint(key, fund[key], rc));
+  }
+  if (fund.trome) { const rc = await wsend(D, { to: R.address, data: "0x", value: fund.trome, gas: 100_000 }, "distributor"); refillStats.funded++; refillStats.tromeTaken += fund.trome; log(`refill: sent ${ethers.formatEther(fund.trome)} ${cfg.coin} to the refill key`); ev(refillEvents.fund(fund.trome, rc)); }
+  if (!approvedSeeder && (each.tUSD || each.tETH)) {
+    for (const addr of [A.tUSD, A.tETH]) await wsend(R, { to: addr, data: F.tok.encodeFunctionData("approve", [seederAddr, ethers.MaxUint256]), gas: 100_000 }, "refill key");
+    approvedSeeder = true;
+  }
+  const r = await wsend(R, { to: seederAddr, data: F2.seeder.encodeFunctionData("seed", [addrs, each.trome, A.tUSD, each.tUSD, A.tETH, each.tETH]), value: each.trome * n, gas: RF.gasLimit }, "refill key");
+  ev(refillEvents.topUp({ group: g.name, wallets: addrs.length, kinds, each }, r));
+  log(`refill: ${addrs.length} ${g.name} wallets topped up in ${kinds.join(", ")} (each ${[each.trome && `${ethers.formatEther(each.trome)} ${cfg.coin}`, each.tUSD && `${ethers.formatUnits(each.tUSD, 6)} tUSD`, each.tETH && `${ethers.formatEther(each.tETH)} tETH`].filter(Boolean).join(", ")})`);
+  return true;
+}
+const groups = [
+  { name: "pool", addrs: pool.map((w) => w.address), low: { trome: E(RF.lowTrome), tUSD: U(RF.lowTusd), tETH: E(RF.lowTeth) }, topUp: { trome: E(M.seed.tromeEach), tUSD: U(M.seed.tUsdEach), tETH: E(M.seed.tEthEach) }, rereadMs: RF.rereadMinutes * 60_000 },
+  { name: "holders", addrs: holders.map((w) => w.address), low: { trome: E(RF.holderLowTrome) }, topUp: { trome: E(RF.holderTopUpTrome) } },
+];
+const holderAddrs = new Set(holders.map((h) => h.address));
+const refillBudget = new RefillBudget({ perMinute: RF.maxWalletsPerMinute, perRun: RF.maxWalletsPerRun });
+const refillOn = RF.enabled && !!seederAddr;
+if (refillOn) ledger.markUnread(groups.flatMap((g) => g.addrs)); // with the refill off nothing reads them: the books stay as seeded
+const io = {
+  readBalances: async (as) => {
+    const holder = as.every((a) => holderAddrs.has(a));
+    const m = await readBalances(as, !holder);
+    for (const [a, r] of m) if (r.wt != null) wbooks.correct(a, r.wt); // the books of wrapped tROME follow the real balance
+    return new Map([...m].map(([a, { wt, ...rest }]) => [a, rest]));
+  },
+  topUp,
+};
+async function refillLoop() {
+  if (!RF.enabled || !seederAddr) { log(`refill is off${RF.enabled ? " (no Seeder in the state: run seed first)" : ""}`); return; }
+  log(`refill: top-ups are sent from the refill key ${R.address} (fund it only through the distributor; nothing else may send from it)`);
+  let lastCheck = Date.now();
+  while (running) {
+    const unread = ledger.unreadIn(groups.flatMap((g) => g.addrs)).length;
+    // the sends come first, but the check is never starved: after twice its period it runs anyway and waits for the RPC budget in the queue
+    const gate = refillGate({ left: left(), need: RF.readWalletsPerCheck * 4 + curRate * 10 + 15, sinceLastCheckMs: Date.now() - lastCheck, checkMs: RF.checkSeconds * 1000 });
+    if (gate === "wait") { await sleep(2000); continue; }
+    if (gate === "forced") refillStats.budgetWaits++;
+    try { await refillCycle({ ledger, groups, budget: refillBudget, io, readPerCheck: RF.readWalletsPerCheck, stats: refillStats, log }); } catch (e) { log("refill", String(e.message).slice(0, 100)); }
+    lastCheck = Date.now();
+    await sleep(unread ? 1000 : RF.checkSeconds * 1000);
+  }
+}
+const poolPairs = [[A.pairUW, A.tUSD, A.wt], [A.pairET, A.tETH, A.tUSD]];
+async function readQuotes() {
+  const res = await rpcBatch(poolPairs.map(([p]) => ["eth_call", [{ to: p, data: F2.pair.encodeFunctionData("getReserves") }, "latest"]]));
+  res.forEach((r, i) => {
+    if (!r.result) return;
+    const [r0, r1] = F2.pair.decodeFunctionResult("getReserves", r.result);
+    const [, a, b] = poolPairs[i]; const aIs0 = a.toLowerCase() < b.toLowerCase();
+    quotes.set(a, aIs0 ? r0 : r1, b, aIs0 ? r1 : r0);
+  });
+}
+async function quoteLoop() {
+  while (running) { try { await readQuotes(); } catch (e) { log("quotes", String(e.message).slice(0, 80)); } await sleep(SL.quoteRefreshSeconds * 1000); }
+}
+try { await readQuotes(); } catch {}
+try { // the holders' real T-REX balances (the books start from what the deploy minted)
+  const calls = holders.map((h) => bal(F.trex.encodeFunctionData("balanceOf", [h.address]), A.trex));
+  (await rpcBatch(calls)).forEach((r, i) => { if (r.result) trexBal.set(holders[i].address, BigInt(r.result)); });
+} catch {}
+
 const phaseResults = [];
 const best = () => { const ok = phaseResults.filter((p) => p.ok); return ok.length ? Math.max(...ok.map((p) => p.rate)) : 2; };
-const bg = [watch(), receipts(), redstoneLoop(), proofLoop(), misc(), vaultRead()];
+// every wallet is read once (and topped up where it is low) before the first send: what a wallet holds at the start of a run is not known until it is read
+if (refillOn) {
+  log(`reading every wallet once before sending (${ledger.unreadIn(groups.flatMap((g) => g.addrs)).length} wallets)`);
+  const still = await readAllOnce({ ledger, groups, budget: refillBudget, io, readPerCheck: RF.readWalletsPerCheck * 3, stats: refillStats, log });
+  if (still.length) { log(`stopping: ${still.length} wallets could not be read, so the run does not send from them (the RPC did not answer)`); process.exit(1); }
+  log(`all wallets read; ${refillStats.toppedUp} topped up before the start`);
+}
+const bg = [watch(), receipts(), redstoneLoop(), proofLoop(), misc(), vaultRead(), refillLoop(), quoteLoop()];
 for (const ph of M.phases) {
   const rate = ph.rate === "best" ? best() : ph.rate;
   const start = Date.now(), end = start + ph.minutes * 60_000, interval = 1000 / rate;
@@ -537,9 +716,10 @@ log("sending stopped; waiting for the last transactions to be final");
 const drainEnd = Date.now() + M.drainMinutes * 60_000;
 while (Date.now() < drainEnd && sent.size > finalCount) await sleep(5000);
 await Promise.race([Promise.all(bg), sleep(15_000)]);
+await Promise.race([Promise.all(reasonJobs), sleep(30_000)]); // the replays of unexpected reverts
 const notFinal = [...sent.values()].filter((r) => !r.finalAt).map((r) => ({ hash: r.hash, kind: r.kind, sentAt: r.sentAt }));
-const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length };
+const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length, outcomes, pass: passes(outcomes, notFinal.length), refills: { ...refillStats, tromeTaken: refillStats.tromeTaken.toString(), quotes: quotes.stats } };
 ev({ e: "end", ...summary });
 writeFileSync(`${DIR}/summary.json`, JSON.stringify(summary, null, 2) + "\n");
-log(`done: sent ${counters.sent}, final ${finalCount}, not final ${notFinal.length}, rejected ${counters.rejected}`);
+log(`done: ${tallyLine(outcomes)}; ${passes(outcomes, notFinal.length) ? "PASS" : "FAIL"} (unexpected reverts, deliberate reverts that went through, lost transactions). sent ${counters.sent}, final ${finalCount}, not final ${notFinal.length}, rejected ${counters.rejected}`);
 process.exit(0);

@@ -42,6 +42,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: The load kit never sends a tip above the max fee
         run: node --test load/mixed/scripts/fee.test.mjs
+      - name: The load kit tells expected reverts from unexpected ones
+        run: node --test load/mixed/scripts/classify.test.mjs
+      - name: The load kit keeps its wallets funded and sets a swap's minimum from a fresh quote
+        run: node --test load/mixed/scripts/refill.test.mjs
+      - name: The load kit's RPC budget is first come, first served, so the refill is never starved
+        run: node --test load/mixed/scripts/limiter.test.mjs
 
   refuses-missing-flag:
     runs-on: ubuntu-latest
