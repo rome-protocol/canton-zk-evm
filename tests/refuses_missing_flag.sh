@@ -43,7 +43,7 @@ done
 # The block-building flags are in the command, the gas limit is the pinned cap, and proofs reach back one block (the parent's).
 # shellcheck disable=SC1091
 . "$ROOT/PINS"
-for f in --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header; do
+for f in --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header --testing.skip-invalid-transactions; do
   grep -q -- " $f " <<<"$out " || { echo "FAIL: dry run lacks $f" >&2; exit 1; }
 done
 grep -q -- " --rpc.eth-proof-window 1 " <<<"$out " || { echo "FAIL: dry run lacks --rpc.eth-proof-window 1" >&2; exit 1; }
@@ -62,7 +62,7 @@ done < <(grep -oE -- '-p [^ ]+' <<<"$out" | cut -d' ' -f2)
 fresh_copy
 persist_out=$(PATH="$WORK/bin:$PATH" CZE_STATE_DIR="$WORK/pstate" CZE_PERSIST=1 LAUNCH_DRY_RUN=1 "$WORK/repo/network/reth/launch.sh")
 for f in --disable-discovery "--nat none" "--max-outbound-peers 0" "--max-inbound-peers 0" "--addr 127.0.0.1" --ipcdisable \
-    --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header "--rpc.eth-proof-window 1" "--builder.gaslimit $GAS_CAP" "--rpc.gascap $GAS_CAP"; do
+    --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header --testing.skip-invalid-transactions "--rpc.eth-proof-window 1" "--builder.gaslimit $GAS_CAP" "--rpc.gascap $GAS_CAP"; do
   grep -q -- "$f" <<<"$persist_out" || { echo "FAIL: persistent dry run lacks $f" >&2; exit 1; }
 done
 # A hard kill must not lose blocks Canton has already committed: reth writes every block to disk as soon as it is imported.
@@ -90,7 +90,7 @@ expect_persistent_refusal "a new persistent chain on data that is there" "has da
 
 # 2. Remove each required flag in turn; every variant must be refused.
 for flag in --disable-discovery --nat --max-outbound-peers --max-inbound-peers --addr --ipcdisable \
-    --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header --builder.gaslimit --rpc.eth-proof-window --rpc.gascap --http.api; do
+    --engine.always-process-payload-attributes-on-canonical-head --engine.allow-unwind-canonical-header --testing.skip-invalid-transactions --builder.gaslimit --rpc.eth-proof-window --rpc.gascap --http.api; do
   fresh_copy
   sed -E -i.bak "/^ *$flag( |\$)/d" "$WORK/repo/network/reth/launch.sh"
   if grep -qE -- "^ *$flag( |\$)" "$WORK/repo/network/reth/launch.sh"; then

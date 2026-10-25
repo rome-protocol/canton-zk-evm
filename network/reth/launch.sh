@@ -4,8 +4,8 @@
 # Peer discovery is always off: no discovery, no NAT, no outbound or inbound peers, p2p
 # bound to localhost, and no p2p port published. It also always passes the flags the block
 # builder relies on: --engine.always-process-payload-attributes-on-canonical-head,
-# --engine.allow-unwind-canonical-header, --builder.gaslimit set to the chain's gas cap
-# (GAS_CAP in PINS, equal to the genesis gas limit), and --rpc.eth-proof-window 1, so that
+# --engine.allow-unwind-canonical-header, --testing.skip-invalid-transactions, --builder.gaslimit set to the
+# chain's gas cap (GAS_CAP in PINS, equal to the genesis gas limit), and --rpc.eth-proof-window 1, so that
 # eth_getProof can answer for the parent of the newest block. Before Docker is called, this script
 # checks its own command line: it refuses to run if a flag above is missing or has a
 # different value, or if the command line carries an option that would let peers in or
@@ -54,6 +54,7 @@ RETH_ARGS=(
   --engine.always-process-payload-attributes-on-canonical-head
   --engine.allow-unwind-canonical-header
   --builder.gaslimit "$GAS_CAP"
+  --testing.skip-invalid-transactions
   --rpc.eth-proof-window 1
   --rpc.gascap "$GAS_CAP"
 )
@@ -92,6 +93,9 @@ require --ipcdisable
 require --engine.always-process-payload-attributes-on-canonical-head
 require --engine.allow-unwind-canonical-header
 require --builder.gaslimit "$GAS_CAP"
+# The builder fills a block by the gas its transactions use (the Ethereum rule): it offers more than fits and reth leaves out a transaction whose gas limit
+# is above what the block has left, and that sender's later ones. Without this flag reth refuses such a list and the builder packs by gas limits instead.
+require --testing.skip-invalid-transactions
 require --rpc.eth-proof-window 1
 # No eth_call or eth_estimateGas runs past one block's gas, whoever asks (the public RPC, the Etherscan proxy, a token read): reth's default is 50M, above the chain's block limit.
 require --rpc.gascap "$GAS_CAP"

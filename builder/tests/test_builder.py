@@ -38,9 +38,9 @@ WD = Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, 4 * UNIT, "r::1")
 
 
 class Setup:
-    def __init__(self, pool, gas_cap=30_000_000, terms=(), refuse=None, fail_but_commit=False, drop_but_commit=False, allocations=None, chains=1, bad_json=False, prover_fails=False, prover_writes_nothing=False, secret=JWT_SECRET):
+    def __init__(self, pool, gas_cap=30_000_000, terms=(), refuse=None, fail_but_commit=False, drop_but_commit=False, allocations=None, chains=1, bad_json=False, prover_fails=False, prover_writes_nothing=False, secret=JWT_SECRET, skip_invalid=True):
         self.dir = tempfile.mkdtemp()
-        self.reth = FakeReth(pool, gas_limit=gas_cap)
+        self.reth = FakeReth(pool, gas_limit=gas_cap, skip_invalid=skip_invalid)
         self.ledger = FakeLedger(gas_cap, terms, refuse, fail_but_commit, drop_but_commit, allocations, chains, bad_json)
         self.log = Path(self.dir) / "log"
         os.environ["FAKE_LOG"] = str(self.log)
@@ -984,6 +984,181 @@ class Transactions(Case):
         s.reth.blocks[HEAD_HASH]["gasLimit"] = 45_000   # parent limit below the chain's cap
         b.build_block(s.cfg)
         self.assertEqual(len([p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"][0][2]), 2)
+
+
+def sender(n: int) -> str:
+    return "0x%040x" % (n + 1)
+
+
+class Attempts(b.Attempt):
+    """An attempt that keeps its events, in place of a journal file."""
+    def __init__(self):
+        super().__init__(None, 1)
+        self.events = []
+
+    def event(self, name, at=None, **fields):
+        super().event(name, at=at, **fields)
+        self.events.append((name, fields))
+
+
+class PackedByGasUsed(Case):
+    """A block is filled by the gas its transactions use, by Ethereum's rule: a transaction fits if the gas used so far plus its own gas
+    limit is at most the block's gas limit. A wallet that declares three times what it uses no longer cuts the block to a third."""
+
+    def pack(self, pool, **k):
+        """Builds one block from the pool and returns (setup, the hashes of the transactions in the block, the Engine payload)."""
+        s = self.setup(pool, **k)
+        attempt = Attempts()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            b.build_block(s.cfg, journal=attempt)
+        s.attempt, s.stderr = attempt, err.getvalue()
+        (payload,) = s.engine("engine_newPayloadV4")[0][:1]
+        return s, ["0x" + r[4:] for r in payload["transactions"]], payload
+
+    def test_limits_above_use_fill_the_block_by_use(self):
+        pool = {sender(i): [tx(sender(i), 0, gas=90_000, used=30_000, price=100 - i)] for i in range(10)}
+        hashes = [pool[sender(i)][0]["hash"] for i in range(10)]   # the fake pool loses the transactions that go into the block
+        s, got, payload = self.pack(pool, gas_cap=300_000)
+        # 30,000 used each: the 8th still fits (7 * 30,000 + 90,000 = 300,000), the 9th does not. By limits only 3 would fit.
+        self.assertEqual(got, hashes[:8])
+        self.assertEqual(int(payload["gasUsed"], 16), 240_000)
+        self.assertLessEqual(int(payload["gasUsed"], 16), 300_000)
+        built = [f for n, f in s.attempt.events if n == "built"][0]
+        self.assertEqual(built["packed"], "gas_used")
+
+    def test_best_price_first_and_each_senders_nonces_in_order(self):
+        a = [tx(ALICE, n, gas=90_000, used=30_000, price=100 - 2 * n) for n in range(3)]
+        bob = [tx(BOB, 0, gas=90_000, used=30_000, price=99)]
+        want = [a[0]["hash"], bob[0]["hash"], a[1]["hash"], a[2]["hash"]]
+        s, got, _ = self.pack({ALICE: a, BOB: bob}, gas_cap=300_000)
+        self.assertEqual(got, want)
+
+    def test_the_boundary_is_in(self):
+        # 40,000 used by the first; the second's limit 60,000 makes exactly 100,000: it fits. The third's 21,000 then does not.
+        one, two, three = (tx(sender(i), 0, gas=g, used=u, price=9 - i) for i, (g, u) in enumerate([(60_000, 40_000), (60_000, 40_000), (21_000, 21_000)]))
+        pool = {t["from"]: [t] for t in (one, two, three)}
+        _, got, _ = self.pack(pool, gas_cap=100_000)
+        self.assertEqual(got, [one["hash"], two["hash"]])
+
+    def test_one_gas_over_the_boundary_is_out(self):
+        one, two, three = (tx(sender(i), 0, gas=g, used=u, price=9 - i) for i, (g, u) in enumerate([(60_000, 40_000), (60_001, 40_000), (21_000, 21_000)]))
+        _, got, _ = self.pack({t["from"]: [t] for t in (one, two, three)}, gas_cap=100_000)
+        self.assertEqual(got, [one["hash"], three["hash"]])   # the one that does not fit does not stop other senders
+
+    def test_a_transaction_that_does_not_fit_ends_its_senders_turn(self):
+        first = tx(BOB, 0, gas=60_000, used=60_000, price=9)
+        big, after = tx(ALICE, 0, gas=50_000, price=8), tx(ALICE, 1, gas=21_000, price=7)   # 60,000 + 50,000 is over: Alice's turn is over
+        other = tx(CAROL, 0, gas=21_000, price=1)
+        s, got, _ = self.pack({BOB: [first], ALICE: [big, after], CAROL: [other]}, gas_cap=100_000)
+        self.assertEqual(got, [first["hash"], other["hash"]])
+        self.assertIn(raw_of(big), s.builds()[0])   # it was offered: reth, not the builder, found that it does not fit
+
+    def test_an_excluded_transaction_ends_its_senders_turn(self):
+        a0, a1, b0 = tx(ALICE, 0, gas=90_000, used=30_000, price=9), tx(ALICE, 1, gas=90_000, used=30_000, price=8), tx(BOB, 0, gas=90_000, used=30_000, price=1)
+        s = self.setup({ALICE: [a0, a1], BOB: [b0]}, gas_cap=300_000)
+        b.build_block(s.cfg, exclude={a0["hash"]})
+        self.assertEqual(s.builds()[0], [raw_of(b0)])
+
+    def test_the_candidates_stay_few_when_the_pool_is_deep(self):
+        # 100 transactions that each use all of their 30,000 gas, cap 100,000: the block holds 3. Only the transactions that could fit if each
+        # earlier one used the least gas a transaction can (4 of them) are offered to reth, or fetched from the pool one by one.
+        pool = {sender(i): [tx(sender(i), 0, gas=30_000, used=30_000, price=500 - i)] for i in range(100)}
+        want = [pool[sender(i)][0]["hash"] for i in range(3)]
+        s, got, _ = self.pack(pool, gas_cap=100_000)
+        self.assertEqual(got, want)
+        self.assertEqual(len(s.builds()), 1)
+        self.assertEqual(len(s.builds()[0]), 4)
+        self.assertEqual(len([p for m, p in s.reth.ws_calls if m == "eth_getRawTransactionByHash"]), 4)
+
+    def test_without_the_flag_reth_refuses_and_the_block_is_packed_by_limits(self):
+        first, over, small = tx(BOB, 0, gas=60_000, used=60_000, price=9), tx(ALICE, 0, gas=50_000, used=21_000, price=8), tx(CAROL, 0, gas=21_000, price=7)
+        s, got, _ = self.pack({BOB: [first], ALICE: [over], CAROL: [small]}, gas_cap=100_000, skip_invalid=False)
+        self.assertEqual(len(s.builds()), 2)   # the offered list failed, then the list by gas limits was built
+        self.assertEqual(s.builds()[1], [raw_of(first), raw_of(small)])
+        self.assertEqual(got, [first["hash"], small["hash"]])
+        built = [f for n, f in s.attempt.events if n == "built"][0]
+        self.assertEqual(built["packed"], "gas_limits")
+        self.assertIn("more than blocks available gas", built["pack_reason"])
+        self.assertIn("gas limits", s.stderr)
+
+    def packed_pool(self):
+        return {sender(i): [tx(sender(i), 0, gas=90_000, used=30_000, price=100 - i)] for i in range(10)}
+
+    def test_a_build_with_a_foreign_transaction_falls_back(self):
+        s = self.setup(self.packed_pool(), gas_cap=300_000)
+        s.reth.tamper = ["extra"]
+        b.build_block(s.cfg)
+        self.assertEqual(len(s.builds()), 2)
+        self.assertEqual(len(s.builds()[1]), 3)   # by limits: 3 * 90,000 is under 300,000, a 4th is over
+        built = [r for r in s.engine("engine_newPayloadV4")]
+        self.assertEqual(len(built), 1)
+        self.assertEqual(built[0][0]["transactions"], s.builds()[1])
+
+    def test_a_build_in_another_order_falls_back(self):
+        s = self.setup(self.packed_pool(), gas_cap=300_000)
+        s.reth.tamper = ["reorder"]
+        b.build_block(s.cfg)
+        self.assertEqual(len(s.builds()), 2)
+        self.assertEqual(s.engine("engine_newPayloadV4")[0][0]["transactions"], s.builds()[1])
+
+    def test_a_build_over_the_cap_falls_back_and_is_never_imported(self):
+        s = self.setup(self.packed_pool(), gas_cap=300_000)
+        s.reth.tamper = ["over_cap"]
+        b.build_block(s.cfg)
+        self.assertEqual(len(s.builds()), 2)
+        for (payload, *_rest) in s.engine("engine_newPayloadV4"):
+            self.assertLessEqual(int(payload["gasUsed"], 16), 300_000)
+        self.assertEqual(len(s.engine("engine_newPayloadV4")), 1)
+
+    def test_a_fallback_that_is_also_wrong_is_an_error_and_nothing_is_imported(self):
+        for how in ("extra", "over_cap"):
+            s = self.setup(self.packed_pool(), gas_cap=300_000)
+            s.reth.tamper_always = how
+            with self.assertRaisesRegex(b.BuilderError, "other than the one asked for, or over the gas cap"):
+                b.build_block(s.cfg)
+            self.assertEqual(s.engine("engine_newPayloadV4"), [])
+
+    def test_the_kept_copy_is_of_the_transactions_that_went_into_the_block(self):
+        pool = self.packed_pool()
+        s = self.setup(pool, gas_cap=300_000)
+        s.reth.tamper = ["extra"]   # the first build is refused: nothing of it may be kept
+        with mock.patch.object(b, "save_kept", wraps=b.save_kept) as kept:
+            b.build_block(s.cfg)
+        (call,) = kept.call_args_list
+        self.assertEqual([h for h, _ in call.args[1]], ["0x" + r[4:] for r in s.engine("engine_newPayloadV4")[0][0]["transactions"]])
+
+    def test_the_cap_is_never_passed_and_every_sender_stays_in_order(self):
+        import random
+        for seed in range(12):
+            rnd = random.Random(seed)
+            cap = rnd.choice([100_000, 250_000, 600_000])
+            pool, k = {}, 0
+            for i in range(rnd.randint(2, 7)):
+                nonces = []
+                for n in range(rnd.randint(1, 5)):
+                    limit = rnd.randint(21_000, cap)
+                    nonces.append(tx(sender(i), n, gas=limit, used=rnd.randint(21_000, limit), price=1000 - k))
+                    k += 1
+                pool[sender(i)] = nonces
+            order = {t["hash"]: (int(t["from"], 16), int(t["nonce"], 16)) for ts in pool.values() for t in ts}
+            _, got, payload = self.pack({k_: list(v) for k_, v in pool.items()}, gas_cap=cap)
+            self.assertLessEqual(int(payload["gasUsed"], 16), cap, f"seed {seed}")
+            self.assertLessEqual(int(payload["gasLimit"], 16), cap, f"seed {seed}")
+            self.assertEqual(len(got), len(set(got)))
+            by_sender = {}
+            for h in got:
+                by_sender.setdefault(order[h][0], []).append(order[h][1])
+            for nonces in by_sender.values():
+                self.assertEqual(nonces, list(range(len(nonces))), f"seed {seed}")   # a sender's transactions are its first ones, in order
+
+    def test_choosing_with_a_least_gas_per_transaction(self):
+        t1, t2, t3 = tx(ALICE, 0, gas=58_000, price=1), tx(BOB, 0, gas=79_000, price=9), tx(CAROL, 0, gas=79_001, price=8)
+        picked = b.choose_txs({ALICE: {"0": t1}, BOB: {"0": t2}, CAROL: {"0": t3}}, budget=100_000, exclude=set(), used_each=21_000)
+        # BOB first (price 9): 79,000 fits; 21,000 taken off; CAROL's 79,001 is 1 over what is left (79,000); ALICE's 58,000 fits
+        self.assertEqual(picked, [t2, t1])
+        picked = b.choose_txs({BOB: {"0": t2}, CAROL: {"0": tx(CAROL, 0, gas=79_000, price=8)}}, budget=100_000, exclude=set(), used_each=21_000)
+        self.assertEqual(len(picked), 2)   # 79,000 equals what is left: the boundary fits
 
 
 class CommandLine(Case):

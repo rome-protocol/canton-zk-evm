@@ -70,7 +70,7 @@ class WhenToBuild(Loop):
         self.assertEqual(len(self.reports), 1)
 
     def test_after_a_commit_the_next_block_is_made_at_once(self):
-        a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)   # too big for one block
+        a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)   # each uses 20M of the 30M block: too big for one block
         s = self.setup({ALICE: [a], BOB: [c]})
         p = self.producer(s)
         p.step(); p.step()
@@ -236,8 +236,8 @@ class Refusals(Loop):
         self.assertEqual(self.in_pool(s), {bad["hash"]})
 
     def test_refusals_with_a_commit_between_them_are_not_consecutive(self):
-        t = tx(ALICE, 0, gas=20_000_000)
-        u = tx(BOB, 0, gas=20_000_000, price=5)
+        t = tx(ALICE, 0, gas=20_000_000, used=20_000_000)
+        u = tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)
         s = self.setup({ALICE: [t], BOB: [u]}, refuse="no")
         p = self.producer(s)
         p.step()
@@ -605,7 +605,7 @@ class Housekeeping(Loop):
 
 class StatusFile(Loop):
     def test_the_status_after_a_commit_and_a_refusal(self):
-        a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)
+        a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)
         s = self.setup({ALICE: [a], BOB: [c]})
         p = self.producer(s)
         p.write_status()
@@ -644,7 +644,7 @@ class StatusFile(Loop):
 
 class TheCommand(Loop):
     def test_a_signal_lets_the_block_in_progress_finish_and_exits_zero(self):
-        a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)
+        a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)
         s = self.setup({ALICE: [a], BOB: [c]})
         status = str(Path(s.dir) / "status.json")
         proc = subprocess.Popen([sys.executable, str(HERE.parent / "builder.py"), "run", "--idle-ms", "50", "--status-file", status],

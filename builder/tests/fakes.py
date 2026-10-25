@@ -60,9 +60,11 @@ class Leg:
                 + word(self.amount) + word(0xC0) + word(len(text)) + text + bytes(-len(text) % 32))
 
 
-def tx(sender: str, nonce: int, gas: int = 21000, price: int = 10, name: str = "") -> dict:
+def tx(sender: str, nonce: int, gas: int = 21000, price: int = 10, name: str = "", used: int = 21000) -> dict:
+    """`gas` is the transaction's gas limit, as the pool shows it. `used` (the `_used` field) is what the fake reth charges when it
+    runs the transaction. A real pool does not know it and the builder never reads it."""
     h = "0x" + hashlib.sha256(f"{sender}{nonce}{name}".encode()).hexdigest()
-    return {"hash": h, "from": sender, "nonce": hex(nonce), "gas": hex(gas), "maxFeePerGas": hex(price)}
+    return {"hash": h, "from": sender, "nonce": hex(nonce), "gas": hex(gas), "maxFeePerGas": hex(price), "_used": used}
 
 
 def raw_of(t: dict) -> str:
@@ -72,8 +74,13 @@ def raw_of(t: dict) -> str:
 class FakeReth:
     """The builder-only WebSocket port and the Engine port of one reth. `pool` is txpool_content's pending part."""
 
-    def __init__(self, pool: dict, gas_limit: int = 30_000_000):
+    def __init__(self, pool: dict, gas_limit: int = 30_000_000, skip_invalid: bool = True):
         self.pool, self.gas_limit = pool, gas_limit
+        # reth's --testing.skip-invalid-transactions, which network/reth/launch.sh always passes. On: a transaction whose gas limit is above the
+        # gas the block has left is left out, with its sender's later ones. Off: the build fails on it, as reth 2.5.2 does without the flag.
+        self.skip_invalid = skip_invalid
+        self.tamper: list = []   # one entry per build, first first: None (build as asked), "extra" (add a transaction nobody asked for), "reorder", or "over_cap" (report gasUsed above the cap); once used up, builds are honest
+        self.tamper_always = None   # a way of lying about every build from then on (the same names)
         self.genesis = "0x" + "66" * 32   # the hash of block 0
         self.mined: dict = {}   # hash -> transaction, for every transaction the pool lost when a block holding it became head
         self.engine_calls: list = []   # (method, params)
@@ -181,9 +188,38 @@ class FakeReth:
                     "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb01"]}]}
         raise KeyError(method)
 
+    def _run(self, raws):
+        """What reth 2.5.2's testing_buildBlockV1 does with a list of transactions: each one runs if its gas limit is no more than the gas the
+        block has left (the Ethereum rule: the gas used so far plus the limit is at most the block's gas limit). One that does not fit fails the build, or,
+        with skip_invalid, is left out together with its sender's later ones. Returns (the raw transactions that ran, the gas they used)."""
+        by_raw = {raw_of(t): t for ts in [*self.pool.values(), *([t] for t in self.mined.values())] for t in ts}
+        ran, used, stopped = [], 0, set()
+        for raw in raws:
+            t = by_raw[raw]
+            if t["from"] in stopped:
+                continue
+            limit = int(t["gas"], 16)
+            if limit > self.gas_limit - used:
+                if not self.skip_invalid:
+                    raise RpcError(f"transaction gas limit {limit} is more than blocks available gas {self.gas_limit - used}")
+                stopped.add(t["from"])
+                continue
+            ran.append(raw)
+            used += t["_used"]
+        return ran, used
+
     def _build(self, parent, attributes, raws, extra):
         p = self.blocks[parent]
-        number, gas_used = p["number"] + 1, 21000 * len(raws)
+        raws, gas_used = self._run(raws)
+        how = self.tamper.pop(0) if self.tamper else self.tamper_always
+        reported = gas_used
+        if how == "extra":
+            raws = [*raws, "0x02" + "ee" * 32]
+        elif how == "reorder":
+            raws = raws[::-1]
+        elif how == "over_cap":
+            reported = self.gas_limit + 1
+        number = p["number"] + 1
         header = rlp([bytes.fromhex(parent[2:]), number.to_bytes(4, "big"), gas_used.to_bytes(4, "big"),
                       int(attributes["timestamp"], 16).to_bytes(8, "big")])
         h = "0x" + keccak256(header).hex()
@@ -192,7 +228,7 @@ class FakeReth:
         self.by_number[number] = h
         self.raw_blocks[number] = "0x" + rlp([Raw(header), [bytes.fromhex(r[2:]) for r in raws], [], []]).hex()
         payload = {"parentHash": parent, "blockNumber": hex(number), "blockHash": h, "gasLimit": hex(self.gas_limit),
-                   "gasUsed": hex(gas_used), "timestamp": attributes["timestamp"], "transactions": raws}
+                   "gasUsed": hex(reported), "timestamp": attributes["timestamp"], "transactions": raws}
         return {"executionPayload": payload, "executionRequests": []}
 
     def _logs(self, flt):
