@@ -29,6 +29,9 @@ export interface BlockShape {
   hot?: string;
   /** Every how many transactions the hot address sends one: 10 when absent. */
   hotEvery?: number;
+  /** The block header's gas limit (30,000,000 when absent) and gas used (the receipts' sum when absent). */
+  gasLimit?: number;
+  gasUsed?: number;
   /** When the block's record became readable, as an ISO time. Fixed by the block's number when absent; a load test gives the time of the writing. */
   at?: string;
 }
@@ -121,7 +124,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
   const headerHex = number.toString(16).padStart(8, "0") + instance.toString(16).padStart(2, "0") + "f9".repeat(39);
   const hash = keccak256(`0x${headerHex}`);
   const block: FinalBlock = {
-    number, hash, parentHash, timestamp: 1_790_000_000 + number * 3, gasLimit: 30_000_000, gasUsed: cumulative, baseFeePerGas: 7n, miner: hex(0xbeef),
+    number, hash, parentHash, timestamp: 1_790_000_000 + number * 3, gasLimit: shape.gasLimit ?? 30_000_000, gasUsed: shape.gasUsed ?? cumulative, baseFeePerGas: 7n, miner: hex(0xbeef),
     stateRoot: "0x" + "01".repeat(32), transactionsRoot: "0x" + "02".repeat(32), receiptsRoot: "0x" + "03".repeat(32), extraData: "0x", size: 1000 + shape.txs * 150, transactions: txs,
   };
   const at = shape.at ?? new Date(Date.UTC(2026, 9, 21, 0, 0, 0) + number * 3000).toISOString();
