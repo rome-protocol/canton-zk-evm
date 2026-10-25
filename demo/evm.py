@@ -19,17 +19,33 @@
   evm.py pay <u|v> <payment id> <token> <to> <amount>
                                    the sender pays <to> <amount> TKA (a whole number) through the gateway, against the payment with that
                                    id (64 lowercase hex digits). The sender must have approved the gateway for it first
+  evm.py wrap <u|v> <token> <amount>
+                                   the sender wraps <amount> of the chain's coin (a whole number) into WtROME, the wrapped coin at <token>:
+                                   a send of that much with deposit(), which mints as many WtROME to the sender. Then WtROME can be paid
+                                   through the gateway (approve, then pay) as TKA is
   evm.py receipt <tx hash>         print the transaction's block number, block hash, gas used, and the contract it made
+  evm.py wait <tx hash> [seconds]  wait (600 seconds if none are given) until the transaction is in a block that is the chain's finalized
+                                   block or lies below it, which is a block Canton has committed, and the block at that number is the
+                                   one the receipt names. Print what `receipt` prints. The blocks are made by a producer that is running
+  evm.py legs <block number>       how many of the block's transactions are calls of the gateway that can make a leg (claim, pay,
+                                   withdraw), and which
+  evm.py block <latest|finalized|number>
+                                   print that block's number, hash and gas used
+  evm.py ether <address>           print the address's balance of the chain's coin, in wei and in whole coins
+  evm.py code <address>            print the size and the Keccak-256 of the code at the address (latest block)
+  evm.py chain                     print the chain id
   evm.py balance <token> <holder> [block]
                                    print the holder's TKA balance in whole tokens (eth_call balanceOf)
   evm.py wrapped <token> <holder> [block]
                                    print the holder's balance of a wrapped token and its supply, as Canton writes amounts ("10.0")
 
 [block] is latest (the default) or finalized: the block Canton has committed. Balances should be read at finalized.
-The transactions go to reth's HTTP port (RETH_HTTP_PORT, default 8545) and wait in its pool until the builder takes them
-into a block. Needs the packages in demo/requirements.txt. Prints one JSON object per command.
+The transactions go to the chain's JSON-RPC: CZE_RPC_URL, or reth's HTTP port on this machine (RETH_HTTP_PORT, default 8545). They wait in
+its pool until the builder takes them into a block. On a chain that is already running, V's and U's keys are the ones in
+$CZE_STATE_DIR/demo (`keys` makes them without any genesis; the chain's coin for their fees has to be sent to the addresses it prints).
+Needs the packages in demo/requirements.txt. Prints one JSON object per command.
 """
-import json, os, re, sys, urllib.request
+import json, os, re, sys, time, urllib.request
 from pathlib import Path
 
 from eth_abi import encode
@@ -49,6 +65,10 @@ REGISTER_GAS = 2_000_000
 GATEWAY_GAS = 300_000
 PAY_GAS = 400_000
 APPROVE_GAS = 100_000
+WRAP_GAS = 150_000
+LEG_CALLS = {"claim(bytes32,address,uint256)": "claim", "pay(bytes32,address,address,uint256)": "pay", "withdraw(address,uint256,string)": "withdraw"}
+WAIT_SECONDS = 600
+SELECTOR_DEPOSIT = "d0e30db0"   # deposit(): WtROME mints as much as it is sent
 SELECTOR_TRANSFER = "a9059cbb"
 SELECTOR_BALANCE_OF = "70a08231"
 SELECTOR_TOTAL_SUPPLY = "18160ddd"
@@ -94,8 +114,12 @@ def load_key(folder: Path, who: str) -> str:
     return "0x" + (folder / f"{who}.key").read_text().strip()
 
 
+def rpc_url() -> str:
+    return os.environ.get("CZE_RPC_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', 8545)}"
+
+
 def rpc(method: str, params: list):
-    url = f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', 8545)}"
+    url = rpc_url()
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     with urllib.request.urlopen(urllib.request.Request(url, body, {"content-type": "application/json"}), timeout=60) as r:
         reply = json.load(r)
@@ -104,12 +128,12 @@ def rpc(method: str, params: list):
     return reply["result"]
 
 
-def send(folder: Path, who: str, to: str | None, data: str, gas: int) -> str:
+def send(folder: Path, who: str, to: str | None, data: str, gas: int, value: int = 0) -> str:
     """U or V signs a type-2 transaction and sends it to reth's pool. The key is read from its file and used here only."""
     make_keys(folder)
     account = Account.from_key(load_key(folder, who))
     tx = {"type": 2, "chainId": int(rpc("eth_chainId", []), 16), "nonce": int(rpc("eth_getTransactionCount", [account.address, "pending"]), 16),
-          "value": 0, "gas": gas, "maxFeePerGas": MAX_FEE, "maxPriorityFeePerGas": PRIORITY_FEE, "data": "0x" + data}
+          "value": value, "gas": gas, "maxFeePerGas": MAX_FEE, "maxPriorityFeePerGas": PRIORITY_FEE, "data": "0x" + data}
     if to:
         tx["to"] = to_checksum_address(to)
     raw = account.sign_transaction(tx).raw_transaction.hex().removeprefix("0x")
@@ -186,6 +210,43 @@ def read_word(token: str, data: str, tag: str) -> int:
     return int(rpc("eth_call", [{"to": token, "data": "0x" + data}, tag]), 16)
 
 
+def receipt_of(tx: str) -> dict:
+    r = rpc("eth_getTransactionReceipt", [tx])
+    if r is None:
+        raise SystemExit(f"no receipt for {tx}: the transaction is not in a block yet")
+    return {"block": int(r["blockNumber"], 16), "blockHash": r["blockHash"], "gasUsed": int(r["gasUsed"], 16),
+            "status": int(r["status"], 16), "contract": r.get("contractAddress")}
+
+
+def wait_finalized(tx: str, seconds: int) -> dict:
+    """Until the transaction's block is final: reth's finalized block is that block or a later one, and the block at that number has the hash the
+    receipt names. A block Canton refuses is taken back by reth, and the transaction may come again in another block, so the receipt is read
+    again each time round."""
+    deadline = time.time() + seconds
+    while True:
+        r = rpc("eth_getTransactionReceipt", [tx])
+        if r is not None:
+            number, finalized = int(r["blockNumber"], 16), rpc("eth_getBlockByNumber", ["finalized", False])
+            if finalized and int(finalized["number"], 16) >= number:
+                there = rpc("eth_getBlockByNumber", [hex(number), False])
+                if there and there["hash"] == r["blockHash"]:
+                    return receipt_of(tx)
+        if time.time() > deadline:
+            raise SystemExit(f"{tx} is not in a finalized block after {seconds} seconds" + (f" (it is in block {int(r['blockNumber'], 16)})" if r is not None else " (it is in no block)"))
+        time.sleep(float(os.environ.get("CZE_POLL_SECONDS", "1")))
+
+
+def legs_in(number: int) -> dict:
+    """The transactions of a block that call the gateway's claim, pay or withdraw: each can make a leg. Their number is what the leg count of the block is."""
+    block = rpc("eth_getBlockByNumber", [hex(number), True])
+    if block is None:
+        raise SystemExit(f"no block {number}")
+    gateway = gateway_address().lower()
+    selectors = {keccak(text=signature)[:4].hex(): name for signature, name in LEG_CALLS.items()}
+    kinds = [selectors[t["input"][2:10]] for t in block["transactions"] if (t.get("to") or "").lower() == gateway and t["input"][2:10] in selectors]
+    return {"block": number, "legs": len(kinds), "kinds": kinds}
+
+
 def balance(token: str, holder: str, tag: str = "latest") -> int:
     return read_word(token, SELECTOR_BALANCE_OF + pad32(holder), tag) // ONE
 
@@ -226,12 +287,28 @@ def main(argv: list) -> dict:
     if cmd == ["pay"] and n == 6:
         data = call_data("pay(bytes32,address,address,uint256)", [id_of(argv[2]), address_of(argv[3], "the token"), address_of(argv[4], "the payee"), whole(argv[5], "the amount") * ONE])
         return {"tx": send(folder, who_sends(argv[1]), gateway_address(), data, PAY_GAS)}
+    if cmd == ["wrap"] and n == 4:
+        return {"tx": send(folder, who_sends(argv[1]), address_of(argv[2], "the token"), SELECTOR_DEPOSIT, WRAP_GAS, whole(argv[3], "the amount") * ONE)}
     if cmd == ["receipt"] and n == 2:
-        r = rpc("eth_getTransactionReceipt", [argv[1]])
-        if r is None:
-            raise SystemExit(f"no receipt for {argv[1]}: the transaction is not in a block yet")
-        return {"block": int(r["blockNumber"], 16), "blockHash": r["blockHash"], "gasUsed": int(r["gasUsed"], 16),
-                "status": int(r["status"], 16), "contract": r.get("contractAddress")}
+        return receipt_of(argv[1])
+    if cmd == ["wait"] and n in (2, 3):
+        return {**wait_finalized(argv[1], whole(argv[2], "the seconds") if n == 3 else WAIT_SECONDS), "finalized": True}
+    if cmd == ["legs"] and n == 2 and WHOLE.fullmatch(argv[1]):
+        return legs_in(int(argv[1]))
+    if cmd == ["block"] and n == 2:
+        tag = argv[1] if argv[1] in ("latest", "finalized") else hex(whole(argv[1], "the block number", 0))
+        b = rpc("eth_getBlockByNumber", [tag, False])
+        if b is None:
+            raise SystemExit(f"no block {argv[1]}")
+        return {"number": int(b["number"], 16), "hash": b["hash"], "gasUsed": int(b["gasUsed"], 16)}
+    if cmd == ["ether"] and n == 2:
+        wei = int(rpc("eth_getBalance", [address_of(argv[1], "the address"), "latest"]), 16)
+        return {"wei": wei, "ether": wei // ONE}
+    if cmd == ["code"] and n == 2:
+        code = bytes.fromhex(rpc("eth_getCode", [address_of(argv[1], "the address"), "latest"]).removeprefix("0x"))
+        return {"size": len(code), "codeHash": "0x" + keccak(code).hex()}
+    if cmd == ["chain"] and n == 1:
+        return {"chainId": int(rpc("eth_chainId", []), 16)}
     if cmd == ["balance"] and n in (3, 4):
         return {"tka": balance(argv[1], argv[2], block_tag(argv[3:]))}
     if cmd == ["wrapped"] and n in (3, 4):
