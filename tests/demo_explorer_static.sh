@@ -45,9 +45,11 @@ lacks() { ! grep -qF -- "$2" <<<"$1" || fail "$3: \"$2\" is in: $1"; }
 
 start=$(dry start)
 # The public RPC's and the tracker's settings reach the container when they are set.
-rpc=$(PUBLIC_RPC=1 RPC_RATE_PER_MINUTE=120 TRACKER_MAX=500 dry start)
+rpc=$(PUBLIC_RPC=1 RPC_RATE_PER_MINUTE=120 RPC_HEAVY_CONCURRENCY=6 RPC_HEAVY_QUEUE=10 TRACKER_MAX=500 dry start)
 has "$rpc" " -e PUBLIC_RPC=1" "the public RPC switch is passed on"
 has "$rpc" " -e RPC_RATE_PER_MINUTE=120" "the rate limit is passed on"
+has "$rpc" " -e RPC_HEAVY_CONCURRENCY=6" "the heavy-call cap is passed on"
+has "$rpc" " -e RPC_HEAVY_QUEUE=10" "the heavy-call queue is passed on"
 has "$rpc" " -e TRACKER_MAX=500" "the tracker's size is passed on"
 has "$start" "docker build" "start builds the image"
 has "$start" "--build-arg EXPLORER_NODE_IMAGE=$EXPLORER_NODE_IMAGE" "the build takes the Node image from PINS"
