@@ -718,3 +718,13 @@ describe("the list of latest transactions fits its box", () => {
     expect(css).toMatch(/\.home-txs \.c-stage \{ width: 15\dpx; \}/);
   });
 });
+
+describe("the home page's two cards", () => {
+  it("gives Latest final blocks the narrower share and Latest transactions the wider one on a desktop width, and leaves the phone layout alone", async () => {
+    await home();
+    expect(screen.getByRole("heading", { name: "Latest transactions" }).closest(".cols")).toHaveClass("home-cols");
+    const css = readFileSync(join(__dirname, "home.css"), "utf8");
+    expect(css).toMatch(/@media \(min-width: 901px\) \{\s*\.cols\.home-cols \{ grid-template-columns: minmax\(0, 2fr\) minmax\(0, 3fr\); \}/);
+    expect(css).not.toMatch(/max-width: 720px[^}]*home-cols/);
+  });
+});
