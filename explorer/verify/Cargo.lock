@@ -590,6 +590,7 @@ dependencies = [
 name = "zk-sidecar"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "sha3",
  "tiny_http",
  "zk-mpt",

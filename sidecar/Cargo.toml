@@ -14,6 +14,7 @@ test-proof-check = []
 [dependencies]
 zk-verifier = { path = "../verifier" }
 zk-mpt = { path = "../mpt" }
+sha2 = "0.10"
 sha3 = "0.10"
 tiny_http = "0.12"
 

@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Rome Protocol
 //! The service Canton calls through its external-call extension, one beside each confirming
-//! participant. Two functions, each a pure function of its input line (no state, no network, no
-//! clock): `verify` checks a proven block, `legs` checks that the Canton legs attached to a block are
-//! exactly the ones the block recorded in the gateway contract. The lines and the answers are those
-//! of `daml/README.md`.
+//! participant. Three functions, each a pure function of its input line (no state, no network, no
+//! clock): `verify` and `verify2` check a proven block (`verify2` takes it with length prefixes
+//! and a hash), `legs` checks that the Canton legs attached to a block are exactly the ones the
+//! block recorded in the gateway contract. The lines and the answers are those of
+//! `daml/README.md` (`verify2`: see `sidecar/README.md` until it gains the line).
 
 pub mod block;
 pub mod http;
 pub mod rlp;
 pub mod trie;
 
+use sha2::Sha256;
 use sha3::{Digest, Keccak256};
 
 pub(crate) fn keccak(b: &[u8]) -> [u8; 32] {
@@ -102,11 +104,21 @@ fn verify_line(cfg: &Config, line: &str) -> Result<String, &'static str> {
     let [proof, header, txs] = line.split(',').collect::<Vec<_>>()[..] else {
         return Err(MALFORMED);
     };
-    let (proof, header, txs) = (
+    check_fields(
+        cfg,
         unhex(proof).ok_or(MALFORMED)?,
         unhex(header).ok_or(MALFORMED)?,
         unhex(txs).ok_or(MALFORMED)?,
-    );
+    )
+}
+
+/// The proof and block checks, and the answer line, for the three decoded fields.
+fn check_fields(
+    cfg: &Config,
+    proof: Vec<u8>,
+    header: Vec<u8>,
+    txs: Vec<u8>,
+) -> Result<String, &'static str> {
     let hash = proven_block_hash(cfg, &proof)?;
     let b = block::check(&hash, &header, &txs)?;
     Ok(format!(
@@ -127,6 +139,49 @@ fn verify_line(cfg: &Config, line: &str) -> Result<String, &'static str> {
 /// `verify`: the line is `proofHex,headerHex,txsHex`; the answer is `ok ...` or `no <reason>`.
 pub fn verify(cfg: &Config, line: &str) -> String {
     verify_line(cfg, line).unwrap_or_else(|reason| format!("no {reason}"))
+}
+
+/// Characters in the hash at the front of a `verify2` line: SHA-256, as lowercase hex.
+const HASH_LEN: usize = 64;
+/// Decimal digits in a length field of a `verify2` line.
+const LENGTH_DIGITS: usize = 10;
+
+/// Takes one length-prefixed field off the front of `rest`: 10 decimal digits, then that many
+/// characters. The field must fit in what is left; whole bytes are checked by `unhex`.
+fn length_prefixed(rest: &str) -> Result<(&str, &str), &'static str> {
+    let digits = rest.get(..LENGTH_DIGITS).ok_or(MALFORMED)?;
+    digits
+        .bytes()
+        .all(|c| c.is_ascii_digit())
+        .then_some(())
+        .ok_or(MALFORMED)?;
+    let n: usize = digits.parse().map_err(|_| MALFORMED)?;
+    let rest = &rest[LENGTH_DIGITS..];
+    Ok((rest.get(..n).ok_or(MALFORMED)?, &rest[n..]))
+}
+
+fn verify2_line(cfg: &Config, line: &str) -> Result<String, &'static str> {
+    let (hash, body) = (line.get(..HASH_LEN).ok_or(MALFORMED)?, &line[HASH_LEN..]);
+    // The hash is of the text as received (the caller's runtime lowercases it on the way), so a
+    // capital letter in a field that was kept as written elsewhere makes the two differ.
+    (hex(&Sha256::digest(body.as_bytes())) == hash)
+        .then_some(())
+        .ok_or(MALFORMED)?;
+    let (proof, rest) = length_prefixed(body)?;
+    let (header, txs) = length_prefixed(rest)?;
+    check_fields(
+        cfg,
+        unhex(proof).ok_or(MALFORMED)?,
+        unhex(header).ok_or(MALFORMED)?,
+        unhex(txs).ok_or(MALFORMED)?,
+    )
+}
+
+/// `verify2`: the line is `H` + `B`, where `B` is `lp(proofHex) lp(headerHex) txsHex`, `lp(f)` is
+/// the length of `f` in characters as 10 decimal digits, then `f`, and `H` is the SHA-256 of `B` as
+/// 64 lowercase hex digits. The answer is `verify`'s: `ok ...` or `no <reason>`.
+pub fn verify2(cfg: &Config, line: &str) -> String {
+    verify2_line(cfg, line).unwrap_or_else(|reason| format!("no {reason}"))
 }
 
 /// `n` bytes of lowercase hex, as an array.

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """A stand-in for the sidecar, for the demo rehearsal only (tests/demo_rehearsal.sh). There is no GPU in CI, so there is no real
-proof. This answers `verify` itself: the proof is accepted only if it is a stand-in proof the rehearsal's fake prover writes (832 fixed
+proof. This answers `verify` and `verify2` itself: the proof is accepted only if it is a stand-in proof the rehearsal's fake prover writes (832 fixed
 bytes, then public values that commit to this block's hash, as a real proof's do), and then the rest of the answer is read from the header and the transaction list exactly as the real sidecar reads it. Every other
 call, `legs` in particular, is passed to the REAL sidecar, which checks the gateway's storage proofs against the block's state root.
 So the rehearsal runs everything but the zero-knowledge proof check.
 
 Usage: demo_sidecar.py <port> <real sidecar port> <program-vk hex> <root-c hex> <the fixed first 832 bytes of the stand-in proof, hex>"""
-import http.server, os, sys, urllib.request
+import hashlib, http.server, os, re, sys, urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "builder"))
@@ -67,6 +67,31 @@ def verify(line: str) -> str:
     return " ".join(["ok", program_vk, root_c, keccak256(header).hex(), f[0].hex(), str(number), f[3].hex(), str(ts), str(gas_limit), str(gas_used), str(tx_count)])
 
 
+def length_prefixed(rest: str) -> tuple | None:
+    """Takes one field off the front of `rest`: 10 decimal digits for its length, then the field. Returns (field, the rest)."""
+    digits = rest[:10]
+    if len(digits) != 10 or not re.fullmatch(r"[0-9]{10}", digits):
+        return None
+    n = int(digits)
+    return None if len(rest) < 10 + n else (rest[10:10 + n], rest[10 + n:])
+
+
+def verify2(line: str) -> str:
+    """The same answer as `verify` for a line that is a 64-digit SHA-256 of what follows it, then two length-prefixed fields (proof, header)
+    and the transactions as the rest. The hash is of the text as received, which Daml has lowercased; a mismatch is malformed input."""
+    body = line[64:]
+    if len(line) < 64 or hashlib.sha256(body.encode()).hexdigest() != line[:64]:
+        return "no malformed input"
+    first = length_prefixed(body)
+    second = length_prefixed(first[1]) if first else None
+    if not second:
+        return "no malformed input"
+    fields = [first[0], second[0], second[1]]
+    if any(re.fullmatch(r"([0-9a-f]{2})*", f) is None for f in fields):
+        return "no malformed input"
+    return verify(",".join(fields))
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"   # keep-alive, as the real sidecar's server does: Canton reuses its connections
 
@@ -86,6 +111,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             log.write(f"{port} {function} {self.headers.get('X-Daml-External-Mode')}\n")
         if function == "verify":
             answer = verify(bytes.fromhex(body.decode()).decode()).encode().hex().encode()
+        elif function == "verify2":
+            answer = verify2(body.decode()).encode().hex().encode()
         else:
             request = urllib.request.Request(f"http://127.0.0.1:{real_port}/api/v1/external-call", body, {"X-Daml-External-Function-Id": function or ""})
             with urllib.request.urlopen(request, timeout=60) as r:
