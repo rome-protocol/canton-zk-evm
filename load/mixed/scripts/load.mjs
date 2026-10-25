@@ -9,6 +9,7 @@ import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } fr
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
 import { fees } from "./fee.mjs";
+import { classify, emptyTally, tallyLine, passes, reasonFromError, reasonFinder } from "./classify.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
 const mode = process.argv[2];
@@ -214,6 +215,14 @@ let EVENTS = null;
 const ev = (o) => { if (EVENTS) appendFileSync(EVENTS, JSON.stringify({ t: Date.now(), ...o }) + "\n"); };
 const sent = new Map(); // hash -> record
 const counters = { sent: 0, rejected: 0, resync: 0 };
+// what became of the transactions that are final: success / reverted on purpose / unexpected revert (see classify.mjs)
+const outcomes = emptyTally();
+// the reason of an unexpected revert: the same call replayed with eth_call from the same wallet, a few per kind (the RPC budget is shared)
+const findReason = reasonFinder(async (r) => {
+  try { await rpc("eth_call", [{ from: r.from, to: r.call.to, data: r.call.data, value: r.call.value ? ethers.toBeHex(r.call.value) : undefined, gas: ethers.toBeHex(r.gas) }, "latest"]); return "the replay went through (state has changed since)"; }
+  catch (e) { return reasonFromError(e); }
+});
+const reasonJobs = [];
 
 function signed(w, spec, nonce) {
   const t = ethers.Transaction.from({ type: 2, chainId: cfg.chainId, nonce, to: spec.to, data: spec.data, value: spec.value ?? 0n, gasLimit: spec.gas,
@@ -231,7 +240,7 @@ async function send(w, spec, phase) {
   const nonce = nonces.get(w.address) ?? 0;
   nonces.set(w.address, nonce + 1);
   const { raw, hash } = signed(w, spec, nonce);
-  const rec = { hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: Date.now(), expectRevert: !!spec.expectRevert, after: spec.after, undo: spec.undo, gas: spec.gas };
+  const rec = { hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: Date.now(), expectRevert: !!spec.expectRevert, after: spec.after, undo: spec.undo, gas: spec.gas, call: { to: spec.to, data: spec.data, value: spec.value } };
   // one wallet's transactions go to the RPC in nonce order: two sent at once could pass each other while they wait for the rate budget, and the later one is refused (nonce gap)
   const go = async () => {
     try {
@@ -386,7 +395,9 @@ async function readTxs(rec) {
         const r = sent.get(t.hash);
         if (!r || r.finalAt) continue;
         r.finalAt = rec.finalAt; r.block = rec.n; r.success = t.success; r.gasUsed = t.gasUsed; finalCount++;
-        ev({ e: "final", hash: t.hash, block: rec.n, index: t.index, success: t.success, gasUsed: t.gasUsed, methodId: t.methodId, finalAt: rec.finalAt, firstSeenAt: rec.firstSeenAt, sentAt: r.sentAt });
+        r.class = classify({ success: t.success, expectRevert: r.expectRevert }); outcomes[r.class]++;
+        ev({ e: "final", hash: t.hash, block: rec.n, index: t.index, success: t.success, class: r.class, gasUsed: t.gasUsed, methodId: t.methodId, finalAt: rec.finalAt, firstSeenAt: rec.firstSeenAt, sentAt: r.sentAt });
+        if (r.class === "unexpectedRevert") reasonJobs.push(findReason(r).then((reason) => { ev({ e: "revertReason", hash: t.hash, kind: r.kind, sub: r.sub, reason }); log("UNEXPECTED revert", r.sub ?? r.kind, "->", reason); }));
         if (!t.success && r.undo) { try { r.undo(); } catch {} }
         if (r.after) { try { r.after({ success: t.success, tokenId: t.tokenMoves?.first?.token === A.pass.toLowerCase() && t.tokenMoves.first.tokenId != null ? BigInt(t.tokenMoves.first.tokenId) : null }); } catch {} }
       }
@@ -440,8 +451,8 @@ async function misc() {
   while (running) {
     await sleep(15_000); n++;
     if (n % 2 === 0) await refreshGasPrice();
-    if (n % 4 === 0) ev({ e: "rpcMinute", used: used(), calls: rpcStats.calls, httpLimited: rpcStats.httpLimited, waitedMs: rpcStats.waitedMs, sent: counters.sent, rejected: counters.rejected, final: finalCount, queue: queue.length, inflight });
-    if (n % 4 === 0) log(`sent ${counters.sent}  final ${finalCount}  rejected ${counters.rejected}  rpc ${used()}/min  proofs ${proofs.length}  prices ${fresh() ? "fresh" : "none"}  blocks ${blocks.size}`);
+    if (n % 4 === 0) ev({ e: "rpcMinute", used: used(), calls: rpcStats.calls, httpLimited: rpcStats.httpLimited, waitedMs: rpcStats.waitedMs, sent: counters.sent, rejected: counters.rejected, final: finalCount, outcomes: { ...outcomes }, queue: queue.length, inflight });
+    if (n % 4 === 0) log(`sent ${counters.sent}  final ${finalCount}  ${tallyLine(outcomes)}  rejected ${counters.rejected}  rpc ${used()}/min  proofs ${proofs.length}  prices ${fresh() ? "fresh" : "none"}  blocks ${blocks.size}`);
   }
 }
 let vaultReads = 0;
@@ -537,9 +548,10 @@ log("sending stopped; waiting for the last transactions to be final");
 const drainEnd = Date.now() + M.drainMinutes * 60_000;
 while (Date.now() < drainEnd && sent.size > finalCount) await sleep(5000);
 await Promise.race([Promise.all(bg), sleep(15_000)]);
+await Promise.race([Promise.all(reasonJobs), sleep(30_000)]); // the replays of unexpected reverts
 const notFinal = [...sent.values()].filter((r) => !r.finalAt).map((r) => ({ hash: r.hash, kind: r.kind, sentAt: r.sentAt }));
-const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length };
+const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length, outcomes, pass: passes(outcomes) };
 ev({ e: "end", ...summary });
 writeFileSync(`${DIR}/summary.json`, JSON.stringify(summary, null, 2) + "\n");
-log(`done: sent ${counters.sent}, final ${finalCount}, not final ${notFinal.length}, rejected ${counters.rejected}`);
+log(`done: ${tallyLine(outcomes)}; ${passes(outcomes) ? "PASS" : "FAIL"} on unexpected reverts. sent ${counters.sent}, final ${finalCount}, not final ${notFinal.length}, rejected ${counters.rejected}`);
 process.exit(0);

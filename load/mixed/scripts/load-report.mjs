@@ -3,6 +3,7 @@
 //   node scripts/load-report.mjs <name>
 import { readFileSync, writeFileSync } from "node:fs";
 import { cfg, RUN } from "./lib.mjs";
+import { classify, emptyTally, passes } from "./classify.mjs";
 
 const NAME = process.argv[2];
 if (!NAME) { console.error("usage: load-report.mjs <name>"); process.exit(2); }
@@ -22,6 +23,15 @@ const BUCKETS = ["1-10", "11-100", "101-1000", "over 1000"];
 const label = (x) => (x.sub && x.sub !== "lazy" ? `${x.kind}: ${x.sub}` : x.kind);
 
 const rep = {};
+// every final transaction is a success, a revert sent on purpose, or an unexpected revert with its reason (events of older runs carry no class: it is worked out here)
+const reasons = new Map(by("revertReason").map((x) => [x.hash, x.reason]));
+const cls = (h) => { const f = finals.get(h); return f && (f.class ?? classify({ success: f.success, expectRevert: !!sent.get(h)?.expectRevert })); };
+const outcomes = emptyTally();
+for (const h of finals.keys()) if (sent.has(h)) outcomes[cls(h)]++;
+rep.outcomes = outcomes;
+rep.pass = { rule: "no unexpected revert and no deliberate revert that went through", ok: passes(outcomes) };
+rep.unexpectedRevertReasons = {};
+for (const [h, f] of finals) if (cls(h) === "unexpectedRevert") { const k = `${label(sent.get(h) ?? { kind: "?" })}: ${reasons.get(h) ?? "reason not read"}`; rep.unexpectedRevertReasons[k] = (rep.unexpectedRevertReasons[k] ?? 0) + 1; }
 // counts by kind
 const kinds = {};
 for (const [h, s] of sent) {
@@ -94,6 +104,7 @@ rep.canton = { blocksRead: arg.length, argumentBytesPerBlock: stat(arg), argumen
 writeFileSync(`${DIR}/report.json`, JSON.stringify(rep, null, 2) + "\n");
 
 // markdown
+const fmt = (o) => Object.entries(o ?? {}).map(([k, v]) => `${k}: ${v}`).join("; ") || "none";
 const row = (...c) => `| ${c.join(" | ")} |`;
 const out = [];
 out.push(`## Counts by kind`, "", row("kind", "sent", "final", "succeeded", "reverted"), row("---", "---:", "---:", "---:", "---:"));
@@ -108,7 +119,9 @@ out.push("", `## Blocks`, "", `${rep.blocks.withOurTxs} blocks carried our trans
 if (busiest) out.push("", `Busiest block: ${busiest.n}, ${busiest.txCount} transactions (${mine.get(busiest.n)} ours), ${busiest.gasUsed} gas, proof ${r2(busiest.proofSeconds)} s, final ${r2(busiest.finalSeconds)} s, commit ${r2(busiest.commitSeconds)} s.`);
 out.push("", `## Canton ledger`, "", `${rep.canton.blocksRead} blocks read from /api/canton/updates: argument bytes per block p50 ${r2(rep.canton.argumentBytesPerBlock.p50)}, p95 ${r2(rep.canton.argumentBytesPerBlock.p95)}, max ${r2(rep.canton.argumentBytesPerBlock.max)}; per transaction p50 ${r2(rep.canton.argumentBytesPerTx.p50)}. Traffic fields the explorer showed: ${rep.canton.trafficFieldsSeen.join(", ") || "none"}.`);
 out.push("", `## RPC`, "", `Budget ${rep.rpc.budgetPerMinute} calls a minute; the most used in any minute: ${rep.rpc.peakCallsInAMinute}; ${rep.rpc.calls} calls in all; ${rep.rpc.limitedAnswers} answers of "too many requests"; the driver waited ${rep.rpc.waitedForBudgetSeconds} s for budget; ${rep.rpc.receiptsChecked} receipts read through the RPC (${rep.rpc.receiptMismatches} differed from the explorer).`);
-const fmt = (o) => Object.entries(o ?? {}).map(([k, v]) => `${k}: ${v}`).join("; ") || "none";
+out.push("", `## Outcome of the final transactions`, "", row("class", "count"), row("---", "---:"), row("success", outcomes.success), row("reverted on purpose (a test of a contract's refusal; the chain worked as intended)", outcomes.expectedRevert), row("UNEXPECTED revert", outcomes.unexpectedRevert), row("deliberate revert that went through", outcomes.unexpectedSuccess));
+out.push("", `Pass rule: ${rep.pass.rule}. This run: ${rep.pass.ok ? "PASS" : "FAIL"}.`);
+if (outcomes.unexpectedRevert) out.push("", `Unexpected reverts by reason: ${fmt(rep.unexpectedRevertReasons)}.`);
 out.push("", `## Reverts`, "", `Deliberate reverts (sent to fail): ${Object.values(kinds).reduce((a, v) => a + (v.expectedRevert ? v.reverted : 0), 0)} reverted as intended, ${rep.totals.deliberateRevertsThatSucceeded} succeeded when they should not have. Unexpected failures: ${unexpectedFail.length}${unexpectedFail.length ? ` (${rep.unexpectedFailures.map((u) => `${u.kind} ${u.hash} in block ${u.block}`).join("; ")})` : ""}.`);
 out.push("", `## Lost transactions and refusals`, "", `Lost (accepted by the RPC, never seen in a final block): ${rep.lost.length}${rep.lost.length ? ` (${rep.lost.slice(0, 20).map((l) => `${l.kind} ${l.hash}`).join("; ")})` : ""}.`, "", `Refused by the RPC at send, by reason: ${fmt(rep.rejections)}.`);
 out.push("", `## Kinds that did not run`, "", `Skipped because they could not be built when their turn came: ${fmt(rep.run.skipped)}.`);

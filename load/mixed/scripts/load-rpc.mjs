@@ -48,7 +48,7 @@ async function post(body) {
 export async function rpc(method, params = []) {
   await acquire(1);
   const j = await post({ jsonrpc: "2.0", id: 1, method, params });
-  if (j.error) { const e = new Error(j.error.message ?? "rpc error"); e.code = j.error.code; throw e; }
+  if (j.error) { const e = new Error(j.error.message ?? "rpc error"); e.code = j.error.code; e.data = j.error.data; throw e; }
   return j.result;
 }
 
