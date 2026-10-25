@@ -14,7 +14,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
 . "$ROOT/PINS"
 WORK=$(mktemp -d)
-export CZE_STATE_DIR=$WORK/state CZE_DEMO_RESULTS=$WORK/results FAKE_LOG=$WORK/calls
+export CZE_STATE_DIR=$WORK/state CZE_DEMO_RESULTS=$WORK/results FAKE_LOG=$WORK/calls CUT_ERR=$WORK/cut.err   # CUT_ERR: the builder's stderr of the last cut_block (the nightly part cuts blocks in a shell of its own, so it is exported)
 NET=$CZE_STATE_DIR/net
 umask 077
 mkdir -p "$NET/logs" "$CZE_DEMO_RESULTS"
@@ -223,9 +223,9 @@ w1py() { "$PY" "$ROOT/tests/demo_w1.py" "$@"; }
 cut_block() {
   local out
   out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json" 2> "$WORK/cut.err") \
-    || { cat "$WORK/cut.err" >&2; fail "the builder stopped: $out"; }
-  cat "$WORK/cut.err" >&2   # the builder's stderr names how the block was packed ("block N: ..., packed by gas used"); the check below reads it
+    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json" 2> "$CUT_ERR") \
+    || { cat "$CUT_ERR" >&2; fail "the builder stopped: $out"; }
+  cat "$CUT_ERR" >&2   # the builder's stderr names how the block was packed ("block N: ..., packed by gas used"); the check below reads it
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
   # The nightly's L3 reads the block's update id here when it can; it times a block from the update's offset on the reader's participant (canton_updates.reader_offset, found by update id).
   [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
@@ -296,8 +296,8 @@ PACK_BLOCK=$(receipt_of "${pack_txs[0]}" | jq -r .block)
 [[ $PACK_BLOCK =~ ^[0-9]+$ ]] || fail "the first of the 8 deployments is in no block: $(receipt_of "${pack_txs[0]}")"
 # The block is built again when a transaction of it has a leg with no Canton side (the demo's payout waits in the pool): the first build's line says how it was
 # packed, and the rebuild's says "the last build's list", so the line to look for is the first.
-grep -Eq "^block $PACK_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$WORK/cut.err" \
-  || fail "block $PACK_BLOCK was not packed by gas used: $(grep "^block " "$WORK/cut.err" | tr '\n' '|')"
+grep -Eq "^block $PACK_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$CUT_ERR" \
+  || fail "block $PACK_BLOCK was not packed by gas used: $(grep "^block " "$CUT_ERR" | tr '\n' '|')"
 pack_json=$(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$PACK_BLOCK")\",true" | jq -c .result)
 [ "$(jq '.transactions | length' <<<"$pack_json")" = 8 ] || fail "block $PACK_BLOCK does not hold the 8 deployments: $(jq -c '.transactions | length' <<<"$pack_json")"
 pack_limits=0
