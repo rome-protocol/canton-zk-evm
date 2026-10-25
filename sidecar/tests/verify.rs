@@ -118,3 +118,35 @@ fn lines_that_are_not_well_formed_are_refused_with_the_exact_reason() {
         assert_eq!(verify(&cfg, &line), expected, "{line:.60}");
     }
 }
+
+/// The sidecar does not rely on Daml to check that the proof, header and transactions are lowercase hex:
+/// it refuses a capital letter in any one field itself, so the rule holds even when the caller does not
+/// check it.
+#[test]
+fn a_capital_letter_in_any_one_verify_field_is_refused() {
+    let b = reth_block();
+    let cfg = config_accepting_any();
+    let (abi, header, txs) = (hex(&abi_for(&b.hash)), hex(&b.header), hex(&b.txs));
+    let capitalised = |s: &str| {
+        // one capital letter in the first hex letter, which every field has
+        let at = s
+            .find(|c: char| matches!(c, 'a'..='f'))
+            .expect("a hex letter");
+        let mut out = s.to_string();
+        out.replace_range(at..=at, &s[at..=at].to_uppercase());
+        assert_ne!(out, s);
+        out
+    };
+    let good = format!("{abi},{header},{txs}");
+    assert!(
+        !verify(&cfg, &good).starts_with("no malformed"),
+        "the good line is well formed"
+    );
+    for (name, line) in [
+        ("proof", format!("{},{header},{txs}", capitalised(&abi))),
+        ("header", format!("{abi},{},{txs}", capitalised(&header))),
+        ("txs", format!("{abi},{header},{}", capitalised(&txs))),
+    ] {
+        assert_eq!(verify(&cfg, &line), "no malformed input", "{name}");
+    }
+}

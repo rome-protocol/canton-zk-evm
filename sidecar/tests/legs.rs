@@ -536,3 +536,95 @@ fn the_reasons_come_in_this_order() {
     let b = gateway_block("three");
     assert_eq!(legs(&b.line_with(&b.legs[..2])), NOT_RECORDED);
 }
+
+/// The sidecar does not rely on Daml to check the gateway's proof nodes: it refuses an empty node (in a
+/// list of two or more), a trailing or leading `;`, a capital letter, a `,` inside a node and an odd-length
+/// node itself as malformed, so the rule holds even when the caller does not check it. It reads the
+/// joined text, so a single empty node is the same as no nodes and a `;` inside a node splits it; the
+/// test after this one pins both.
+#[test]
+fn a_gateway_node_that_is_not_lowercase_hex_of_whole_bytes_is_refused() {
+    let b = gateway_block("three");
+    assert_eq!(legs(&b.line()), b.ok());
+    assert!(b.account_nodes.len() > 1 && !b.storage_nodes.is_empty());
+    // the two lists are tried in turn, each with the same mistakes
+    for storage in [false, true] {
+        let with = |nodes: Vec<String>| {
+            let mut c = b.clone();
+            if storage {
+                c.storage_nodes = nodes;
+            } else {
+                c.account_nodes = nodes;
+            }
+            c.line()
+        };
+        let good = if storage {
+            &b.storage_nodes
+        } else {
+            &b.account_nodes
+        };
+        let first = good[0].clone();
+        let rest = good[1..].to_vec();
+        let at = |node: String| [vec![node], rest.clone()].concat();
+        let mut bad = vec![
+            // an empty node: first, in the middle, last (a trailing ';' is an empty last node)
+            with([vec![String::new()], good.clone()].concat()),
+            with([vec![first.clone(), String::new()], rest.clone()].concat()),
+            with([good.clone(), vec![String::new()]].concat()),
+            // a capital letter
+            with(at(first.to_uppercase())),
+            with(at(format!("{}A{}", &first[..2], &first[3..]))),
+            // a ',' inside a node
+            with(at(format!("{},{}", &first[..2], &first[2..]))),
+            // an odd length, a prefix, a space, a non-hex letter
+            with(at(first[1..].to_string())),
+            with(at(format!("{first}0"))),
+            with(at(format!("0x{first}"))),
+            with(at(format!(" {}", &first[1..]))),
+            with(at(format!("{}g{}", &first[..2], &first[3..]))),
+        ];
+        // a lone ';' is two empty nodes
+        bad.push(with(vec![";".into()]));
+        for line in bad {
+            assert_eq!(legs(&line), MALFORMED, "storage={storage} {line:.80}");
+        }
+    }
+}
+
+/// The sidecar reads the node lists after they are joined with `;`, so two lists a caller could build
+/// look like legal ones: a list of one empty node reads as no nodes, and a node with a `;` inside reads
+/// as the two nodes either side of it. This pins both, so a change in either would be noticed.
+#[test]
+fn a_single_empty_node_is_no_nodes_and_a_semicolon_inside_a_node_splits_it() {
+    // storage [""] is exactly what storage [] is: on a gateway with no storage that is a proven zero
+    let b = gateway_block("unused");
+    assert!(b.storage_nodes.is_empty());
+    let mut c = b.clone();
+    c.storage_nodes = vec![String::new()];
+    assert_eq!(c.line(), b.line());
+    assert_eq!(legs(&c.line()), b.ok());
+    // account [""] is exactly what account [] is: no account proof
+    let mut none = b.clone();
+    none.account_nodes.clear();
+    let mut one_empty = b.clone();
+    one_empty.account_nodes = vec![String::new()];
+    assert_eq!(one_empty.line(), none.line());
+    assert_eq!(legs(&one_empty.line()), ACCOUNT_BAD);
+    assert_eq!(legs(&none.line()), ACCOUNT_BAD);
+    // a node holding `;` is read as the two nodes either side of it, for both proofs
+    let b = gateway_block("three");
+    assert!(b.account_nodes.len() > 1 && b.storage_nodes.len() > 1);
+    let mut c = b.clone();
+    c.account_nodes = [
+        vec![format!("{};{}", b.account_nodes[0], b.account_nodes[1])],
+        b.account_nodes[2..].to_vec(),
+    ]
+    .concat();
+    c.storage_nodes = [
+        vec![format!("{};{}", b.storage_nodes[0], b.storage_nodes[1])],
+        b.storage_nodes[2..].to_vec(),
+    ]
+    .concat();
+    assert_eq!(c.line(), b.line());
+    assert_eq!(legs(&c.line()), b.ok());
+}
