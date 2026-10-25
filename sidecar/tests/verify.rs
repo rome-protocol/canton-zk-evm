@@ -193,7 +193,8 @@ fn a_good_verify2_line_gets_the_answer_verify_gives() {
 }
 
 /// The fixed line the Daml tests and the Python stand-in check too: fields "aa", "01", "cc".
-const FIXED_LINE: &str = "63bf501ac3036ecbde797c99ac847bfe8a41194cbe46468d4e668ea0a21686460000000002aa000000000201cc";
+const FIXED_LINE: &str =
+    "63bf501ac3036ecbde797c99ac847bfe8a41194cbe46468d4e668ea0a21686460000000002aa000000000201cc";
 
 #[test]
 fn the_fixed_verify2_line_is_what_the_helpers_build_and_reads_as_its_fields() {
