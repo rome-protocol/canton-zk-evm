@@ -98,8 +98,8 @@ class CommandLine(tb.Case):
         (attrs,) = [p[1] for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"]
         self.assertNotIn("targetGasLimit", attrs)
 
-    def test_a_target_under_one_is_refused(self):
-        for bad in ("0", "-5", "many"):
+    def test_a_target_under_the_protocol_minimum_is_refused(self):
+        for bad in ("0", "-5", "4999", "many"):
             code, out = self.run_main(self.setup({}), "--target-gas-limit", bad)
             self.assertEqual(code, 1)
             self.assertIn("bad arguments", out["error"] if "error" in out else json.dumps(out))

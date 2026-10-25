@@ -73,7 +73,7 @@ class Config:
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
     traffic_url: str = ""         # where the builder's participant reports its traffic (CZE_TRAFFIC_URL); empty: the traffic is not read
     max_block_tx_bytes: int = 65536   # the most raw transaction bytes a block is offered (--max-block-tx-bytes): our participant's Daml work grows with the Advance argument, about 23 ms per KB in each of two passes
-    target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked and reth keeps its own limit. The chain's gasCap, read from Canton for each block, is the most that is ever sent
+    target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -924,7 +924,7 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     attributes = {"timestamp": hex(max(int(time.time()), int(parent["timestamp"], 16) + 1)), "prevRandao": ZERO32,
                   "suggestedFeeRecipient": cfg.fee_recipient, "withdrawals": [], "parentBeaconBlockRoot": ZERO32}
     target = target_for(cfg, cap)
-    if target is not None:   # reth moves each block's limit toward this by less than 1/1024 of the parent's; without it, reth keeps its own limit
+    if target is not None:   # reth moves each block's limit toward this by less than 1/1024 of the parent's; without it, toward --builder.gaslimit (the genesis cap)
         attributes["targetGasLimit"] = hex(target)
 
     def keep(pairs: list) -> None:
@@ -2126,8 +2126,8 @@ def main() -> int:
             raise BuilderError(f"bad arguments: --idle-ms must be at least {MIN_IDLE_MS}: a shorter wait would only keep reth busy")
         if args.max_block_tx_bytes < 1:
             raise BuilderError("bad arguments: --max-block-tx-bytes must be at least 1")
-        if args.target_gas_limit is not None and args.target_gas_limit < 1:
-            raise BuilderError("bad arguments: --target-gas-limit must be at least 1")
+        if args.target_gas_limit is not None and args.target_gas_limit < 5000:   # the protocol's minimum gas limit: a lower target would walk the limit down until blocks are refused
+            raise BuilderError("bad arguments: --target-gas-limit must be at least 5000")
         cfg = Config.from_env()
         cfg.max_block_tx_bytes = args.max_block_tx_bytes
         cfg.target_gas_limit = args.target_gas_limit or 0
