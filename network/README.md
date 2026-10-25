@@ -174,7 +174,17 @@ In (a), do not start the sidecar yourself first; if you did, `up.sh` finds it ru
 
 **The explorer.** It and its indexer read Canton as the reader party, with the reader user's token: make a 0600 token file for `ostia-reader` (HS256, audience `https://canton.network.global`, `sub` `ostia-reader`, or your `CZE_USER_PREFIX`'s reader) and give it to `explorer/run.sh` as `LEDGER_TOKEN_FILE` (or `CZE_TOKEN_FILE_READER`), with `LEDGER_URL` and `READER_PARTY` for this participant. The file is read again on every call, so refresh it in place. See `explorer/README.md`.
 
-**Not covered here.** The demo's helpers still talk to the local network's ports and users; pointing them at this participant, with a token, is their own change.
+**The demo's helpers on this participant.** `demo/canton.py` and `demo/evm.py` run against it, and `demo/live.sh` runs the deposit, the payment (in WtROME) and the withdrawal on the running chain. They need the demo's parties and user as well: run `network/external/setup.py --demo` once more, with no chain arguments (it adds `u`, `v`, `registry` and the user `ostia-demo`, and changes nothing else). Then:
+
+```sh
+export CZE_CANTON=external CZE_LEDGER_URL=https://<participant's Ledger API> CZE_RPC_URL=<the chain's RPC>
+export CZE_TOKEN_FILE_DEMO=... CZE_TOKEN_FILE_OPERATOR=... CZE_TOKEN_FILE_CONFIRMER=... CZE_TOKEN_FILE_READER=... CZE_TOKEN_FILE_ADMIN=...   # 0600 files, one token each
+demo/canton.py upload-dars    # only the test token's DAR; the participant already has the token standard's packages; then checks it is vetted
+demo/live.sh setup            # the token rules and U's 100 TKB, wTKB made and registered, U's acceptance
+demo/live.sh legs             # the three legs, each waited for at the finalized block
+```
+
+`CZE_USER_PREFIX` goes before the user ids as for the rest. A token is read again from its file at every call, so a short-lived one can be rewritten in place. The block producer must run with `--disclosed $CZE_STATE_DIR/demo/disclosed.json`, the file `canton.py setup` writes, and U's and V's EVM addresses (`demo/evm.py keys`) need the chain's coin. See `demo/README.md` and the header of `demo/live.sh`. `tests/canton_external.sh` runs `upload-dars`, `setup` and `register-token` against the pinned Canton with a login.
 
 ## The smoke test
 

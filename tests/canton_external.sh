@@ -4,6 +4,8 @@
 #   - network/external/setup.py uploads the real DAR, allocates the parties, creates the users, proposes and accepts the chain; a second run changes nothing
 #     at all (the ledger end, the parties, the users and the chain are the same);
 #   - the users have exactly the rights of their roles;
+#   - the demo's Canton helpers (demo/canton.py, CZE_CANTON=external) upload the test token's DAR, make its rules and U's holding, and register a wrapped token
+#     for it (one stand-in reth says the gateway made the token), all with the users' tokens; a second run of each changes nothing;
 #   - one Advance commits, against one stand-in sidecar: this participant is every party's host, so its sidecar is the only confirmer, and Canton asks it
 #     both when the block is submitted and when the block is validated; a refused block changes nothing.
 # The participant's Ledger API has a login here, as the DevNet's has: HS256 tokens (audience https://canton.network.global, sub = the user's id) from a
@@ -45,7 +47,7 @@ python3 - "$SECRET" "$WORK" <<'PY'
 import base64, hashlib, hmac, json, os, sys, time
 secret, work = sys.argv[1:]
 enc = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=")
-for role, user in {"admin": "participant_admin", "operator": "ostia-operator", "confirmer": "ostia-confirmer", "builder": "ostia-builder", "reader": "ostia-reader"}.items():
+for role, user in {"admin": "participant_admin", "operator": "ostia-operator", "confirmer": "ostia-confirmer", "builder": "ostia-builder", "reader": "ostia-reader", "demo": "ostia-demo"}.items():
     claims = {"sub": user, "aud": "https://canton.network.global", "exp": int(time.time()) + 120}
     signing = enc(b'{"alg":"HS256","typ":"JWT"}') + b"." + enc(json.dumps(claims).encode())
     token = signing + b"." + enc(hmac.new(secret.encode(), signing, hashlib.sha256).digest())
@@ -55,7 +57,7 @@ for role, user in {"admin": "participant_admin", "operator": "ostia-operator", "
 PY
 }
 mint
-for role in admin operator confirmer builder reader; do
+for role in admin operator confirmer builder reader demo; do
   export "CZE_TOKEN_FILE_${role^^}=$WORK/token-$role"
 done
 export CZE_LEDGER_URL=http://127.0.0.1:7575 CZE_READER_LEDGER_URL=http://127.0.0.1:7575 CZE_USER_PREFIX=ostia-
@@ -68,6 +70,7 @@ mkdir -p "$CZE_STATE_DIR"; answers
 # check 8086 at start-up, so a stand-in answers there too; the test fails if it is ever called.
 python3 "$ROOT/tests/fake_sidecar.py" 8085 & pids+=($!)
 python3 "$ROOT/tests/fake_sidecar.py" 8086 & pids+=($!)
+python3 "$ROOT/tests/fake_reth.py" 18545 & pids+=($!)   # for register-token only: it says the gateway made the token
 sleep 1
 
 java -Xmx3g -jar "$CANTON_JAR" daemon -c "$ROOT/network/canton/canton.conf" -c "$WORK/auth.conf" --bootstrap "$ROOT/tests/external_bootstrap.canton" --no-tty > "$WORK/canton.log" 2>&1 &
@@ -79,7 +82,7 @@ grep -q "EXTERNAL PARTICIPANT READY" "$WORK/canton.log" || fail "the participant
 [ "$(curl -s -o /dev/null -w '%{http_code}' "$CZE_LEDGER_URL/v2/packages")" = 401 ] || fail "the Ledger API answers without a token"
 
 H0=$(printf 'ab%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32))
-setup() { mint; python3 "$ROOT/network/external/setup.py" -- --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
+setup() { mint; python3 "$ROOT/network/external/setup.py" --demo -- --genesis-hash "$H0" --genesis-state-root "$(printf '44%.0s' $(seq 32))" --program-vk "$VK" --root-c "$RC" \
   --rules-hash "$(printf '12%.0s' $(seq 32))" --gateway-address "${GATEWAY_ADDRESS#0x}"; }
 snapshot() {
   mint
@@ -122,6 +125,24 @@ grep -q 'the package is vetted' "$WORK/setup1.log" || echo "NOTE: the participan
 gw=${GATEWAY_ADDRESS#0x}
 mint
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" gateway "$gw")" = ok ] || fail "the users' rights, or the chain's gateway, are wrong"
+
+# The demo's Canton helpers on this participant, with the users' tokens: the test token's DAR (the admin's token), its rules and U's 100 TKB (the demo user's),
+# and a wrapped token registered for it (the operator proposes, the confirmer accepts). Each is run twice: the second changes nothing.
+canton() { mint; CZE_CANTON=external CZE_RPC_URL=http://127.0.0.1:18545 python3 "$ROOT/demo/canton.py" "$@"; }
+uploaded=$(canton upload-dars) || fail "upload-dars did not run on the participant"
+jq -e '.vetted == true and .uploaded == ["splice-test-token-v1-1.0.1.dar"]' <<<"$uploaded" >/dev/null || fail "the test token's DAR was not uploaded and vetted: $uploaded"
+uploaded2=$(canton upload-dars) || fail "the second upload-dars failed"
+jq -e '.vetted == true and .uploaded == []' <<<"$uploaded2" >/dev/null || fail "the second upload-dars uploaded again: $uploaded2"
+demo_setup=$(canton setup) || fail "canton.py setup did not run on the participant"
+jq -e '.uHolds == [100]' <<<"$demo_setup" >/dev/null || fail "U does not hold 100 TKB after setup: $demo_setup"
+demo_setup2=$(canton setup) || fail "the second canton.py setup failed"
+[ "$demo_setup2" = "$demo_setup" ] || fail "the second canton.py setup changed something: $demo_setup2"
+wrapped=$(printf '12%.0s' $(seq 20))
+[ "$(canton registered "$wrapped" | jq -r .registered)" = false ] || fail "the wrapped token is registered before register-token"
+registered=$(canton register-token "$wrapped") || fail "canton.py register-token did not run on the participant"
+jq -e --arg t "$wrapped" '.evmToken == $t' <<<"$registered" >/dev/null || fail "the token was not registered as proposed: $registered"
+[ "$(canton registered "$wrapped" | jq -r .registered)" = true ] || fail "the operator does not see the registered token"
+canton register-token "$wrapped" >/dev/null 2>&1 && fail "a token was registered twice"
 
 # One Advance. The stand-in refuses first: nothing moves. Then it agrees: the head is 1, and the same sidecar was asked in both modes.
 echo "no the proof does not verify" > "$FAKE_ANSWER.verify"
