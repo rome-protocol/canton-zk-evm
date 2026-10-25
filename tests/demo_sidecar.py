@@ -76,20 +76,26 @@ def length_prefixed(rest: str) -> tuple | None:
     return None if len(rest) < 10 + n else (rest[10:10 + n], rest[10 + n:])
 
 
-def verify2(line: str) -> str:
-    """The same answer as `verify` for a line that is a 64-digit SHA-256 of what follows it, then two length-prefixed fields (proof, header)
-    and the transactions as the rest. The hash is of the text as received, which Daml has lowercased; a mismatch is malformed input."""
+def verify2_why(line: str) -> tuple:
+    """The answer of `verify2` and, for a refusal, which check refused it: "hash" (the SHA-256 in front does not match the text as received) or
+    "form" (the fields are not length-prefixed lowercase hex). The answer is the same as `verify`'s for a line that is a 64-digit SHA-256 of what
+    follows it, then two length-prefixed fields (proof, header) and the transactions as the rest. The hash is of the text as received, which Daml
+    has lowercased; a mismatch is malformed input."""
     body = line[64:]
     if len(line) < 64 or hashlib.sha256(body.encode()).hexdigest() != line[:64]:
-        return "no malformed input"
+        return "no malformed input", "hash"
     first = length_prefixed(body)
     second = length_prefixed(first[1]) if first else None
     if not second:
-        return "no malformed input"
+        return "no malformed input", "form"
     fields = [first[0], second[0], second[1]]
     if any(re.fullmatch(r"([0-9a-f]{2})*", f) is None for f in fields):
-        return "no malformed input"
-    return verify(",".join(fields))
+        return "no malformed input", "form"
+    return verify(",".join(fields)), None
+
+
+def verify2(line: str) -> str:
+    return verify2_why(line)[0]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -112,7 +118,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if function == "verify":
             answer = verify(bytes.fromhex(body.decode()).decode()).encode().hex().encode()
         elif function == "verify2":
-            answer = verify2(body.decode()).encode().hex().encode()
+            text, why = verify2_why(body.decode())
+            if why:   # which check refused the line, for the tests that ask (a file next to the call log: the log's lines stay as they are)
+                with open(os.environ["FAKE_LOG"] + ".refused", "a") as refused:
+                    refused.write(f"{port} verify2 {why}\n")
+            answer = text.encode().hex().encode()
         else:
             request = urllib.request.Request(f"http://127.0.0.1:{real_port}/api/v1/external-call", body, {"X-Daml-External-Function-Id": function or ""})
             with urllib.request.urlopen(request, timeout=60) as r:

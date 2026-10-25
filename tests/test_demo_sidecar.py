@@ -83,10 +83,12 @@ class StandInVerify2(unittest.TestCase):
         body = f"{len(PROOF):010d}{PROOF}{len(header):010d}{upper}{BLOCK['txs']}"
         lowered = hashlib.sha256(body.encode()).hexdigest() + body.lower()
         self.assertEqual(s.verify2(lowered), "no malformed input")
+        self.assertEqual(s.verify2_why(lowered)[1], "hash")   # refused at the hash: the lowercasing is what the test can tell apart
 
     def test_a_capital_letter_that_reaches_the_sidecar_is_refused(self):
         body = f"{len(PROOF):010d}{PROOF}{len(BLOCK['header']):010d}{BLOCK['header'].upper()}{BLOCK['txs']}"
         self.assertEqual(s.verify2(self.line(body=body)), "no malformed input")
+        self.assertEqual(s.verify2_why(self.line(body=body))[1], "form")   # the case was kept: the hash matches, the hex form does not
 
     def test_a_short_line_or_a_bad_length_is_refused(self):
         self.assertEqual(s.verify2("ab"), "no malformed input")
