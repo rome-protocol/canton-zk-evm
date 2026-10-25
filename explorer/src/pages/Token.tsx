@@ -12,6 +12,7 @@ import { useLabels, type Labels } from "../labels.ts";
 import { methodOf } from "../method.ts";
 import { listPoll } from "../stats.ts";
 import { useNow, useStatus } from "../useStatus.ts";
+import { CantonCustody } from "./CantonCustody.tsx";
 import { Avatar, failedNote, Mint, NftCount, noName, Supply } from "./TokenParts.tsx";
 import "./token.css";
 
@@ -257,6 +258,7 @@ export function Token() {
           : "The explorer has not read this token's name, symbol or decimals from the contract yet, so amounts are shown raw until it has."}</p></aside>
       )}
       <Cards t={t} />
+      {t.canton && <CantonCustody t={t} canton={t.canton} />}
       <Holders t={t} />
       <Transfers t={t} />
       <Information t={t} />

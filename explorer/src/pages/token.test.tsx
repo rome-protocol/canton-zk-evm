@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { screen, within } from "@testing-library/react";
+import { cleanup, screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenDetail } from "../api.ts";
-import { addr, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, status, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
+import { addr, cantonCustody, contractDetail, fakeApi, NOT_FOUND, page, renderApp, reply, route, status, tick, tokenDetail, tokenHolder, tokenTransfer } from "../test-utils.tsx";
 
 afterEach(() => { vi.useRealTimers(); });
 const A = addr(0xcb);
@@ -116,6 +116,76 @@ describe("the token page: the overview", () => {
   it("marks a token the gateway wrapped from Canton", async () => {
     await open(tokenDetail(0xcb, { gatewayWrapped: true }));
     expect(screen.getAllByText("From Canton").length).toBeGreaterThan(0);
+  });
+
+  describe("backed on Canton", () => {
+    const WRAPPED = { gatewayWrapped: true, totalSupplyBlock: 21 };
+    const check = () => screen.getByRole("region", { name: "Backed on Canton" });
+    const kv = (k: string) => within(check()).getByText(k, { selector: "dt" }).nextElementSibling as HTMLElement;
+
+    it("shows nothing of Canton for a token the gateway did not register: today's DevNet, with no token registered", async () => {
+      await open();
+      expect(screen.queryByRole("region", { name: "Backed on Canton" })).toBeNull();
+    });
+
+    it("shows nothing for a wrapped token with no custody row: a token anyone made through the register is not shown as backed", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: null }));
+      expect(screen.queryByRole("region", { name: "Backed on Canton" })).toBeNull();
+    });
+
+    it("sets what the gateway holds on Canton against the supply read at the same block, and says they are equal at that block", async () => {
+      // 1,000 whole units on both sides: 10 decimals on Canton, 6 on the wrapped token.
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody() }));
+      expect(kv("Held on Canton")).toHaveTextContent("1,000 TKB");
+      expect(kv("Wrapped supply")).toHaveTextContent("1,000 tUSD");
+      expect(kv("Check")).toHaveTextContent("Equal at block 21");
+      expect(kv("Check")).toHaveAttribute("data-state", "equal");
+      expect(kv("Read")).toHaveTextContent("Both at block 21");
+    });
+
+    it("compares the stored supply, not the token's live one, which a later deposit may have raised", async () => {
+      // The page's token row has moved on to 1,010 (a deposit in a later block); the custody row was read as a pair at block 21, 1,000 and 1,000.
+      await open(tokenDetail(0xcb, { ...WRAPPED, totalSupply: "1010000000", totalSupplyBlock: 22, canton: cantonCustody() }));
+      expect(kv("Check")).toHaveAttribute("data-state", "equal");
+      expect(kv("Wrapped supply")).toHaveTextContent("1,000 tUSD");
+      expect(within(check()).queryByText(/more than/)).toBeNull();
+    });
+
+    it("names the registered instrument, the admin in full, and the ledger offset the custody was read at", async () => {
+      const c = cantonCustody();
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: c }));
+      expect(kv("Instrument")).toHaveTextContent(`TKB`);
+      expect(kv("Instrument")).toHaveTextContent(c.instrumentAdmin);
+      expect(kv("Read")).toHaveTextContent("Canton offset 4,242");
+    });
+
+    it("says by how much Canton holds more, and by how much the supply is more, at the block, in the token's own units", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ supply: "999500000" }) }));
+      expect(kv("Check")).toHaveTextContent("At block 21, Canton holds 0.5 more than the wrapped supply");
+      expect(kv("Check")).toHaveAttribute("data-state", "custody-higher");
+      cleanup();
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ supply: "1000250000" }) }));
+      expect(kv("Check")).toHaveTextContent("At block 21, the wrapped supply is 0.25 more than Canton holds");
+      expect(kv("Check")).toHaveAttribute("data-state", "supply-higher");
+    });
+
+    it("compares nothing when the supply or the decimals are not known, and still shows the custody", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ supply: null }) }));
+      expect(kv("Held on Canton")).toHaveTextContent("1,000 TKB");
+      expect(kv("Check")).toHaveTextContent("not known");
+      expect(kv("Check")).toHaveAttribute("data-state", "unknown");
+    });
+
+    it("shows an empty custody as 0, not as a missing number", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody({ custody: "0", holdings: 0, supply: "0" }) }));
+      expect(kv("Held on Canton")).toHaveTextContent("0 TKB");
+      expect(kv("Check")).toHaveTextContent("Equal");
+    });
+
+    it("shows no owner, holding or contract of the gateway's Daml side", async () => {
+      await open(tokenDetail(0xcb, { ...WRAPPED, canton: cantonCustody() }));
+      expect(within(check()).queryByText(/contract id|owner|allocation/i)).toBeNull();
+    });
   });
 
   it("shows the name as text, never as markup", async () => {

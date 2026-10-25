@@ -4,7 +4,7 @@ import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { App } from "./App.tsx";
-import type { Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
+import type { CantonCustody, Label, LegListItem, TokenDetail, TokenHolder, TokenListItem, AddressTransferItem, ContractDetail, ContractListItem, ContractSource, AddressDetail, ApiAddress, Holding, ApiBlock, ApiTxDetail, BlockDetail, BlockSummary, UpdateDetail, ApiStatus, ApiTxSeen, ApiTxUnseen, BlockListItem, InFlight, Page, TxListItem } from "./api.ts";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
@@ -259,7 +259,11 @@ export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenLi
   address: addr(n), standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, totalSupply: "1000000000000", holderCount: 5, transferCount: 6, firstTransferBlock: 19,
   gatewayWrapped: false, metadataStatus: "read", creator: addr(0xa1), creationBlock: 19, createdAt: "2026-01-01T00:00:00.000Z", verified: false, ...over,
 });
-export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, ...over });
+export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, canton: null, ...over });
+/** What the gateway holds on Canton of a registered token's instrument: 1,000 whole units of 10 decimals. */
+export const cantonCustody = (over: Partial<CantonCustody> = {}): CantonCustody => ({
+  instrumentAdmin: "registry::1220" + "ff".repeat(32), instrumentId: "TKB", custody: "10000000000000", custodyDecimals: 10, holdings: 2, supply: "1000000000", supplyBlock: 21, ledgerOffset: 4242, readAt: "2026-10-25T10:00:00.000Z", ...over,
+});
 export const tokenHolder = (n: number, value: string, over: Partial<TokenHolder> = {}): TokenHolder => ({ holder: addr(n), tokenId: "0", value, updatedBlock: 20, ...over });
 export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}): AddressTransferItem => ({
   txHash: hash(n), block: 20, txIndex: 0, logIndex: n, batchIndex: 0, methodId: null, creation: false, timestamp: 1700000000, token: addr(0xcb), standard: "ERC-20", from: addr(0xa1), to: addr(0xa2), amount: "100000000", tokenId: null, ...over,
@@ -267,7 +271,7 @@ export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}
 
 /** A gateway leg as /api/legs gives it: leg n of block 21, made by transaction n. */
 export const legListItem = (n: number, over: Partial<LegListItem> = {}): LegListItem => ({
-  block: 21, txHash: hash(0xd0 + n), legIndex: n, txIndex: n, logIndex: n + 1, kind: "deposit", legId: hash(0xe0 + n), token: addr(0xb1), account: addr(0xa1), amount: "2500000", ...over,
+  block: 21, txHash: hash(0xd0 + n), legIndex: n, txIndex: n, logIndex: n + 1, kind: "deposit", legId: hash(0xe0 + n), token: addr(0xb1), account: addr(0xa1), amount: "2500000", party: null, ...over,
 });
 
 /** A fake /api/labels answering each address asked from `known`, as an address the index holds nothing of when it is not there. */

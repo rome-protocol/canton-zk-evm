@@ -17,7 +17,7 @@ import { userInfo } from "node:os";
 import { Pool } from "pg";
 import { loadConfig } from "../config.ts";
 import { connectionConfig } from "../db/connect.ts";
-import { ledgerFromConfig } from "../ledger-config.ts";
+import { gatewayLedgerFromConfig, ledgerFromConfig } from "../ledger-config.ts";
 import { parseCommand, UsageError, type Command } from "./commands.ts";
 import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { IndexerStop } from "./errors.ts";
@@ -84,8 +84,10 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
     console.log(`reindex: ${done.blocks} blocks, ${done.from} to ${done.to}; their stage 2 rows are written again with them`);
     return 0;
   }
+  // The custody read is the one Ledger API client that reads as the gateway party, with a token file of its own.
+  const custody = settings.custody && { ledger: gatewayLedgerFromConfig(config, settings.custody), ms: settings.custody.ms, limit: settings.custody.limit };
   const indexer = createIndexer({
-    pool, reads, ledger: ledgerFromConfig(config),
+    pool, reads, ledger: ledgerFromConfig(config), ...(custody ? { custody } : {}),
     pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, journalDir: settings.journalDir, producerStatusFile: settings.producerStatusFile, journalMs: settings.journalMs, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
     log,
   });

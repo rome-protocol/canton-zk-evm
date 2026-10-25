@@ -380,6 +380,34 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     expect(await get("/api/legs/0x12")).toMatchObject({ status: 400 });
   });
 
+  it("names the Canton party a withdrawal paid, and none on any other leg", async () => {
+    const legs = body(await get("/api/legs")).items as { kind: string; party: string | null; legId: string }[];
+    expect(legs[0]).toMatchObject({ kind: "withdrawal", party: "alice::1220" + "ab".repeat(32) });
+    expect(body(await get(`/api/legs/${legs[0]!.legId}`)).party).toBe(legs[0]!.party);
+    // A deposit leg has no party column value (the EVM event of a deposit does not name one), so the answer says null, not a missing field.
+    await sql("insert into gateway_legs (block_number, leg_index, tx_index, log_index, kind, leg_id, token, account, amount, party) values (3, 0, 0, 0, 1, $1, $2, $3, 5, null)", [Buffer.alloc(32, 7), who(0xb1), who(0xa1)]);
+    try {
+      const all = body(await get("/api/legs")).items as { kind: string; party: string | null }[];
+      expect(all.map((l) => [l.kind, l.party === null])).toEqual([["deposit", true], ["withdrawal", false]]);
+      same(all[0]!, F.legItem);
+    } finally { await sql("delete from gateway_legs where leg_id = $1", [Buffer.alloc(32, 7)]); }
+  });
+
+  it("shows a token's custody on Canton with the registered instrument, and null for a token the gateway did not register", async () => {
+    expect(body(await get(`/api/tokens/${T1}`)).canton).toBeNull();
+    await sql("insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, supply, supply_block, ledger_offset, read_at) values ($1, 'registry::1220ff', 'TKB', 1230000000000, 3, 123000000, 7, 77, '2026-10-25T10:00:00Z')", [who(0xb1)]);
+    try {
+      const t = body(await get(`/api/tokens/${T1}`));
+      same(t, F.tokenDetail);
+      same(t.canton, F.cantonCustody);
+      expect(t.canton).toEqual({ instrumentAdmin: "registry::1220ff", instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, supply: "123000000", supplyBlock: 7, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z" });
+      expect(body(await get(`/api/tokens/${T2}`)).canton).toBeNull();
+      // The list does not carry it: one read of the table is for the one token's page.
+      for (const i of body(await get("/api/tokens")).items) expect(i).not.toHaveProperty("canton");
+    } finally { await sql("delete from gateway_tokens where evm_token = $1", [who(0xb1)]); }
+    expect(body(await get(`/api/tokens/${T1}`)).canton).toBeNull();
+  });
+
   it("caches a list for a second and what can still change for a few seconds with a tag, and a miss for nothing", async () => {
     const lists = ["/api/addresses", "/api/addresses?sort=txs", `/api/addresses/${A}/txs`, `/api/addresses/${A}/internal`, `/api/addresses/${A}/token-transfers`, `/api/addresses/${A}/coin-history`, "/api/contracts", "/api/tokens",
       `/api/tokens/${T1}/holders`, `/api/tokens/${T1}/transfers`, "/api/legs", `/api/search?q=${A}`];
