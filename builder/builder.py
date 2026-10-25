@@ -135,6 +135,39 @@ class Reth:
             raise BuilderError(f"{method} failed: {reply['error']}")
         return reply["result"]
 
+    def call_many(self, method: str, params_list: list, limit: int | None = None) -> list:
+        """The same method for each of the params, as JSON-RPC batches on the WebSocket port: one batch, split only when its request would be
+        over `limit` bytes (reth refuses a WebSocket request over 15 MB). The results are in the order of params_list."""
+        limit = WS_REQUEST_BYTES if limit is None else limit
+        out: list = []
+        batch, size = [], 2
+        for params in params_list:
+            self.next_id += 1
+            req = {"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params}
+            n = len(json.dumps(req)) + 1
+            if batch and size + n > limit:
+                out.extend(self._send_batch(method, batch))
+                batch, size = [], 2
+            batch.append(req)
+            size += n
+        if batch:
+            out.extend(self._send_batch(method, batch))
+        return out
+
+    def _send_batch(self, method: str, batch: list) -> list:
+        self.ws.send(json.dumps(batch))
+        replies = json.loads(self.ws.recv())
+        if not isinstance(replies, list):   # a single answer to the whole batch is an error
+            raise BuilderError(f"{method} batch failed: {replies.get('error') if isinstance(replies, dict) else replies}")
+        by_id = {r.get("id"): r for r in replies}
+        out = []
+        for req in batch:
+            reply = by_id.get(req["id"])
+            if reply is None or "error" in reply:
+                raise BuilderError(f"{method} failed: {reply['error'] if reply else 'no answer in the batch'}")
+            out.append(reply["result"])
+        return out
+
     def engine(self, method: str, params: list):
         auth = {"authorization": "Bearer " + jwt_token(self.cfg.jwt_secret)}
         try:
@@ -298,6 +331,7 @@ def price(t: dict) -> int:
 
 
 MIN_TX_GAS = 21000   # the least gas any transaction uses
+WS_REQUEST_BYTES = 10_000_000   # the most a request to reth's WebSocket port may hold: reth refuses one over 15 MB (a batch of fetches is split by this; the offered raw hex stays under it)
 
 
 def choose_txs(pending: dict, budget: int, exclude: set, used_each: int | None = None) -> list:
@@ -839,10 +873,23 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         save_kept(cfg, kept, attempt)   # before reth drops them from its pool
         reth.imported = kept
 
+    def build_listed(offered: list) -> tuple:
+        """reth builds the offered (transaction, raw) pairs in order and leaves out any it cannot run, with its sender's later ones (it was started
+        with --testing.skip-invalid-transactions). check_built requires what it built to be the offered list in order less some, under the cap.
+        Returns (the block reth built, the pairs in it)."""
+        raws = [raw for _, raw in offered]
+        built = reth.call("testing_buildBlockV1", [head, attributes, raws, None])   # always a list, never null
+        check_built(built, raws, cap, may_leave_out=True)
+        by_raw = {raw: (t, raw) for t, raw in offered}
+        return built, [by_raw[raw] for raw in built["executionPayload"]["transactions"]]
+
     if previous is not None:
-        pairs = without(previous, exclude)
-        keep(pairs)
-        built = build_exactly(reth, head, attributes, [raw for _, raw in pairs], cap)
+        # The last build's list less the excluded ones. The kept transactions can use more gas on the new state than they did, so reth may
+        # leave a tail one out: the block is the list less some, as in the pool path, and what reth left out is in the pool again.
+        listed = without(previous, exclude)
+        keep(listed)   # the saved copy was cleared when put_back sent them to the pool: it holds the list again before reth builds
+        built, pairs = build_listed(listed)
+        keep(pairs)    # and then what reth built
         reth.packed = {"packed": "listed"}
     else:
         pending = reth.call("txpool_content", [])["pending"]
@@ -850,19 +897,24 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         raws: dict = {}   # hash -> raw transaction, each fetched once
 
         def fetch(chosen: list) -> list:
+            """The (transaction, raw) pairs of the chosen ones, the raw ones in one batch. Stops adding once the raw hex of the list would pass
+            WS_REQUEST_BYTES (reth refuses a bigger request): a prefix of the list, so every sender's transactions stay in nonce order."""
+            missing = [t["hash"] for t in chosen if t["hash"] not in raws]
+            raws.update(zip(missing, reth.call_many("eth_getRawTransactionByHash", [[h] for h in missing])))
+            out, size = [], 0
             for t in chosen:
-                if t["hash"] not in raws:
-                    raws[t["hash"]] = reth.call("eth_getRawTransactionByHash", [t["hash"]])
-            return [(t, raws[t["hash"]]) for t in chosen]
+                size += len(raws[t["hash"]])
+                if out and size > WS_REQUEST_BYTES:
+                    break
+                out.append((t, raws[t["hash"]]))
+            return out
 
         # Offer reth every transaction that could fit if each one before it used the least gas a transaction can. reth runs them in this order and
-        # leaves out one whose gas limit is more than the block has left (and its sender's later ones): the block is full by gas used.
+        # leaves out any it cannot run (a gas limit over what the block has left, a wrong nonce, too little balance, a fee under the base fee) with
+        # its sender's later ones: the block is full by gas used.
         offered = fetch(choose_txs(pending, budget, exclude, used_each=MIN_TX_GAS))
         try:
-            built = reth.call("testing_buildBlockV1", [head, attributes, [raw for _, raw in offered], None])
-            check_built(built, [raw for _, raw in offered], cap, may_leave_out=True)
-            by_raw = {raw: (t, raw) for t, raw in offered}
-            pairs = [by_raw[raw] for raw in built["executionPayload"]["transactions"]]
+            built, pairs = build_listed(offered)
             reth.packed = {"packed": "gas_used", "offered": len(offered)}
         except BuilderError as e:
             # Not what was asked for, or reth cannot build it (it was started without --testing.skip-invalid-transactions): this block is
