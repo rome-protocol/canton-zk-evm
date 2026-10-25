@@ -256,6 +256,46 @@ class Judge(unittest.TestCase):
         _, failures = l3.judge([], **self.ok)
         self.assertTrue(failures)
 
+class SenderNonces(unittest.TestCase):
+    """The flood's sender counts V's nonces itself. reth moves back and resends a block's transactions while the next batch is made, and
+    eth_getTransactionCount "pending" then answers the old nonce: a sender that reads it for every batch signs a nonce twice."""
+
+    def fake(self, body):
+        import tempfile
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(folder, ignore_errors=True))
+        (folder / "demo_w1.py").write_text(body)
+        return folder
+
+    def sender(self, folder, per_block=3):
+        s = l3.Sender(sys.executable, folder, per_block)
+        s.prefix = []   # no `nice`
+        return s
+
+    def test_the_first_nonce_is_read_once_and_each_batch_goes_on_from_the_last(self):
+        folder = self.fake("import sys\nopen(__file__ + '.log', 'a').write(' '.join(sys.argv[1:]) + '\\n')\nprint(7 if sys.argv[1] == 'nonce' else 'ok')\n")
+        s = self.sender(folder)
+        s.start()
+        for _ in range(3):
+            s.next_batch()
+        s.stop = True
+        s.join(5)
+        lines = (folder / "demo_w1.py.log").read_text().splitlines()
+        self.assertEqual(lines[0], "nonce")
+        self.assertEqual(lines[1:4], ["plain 3 7", "plain 3 10", "plain 3 13"])
+        self.assertEqual(lines.count("nonce"), 1)
+
+    def test_a_failing_batch_shows_what_it_printed(self):
+        folder = self.fake("import sys\nif sys.argv[1] == 'nonce':\n    print(0)\nelse:\n    sys.stderr.write('nonce too low: next nonce 5, tx nonce 4')\n    sys.exit(1)\n")
+        s = self.sender(folder)
+        s.start()
+        with self.assertRaises(RuntimeError) as caught:
+            for _ in range(10):
+                s.next_batch()
+        s.stop = True
+        self.assertIn("nonce too low: next nonce 5, tx nonce 4", str(caught.exception))
+        self.assertIn("returned non-zero exit status 1", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

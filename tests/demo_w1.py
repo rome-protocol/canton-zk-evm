@@ -12,8 +12,9 @@
                                            batches (Multi: 18 ERC-1155 batches of 4,096 ids that share one array, from the holder of the ids to new holders)
                                            or spawn (Flood: new tokens that need their metadata read, a third of them Burners whose reads spend all their gas, and one a FatReturn whose reads answer 170 KB)
 
-  demo_w1.py plain <count>                 <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
-                                           (the nightly load test's flood, tests/demo_nightly_l3.py)
+  demo_w1.py plain <count> [nonce]         <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
+                                           (the nightly load test's flood, tests/demo_nightly_l3.py). The nonces start at [nonce], or at V's pending nonce when none is given
+  demo_w1.py nonce                         print V's pending nonce
 
 The transactions wait in reth's pool until the builder cuts a block. The failed calls carry a gas limit of their own, so that reth takes them.
 """
@@ -50,12 +51,17 @@ def recipient(i: int) -> str:
     return "0x" + keccak(f"nightly-l3:{time.time_ns()}:{i}".encode())[-20:].hex()
 
 
-def plain(folder: Path, count: int) -> list:
+def pending_nonce(folder: Path) -> int:
+    evm.make_keys(folder)
+    return int(evm.rpc("eth_getTransactionCount", [Account.from_key(evm.load_key(folder, "v")).address, "pending"]), 16)
+
+
+def plain(folder: Path, count: int, first_nonce: int | None = None) -> list:
     """Signs `count` transfers in one process (the key is read once and used here only) and sends them to reth's pool, nonces in order."""
     evm.make_keys(folder)
     account = Account.from_key(evm.load_key(folder, "v"))
     chain_id = int(evm.rpc("eth_chainId", []), 16)
-    nonce = int(evm.rpc("eth_getTransactionCount", [account.address, "pending"]), 16)
+    nonce = pending_nonce(folder) if first_nonce is None else first_nonce
     hashes = []
     for i in range(count):
         tx = {"type": 2, "chainId": chain_id, "nonce": nonce + i, "value": 1, "gas": PLAIN_GAS, "maxFeePerGas": evm.MAX_FEE,
@@ -90,8 +96,11 @@ def main(argv: list) -> int:
             data = selector(signature) + encode(["uint256"] * len(args), args).hex()
             print(evm.send(folder, "v", argv[1], data, gas))
         return 0
-    if cmd == ["plain"] and len(argv) == 2 and argv[1].isdigit():
-        print("\n".join(plain(folder, int(argv[1]))))
+    if cmd == ["plain"] and len(argv) in (2, 3) and all(a.isdigit() for a in argv[1:]):
+        print("\n".join(plain(folder, int(argv[1]), int(argv[2]) if len(argv) == 3 else None)))
+        return 0
+    if cmd == ["nonce"] and len(argv) == 1:
+        print(pending_nonce(folder))
         return 0
     print(__doc__, file=sys.stderr)
     return 2

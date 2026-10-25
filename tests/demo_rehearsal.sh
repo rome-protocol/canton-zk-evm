@@ -220,10 +220,14 @@ echo "== the indexer's real-reth tests: revert data (Error(string), Panic(uint25
 # here, through the real builder, and the test then indexes the whole chain into a PostgreSQL made for this run (the pinned image, loopback only).
 PY=$CZE_STATE_DIR/venv/bin/python3
 w1py() { "$PY" "$ROOT/tests/demo_w1.py" "$@"; }
+# CUT_MAX_TX_BYTES is the builder's --max-block-tx-bytes. The builder's default (64 KiB of raw transactions, for our participant's per-KB cost) would cut the explorer's
+# worst-case and flood blocks (1,428 transfers are about 160 KB) into smaller ones, and these tests measure the explorer on blocks as big as the gas cap allows: so the
+# rehearsal lifts it to 1 MiB, and the check of the cap itself sets its own.
 cut_block() {
   local out
   out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json" 2> "$CUT_ERR") \
+    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json" \
+    --max-block-tx-bytes "${CUT_MAX_TX_BYTES:-1048576}" 2> "$CUT_ERR") \
     || { cat "$CUT_ERR" >&2; fail "the builder stopped: $out"; }
   cat "$CUT_ERR" >&2   # the builder's stderr names how the block was packed ("block N: ..., packed by gas used"); the check below reads it
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
@@ -305,6 +309,18 @@ for g in $(jq -r '.transactions[].gas' <<<"$pack_json"); do pack_limits=$((pack_
 [ "$pack_limits" -gt "$GAS_CAP" ] || fail "the 8 deployments' gas limits ($pack_limits) are not over the cap ($GAS_CAP): the check proves nothing"
 [ "$(jq -r '.gasUsed' <<<"$pack_json" | xargs printf '%d')" -le "$GAS_CAP" ] || fail "block $PACK_BLOCK used more gas than the cap"
 echo "block $PACK_BLOCK: 8 transactions that declare $pack_limits gas against a cap of $GAS_CAP, packed by gas used"
+# The cap on a block's raw transaction bytes (--max-block-tx-bytes), on the real reth: three deployments of about 30 KB each (initcode that returns at once, then
+# bytes that never run) against a cap of 70,000: the first two go into the block, the third ends the turn of V (it does not fit) and goes into the next block.
+"$PY" -c 'import sys; open(sys.argv[1], "w").write("5f5ff3" + "ff" * 30000)' "$WORK/w1/Big.bin"
+big_txs=()
+for _ in 1 2 3; do big_txs+=("$(w1py deploy "$WORK/w1/Big.bin" 700000)"); done
+mined_in() { rpc eth_getTransactionByHash "\"$1\"" | jq -r '.result.blockNumber'; }
+CUT_MAX_TX_BYTES=70000 cut_block
+{ [ "$(mined_in "${big_txs[0]}")" != null ] && [ "$(mined_in "${big_txs[1]}")" != null ]; } || fail "the first two 30 KB deployments are not in the block cut with a cap of 70,000 bytes"
+[ "$(mined_in "${big_txs[2]}")" = null ] || fail "the third 30 KB deployment is in the block: the cap of 70,000 bytes did not hold"
+CUT_MAX_TX_BYTES=70000 cut_block
+[ "$(mined_in "${big_txs[2]}")" != null ] || fail "the third 30 KB deployment did not go into the next block"
+echo "a cap of 70,000 raw bytes: two 30 KB deployments in a block, the third in the next"
 echo "== the Etherscan door's contract module: forge verify-contract (both formats), cast source and cast interface, against Box built and deployed here"
 # Box is built twice by the script (the pinned Foundry, checked against its SHA-256; the solc of PINS' image, copied out of it, is the compiler forge runs) and deployed twice with
 # the argument 42; the explorer's verifier compiles it again, in its sandbox, with the solc it downloads from the compiler list.
