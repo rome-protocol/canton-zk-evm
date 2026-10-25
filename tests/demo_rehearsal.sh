@@ -310,10 +310,10 @@ for g in $(jq -r '.transactions[].gas' <<<"$pack_json"); do pack_limits=$((pack_
 [ "$(jq -r '.gasUsed' <<<"$pack_json" | xargs printf '%d')" -le "$GAS_CAP" ] || fail "block $PACK_BLOCK used more gas than the cap"
 echo "block $PACK_BLOCK: 8 transactions that declare $pack_limits gas against a cap of $GAS_CAP, packed by gas used"
 # The cap on a block's raw transaction bytes (--max-block-tx-bytes), on the real reth: three deployments of about 30 KB each (initcode that returns at once, then
-# bytes that never run) against a cap of 70,000: the first two go into the block, the third ends the turn of V (it does not fit) and goes into the next block.
+# bytes that never run; 1.4 Mgas each, over the 1.22 Mgas that Prague's calldata floor asks for) against a cap of 70,000: the first two go into the block, the third ends the turn of V (it does not fit) and goes into the next block.
 "$PY" -c 'import sys; open(sys.argv[1], "w").write("5f5ff3" + "ff" * 30000)' "$WORK/w1/Big.bin"
 big_txs=()
-for _ in 1 2 3; do big_txs+=("$(w1py deploy "$WORK/w1/Big.bin" 700000)"); done
+for _ in 1 2 3; do big_txs+=("$(w1py deploy "$WORK/w1/Big.bin" 1400000)"); done
 mined_in() { rpc eth_getTransactionByHash "\"$1\"" | jq -r '.result.blockNumber'; }
 CUT_MAX_TX_BYTES=70000 cut_block
 { [ "$(mined_in "${big_txs[0]}")" != null ] && [ "$(mined_in "${big_txs[1]}")" != null ]; } || fail "the first two 30 KB deployments are not in the block cut with a cap of 70,000 bytes"
