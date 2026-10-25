@@ -30,3 +30,16 @@ pairs _ = None
 
 digit : Text -> Optional Int
 digit d = lookup d (zip hexDigits [0 .. 15])
+
+-- The length of a field in characters, written as 10 decimal digits: the prefix `verify2` reads in front of each of the proof and
+-- the header. Decimal digits are hex digits, so a line made of these and hex fields is still a hex string.
+lengthField : Text -> Text
+lengthField s = mconcat (replicate (10 - T.length n) "0") <> n
+  where n = show (T.length s)
+
+-- The line `verify2` takes: the SHA-256 of the rest as 64 lowercase hex digits, then the proof and the header, each behind its
+-- length, then the transactions. The hash is of the text as Daml holds it. The runtime lowercases the text it sends, so a capital
+-- letter kept in a field here would reach the sidecar as a small one and pass; with the hash it makes the line refused instead.
+verify2Line : Text -> Text -> Text -> Text
+verify2Line proofHex headerHex txsHex = T.sha256 body <> body
+  where body = lengthField proofHex <> proofHex <> lengthField headerHex <> headerHex <> txsHex

@@ -5,6 +5,7 @@
 -- through the same hex helpers as the production form: the request body is hex, so is the answer's.
 module Zk.Sidecar where
 
+import DA.Optional (fromOptional)
 import qualified DA.Text as T
 import Zk.Hex
 
@@ -25,8 +26,11 @@ fiveTokens = mconcat (replicate 48 "0") <> "4563918244f40000"
 stubService : (Text -> Text) -> Text -> Text
 stubService answer body = toHex (answer (fromHex body))
 
-verifyCall : Text -> Update Text
-verifyCall input = pure (fromHex (stubService verifyAnswer (toHex input)))
+-- The line goes to the stand-in as it goes to the real service: lowercased by the runtime (DA.ExternalCall's externalCall does it on
+-- the way), and not hexed again. The sidecar's `verify2` then takes the line apart, as `verify2Answer` does.
+verifyBlockCall : Text -> Text -> Text -> Update Text
+verifyBlockCall proofHex headerHex txsHex =
+  pure (fromHex (toHex (verify2Answer (T.asciiToLower (verify2Line proofHex headerHex txsHex)))))
 
 legsCall : Text -> Update Text
 legsCall input = pure (fromHex (stubService legsAnswer (toHex input)))
@@ -40,24 +44,51 @@ wholeBytes s = T.length s % 2 == 0 && all (`elem` T.explode "0123456789abcdef") 
 nodesOk : Text -> Bool
 nodesOk s = s == "" || all (\n -> n /= "" && wholeBytes n) (T.splitOn ";" s)
 
+-- What the sidecar's `verify2` does with a line: the first 64 characters are the SHA-256 of the rest, which is the proof and the
+-- header, each behind 10 decimal digits for its length, and then the transactions. Anything else is "malformed input".
+verify2Answer : Text -> Text
+verify2Answer line
+  | T.length line < 64 || T.sha256 body /= T.take 64 line = malformed
+  | otherwise = case lengthPrefixed body of
+      Some (proof, rest) -> case lengthPrefixed rest of
+        Some (header, txs) -> verifyAnswer proof header txs
+        None -> malformed
+      None -> malformed
+  where
+    body = T.drop 64 line
+    malformed = "no malformed input"
+
+lengthPrefixed : Text -> Optional (Text, Text)
+lengthPrefixed s
+  | T.length digits == 10 && all (`elem` T.explode "0123456789") (T.explode digits) && n <= T.length rest = Some (T.take n rest, T.drop n rest)
+  | otherwise = None
+  where
+    digits = T.take 10 s
+    rest = T.drop 10 s
+    n = fromOptional 0 (T.parseInt digits)
+
 -- Header "01" is a good block 1 on the genesis; "11" a good block 2 on block 1. The rest each get one thing wrong.
 -- A block's state root is the one of its number: block 1's, then block 2's.
-verifyAnswer : Text -> Text
-verifyAnswer input = case T.splitOn "," input of
-  [proof, header, txs]
-    | not (all wholeBytes [proof, header, txs]) -> "no malformed input"
-    | proof == "ba" -> "no the proof does not verify"
-    | header == "01" -> ok stubVK stubRoot stubHash1 stubHash0 1 30000000
-    | header == "11" -> ok stubVK stubRoot stubHash2 stubHash1 2 30000000
-    | header == "02" -> ok stubVK stubRoot stubHash1 stubHash2 1 30000000   -- the parent is not the head
-    | header == "03" -> ok stubVK stubRoot stubHash1 stubHash0 2 30000000   -- the number skips one
-    | header == "04" -> ok stubVK stubRoot stubHash1 stubHash0 1 31000000   -- the gas limit is over the cap
-    | header == "05" -> ok stubRoot stubRoot stubHash1 stubHash0 1 30000000 -- proven under another program
-    | header == "06" -> ok stubVK stubVK stubHash1 stubHash0 1 30000000     -- proven under another ZisK release
-    | otherwise -> "no unknown block"
-  _ -> "no malformed input"
+-- Headers "07" to "0a" are block 1 with a limit or a gas use above 30M: "07" has the limit 60M, "08" 60,000,001, "09" the limit 60M
+-- and 60,000,001 used, "0a" the limit 60M and exactly 60M used.
+verifyAnswer : Text -> Text -> Text -> Text
+verifyAnswer proof header txs
+  | not (all wholeBytes [proof, header, txs]) = "no malformed input"
+  | proof == "ba" = "no the proof does not verify"
+  | header == "01" = ok stubVK stubRoot stubHash1 stubHash0 1 30000000 21000
+  | header == "11" = ok stubVK stubRoot stubHash2 stubHash1 2 30000000 21000
+  | header == "02" = ok stubVK stubRoot stubHash1 stubHash2 1 30000000 21000   -- the parent is not the head
+  | header == "03" = ok stubVK stubRoot stubHash1 stubHash0 2 30000000 21000   -- the number skips one
+  | header == "04" = ok stubVK stubRoot stubHash1 stubHash0 1 31000000 21000   -- the gas limit is over the cap
+  | header == "05" = ok stubRoot stubRoot stubHash1 stubHash0 1 30000000 21000 -- proven under another program
+  | header == "06" = ok stubVK stubVK stubHash1 stubHash0 1 30000000 21000     -- proven under another ZisK release
+  | header == "07" = ok stubVK stubRoot stubHash1 stubHash0 1 60000000 21000
+  | header == "08" = ok stubVK stubRoot stubHash1 stubHash0 1 60000001 21000
+  | header == "09" = ok stubVK stubRoot stubHash1 stubHash0 1 60000000 60000001
+  | header == "0a" = ok stubVK stubRoot stubHash1 stubHash0 1 60000000 60000000
+  | otherwise = "no unknown block"
   where
-    ok vk rc bh ph n gl = T.intercalate " " ["ok", vk, rc, bh, ph, show n, if n == 2 then stubStateRoot2 else stubStateRoot, "1700000000", show gl, "21000", "1"]
+    ok vk rc bh ph n gl used = T.intercalate " " ["ok", vk, rc, bh, ph, show n, if n == 2 then stubStateRoot2 else stubStateRoot, "1700000000", show gl, show used, "1"]
 
 -- The stub cannot hash, so it stands in for the gateway's proofs like this. The roots and numbers are the ones of its blocks:
 -- block 1 under the first state root, block 2 under the second; under any other pair the account proof does not verify.
