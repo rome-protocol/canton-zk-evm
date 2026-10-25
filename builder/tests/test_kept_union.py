@@ -1,6 +1,6 @@
 """The kept file holds the transactions of every block being made, each entry tagged with its block's number, and each attempt has a folder of
 its own. Run: python3 -m unittest discover -s builder/tests"""
-import json, sys, unittest
+import json, os, sys, unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -97,6 +97,29 @@ class KeptFile(tb.Case):
         b.clear_saved(s.cfg, 5)   # clearing is lenient: it raises nothing
 
 
+class UnreadableFile(tb.Case):
+    def damage(self, s):
+        b.saved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        b.saved_path(s.cfg).write_text("[{not json")
+
+    def test_clearing_a_block_leaves_a_file_it_cannot_read(self):
+        s = self.setup({})
+        self.damage(s)
+        b.clear_saved(s.cfg, 5)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), "[{not json")
+        b.saved_path(s.cfg).write_text('{"not": "a list"}')
+        b.clear_saved(s.cfg, 5)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), '{"not": "a list"}')
+
+    def test_a_block_that_cannot_be_kept_raises_and_the_file_is_still_there_after_the_failure(self):
+        s = self.setup({tb.ALICE: [tx(tb.ALICE, 0)]})
+        self.damage(s)
+        with self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), "[{not json")
+        self.assertEqual(self.in_pool(s), {tx(tb.ALICE, 0)["hash"]})
+
+
 class OtherBlocksSurvive(tb.LegCase):
     """Block N is put back, refused, fails or commits while block N+1's entry is in the file: only N's entries go."""
     OTHER = {"hash": "0xb", "raw": "0x02", "number": N + 1}
@@ -174,6 +197,22 @@ class AttemptFolders(tb.Case):
         self.assertTrue((built.work / "out" / "wrapped-proof.hex").is_file())
         self.assertFalse((built.attempt_dir / "out").exists())                     # moved, not copied
         self.assertTrue((built.attempt_dir / "input.bin").is_file())
+
+    def test_a_proof_of_a_refused_block_does_not_stay_when_the_rebuild_fails_to_prove(self):
+        s = self.setup({tb.ALICE: [tx(tb.ALICE, 0)]})
+        reth, chain = self.cut(s)
+        first = b.build(s.cfg, reth, chain, HEAD_HASH, set())
+        b.prove(s.cfg, first)   # accepted, then Advance is refused and the block is built again at the same height
+        self.assertTrue((first.work / "out" / "wrapped-proof.hex").is_file())
+        reth.forkchoice(HEAD_HASH, HEAD_HASH, HEAD_HASH)
+        b.put_back(reth, first.n)
+        second = b.build(s.cfg, reth, chain, HEAD_HASH, set())
+        self.assertEqual(first.work, second.work)
+        os.environ["FAKE_PROVER_FAILS"] = "1"
+        self.addCleanup(os.environ.pop, "FAKE_PROVER_FAILS", None)
+        with self.assertRaises(b.ProvingError):
+            b.prove(s.cfg, second)
+        self.assertFalse((second.work / "out").exists())
 
     def test_only_the_newest_attempt_folders_of_a_block_are_kept(self):
         s = self.setup({tb.ALICE: [tx(tb.ALICE, 0)]})

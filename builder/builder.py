@@ -258,13 +258,14 @@ def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None, number
 
 def clear_saved(cfg: Config, number: int | None = None) -> None:
     """Called once Canton has the block or the transactions are back in reth's pool. With a `number` only that block's entries go; the
-    others stay. A file that cannot be changed is harmless: sent again, its transactions are `already known` or have a used nonce."""
+    others stay. A file that cannot be changed is harmless: sent again, its transactions are `already known` or have a used nonce. A file
+    that cannot be read stays as it is: it may be the only copy of other blocks' transactions."""
     try:
         if number is None:
             saved_path(cfg).unlink(missing_ok=True)
         elif saved_path(cfg).exists():
-            write_saved(cfg, other_blocks(saved_entries(cfg), number))
-    except OSError:
+            write_saved(cfg, other_blocks(saved_file_entries(cfg), number))
+    except (OSError, BuilderError):
         pass
 
 
@@ -1086,6 +1087,7 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     kept = [t["hash"] for t in built.chosen]
     # Each attempt has its own folder, output included: a prover left behind by a killed builder writes into the old one, never into this one.
     out = attempt_dir / "out"
+    shutil.rmtree(work / "out", ignore_errors=True)   # the block's `out` holds only the proof of the attempt that is accepted: an earlier attempt's or run's proof of this height goes now
     try:
         attempt.event("proof_started", prover=prover)
         run(cfg.make_input_cmd, str(attempt_dir / "block.json"), str(attempt_dir / "witness.json"), cfg.genesis, str(attempt_dir / "input.bin"))
@@ -1103,7 +1105,6 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     except BuilderError as e:
         attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300])
         raise ProvingError(str(e), kept) from e
-    shutil.rmtree(work / "out", ignore_errors=True)   # an earlier attempt's or run's proof of this height
     os.replace(out, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
     attempt.event("proof_ended", prover=prover, outcome="ok", seconds=prove_seconds)
@@ -1297,6 +1298,11 @@ def builder_now() -> float:
     return time.time()
 
 
+def in_block_order(entries: list, default: int) -> list:
+    """The kept entries by block number, each block's own order kept; an entry with no number (an older file) counts as block `default`."""
+    return sorted(entries, key=lambda e: e["number"] if isinstance(e.get("number"), int) else default)
+
+
 def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
     """Settles an Advance whose answer did not arrive, by its own command id. Reads the builder user's completions from the ledger end
     recorded before the submit. A completion that succeeded: the block committed, reth's head is made final. One that failed: it did not
@@ -1344,7 +1350,7 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         except BuilderError:   # damaged and moved aside: what was given is all there is
             kept = []
         number = u["number"] if isinstance(u.get("number"), int) else 0
-        kept = sorted(kept, key=lambda e: e["number"] if isinstance(e.get("number"), int) else number)   # block order, each block's own order kept
+        kept = in_block_order(kept, number)
         in_file = {e["hash"] for e in kept}
         union = [*(p for p in pairs if p[0] not in in_file), *((e["hash"], e["raw"]) for e in kept)]   # what was given and the file lacks goes first
         reth.forkchoice(head, head, head)
@@ -1381,6 +1387,8 @@ def recover_saved(cfg: Config, wait=None, close=None) -> dict | None:
                 raise
             wait(2)
     entries = read_saved_entries(cfg)
+    if entries is not None:
+        entries = in_block_order(entries, 0)
     if entries is None:
         return {"recovered": 0, "lostTransactions": settled.pop("lostTransactions", []), "settled": settled} if settled else None
     pairs = [(e["hash"], e["raw"]) for e in entries]

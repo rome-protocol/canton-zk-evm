@@ -1,6 +1,7 @@
 """Recovery with several blocks kept: an in-doubt command settles by its own id, the blocks above it are sent again, and every abandoned
 attempt is closed. Run: python3 -m unittest discover -s builder/tests"""
 import json, sys, threading, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -157,6 +158,18 @@ class Recovery(tb.Case):
         lines = [(l["attempt_run"], l["attempt"], l["outcome"]) for l in self.journal(s, "resolved")]
         self.assertEqual(lines, [("run-a", 3, "restarted"), ("run-a", 4, "restarted")])
         self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_a_restart_with_no_record_sends_the_entries_in_block_order(self):
+        s = self.setup({})
+        entries = [{"hash": "0xc", "raw": "0x03", "number": N + 2}, {"hash": "0xa", "raw": "0x01", "number": N},
+                   {"hash": "0xb", "raw": "0x02", "number": N + 1}, {"hash": "0xd", "raw": "0x04", "number": N}]
+        b.saved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        b.saved_path(s.cfg).write_text(json.dumps(entries))
+        sent = []
+        with mock.patch.object(b, "resend", lambda reth, pairs: sent.extend(pairs) or []):
+            out = b.recover_saved(s.cfg)
+        self.assertEqual([h for h, _ in sent], ["0xa", "0xd", "0xb", "0xc"])   # by block, each block's own order kept
+        self.assertEqual(out["recovered"], 4)
 
     def test_an_old_format_file_with_no_record_is_sent_again_and_its_attempt_closed(self):
         t1 = tx(ALICE, 0)
