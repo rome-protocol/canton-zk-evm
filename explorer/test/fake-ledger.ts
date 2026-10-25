@@ -58,7 +58,7 @@ export function holding(n: number, owner: string, amount: string, admin = FAKE_R
   const value = view ?? { owner, instrumentId: { admin, id }, amount, lock, meta: { values: {} } };
   return {
     contractId: "00" + n.toString(16).padStart(8, "0"), templateId: "999999:Some.Token:Holding", signatories,
-    interfaceViews: [view === "unreadable" ? { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 3, message: "no view" } } : { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 0 }, viewValue: value }],
+    interfaceViews: [view === "unreadable" ? { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 3, message: "no view" } } : { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 0, message: "" }, viewValue: value }],
   };
 }
 
