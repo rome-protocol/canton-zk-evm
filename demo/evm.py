@@ -6,6 +6,9 @@
   evm.py genesis                   write $CZE_STATE_DIR/demo/genesis.json: network/genesis.json plus 10 ether for each of V and U
   evm.py deploy                    V deploys TKA, which gives its whole supply (1,000 TKA) to V; print the transaction hash
   evm.py transfer <token> <amount> V sends U <amount> TKA (a whole number) from the token at that address; print the transaction hash
+  evm.py give <u|v> <token> <to> <amount>
+                                   the sender sends <amount> (a whole number) of the token at that address to <to>, an address: the token's own
+                                   transfer. The live cycle uses it to send the WtROME of a payment back to V; print the transaction hash
   evm.py register <u|v> <name> <symbol>
                                    the gateway makes a wrapped token; print the transaction hash and the address the token will have
                                    (register one token at a time: the address is worked out from the gateway's state when the transaction is sent)
@@ -281,6 +284,8 @@ def main(argv: list) -> dict:
         return {"tx": send(folder, "v", None, deploy_data(v), DEPLOY_GAS), "supplyTo": v, "supply": 1000}
     if cmd == ["transfer"] and n == 3 and WHOLE.fullmatch(argv[2]) and int(argv[2]) > 0:
         return {"tx": send(folder, "v", argv[1], transfer_data(make_keys(folder)["u"], int(argv[2])), TRANSFER_GAS)}
+    if cmd == ["give"] and n == 5:
+        return {"tx": send(folder, who_sends(argv[1]), address_of(argv[2], "the token"), transfer_data(address_of(argv[3], "the receiver"), whole(argv[4], "the amount")), TRANSFER_GAS)}
     if cmd == ["register"] and n == 4 and argv[2] and argv[3]:
         who, address = who_sends(argv[1]), make_keys(folder)[argv[1]]
         data = call_data("register(string,string)", [argv[2], argv[3]])
