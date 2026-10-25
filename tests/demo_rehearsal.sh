@@ -195,7 +195,7 @@ EXPLORER=$EXPLORER ETHERSCAN_ADDRESS=$TO ETHERSCAN_BALANCE=1000000000000000000 E
 echo "--- what the explorer asked reth and Canton for"
 # Canton, asked by the explorer (the ledger end, for its status) and by the indexer (the ledger end, the updates and the participant id), and nothing else, with one exception:
 # the custody read (POST /v2/state/active-contracts, the registered tokens and the gateway's holdings), which the indexer makes only when GATEWAY_PARTY and its token file are set
-# (off in this rehearsal: the local participant has no login). When it is made, it is for the gateway party alone, the token contracts and the holding interface alone.
+# (off in this rehearsal: the local participant has no login, and the gateway is on a different participant than the reader). When it is made, it is for the gateway party alone, the token contracts and the holding interface alone.
 # Every update request names the reader party and the block record, and no other party.
 CALLS=$(jq -r '.method + " " + (.path | split("?")[0])' "$WORK/ledger-calls" | sort -u)
 [ "$(printf '%s\n' "$CALLS" | grep -v '^POST /v2/state/active-contracts$')" = $'GET /v2/parties/participant-id\nGET /v2/state/ledger-end\nPOST /v2/updates' ] \
