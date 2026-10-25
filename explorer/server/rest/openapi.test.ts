@@ -72,6 +72,8 @@ describe("the API description", () => {
     expect(Object.keys(props("/api/addresses")).sort()).toEqual([...F.derivedPage].sort());
     expect(Object.keys(props("/api/addresses").items.items.properties).sort()).toEqual([...F.addressItem].sort());
     expect(Object.keys(props("/api/tokens/{address}")).sort()).toEqual([...F.tokenDetail].sort());
+    expect(F.tokenDetail).toContain("canton");
+    expect(F.legItem).toContain("party");
     expect(Object.keys(props("/api/status")).sort()).toEqual([...FIELDS.status].sort());
     // The transaction list also says how many the chain holds and as of when; /api/labels is an object whose `items` are labels, not one label.
     expect(Object.keys(props("/api/txs")).sort()).toEqual([...F.txPage].sort());

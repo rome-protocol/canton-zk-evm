@@ -11,6 +11,8 @@ import { addressOfKey, bytes, hex, hexOrNull, MS, txSelect, type TxListItem, txI
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Key = (number | string)[];
 const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
+/** A Canton amount's own scale (Daml Numeric 10): the unit of `canton.custody`. */
+const CUSTODY_DECIMALS = 10;
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 
 export type AddressSort = "balance" | "txs";
@@ -90,9 +92,11 @@ export interface TokenItem {
   /** Who made the token's contract, in which block and when; none of the three where the explorer saw no creation (a contract of the genesis state). */
   creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
 }
-export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string }
+/** The gateway's custody of a registered token on Canton (`gateway_tokens`): base units of 10 decimals, and when and at which ledger offset it was read. */
+export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; ledgerOffset: number; readAt: string }
+export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
-export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
+export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; party: string | null }
 /** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
 export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string }
@@ -467,7 +471,10 @@ export function createAccountRest(pool: Pool) {
 
   async function token(a: string): Promise<TokenDetail | undefined> {
     const [r] = await query(`select ${tokenSelect} ${tokenFrom} where tk.address = $1`, [bytes(a)]);
-    return r && { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode };
+    if (!r) return undefined;
+    const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
+    const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
+    return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton };
   }
 
   /** Who holds a token, most first, after the key (value, holder, id). A holder of several ids of an ERC-1155 is listed once for each. */
@@ -492,11 +499,11 @@ export function createAccountRest(pool: Pool) {
     return rows.map(transferItem);
   }
 
-  const legSelect = "g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, t.hash";
+  const legSelect = "g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, t.hash";
   const legFrom = "from gateway_legs g left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index";
   const legItem = (r: Row): LegListItem => ({
     block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: LEG_KINDS[r.kind] ?? String(r.kind), legId: hex(r.leg_id),
-    token: hex(r.token), account: hex(r.account), amount: r.amount,
+    token: hex(r.token), account: hex(r.account), amount: r.amount, party: r.party ?? null,
   });
 
   /** The gateway's legs, newest first, after the key (block, leg index). */

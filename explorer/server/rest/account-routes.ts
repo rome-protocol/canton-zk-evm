@@ -270,7 +270,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     addressOf(a);
     const t = await accounts.token(a);
     if (!t) return missing(NO_TOKEN);
-    return cached(ok(pick({ ...t, derived: await isDerived() }, F.tokenDetail)), "composite");
+    return cached(ok(pick({ ...t, canton: t.canton && pick(t.canton, F.cantonCustody), derived: await isDerived() }, F.tokenDetail)), "composite");
   }
 
   async function tokenHolders(a: string, q: URLSearchParams): Promise<Answer> {
