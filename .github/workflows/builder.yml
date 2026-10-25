@@ -2,10 +2,10 @@ name: builder
 
 on:
   pull_request:
-    paths: ["builder/**", "network/sync_reth.py", "gateway/Gateway.sol", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
+    paths: ["builder/**", "network/**", "PINS", "prover/make-block.py", "gateway/Gateway.sol", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
   push:
     branches: [main]
-    paths: ["builder/**", "network/sync_reth.py", "gateway/Gateway.sol", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
+    paths: ["builder/**", "network/**", "PINS", "prover/make-block.py", "gateway/Gateway.sol", "sidecar/tests/fixtures/block.json", ".github/workflows/builder.yml"]
 
 permissions:
   contents: read
@@ -26,6 +26,23 @@ jobs:
       - name: Run the tests
         run: |
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s builder/tests -v
+
+  # The block gas limit ramp on a real reth, started only through network/reth/launch.sh (peer discovery off): the limit rises toward the
+  # target by less than 1/1024 of its parent per block and stops at the target or at the chain's cap.
+  gas-ramp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - name: Install the packages, by hash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r demo/requirements.txt
+      - name: The gas limit ramp on a real reth
+        run: PYTHON="$RUNNER_TEMP/venv/bin/python" builder/tests/real_reth_gas_ramp.sh
 
   shellcheck:
     runs-on: ubuntu-latest
