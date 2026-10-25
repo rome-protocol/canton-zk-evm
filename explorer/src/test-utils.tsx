@@ -127,7 +127,7 @@ export function route(h: {
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
   labels?: (path: string) => Reply;
-  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
+  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply; updateTxs?: (id: string, path: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -138,6 +138,7 @@ export function route(h: {
     if (kind === "blocks" && arg && sub === "record") return h.blockRecord ? h.blockRecord(decodeURIComponent(arg)) : gone();
     if (kind === "blocks" && arg) return h.blockDetail ? h.blockDetail(decodeURIComponent(arg)) : gone();
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "transactions") return h.updateTxs ? h.updateTxs(decodeURIComponent(sub), path) : reply(page([]));
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "addresses") return h.addresses ? h.addresses(decodeURIComponent(arg), sub, path) : gone();

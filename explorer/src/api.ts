@@ -338,6 +338,8 @@ export interface LegListItem extends LegItem { block: number; txHash: string | n
 export const getLegPage = async (before: string | null, limit = PAGE) => (await call(`/api/legs?limit=${limit}${cursor("before", before)}`, [200])).body as Page<LegListItem>;
 export const getLeg = async (id: string) => (await call(`/api/legs/${encodeURIComponent(id)}`, [200])).body as LegListItem;
 export const getUpdates = async (before: string | null, limit = PAGE) => (await call(`/api/canton/updates?limit=${limit}${cursor("before", before)}`, [200])).body as Page<UpdateItem>;
+/** The EVM transactions one Canton update settled: its block's, in order. */
+export const getUpdateTxs = async (id: string, after: string | null, limit = PAGE) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/transactions?limit=${limit}${cursor("after", after)}`, [200])).body as Page<TxListItem>;
 export const getUpdate = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}`, [200])).body as UpdateDetail;
 /** The updates just newer and just older than one, by the list's key, newest first, the update itself among them. */
 export const getUpdatesAround = async (id: string) => (await call(`/api/canton/updates/${encodeURIComponent(id)}/around`, [200])).body as { items: UpdateAroundItem[] };

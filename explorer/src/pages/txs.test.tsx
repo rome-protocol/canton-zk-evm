@@ -42,6 +42,15 @@ describe("the transactions page", () => {
     expect(within(rows()[2]!).getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
   });
 
+  it("names the Canton update of each final transaction, linked to its page, and says 'not final yet' for the rest", async () => {
+    await open({ inFlight: () => reply(flight()), tx: byHash("") });
+    expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toContain("Canton update");
+    expect(rows()[0]).toHaveTextContent("not final yet");
+    const link = within(rows()[2]!).getByRole("link", { name: /^1220/ });
+    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/canton\/1220[0-9a-f]{64}$/));
+    expect(within(rows()[3]!).getByRole("link", { name: /^1220/ })).not.toHaveAttribute("href", link.getAttribute("href")!);
+  });
+
   it("marks a failed transaction and shows the fee with every digit", async () => {
     await open({ txs: () => reply(page([txItem(3, { success: false, gasUsed: 21000, gasPrice: "1670000000" })])) });
     expect(within(rows()[0]!).getByRole("img", { name: "Failed (reverted)" })).toBeInTheDocument();
