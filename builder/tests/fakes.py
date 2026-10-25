@@ -14,6 +14,7 @@ LEDGER_TOKEN = "ledger-test-token"
 BUILDER = "builder::1220aa"
 HEAD_HASH = "0x" + "ab" * 32
 HEAD_NUMBER = 4
+PROOF_WINDOW = 1   # reth is run with --rpc.eth-proof-window 1
 HEAD_TIME = 1000
 GATEWAY = "a7e0" + "00" * 18   # the gateway contract's address, 40 lowercase hex digits, as the chain record writes it
 LEG_TOPIC = "0x" + keccak256(b"Leg(uint8,bytes32,address,address,uint256,string)").hex()   # the gateway's Leg event
@@ -183,6 +184,14 @@ class FakeReth:
                 if not self.pool[sender]:
                     del self.pool[sender]
 
+    def chain_txs(self) -> set:
+        """The hashes of the transactions of every block on the head's chain (the head and each parent back to the first block reth knows)."""
+        out, h = set(), self.head
+        while h in self.blocks:
+            out.update(self.block_txs.get(h, []))
+            h = self.blocks[h].get("parent")
+        return out
+
     def send_raw(self, raw):
         """eth_sendRawTransaction: a transaction already in the pool is `already known`; one reth never saw is refused."""
         hash_ = hash_of(raw)
@@ -191,7 +200,7 @@ class FakeReth:
             raise RuntimeError("the connection broke")
         if self.refuse_resend:
             raise RpcError("refused")
-        if hash_ in self.block_txs.get(self.head, []):   # in the head block: its state has the transaction, so the nonce is used
+        if hash_ in self.chain_txs():   # in any block on the head's chain: the head's state has the transaction, so the nonce is used
             raise RpcError("nonce too low")
         if any(t["hash"] == hash_ for ts in self.pool.values() for t in ts):
             raise RpcError("already known")
@@ -229,6 +238,9 @@ class FakeReth:
         if method == "eth_getLogs":
             return self._logs(params[0])
         if method == "eth_getProof":   # only the gateway's account and its legs slot are ever asked for
+            # reth --rpc.eth-proof-window 1: the state of a block more than one below the head is gone, and the call fails
+            if int(params[2], 16) < self.blocks[self.head]["number"] - PROOF_WINDOW:
+                raise RpcError(f"distance to target block exceeds maximum proof window {PROOF_WINDOW}")
             return {"codeHash": "0x" + "c0" * 32, "accountProof": ["0xaa01", "0xaa02"],
                     "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb01"]}]}
         raise KeyError(method)
@@ -268,7 +280,7 @@ class FakeReth:
         header = rlp([bytes.fromhex(parent[2:]), number.to_bytes(4, "big"), gas_used.to_bytes(4, "big"),
                       int(attributes["timestamp"], 16).to_bytes(8, "big")])
         h = "0x" + keccak256(header).hex()
-        self.blocks[h] = {"number": number, "timestamp": int(attributes["timestamp"], 16), "gasLimit": self.gas_limit}
+        self.blocks[h] = {"number": number, "timestamp": int(attributes["timestamp"], 16), "gasLimit": self.gas_limit, "parent": parent}
         self.block_txs[h] = [hash_of(r) for r in raws]
         self.by_number[number] = h
         self.raw_blocks[number] = "0x" + rlp([Raw(header), [bytes.fromhex(r[2:]) for r in raws], [], []]).hex()
