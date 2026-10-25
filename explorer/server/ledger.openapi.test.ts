@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { ALLOWED_ENDPOINTS, createLedger } from "./ledger.ts";
-import { checkpoint, createdEvent, FAKE_PARTICIPANT, FAKE_READER, startFakeLedger, transaction, type FakeLedger } from "../test/fake-ledger.ts";
+import { ALLOWED_ENDPOINTS, createLedger, CUSTODY_ENDPOINTS } from "./ledger.ts";
+import { checkpoint, createdEvent, FAKE_GATEWAY, FAKE_PARTICIPANT, FAKE_READER, gatewayToken, holding, startFakeLedger, transaction, type FakeLedger } from "../test/fake-ledger.ts";
 import { loadSpec, validate } from "../test/openapi.ts";
 
 // CANTON_OPENAPI names the OpenAPI document of the pinned Canton, as JSON. CI sets it (explorer/check-ledger-api.sh); without it these tests skip.
@@ -26,6 +26,19 @@ describe.skipIf(!file)("the Ledger API calls, against Canton's own OpenAPI docum
     const body = fake.requests[0]!.body;
     expect(validate(spec(), post.requestBody.content["application/json"].schema, body, true)).toEqual([]);
     expect(post.parameters.map((p: { name: string }) => p.name)).toContain("limit");
+  });
+
+  it("sends the custody read's request body as the document accepts it, and is given an answer of the documented shape by the fake", async () => {
+    fake = await startFakeLedger([], { ledgerEnd: 999, active: [gatewayToken("0x" + "d1".repeat(20)), holding(1, FAKE_GATEWAY, "1")] });
+    await createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS).gatewayCustody(100, 20);
+    const post = spec().paths["/v2/state/active-contracts"]!.post;
+    const sent = fake.requests.find((r) => r.path.startsWith("/v2/state/active-contracts"));
+    expect(sent).toBeDefined();
+    expect(validate(spec(), post.requestBody.content["application/json"].schema, sent!.body, true)).toEqual([]);
+    expect(post.parameters.map((p: { name: string }) => p.name)).toContain("limit");
+    const res = await fetch(`${fake.url}/v2/state/active-contracts?limit=100`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sent!.body) });
+    expect(res.status).toBe(200);
+    expect(validate(spec(), answer("/v2/state/active-contracts", "post"), await res.json(), true)).toEqual([]);
   });
 
   it("is given answers of the documented shape by the fake, so the reader's tests are about the real thing", async () => {

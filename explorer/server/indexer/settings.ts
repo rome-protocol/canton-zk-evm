@@ -23,7 +23,8 @@ export function loadIndexerSettings(env: Env = process.env): IndexerSettings {
   const derive = env.INDEX_DERIVE || "behind";
   if (derive !== "inline" && derive !== "behind") throw new IndexerSettingsError(`INDEX_DERIVE must be inline or behind, not "${derive}"`);
   // The custody read (the registered tokens and what the gateway holds of each) reads Canton as the gateway party, with a token of its own: both or neither.
-  // CUSTODY_LIMIT is how many contracts it asks for: it must be at or below the participant's list maximum (Canton's default is 200), or a cut list would pass for a whole one.
+  // CUSTODY_LIMIT is how many contracts it asks for. Canton 3.6.3 (Endpoints.asList) takes min(limit, http-list-max-elements-limit + 1) and answers 413 for a list
+  // past that maximum (default 200), so a limit above the participant's maximum fails closed: the read errors and the last rows stay, and no cut list passes for a whole one.
   const party = env.GATEWAY_PARTY || "", tokenFile = env.GATEWAY_LEDGER_TOKEN_FILE || "";
   if ((party === "") !== (tokenFile === "")) throw new IndexerSettingsError("GATEWAY_PARTY and GATEWAY_LEDGER_TOKEN_FILE must be set together: the custody read is made as the gateway party, with a token for it only");
   const custody = party ? { party, tokenFile, ms: whole(env, "CUSTODY_MS", 30_000, 1000), limit: whole(env, "CUSTODY_LIMIT", 200, 1) } : null;

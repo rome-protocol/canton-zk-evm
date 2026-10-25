@@ -75,6 +75,23 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
     });
   });
 
+  it("reads at a block of the participant now read: after a reader move the older participant's offset is not used, the last rows stay, and nothing is asked of Canton", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 2, { [TKB]: 1_005_000_000n });
+      const { ledger, fake } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")]);
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      const before = await rows(pool);
+      expect(before).toMatchObject([{ supply_block: 2, ledger_offset: 20 }]);
+      const asked = fake.requests.length;
+      // the reader moved: the participant that holds every indexed record is no longer the one read, and the new one has no block yet
+      await pool.query("update canton_participants set moved_out_at = now()");
+      await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('new-participant', 0, now())");
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(fake.requests).toHaveLength(asked);
+      expect(await rows(pool)).toEqual(before);
+    });
+  });
+
   it("reads the custody and the supply at the same block, so a deposit that lands between two reads never shows as a difference", async () => {
     await inDb(async (pool) => {
       // Each block holds one deposit of 10 units. The world is what Canton and reth know at the head: a stand-in Canton answers the custody at any offset it is
