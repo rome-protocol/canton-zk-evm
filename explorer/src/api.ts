@@ -197,7 +197,9 @@ export interface TokenMoves { count: number; more: boolean; first: TokenMove | n
 export interface Label { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 /** The newest transactions: a page with how many the chain holds (null where the rollups cannot say, and for a filtered list) and when that was counted to. */
 export interface TxsPage extends Page<TxListItem> { total: number | null; totalAsOfBlock: number | null; totalAsOf: string | null }
-export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null; tokenMoves: TokenMoves | null }
+export interface TxListItem { hash: string; block: number; index: number; timestamp: number; from: string; to: string | null; value: string; nonce: number; type: number; gasUsed: number; gasPrice: string; success: boolean; created: string | null; methodId: string | null; tokenMoves: TokenMoves | null;
+  /** The Canton update that settled the transaction's block, and the time Canton recorded it. */
+  updateId: string; recordTime: string }
 /** An attempt at a block that is not final: where it is, and when each step happened (UTC, ISO). Nothing here is a fact of the chain until the block is final. */
 export interface InFlightAttempt {
   number: number; strategy: string; cutReason: string; stage: "cut" | "built" | "proving" | "proved" | "submitted" | "committed";
@@ -295,7 +297,9 @@ export const getAddress = async (address: string) => (await call(`/api/address/$
 /** A gateway leg a block recorded, as the legs route gives it. */
 export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
 /** A Canton update that carries a block. `offset` is on the reader party's participant, never the builder's completion offset. */
-export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null }
+export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null;
+  /** How many EVM transactions the update settled (its block's); null for an update that carries no block. */
+  txCount: number | null }
 export interface UpdateDetail extends UpdateItem {
   template: { packageId: string; packageName: string | null; module: string; entity: string };
   contractId: string | null;
@@ -306,7 +310,7 @@ export interface UpdateDetail extends UpdateItem {
 }
 
 /** An update in the window around one. The template and the choice are what the producer's log says it submitted, null where the log does not hold the update; `txCount` is the block's. */
-export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null; txCount: number | null }
+export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null }
 
 const PAGE = 25;
 const cursor = (name: string, c: string | null) => (c ? `&${name}=${encodeURIComponent(c)}` : "");

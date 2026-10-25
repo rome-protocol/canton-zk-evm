@@ -66,7 +66,7 @@ export const REST_FIELDS = {
   /** The Canton side of a block as its page shows it: the record's hex is served by /record. */
   cantonSummary: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch"],
   blockLifecycle: ["strategy", "cutReason", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt"],
-  txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId", "tokenMoves"],
+  txItem: ["hash", "block", "index", "timestamp", "from", "to", "value", "nonce", "type", "gasUsed", "gasPrice", "success", "created", "methodId", "tokenMoves", "updateId", "recordTime"],
   /** What a transaction in a list moved in tokens: how many moves (counted to a cap, `more` past it) and the first; the whole object is null while stage 2 has not reached the block. */
   tokenMoves: ["count", "more", "first"],
   /** `amount` is in the token's base units; `decimals` (null where the token's metadata is not held) says how to show it. */
@@ -85,8 +85,8 @@ export const REST_FIELDS = {
   transfer: ["logIndex", "batchIndex", "methodId", "creation", "timestamp", "token", "standard", "from", "to", "amount", "tokenId"],
   trace: ["frames", "truncated"],
   frame: ["traceAddress", "type", "callType", "from", "to", "value", "gas", "gasUsed", "input", "inputSize", "error", "created"],
-  updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block"],
-  updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "template", "contractId", "blockHash", "signatories", "producerRecord"],
+  updateItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "txCount"],
+  updateDetail: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "txCount", "template", "contractId", "blockHash", "signatories", "producerRecord"],
   updateAround: ["items"],
   updateAroundItem: ["updateId", "recordTime", "effectiveAt", "participant", "offset", "synchronizer", "block", "submittedTemplate", "submittedChoice", "txCount"],
   updateTemplate: ["packageId", "packageName", "module", "entity"],

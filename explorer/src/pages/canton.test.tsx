@@ -7,7 +7,7 @@ import { block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, tx, upd
 
 const SYNC = "da::1220" + "e8".repeat(32);
 const item = (n: number, over: Partial<UpdateItem> = {}): UpdateItem => ({
-  updateId: update(n), recordTime: `2026-10-04T01:37:${10 + n}.230583Z`, effectiveAt: null, participant: "reader-1", offset: 60 + n, synchronizer: SYNC, block: n, ...over,
+  updateId: update(n), recordTime: `2026-10-04T01:37:${10 + n}.230583Z`, effectiveAt: null, participant: "reader-1", offset: 60 + n, synchronizer: SYNC, block: n, txCount: n % 3, ...over,
 });
 const near = (n: number, over: Partial<UpdateAroundItem> = {}): UpdateAroundItem => ({ ...item(n), submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", txCount: n * 2, ...over });
 const detail = (over: Partial<UpdateDetail> = {}): UpdateDetail => ({

@@ -96,7 +96,7 @@ export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockLi
 }
 /** A final transaction as the list route gives it: the nth, in block n. */
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
-  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, tokenMoves: null, ...over };
+  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, tokenMoves: null, updateId: update(n), recordTime: new Date((T0 + (n - 2) * 8) * 1000 + 7400).toISOString(), ...over };
 }
 /** One address as /api/addresses/:address gives it: an account that sent 3 transactions, with reth's balance at final block 21. */
 export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {
@@ -212,7 +212,7 @@ export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
 /** The Canton update that carries block n, as its own route gives it: the reader's offset 52, the synchronizer, and what the producer submitted. */
 export function updateDetail(n = 3, over: Partial<UpdateDetail> = {}): UpdateDetail {
   return {
-    updateId: update(n), recordTime: "2026-10-04T01:37:23.412Z", effectiveAt: null, participant: "reader::1220" + "11".repeat(32), offset: 52, synchronizer: "da::1220" + "e8".repeat(32), block: n,
+    updateId: update(n), recordTime: "2026-10-04T01:37:23.412Z", effectiveAt: null, participant: "reader::1220" + "11".repeat(32), offset: 52, synchronizer: "da::1220" + "e8".repeat(32), block: n, txCount: n % 3,
     template: { packageId: "ab".repeat(32), packageName: "zk-chain", module: "Zk.Chain", entity: "BlockRecord" }, contractId: "00" + "cc".repeat(32), blockHash: hash(n), signatories: [],
     producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "cmd-1", argumentBytes: 13760, trafficBytes: null },
     ...over,
