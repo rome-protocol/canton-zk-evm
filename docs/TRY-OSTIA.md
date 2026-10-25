@@ -1,6 +1,6 @@
 # Try Ostia
 
-Ostia is an EVM chain on Canton DevNet. Ordinary Ethereum tools work on it: wallets, Foundry, Hardhat, ethers, viem. What is different is what happens after a block is made: a zero-knowledge proof of the block is made, and the block's record, with the proof, is written to Canton. This guide connects an existing Foundry or Hardhat project to Ostia. First install your tool, write your contract and deploy script, and set up a signer funded by the faucet. The guide then shows you how to deploy and verify the contract, and where your transaction becomes final on Canton.
+Ostia is an EVM chain on Canton DevNet. Ordinary Ethereum tools work on it: wallets, Foundry, Hardhat, ethers, viem. What is different is what happens after a block is made: a zero-knowledge proof of the block is made, and the block's record, with the proof, is written to Canton. This guide connects an existing Foundry or Hardhat project to Ostia. Before you start, have Foundry or Hardhat installed, a contract and a deploy script, and a key to sign with. The guide shows how to fund that key from the faucet, deploy, verify, and see where your transaction becomes final on Canton.
 
 Ostia is a DevNet. Its coin, tROME, has no value, and the chain can be reset.
 
@@ -36,7 +36,7 @@ export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
 forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version london --broadcast
 ```
 
-What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; its deposits and transfers succeed). Use `london` for your own contracts. Only the compiler and EVM-target pairs above have been tried; that does not establish support for every newer EVM feature.
+What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; their deposit and transfer transactions go through and the on-chain verifier accepts the proofs, but no MPC network runs, so nothing settles privately). Use `london` for your own contracts. Only these compiler and EVM-target pairs have been tried, so newer EVM features may not all work.
 
 Verify the source on the explorer. It speaks the Etherscan API, so `forge verify-contract` works with the Etherscan verifier and any API key text:
 
@@ -52,7 +52,7 @@ forge verify-contract <address> src/Counter.sol:Counter \
 
 Use the same compiler version, optimizer settings, EVM version and constructor arguments as in the deploy (settings in `foundry.toml` are shared by both). The explorer takes about 30 verifications an hour from one client. If it says so, wait and send the request again.
 
-A large multi-file contract can be refused with HTTP 413. For Merces, the explorer's front proxy refused forge's url-encoded request (about 450 KB) and accepted the same input as JSON (about 265 KB). The kit's `load/mixed/scripts/verify-large.mjs` wraps the compiler input and the contract's details for `POST /api/verify` and does this. Larger requests can still be refused (the explorer's own limit is 500 KiB).
+A large multi-file contract can be refused with HTTP 413. For Merces, the explorer's front proxy refused forge's url-encoded request (about 450 KB) and accepted the same input as JSON (about 265 KB). The kit's `load/mixed/scripts/verify-large.mjs` sends the compiler input and the contract's details to `POST /api/verify` as JSON. The front proxy takes about 300 KB a request, so a JSON input above that is still refused; the explorer itself takes a source of up to 500 KiB.
 
 ## Deploy with Hardhat
 
@@ -80,7 +80,7 @@ A receipt only comes back once the block is final (next section), so a deploy wa
 ## Where a transaction becomes final
 
 1. You send a transaction to the RPC. If the RPC accepts it, it enters the transaction pool. The builder chooses transactions for the blocks it makes next, so acceptance does not guarantee a place in the very next block.
-2. The block is made, about every 16 seconds while there are transactions. The builder makes no empty blocks, so while no transaction waits, the chain makes no blocks at all, possibly for hours. An hours-old final block on the explorer is then expected. If a transaction the RPC accepted stays pending, check the health status on the explorer.
+2. The block is made, about every 16 seconds while there are transactions. The builder makes no empty blocks, so while no transaction waits, the chain makes no blocks at all, possibly for hours. An hours-old final block on the explorer is then expected. If a transaction the RPC accepted stays pending, check the health strip on the explorer's home page (or `/api/health`).
 3. A zero-knowledge proof of the block is made. In the one-hour mixed load of 2026-10-24, the median proof time was 9.03 seconds across 223 blocks of 11 to 100 transactions.
 4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In the same run, a block was final about 9 to 12 seconds after it was made (about 9 seconds for a small block, about 11 seconds, at most 13, with 70 transactions in a block).
 
@@ -97,4 +97,4 @@ On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/bloc
 
 ## Something bigger to try
 
-The `load/mixed/` folder in this repository deploys a set of contracts (ERC-20, ERC-721, ERC-1155, an ERC-3643 permissioned token, Uniswap V2, a RedStone price consumer, and private transfers with Merces) and drives an hour of mixed traffic through them. Its README has the commands and `load/mixed/RESULTS-2026-10-24.md` has what one run measured.
+The `load/mixed/` folder in this repository deploys a set of contracts (ERC-20, ERC-721, ERC-1155, an ERC-3643 permissioned token, Uniswap V2, a RedStone price consumer, and TACEO's Merces contracts, with client-side proofs only; nothing settles) and drives an hour of mixed traffic through them. Its README has the commands and `load/mixed/RESULTS-2026-10-24.md` has what one run measured.
