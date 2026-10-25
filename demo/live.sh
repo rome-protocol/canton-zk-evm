@@ -13,28 +13,36 @@
 #          checks that the block has exactly one leg of the kind, that Canton's BlockRecord is that block (and holds a proof), that the
 #          BlockRecord and the new holding came from one Canton update (canton.py settled), the TKB and wTKB balances, and that Canton's custody
 #          equals wTKB's supply. It stops at the first claim that does not hold, and writes $CZE_LIVE_RESULTS/live-<date>.txt.
+#   cycle  A balanced cycle, repeated: the three runs of `legs` (a deposit of 10 TKB, a payment, a withdrawal of the 10 wTKB that the deposit made),
+#          then V sends U the 10 TKB the payment moved (canton.py return-tkb, the token standard's plain transfer) and U sends V the WtROME it was paid
+#          (evm.py give). Every balance is back where it was when the cycle ends, so the lane can run for as long as it is asked to: U needs 20 TKB, and no
+#          more. A cycle starts every CZE_LIVE_CYCLE_MINUTES (default 10; 0 = one after the other) until $CZE_LIVE_STOP_FILE exists (default
+#          $CZE_STATE_DIR/demo/cycle.stop) or CZE_LIVE_CYCLES cycles have run (default 0 = no limit). A cycle makes the checks of `legs`, and that every
+#          balance is back at its start; it appends one line to $CZE_LIVE_RESULTS/cycle-<start time>.txt (result=pass with the three blocks, or
+#          result=fail with the reason). A failed check stops the lane: nothing is retried and nothing is minted to cover a difference.
 #   all    setup, then legs (the default).
 #
-# Usage: demo/live.sh [setup|legs|all]        demo/live.sh --help
+# Usage: demo/live.sh [setup|legs|cycle|all]        demo/live.sh --help
 #
 # Needs the participant and the chain to be ready as network/README.md says: the test token's DAR vetted (canton.py upload-dars), the parties made
 # (network/external/setup.py --demo), V's and U's addresses (evm.py keys prints them) holding the chain's coin, and the block producer running with
 # --disclosed $CZE_STATE_DIR/demo/disclosed.json (the file canton.py setup writes). Settings: CZE_STATE_DIR, CZE_LEDGER_URL, CZE_RPC_URL, the
 # token files and CZE_USER_PREFIX of demo/canton.py, CZE_WTROME (the WtROME address; legs), CZE_SOURCE_COMMIT (the full commit hash of the
 # source that runs; legs), CZE_WTKB (a wrapped TKB that setup does not make: one that is not yet registered on Canton must be called Wrapped TKB / wTKB), CZE_LIVE_WAIT_SECONDS (default 600),
-# CZE_LIVE_RESULTS. CZE_LIVE_EVM and CZE_LIVE_CANTON name other commands in place of evm.py and canton.py (for tests only).
+# CZE_LIVE_RESULTS, and for cycle CZE_LIVE_CYCLE_MINUTES, CZE_LIVE_CYCLES, CZE_LIVE_STOP_FILE. CZE_LIVE_EVM and CZE_LIVE_CANTON name other commands in place of evm.py and canton.py (for tests only).
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || { echo "FAIL: demo/live.sh needs bash 4.4 or later" >&2; exit 1; }   # set -e then holds inside "$(...)" too
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-fail() { echo "FAIL: $*" >&2; exit 1; }
+FAIL_HOOK=   # the name of a function that is told the reason before the run stops (the cycle writes its failed line there)
+fail() { echo "FAIL: $*" >&2; [ -z "$FAIL_HOOK" ] || "$FAIL_HOOK" "$*" || true; exit 1; }
 step() { echo "== $* ($(date -u +%T))"; }
-usage() { echo "Usage: demo/live.sh [setup|legs|all]    (setup: token rules, wTKB, acceptance; legs: deposit, payment, withdrawal; all: both, the default)"; }
+usage() { echo "Usage: demo/live.sh [setup|legs|cycle|all]    (setup: token rules, wTKB, acceptance; legs: deposit, payment, withdrawal; cycle: a balanced set of the three, repeated; all: setup and legs, the default)"; }
 
 mode=all
 case $# in
   0) ;;
   1) case $1 in
-       setup | legs | all) mode=$1 ;;
+       setup | legs | cycle | all) mode=$1 ;;
        -h | --help) usage; exit 0 ;;
        *) usage >&2; fail "unknown argument: $1" ;;
      esac ;;
@@ -47,10 +55,15 @@ DEMO=$CZE_STATE_DIR/demo
 RESULTS=${CZE_LIVE_RESULTS:-$ROOT/demo/results}
 WAIT_SECONDS=${CZE_LIVE_WAIT_SECONDS:-600}
 PAY=${CZE_LIVE_PAY:-1}
+CYCLE_MINUTES=${CZE_LIVE_CYCLE_MINUTES:-10}
+CYCLES=${CZE_LIVE_CYCLES:-0}
+STOP_FILE=${CZE_LIVE_STOP_FILE:-$DEMO/cycle.stop}
 [ "$CZE_CANTON" = external ] || fail "live.sh runs on an existing participant: CZE_CANTON must be external, not $CZE_CANTON"
 [ -n "${CZE_LEDGER_URL:-}" ] || fail "set CZE_LEDGER_URL to the participant's JSON Ledger API"
 [ -n "${CZE_RPC_URL:-}" ] || fail "set CZE_RPC_URL to the chain's JSON-RPC"
 [[ $PAY =~ ^[1-9][0-9]*$ ]] || fail "CZE_LIVE_PAY must be a whole number of WtROME, 1 or more: $PAY"
+[[ $CYCLE_MINUTES =~ ^[0-9]+$ ]] || fail "CZE_LIVE_CYCLE_MINUTES must be a whole number: $CYCLE_MINUTES"
+[[ $CYCLES =~ ^[0-9]+$ ]] || fail "CZE_LIVE_CYCLES must be a whole number (0 for no limit): $CYCLES"
 [[ $WAIT_SECONDS =~ ^[0-9]+$ ]] || fail "CZE_LIVE_WAIT_SECONDS must be a whole number: $WAIT_SECONDS"
 if [ "$mode" != setup ]; then
   [[ ${CZE_SOURCE_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || fail "set CZE_SOURCE_COMMIT to the full commit hash of the source that is running"
@@ -189,7 +202,8 @@ custody_is_supply() {
   is "$(num "$(total "$1" gateway)")" "$(num "$(jq -r .supply <<<"$w")")" "Canton's custody and wTKB's supply $2"
 }
 
-legs() {
+# What the legs and the cycle need before they start: wTKB, its registration, U's acceptance, the parties. Sets WTKB and U_PARTY.
+prepare_legs() {
   local wtkb_file=$DEMO/wtkb.json
   if [ -n "${CZE_WTKB:-}" ]; then WTKB=$CZE_WTKB
   elif [ -f "$wtkb_file" ]; then WTKB=$(jq -r .token "$wtkb_file")
@@ -203,6 +217,76 @@ legs() {
   # shellcheck disable=SC1091
   . "$CZE_STATE_DIR/canton/parties.env"
   [ -n "${U_PARTY:-}" ] || fail "parties.env has no U_PARTY"
+}
+
+# The three runs. Each takes the Canton balances from before it and sets AFTER (the Canton balances after it), W_BEFORE and W_AFTER (wTKB's
+# balance and supply for U's address before and after), and the variables of its own leg (DEP_*, PAY_*, WD_*) that the results print.
+# <tag> <canton balances before> <amount of TKB>
+run_deposit() {
+  local tag=$1 before=$2 amount=$3 deposit
+  step "run 1, a deposit: U puts $amount TKB with the gateway and claims $amount wTKB"
+  W_BEFORE=$(wrapped "$U_ADDR")
+  deposit=$(canton deposit "$tag-dep" "$U_ADDR" "$amount"); echo "$deposit" | jq -c .
+  DEP_JSON=$deposit; DEP_ID=$(jq -r .depositId <<<"$deposit")
+  DEP_TX=$(evm claim u "$DEP_ID" "$WTKB" "$amount" | jq -r .tx)
+  local r; r=$(final "$DEP_TX" "the claim"); DEP_N=$(jq -r .block <<<"$r"); DEP_H=$(jq -r .blockHash <<<"$r")
+  DEP_UPDATE=$(check_leg "$DEP_N" claim gateway "$DEP_H"); DEP_REC=$(canton block "$DEP_N" gateway | jq -c .record)
+  AFTER=$(canton balances); W_AFTER=$(wrapped "$U_ADDR")
+  is "$(num "$(total "$AFTER" u)")" "$(sum "$(total "$before" u)" "-$amount")" "U's TKB after run 1"
+  is "$(num "$(total "$AFTER" gateway)")" "$(sum "$(total "$before" gateway)" "$amount")" "the custody after run 1"
+  is "$(num "$(jq -r .balance <<<"$W_AFTER")")" "$(sum "$(jq -r .balance <<<"$W_BEFORE")" "$amount")" "U's wTKB after run 1"
+  is "$(num "$(jq -r .supply <<<"$W_AFTER")")" "$(sum "$(jq -r .supply <<<"$W_BEFORE")" "$amount")" "wTKB's supply after run 1"
+  is "$(jq -c '[.allocations, .deposits]' <<<"$AFTER")" "$(jq -c '[.allocations, .deposits]' <<<"$before")" "the allocations and deposit requests after run 1"
+  custody_is_supply "$AFTER" "after run 1"
+}
+# <tag> <canton balances before>. Also sets ROME_U and ROME_V, U's and V's WtROME before the payment (after V has wrapped what it lacked).
+run_payment() {
+  local tag=$1 before=$2
+  step "run 2, a payment: V pays U $PAY WtROME through the gateway, and U's 10 TKB go to V"
+  local held wrap_tx pid
+  held=$(coin "$CZE_WTROME" "$V_ADDR")
+  if [ "$held" -lt "$PAY" ]; then
+    wrap_tx=$(evm wrap v "$CZE_WTROME" "$PAY" | jq -r .tx)
+    final "$wrap_tx" "V's wrapping of $PAY coin" >/dev/null
+  fi
+  ROME_U=$(coin "$CZE_WTROME" "$U_ADDR"); ROME_V=$(coin "$CZE_WTROME" "$V_ADDR")
+  [ "$ROME_V" -ge "$PAY" ] || fail "V holds $ROME_V WtROME after wrapping, less than $PAY"
+  PAY_APPROVE_TX=$(evm approve v "$CZE_WTROME" gateway "$PAY" | jq -r .tx)
+  final "$PAY_APPROVE_TX" "V's approval of the gateway" >/dev/null
+  PAY_DVP=$(canton dvp "$tag-dvp" "$CZE_WTROME" "$U_ADDR" "$PAY"); echo "$PAY_DVP" | jq -c .
+  PAY_ID=$(jq -r .id <<<"$PAY_DVP")
+  pid=$(canton payment-id "$tag-dvp"); pid=$(jq -r .id <<<"$pid")
+  is "$PAY_ID" "$pid" "the payment id of $tag-dvp"
+  PAY_TX=$(evm pay v "$PAY_ID" "$CZE_WTROME" "$U_ADDR" "$PAY" | jq -r .tx)
+  local r; r=$(final "$PAY_TX" "the payment"); PAY_N=$(jq -r .block <<<"$r"); PAY_H=$(jq -r .blockHash <<<"$r")
+  PAY_UPDATE=$(check_leg "$PAY_N" pay v "$PAY_H"); PAY_REC=$(canton block "$PAY_N" v | jq -c .record)
+  AFTER=$(canton balances)
+  is "$(num "$(total "$AFTER" u)")" "$(sum "$(total "$before" u)" -10)" "U's TKB after run 2"
+  is "$(num "$(total "$AFTER" v)")" "$(sum "$(total "$before" v)" 10)" "V's TKB after run 2"
+  is "$(jq -c '[.allocations, .terms]' <<<"$AFTER")" "$(jq -c '[.allocations, .terms]' <<<"$before")" "the allocations and terms after run 2"
+  local rome_u2 rome_v2; rome_u2=$(coin "$CZE_WTROME" "$U_ADDR"); rome_v2=$(coin "$CZE_WTROME" "$V_ADDR")
+  is "$rome_u2" $((ROME_U + PAY)) "U's WtROME after run 2"
+  is "$rome_v2" $((ROME_V - PAY)) "V's WtROME after run 2"
+  custody_is_supply "$AFTER" "after run 2"
+}
+# <canton balances before> <amount of wTKB>
+run_withdraw() {
+  local before=$1 amount=$2
+  step "run 3, a withdrawal: U's address burns $amount wTKB, and $amount TKB go from the gateway to U"
+  W_BEFORE=$(wrapped "$U_ADDR")
+  WD_TX=$(evm withdraw u "$WTKB" "$amount" "$U_PARTY" | jq -r .tx)
+  local r; r=$(final "$WD_TX" "the withdrawal"); WD_N=$(jq -r .block <<<"$r"); WD_H=$(jq -r .blockHash <<<"$r")
+  WD_UPDATE=$(check_leg "$WD_N" withdraw u "$WD_H"); WD_REC=$(canton block "$WD_N" u | jq -c .record)
+  AFTER=$(canton balances); W_AFTER=$(wrapped "$U_ADDR")
+  is "$(num "$(total "$AFTER" u)")" "$(sum "$(total "$before" u)" "$amount")" "U's TKB after run 3"
+  is "$(num "$(total "$AFTER" gateway)")" "$(sum "$(total "$before" gateway)" "-$amount")" "the custody after run 3"
+  is "$(num "$(jq -r .balance <<<"$W_AFTER")")" "$(sum "$(jq -r .balance <<<"$W_BEFORE")" "-$amount")" "U's wTKB after run 3"
+  is "$(num "$(jq -r .supply <<<"$W_AFTER")")" "$(sum "$(jq -r .supply <<<"$W_BEFORE")" "-$amount")" "wTKB's supply after run 3"
+  custody_is_supply "$AFTER" "after run 3"
+}
+
+legs() {
+  prepare_legs
   local tag; tag=live-$(date -u +%m%d%H%M%S)
   local day; day=$(date -u +%F)
 
@@ -211,63 +295,12 @@ legs() {
   # Run 1 allocates 10 TKB and run 2 allocates 10 more (two allocations of 10): a U with less than 20 would stop in run 2, after run 1 had changed things.
   awk -v a="$(total "$start" u)" 'BEGIN { exit !(a >= 20) }' || fail "U holds less than 20 TKB, which the deposit and the payment need (10 each): $(totals "$start")"
 
-  # ---- run 1
-  step "run 1, a deposit: U puts 10 TKB with the gateway and claims 10 wTKB"
-  local w0 deposit deposit_id claim_tx r1 n1 h1 u1 after1 w1
-  w0=$(wrapped "$U_ADDR")
-  deposit=$(canton deposit "$tag-dep" "$U_ADDR" 10); echo "$deposit" | jq -c .
-  deposit_id=$(jq -r .depositId <<<"$deposit")
-  claim_tx=$(evm claim u "$deposit_id" "$WTKB" 10 | jq -r .tx)
-  r1=$(final "$claim_tx" "the claim"); n1=$(jq -r .block <<<"$r1"); h1=$(jq -r .blockHash <<<"$r1")
-  u1=$(check_leg "$n1" claim gateway "$h1"); local rec1; rec1=$(canton block "$n1" gateway | jq -c .record)
-  after1=$(canton balances); w1=$(wrapped "$U_ADDR")
-  is "$(num "$(total "$after1" u)")" "$(sum "$(total "$start" u)" -10)" "U's TKB after run 1"
-  is "$(num "$(total "$after1" gateway)")" "$(sum "$(total "$start" gateway)" 10)" "the custody after run 1"
-  is "$(num "$(jq -r .balance <<<"$w1")")" "$(sum "$(jq -r .balance <<<"$w0")" 10)" "U's wTKB after run 1"
-  is "$(num "$(jq -r .supply <<<"$w1")")" "$(sum "$(jq -r .supply <<<"$w0")" 10)" "wTKB's supply after run 1"
-  is "$(jq -c '[.allocations, .deposits]' <<<"$after1")" "$(jq -c '[.allocations, .deposits]' <<<"$start")" "the allocations and deposit requests after run 1"
-  custody_is_supply "$after1" "after run 1"
-
-  # ---- run 2
-  step "run 2, a payment: V pays U $PAY WtROME through the gateway, and U's 10 TKB go to V"
-  local held wrap_tx approve_tx dvp payment pay_tx r2 n2 h2 u2 after2 rome_u rome_v
-  held=$(coin "$CZE_WTROME" "$V_ADDR")
-  if [ "$held" -lt "$PAY" ]; then
-    wrap_tx=$(evm wrap v "$CZE_WTROME" "$PAY" | jq -r .tx)
-    final "$wrap_tx" "V's wrapping of $PAY coin" >/dev/null
-  fi
-  rome_u=$(coin "$CZE_WTROME" "$U_ADDR"); rome_v=$(coin "$CZE_WTROME" "$V_ADDR")
-  [ "$rome_v" -ge "$PAY" ] || fail "V holds $rome_v WtROME after wrapping, less than $PAY"
-  approve_tx=$(evm approve v "$CZE_WTROME" gateway "$PAY" | jq -r .tx)
-  final "$approve_tx" "V's approval of the gateway" >/dev/null
-  dvp=$(canton dvp "$tag-dvp" "$CZE_WTROME" "$U_ADDR" "$PAY"); echo "$dvp" | jq -c .
-  payment=$(jq -r .id <<<"$dvp")
-  local pid; pid=$(canton payment-id "$tag-dvp"); pid=$(jq -r .id <<<"$pid")
-  is "$payment" "$pid" "the payment id of $tag-dvp"
-  pay_tx=$(evm pay v "$payment" "$CZE_WTROME" "$U_ADDR" "$PAY" | jq -r .tx)
-  r2=$(final "$pay_tx" "the payment"); n2=$(jq -r .block <<<"$r2"); h2=$(jq -r .blockHash <<<"$r2")
-  u2=$(check_leg "$n2" pay v "$h2"); local rec2; rec2=$(canton block "$n2" v | jq -c .record)
-  after2=$(canton balances)
-  is "$(num "$(total "$after2" u)")" "$(sum "$(total "$after1" u)" -10)" "U's TKB after run 2"
-  is "$(num "$(total "$after2" v)")" "$(sum "$(total "$after1" v)" 10)" "V's TKB after run 2"
-  is "$(jq -c '[.allocations, .terms]' <<<"$after2")" "$(jq -c '[.allocations, .terms]' <<<"$after1")" "the allocations and terms after run 2"
-  local rome_u2 rome_v2; rome_u2=$(coin "$CZE_WTROME" "$U_ADDR"); rome_v2=$(coin "$CZE_WTROME" "$V_ADDR")
-  is "$rome_u2" $((rome_u + PAY)) "U's WtROME after run 2"
-  is "$rome_v2" $((rome_v - PAY)) "V's WtROME after run 2"
-  custody_is_supply "$after2" "after run 2"
-
-  # ---- run 3
-  step "run 3, a withdrawal: U's address burns 4 wTKB, and 4 TKB go from the gateway to U"
-  local withdraw_tx r3 n3 h3 u3 after3 w3
-  withdraw_tx=$(evm withdraw u "$WTKB" 4 "$U_PARTY" | jq -r .tx)
-  r3=$(final "$withdraw_tx" "the withdrawal"); n3=$(jq -r .block <<<"$r3"); h3=$(jq -r .blockHash <<<"$r3")
-  u3=$(check_leg "$n3" withdraw u "$h3"); local rec3; rec3=$(canton block "$n3" u | jq -c .record)
-  after3=$(canton balances); w3=$(wrapped "$U_ADDR")
-  is "$(num "$(total "$after3" u)")" "$(sum "$(total "$after2" u)" 4)" "U's TKB after run 3"
-  is "$(num "$(total "$after3" gateway)")" "$(sum "$(total "$after2" gateway)" -4)" "the custody after run 3"
-  is "$(num "$(jq -r .balance <<<"$w3")")" "$(sum "$(jq -r .balance <<<"$w1")" -4)" "U's wTKB after run 3"
-  is "$(num "$(jq -r .supply <<<"$w3")")" "$(sum "$(jq -r .supply <<<"$w1")" -4)" "wTKB's supply after run 3"
-  custody_is_supply "$after3" "after run 3"
+  run_deposit "$tag" "$start" 10
+  local w0=$W_BEFORE after1=$AFTER
+  run_payment "$tag" "$after1"
+  local after2=$AFTER
+  run_withdraw "$after2" 4
+  local after3=$AFTER w3=$W_AFTER
 
   # ---- results
   mkdir -p "$RESULTS"
@@ -287,29 +320,29 @@ legs() {
     echo "wtrome=$CZE_WTROME"
     echo "u_address=$U_ADDR"
     echo "v_address=$V_ADDR"
-    echo "deposit_id=$deposit_id"
-    echo "deposit_block=$n1"
-    echo "deposit_block_hash=$h1"
-    echo "deposit_claim_tx=$claim_tx"
-    echo "deposit_request=$(short "$(jq -r .request <<<"$deposit")")"
-    echo "deposit_allocation=$(short "$(jq -r .allocation <<<"$deposit")")"
-    echo "deposit_canton_update=$u1"
-    echo "deposit_proof_sha256=$(jq -r .proofSha256 <<<"$rec1")"
-    echo "payment_id=$payment"
-    echo "payment_block=$n2"
-    echo "payment_block_hash=$h2"
-    echo "payment_approve_tx=$approve_tx"
-    echo "payment_pay_tx=$pay_tx"
+    echo "deposit_id=$DEP_ID"
+    echo "deposit_block=$DEP_N"
+    echo "deposit_block_hash=$DEP_H"
+    echo "deposit_claim_tx=$DEP_TX"
+    echo "deposit_request=$(short "$(jq -r .request <<<"$DEP_JSON")")"
+    echo "deposit_allocation=$(short "$(jq -r .allocation <<<"$DEP_JSON")")"
+    echo "deposit_canton_update=$DEP_UPDATE"
+    echo "deposit_proof_sha256=$(jq -r .proofSha256 <<<"$DEP_REC")"
+    echo "payment_id=$PAY_ID"
+    echo "payment_block=$PAY_N"
+    echo "payment_block_hash=$PAY_H"
+    echo "payment_approve_tx=$PAY_APPROVE_TX"
+    echo "payment_pay_tx=$PAY_TX"
     echo "payment_amount_wtrome=$PAY"
-    echo "payment_terms=$(short "$(jq -r .terms <<<"$dvp")")"
-    echo "payment_allocation=$(short "$(jq -r .allocation <<<"$dvp")")"
-    echo "payment_canton_update=$u2"
-    echo "payment_proof_sha256=$(jq -r .proofSha256 <<<"$rec2")"
-    echo "withdrawal_block=$n3"
-    echo "withdrawal_block_hash=$h3"
-    echo "withdrawal_tx=$withdraw_tx"
-    echo "withdrawal_canton_update=$u3"
-    echo "withdrawal_proof_sha256=$(jq -r .proofSha256 <<<"$rec3")"
+    echo "payment_terms=$(short "$(jq -r .terms <<<"$PAY_DVP")")"
+    echo "payment_allocation=$(short "$(jq -r .allocation <<<"$PAY_DVP")")"
+    echo "payment_canton_update=$PAY_UPDATE"
+    echo "payment_proof_sha256=$(jq -r .proofSha256 <<<"$PAY_REC")"
+    echo "withdrawal_block=$WD_N"
+    echo "withdrawal_block_hash=$WD_H"
+    echo "withdrawal_tx=$WD_TX"
+    echo "withdrawal_canton_update=$WD_UPDATE"
+    echo "withdrawal_proof_sha256=$(jq -r .proofSha256 <<<"$WD_REC")"
     echo "one_leg_per_block=yes"
     echo "block_record_and_holding_in_one_update=yes"
     echo "reth_finalized=yes"
@@ -328,8 +361,102 @@ legs() {
   echo "written: $out"
 }
 
+# ---------------------------------------------------------------- cycle
+# A balanced cycle, repeated: the same three runs as `legs` (a deposit of 10 TKB, a payment of $PAY WtROME against 10 TKB, a withdrawal of the 10 wTKB
+# that the deposit made), then the two things that give back what the payment moved: V sends U the 10 TKB by the token standard's plain transfer
+# (canton.py return-tkb), and U sends V the $PAY WtROME (evm.py give). After the cycle every balance is what it was before it: if one is not, the lane stops.
+# Each cycle appends one line to $CYCLE_OUT; a failed check appends a line that says why, and stops the lane (nothing is retried).
+CYCLE_N=0; IN_CYCLE=0; CYCLE_OUT=
+cycle_line() { printf '%s\n' "$*" >> "$CYCLE_OUT"; }
+cycle_failed() {   # the reason: one line for the failed cycle, if there is not one yet
+  [ "$IN_CYCLE" = 1 ] && [ -n "$CYCLE_OUT" ] || return 0
+  ! tail -1 "$CYCLE_OUT" | grep -q "^cycle=$CYCLE_N .*result=fail" || return 0
+  local reason; reason=$(tr '\n\t' '  ' <<<"$1" | cut -c1-300)
+  cycle_line "cycle=$CYCLE_N date=$(date -u +%FT%TZ) result=fail reason=\"$reason\""
+}
+cycle_exit() {   # an unexpected stop (a command failed with no message of ours): the line says so
+  local rc=$?
+  [ "$rc" = 0 ] || cycle_failed "a command failed with exit $rc; the log above names it"
+}
+interval_wait() {   # <started (epoch seconds)>: until the interval since then has passed; leaves early when the stop file appears
+  local deadline=$(($1 + CYCLE_MINUTES * 60))
+  while [ "$(date +%s)" -lt "$deadline" ] && [ ! -e "$STOP_FILE" ]; do sleep 1; done
+}
+one_cycle() {   # <tag>
+  local tag=$1 start after1 after2 after3 after4 w_start
+  IN_CYCLE=1
+  start=$(canton balances); w_start=$(wrapped "$U_ADDR")
+  custody_is_supply "$start" "at the start of cycle $CYCLE_N"
+  awk -v a="$(total "$start" u)" 'BEGIN { exit !(a >= 20) }' || fail "U holds less than 20 TKB, which the deposit and the payment need (10 each): $(totals "$start")"
+
+  run_deposit "$tag" "$start" 10
+  after1=$AFTER
+  run_payment "$tag" "$after1"
+  after2=$AFTER
+  run_withdraw "$after2" 10
+  after3=$AFTER
+
+  step "the return: V sends U 10 TKB, and U sends V $PAY WtROME"
+  canton return-tkb "$tag-ret" 10 | jq -c .
+  after4=$(canton balances)
+  is "$(num "$(total "$after4" u)")" "$(sum "$(total "$after3" u)" 10)" "U's TKB after V's transfer"
+  is "$(num "$(total "$after4" v)")" "$(sum "$(total "$after3" v)" -10)" "V's TKB after V's transfer"
+  is "$(num "$(total "$after4" gateway)")" "$(num "$(total "$after3" gateway)")" "the custody after V's transfer"
+  local give_tx; give_tx=$(evm give u "$CZE_WTROME" "$V_ADDR" "$PAY" | jq -r .tx)
+  final "$give_tx" "U's return of $PAY WtROME" >/dev/null
+
+  # Every balance is what it was at the start of the cycle (WtROME: after V's own wrapping, if it had to wrap).
+  local w_end end rome_u_end rome_v_end
+  end=$after4; w_end=$(wrapped "$U_ADDR")
+  rome_u_end=$(coin "$CZE_WTROME" "$U_ADDR"); rome_v_end=$(coin "$CZE_WTROME" "$V_ADDR")
+  is "$(num "$(total "$end" u)")" "$(num "$(total "$start" u)")" "U's TKB at the end of cycle $CYCLE_N"
+  is "$(num "$(total "$end" v)")" "$(num "$(total "$start" v)")" "V's TKB at the end of cycle $CYCLE_N"
+  is "$(num "$(total "$end" gateway)")" "$(num "$(total "$start" gateway)")" "the custody at the end of cycle $CYCLE_N"
+  is "$(num "$(jq -r .balance <<<"$w_end")")" "$(num "$(jq -r .balance <<<"$w_start")")" "U's wTKB at the end of cycle $CYCLE_N"
+  is "$(num "$(jq -r .supply <<<"$w_end")")" "$(num "$(jq -r .supply <<<"$w_start")")" "wTKB's supply at the end of cycle $CYCLE_N"
+  is "$rome_u_end" "$ROME_U" "U's WtROME at the end of cycle $CYCLE_N"
+  is "$rome_v_end" "$ROME_V" "V's WtROME at the end of cycle $CYCLE_N"
+  is "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$end")" "$(jq -c '[.allocations, .terms, .deposits, .acceptances]' <<<"$start")" "the allocations, terms, deposit requests and acceptances at the end of cycle $CYCLE_N"
+  custody_is_supply "$end" "at the end of cycle $CYCLE_N"
+
+  cycle_line "cycle=$CYCLE_N date=$(date -u +%FT%TZ) result=pass deposit_block=$DEP_N payment_block=$PAY_N withdrawal_block=$WD_N deposit_update=$DEP_UPDATE payment_update=$PAY_UPDATE withdrawal_update=$WD_UPDATE return_tx=$give_tx tkb_u=$(total "$end" u) tkb_v=$(total "$end" v) custody=$(total "$end" gateway) wtkb_supply=$(jq -r .supply <<<"$w_end") wtkb_u=$(jq -r .balance <<<"$w_end") wtrome_u=$rome_u_end wtrome_v=$rome_v_end"
+  IN_CYCLE=0
+}
+
+cycle() {
+  prepare_legs
+  local started n=0
+  CYCLE_OUT=$RESULTS/cycle-$(date -u +%Y%m%dT%H%M%SZ).txt
+  mkdir -p "$RESULTS"
+  {
+    echo "# A balanced cycle on a running chain, repeated: a deposit, a payment in WtROME, a withdrawal, then the TKB and the WtROME of the payment back."
+    echo "# One line a cycle: result=pass with the blocks and Canton updates of the three legs and the balances after the cycle, or result=fail with the reason, after which the lane stops."
+    echo "format=1"
+    echo "date=$(date -u +%FT%TZ)"
+    echo "source_commit=$CZE_SOURCE_COMMIT"
+    echo "wtkb=$WTKB"
+    echo "wtrome=$CZE_WTROME"
+    echo "u_address=$U_ADDR"
+    echo "v_address=$V_ADDR"
+    echo "pay_wtrome=$PAY"
+    echo "minutes=$CYCLE_MINUTES"
+    echo "cycles=$CYCLES"
+  } > "$CYCLE_OUT"
+  echo "results: $CYCLE_OUT   (stop it with: touch $STOP_FILE)"
+  FAIL_HOOK=cycle_failed
+  trap cycle_exit EXIT
+  while :; do
+    if [ -e "$STOP_FILE" ]; then cycle_line "end=stop-file cycles=$n"; echo "stopped: $STOP_FILE exists, after $n cycles"; return 0; fi
+    if [ "$CYCLES" != 0 ] && [ "$n" -ge "$CYCLES" ]; then cycle_line "end=count cycles=$n"; echo "done: $n cycles"; return 0; fi
+    n=$((n + 1)); CYCLE_N=$n; started=$(date +%s)
+    one_cycle "cyc-$(date -u +%m%d%H%M%S)-$n"
+    [ "$CYCLES" != 0 ] && [ "$n" -ge "$CYCLES" ] || interval_wait "$started"
+  done
+}
+
 case $mode in
   setup) setup ;;
   legs) legs ;;
+  cycle) cycle ;;
   all) setup; legs ;;
 esac

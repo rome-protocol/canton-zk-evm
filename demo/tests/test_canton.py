@@ -23,6 +23,7 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
     updates: dict = {}       # offset -> (update id, contract ids created)
     update_reads: list = []  # (node, party, offset, template filter or None) of each look at one update
     refuse = None            # if set, the text of a refusal that every command gets
+    transfer_completes = False   # a token's transfer that completes at once, with no offer to accept
 
     def log_message(self, *args):
         pass
@@ -55,6 +56,15 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
             elif command["ExerciseCommand"]["choice"] == "AllocationFactory_Allocate":   # the token makes the allocation
                 FakeLedger.created.append({"contractId": f"cid-{n}", "templateId": canton.ALLOCATION_OF_TOKEN, "offset": 100 + n,
                                            "createArgument": {"allocation": command["ExerciseCommand"]["choiceArgument"]["allocation"]}})
+            elif command["ExerciseCommand"]["choice"] == "TransferFactory_Transfer":   # the token makes an offer to the receiver, or completes the transfer
+                t = command["ExerciseCommand"]["choiceArgument"]["transfer"]
+                if FakeLedger.transfer_completes:
+                    FakeLedger.created.append(holding(t["receiver"], t["amount"], f"cid-{n}") | {"templateId": canton.TOKEN})
+                else:
+                    FakeLedger.created.append({"contractId": f"cid-{n}", "templateId": canton.TRANSFER_OFFER, "offset": 100 + n, "createArgument": {"transfer": t}})
+            elif command["ExerciseCommand"]["choice"] == "TransferInstruction_Accept":   # the receiver accepts: it holds the amount
+                offer = [e for e in FakeLedger.created if e["contractId"] == command["ExerciseCommand"]["contractId"]][0]["createArgument"]["transfer"]
+                FakeLedger.created.append(holding(offer["receiver"], offer["amount"], f"cid-{n}") | {"templateId": canton.TOKEN})
             elif command["ExerciseCommand"]["choice"] == "AcceptToken":   # the confirmer accepts a token proposal: the gateway token is made
                 made = [e for es in FakeLedger.contracts.values() for e in es if e["contractId"] == command["ExerciseCommand"]["contractId"]][0]
                 FakeLedger.created.append({"contractId": f"cid-{n}", "templateId": canton.CHAIN + "GatewayToken", "offset": 100 + n,
@@ -213,6 +223,56 @@ class SettledHolderTests(LedgerTestCase):
         FakeLedger.contracts[("gw::1", canton.TOKEN)] = []
         with self.assertRaises(canton.Fail):
             canton.settled(canton.Network(), 8, "gateway")
+
+
+class ReturnTkbTests(LedgerTestCase):
+    def setUp(self):
+        super().setUp()
+        FakeLedger.transfer_completes = False
+        self.addCleanup(setattr, FakeLedger, "transfer_completes", False)
+        FakeLedger.contracts[("v::1", canton.TOKEN)] = [holding("v::1", "6.0", "hv-1"), holding("v::1", "4.0", "hv-2")]
+
+    def test_v_offers_the_tkb_to_u_with_all_its_holdings_and_u_accepts(self):
+        out = canton.main(["return-tkb", "ret-1", "10"])
+        [(node, body)] = self.exercised("TransferFactory_Transfer")
+        self.assertEqual((node, body["actAs"], body["userId"]), ("users", ["v::1"], "demo"))
+        command = body["commands"][0]["ExerciseCommand"]
+        self.assertEqual((command["templateId"], command["contractId"]), (canton.TRANSFER_FACTORY, "rules-1"))
+        self.assertEqual(body["disclosedContracts"], [RULES])
+        argument = command["choiceArgument"]
+        self.assertEqual((argument["expectedAdmin"], argument["extraArgs"]), ("rg::1", canton.NO_EXTRA_ARGS))
+        transfer = argument["transfer"]
+        self.assertEqual({k: transfer[k] for k in ("sender", "receiver", "amount", "instrumentId", "inputHoldingCids")},
+                         {"sender": "v::1", "receiver": "u::1", "amount": "10.0", "instrumentId": {"admin": "rg::1", "id": "TKB"}, "inputHoldingCids": ["hv-1", "hv-2"]})
+        [(node, body)] = self.exercised("TransferInstruction_Accept")
+        self.assertEqual((node, body["actAs"]), ("users", ["u::1"]))
+        self.assertEqual(body["commands"][0]["ExerciseCommand"]["templateId"], canton.TRANSFER_INSTRUCTION)
+        self.assertEqual(body["commands"][0]["ExerciseCommand"]["choiceArgument"], {"extraArgs": canton.NO_EXTRA_ARGS})
+        self.assertEqual((out["amount"], out["from"], out["to"], out["offer"] is not None), ("10.0", "v", "u", True))
+
+    def test_a_transfer_that_completes_at_once_needs_no_acceptance(self):
+        FakeLedger.transfer_completes = True
+        out = canton.main(["return-tkb", "ret-1", "3"])
+        self.assertEqual(len(self.exercised("TransferFactory_Transfer")), 1)
+        self.assertEqual(self.exercised("TransferInstruction_Accept"), [])
+        self.assertIsNone(out["offer"])
+
+    def test_v_with_too_little_is_a_failure_and_nothing_is_sent(self):
+        with self.assertRaisesRegex(canton.Fail, "less than 11"):
+            canton.main(["return-tkb", "ret-1", "11"])
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_bad_arguments_are_refused_before_anything_is_sent(self):
+        for argv in (["return-tkb", "ret-1", "0"], ["return-tkb", "ret-1", "-1"], ["return-tkb", "", "1"], ["return-tkb", "ret-1", "1e3"], ["return-tkb", "ret-1"]):
+            with self.assertRaises(SystemExit, msg=str(argv)):
+                canton.main(argv)
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_canton_refusing_is_a_failure_with_its_words(self):
+        FakeLedger.refuse = "NOT_ALLOWED"
+        with self.assertRaises(canton.Refused) as why:
+            canton.main(["return-tkb", "ret-1", "1"])
+        self.assertIn("NOT_ALLOWED", str(why.exception))
 
 
 class WithdrawAllocationTests(LedgerTestCase):

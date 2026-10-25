@@ -185,6 +185,17 @@ class EvmTests(unittest.TestCase):
         _, data, _ = self.sent("v")
         self.assertEqual(decode(["address", "uint256"], bytes.fromhex(data[8:])), ("0x" + "11" * 20, 0))
 
+    def test_give_is_sent_by_the_sender_to_any_address_through_the_tokens_transfer(self):
+        a = evm.main(["keys"])
+        evm.main(["give", "u", TOKEN, a["v"], "3"])
+        to, data, gas = self.sent("u")
+        self.assertEqual(to, TOKEN)
+        self.assertEqual(data, "a9059cbb" + a["v"].lower()[2:].rjust(64, "0") + f"{3 * evm.ONE:064x}")
+        self.assertTrue(21_000 < gas <= 3_000_000)
+        for bad in (["give", "x", TOKEN, a["v"], "1"], ["give", "u", TOKEN, a["v"], "0"], ["give", "u", TOKEN, "nobody", "1"], ["give", "u", "0x12", a["v"], "1"]):
+            with self.assertRaises(SystemExit, msg=str(bad)):
+                evm.main(bad)
+
     def test_every_transaction_has_a_gas_limit_the_block_can_take(self):
         for argv in (["register", "v", "n", "s"], ["claim", "u", ID, WRAPPED, "1"], ["withdraw", "u", WRAPPED, "1", PARTY],
                      ["pay", "v", ID, TOKEN, TOKEN, "1"], ["approve", "v", TOKEN, "gateway", "1"]):
