@@ -107,6 +107,10 @@ export interface NameMatch { kind: "token" | "contract"; name: string | null; sy
 
 export type AccountRest = ReturnType<typeof createAccountRest>;
 
+/** The filters of the two lists of an address's transfers, as the address detail counts them and as the tests plan them. */
+export const ERC20_TRANSFERS = "x.token_id is null";
+export const NFT_TRANSFERS = "x.token_id is not null";
+
 /** The transfers of an address in one list (one standard group), counted to the ceiling $3 from each side: a transfer to itself is once, as the list shows it. */
 export const transferCountSql = (filter: string) =>
   `(select count(*) from (select 1 from (
@@ -191,7 +195,7 @@ export function createAccountRest(pool: Pool) {
          (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.first_seen_block) as first_ts,
          (select extract(epoch from b.timestamp)::bigint from blocks b where b.number = ad.last_active_block) as last_ts,
          (select count(*) from (select 1 from contracts k where k.creator = q.address limit $2) k) as created_count,
-         ${transferCountSql("x.token_id is null")} as erc20_count, ${transferCountSql("x.token_id is not null")} as nft_count,
+         ${transferCountSql(ERC20_TRANSFERS)} as erc20_count, ${transferCountSql(NFT_TRANSFERS)} as nft_count,
          f.from_address as fund_from, f.hash as fund_tx, f.block_number as fund_block, f.value as fund_value, f.ts as fund_ts
        from (select $1::bytea as address) q left join addresses ad on ad.address = q.address left join contracts c on c.address = q.address left join tokens tk on tk.address = q.address
          left join lateral (select t.from_address, t.hash, t.block_number, t.value::text as value, extract(epoch from b.timestamp)::bigint as ts
