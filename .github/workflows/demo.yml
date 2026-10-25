@@ -2,10 +2,10 @@ name: demo
 
 on:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
 
 permissions:
   contents: read
@@ -58,3 +58,20 @@ jobs:
           distribution: temurin
           java-version: "21"
       - run: tests/demo_rehearsal.sh
+
+  # A chain that runs is upgraded to the next version of the Daml package and back, on the real network: the DAR of the tag v0.1.0 and the
+  # current source, the package put on each participant in the steps of network/external/setup.py --package-step (check, upload not vetted,
+  # vet with a dry run first), the builder pinned to 0.2.0, pinned back to 0.1.0 (the downgrade), and forward again. Real reth (launch.sh,
+  # discovery off), Canton, builder and sidecar for the legs; the proof is a stand-in (tests/demo_package_upgrade.sh).
+  package-upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_package_upgrade.sh

@@ -14,6 +14,21 @@
          chain's contract id, id and head, and "created".
     One participant hosts every party, so it is the only confirmer. Nothing but the Ledger API is used.
 
+  setup.py --ledger-url <URL> --dar <built DAR> --package-step check|upload|vet [--dry-run]
+
+    The package alone, for an upgrade of a chain that runs (a new version of the same package), in three steps that are run one at a time; nothing
+    else is done (no parties, users or chain, and only the ADMIN token is needed). Each prints one JSON line.
+      check   POST /v2/dars/validate: the participant checks the DAR (its packages, its dependencies, whether it is a valid upgrade of the one that
+              is there) on each synchronizer it is connected to, and keeps nothing.
+      upload  POST /v2/packages?vetAllPackages=false: the participant keeps the packages and vets none of them, so no submitter that picks a version
+              by package name can come to use the new one. Does nothing if the package is listed already. Stops, naming the package, if the
+              participant lists the package as vetted afterwards (a participant that ignores the query parameter): the DAR is on it, vetted.
+      vet     POST /v2/package-vetting/update: vets, on each synchronizer, every package of the DAR that this participant has not vetted there yet (the
+              main package and the dependencies the DAR carries, read from its .dalf files: the upload vetted none of them, and the participant refuses
+              a package whose dependencies are not vetted), in one change, with --dry-run first (the participant prepares the change and answers what
+              the vetting would be, and applies nothing). Does nothing where all of them are vetted by this participant.
+    Without --package-step the setup above is unchanged: it uploads with vetting on, as before.
+
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
@@ -21,7 +36,7 @@ applies the rules of check-env.sh itself, before it sends anything: the URL is h
 mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unless CZE_LEDGER_NO_AUTH=1 says the Ledger API has no login (then
 no token is sent). A token is never printed.
 """
-import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -48,7 +63,7 @@ TOKEN_ROLES = ("admin", "operator", "confirmer")
 LOOPBACK_OR_HTTPS = re.compile(r"^(https://[^/]+|http://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?)(/.*)?$")
 
 
-def check_settings(url: str) -> None:
+def check_settings(url: str, needed: tuple = TOKEN_ROLES) -> None:
     """The rules of network/external/check-env.sh, so that setup.py is as safe when it is run on its own: the URL is https or on this machine (a token
     never crosses a network in the clear), and every token file is read, before anything is sent, so that a bad one stops the run before it
     has changed the participant. A token file is one that others cannot read, with one token in it. Without CZE_LEDGER_NO_AUTH=1 every role
@@ -59,7 +74,7 @@ def check_settings(url: str) -> None:
         var = "CZE_TOKEN_FILE_" + role.upper()
         if os.environ.get(var):
             propose.role_token(role)   # refuses a file that others can read, an unreadable one, an empty one, and one with more than a token
-        elif role in TOKEN_ROLES and os.environ.get("CZE_LEDGER_NO_AUTH") != "1":
+        elif role in needed and os.environ.get("CZE_LEDGER_NO_AUTH") != "1":
             raise SystemExit(f"{var} is not set: a file with the {role} user's token (or CZE_LEDGER_NO_AUTH=1 for a Ledger API with no login)")
 
 
@@ -93,10 +108,31 @@ class Participant:
     def package_ids(self) -> list:
         return self.call("/v2/packages")[1].get("packageIds", [])
 
-    def upload(self, dar: Path) -> None:
-        # POST /v2/packages is the upload; a participant that has moved it to /v2/dars (404 here) takes the DAR there.
-        if self.call("/v2/packages", dar.read_bytes(), content_type="application/octet-stream")[0] == 404:
-            self.call("/v2/dars", dar.read_bytes(), content_type="application/octet-stream")
+    def upload(self, dar: Path, vet: bool = True) -> None:
+        # POST /v2/packages is the upload; a participant that has moved it to /v2/dars (404 here) takes the DAR there. The participant vets what it uploads
+        # unless vetAllPackages=false (Canton 3.6.3's OpenAPI: a query parameter of both).
+        query = "" if vet else "?vetAllPackages=false"
+        if self.call("/v2/packages" + query, dar.read_bytes(), content_type="application/octet-stream")[0] == 404:
+            self.call("/v2/dars" + query, dar.read_bytes(), content_type="application/octet-stream")
+
+    def validate(self, dar: Path, synchronizer: str) -> None:
+        """POST /v2/dars/validate: the participant checks the DAR on the synchronizer and keeps nothing. A DAR that fails stops with the participant's reason."""
+        if self.call("/v2/dars/validate?synchronizerId=" + urllib.parse.quote(synchronizer, safe=""), dar.read_bytes(), content_type="application/octet-stream")[0] == 404:
+            raise SystemExit("the participant has no POST /v2/dars/validate, so it cannot check a DAR without uploading it")
+
+    def vet(self, package_ids: list, synchronizer: str, dry_run: bool) -> dict:
+        """POST /v2/package-vetting/update: vet the packages (one change) on the synchronizer (this participant's vetting); with dry_run the participant
+        prepares the change and applies nothing. Returns the vetting it would hold after the change (a dry run) or holds now."""
+        status, answer = self.call("/v2/package-vetting/update", {"changes": [{"operation": {"Vet": {"value": {"packages": [{"packageId": p} for p in package_ids]}}}}],
+                                                                  "dryRun": dry_run, "synchronizerId": synchronizer})
+        if status == 404:
+            raise SystemExit("the participant has no POST /v2/package-vetting/update, so the package cannot be vetted through the Ledger API")
+        new = answer.get("newVettedPackages") or {}
+        listed = {p.get("packageId") for p in new.get("packages", [])}
+        for package_id in package_ids:
+            if package_id not in listed:
+                raise SystemExit(f"the participant did not answer that the package {package_id} is vetted on {synchronizer} after the change")
+        return new
 
     def synchronizers(self) -> list:
         found = self.call("/v2/state/connected-synchronizers")[1].get("connectedSynchronizers", [])
@@ -169,6 +205,19 @@ def package_id_of(dar: Path) -> str:
     return next(line.split("=", 1)[1] for line in out.splitlines() if line.startswith("package_id="))
 
 
+def dar_package_ids(dar: Path) -> list:
+    """Every package of the DAR: the main package first, then the others (the dependencies the DAR carries), each read from the name of its .dalf
+    (the 64 hex digits before .dalf, as dar-id.sh reads the main one)."""
+    main = package_id_of(dar)
+    try:
+        with zipfile.ZipFile(dar) as z:
+            names = z.namelist()
+    except (zipfile.BadZipFile, OSError):
+        return [main]
+    found = [m[1] for m in (re.search(r"-([0-9a-f]{64})\.dalf$", n) for n in names) if m]
+    return [main] + sorted(set(found) - {main})
+
+
 def ensure_package(node: Participant, dar: Path) -> None:
     package_id = package_id_of(dar)
     if package_id in node.package_ids():
@@ -185,6 +234,51 @@ def ensure_package(node: Participant, dar: Path) -> None:
     if vetted is False:
         raise SystemExit(f"the package {package_id} is not vetted on the synchronizer the participant is connected to: vet it (the validator's operator can), then run this again")
     log("the package is vetted on the synchronizer" if vetted else "WARN: the participant has no vetting list; the chain proposal below fails if the package is not vetted")
+
+
+def connected(node: Participant) -> list:
+    synchronizers = node.synchronizers()
+    if not synchronizers:
+        raise SystemExit("the participant is not connected to a synchronizer")
+    return synchronizers
+
+
+def package_step(node: Participant, dar: Path, step: str, dry_run: bool) -> dict:
+    """One of the three steps of putting a new version of the package on a participant (see the top of this file). Returns what it printed."""
+    package_id = package_id_of(dar)
+    if step == "check":
+        for synchronizer in connected(node):
+            node.validate(dar, synchronizer)
+        log(f"the participant accepts the DAR with the package {package_id}; nothing was uploaded")
+        return {"step": "check", "packageId": package_id, "valid": True}
+    if step == "upload":
+        uploaded = package_id not in node.package_ids()
+        if uploaded:
+            node.upload(dar, vet=False)
+            if package_id not in node.package_ids():
+                raise SystemExit(f"the participant took the DAR but does not list the package {package_id}")
+            log(f"uploaded the DAR without vetting; the package is {package_id}")
+        else:
+            log(f"the package {package_id} is on the participant already; nothing was uploaded")
+        synchronizers = connected(node)
+        vetted = node.vetted(package_id, synchronizers)
+        if uploaded and vetted:
+            raise SystemExit(f"the participant lists the package {package_id} as vetted on {' and '.join(synchronizers)} although it was uploaded with vetAllPackages=false: "
+                             "it ignores that parameter, so the DAR is on it and vetted (nothing else was changed)")
+        return {"step": "upload", "packageId": package_id, "uploaded": uploaded, "vetted": vetted}
+    if package_id not in node.package_ids():
+        raise SystemExit(f"the package {package_id} is not on the participant: upload it first (--package-step upload)")
+    wanted, done = dar_package_ids(dar), {}
+    for synchronizer in connected(node):
+        unvetted = [p for p in wanted if not node.vetted(p, [synchronizer])]
+        if not unvetted:
+            log(f"the package {package_id} and the {len(wanted) - 1} it depends on in the DAR are vetted on {synchronizer} already")
+            done[synchronizer] = "already"
+            continue
+        node.vet(unvetted, synchronizer, dry_run)
+        log(f"{'dry run: would vet' if dry_run else 'vetted'} the package {package_id} and {len(unvetted) - (package_id in unvetted)} of its dependencies on {synchronizer}")
+        done[synchronizer] = "dry-run" if dry_run else "vetted"
+    return {"step": "vet", "packageId": package_id, "dryRun": dry_run, "synchronizers": done}
 
 
 def ensure_parties(node: Participant, hints: tuple, prefix: str) -> dict:
@@ -251,11 +345,21 @@ def main(argv: list) -> int:
     ap.add_argument("--ledger-url", default=os.environ.get("CZE_LEDGER_URL"))
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
+    ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
-    check_settings(own.ledger_url)
+    if own.dry_run and own.package_step != "vet":
+        ap.error("--dry-run goes with --package-step vet")
+    if own.package_step and (rest or own.demo):
+        ap.error("--package-step does only the package: no --demo and no chain arguments")
+    check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)
+    if own.package_step:
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(package_step(Participant(own.ledger_url), Path(own.dar), own.package_step, own.dry_run)))
+        return 0
     chain_args = propose.parse(rest, propose.read_env_file(ROOT / "PINS"))[1] if rest else None
     prefix = os.environ.get("CZE_PARTY_PREFIX", "ostia-")
     os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
