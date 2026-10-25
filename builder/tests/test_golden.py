@@ -257,5 +257,5 @@ class Golden(Loop):
         t.start()
         self.assertTrue(done.wait(20), "the run did not end after a raise out of step()")
         self.assertTrue(self.stop.is_set())
-        # Compared with the file directly, never through check(): with GOLDEN_REGENERATE=1 check() would write this faulty record.
-        self.assertNotEqual(self.record(s), json.loads((GOLDEN / "commit.json").read_text()))
+        # The fault itself is in the run's report (never compared through check(), which would write a fixture under GOLDEN_REGENERATE=1).
+        self.assertIn("RuntimeError: boom", [r.get("error") for r in self.reports])
