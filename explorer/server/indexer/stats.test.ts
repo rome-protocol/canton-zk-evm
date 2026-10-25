@@ -62,7 +62,14 @@ async function inDb(fn: (pool: Pool) => Promise<void>): Promise<void> {
 }
 
 checkRequired();
-describe.skipIf(!TEST_URL)("the stats rollups", () => {
+// Each test makes a database of its own and applies every migration to it (about half a second on an idle machine), and the rollup tests then
+// compute real ranges: the one about a late fact older than the minute rows' retention rolls up 40 days three times, which is about four seconds
+// when nothing else is running. The default of five seconds is too tight for that on a runner that shares its cores with another job (the `l2`
+// job runs beside this one), and a test that only waits on PostgreSQL fails there for no reason. This is the time the file's tests really need,
+// with room to spare; what each test checks is unchanged.
+const DATABASE_TEST_TIMEOUT_MS = 60_000;
+
+describe.skipIf(!TEST_URL)("the stats rollups", { timeout: DATABASE_TEST_TIMEOUT_MS }, () => {
   it("a database with no facts has no rows and no cursor, and a run says nothing was done", () => inDb(async (pool) => {
     const r = await rollupStats(pool, { now: () => T0 });
     expect(r.minutes).toBe(0);
