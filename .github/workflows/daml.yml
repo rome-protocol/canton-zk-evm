@@ -37,12 +37,13 @@ jobs:
       - name: Build the DAR and run the Daml Script tests
         run: daml/test.sh
 
-  # 0.2.0 must be a valid upgrade of the live 0.1.0. Both DARs are the external form, built with the toolchain in PINS
-  # (the one the network runs), so the old package id is the live one.
+  # 0.3.0 must be a valid upgrade of 0.2.0 and of 0.1.0. The DARs are the external form, built with the toolchain in PINS
+  # (the one the network runs), so each old package id is the live one.
   upgrade:
     runs-on: ubuntu-latest
     env:
-      LIVE_PACKAGE_ID: ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08
+      PACKAGE_ID_V0_1_0: ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08
+      PACKAGE_ID_V0_2_0: a07a2e4d5fc10ba0ef486164dfadce6af066cb92879425ff1e0ec7629c43da7e
       CZE_TOOLS_DIR: ${{ github.workspace }}/../tools
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -57,22 +58,28 @@ jobs:
           . ./PINS
           export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
           SDK_VERSION=$DAML_SDK_VERSION TARGET=$DAML_TARGET daml/test.sh
-      - name: Rebuild 0.1.0 from the tag v0.1.0 and check its package id
+      - name: Rebuild 0.1.0 and 0.2.0 from their tags and check their package ids
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.1.0
-          git worktree add "$RUNNER_TEMP/v0.1.0" v0.1.0
-          grep -qx 'version: 0.1.0' "$RUNNER_TEMP/v0.1.0/daml/daml.yaml"
-          old=$(cd "$RUNNER_TEMP/v0.1.0" && network/canton/build-dar.sh)
-          cp "$old" "$RUNNER_TEMP/old.dar"
-          id=$(network/canton/dar-id.sh "$RUNNER_TEMP/old.dar" | sed -n 's/^package_id=//p')
-          echo "0.1.0 package id: $id"
-          [ "$id" = "$LIVE_PACKAGE_ID" ] || { echo "FAIL: 0.1.0 rebuilt from the tag has package id $id, not $LIVE_PACKAGE_ID" >&2; exit 1; }
-      - name: Build this version and run the upgrade check
+          for v in 0.1.0 0.2.0; do
+            git fetch --no-tags --depth=1 origin tag "v$v"
+            git worktree add "$RUNNER_TEMP/v$v" "v$v"
+            grep -qx "version: $v" "$RUNNER_TEMP/v$v/daml/daml.yaml"
+            old=$(cd "$RUNNER_TEMP/v$v" && network/canton/build-dar.sh)
+            cp "$old" "$RUNNER_TEMP/old-$v.dar"
+            id=$(network/canton/dar-id.sh "$RUNNER_TEMP/old-$v.dar" | sed -n 's/^package_id=//p')
+            echo "$v package id: $id"
+            want=PACKAGE_ID_V${v//./_}
+            [ "$id" = "${!want}" ] || { echo "FAIL: $v rebuilt from the tag has package id $id, not ${!want}" >&2; exit 1; }
+          done
+      - name: Build this version and run the upgrade checks
         run: |
-          grep -qx 'version: 0.2.0' daml/daml.yaml
+          grep -qx 'version: 0.3.0' daml/daml.yaml
           new=$(network/canton/build-dar.sh)
           cp "$new" "$RUNNER_TEMP/new.dar"
           network/canton/dar-id.sh "$RUNNER_TEMP/new.dar"
           . ./PINS
           export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
-          dpm upgrade-check --both "$RUNNER_TEMP/old.dar" "$RUNNER_TEMP/new.dar"
+          for v in 0.2.0 0.1.0; do
+            echo "upgrade check from $v"
+            dpm upgrade-check --both "$RUNNER_TEMP/old-$v.dar" "$RUNNER_TEMP/new.dar"
+          done

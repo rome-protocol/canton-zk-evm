@@ -120,6 +120,18 @@ template ZkChain
     signatory operator, confirmer, gateway
     observer builder
 
+    -- The cap on a block's gas limit and gas used only goes up, by at most double each time, and never over `maxGasCap`.
+    -- It cannot go down: Advance already holds every committed header to the cap, and the head's limit is not kept here.
+    -- The operator and the confirmer decide it together; see `GasCapProposal` for how they do it from two users.
+    choice SetGasCap : ContractId ZkChain
+      with newCap : Int
+      controller operator, confirmer
+      do
+        assertMsg "the new gas cap must be above the current one" (newCap > gasCap)
+        assertMsg "the gas cap may at most double in one change" (newCap <= 2 * gasCap)
+        assertMsg "the gas cap may not be over maxGasCap" (newCap <= maxGasCap)
+        create this with gasCap = newCap
+
     choice Advance : (ContractId ZkChain, ContractId BlockRecord)
       with
         headerHex : Text
@@ -130,7 +142,7 @@ template ZkChain
         legs : [Leg]
       controller builder
       do
-        answer <- verifyCall (T.intercalate "," [proofHex, headerHex, txsHex])
+        answer <- verifyBlockCall proofHex headerHex txsHex
         b <- either (\why -> abort ("the sidecar refused the block: " <> why)) pure (parseVerify answer)
         assertMsg "the block was proven by another program" (b.programVK == programVK)
         assertMsg "the block was proven by another ZisK release" (b.rootC == rootC)
@@ -150,6 +162,32 @@ template ZkChain
           number = b.number; blockHash = b.blockHash; parentHash = b.parentHash; ..
         next <- create this with headNumber = b.number; headHash = b.blockHash; headStateRoot = b.stateRoot
         pure (next, record)
+
+-- The highest gas cap a chain may be given.
+maxGasCap : Int
+maxGasCap = 300000000
+
+-- The operator proposes a new gas cap; the confirmer accepts it on the chain's current contract. Two parties sign `SetGasCap`, and
+-- the users that act for them are split by role (the confirmer's user acts for the confirmer alone), so the choice is exercised
+-- from inside the confirmer's acceptance, where the operator's authority is the proposal's signatory.
+template GasCapProposal
+  with
+    operator : Party
+    confirmer : Party
+    chainId : Int
+    newCap : Int
+  where
+    signatory operator
+    observer confirmer
+    ensure chainId > 0 && newCap > 0
+
+    choice AcceptGasCap : ContractId ZkChain
+      with chain : ContractId ZkChain
+      controller confirmer
+      do
+        c <- fetch chain
+        assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer)
+        exercise chain SetGasCap with newCap
 
 -- A contract of a leg must name this chain's id, operator and confirmer. Authority would not always refuse others: the
 -- builder is a controller of `Advance`, so a contract that names the builder in one of those roles would otherwise pass.

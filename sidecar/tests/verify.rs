@@ -192,6 +192,19 @@ fn a_good_verify2_line_gets_the_answer_verify_gives() {
     assert_eq!(answer, verify(&cfg, &format!("{abi},{header},{txs}")));
 }
 
+/// The fixed line the Daml tests and the Python stand-in check too: fields "aa", "01", "cc".
+const FIXED_LINE: &str =
+    "63bf501ac3036ecbde797c99ac847bfe8a41194cbe46468d4e668ea0a21686460000000002aa000000000201cc";
+
+#[test]
+fn the_fixed_verify2_line_is_what_the_helpers_build_and_reads_as_its_fields() {
+    let cfg = config_accepting_any();
+    assert_eq!(line2_of(&body2("aa", "01", "cc")), FIXED_LINE);
+    assert_eq!(&FIXED_LINE[64..], "0000000002aa000000000201cc");
+    assert_eq!(FIXED_LINE[..64], sha256_hex(&FIXED_LINE[64..]));
+    assert_eq!(verify2(&cfg, FIXED_LINE), verify(&cfg, "aa,01,cc"));
+}
+
 #[test]
 fn verify2_gives_verifys_refusals_for_the_same_fields() {
     let cfg = config_accepting_any();

@@ -7,9 +7,11 @@ module Zk.Sidecar where
 import DA.ExternalCall (externalCall)
 import Zk.Hex
 
--- The proof, header and transactions in; one line out (README: "verify").
-verifyCall : Text -> Update Text
-verifyCall input = fromHex <$> externalCall "canton-zk-evm" "verify" "" (toHex input)
+-- The proof, header and transactions in; one line out (README: "verify2"). The input is the line itself: it is hex text already,
+-- so unlike the other call it is not hexed again.
+verifyBlockCall : Text -> Text -> Text -> Update Text
+verifyBlockCall proofHex headerHex txsHex =
+  fromHex <$> externalCall "canton-zk-evm" "verify2" "" (verify2Line proofHex headerHex txsHex)
 
 -- The proven block's state root and number, the gateway's address, the gateway's two storage proofs and the attached legs
 -- in; one line out (README: "legs").

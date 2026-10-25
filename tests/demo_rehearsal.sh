@@ -3,7 +3,7 @@
 # Daml package and the real token standard, the real builder, and the real sidecar for `legs` (the gateway's storage proofs), running
 # demo/run.sh start to end: the setup block, a deposit, a payment, a withdrawal, the gap that is closed, and the block whose proof has one byte flipped.
 # What is not real: the zero-knowledge proof. The prover is a stand-in that writes a fixed proof that carries the block hash (tests/demo_fake_prove.sh) and
-# the `verify` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
+# the `verify`/`verify2` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
 # sidecar does. So this checks everything except the proof check itself, which the sidecar's own tests and the GPU session cover.
 # The explorer runs beside it, from its image (explorer/run.sh), with its own database and its indexer (run.sh starts both), and is checked against this
 # chain: the page of run 1's block once the indexer has written it, the Verify check (which says no, because the proof is a stand-in), the faucet, and the
@@ -66,7 +66,7 @@ CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools")
 CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 "$ROOT/network/canton/dar-id.sh" "$CZE_DAR" > "$NET/dar.txt"
 
-echo "== the sidecars: the real one for legs, the stand-in in front of it for verify"
+echo "== the sidecars: the real one for legs, the stand-in in front of it for verify/verify2"
 VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 768))$VK$RC
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085
@@ -96,7 +96,7 @@ CZE_SOURCE_COMMIT=$(printf 'a%.0s' $(seq 40)) "$ROOT/demo/run.sh"
 echo "== the results are complete and consistent"
 "$ROOT/tests/demo_results.sh" "$CZE_DEMO_RESULTS" --stand-in
 # Calls: the stand-ins were asked to verify, and the real sidecar's legs answered for the legs.
-grep -q ' verify submission$' "$FAKE_LOG" || fail "no verify call"
+grep -qE ' verify2? submission$' "$FAKE_LOG" || fail "no verify call"
 grep -q '^8086 legs validation$' "$FAKE_LOG" || fail "the confirmer's sidecar was never asked for legs: its participant did not check the legs when it validated"
 grep -q ' legs submission$' "$FAKE_LOG" || fail "no legs call: the legs were never checked against the proven state"
 # Informational: the first call to a service that has just started can time out once, and Canton recovers (the blocks above committed).

@@ -5,7 +5,8 @@
 | Template | What it is |
 |---|---|
 | `ChainProposal` | The operator and the gateway propose a chain: its id, genesis hash, the genesis block's state root, the pinned program key (`programVK`), the pinned ZisK release (`rootC`), the rules hash, the gas cap, the builder, the gateway party and the gateway contract's address on the EVM. The confirmer's `Accept` creates the chain. |
-| `ZkChain` | The chain's one state contract, signed by the operator, the confirmer and the gateway: the current head (number, block hash and state root) and the pins. `Advance`, exercised by the builder, consumes it and creates the next one. |
+| `ZkChain` | The chain's one state contract, signed by the operator, the confirmer and the gateway: the current head (number, block hash and state root) and the pins. `Advance`, exercised by the builder, consumes it and creates the next one. `SetGasCap` (from package 0.3.0), exercised by the operator and the confirmer together, raises its gas cap. |
+| `GasCapProposal` | From package 0.3.0. Signed by the operator, seen by the confirmer: "raise this chain's gas cap to this value". The confirmer's `AcceptGasCap`, given the chain's current contract, exercises `SetGasCap` with both parties' authority (the operator's from the proposal, the confirmer's as the controller) and creates the chain contract again with the new cap and every other field unchanged. It is refused on another chain's contract. The two parties are normally acted for by separate users, so the proposal is how they decide together. |
 | `BlockRecord` | One per block, signed by the operator and the confirmer, seen by the builder and a reader party: number, hash, parent, header, transactions and proof. Enough to replay the chain and re-check every proof. |
 | `GatewayTokenProposal`, `GatewayToken` | "This Canton instrument (its admin and id) is what this EVM token wraps, and this is its registry's transfer factory." Signed by the operator, the confirmer and the gateway: the proposal by the operator and the gateway, accepted by the confirmer with `AcceptToken`. Registering a token is a trust decision, because the gateway runs that registry's Daml code with its own authority. |
 | `DepositRequest` | Signed by the depositor: the deposit id, the EVM address that will claim the wrapped token, and the depositor's allocation to the gateway. Its `Lock` choice executes the allocation. |
@@ -16,7 +17,7 @@
 
 In one Canton transaction, the builder's `Advance`:
 
-1. calls the sidecar's `verify` with the proof, header and transactions;
+1. calls the sidecar's `verify2` (from package 0.3.0; `verify` before) with the proof, header and transactions;
 2. checks the answer: the block was proven under the pinned `programVK` and `rootC`; its parent is the current head; its number is the head's plus one; its gas limit and gas used are within the cap;
 3. builds one line for each attached leg (a deposit, a withdrawal or a payment), from the Canton contracts that the leg names, and calls the sidecar's `legs` with those lines and the gateway's proofs. The sidecar hashes the lines as the gateway contract does and compares the result with the value the proven block recorded. Daml requires the exact answer. A block that recorded no legs is checked in the same way, with no lines: that is how it is proven that it needs none;
 4. settles every leg, in order: `Lock` for a deposit, `Receive` for a withdrawal, `Settle` for a payment;
@@ -47,7 +48,7 @@ A withdrawal goes through the registry's own transfer factory, and the factory i
 
 ## What the sidecar answers
 
-The sidecar is a service each confirming participant runs beside it. Daml calls it through Canton's external call, extension `canton-zk-evm`, with the verb as the function name. Every verb is a pure function of its input, so every honest confirmer answers with the same bytes; Canton rejects the transaction if two answers differ. The input is one line of fields separated by commas; the answer is one line of fields separated by single spaces. The request and the response bodies of the external call are the hex of that ASCII line (lowercase, two digits a character), with no newline at the end of either; `Zk.Hex` has the two helpers, `toHex` and `fromHex`. Inside the line, hashes, keys, addresses and proofs are lowercase hex, with no `0x`. Numbers are decimal.
+The sidecar is a service each confirming participant runs beside it. Daml calls it through Canton's external call, extension `canton-zk-evm`, with the verb as the function name. Every verb is a pure function of its input, so every honest confirmer answers with the same bytes; Canton rejects the transaction if two answers differ. The input is one line of fields separated by commas; the answer is one line of fields separated by single spaces. The request and the response bodies of the external call are the hex of that ASCII line (lowercase, two digits a character), with no newline at the end of either, except that the request body of `verify2` is the length-prefixed line itself (see `verify2`); `Zk.Hex` has the two helpers, `toHex` and `fromHex`. Inside the line, hashes, keys, addresses and proofs are lowercase hex, with no `0x`. Numbers are decimal.
 
 ### `verify`
 
@@ -63,11 +64,20 @@ ok programVK rootC blockHash parentHash number stateRoot timestamp gasLimit gasU
 
 Otherwise: `no` followed by a reason in plain words, for example `no the proof does not verify`.
 
+### `verify2`
+
+The same checks and the same answer as `verify`, for a line that carries the block once. From package 0.3.0 `Advance` calls this one. The line is a hash followed by a body:
+
+- the body is the proof, the header and the transactions, as lowercase hex, with the length of the proof and the length of the header (in characters, each written as 10 decimal digits) in front of them: `lengthField proofHex`, `proofHex`, `lengthField headerHex`, `headerHex`, `txsHex`. The transactions are the rest of the line, and empty for a block with no transactions. The prefixes fix where each field ends, so bytes cannot be moved from one field to the next;
+- the hash is the SHA-256 of the body, as 64 lowercase hex digits (`T.sha256`).
+
+The line is sent as it is, not hexed again, which halves what Canton records and replays for the call. The runtime lowercases the text it sends, so a capital letter that `Advance` holds would arrive as a small letter and pass; the hash is of the text as `Advance` holds it, so it no longer matches and the sidecar answers `malformed input`. The record and the argument therefore hold only lowercase hex, as under `verify`. The sidecar also answers `malformed input` for a line shorter than the hash, a prefix that is not 10 digits or reaches past the end, and a field that is not whole lowercase bytes.
+
 ### `legs`
 
 Input: `stateRoot,number,gateway,accountNodes,storageNodes,legs`.
 
-- `stateRoot` is the proven block's state root, from the answer of `verify`, and `number` the block's number in decimal. `gateway` is the gateway contract's address, from the chain record.
+- `stateRoot` is the proven block's state root, from the answer of the block check (`verify2`, the same line as `verify`), and `number` the block's number in decimal. `gateway` is the gateway contract's address, from the chain record.
 - `accountNodes` and `storageNodes` are the gateway's account proof and the storage proof of its `legs[number]` slot, as `eth_getProof` gives them: nodes in hex, joined by `;`. The storage list may be empty.
 - `legs` is empty, or the attached legs in order, joined by `|`. Each leg is six fields joined by `/`: `kind/id/token/account/amount/party`.
   - `kind` is `deposit`, `withdrawal` or `payment`. `id` is 64 hex digits, `token` and `account` are 40.
@@ -105,8 +115,8 @@ This version has these limits:
 
 `DA.ExternalCall` is not in the Daml 3.5 SDK. It is in the released Daml 3.6 SDK and in Canton 3.6, and Daml Script's test ledger cannot make an external call in any case. So `Zk.Sidecar`, the one module that makes the call, has two forms in `sidecar/`:
 
-- `external.daml` is the form used with a real Canton: two one-line functions, `verifyCall` and `legsCall`, each `fromHex <$> externalCall "canton-zk-evm" <verb> "" (toHex input)`.
-- `stub.daml` is the test form: the same two functions, going through the same hex helpers, answering in the same format from a small table. Its package is named `canton-zk-evm-stub`, so it cannot be mistaken for the real one. For `verify`, the header field of the call picks the scenario, so a test names a block and gets a well-formed answer for a good block, a block on the wrong parent, one that skips a number, one over the gas cap, one proven under another program or another ZisK release, and a failing proof. For `legs`, the stub cannot hash, so it treats the storage proof as the text of the legs the block recorded, in hex, and the account proof as a tag that picks a failure. A test writes down the legs its block "recorded" in the exact line format above, so the tests also pin that format.
+- `external.daml` is the form used with a real Canton: two one-line functions. `verifyBlockCall` is `fromHex <$> externalCall "canton-zk-evm" "verify2" "" (verify2Line proofHex headerHex txsHex)`, and `legsCall` is the same for `legs` with `(toHex input)`.
+- `stub.daml` is the test form: the same two functions, going through the same hex helpers, answering in the same format from a small table. For `verify2` it lowercases the line (`T.asciiToLower`) as the runtime does, then reads it as the sidecar does: the hash, the two prefixes, and the same refusals. Its package is named `canton-zk-evm-stub`, so it cannot be mistaken for the real one. For `verify2`, the header field of the call picks the scenario, so a test names a block and gets a well-formed answer for a good block, a block on the wrong parent, one that skips a number, one over the gas cap, one proven under another program or another ZisK release, and a failing proof. Four more scenarios cover the 60M cap: the limit is 60M (header `07`), the limit is 60,000,001 (`08`), the limit is 60M and the gas used 60,000,001 (`09`), and the limit is 60M and the gas used exactly 60M (`0a`). For `legs`, the stub cannot hash, so it treats the storage proof as the text of the legs the block recorded, in hex, and the account proof as a tag that picks a failure. A test writes down the legs its block "recorded" in the exact line format above, so the tests also pin that format.
 
 Both forms share all other source code, including every check that `Advance` and the settlement choices make on an answer. Only the answer's source is stubbed. CI runs tests against the stub form. The external form needs a toolchain with `DA.ExternalCall`, which the released Daml 3.6 SDK has. `PINS` names that SDK, `network/canton/fetch.sh` installs it, and `network/canton/build-dar.sh` builds the external form. `SDK_VERSION` selects the SDK version. `build.sh external` defaults to `--target=2.4`, the first Daml-LF version with the external call. The network workflow builds this form and loads it into a real Canton. The smoke test in `network/` exercises the real call with the real sidecar.
 
@@ -130,3 +140,11 @@ CI (`.github/workflows/daml.yml`) does both on a GitHub runner. It downloads the
 ### Package 0.2.0 is an upgrade of 0.1.0
 
 Both versions have the same package name, the same templates and types; only the bodies of choices and helpers differ, which Canton accepts as an upgrade. A running chain keeps its contracts: the first `Advance` under 0.2.0 consumes the 0.1.0 `ZkChain` and creates a 0.2.0 one. The `upgrade` job of the same workflow checks this on every change under `daml/`: it rebuilds 0.1.0 from the tag `v0.1.0` and requires its package id to be `ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08`, builds the current source, and runs `dpm upgrade-check --both` on the two DARs (Canton's own upgrade validator). Both are the `external` form, built with the toolchain pinned in `PINS` through `network/canton/build-dar.sh`, which is the toolchain the network runs.
+
+### Package 0.3.0 is an upgrade of 0.2.0 and of 0.1.0
+
+0.3.0 adds a choice (`SetGasCap`) to `ZkChain`, adds a template (`GasCapProposal`), and changes the body of `Advance` and the helper modules. No field or choice signature changes, so a `ZkChain` made by 0.3.0 has the fields of 0.2.0's and 0.2.0 can consume it; after a downgrade a raised cap stays. The `upgrade` job rebuilds 0.1.0 and 0.2.0 from the tags `v0.1.0` and `v0.2.0` and requires their package ids to be `ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08` and `a07a2e4d5fc10ba0ef486164dfadce6af066cb92879425ff1e0ec7629c43da7e`, builds the current source, and runs `dpm upgrade-check --both` for 0.2.0 to 0.3.0 and for 0.1.0 to 0.3.0.
+
+### The gas cap
+
+`SetGasCap` only raises the cap: the new value must be above the current one, at most double it, and at most `maxGasCap` (300,000,000). It does not lower it, because `Advance` already holds every committed header to the cap and the chain contract does not keep the head's gas limit. `Advance`'s own check, that a block's gas limit and gas used are within the cap, is unchanged. The builder reads the chain contract before every block, so a new cap needs no change on its side. The accept consumes the contract that every `Advance` consumes, so the producer is stopped while the cap changes.
