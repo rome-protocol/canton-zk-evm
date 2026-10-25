@@ -1,6 +1,6 @@
 """--target-gas-limit: the builder asks reth to move the block gas limit toward a target, never past the chain's gasCap. Without it the calls to reth
 are exactly what they were. Run: python3 -m unittest discover -s builder/tests"""
-import contextlib, io, json, sys, threading, unittest
+import json, sys, threading, unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -43,10 +43,25 @@ class Target(tb.Case):
         self.assertEqual(b.targeting(s.cfg, CAP), {"target_gas_limit": CAP, "target_gas_limit_asked": 60_000_000, "target_gas_limit_clamped_to_cap": True})
 
     def test_the_cap_is_read_again_for_every_block(self):
-        s = self.setup({ALICE: [tx(ALICE, 0)]}, gas_cap=CAP)
+        s = self.setup({ALICE: [tx(ALICE, 0), tx(ALICE, 1)]}, gas_cap=CAP)
         s.cfg.target_gas_limit = 60_000_000
-        for cap, want in ((CAP, CAP), (45_000_000, 45_000_000), (90_000_000, 60_000_000)):
-            self.assertEqual(b.target_for(s.cfg, cap), want)
+        self.assertTrue(b.build_block(s.cfg)["committed"])
+        s.ledger.gas_cap = 45_000_000   # Canton's record changes between the blocks
+        self.assertTrue(b.build_block(s.cfg)["committed"])
+        first, second = [a["targetGasLimit"] for a in self.attributes(s)]
+        self.assertEqual((first, second), (hex(CAP), hex(45_000_000)))
+
+    def test_the_budget_follows_the_limit_reth_will_build(self):
+        parent = 30_000_000
+        step = parent // 1024 - 1
+        mk = lambda target: type("C", (), {"target_gas_limit": target})()
+        self.assertEqual(b.budget_for(mk(0), CAP, parent), parent)   # no target: as it always was
+        self.assertEqual(b.budget_for(mk(60_000_000), CAP, parent), parent)   # rising: the parent's limit, the most a block can start from
+        self.assertEqual(b.budget_for(mk(parent), CAP, parent), parent)
+        self.assertEqual(b.budget_for(mk(20_000_000), CAP, parent), parent - step)   # falling: one step under the parent's limit
+        self.assertEqual(b.budget_for(mk(parent - 5), CAP, parent), parent - 5)   # the target is closer than a step
+        self.assertEqual(b.budget_for(mk(0), 25_000_000, parent), 25_000_000)   # the cap still holds it
+        self.assertEqual(b.budget_for(mk(20_000_000), 25_000_000, parent), 25_000_000)
 
     def test_the_built_line_names_the_target_only_when_one_is_set(self):
         for target, fields in ((0, {}), (20_000_000, {"target_gas_limit": 20_000_000}),

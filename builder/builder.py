@@ -945,7 +945,7 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         return built, [by_raw[raw] for raw in built["executionPayload"]["transactions"]]
 
     pending = reth.call("txpool_content", [])["pending"]
-    budget = min(cap, int(parent["gasLimit"], 16))
+    budget = budget_for(cfg, cap, int(parent["gasLimit"], 16))
     raws: dict = {}   # hash -> raw transaction, each fetched once
     stopped: set = set()
     for t, raw in known or []:   # in the pool already, or not taken back: either way the raw bytes are in hand
@@ -1466,6 +1466,18 @@ def target_for(cfg: Config, cap: int) -> "int | None":
     """The gas limit to ask reth for in a block's attributes: --target-gas-limit, or the chain's gasCap if that is lower (a header over the cap
     is refused by check_built, so a larger ask would stop the chain). None when no target was set."""
     return min(cfg.target_gas_limit, cap) if cfg.target_gas_limit else None
+
+
+def budget_for(cfg: Config, cap: int, parent_limit: int) -> int:
+    """The gas limit of the block reth will build, as far as the builder can tell: the budget its transactions are chosen under. With no target
+    it is the parent's limit, held at the cap, as it always was. With a target, reth moves the limit toward it by at most parent // 1024 - 1
+    a block, so when the target is under the parent's limit (a soft brake) the child's limit is a little lower than the parent's, and the
+    gas limits of a block packed by gas limits must fit under that."""
+    budget = min(cap, parent_limit)
+    target = target_for(cfg, cap)
+    if target is None:
+        return budget
+    return min(budget, max(target, parent_limit - max(parent_limit // 1024 - 1, 0)))
 
 
 def targeting(cfg: Config, cap: int) -> dict:
