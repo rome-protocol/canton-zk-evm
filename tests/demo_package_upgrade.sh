@@ -106,7 +106,7 @@ export DEMO_PROOF_PROGRAM_VK=$VK DEMO_PROOF_ROOT_C=$RC
 export CZE_MAKE_INPUT_CMD=$ROOT/builder/tests/fake-make-input.sh CZE_PROVE_CMD=$ROOT/tests/demo_fake_prove.sh
 
 # <ZkChain|BlockRecord|DepositRequest>: the package ids the ledger says the active contracts of that template were made under.
-probe() { "$PY" "$ROOT/tests/package_probe.py" "$CZE_STATE_DIR" "$1"; }
+probe() { "$PY" "$ROOT/tests/demo_package_probe.py" "$CZE_STATE_DIR" "$1"; }
 chain_package() { local one; one=$(probe ZkChain | jq -c '.contracts | [.[]]'); [ "$(jq length <<<"$one")" = 1 ] || fail "not exactly one ZkChain: $one"; jq -r '.[0]' <<<"$one"; }
 # <package id>: one builder run, pinned to it. Prints the builder's JSON line; the exit status is the builder's.
 build() {

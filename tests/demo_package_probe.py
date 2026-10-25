@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Part of tests/demo_package_upgrade.sh, on the local Canton network (no login).
-Usage: package_probe.py <state dir> <ZkChain|BlockRecord|DepositRequest> [<DepositRequest field>=<value> | <BlockRecord number>]
-       prints, as JSON, the package id of the template of each active contract of that template (the operator's view), keyed by the
-       contract's ledger id: {"<contractId>": "<package id>", ...}. The package id is what the ledger says the contract was created under:
-       the part before the first ':' of its template id, which is the version of the package that made it."""
+Usage: demo_package_probe.py <state dir> ZkChain|BlockRecord|DepositRequest
+       Prints one JSON line: "contracts" maps the ledger id of each active contract of that template (the operator's view) to the package id
+       it was made under, which is the part before the first ':' of its template id; "numbers" lists the block numbers of BlockRecords."""
 import json, sys
 from pathlib import Path
 
