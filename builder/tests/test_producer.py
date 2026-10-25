@@ -1,7 +1,7 @@
 """The always-on loop (`builder.py run`), against the same fakes as test_builder.py. The tests drive `Producer.step()` by hand with a
 fake clock and a recording `wait`, so no test sleeps; one test runs the real command and signals it."""
 from datetime import datetime, timezone
-import json, os, signal, subprocess, sys, tempfile, threading, time, unittest
+import json, os, shutil, signal, subprocess, sys, tempfile, threading, time, unittest
 from unittest import mock
 from pathlib import Path
 
@@ -718,6 +718,83 @@ class StatusTicker(Loop):
         self.assertFalse(t.is_alive())
         self.assertEqual(out.getvalue().count("cannot write the status file"), 1)
         self.assertTrue(self.reports and self.reports[0]["committed"])
+
+    def test_the_ticker_stops_refreshing_when_the_loop_has_written_nothing_for_the_stall_limit(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        p, t = self.slow_run(s, status_stall=10)   # the build takes 20 fake seconds; the limit is 10
+        t.start()
+        deadline = time.time() + 20
+        while len(self.seen) < 20 and time.time() < deadline:
+            time.sleep(0.02)
+        self.stop.set()
+        t.join(30)
+        parse = lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+        moved = parse(max(self.seen)) - parse(min(self.seen))
+        self.assertGreaterEqual(moved, 8)    # it refreshed while the stall was short
+        self.assertLessEqual(moved, 11)      # and stopped at the limit, though the build went on to 20 s
+        self.assertEqual(self.seen[-1], max(self.seen))   # the last reads are the frozen value, not a later refresh
+        self.assertLess(parse(self.seen[-1]), parse(min(self.seen)) + 12)
+
+    def test_a_ticker_failure_other_than_a_write_error_is_reported_once_and_the_ticker_goes_on(self):
+        s = self.setup({})
+        p = self.producer(s, status_tick=0.01)
+        p.write_status()
+        calls = []
+        def broken(status):
+            calls.append(1)
+            raise RuntimeError("dictionary changed size during iteration")
+        p.put_status = broken
+        done = threading.Event()
+        t = threading.Thread(target=p.tick_status, args=(done,), daemon=True)
+        with mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as out:
+            t.start()
+            deadline = time.time() + 5
+            while len(calls) < 3 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(t.is_alive())
+            done.set()
+            t.join(5)
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual(out.getvalue().count("the status ticker failed"), 1)
+
+    def test_the_status_kept_for_the_ticker_shares_no_objects_with_the_loop(self):
+        s = self.setup({})
+        p = self.producer(s)
+        p.lost = [{"hash": "0x1"}]
+        p.write_status()
+        p.lost.append({"hash": "0x2"})
+        self.assertEqual(p.status_last["lostTransactions"], [{"hash": "0x1"}])
+
+    def test_a_failed_write_is_reported_again_after_one_has_worked_and_the_ticker_stays_alive(self):
+        s = self.setup({})
+        blocker = Path(s.dir) / "blocker"
+        p = self.producer(s, status_file=str(blocker / "status.json"), status_tick=0.01)
+        said = lambda out: out.getvalue().count("cannot write the status file")
+        blocker.write_text("a file, so the folder cannot be made")
+        done = threading.Event()
+        with mock.patch("sys.stderr", new_callable=__import__("io").StringIO) as out:
+            p.write_status()
+            t = threading.Thread(target=p.tick_status, args=(done,), name="status-ticker", daemon=True)
+            t.start()
+            time.sleep(0.15)
+            self.assertEqual(said(out), 1)    # one line, though the ticker tried many times
+            self.assertTrue(t.is_alive())
+            blocker.unlink()                  # now the path can be written
+            deadline = time.time() + 5
+            while not (blocker / "status.json").exists() and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertTrue((blocker / "status.json").exists())
+            self.assertEqual(said(out), 1)
+            time.sleep(0.05)
+            shutil.rmtree(blocker)
+            blocker.write_text("a file again")   # unwritable again
+            deadline = time.time() + 5
+            while said(out) < 2 and time.time() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(said(out), 2)    # reported again after a write worked in between
+            self.assertTrue(t.is_alive())
+            done.set()
+            t.join(5)
 
 
 class TheCommand(Loop):

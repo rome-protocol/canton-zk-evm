@@ -127,7 +127,7 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 
 **Work folders.** Every block keeps `block-<n>` in the work folder (block, witness, input, proof, `advance.json`). `run` removes the folders of committed blocks that are more than 10 behind the newest one. `once` removes nothing.
 
-**The status file.** `--status-file` (default `status.json` in the work folder) is JSON, replaced atomically after every block, at start and at stop. While the producer runs, a small background ticker also rewrites it every 5 seconds with the same fields and a fresh `updatedAt`, so a long block (a slow proof or Advance) does not make the file look stale. `updatedAt` shows the producer process is alive:
+**The status file.** `--status-file` (default `status.json` in the work folder) is JSON, replaced atomically after every block, at start and at stop. While the producer runs, a small background ticker also rewrites it every 5 seconds with the same fields and a fresh `updatedAt`, so a long block (a slow proof or Advance) does not make the file look stale. The ticker gives up when the loop itself has written nothing for 300 seconds (a step that is stuck), so the file then goes stale and a monitor sees it. `updatedAt` shows the producer process is alive:
 
 | Field | What it holds |
 |---|---|
