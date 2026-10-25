@@ -4,7 +4,7 @@ Rome Protocol
 
 ## What we want
 
-Ostia, a Canton zkEVM (chain id 770101): one EVM chain whose blocks are ordered by Canton and proven by a zkVM (ZisK), so that an EVM block and the Canton actions it needs settle together in one Canton transaction. A Canton token can move onto the EVM and back, and an EVM payment can be tied to the Canton payment it stands for. Blocks are made on demand. Each builder run builds, proves and submits one block. Speed and throughput are not goals yet.
+Ostia, a Canton zkEVM (chain id 770101): one EVM chain whose blocks are ordered by Canton and proven by a zkVM (ZisK), so that an EVM block and the Canton actions it needs settle together in one Canton transaction. A Canton token can move onto the EVM and back, and an EVM payment can be tied to the Canton payment it stands for. Blocks are made on demand: the builder runs all the time and cuts a block whenever transactions wait, one block at a time (`builder.py once` makes a single block by hand). Speed and throughput are not goals yet.
 
 ## The idea
 
@@ -39,7 +39,7 @@ flowchart LR
 | **Prover** | ZisK 1.3.1 running our copy of its EVM program, with our chain's rules built in. It outputs a small wrapped proof (1,344 bytes) that commits to the block's hash. |
 | **Daml package** | The chain's one state contract (its current head), a record per block, and the contracts for deposits, withdrawals, payments and registered tokens. See [daml/README.md](../daml/README.md). |
 | **Sidecar** | A small Rust program beside each confirming participant. It does two things: `verify` checks a proof, and `legs` checks that the legs attached to a block hash to the value the proven block recorded in the gateway (an account proof and a storage proof, at the block's state root). |
-| **Canton network** | Where Ostia settles, with a party for the gateway. On DevNet that is Canton Network DevNet, on one participant that hosts every Ostia party and has one sidecar, so there is one confirmer. The local network of our own, which the demo ran on, has two confirming participants. |
+| **Canton network** | Where Ostia settles, with a party for the gateway. Ostia DevNet settles on Canton Network DevNet, on one participant that hosts every Ostia party and has one sidecar, so there is one confirmer. The local network of our own, which the demo ran on, has two confirming participants. |
 | **Explorer** | Shows each EVM block next to its Canton record, read as the reader party, from a database of its own that an indexer fills. It serves a REST API, an Etherscan-compatible API, a live stream and an optional public RPC that shows only final blocks. Its Verify button runs the sidecar's block check in the browser through WebAssembly. Its faucet sends the test coin, tROME, through reth. See [The explorer](#the-explorer). |
 
 ## One block
@@ -73,7 +73,7 @@ flowchart LR
 - **Canton legs settle only with a proven block.** Settling a leg requires the operator and the confirmer, and for a deposit or a withdrawal the gateway as well. The design provides their joint authority only inside a block's transaction. The builder cannot settle a leg. The operator and confirmer together are the root of trust because they both sign the chain record.
 - **The chain can be re-checked.** A party that can read the block records, such as the reader party, can re-verify every proof. The explorer exposes that reader's view. The records last as long as Canton's databases do: the default local network keeps them in memory and loses them on restart, and a network started with `CZE_PERSIST=1` keeps them in PostgreSQL (see [network/README.md](../network/README.md)).
 
-**Custody.** The gateway party holds the Canton tokens that are locked for their wrapped forms. It is hosted on the operator's participant, so whoever runs that participant can move the locked tokens. Under the Daml rules, they leave only inside `Advance`, for a withdrawal that the proven block recorded; but a Canton party can always act through its own participant. This is acceptable for a local proof where we run every party, and not for anything of value. Registering a token is also a trust decision, because the gateway runs that token's registry's Daml code with its own authority.
+**Custody.** The gateway party holds the Canton tokens that are locked for their wrapped forms. It is hosted on the operator's participant, so whoever runs that participant can move the locked tokens. Under the Daml rules, they leave only inside `Advance`, for a withdrawal that the proven block recorded; but a Canton party can always act through its own participant. This is acceptable on the local network and on DevNet, where Rome runs every party, and not for anything of value. Registering a token is also a trust decision, because the gateway runs that token's registry's Daml code with its own authority.
 
 ## The explorer
 
@@ -121,16 +121,16 @@ On our own local Canton network, in a setup block and five runs ([demo/README.md
 - **A payment whose allocation is taken back after the proof was made:** Canton refuses the block and nothing moves. The same proven block sent again without its leg is refused too ("the legs are not the ones the block recorded"). The next builder run leaves the payment out and commits.
 - **A tampered proof:** refused by the sidecar, and nothing moves.
 
-These ran on a local network started for the run. The deposit, withdrawal and payment legs have not been run on DevNet, where no Canton token is registered.
+These ran on a local network started for the run. The deposit, withdrawal and payment legs have not been run on DevNet, where, as of 25 October 2026, no Canton token is registered with Ostia's gateway.
 
 ## Ostia on DevNet
 
-Ostia has run on Canton Network DevNet since 2026-10-22 (Canton 3.6.3, chain id 770101). The setup is in [network/README.md](../network/README.md#running-on-an-existing-participant-the-canton-network); how to use it is in [TRY-OSTIA.md](TRY-OSTIA.md).
+Ostia opened on Canton Network DevNet on 22 October 2026 (Canton 3.6.3, chain id 770101). Everything below is as of 25 October 2026. The setup is in [network/README.md](../network/README.md#running-on-an-existing-participant-the-canton-network); how to use it is in [TRY-OSTIA.md](TRY-OSTIA.md).
 
 - **One confirmer.** One participant hosts every Ostia party, so its one sidecar is the only confirmer. The local network has two. The participant's operator can see every Ostia contract and act for every Ostia party, the gateway party included.
-- **Rome runs the rest.** One builder, the prover, the public RPC, the explorer and the faucet. There is no forced inclusion: the RPC and the builder can refuse or omit a transaction. The explorer's indexer checks every record against reth, but the RPC and the explorer are views that Rome runs, not trustless ones.
+- **Rome runs all of it.** The participant that hosts every Ostia party, and so the one confirmer, is Rome's DevNet validator. Rome also runs the one builder, the prover, the public RPC, the explorer and the faucet. There is no forced inclusion: the RPC and the builder can refuse or omit a transaction. The explorer's indexer checks every record against reth, but the RPC and the explorer are views that Rome runs, not trustless ones.
 - **What the proof fixes.** Each block was executed under this chain's compiled rules. The confirmer's sidecar checks the proof, the header and the transaction root before Canton commits, and anyone can check a block's proof again in the explorer.
-- **No privacy yet.** Merces transfers have run on DevNet, with their proofs made by the client and checked on-chain, but no MPC network runs and nothing is settled.
+- **No privacy yet.** Ostia does not currently provide private transfers. The test of TACEO's Merces private-transfer contracts ([results](../load/mixed/RESULTS-2026-10-24.md)) submitted transfer requests with client-made proofs that the on-chain verifier accepted. No MPC cluster processes those requests, so Merces private balances do not settle.
 
 ## Numbers we have
 
@@ -150,4 +150,4 @@ The recorded GPU demo ran from commit `6b445073163832e9023850f53678617d90dfc808`
 
 ## Not now
 
-Throughput and block-time targets, more than one builder, forced inclusion, Canton TestNet and MainNet, privacy and hardening. Hardening includes custody that needs more than the operator's participant (for example, the gateway party hosted on both participants with a threshold), and a builder that remembers across runs which transaction a token registry refused (today the next run needs `--exclude`). The recipient of a deposit sends its own `claim` and so needs a little tROME for gas; the gateway's `claim` mints to its caller, so the recipient sends it; having the gateway mint for the recipient would need a key the gateway does not have.
+Throughput and block-time targets, more than one builder, forced inclusion, Canton TestNet and MainNet, privacy and hardening. Hardening includes custody that needs more than the operator's participant (for example, the gateway party hosted on both participants with a threshold), and a builder that remembers, across restarts and for `once`, which transaction a token registry refused (`run` leaves a suspected transaction out for a cool-down after two refused blocks, but forgets it on a restart; `once` still needs `--exclude`). The recipient of a deposit sends its own `claim` and so needs a little tROME for gas; the gateway's `claim` mints to its caller, so the recipient sends it; having the gateway mint for the recipient would need a key the gateway does not have.
