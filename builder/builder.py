@@ -871,6 +871,8 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
 
     def keep(pairs: list) -> None:
         kept = [(t["hash"], raw) for t, raw in pairs]
+        if not kept:   # a block with no transaction: nothing leaves reth's pool, and an earlier copy (the list before reth emptied it) is of transactions that are in the pool
+            clear_saved(cfg)
         save_kept(cfg, kept, attempt)   # before reth drops them from its pool
         reth.imported = kept
 

@@ -861,6 +861,34 @@ class SavedBlock(Loop):
             reth.forkchoice(head, head, head)
             b.build_and_import(s.cfg, reth, chain, head, set())
 
+    def test_a_rebuild_that_reth_empties_leaves_no_saved_copy_and_the_next_step_backs_off_instead_of_restoring(self):
+        # BOB's leg has no Canton side. After the first build reth has less gas: the rebuild of ALICE's transaction is left out for its gas limit,
+        # so the rebuilt block is empty and (prove_empty False) is skipped. ALICE's transaction is back in the pool, so no saved copy may remain:
+        # it would be sent again by the next step as a recovered block.
+        good, bad = tx(ALICE, 0, gas=90_000, price=20), tx(BOB, 0, gas=90_000, price=10)
+        s = self.setup({ALICE: [good], BOB: [bad]})   # no terms
+        s.reth.tx_legs[bad["hash"]] = [tb.PAY]
+        real, seen = b.read_legs, []
+
+        def read(*a, **k):
+            out = real(*a, **k)
+            if not seen:
+                seen.append(1)
+                s.reth.gas_limit = 50_000
+            return out
+        p = self.producer(s)
+        with mock.patch.object(b, "read_legs", read):
+            p.step()
+        self.assertEqual([r.get("skipped") for r in self.reports], [True])
+        self.assertEqual([x["transaction"] for x in self.reports[0]["leftOut"]], [bad["hash"]])
+        self.assertFalse(self.saved(s).exists())
+        self.assertEqual({t["hash"] for ts in s.reth.pool.values() for t in ts}, {good["hash"], bad["hash"]})
+        looked = len(self.built(s))
+        p.step(); p.step()   # inside the pause: nothing is restored, built or reported
+        self.assertEqual(len(self.reports), 1)
+        self.assertEqual(len(self.built(s)), looked)
+        self.assertNotIn("recovered", json.dumps(self.reports))
+
     def test_the_transactions_are_on_disk_while_the_block_is_proven_and_gone_once_it_is_committed(self):
         t = tx(ALICE, 0)
         s = self.setup({ALICE: [t]})
