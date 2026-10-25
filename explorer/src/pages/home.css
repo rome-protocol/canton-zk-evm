@@ -36,3 +36,24 @@
 
 /* home: a token's symbol is the contract's own text, so the Try chip cuts it short and isolates its direction */
 .try .tname { display: inline-block; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; vertical-align: bottom; }
+
+/*
+ * home: the Latest transactions table fits its card with no sideways scroll (the phone layout, 720 px and below, keeps its own scroll). The layout is fixed with a width
+ * for every column but From / to, which takes what is left, so the Stage chip is always whole: its column is as wide as the longest chip ("Being proven") and its padding.
+ * A long name or address in From / to is cut with an ellipsis (the full text is in its title), and a long value wraps inside its cell.
+ */
+@media (min-width: 721px) {
+  .home-txs { table-layout: fixed; }
+  .home-txs .c-tx { width: 172px; }
+  .home-txs .c-val { width: 156px; }
+  .home-txs .c-stage { width: 150px; }
+  .home-txs td, .home-txs th { overflow: hidden; }
+  .home-txs .who-cell .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .home-txs .who-cell .acell, .home-txs .who-cell .acell .hx { display: inline; }
+  .home-txs .who-cell .acell .ic, .home-txs .who-cell .acell .verified { display: inline-block; vertical-align: -2px; margin-right: 5px; }
+  .home-txs .who-cell .acell .aname { display: inline; max-width: none; }
+  .home-txs .val-cell { white-space: normal; }
+  .home-txs .val-cell .moved { justify-content: flex-end; }
+  .home-txs .val-cell .tchip { max-width: 100%; }
+  .home-txs .val-cell .tchip .tname { max-width: 12ch; } /* the chip's title has the whole name and amount */
+}

@@ -152,15 +152,15 @@ function Parties({ from, to, created, labels, faucet, chain }: { from: string; t
 }
 
 /** What a final transaction moved: the first token move as a chip (with how many more there are), and the coin when any was sent. */
-export function Moved({ t, coin, labels }: { t: TxListItem; coin: { symbol: string; decimals: number }; labels: Labels }) {
+export function Moved({ t, coin, labels, compact = false }: { t: TxListItem; coin: { symbol: string; decimals: number }; labels: Labels; compact?: boolean }) {
   const first = t.tokenMoves?.first ?? null, more = t.tokenMoves ? t.tokenMoves.count - 1 : 0;
   const sent = BigInt(t.value) > 0n;
-  if (!first) return <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} />;
+  if (!first) return <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} compact={compact} />;
   return (
     <span className="moved">
-      <TokenChip move={first} label={labels.get(first.token)} />
+      <TokenChip move={first} label={labels.get(first.token)} compact={compact} />
       {more > 0 && <span className="muted small" title={`${more}${t.tokenMoves!.more ? " or more" : ""} more token moves in this transaction`}>+{more}{t.tokenMoves!.more ? "+" : ""}</span>}
-      {sent && <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} />}
+      {sent && <Amount raw={t.value} decimals={coin.decimals} symbol={coin.symbol} compact={compact} />}
     </span>
   );
 }
@@ -192,25 +192,25 @@ export const provingToken = (d: Pick<ApiTx, "logs">): string | undefined => move
  * A transaction still waiting has no receipt: when `to` is a known token and the input is a transfer, the transaction route decodes it (`transfer`), and that is
  * the chip. The coin is beside the chip when any is sent. `d.value` is not null (the caller checks).
  */
-export function ProvingMoved({ d, coin, labels }: { d: ApiTx & { value: string }; coin: { symbol: string; decimals: number }; labels: Labels }) {
+export function ProvingMoved({ d, coin, labels, compact = false }: { d: ApiTx & { value: string }; coin: { symbol: string; decimals: number }; labels: Labels; compact?: boolean }) {
   if (d.success === false) return <span className="muted" title="The transaction reverted, so it moved nothing">reverted</span>;
-  const coinAmount = BigInt(d.value) > 0n && <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
+  const coinAmount = BigInt(d.value) > 0n && <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} compact={compact} />;
   if (d.success === true) {
     const m = moveOfLogs(d.logs);
-    if (!m) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
+    if (!m) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} compact={compact} />;
     const known = labels.get(m.token);
     // The transaction route read the symbol and decimals of the token it was sent to from the contract; they stand in for a token the index does not know yet.
     const own = d.transfer && d.to && d.to.toLowerCase() === m.token.toLowerCase() ? d.transfer : null;
     const label = known?.symbol || !own ? known : { address: m.token, name: known?.name ?? null, symbol: own.symbol, kind: known?.kind ?? "token" as const, standard: known?.standard ?? null, decimals: own.decimals, verified: known?.verified ?? false };
-    return <span className="moved"><TokenChip move={{ ...m, decimals: own?.decimals ?? null }} label={label} />{coinAmount}</span>;
+    return <span className="moved"><TokenChip move={{ ...m, decimals: own?.decimals ?? null }} label={label} compact={compact} />{coinAmount}</span>;
   }
   const t = d.transfer;
-  if (!t || !d.to) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} />;
+  if (!t || !d.to) return <Amount raw={d.value} decimals={coin.decimals} symbol={coin.symbol} compact={compact} />;
   const move = { token: d.to, amount: t.value, tokenId: null, standard: null, decimals: t.decimals };
   // The index may not know a token yet that was just made; its own symbol, as the transaction route read it from the contract, then stands in.
   const known = labels.get(d.to);
   const label = known?.symbol ? known : { address: d.to, name: known?.name ?? null, symbol: t.symbol, kind: known?.kind ?? "token" as const, standard: known?.standard ?? null, decimals: t.decimals, verified: known?.verified ?? false };
-  return <span className="moved"><TokenChip move={move} label={label} />{coinAmount}</span>;
+  return <span className="moved"><TokenChip move={move} label={label} compact={compact} />{coinAmount}</span>;
 }
 
 /** The cell of a transaction: its icon, its hash cut as the screen cuts it (8 and 4), and how long ago. */
@@ -240,7 +240,8 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
       {waiting.length || final.length ? (
         <>
           <div className="scroll">
-            <table className="tbl">
+            <table className="tbl home-txs">
+              <colgroup><col className="c-tx" /><col className="c-who" /><col className="c-val" /><col className="c-stage" /></colgroup>
               <thead><tr><th>Transaction</th><th>From / to</th><th className="r">Value</th><th>Stage</th></tr></thead>
               <tbody>
                 {waiting.map((p) => {
@@ -248,8 +249,8 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
                   return (
                     <tr key={p.hash}>
                       <TxCell hash={p.hash} ago={duration(now - Date.parse(p.at))} />
-                      <td className="small">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Parties from={d.from} to={d.to} created={d.created} labels={labels} faucet={faucet} chain={chain} />}</td>
-                      <td className="r">{typeof d === "object" && d.value !== null ? <ProvingMoved d={{ ...d, value: d.value }} coin={coin} labels={labels} /> : <span className="muted">—</span>}</td>
+                      <td className="small who-cell">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Parties from={d.from} to={d.to} created={d.created} labels={labels} faucet={faucet} chain={chain} />}</td>
+                      <td className="r val-cell">{typeof d === "object" && d.value !== null ? <ProvingMoved d={{ ...d, value: d.value }} coin={coin} labels={labels} compact /> : <span className="muted">—</span>}</td>
                       <td><Chip status={p.stage} /></td>
                     </tr>
                   );
@@ -257,8 +258,8 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
                 {final.map((t) => (
                   <tr key={t.hash}>
                     <TxCell hash={t.hash} ago={duration(now - t.timestamp * 1000)} />
-                    <td className="small"><Parties from={t.from} to={t.to} created={t.created} labels={labels} faucet={faucet} chain={chain} /></td>
-                    <td className="r"><Moved t={t} coin={coin} labels={labels} /></td>
+                    <td className="small who-cell"><Parties from={t.from} to={t.to} created={t.created} labels={labels} faucet={faucet} chain={chain} /></td>
+                    <td className="r val-cell"><Moved t={t} coin={coin} labels={labels} compact /></td>
                     <td><Chip status="final" /></td>
                   </tr>
                 ))}

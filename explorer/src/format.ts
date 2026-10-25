@@ -55,6 +55,20 @@ export function exact(raw: string, decimals: number): string {
   return count(v / base) + (fraction ? `.${fraction}` : "");
 }
 
+/**
+ * An amount for a narrow cell: at most six decimals, rounded, with a thousands-separated whole part, and "<0.000001" for a non-zero amount below that. A page puts the
+ * exact value in the `title` of what it shows (see `exact`).
+ */
+export function compactUnits(raw: string, decimals: number): string {
+  const v = BigInt(raw);
+  if (decimals <= 6) return exact(raw, decimals);
+  const step = 10n ** BigInt(decimals - 6);
+  if (v > 0n && v < step) return "<0.000001";
+  const q = (v + step / 2n) / step, million = 1_000_000n;
+  const fraction = (q % million).toString().padStart(6, "0").replace(/0+$/, "");
+  return count(q / million) + (fraction ? `.${fraction}` : "");
+}
+
 /** A fee rate: in gwei with up to two places, or in wei when it is below 0.01 gwei. */
 export function gwei(wei: string): string {
   const v = BigInt(wei);

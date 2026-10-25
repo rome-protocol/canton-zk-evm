@@ -681,3 +681,40 @@ describe("following the chain", () => {
     expect(calls.filter((c) => c === "/api/status").length).toBeGreaterThanOrEqual(first + 2);
   });
 });
+
+describe("the list of latest transactions fits its box", () => {
+  const long = { address: addr(0xcc), name: "A Very Long Contract Name That Cannot Fit In The Column", symbol: "LONGNAME", kind: "contract", standard: null, decimals: null, verified: true };
+  const withLabels = (items: unknown[]) => {
+    const base = route({ txs: () => reply(page(items as never[])) });
+    fakeApi(Object.assign((path: string) => (path.includes("/api/labels") ? reply({ items: [long] }) : base(path)), { routed: true }));
+  };
+
+  it("shows a one wei value as '<0.000001 tROME' with the exact value in the title, and a long value with six decimals", async () => {
+    withLabels([txItem(3, { value: "1" }), txItem(2, { value: "1234567891234567000000000" }), txItem(1, { value: "500000000000000000" }), txItem(4, { value: "0" })]);
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    const rows = (await region.findAllByRole("row")).slice(1);
+    expect(rows[0]).toHaveTextContent("<0.000001 tROME");
+    expect(within(rows[0]!).getByTitle("0.000000000000000001 tROME")).toBeInTheDocument();
+    expect(rows[1]).toHaveTextContent("1,234,567.891235 tROME");
+    expect(within(rows[1]!).getByTitle("1,234,567.891234567 tROME")).toBeInTheDocument();
+    expect(rows[2]).toHaveTextContent("0.5 tROME");
+    expect(within(rows[3]!).getByText("0", { selector: ".num" })).toBeInTheDocument();
+  });
+
+  it("keeps the full name and address of a long To in titles, and gives the table a fixed layout with a width for every column but From / to", async () => {
+    withLabels([txItem(3, { to: addr(0xcc) })]);
+    renderApp("/");
+    const region = within(await screen.findByRole("region", { name: "Latest transactions" }));
+    const row = (await region.findAllByRole("row"))[1]!;
+    expect(await within(row).findByTitle("A Very Long Contract Name That Cannot Fit In The Column (LONGNAME)")).toBeInTheDocument();
+    expect(within(row).getByRole("link", { name: /A Very Long Contract Name/ })).toHaveAttribute("title", addr(0xcc));
+    expect(row.querySelector(".who-cell .who")).not.toBeNull();
+    const table = region.getByRole("table");
+    expect(table).toHaveClass("home-txs");
+    expect(table.querySelectorAll("colgroup col")).toHaveLength(4);
+    const css = readFileSync(join(__dirname, "home.css"), "utf8");
+    expect(css).toMatch(/@media \(min-width: 721px\)[^]*\.home-txs \{ table-layout: fixed; \}/);
+    expect(css).toMatch(/\.home-txs \.c-stage \{ width: 15\dpx; \}/);
+  });
+});
