@@ -969,8 +969,8 @@ class Proven:
     seconds: float
 
 
-def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None,
-          lost: list | None = None, attempt: "Attempt | None" = None):
+def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True,
+          lost: list | None = None, attempt: "Attempt | None" = None) -> "Built | dict":
     """Stage one. Cuts the block: chooses its transactions, has reth build it on Canton's head (again without any transaction whose leg has no
     Canton side), reads the gateway's proofs while the block is reth's tip, and writes the prover's input files. Returns a Built, or, for a
     block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block."""
@@ -1063,7 +1063,7 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
 
 
 def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None) -> dict:
-    """Stage three. Sends the Advance with the proof and the gateway's proofs, and settles the answer: commit (reth's head moves to the block), refusal or
+    """Stage three. Sends the Advance with the proof and the gateway's proofs, and settles the answer: commit (reth's safe and finalized move to the block), refusal or
     not taken (reth goes back to Canton's head and the transactions return to the pool), or unknown (nothing moves)."""
     attempt = attempt or Attempt(None, 1)
     n, chain, head, block_hash, header, txs, legs = built.n, built.chain, built.head, built.block_hash, built.header, built.txs, built.legs
@@ -1166,10 +1166,11 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
            lost: list | None = None, attempt: "Attempt | None" = None) -> dict:
     """One block through the three stages: build, prove, submit."""
     attempt = attempt or Attempt(None, 1)
-    built = build(cfg, reth, chain, head, exclude, prove_empty, unknown_pairs, lost, attempt)
+    built = build(cfg, reth, chain, head, exclude, prove_empty, lost, attempt)
     if isinstance(built, dict):   # skipped: nothing to prove or submit
         return built
     return submit(cfg, reth, built, prove(cfg, built, attempt), unknown_pairs, attempt)
+
 
 PUBLIC_AT = 832   # the proof (768), the program key (32) and the release root (32) come before the public values
 

@@ -30,7 +30,7 @@ a change you meant to make.
 
 These files pin what the one-block producer does today. A later change to the builder may alter them only in these ways:
 
-- When the build, prove and submit stages are split, `eth_getProof` is read before the prover instead of after it.
+- When the build, prove and submit stages are split, `eth_getProof` is read before the prover instead of after it. An attempt whose proof then fails has also read `eth_getProof` (`prover_failure`: one extra read, in the first attempt).
 - When two blocks can be prepared at once, the input tool and the prove command get a folder of their own for each attempt, and the kept
   entries carry the block `number`.
 - Support for several provers changes nothing in these files, which run with one prover.

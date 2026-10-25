@@ -105,6 +105,7 @@ class FakeReth:
 
     def __init__(self, pool: dict, gas_limit: int = 30_000_000, skip_invalid: bool = True, max_request: int = 15_000_000):
         self.pool, self.gas_limit = pool, gas_limit
+        self.fail_proof_reads = 0   # how many of the next eth_getProof calls fail
         self.max_request = max_request   # reth refuses a WebSocket request over 15 MB (the connection is closed, code 1009)
         self.vanished: set = set()       # hashes that txpool_content still lists but eth_getRawTransactionByHash answers null for (replaced or evicted since)
         self.ws_frames: list = []        # the size of each WebSocket request, in characters
@@ -238,6 +239,9 @@ class FakeReth:
         if method == "eth_getLogs":
             return self._logs(params[0])
         if method == "eth_getProof":   # only the gateway's account and its legs slot are ever asked for
+            if self.fail_proof_reads:
+                self.fail_proof_reads -= 1
+                raise RpcError("the state of the block is not available")
             # reth --rpc.eth-proof-window 1: the state of a block more than one below the head is gone, and the call fails
             if int(params[2], 16) < self.blocks[self.head]["number"] - PROOF_WINDOW:
                 raise RpcError(f"distance to target block exceeds maximum proof window {PROOF_WINDOW}")

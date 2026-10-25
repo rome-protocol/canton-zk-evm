@@ -93,7 +93,7 @@ mkdir -p "$(dirname "$OUT")"
 {
   echo "# The smoke test of the network: one empty block, proven, committed on Canton, final in reth."
   echo "# advance_seconds runs from the moment the proof file was written to the end of the builder's run:"
-  echo "# assembling the Daml legs (the builder's Ledger reads, and eth_getProof calls when there are terms to settle), Advance, its commit on every confirmer, and reth marking the block final."
+  echo "# assembling the Daml legs (the builder's Ledger reads; the gateway's eth_getProof reads come before the prover, so they are not in this interval), Advance, its commit on every confirmer, and reth marking the block final."
   echo "# proof_seconds is the prover's time for the proof with the prover already running, as in prover/fixtures/session.txt."
   echo "# builder_total_seconds is the whole run, which also holds the witness, the input and, the first time the prover sees"
   echo "# the program, its one-time setup; on a machine that has not built the input tool yet it holds that build too."

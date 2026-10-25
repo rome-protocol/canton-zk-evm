@@ -6,7 +6,7 @@ One run makes one block (`once`); `run` keeps making them (see "Running it all t
 
 ## What one run does
 
-In the code a run is three stages that `build_block` calls one after the other: `build` (steps 1 to 6 and the saved prover input, including the gateway's proofs), `prove` (step 7, the prover and the check of its proof) and `submit` (step 8, the `Advance` and the answer). Each can be called alone with the test fakes (`builder/tests/test_stages.py`). One block is in flight at a time.
+In the code a run is three stages, which `_build` composes under `build_block`: `build` (steps 1 to 6, and the start of step 7: it saves the block and its witness and reads the gateway's proofs), `prove` (the rest of step 7: the input tool, the prover and the check of its proof) and `submit` (steps 8 and 9: the `Advance` and the answer). Each can be called alone with the test fakes (`builder/tests/test_stages.py`). One block is in flight at a time.
 
 ```sh
 python3 builder/builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--max-block-tx-bytes 65536]

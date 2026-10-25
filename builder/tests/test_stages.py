@@ -7,13 +7,13 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
-from fakes import HEAD_HASH, HEAD_NUMBER, tx
+from fakes import GATEWAY, HEAD_HASH, HEAD_NUMBER, tx
 from websockets.sync.client import connect
 
 
 class Stages(tb.Case):
     def stages(self, s, **k):
-        """Opens the builder's connection as build_block does and cuts the block: returns reth, the chain record and the build stage's answer."""
+        """Opens the builder's connection as build_block does and cuts the block: returns (reth, the chain record, Canton's head hash), ready for the build stage."""
         ws = connect(s.cfg.ws_url, max_size=None)
         self.addCleanup(ws.close)
         reth = b.Reth(s.cfg, ws)
@@ -31,7 +31,10 @@ class Stages(tb.Case):
         built = b.build(s.cfg, reth, chain, head, set())
         self.assertIsInstance(built, b.Built)
         self.assertEqual((built.n, built.head, built.block_hash), (HEAD_NUMBER + 1, HEAD_HASH, built.payload["blockHash"]))
-        self.assertEqual(len(self.proof_reads(s)), 1)   # read at build time, while the block is the tip
+        n = HEAD_NUMBER + 1
+        slot = "0x" + b.keccak256(n.to_bytes(32, "big") + bytes(32)).hex()   # Solidity's key for legs[n], the mapping at slot 0
+        self.assertEqual(self.proof_reads(s), [["0x" + GATEWAY, [slot], hex(n)]])   # read at build time, for the new block
+        self.assertEqual(s.reth.head, built.block_hash)                              # while that block is reth's head
         self.assertFalse(s.log.exists())                  # the prover has not run
         self.assertEqual(sorted(p.name for p in built.work.iterdir()), ["block.json", "witness.json"])
         self.assertEqual(s.ledger.submitted, [])          # nothing was sent to Canton
@@ -74,6 +77,23 @@ class Stages(tb.Case):
         self.assertEqual((answer["skipped"], answer["number"]), (True, HEAD_NUMBER + 1))
         self.assertEqual(self.proof_reads(s), [])
         self.assertFalse(s.log.exists())
+
+    def test_a_failed_proof_read_ends_the_block_like_any_failure_before_the_prover(self):
+        s = self.setup({tb.ALICE: [tx(tb.ALICE, 0)]})
+        s.reth.fail_proof_reads = 1
+        attempt = tb.Attempts()
+        with self.assertRaises(b.BuilderError) as raised:
+            b.build_block(s.cfg, journal=attempt)
+        self.assertIn("the state of the block is not available", str(raised.exception))
+        self.assertNotIsInstance(raised.exception, b.ProvingError)
+        self.assertFalse(s.log.exists())                                        # the prover never ran
+        self.assertFalse([n for n, _ in attempt.events if n.startswith("proof_")])
+        self.assertEqual(s.reth.head, HEAD_HASH)                                 # reth is back on Canton's head
+        self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
+        self.assertEqual(self.in_pool(s), {t["hash"] for t in [tx(tb.ALICE, 0)]})   # the transaction is back in the pool
+        self.assertFalse(b.saved_path(s.cfg).exists())                           # and the kept file is cleared
+        self.assertFalse(b.unresolved_path(s.cfg).exists())
+        self.assertEqual(s.ledger.submitted, [])
 
 
 if __name__ == "__main__":
