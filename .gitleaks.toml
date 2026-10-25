@@ -26,3 +26,10 @@ description = "The program key in the demo README's prose: the public key of the
 condition = "AND"
 paths = ['''demo/README\.md''']
 regexes = ['''db79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f''']
+
+[[allowlists]]
+description = "The main package id of the test token's DAR in the demo's tests: a public Daml package hash, not a secret"
+condition = "AND"
+paths = ['''demo/tests/test_canton_external\.py''']
+regexTarget = "line"
+regexes = ['''TEST_TOKEN_PACKAGE = "da294b5651ed00af8565fd31351d0c1d8778f10393d250e32c9844311f681436"''']
