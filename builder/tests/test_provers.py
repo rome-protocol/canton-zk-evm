@@ -288,6 +288,47 @@ class Pool2(Case):
         self.assertEqual({u for _, u, _ in seen}, {A, B_})
         self.assertEqual(list(shared.iterdir()), [])
 
+    def test_an_error_that_is_not_a_job_error_frees_the_prover_and_marks_none_down(self):
+        calls = []
+        def fake_run(cmd, args, env=None, timeout=None):
+            calls.append(args)
+            if len(calls) == 1:
+                raise OSError("cannot start the prove command")
+            pv.run_command(cmd, args, env=env, timeout=timeout)
+        pool = self.pool([A, B_], run=fake_run)
+        with self.assertRaises(OSError):
+            pool.prove(self.job())
+        done = pool.prove(self.job())   # it would wait for ever if the prover stayed busy
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(pool.events(), [])
+        self.assertEqual(done.prover in ("gpu0", "gpu1"), True)
+        self.assertEqual([p["state"] for p in pool.status()], ["up", "up"])
+
+    def test_a_missing_shared_folder_fails_the_block_and_the_next_one_proves_once_it_exists(self):
+        shared = self.dir / "shared"
+        pool = self.pool([A, B_])
+        for _ in range(2):
+            with self.assertRaises(OSError):
+                pool.prove(self.job(input_dir=shared))
+        shared.mkdir()
+        done = pool.prove(self.job(input_dir=shared))
+        self.assertEqual(done.tried, [])
+        self.assertEqual(pool.events(), [])
+
+    def test_one_prover_survives_a_non_job_error_and_the_ticket_ends(self):
+        calls = []
+        def fake_run(cmd, args, env=None, timeout=None):
+            calls.append(args)
+            if len(calls) == 1:
+                raise PermissionError("denied")
+            pv.run_command(cmd, args, env=env, timeout=timeout)
+        pool = self.pool([A], run=fake_run)
+        t1 = pool.submit(self.job())
+        t2 = pool.submit(self.job())   # waits behind the first
+        with self.assertRaises(PermissionError):
+            t1.result()
+        self.assertEqual(t2.result().prover, "gpu0")
+
 
 class Settings(unittest.TestCase):
     def test_the_heartbeat_floor_is_one_proof_whatever_the_number_of_provers(self):

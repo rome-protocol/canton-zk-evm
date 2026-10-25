@@ -212,6 +212,9 @@ class Pool:
                     err.tried = [t[0].name for t in tried]
                     raise err
                 continue
+            except BaseException:   # not a prover fault (no process, no shared folder, an unreadable proof file): the prover is free again, health unchanged, the error still ends this block
+                self._release(prover, None, failed=True)
+                raise
             self._release(prover, None, failed=False)
             if not ticket.cancelled:
                 for earlier, e in tried:   # it failed on one prover and then succeeded on another: that prover is at fault
