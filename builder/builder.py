@@ -1291,6 +1291,8 @@ def read_disclosed(path: str) -> list:
 
 # ---- the loop --------------------------------------------------------------------------------------------------
 
+STATUS_TICK_SECONDS = 5.0   # how often the status file is rewritten while a block is in flight
+STATUS_STALL_SECONDS = 300.0   # the ticker stops refreshing when the loop itself has written nothing for this long: a stuck step must show
 BACKOFF_CAP = 30.0    # the longest pause after a failed or refused block, in seconds
 RECHECK_BASE = 2.0    # how soon a pool that held nothing includable is looked at again, and the least between two looks
 KEEP_BLOCKS = 10      # the work folders of this many of the newest committed blocks are kept
@@ -1345,13 +1347,20 @@ class Producer:
     def __init__(self, cfg: Config, stop: threading.Event, idle: float = 0.5, empty_every: float = 0, status_file: str | None = None,
                  cooldown: float = 600, emit=None, clock=time.time, build=build_block, pending=pool_pending,
                  resolve=resolve_unknown, recover=recover_saved, wait=None, gather_ms: float = 0, journal: Journal | None = None, test: bool = False,
-                 source_commit: str = "unknown"):
+                 source_commit: str = "unknown", status_tick: float = STATUS_TICK_SECONDS,
+                 status_stall: float = STATUS_STALL_SECONDS):
         self.cfg, self.stop, self.idle, self.empty_every, self.cooldown = cfg, stop, idle, empty_every, cooldown
         self.gather_ms = gather_ms
         self.journal = journal or Journal(Path(cfg.work_dir) / "journal", clock=clock)
         self.source_commit = source_commit
         self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": 1,
                          "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "test": test, "traffic_read": bool(cfg.traffic_url)}
+        self.status_tick, self.status_stall = status_tick, status_stall
+        self.status_lock = threading.Lock()   # the loop's and the ticker's writes of the status file never interleave
+        self.status_last = None               # what the loop last wrote: the ticker repeats it with a fresh updatedAt
+        self.status_final = False             # the last write was made: the ticker writes no more
+        self.status_warned = False            # the "cannot write" line is printed once
+        self.ticker_warned = False            # so is the line for any other failure of the ticker
         self.attempt_seq = 0
         self.attempt = None               # the Attempt whose lines the block now being made writes
         self.pool_sampled = None          # (the time, the count) of the last `pool` line
@@ -1392,10 +1401,13 @@ class Producer:
     # -- the loop
     def run(self) -> None:
         state = "crashed"   # what the status says if anything but a stop ends this
+        ticker_stop = threading.Event()   # set when the run ends (not when `stop` is set: the block in progress still needs a fresh status)
+        ticker = threading.Thread(target=self.tick_status, args=(ticker_stop,), name="status-ticker", daemon=True)
         try:
             self.journal.event("run_started", strategy="on_demand", settings=self.settings, source_commit=self.source_commit)
             self.load_unresolved()
             self.write_status()
+            ticker.start()
             while not self.stop.is_set():
                 try:
                     self.step()
@@ -1403,8 +1415,11 @@ class Producer:
                     self.fail(failure_report(e))
             state = "stopped"
         finally:
+            ticker_stop.set()
+            if ticker.is_alive():
+                ticker.join(timeout=10)
             self.journal.event("run_stopped", state=state)
-            self.write_status(state)
+            self.write_status(state, final=True)
 
     def load_unresolved(self) -> None:
         """An Advance with no answer from before a restart is settled by its command id first, as in the run that submitted it."""
@@ -1755,15 +1770,46 @@ class Producer:
                 "lostTransactions": self.lost,
                 "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total)}
 
-    def write_status(self, state: str = "running") -> None:
+    def write_status(self, state: str = "running", final: bool = False) -> None:
         """Atomic: a reader sees the old file or the new one. A file that cannot be written never stops the chain."""
-        self.last_written = self.clock()
+        with self.status_lock:
+            self.last_written = self.clock()
+            self.status_last = json.loads(json.dumps(self.status(state)))   # a copy: it shares nothing with the loop's objects
+            self.status_final = final
+            self.put_status(self.status_last)
+
+    def tick_status(self, done: threading.Event) -> None:
+        """Runs beside the loop: every `status_tick` seconds it writes the loop's last status again with a fresh `updatedAt`, so a block that
+        takes long (a proof, an Advance) does not make a monitor think the producer is dead. Nothing else in the file changes. It stops
+        refreshing once the loop itself has written nothing for `status_stall` seconds, so a step that never returns shows as a stale file."""
+        while not done.wait(self.status_tick):
+            try:
+                with self.status_lock:
+                    if self.status_final or self.status_last is None:
+                        return
+                    now = self.clock()
+                    if now - self.last_written > self.status_stall:
+                        continue
+                    self.put_status({**self.status_last, "updatedAt": iso(now)})
+            except Exception as e:   # the ticker must not die while the run goes on
+                if not self.ticker_warned:
+                    self.ticker_warned = True
+                    try:
+                        print(f"the status ticker failed, it keeps running: {e!r}", file=sys.stderr)
+                    except OSError:
+                        pass
+
+    def put_status(self, status: dict) -> None:
         tmp = self.status_file + ".tmp"
         try:
             Path(self.status_file).parent.mkdir(parents=True, exist_ok=True)
-            Path(tmp).write_text(json.dumps(self.status(state), indent=1) + "\n")
+            Path(tmp).write_text(json.dumps(status, indent=1) + "\n")
             os.replace(tmp, self.status_file)
+            self.status_warned = False
         except OSError as e:
+            if self.status_warned:
+                return
+            self.status_warned = True
             try:
                 print(f"cannot write the status file {self.status_file}: {e}", file=sys.stderr)
             except OSError:
