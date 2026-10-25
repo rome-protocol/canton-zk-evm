@@ -7,6 +7,7 @@ def load():
 st = load()
 who = os.environ["FAKE_ROLE"]; a = sys.argv[1:]
 if a and a[0] == os.environ.get("FAKE_FAIL"): sys.exit("fake %s: %s failed" % (who, a[0]))   # a command that fails, named by FAKE_FAIL
+if a and a[0] == os.environ.get("FAKE_SLOW"): import time; time.sleep(3)   # a command that takes a while, named by FAKE_SLOW
 def out(o): json.dump(st, open(S,"w")); print(json.dumps(o)); sys.exit(0)
 def newtx(kind, **kw):
     st["n"]+=1; tx="0x%064x"%st["n"]; st["block"]+=1
@@ -29,7 +30,9 @@ if who=="evm":
     if c=="wait":
         t=st["tx"][a[1]]; out({"block":t["block"],"blockHash":"0xb%d"%t["block"],"gasUsed":1,"status":1,"contract":None,"finalized":True})
     if c=="legs":
-        k=st["blocks"][a[1]]; ok=k in("claim","pay","withdraw"); out({"block":int(a[1]),"legs":1 if ok else 0,"kinds":[k] if ok else []})
+        k=st["blocks"][a[1]]; ok=k in("claim","pay","withdraw")
+        if os.environ.get("FAKE_KIND_FROM") and int(a[1]) >= int(os.environ["FAKE_KIND_FROM"]): k="wrong"   # FAKE_KIND_FROM=<block>: from there on the block's leg is of another kind
+        out({"block":int(a[1]),"legs":1 if ok else 0,"kinds":[k] if ok else []})
     if c=="wrapped": out({"balance":"%d.0"%st["wu"],"supply":"%d.0"%st["sup"]})
     if c=="balance": out({"tka": st["rome_u"] if a[2]==("0x"+"2"*40) else st["rome_v"]})
 else:
@@ -42,6 +45,8 @@ else:
     if c=="payment-id": out({"label":a[1],"id":"e"*64})
     if c=="block" and len(a)!=3: sys.exit("canton block must name the party whose holding was made with the record")
     if c=="block": n=a[1]; out({"chain":[{"headNumber":st["block"],"headHash":"x"}],"record":{"number":int(n),"blockHash":"b%s"%n,"proofHex":"ab","proofSha256":"sha"}})
-    if c=="return-tkb": k=int(a[2]); st["v"]-=k; st["u"]+=k; out({"label":a[1],"amount":a[2],"offer":None})   # V sends U the TKB
-    if c=="settled": out({"record":{"updateId":"upd","offset":7},"holding":{"updateId":"upd","offset":7}})
+    if c=="return-tkb": k=int(a[2]); k-=(1 if os.environ.get("FAKE_DRIFT")=="return-tkb" else 0); st["v"]-=k; st["u"]+=k; out({"label":a[1],"amount":a[2],"offer":None})   # V sends U the TKB
+    if c=="settled":   # FAKE_UPD_FROM=<block>: from that block on, the holding comes from another update than the BlockRecord
+        other = os.environ.get("FAKE_UPD_FROM") and int(a[1]) >= int(os.environ["FAKE_UPD_FROM"])
+        out({"record":{"updateId":"upd","offset":7},"holding":{"updateId":"other" if other else "upd","offset":7}})
     out({})

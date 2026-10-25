@@ -20,6 +20,8 @@
 #          $CZE_STATE_DIR/demo/cycle.stop) or CZE_LIVE_CYCLES cycles have run (default 0 = no limit). A cycle makes the checks of `legs`, and that every
 #          balance is back at its start; it appends one line to $CZE_LIVE_RESULTS/cycle-<start time>.txt (result=pass with the three blocks, or
 #          result=fail with the reason). A failed check stops the lane: nothing is retried and nothing is minted to cover a difference.
+#          A stop file left from an earlier lane is refused at the start (remove it first). Stop the lane with the stop file, which ends it between cycles;
+#          a TERM, INT or HUP during a cycle writes a result=fail line for it (the balances may be part-way through), and between cycles an end=signal line.
 #   all    setup, then legs (the default).
 #
 # Usage: demo/live.sh [setup|legs|cycle|all]        demo/live.sh --help
@@ -62,8 +64,8 @@ STOP_FILE=${CZE_LIVE_STOP_FILE:-$DEMO/cycle.stop}
 [ -n "${CZE_LEDGER_URL:-}" ] || fail "set CZE_LEDGER_URL to the participant's JSON Ledger API"
 [ -n "${CZE_RPC_URL:-}" ] || fail "set CZE_RPC_URL to the chain's JSON-RPC"
 [[ $PAY =~ ^[1-9][0-9]*$ ]] || fail "CZE_LIVE_PAY must be a whole number of WtROME, 1 or more: $PAY"
-[[ $CYCLE_MINUTES =~ ^[0-9]+$ ]] || fail "CZE_LIVE_CYCLE_MINUTES must be a whole number: $CYCLE_MINUTES"
-[[ $CYCLES =~ ^[0-9]+$ ]] || fail "CZE_LIVE_CYCLES must be a whole number (0 for no limit): $CYCLES"
+[[ $CYCLE_MINUTES =~ ^(0|[1-9][0-9]*)$ ]] || fail "CZE_LIVE_CYCLE_MINUTES must be a whole number: $CYCLE_MINUTES"
+[[ $CYCLES =~ ^(0|[1-9][0-9]*)$ ]] || fail "CZE_LIVE_CYCLES must be a whole number (0 for no limit): $CYCLES"
 [[ $WAIT_SECONDS =~ ^[0-9]+$ ]] || fail "CZE_LIVE_WAIT_SECONDS must be a whole number: $WAIT_SECONDS"
 if [ "$mode" != setup ]; then
   [[ ${CZE_SOURCE_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || fail "set CZE_SOURCE_COMMIT to the full commit hash of the source that is running"
@@ -371,12 +373,17 @@ cycle_line() { printf '%s\n' "$*" >> "$CYCLE_OUT"; }
 cycle_failed() {   # the reason: one line for the failed cycle, if there is not one yet
   [ "$IN_CYCLE" = 1 ] && [ -n "$CYCLE_OUT" ] || return 0
   ! tail -1 "$CYCLE_OUT" | grep -q "^cycle=$CYCLE_N .*result=fail" || return 0
-  local reason; reason=$(tr '\n\t' '  ' <<<"$1" | cut -c1-300)
+  local reason; reason=$(printf '%s' "$1" | tr '\n\t"' "  '" | cut -c1-300)   # one line, and no double quote inside the quoted reason
   cycle_line "cycle=$CYCLE_N date=$(date -u +%FT%TZ) result=fail reason=\"$reason\""
 }
 cycle_exit() {   # an unexpected stop (a command failed with no message of ours): the line says so
   local rc=$?
   [ "$rc" = 0 ] || cycle_failed "a command failed with exit $rc; the log above names it"
+}
+cycle_signal() {   # <exit code>: the lane was killed (TERM, INT, HUP): the results say where, as the balances may be part-way through a cycle
+  if [ "$IN_CYCLE" = 1 ]; then cycle_failed "stopped by a signal during cycle $CYCLE_N; the balances may be part-way through the cycle (up to 20 TKB moved)"
+  else cycle_line "end=signal cycles=$CYCLE_N"; fi
+  exit "$1"
 }
 interval_wait() {   # <started (epoch seconds)>: until the interval since then has passed; leaves early when the stop file appears
   local deadline=$(($1 + CYCLE_MINUTES * 60))
@@ -424,6 +431,7 @@ one_cycle() {   # <tag>
 }
 
 cycle() {
+  [ ! -e "$STOP_FILE" ] || fail "the stop file $STOP_FILE exists (from an earlier lane?): remove it, then start the lane again"
   prepare_legs
   local started n=0
   CYCLE_OUT=$RESULTS/cycle-$(date -u +%Y%m%dT%H%M%SZ).txt
@@ -445,6 +453,7 @@ cycle() {
   echo "results: $CYCLE_OUT   (stop it with: touch $STOP_FILE)"
   FAIL_HOOK=cycle_failed
   trap cycle_exit EXIT
+  trap 'cycle_signal 143' TERM; trap 'cycle_signal 130' INT; trap 'cycle_signal 129' HUP
   while :; do
     if [ -e "$STOP_FILE" ]; then cycle_line "end=stop-file cycles=$n"; echo "stopped: $STOP_FILE exists, after $n cycles"; return 0; fi
     if [ "$CYCLES" != 0 ] && [ "$n" -ge "$CYCLES" ]; then cycle_line "end=count cycles=$n"; echo "done: $n cycles"; return 0; fi
