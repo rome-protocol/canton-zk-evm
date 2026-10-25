@@ -193,13 +193,29 @@ docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp -e EXPLOR
 EXPLORER=$EXPLORER ETHERSCAN_ADDRESS=$TO ETHERSCAN_BALANCE=1000000000000000000 ETHERSCAN_TX=$payout "$ROOT/tests/demo_etherscan_cast.sh" || fail "cast and the Etherscan door's proxy disagree"
 
 echo "--- what the explorer asked reth and Canton for"
-# Canton, asked by the explorer (the ledger end, for its status) and by the indexer (the ledger end, the updates and the participant id), and nothing else;
-# every update request names the reader party and the block record, and no other party.
-[ "$(jq -r '.method + " " + (.path | split("?")[0])' "$WORK/ledger-calls" | sort -u)" = $'GET /v2/parties/participant-id\nGET /v2/state/ledger-end\nPOST /v2/updates' ] \
-  || fail "the explorer or its indexer called Canton's Ledger API for something else than the ledger end, the updates and the participant id: $(jq -r '.method + " " + .path' "$WORK/ledger-calls" | sort | uniq -c)"
+# Canton, asked by the explorer (the ledger end, for its status) and by the indexer (the ledger end, the updates and the participant id), and nothing else, with one exception:
+# the custody read (POST /v2/state/active-contracts, the registered tokens and the gateway's holdings), which the indexer makes only when GATEWAY_PARTY and its token file are set
+# (off in this rehearsal: the local participant has no login). When it is made, it is for the gateway party alone, the token contracts and the holding interface alone.
+# Every update request names the reader party and the block record, and no other party.
+CALLS=$(jq -r '.method + " " + (.path | split("?")[0])' "$WORK/ledger-calls" | sort -u)
+[ "$(printf '%s\n' "$CALLS" | grep -v '^POST /v2/state/active-contracts$')" = $'GET /v2/parties/participant-id\nGET /v2/state/ledger-end\nPOST /v2/updates' ] \
+  || fail "the explorer or its indexer called Canton's Ledger API for something else than the ledger end, the updates, the participant id and the custody read: $(jq -r '.method + " " + .path' "$WORK/ledger-calls" | sort | uniq -c)"
+if printf '%s\n' "$CALLS" | grep -qx 'POST /v2/state/active-contracts'; then
+  [ -n "${GATEWAY_PARTY:-}" ] || fail "the explorer read active contracts, and the rehearsal has no gateway party for that read"
+  jq -s -e --arg g "$GATEWAY_PARTY" '
+    [.[] | select(.path | startswith("/v2/state/active-contracts")) | .body | fromjson] as $bodies
+    | ($bodies | length) > 0
+    and ($bodies | all(
+        (.eventFormat.filtersByParty | keys) == [$g]
+        and ([.. | objects | select(has("filtersForAnyParty"))] | length == 0)
+        and ([.. | objects | select(has("templateId")) | .templateId] | all(endswith(":Zk.Chain:GatewayToken")))
+        and ([.. | objects | select(has("interfaceId")) | .interfaceId] | all(endswith(":Splice.Api.Token.HoldingV1:Holding")))
+    ))' "$WORK/ledger-calls" >/dev/null \
+    || fail "a custody read was not for the gateway party alone, the registered tokens and the holding interface alone"
+fi
 # Every update request is, in structure: filtersByParty has the reader party as its only key, there is no filtersForAnyParty, and every template is the block record.
 jq -s -e --arg r "$READER_PARTY" '
-  [.[] | select(.method == "POST") | .body | fromjson] as $bodies
+  [.[] | select(.method == "POST" and (.path | startswith("/v2/updates"))) | .body | fromjson] as $bodies
   | ($bodies | length) > 0
   and ($bodies | all(
       (.updateFormat.includeTransactions.eventFormat | (.filtersByParty | keys) == [$r])
@@ -208,7 +224,7 @@ jq -s -e --arg r "$READER_PARTY" '
   ))' "$WORK/ledger-calls" >/dev/null \
   || fail "an update request was not for the reader party alone and the block record alone: $(jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | head -n 3 | cut -c1-600)"
 for party in "$OPERATOR_PARTY" "$BUILDER_PARTY" "$CONFIRMER_PARTY" "$U_PARTY" "$V_PARTY" "$REGISTRY_PARTY"; do
-  ! jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | grep -qF "$party" || fail "an update request named a party other than the reader: $party"
+  ! jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | grep -qF "$party" || fail "a request named a party other than the reader or, for the custody read, the gateway: $party"
 done
 # reth: only eth_, net_ and web3_ methods.
 [ -s "$WORK/reth-calls" ] || fail "the explorer made no call to reth"
