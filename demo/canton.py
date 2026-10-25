@@ -17,6 +17,9 @@
                                        DvpTerms: "if the gateway records a payment of <amount> TKA (a whole number) of <token> to <payee> with
                                        this id in the proven block, execute that allocation". Prints the id: V's pay on the EVM must carry it
   canton.py payment-id <label>         the payment id of U, V and that label: the SHA-256, in lowercase hex, of the UTF-8 bytes of "<U's party id>,<V's party id>,<label>"
+  canton.py return-tkb <label> <amount>
+                                       V sends U <amount> TKB by the token standard's plain transfer (the transfer factory is the token rules; U
+                                       accepts the offer if the token makes one). It is how the live cycle gives U the TKB that a payment moved to V
   canton.py resubmit <advance.json>    send a block the builder saved (its block-N/advance.json) to Canton again, with the legs taken out. Demo
                                        only: it shows that a proven block is no good without the legs it recorded. Exits 2 if Canton refuses it
   canton.py settled <block number> [u|v|gateway]
@@ -64,6 +67,9 @@ TOKEN = "#splice-test-token-v1:Splice.Testing.Tokens.TestTokenV1:Token"
 RULES = "#splice-test-token-v1:Splice.Testing.Tokens.TestTokenV1:TokenRules"
 ALLOCATION_OF_TOKEN = "#splice-test-token-v1:Splice.Testing.Tokens.TestTokenV1:TokenAllocation"
 ALLOCATION_INTERFACE = "#splice-api-token-allocation-v1:Splice.Api.Token.AllocationV1:Allocation"
+TRANSFER_FACTORY = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory"
+TRANSFER_INSTRUCTION = "#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferInstruction"
+TRANSFER_OFFER = "#splice-test-token-v1:Splice.Testing.Tokens.TestTokenV1:TokenTransferOffer"
 ALLOCATION_FACTORY = "#splice-api-token-allocation-instruction-v1:Splice.Api.Token.AllocationInstructionV1:AllocationFactory"
 DVP_TERMS, DEPOSIT_REQUEST, ACCEPTANCE = CHAIN + "DvpTerms", CHAIN + "DepositRequest", CHAIN + "WithdrawalAcceptance"
 TEST_TOKEN_DAR = "splice-test-token-v1-1.0.1.dar"
@@ -486,6 +492,40 @@ def dvp(net: Network, label: str, token: str, payee: str, tokens: int) -> dict:
     return {"label": label, "id": dvp_id, "allocation": allocation["contractId"], "terms": terms["contractId"]}
 
 
+def total_of(net: Network, who: str) -> float:
+    return sum(holdings(net, who))
+
+
+def return_tkb(net: Network, label: str, amount: str) -> dict:
+    """V sends U `amount` TKB through the token standard's transfer factory (the rules, disclosed to V as for an allocation), with all of V's holdings as
+    the inputs. A token that answers with an offer to U has it accepted by U; one that completes the transfer needs no acceptance. Waits until U holds
+    the amount more, and gives how it went."""
+    read_label(label)
+    if not CANTON_AMOUNT.fullmatch(amount) or float(amount) == 0:
+        raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
+    amount = amount if "." in amount else amount + ".0"
+    u, v, registry = net.party("u"), net.party("v"), net.party("registry")
+    disclosed = read_disclosed(net)
+    inputs = [e["contractId"] for e in net.template("users", "v", TOKEN)]
+    if total_of(net, "v") < float(amount):
+        raise Fail(f"V holds {total_of(net, 'v')} TKB, less than {amount}")
+    u_before = total_of(net, "u")
+    offers = {e["contractId"] for e in net.template("users", "u", TRANSFER_OFFER)}
+    transfer = {"sender": v, "receiver": u, "amount": amount, "instrumentId": {"admin": registry, "id": INSTRUMENT}, "requestedAt": utc(timedelta(minutes=-1)),
+                "executeBefore": utc(timedelta(hours=1)), "inputHoldingCids": inputs, "meta": {"values": {"label": label}}}
+    net.submit("users", ["v"], {"ExerciseCommand": {"templateId": TRANSFER_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "TransferFactory_Transfer",
+                                                   "choiceArgument": {"expectedAdmin": registry, "transfer": transfer, "extraArgs": NO_EXTRA_ARGS}}}, disclosed)
+    def arrived():
+        offer = [e for e in net.template("users", "u", TRANSFER_OFFER) if e["contractId"] not in offers]
+        return {"offer": offer[0]["contractId"]} if offer else ({"offer": None} if total_of(net, "u") >= u_before + float(amount) else None)
+    found = net.wait_for("the transfer to reach U", arrived)
+    if found["offer"]:
+        net.submit("users", ["u"], {"ExerciseCommand": {"templateId": TRANSFER_INSTRUCTION, "contractId": found["offer"], "choice": "TransferInstruction_Accept",
+                                                       "choiceArgument": {"extraArgs": NO_EXTRA_ARGS}}})
+        net.wait_for("U to hold the TKB", lambda: total_of(net, "u") >= u_before + float(amount) or None)
+    return {"label": label, "amount": amount, "from": "v", "to": "u", "offer": found["offer"], "uHolds": holdings(net, "u"), "vHolds": holdings(net, "v")}
+
+
 def resubmit(net: Network, path: str) -> dict:
     """Sends the Advance the builder saved to Canton again, with `legs` empty and everything else as it was sent. The proof, the header and
     the gateway's proofs are all still good, but the block recorded legs that are no longer attached, so Canton must refuse it."""
@@ -653,6 +693,8 @@ def main(argv: list) -> dict:
         return dvp(net, argv[1], argv[2], argv[3], int(argv[4]))
     if cmd == ["payment-id"] and n == 2:
         return {"label": argv[1], "id": payment_id(net.party("u"), net.party("v"), read_label(argv[1]))}
+    if cmd == ["return-tkb"] and n == 3:
+        return return_tkb(net, argv[1], argv[2])
     if cmd == ["resubmit"] and n == 2:
         return resubmit(net, argv[1])
     if cmd == ["settled"] and n in (2, 3) and WHOLE.fullmatch(argv[1]):

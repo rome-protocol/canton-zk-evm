@@ -1,6 +1,7 @@
 import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from "viem";
 import type { Tracker } from "./tracker.ts";
 import { isHexBytes } from "./hex.ts";
+import { createHeavyLimiter, isHeavy, MAX_IN_FLIGHT } from "./rpc-heavy.ts";
 
 /**
  * The public RPC: what a wallet or a script sees of the chain. It forwards to reth, but it shows only what is final on Canton.
@@ -33,6 +34,10 @@ export interface PublicRpcOptions {
   tracker: Pick<Tracker, "track" | "admit">;
   /** The most requests being answered at one time, from all clients together. */
   maxInFlight?: number;
+  /** The most heavy calls (eth_call, eth_estimateGas, eth_getLogs) running at one time, from all clients together. */
+  heavyConcurrency?: number;
+  /** The most heavy calls waiting for a slot. A heavy call past that is refused at once. */
+  heavyQueue?: number;
   now?: () => number;
   /** How long the finalized number is reused. Zero asks reth every time. */
   finalizedTtlMs?: number;
@@ -55,7 +60,11 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 /** A block argument made public: a tag becomes the finalized number, a number above it is `above`, anything else is bad. */
 type Pinned = { value: unknown } | { above: true } | { bad: true };
 
-class Unreachable extends Error {}
+class Unreachable extends Error {
+  /** True when the explorer stopped waiting: reth may still be running the call. */
+  timedOut: boolean;
+  constructor(message: string, timedOut = false) { super(message); this.timedOut = timedOut; }
+}
 
 /**
  * What a client's bucket is keyed on. An IPv6 customer holds a whole /64, so each one is one client: rotating through the
@@ -73,7 +82,8 @@ export function clientKey(ip: string): string {
 }
 
 export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
-  const { rethUrl, timeoutMs, chainId, tracker, now = Date.now, finalizedTtlMs = 500, maxInFlight = 64 } = o;
+  const { rethUrl, timeoutMs, chainId, tracker, now = Date.now, finalizedTtlMs = 500, maxInFlight = MAX_IN_FLIGHT, heavyConcurrency = 8, heavyQueue = 16 } = o;
+  const heavy = createHeavyLimiter(heavyConcurrency, heavyQueue);
   let inFlight = 0;
   const perMs = o.ratePerMinute / 60000;
   const buckets = new Map<string, { tokens: number; at: number }>();
@@ -108,7 +118,7 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       body = (await res.json()) as typeof body;
     } catch (e) {
-      throw new Unreachable(`${method}: ${(e as Error).message}`);
+      throw new Unreachable(`${method}: ${(e as Error).message}`, (e as Error).name === "TimeoutError");
     }
     if (body.error) return { error: { code: body.error.code, message: body.error.message, ...(body.error.data === undefined ? {} : { data: body.error.data }) } };
     if (!("result" in body)) throw new Unreachable(`${method}: no result`);
@@ -330,16 +340,34 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
   }
 
   /** One call of a request, answered as JSON-RPC. */
-  async function one(req: unknown, fin: () => Promise<number>): Promise<unknown> {
+  async function one(req: unknown, fin: () => Promise<number>, refused: { n: number }): Promise<unknown> {
     if (!isObject(req) || typeof req.method !== "string" || (req.params !== undefined && !Array.isArray(req.params))) {
       return { jsonrpc: "2.0", id: null, ...err(-32600, "Invalid request.") };
     }
     const callId: Id = typeof req.id === "string" || typeof req.id === "number" ? req.id : null;
+    // A heavy call takes a slot, or waits for one in a short queue, or is refused at once. A light call goes straight through.
+    let release: (() => void) | null | undefined;
+    if (isHeavy(req.method)) {
+      release = await heavy.acquire();
+      if (release === null) {
+        refused.n++;
+        return { jsonrpc: "2.0", id: callId, ...err(-32005, "The RPC is busy with other calls of this kind. Try again in 1 s.") };
+      }
+    }
     try {
       return { jsonrpc: "2.0", id: callId, ...(await handle(req.method, (req.params as unknown[] | undefined) ?? [], fin)) };
     } catch (e) {
       console.error(`rpc: ${(e as Error).message}`);
+      // reth does not stop a call when the explorer stops waiting for it. A heavy call that timed out keeps its place for one more
+      // timeout, so abandoned calls that reth may still be running count against the cap and do not let more in meanwhile.
+      if (release && e instanceof Unreachable && e.timedOut) {
+        const held = release;
+        release = undefined;
+        setTimeout(held, timeoutMs).unref();
+      }
       return { jsonrpc: "2.0", id: callId, ...err(-32603, e instanceof Unreachable ? "The chain cannot be reached right now. Try again in a moment." : "Something went wrong in the RPC. Try again in a moment.") };
+    } finally {
+      release?.();
     }
   }
 
@@ -367,7 +395,12 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       // One view of the chain for the whole request.
       let seen: Promise<number> | undefined;
       const fin = () => (seen ??= finalizedNumber());
-      return { status: 200, body: batch ? await Promise.all(batch.map((r) => one(r, fin))) : await one(parsed, fin) };
+      const refused = { n: 0 };
+      const body = batch ? await Promise.all(batch.map((r) => one(r, fin, refused))) : await one(parsed, fin, refused);
+      // Told to come back: 429 with Retry-After when every call of the request was refused. A batch that was partly answered keeps
+      // its 200, and each refused call carries the error.
+      const all = refused.n > 0 && refused.n === (batch ? batch.length : 1);
+      return all ? { status: 429, headers: { "retry-after": "1" }, body } : { status: 200, body };
     } finally {
       inFlight--;
     }

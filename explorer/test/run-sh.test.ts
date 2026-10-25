@@ -93,16 +93,16 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
 
   it("passes the public RPC's and the tracker's settings to the container when they are set", () => {
     const cmd = start({
-      PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "120", TRUSTED_IP_HEADER: "x-real-ip", TRACKER_MAX: "500", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "8", TRACKER_MAX_PENDING_MINUTES: "30",
+      PUBLIC_RPC: "1", RPC_RATE_PER_MINUTE: "120", RPC_HEAVY_CONCURRENCY: "6", RPC_HEAVY_QUEUE: "10", TRUSTED_IP_HEADER: "x-real-ip", TRACKER_MAX: "500", TRACKER_MAX_BYTES: "4096", TRACKER_PER_SENDER: "8", TRACKER_MAX_PENDING_MINUTES: "30",
     });
-    for (const flag of ["PUBLIC_RPC=1", "RPC_RATE_PER_MINUTE=120", "TRUSTED_IP_HEADER=x-real-ip", "TRACKER_MAX=500", "TRACKER_MAX_BYTES=4096", "TRACKER_PER_SENDER=8", "TRACKER_MAX_PENDING_MINUTES=30"]) {
+    for (const flag of ["PUBLIC_RPC=1", "RPC_RATE_PER_MINUTE=120", "RPC_HEAVY_CONCURRENCY=6", "RPC_HEAVY_QUEUE=10", "TRUSTED_IP_HEADER=x-real-ip", "TRACKER_MAX=500", "TRACKER_MAX_BYTES=4096", "TRACKER_PER_SENDER=8", "TRACKER_MAX_PENDING_MINUTES=30"]) {
       expect(cmd).toContain(` -e ${flag}`);
     }
   });
 
   it("leaves them out when they are not set, so the explorer's own defaults and the RPC being off stand", () => {
     const cmd = start();
-    for (const name of ["PUBLIC_RPC", "RPC_RATE_PER_MINUTE", "TRUSTED_IP_HEADER", "TRACKER_MAX", "TRACKER_MAX_BYTES", "TRACKER_PER_SENDER", "TRACKER_MAX_PENDING_MINUTES"]) {
+    for (const name of ["PUBLIC_RPC", "RPC_RATE_PER_MINUTE", "RPC_HEAVY_CONCURRENCY", "RPC_HEAVY_QUEUE", "TRUSTED_IP_HEADER", "TRACKER_MAX", "TRACKER_MAX_BYTES", "TRACKER_PER_SENDER", "TRACKER_MAX_PENDING_MINUTES"]) {
       expect(cmd).not.toContain(`-e ${name}=`);
     }
   });
