@@ -9,6 +9,7 @@ import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } fr
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
 import { fees } from "./fee.mjs";
+import { Ledger, QuoteBook, RefillBudget, emptyRefillStats, refillCycle, refillLine } from "./refill.mjs";
 import { classify, emptyTally, tallyLine, passes, reasonFromError, reasonFinder } from "./classify.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
@@ -56,6 +57,7 @@ if (mode === "seed") {
 const W = wallets([...names, ...HOLDERS, "unverified"]);
 const pool = names.map((n) => W[n]);
 const holders = HOLDERS.map((n) => W[n]);
+function wallets_addr(n) { return W[n].address; }
 const A = {
   tUSD: need("tUSD"), tETH: need("tETH"), wt: need("WtROME"), pass: need("OstiaPass"), items: need("OstiaItems"),
   router: need("UniswapV2Router02"), pairUW: need("UniswapV2Pair tUSD/WtROME"), pairET: need("UniswapV2Pair tETH/tUSD"),
@@ -72,6 +74,16 @@ const pick = (a) => a[rnd(a.length)];
 const other = (w, list = pool) => { let o; do o = pick(list); while (o.address === w.address); return o; };
 const deadline = () => Math.floor(Date.now() / 1000) + 3600;
 const ZERO = 0n;
+
+// slippage: a swap's minimum output comes from a fresh reading of the pool's reserves, less a tolerance (config mix.slippage). With no fresh reading the minimum is 0.
+const SL = M.slippage, RF = M.refill;
+const quotes = new QuoteBook(SL.quoteMaxAgeSeconds * 1000);
+const minOut = (tokenIn, tokenOut, amountIn) => quotes.minOut(tokenIn, tokenOut, amountIn, SL.tolerancePercent);
+// what each wallet is thought to hold (see refill.mjs); the holders carry gas only here, their T-REX balance is kept below
+const ledger = new Ledger({ trome: E(M.seed.tromeEach), tUSD: U(M.seed.tUsdEach), tETH: E(M.seed.tEthEach) });
+for (const h of holders) ledger.set(h.address, { trome: E(cfg.deploy.holderGasTrome) });
+const refillStats = emptyRefillStats();
+const trexBal = new Map(HOLDERS.map((n) => [wallets_addr(n), U(cfg.deploy.trex.mintPerHolder)]));
 
 // wallets' bookkeeping, kept here (no reads from the chain): nonces, approvals, what a wallet holds of what it made
 const nonces = new Map(), approved = new Set(), wrapped = new Map(), lp = new Map(), nfts = new Map(), items = new Map(), deposited = new Set(), busy = new Set();
@@ -105,7 +117,7 @@ function plan(kind, w) {
     case "erc20Transfer": {
       const t = pick(["tUSD", "tUSD", "tETH"]);
       const amt = t === "tUSD" ? U(1 + rnd(10)) : E("0.001") * BigInt(1 + rnd(9));
-      tx({ to: A[t], data: F.tok.encodeFunctionData("transfer", [other(w).address, amt]), gas: G.erc20Transfer }); break;
+      tx({ to: A[t], data: F.tok.encodeFunctionData("transfer", [other(w).address, amt]), gas: G.erc20Transfer, spend: { [t]: amt } }); break;
     }
     case "erc20Approve": // a plain approval of a friend, a finite amount
       tx({ to: A[pick(["tUSD", "tETH"])], data: F.tok.encodeFunctionData("approve", [other(w).address, U(100 * (1 + rnd(9)))]), gas: G.erc20Approve }); break;
@@ -117,25 +129,25 @@ function plan(kind, w) {
       tx({ to: A.wt, data: F.wt.encodeFunctionData("withdraw", [E("0.2")]), gas: G.unwrap }); book(out.at(-1), w, -E("0.2")); break;
     case "swapUsdToTrome":
       approval(w, A.tUSD, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), 0, [A.tUSD, A.wt], w.address, deadline()]), gas: G.swap }); book(out.at(-1), w, E("1")); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(20), minOut(A.tUSD, A.wt, U(20)), [A.tUSD, A.wt], w.address, deadline()]), gas: G.swap, spend: { tUSD: U(20) } }); book(out.at(-1), w, E("1")); break;
     case "swapTromeToUsd":
       if (wrp(w) < E("0.3")) return null;
       approval(w, A.wt, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.2"), 0, [A.wt, A.tUSD], w.address, deadline()]), gas: G.swap }); book(out.at(-1), w, -E("0.2")); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.2"), minOut(A.wt, A.tUSD, E("0.2")), [A.wt, A.tUSD], w.address, deadline()]), gas: G.swap, spend: {} }); book(out.at(-1), w, -E("0.2")); break;
     case "swapEthToUsd":
       approval(w, A.tETH, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.01"), 0, [A.tETH, A.tUSD], w.address, deadline()]), gas: G.swap }); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [E("0.01"), minOut(A.tETH, A.tUSD, E("0.01")), [A.tETH, A.tUSD], w.address, deadline()]), gas: G.swap, spend: { tETH: E("0.01") } }); break;
     case "swapUsdToEth":
       approval(w, A.tUSD, A.router, out);
-      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(30), 0, [A.tUSD, A.tETH], w.address, deadline()]), gas: G.swap }); break;
+      tx({ to: A.router, data: F.router.encodeFunctionData("swapExactTokensForTokens", [U(30), minOut(A.tUSD, A.tETH, U(30)), [A.tUSD, A.tETH], w.address, deadline()]), gas: G.swap, spend: { tUSD: U(30) } }); break;
     case "addLiquidity": {
       if (Math.random() < 0.5 && wrp(w) >= E("0.6")) {
         approval(w, A.tUSD, A.router, out); approval(w, A.wt, A.router, out);
-        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tUSD, A.wt, U(5), E("0.5"), 0, 0, w.address, deadline()]), gas: G.addLiquidity });
+        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tUSD, A.wt, U(5), E("0.5"), 0, 0, w.address, deadline()]), gas: G.addLiquidity, spend: { tUSD: U(5) } });
         book(out.at(-1), w, -E("0.5")); bookLp(out.at(-1), w, A.pairUW, 1);
       } else {
         approval(w, A.tETH, A.router, out); approval(w, A.tUSD, A.router, out);
-        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tETH, A.tUSD, E("0.01"), U(35), 0, 0, w.address, deadline()]), gas: G.addLiquidity });
+        tx({ to: A.router, data: F.router.encodeFunctionData("addLiquidity", [A.tETH, A.tUSD, E("0.01"), U(35), 0, 0, w.address, deadline()]), gas: G.addLiquidity, spend: { tETH: E("0.01"), tUSD: U(35) } });
         bookLp(out.at(-1), w, A.pairET, 1);
       }
       break;
@@ -157,6 +169,7 @@ function plan(kind, w) {
       if (!mine.length) return null;
       const id = mine.shift(); const to = other(w);
       tx({ to: A.pass, data: F.pass.encodeFunctionData("safeTransferFrom(address,address,uint256)", [w.address, to.address, id]), gas: G.erc721Transfer,
+        undo: () => nfts.set(w.address, [id, ...(nfts.get(w.address) ?? [])]),
         after: (it) => { if (it.success) nfts.set(to.address, [...(nfts.get(to.address) ?? []), id]); } }); break;
     }
     case "erc1155Mint": {
@@ -171,18 +184,27 @@ function plan(kind, w) {
       const mine = itemsOf(w); if (!mine.length) return null;
       const [id, have] = pick(mine); const amt = 1n; const to = other(w);
       items.set(`${w.address}:${id}`, have - amt);
-      tx({ to: A.items, data: F.items.encodeFunctionData("safeTransferFrom", [w.address, to.address, id, amt, "0x"]), gas: G.erc1155Transfer, after: (it) => { if (it.success) addItem(to, id, amt); } }); break;
+      tx({ to: A.items, data: F.items.encodeFunctionData("safeTransferFrom", [w.address, to.address, id, amt, "0x"]), gas: G.erc1155Transfer, undo: () => addItem(w, id, amt), after: (it) => { if (it.success) addItem(to, id, amt); } }); break;
     }
     case "erc1155BatchTransfer": {
       const mine = itemsOf(w); if (mine.length < 2) return null;
       const two = mine.slice(0, 2); const to = other(w);
       for (const [id, have] of two) items.set(`${w.address}:${id}`, have - 1n);
       tx({ to: A.items, data: F.items.encodeFunctionData("safeBatchTransferFrom", [w.address, to.address, two.map((x) => x[0]), two.map(() => 1n), "0x"]), gas: G.erc1155BatchTransfer,
+        undo: () => { for (const [id] of two) addItem(w, id, 1n); },
         after: (it) => { if (it.success) for (const [id] of two) addItem(to, id, 1n); } }); break;
     }
-    case "trexTransfer":
-      tx({ to: A.trex, data: F.trex.encodeFunctionData("transfer", [other(w, holders).address, U(1 + rnd(5))]), gas: G.trexTransfer }); break;
-    case "trexRefused": // to the address that has no identity in the registry: the token refuses it, the transaction reverts on purpose
+    case "trexTransfer": { // only from a holder that holds enough; the books follow the move and take it back if it fails
+      const amt = U(1 + rnd(5)), have = trexBal.get(w.address) ?? ZERO;
+      if (have < amt) return null;
+      const to = other(w, holders);
+      trexBal.set(w.address, have - amt);
+      tx({ to: A.trex, data: F.trex.encodeFunctionData("transfer", [to.address, amt]), gas: G.trexTransfer,
+        undo: () => trexBal.set(w.address, (trexBal.get(w.address) ?? ZERO) + amt),
+        after: (it) => { if (it.success) trexBal.set(to.address, (trexBal.get(to.address) ?? ZERO) + amt); } }); break;
+    }
+    case "trexRefused": // (a holder with no T-REX left would revert for another reason, so it does not send this) to the address that has no identity in the registry: the token refuses it, the transaction reverts on purpose
+      if ((trexBal.get(w.address) ?? ZERO) < U(1)) return null;
       tx({ to: A.trex, data: F.trex.encodeFunctionData("transfer", [W.unverified.address, U(1)]), gas: G.trexRefused, expectRevert: true }); break;
     case "vaultRecord":
       if (!fresh()) return null;
@@ -246,6 +268,7 @@ async function send(w, spec, phase) {
     try {
       await rpc("eth_sendRawTransaction", [raw]);
       rec.acceptedAt = Date.now(); sent.set(hash, rec); counters.sent++;
+      ledger.spend(w.address, { trome: (spec.value ?? ZERO) + BigInt(spec.gas) * gasPrice, ...spec.spend });
       ev({ e: "sent", hash, kind: spec.kind, sub: spec.sub, from: w.address, nonce, phase, sentAt: rec.sentAt, acceptedAt: rec.acceptedAt, gas: spec.gas, expectRevert: rec.expectRevert });
     } catch (e) {
       counters.rejected++;
@@ -452,7 +475,7 @@ async function misc() {
     await sleep(15_000); n++;
     if (n % 2 === 0) await refreshGasPrice();
     if (n % 4 === 0) ev({ e: "rpcMinute", used: used(), calls: rpcStats.calls, httpLimited: rpcStats.httpLimited, waitedMs: rpcStats.waitedMs, sent: counters.sent, rejected: counters.rejected, final: finalCount, outcomes: { ...outcomes }, queue: queue.length, inflight });
-    if (n % 4 === 0) log(`sent ${counters.sent}  final ${finalCount}  ${tallyLine(outcomes)}  rejected ${counters.rejected}  rpc ${used()}/min  proofs ${proofs.length}  prices ${fresh() ? "fresh" : "none"}  blocks ${blocks.size}`);
+    if (n % 4 === 0) log(`sent ${counters.sent}  final ${finalCount}  ${tallyLine(outcomes)}  rejected ${counters.rejected}  ${refillLine(refillStats)}  rpc ${used()}/min  proofs ${proofs.length}  prices ${fresh() ? "fresh" : "none"}  blocks ${blocks.size}`);
   }
 }
 let vaultReads = 0;
@@ -513,9 +536,102 @@ async function dispatchOne(phase) {
   send(it.w, it.spec, phase).finally(() => { inflight--; });
 }
 
+// ---------------------------------------------------------------- refill: the wallets keep what they spend, and a swap's price is read fresh
+const D = RF.enabled ? distributor() : null;
+const seederAddr = state.contracts.Seeder?.address;
+const F2 = { seeder: I("Seeder.sol", "Seeder"), pair: I("UniswapV2Pair.sol", "UniswapV2Pair") };
+let dnonce = null;
+/** One transaction from the distributor, waited for until it has a receipt. Throws when it is refused, reverts or has no receipt in 75 s. */
+async function dsend(spec) {
+  if (dnonce == null) dnonce = Number(await rpc("eth_getTransactionCount", [D.address, "pending"]));
+  const nonce = dnonce++;
+  const { raw, hash } = signed(D, spec, nonce);
+  try { await rpc("eth_sendRawTransaction", [raw]); } catch (e) { dnonce = null; throw e; }
+  for (let i = 0; i < 25; i++) {
+    await sleep(3000);
+    const r = await rpc("eth_getTransactionReceipt", [hash]);
+    if (r) { if (Number(r.status) !== 1) throw new Error("the distributor's transaction reverted"); return r; }
+  }
+  dnonce = null;
+  throw new Error("no receipt for the distributor's transaction in 75 s");
+}
+const bal = (data, to) => ["eth_call", [{ to, data }, "latest"]];
+const readBalances = async (addrs, tokens = true) => {
+  const calls = addrs.flatMap((a) => tokens
+    ? [["eth_getBalance", [a, "latest"]], bal(F.tok.encodeFunctionData("balanceOf", [a]), A.tUSD), bal(F.tok.encodeFunctionData("balanceOf", [a]), A.tETH)]
+    : [["eth_getBalance", [a, "latest"]]]);
+  const per = tokens ? 3 : 1, out = new Map();
+  const res = [];
+  for (let i = 0; i < calls.length; i += 18) res.push(...await rpcBatch(calls.slice(i, i + 18)));
+  addrs.forEach((a, i) => {
+    const r = res.slice(i * per, i * per + per);
+    if (r.some((x) => !x.result)) return;
+    out.set(a, tokens ? { trome: BigInt(r[0].result), tUSD: BigInt(r[1].result), tETH: BigInt(r[2].result) } : { trome: BigInt(r[0].result) });
+  });
+  return out;
+};
+let approvedSeeder = false;
+async function topUp(g, addrs) {
+  const n = BigInt(addrs.length), { trome, tUSD = ZERO, tETH = ZERO } = g.topUp;
+  const mine = await readBalances([D.address], !!(tUSD || tETH)); const m = mine.get(D.address);
+  if (!m) throw new Error("could not read the distributor's balances");
+  if (m.trome < trome * n + E(RF.distributorMinTrome)) { refillStats.distributorShort++; log(`refill: the distributor is short of ${cfg.coin} (${ethers.formatEther(m.trome)}); ${g.name} wallets wait`); return false; }
+  const tokens = [[A.tUSD, "tUSD", tUSD], [A.tETH, "tETH", tETH]];
+  for (const [addr, key, each] of tokens) {
+    if (!each) continue;
+    if (m[key] < each * n) { // the distributor owns the test tokens: it mints ahead for the next top-ups too
+      await dsend({ to: addr, data: F.tok.encodeFunctionData("mint", [D.address, each * n * BigInt(RF.mintAhead)]), gas: 300_000 });
+      refillStats.minted++; log(`refill: minted ${key} for the distributor`); ev({ e: "refillMint", token: key });
+    }
+  }
+  if (!approvedSeeder && (tUSD || tETH)) {
+    for (const [addr] of tokens) await dsend({ to: addr, data: F.tok.encodeFunctionData("approve", [seederAddr, ethers.MaxUint256]), gas: 100_000 });
+    approvedSeeder = true;
+  }
+  const r = await dsend({ to: seederAddr, data: F2.seeder.encodeFunctionData("seed", [addrs, trome, A.tUSD, tUSD, A.tETH, tETH]), value: trome * n, gas: RF.gasLimit });
+  ev({ e: "refill", group: g.name, wallets: addrs.length, tx: r.hash, trome: trome.toString(), tUSD: tUSD.toString(), tETH: tETH.toString() });
+  log(`refill: ${addrs.length} ${g.name} wallets topped up (${ethers.formatEther(trome)} ${cfg.coin}${tUSD ? `, ${ethers.formatUnits(tUSD, 6)} tUSD` : ""}${tETH ? `, ${ethers.formatEther(tETH)} tETH` : ""} each)`);
+  return true;
+}
+const groups = [
+  { name: "pool", addrs: pool.map((w) => w.address), low: { trome: E(RF.lowTrome), tUSD: U(RF.lowTusd), tETH: E(RF.lowTeth) }, topUp: { trome: E(M.seed.tromeEach), tUSD: U(M.seed.tUsdEach), tETH: E(M.seed.tEthEach) } },
+  { name: "holders", addrs: holders.map((w) => w.address), low: { trome: E(RF.holderLowTrome) }, topUp: { trome: E(RF.holderTopUpTrome) } },
+];
+const refillBudget = new RefillBudget({ perMinute: RF.maxWalletsPerMinute, perRun: RF.maxWalletsPerRun });
+ledger.markUnread(groups.flatMap((g) => g.addrs));
+async function refillLoop() {
+  if (!RF.enabled || !seederAddr) { log(`refill is off${RF.enabled ? " (no Seeder in the state: run seed first)" : ""}`); return; }
+  const io = { readBalances: async (as) => { const holder = as.every((a) => holders.some((h) => h.address === a)); return readBalances(as, !holder); }, topUp };
+  while (running) {
+    const unread = ledger.unreadIn(groups.flatMap((g) => g.addrs)).length;
+    // the sends come first: a check waits until the RPC budget has room for it next to the sends
+    if (left() < RF.readWalletsPerCheck * 3 + curRate * 10 + 15) { await sleep(2000); continue; }
+    try { await refillCycle({ ledger, groups, budget: refillBudget, io, readPerCheck: RF.readWalletsPerCheck, stats: refillStats, log }); } catch (e) { log("refill", String(e.message).slice(0, 100)); }
+    await sleep(unread ? 1000 : RF.checkSeconds * 1000);
+  }
+}
+const poolPairs = [[A.pairUW, A.tUSD, A.wt], [A.pairET, A.tETH, A.tUSD]];
+async function readQuotes() {
+  const res = await rpcBatch(poolPairs.map(([p]) => ["eth_call", [{ to: p, data: F2.pair.encodeFunctionData("getReserves") }, "latest"]]));
+  res.forEach((r, i) => {
+    if (!r.result) return;
+    const [r0, r1] = F2.pair.decodeFunctionResult("getReserves", r.result);
+    const [, a, b] = poolPairs[i]; const aIs0 = a.toLowerCase() < b.toLowerCase();
+    quotes.set(a, aIs0 ? r0 : r1, b, aIs0 ? r1 : r0);
+  });
+}
+async function quoteLoop() {
+  while (running) { try { await readQuotes(); } catch (e) { log("quotes", String(e.message).slice(0, 80)); } await sleep(SL.quoteRefreshSeconds * 1000); }
+}
+try { await readQuotes(); } catch {}
+try { // the holders' real T-REX balances (the books start from what the deploy minted)
+  const calls = holders.map((h) => bal(F.trex.encodeFunctionData("balanceOf", [h.address]), A.trex));
+  (await rpcBatch(calls)).forEach((r, i) => { if (r.result) trexBal.set(holders[i].address, BigInt(r.result)); });
+} catch {}
+
 const phaseResults = [];
 const best = () => { const ok = phaseResults.filter((p) => p.ok); return ok.length ? Math.max(...ok.map((p) => p.rate)) : 2; };
-const bg = [watch(), receipts(), redstoneLoop(), proofLoop(), misc(), vaultRead()];
+const bg = [watch(), receipts(), redstoneLoop(), proofLoop(), misc(), vaultRead(), refillLoop(), quoteLoop()];
 for (const ph of M.phases) {
   const rate = ph.rate === "best" ? best() : ph.rate;
   const start = Date.now(), end = start + ph.minutes * 60_000, interval = 1000 / rate;
@@ -550,7 +666,7 @@ while (Date.now() < drainEnd && sent.size > finalCount) await sleep(5000);
 await Promise.race([Promise.all(bg), sleep(15_000)]);
 await Promise.race([Promise.all(reasonJobs), sleep(30_000)]); // the replays of unexpected reverts
 const notFinal = [...sent.values()].filter((r) => !r.finalAt).map((r) => ({ hash: r.hash, kind: r.kind, sentAt: r.sentAt }));
-const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length, outcomes, pass: passes(outcomes) };
+const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length, outcomes, pass: passes(outcomes), refills: { ...refillStats, quotes: quotes.stats } };
 ev({ e: "end", ...summary });
 writeFileSync(`${DIR}/summary.json`, JSON.stringify(summary, null, 2) + "\n");
 log(`done: ${tallyLine(outcomes)}; ${passes(outcomes) ? "PASS" : "FAIL"} on unexpected reverts. sent ${counters.sent}, final ${finalCount}, not final ${notFinal.length}, rejected ${counters.rejected}`);

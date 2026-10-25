@@ -37,6 +37,26 @@
       "tEthEach": "4",
       "perTx": 20
     },
+    "refill": {
+      "enabled": true,
+      "checkSeconds": 15,
+      "readWalletsPerCheck": 6,
+      "lowTrome": "3",
+      "lowTusd": "300",
+      "lowTeth": "0.4",
+      "holderLowTrome": "1",
+      "holderTopUpTrome": "5",
+      "maxWalletsPerMinute": 40,
+      "maxWalletsPerRun": 2000,
+      "distributorMinTrome": "200",
+      "mintAhead": 10,
+      "gasLimit": 12000000
+    },
+    "slippage": {
+      "tolerancePercent": 5,
+      "quoteMaxAgeSeconds": 30,
+      "quoteRefreshSeconds": 10
+    },
     "weights": {
       "erc20Transfer": 18,
       "erc20Approve": 3,

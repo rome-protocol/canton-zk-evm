@@ -29,6 +29,9 @@ const cls = (h) => { const f = finals.get(h); return f && (f.class ?? classify({
 const outcomes = emptyTally();
 for (const h of finals.keys()) if (sent.has(h)) outcomes[cls(h)]++;
 rep.outcomes = outcomes;
+// the top-ups the driver made during the run (events of older runs have none)
+const topUps = by("refill"), mints = by("refillMint");
+rep.refills = { topUps: topUps.length, wallets: topUps.reduce((a, x) => a + x.wallets, 0), mints: mints.length, byGroup: topUps.reduce((m, x) => ({ ...m, [x.group]: (m[x.group] ?? 0) + x.wallets }), {}) };
 rep.pass = { rule: "no unexpected revert and no deliberate revert that went through", ok: passes(outcomes) };
 rep.unexpectedRevertReasons = {};
 for (const [h, f] of finals) if (cls(h) === "unexpectedRevert") { const k = `${label(sent.get(h) ?? { kind: "?" })}: ${reasons.get(h) ?? "reason not read"}`; rep.unexpectedRevertReasons[k] = (rep.unexpectedRevertReasons[k] ?? 0) + 1; }
@@ -120,6 +123,7 @@ if (busiest) out.push("", `Busiest block: ${busiest.n}, ${busiest.txCount} trans
 out.push("", `## Canton ledger`, "", `${rep.canton.blocksRead} blocks read from /api/canton/updates: argument bytes per block p50 ${r2(rep.canton.argumentBytesPerBlock.p50)}, p95 ${r2(rep.canton.argumentBytesPerBlock.p95)}, max ${r2(rep.canton.argumentBytesPerBlock.max)}; per transaction p50 ${r2(rep.canton.argumentBytesPerTx.p50)}. Traffic fields the explorer showed: ${rep.canton.trafficFieldsSeen.join(", ") || "none"}.`);
 out.push("", `## RPC`, "", `Budget ${rep.rpc.budgetPerMinute} calls a minute; the most used in any minute: ${rep.rpc.peakCallsInAMinute}; ${rep.rpc.calls} calls in all; ${rep.rpc.limitedAnswers} answers of "too many requests"; the driver waited ${rep.rpc.waitedForBudgetSeconds} s for budget; ${rep.rpc.receiptsChecked} receipts read through the RPC (${rep.rpc.receiptMismatches} differed from the explorer).`);
 out.push("", `## Outcome of the final transactions`, "", row("class", "count"), row("---", "---:"), row("success", outcomes.success), row("reverted on purpose (a test of a contract's refusal; the chain worked as intended)", outcomes.expectedRevert), row("UNEXPECTED revert", outcomes.unexpectedRevert), row("deliberate revert that went through", outcomes.unexpectedSuccess));
+out.push("", `## Refills`, "", `During the run the driver topped up ${rep.refills.wallets} wallets in ${rep.refills.topUps} transactions from the distributor (${fmt(rep.refills.byGroup)}) and minted test tokens for the distributor ${rep.refills.mints} times, so the wallets did not run dry and cause reverts of their own.`);
 out.push("", `Pass rule: ${rep.pass.rule}. This run: ${rep.pass.ok ? "PASS" : "FAIL"}.`);
 if (outcomes.unexpectedRevert) out.push("", `Unexpected reverts by reason: ${fmt(rep.unexpectedRevertReasons)}.`);
 out.push("", `## Reverts`, "", `Deliberate reverts (sent to fail): ${Object.values(kinds).reduce((a, v) => a + (v.expectedRevert ? v.reverted : 0), 0)} reverted as intended, ${rep.totals.deliberateRevertsThatSucceeded} succeeded when they should not have. Unexpected failures: ${unexpectedFail.length}${unexpectedFail.length ? ` (${rep.unexpectedFailures.map((u) => `${u.kind} ${u.hash} in block ${u.block}`).join("; ")})` : ""}.`);
