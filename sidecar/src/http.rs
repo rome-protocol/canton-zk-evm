@@ -2,9 +2,11 @@
 // Copyright 2026 Rome Protocol
 //! Canton's HTTP contract for an external-call service: `GET /api/v1/version` answers JSON, and
 //! `POST /api/v1/external-call` takes the function in the `X-Daml-External-Function-Id` header and
-//! the hex of the input line as its body, and answers the hex of the answer line.
+//! the hex of the input line as its body, and answers the hex of the answer line. `verify2` is the
+//! one exception on the way in: its body is the input line itself (already hex text), not the hex
+//! of it.
 
-use crate::{hex, legs, unhex, verify, Config};
+use crate::{hex, legs, unhex, verify, verify2, Config};
 use std::io::Read;
 use std::sync::Arc;
 
@@ -27,6 +29,12 @@ pub fn route(
                 env!("CARGO_PKG_VERSION")
             ),
         ),
+        ("POST", "/api/v1/external-call") if function == Some("verify2") => {
+            match std::str::from_utf8(body) {
+                Ok(line) => (200, hex(verify2(cfg, line).as_bytes())),
+                Err(_) => (400, "the body is not text".into()),
+            }
+        }
         ("POST", "/api/v1/external-call") => {
             let line = std::str::from_utf8(body)
                 .ok()
@@ -39,7 +47,7 @@ pub fn route(
                 ),
                 (Some("verify"), Some(line)) => (200, hex(verify(cfg, &line).as_bytes())),
                 (Some("legs"), Some(line)) => (200, hex(legs(&line).as_bytes())),
-                _ => (400, "the function is not verify or legs".into()),
+                _ => (400, "the function is not verify, verify2 or legs".into()),
             }
         }
         (_, "/api/v1/version" | "/api/v1/external-call") => (405, "method not allowed".into()),

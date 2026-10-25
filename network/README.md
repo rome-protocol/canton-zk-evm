@@ -203,7 +203,10 @@ python3 demo/canton.py upload-dars   # only the test token's DAR; the participan
 demo/live.sh setup                   # the token rules and U's 100 TKB, wTKB made and registered, U's acceptance; writes $CZE_STATE_DIR/demo/disclosed.json
 # Restart the block producer with --disclosed $CZE_STATE_DIR/demo/disclosed.json: it needs the rules to build a block that settles a payment.
 CZE_WTROME=0x<WtROME on the chain> CZE_SOURCE_COMMIT=<the full hash of the source that runs> demo/live.sh legs   # the three legs, each waited for at the finalized block
+CZE_WTROME=0x<WtROME on the chain> CZE_SOURCE_COMMIT=<the full hash of the source that runs> CZE_LIVE_CYCLE_MINUTES=10 nohup demo/live.sh cycle &   # a balanced cycle every 10 minutes; stop: touch $CZE_STATE_DIR/demo/cycle.stop
 ```
+
+U needs at least 20 TKB when `live.sh cycle` starts (each earlier `legs` run took 16 TKB from U, and the cycle cannot top U up); remove an old stop file before starting. `CZE_LIVE_CYCLES` limits the number of cycles (default 0, no limit). See `demo/README.md`.
 
 `CZE_USER_PREFIX` goes before the user ids as for the rest (`canton.py` and `propose.py` use no prefix on an existing participant unless it is set, so without it they send the user `demo`, not `ostia-demo`, and Canton refuses). A token is read again from its file at every call, so a short-lived one can be rewritten in place. U's and V's EVM addresses (`python3 demo/evm.py keys`) need the chain's coin. The commands and settings are in `demo/README.md` and the header of `demo/live.sh`. `tests/canton_external.sh` runs `upload-dars`, `setup` and `register-token` against the pinned Canton with a login.
 

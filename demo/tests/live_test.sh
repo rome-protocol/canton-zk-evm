@@ -207,4 +207,120 @@ echo '{"u":100,"v":0,"cust":3,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"t
 legs_run "$WORK/odd.json" && fail "legs ran with a custody that differs from wTKB's supply"
 grep -q "custody and wTKB's supply before the runs" "$WORK/out" || fail "the custody check is not named: $(tail -3 "$WORK/out")"
 
-echo "ok: demo/live.sh arguments, settings, the setup guards and the legs"
+# ---- cycle: a balanced set of the three runs, repeated, against the same stand-in
+BGPID=   # with BG=1 the lane runs in the background, and this is its pid
+cycle_run() {   # <the stand-in's balances file> [NAME=value ...]: live.sh cycle with no wait between cycles; its output is in $WORK/out
+  local state=$1; shift
+  local cmd=(env -i PATH="$PATH" HOME="$WORK" FAKE_STATE="$state" CZE_STATE_DIR="$WORK/state" CZE_LIVE_EVM="$WORK/evm2" CZE_LIVE_CANTON="$WORK/canton2"
+    CZE_LEDGER_URL=http://127.0.0.1:1 CZE_RPC_URL=http://127.0.0.1:2 CZE_WTROME=0x4444444444444444444444444444444444444444
+    CZE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567 CZE_LIVE_RESULTS="$WORK/results" CZE_LIVE_STOP_FILE="$WORK/stop"
+    CZE_LIVE_CYCLE_MINUTES=0 CZE_LIVE_CYCLES=3 FAKE_FAIL="${FAKE_FAIL:-}" "$@" "$LIVE" cycle)
+  if [ -n "${BG:-}" ]; then "${cmd[@]}" > "$WORK/out" 2>&1 & BGPID=$!; return 0; fi
+  "${cmd[@]}" > "$WORK/out" 2>&1
+}
+fresh() { rm -rf "$WORK/results" "$WORK/stop"; mkdir -p "$WORK/results"; echo '{"u":100,"v":0,"cust":0,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$1"; }
+lines() { ls "$WORK"/results/cycle-*.txt; }   # the one results file of a run
+
+# Three cycles: each passes, each in its own blocks, and U, V, the custody and the supply are where they began (V wrapped its one WtROME once).
+fresh "$WORK/c1.json"
+cycle_run "$WORK/c1.json" || fail "three cycles failed against the stand-in: $(tail -5 "$WORK/out")"
+out=$(lines)
+[ "$(grep -c '^cycle=.* result=pass ' "$out")" = 3 ] || fail "three cycles did not make three passing lines: $(cat "$out")"
+grep -q '^cycle=1 .*result=pass deposit_block=11 payment_block=14 withdrawal_block=15 ' "$out" || fail "cycle 1 has not its three blocks: $(grep '^cycle=1 ' "$out")"
+grep -q '^cycle=2 .*deposit_block=17 ' "$out" || fail "cycle 2 does not have blocks of its own: $(grep '^cycle=2 ' "$out")"
+grep -q '^cycle=3 .* tkb_u=100 tkb_v=0 custody=0 wtkb_supply=0.0 wtkb_u=0.0 wtrome_u=0 wtrome_v=1$' "$out" || fail "cycle 3 is not back at the start: $(grep '^cycle=3 ' "$out")"
+tail -1 "$out" | grep -qx 'end=count cycles=3' || fail "the lane does not say it ended on the count: $(tail -1 "$out")"
+for k in u v cust wu sup; do [ "$(jq .$k "$WORK/c1.json")" = "$([ $k = u ] && echo 100 || echo 0)" ] || fail "$k is not back at its start after three cycles: $(cat "$WORK/c1.json")"; done
+! grep -q "$WORK" "$out" || fail "the cycle results name a path of this machine"
+grep -q '== run 1' "$WORK/out" || fail "the cycle did not make run 1"
+grep -q 'the return' "$WORK/out" || fail "the cycle did not make the return"
+
+# A balance that does not come back stops the lane after that cycle, with the reason in the results: the second cycle never starts.
+fresh "$WORK/c2.json"
+FAKE_DRIFT=give cycle_run "$WORK/c2.json" FAKE_DRIFT=give && fail "the lane went on although U's WtROME did not come back"
+out=$(lines)
+tail -1 "$out" | grep -q '^cycle=1 .*result=fail reason=".*WtROME' || fail "the failed cycle has no line with the reason: $(tail -2 "$out")"
+! grep -q '^cycle=2 ' "$out" || fail "a second cycle started after a failed one"
+grep -q "FAIL:" "$WORK/out" || fail "the failure is not said on the screen"
+
+# TKB that does not come back (V returns 9 of 10): the lane stops with U's TKB named, and no second cycle.
+fresh "$WORK/c2b.json"
+cycle_run "$WORK/c2b.json" FAKE_DRIFT=return-tkb && fail "the lane went on although U's TKB did not come back"
+out=$(lines)
+tail -1 "$out" | grep -q "^cycle=1 .*result=fail reason=\"U's TKB after V's transfer" || fail "the short return of TKB is not in the results: $(tail -2 "$out")"
+! grep -q '^cycle=2 ' "$out" || fail "a second cycle started after TKB did not come back"
+
+# A check that fails inside $(...) (the update of a block's record and holding, in cycle 2): one failed line, with that reason, and no cycle 3.
+fresh "$WORK/c2c.json"
+cycle_run "$WORK/c2c.json" FAKE_UPD_FROM=17 && fail "the lane went on although a holding and a BlockRecord came from two updates"
+out=$(lines)
+[ "$(grep -c '^cycle=.* result=fail' "$out")" = 1 ] || fail "not exactly one failed line: $(cat "$out")"
+grep -q '^cycle=1 .*result=pass ' "$out" || fail "cycle 1 did not pass before the update check failed: $(cat "$out")"
+tail -1 "$out" | grep -q "^cycle=2 .*result=fail reason=\"the update that made" || fail "the update reason is not the last line: $(tail -2 "$out")"
+! grep -q '^cycle=3 ' "$out" || fail "a third cycle started after the update check failed"
+
+# A reason that has double quotes in it (the kind of a leg is shown as ["claim"]) is written with none, so the line splits on key=value.
+fresh "$WORK/c2d.json"
+cycle_run "$WORK/c2d.json" FAKE_KIND_FROM=11 && fail "the lane went on although a block's leg was of another kind"
+out=$(lines)
+tail -1 "$out" | grep -q "^cycle=1 .*result=fail reason=\"the kind of block 11's leg: got \['wrong'\], expected \['claim'\]\"$" || fail "the reason line is not one quoted value: $(tail -1 "$out")"
+
+# A command that fails (the return of TKB) stops it too, with a failed line.
+fresh "$WORK/c3.json"
+FAKE_FAIL=return-tkb cycle_run "$WORK/c3.json" FAKE_FAIL=return-tkb && fail "the lane went on although the return of TKB failed"
+out=$(lines)
+tail -1 "$out" | grep -q '^cycle=1 .*result=fail reason="a command failed' || fail "a failed command has no failed line: $(tail -2 "$out")"
+! grep -q '^cycle=2 ' "$out" || fail "a second cycle started after a failed command"
+
+# A check at the start: U with less than 20 TKB stops before the first run.
+fresh "$WORK/c4.json"; jq '.u = 15' "$WORK/c4.json" > "$WORK/c4b.json"
+cycle_run "$WORK/c4b.json" && fail "the lane ran although U holds less than 20 TKB"
+tail -1 "$(lines)" | grep -q 'result=fail reason="U holds less than 20 TKB' || fail "the short TKB is not in the results: $(tail -1 "$(lines)")"
+grep -q '== run 1' "$WORK/out" && fail "run 1 started with too little TKB"
+
+# The stop file ends the lane before any cycle, and between cycles (one a minute here, with the stop file made after the first).
+fresh "$WORK/c5.json"; touch "$WORK/stop"
+cycle_run "$WORK/c5.json" && fail "the lane started although an old stop file was there"
+grep -q 'the stop file .* exists' "$WORK/out" || fail "the old stop file is not named: $(tail -3 "$WORK/out")"
+grep -q '== run 1' "$WORK/out" && fail "a cycle ran although the stop file was there"
+ls "$WORK"/results/cycle-*.txt >/dev/null 2>&1 && fail "a results file was made for a lane that did not start"
+fresh "$WORK/c6.json"
+( cycle_run "$WORK/c6.json" CZE_LIVE_CYCLE_MINUTES=1 CZE_LIVE_CYCLES=0 ) &
+pid=$!
+for _ in $(seq 1 60); do { ls "$WORK"/results/cycle-*.txt >/dev/null 2>&1 && grep -q '^cycle=1 .*result=pass' "$WORK"/results/cycle-*.txt; } && break; sleep 0.5; done
+grep -q 'cycle=1 .*result=pass' "$WORK"/results/cycle-*.txt || fail "the first cycle did not finish"
+touch "$WORK/stop"
+for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+kill -0 "$pid" 2>/dev/null && { kill "$pid"; fail "the stop file did not end the lane between cycles"; }
+wait "$pid" || fail "the lane ended with an error after the stop file"
+out=$(lines)
+tail -1 "$out" | grep -qx 'end=stop-file cycles=1' || fail "the stop file did not end the lane after cycle 1: $(tail -1 "$out")"
+
+# A TERM in the middle of a cycle (the stand-in's return of TKB takes 3 s) leaves a failed line for that cycle: the balances are part-way through.
+fresh "$WORK/c8.json"
+BG=1 cycle_run "$WORK/c8.json" CZE_LIVE_CYCLE_MINUTES=1 CZE_LIVE_CYCLES=0 FAKE_SLOW=return-tkb; pid=$BGPID
+for _ in $(seq 1 60); do grep -q 'the return' "$WORK/out" && break; sleep 0.5; done
+grep -q 'the return' "$WORK/out" || { kill "$pid"; fail "the cycle did not reach the return"; }
+kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
+[ "$rc" = 143 ] || fail "a TERM in a cycle ended the lane with $rc, not 143"
+out=$(lines)
+[ "$(grep -c '^cycle=.* result=fail' "$out")" = 1 ] || fail "a TERM in a cycle did not leave exactly one failed line: $(cat "$out")"
+tail -1 "$out" | grep -q '^cycle=1 .*result=fail reason="stopped by a signal during cycle 1' || fail "the TERM is not in the results: $(tail -2 "$out")"
+
+# A TERM between cycles leaves an end line.
+fresh "$WORK/c9.json"
+BG=1 cycle_run "$WORK/c9.json" CZE_LIVE_CYCLE_MINUTES=1 CZE_LIVE_CYCLES=0; pid=$BGPID
+for _ in $(seq 1 60); do { ls "$WORK"/results/cycle-*.txt >/dev/null 2>&1 && grep -q '^cycle=1 .*result=pass' "$WORK"/results/cycle-*.txt; } && break; sleep 0.5; done
+grep -q 'cycle=1 .*result=pass' "$WORK"/results/cycle-*.txt || { kill "$pid"; fail "the first cycle did not finish before the TERM"; }
+kill -TERM "$pid"; rc=0; wait "$pid" || rc=$?
+[ "$rc" = 143 ] || fail "a TERM between cycles ended the lane with $rc, not 143"
+tail -1 "$(lines)" | grep -qx 'end=signal cycles=1' || fail "a TERM between cycles has no end line: $(tail -2 "$(lines)")"
+
+# Settings of the cycle are refused before anything is called.
+fresh "$WORK/c7.json"
+cycle_run "$WORK/c7.json" CZE_LIVE_CYCLE_MINUTES=x && fail "minutes of x were accepted"
+cycle_run "$WORK/c7.json" CZE_LIVE_CYCLES=-1 && fail "-1 cycles were accepted"
+cycle_run "$WORK/c7.json" CZE_LIVE_CYCLE_MINUTES=08 && fail "minutes of 08 were accepted"
+cycle_run "$WORK/c7.json" CZE_LIVE_CYCLES=00 && fail "00 cycles were accepted"
+
+echo "ok: demo/live.sh arguments, settings, the setup guards, the legs and the cycle"

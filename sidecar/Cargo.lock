@@ -657,6 +657,7 @@ version = "0.1.0"
 dependencies = [
  "keccak-hasher",
  "serde_json",
+ "sha2",
  "sha3",
  "tiny_http",
  "triehash",
