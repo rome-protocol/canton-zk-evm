@@ -94,8 +94,9 @@ final() {
 named() {
   local described name symbol
   described=$(evm describe "$1" finalized); name=$(jq -r .name <<<"$described"); symbol=$(jq -r .symbol <<<"$described")
-  [ "$name" = "Wrapped TKB" ] && [ "$symbol" = wTKB ] ||
+  if [ "$name" != "Wrapped TKB" ] || [ "$symbol" != wTKB ]; then
     fail "the token at $1 is called '$name' ($symbol), not 'Wrapped TKB' (wTKB): another registration took the address first. Clear $DEMO/wtkb.json and run setup again"
+  fi
 }
 
 # ---------------------------------------------------------------- setup
