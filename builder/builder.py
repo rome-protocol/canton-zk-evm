@@ -1241,8 +1241,8 @@ def definite_rejection(code: int, body: str) -> bool:
     return isinstance(error, str) and error not in ("DUPLICATE_COMMAND", "SUBMISSION_ALREADY_IN_FLIGHT")
 
 
-def read_saved(cfg: Config) -> list | None:
-    """The (hash, raw transaction) pairs saved for the block being made, or None when nothing was saved. Raises when the file is unreadable."""
+def read_saved_entries(cfg: Config) -> list | None:
+    """The entries of the kept file, checked, or None when there is no file. Raises when the file is unreadable (it is moved aside)."""
     path = saved_path(cfg)
     try:
         text = path.read_text()
@@ -1252,13 +1252,36 @@ def read_saved(cfg: Config) -> list | None:
         raise BuilderError(f"cannot read {path}: {e}") from e
     try:
         entries = json.loads(text)
-        pairs = [(e["hash"], e["raw"]) for e in entries]
-        if not all(isinstance(h, str) and isinstance(r, str) for h, r in pairs):
+        if not all(isinstance(e["hash"], str) and isinstance(e["raw"], str) for e in entries):
             raise TypeError("not strings")
     except (ValueError, KeyError, TypeError) as e:
         path.replace(path.with_name(path.name + ".unreadable"))   # kept for a look, and out of the way
         raise BuilderError(f"{path} could not be read ({e}); it was moved to {path.name}.unreadable") from e
-    return pairs
+    return entries
+
+
+def read_saved(cfg: Config, number: int | None = None, above: int | None = None) -> list | None:
+    """The (hash, raw transaction) pairs saved for the blocks being made, in the order they were kept, or None when there is no file. With
+    `number` only that block's (an entry with no number, from an older builder, is the block's own); with `above` only the blocks above
+    that number. Raises when the file is unreadable."""
+    entries = read_saved_entries(cfg)
+    if entries is None:
+        return None
+    if number is not None:
+        entries = [e for e in entries if e.get("number", number) == number]
+    if above is not None:
+        entries = [e for e in entries if isinstance(e.get("number"), int) and e["number"] > above]
+    return [(e["hash"], e["raw"]) for e in entries]
+
+
+def attempt_refs(entries: list, skip: tuple | None = None) -> list:
+    """The attempts (run and attempt number) the entries name, each once, in the order of the entries, without `skip`."""
+    refs = []
+    for e in entries:
+        ref = (e["run"], e["attempt"]) if isinstance(e.get("run"), str) and type(e.get("attempt")) is int else None
+        if ref and ref != skip and ref not in refs:
+            refs.append(ref)
+    return refs
 
 
 def builder_now() -> float:
@@ -1266,7 +1289,7 @@ def builder_now() -> float:
     return time.time()
 
 
-def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
+def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
     """Settles an Advance whose answer did not arrive, by its own command id. Reads the builder user's completions from the ledger end
     recorded before the submit. A completion that succeeded: the block committed, reth's head is made final. One that failed: it did not
     commit, reth goes back to Canton's head and the block's transactions are sent to its pool again. No completion: Canton's head says
@@ -1275,7 +1298,11 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
     Canton's own time, so a participant that lags or reconnects after it confirmed the command cannot commit it later by our clock being
     ahead. Then it is settled as not committed and the head is where reth goes, unless Canton's time is more than 30 s ahead of the builder's
     clock: that is a skew, the window cannot be judged, and `Unresolved` names it. Raises too while the head cannot be read. Returns
-    (committed, the transactions reth refused, how it was settled, {"updateId", "completionOffset"} when known)."""
+    (committed, the transactions reth refused, how it was settled, {"updateId", "completionOffset"} when known).
+    Several blocks can be kept at once. Committed: reth's head stays at `u["tip"]` when there is one (else the block), the block is
+    final, and only its entries go from the kept file; the blocks above it are for `recover_saved` to send again. Not committed: the
+    whole kept file is sent in block order after `pairs`, the attempts of the other blocks are given to `close` (their records are
+    closed), and then the file is cleared."""
     bound = u["since"] + cfg.resolve_seconds
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
@@ -1300,18 +1327,28 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list) -> tuple:
                 raise Unresolved(f"command {u['commandId']} has no completion, and Canton's clock is ahead of the builder's by {reached - builder_now():.0f} s "
                                  f"(more than {SKEW_SECONDS:g}): the window cannot be judged until the clocks agree, so it is not settled as not committed")
         if committed:
-            reth.forkchoice(u["hash"], u["hash"], u["hash"])
-            clear_saved(cfg)
+            reth.forkchoice(u.get("tip") or u["hash"], u["hash"], u["hash"])
+            clear_saved(cfg, u["number"] if isinstance(u.get("number"), int) else None)
             clear_unresolved(cfg)
             return True, [], how, {"updateId": found and found["updateId"], "completionOffset": found and found["completionOffset"]}
+        try:
+            kept = read_saved_entries(cfg) or []
+        except BuilderError:   # damaged and moved aside: what was given is all there is
+            kept = []
+        number = u["number"] if isinstance(u.get("number"), int) else 0
+        kept = sorted(kept, key=lambda e: e["number"] if isinstance(e.get("number"), int) else number)   # block order, each block's own order kept
+        in_file = {e["hash"] for e in kept}
+        union = [*(p for p in pairs if p[0] not in in_file), *((e["hash"], e["raw"]) for e in kept)]   # what was given and the file lacks goes first
         reth.forkchoice(head, head, head)
-        lost = resend(reth, pairs)
+        lost = resend(reth, union)
+        if close is not None:
+            close(attempt_refs(kept, skip=(u.get("attempt_run") or u.get("run"), u.get("attempt"))))   # closed before the file that names them goes
         clear_saved(cfg)
         clear_unresolved(cfg)
         return False, lost, how, {}
 
 
-def recover_saved(cfg: Config, wait=None) -> dict | None:
+def recover_saved(cfg: Config, wait=None, close=None) -> dict | None:
     """After a crash or a restart in the middle of a block: reth goes to Canton's head, and the transactions that block was made from
     (saved before the block was) are sent to reth's pool again. Whether Canton took the block does not matter: a transaction of a
     committed block has a used nonce, and reth says so. An Advance with no answer comes first: it is settled by its command id (and
@@ -1327,7 +1364,7 @@ def recover_saved(cfg: Config, wait=None) -> dict | None:
                 pairs = read_saved(cfg) or []
             except BuilderError:   # the kept transactions are damaged (moved aside): the command is settled all the same
                 pairs = []
-            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u["submittedAt"]}, pairs)
+            committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u["submittedAt"], "tip": None}, pairs, close)
             settled = {"number": u.get("number"), "blockHash": u["hash"], "commandId": u["commandId"], "committed": committed, "resolved": how, **info}
             settled["lostTransactions"] = lost
             break
@@ -1335,19 +1372,20 @@ def recover_saved(cfg: Config, wait=None) -> dict | None:
             if wait is None:
                 raise
             wait(2)
-    pairs = read_saved(cfg)
-    if pairs is None:
+    entries = read_saved_entries(cfg)
+    if entries is None:
         return {"recovered": 0, "lostTransactions": settled.pop("lostTransactions", []), "settled": settled} if settled else None
-    entries = json.loads(saved_path(cfg).read_text())
+    pairs = [(e["hash"], e["raw"]) for e in entries]
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
         head = "0x" + Ledger(cfg).head()["headHash"]
         reth.forkchoice(head, head, head)
         lost = resend(reth, pairs)
+    refs = attempt_refs(entries)
+    if close is not None:
+        close(refs)   # every abandoned attempt is closed before the file that names them is cleared
     clear_saved(cfg)
-    found = {"recovered": len(pairs), "lostTransactions": lost}
-    ref = next(({"run": e["run"], "attempt": e["attempt"]} for e in entries if isinstance(e.get("run"), str) and type(e.get("attempt")) is int), None)
-    return {**found, "attempt": ref} if ref else found
+    return {"recovered": len(pairs), "lostTransactions": lost, "attempts": [{"run": r, "attempt": a} for r, a in refs]}
 
 
 @contextlib.contextmanager
@@ -1675,14 +1713,17 @@ class Producer:
         self.excluded[tx] = now + self.cooldown
         self.journal.event("excluded", transaction=tx, until=iso(now + self.cooldown), reason=why)
 
+    def close_attempts(self, refs: list) -> None:
+        """The attempts of an earlier run that never got their last line (their blocks were cut short by a restart): this run closes them."""
+        for run, attempt in refs:
+            self.journal.event("resolved", attempt=attempt, attempt_run=run, outcome="restarted")
+
     def restore(self) -> None:
         """Sends the transactions a cut-short block was made from back to reth (see `recover_saved`). Raises while reth or Canton cannot be
         reached: the file stays and the loop backs off."""
-        found = self.recover(self.cfg)
+        found = self.recover(self.cfg, close=self.close_attempts)
         if found:
-            ref = found.pop("attempt", None)   # the attempt of an earlier run that never got its last line: this run closes it
-            if ref:
-                self.journal.event("resolved", attempt=ref["attempt"], attempt_run=ref["run"], outcome="restarted")
+            found.pop("attempts", None)   # closed by `recover`, each before the kept file that names it was cleared
             self.emit(found)
             self.note_lost(found["lostTransactions"], self.clock())
             self.held = None
@@ -1767,7 +1808,7 @@ class Producer:
         window the command can still commit in is not over), nothing is built, reth is not moved and the status says the block is waiting."""
         u = self.unresolved
         try:
-            committed, lost, how, info = self.resolve(self.cfg, u, u["pairs"])   # raises while it cannot be read: backoff
+            committed, lost, how, info = self.resolve(self.cfg, u, u["pairs"], close=lambda refs: self.close_attempts([r for r in refs if r != (self.journal.run_id, u.get("attempt"))]))   # raises while it cannot be read: backoff
         except Unresolved as why:
             u["why"] = str(why)   # the status says what it waits for (no completion yet, a clock skew, ...)
             self.write_status()
