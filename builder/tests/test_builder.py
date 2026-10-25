@@ -1240,6 +1240,7 @@ class PackedWithLegsAndSizes(LegCase):
         for i in range(1, 58):
             pool[sender(i)] = [tx(sender(i), 0, price=500 - i, size=128_000, name="big")]
         s = self.setup(pool, max_request=15_000_000)
+        s.cfg.max_block_tx_bytes = 20_000_000   # the byte cap of a block is out of the way: this is the offer cap
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             result = b.build_block(s.cfg)
@@ -1261,6 +1262,88 @@ class PackedWithLegsAndSizes(LegCase):
         built = [p for m, p in s.reth.ws_calls if m == "testing_buildBlockV1"]
         self.assertEqual(len(built), 1)   # not a fallback: the build was within what reth takes
         self.assertEqual(s.engine("engine_newPayloadV4")[0][0]["transactions"], offered)
+
+
+class ByteCap(Case):
+    """The block's raw transactions are capped in bytes (--max-block-tx-bytes, 64 KiB by default): our participant's Daml work grows with the
+    size of the Advance argument. The cap is applied as a prefix per sender: a transaction that does not fit ends its sender's turn."""
+    BODY = 1000 - 33   # padding that makes a fake raw transaction exactly 1,000 bytes (33 are its type byte and hash)
+
+    def offered(self, pool, cap, **k):
+        s = self.setup(pool, **k)
+        s.cfg.max_block_tx_bytes = cap
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            b.build_block(s.cfg)
+        return s, s.builds()[0]
+
+    def test_the_default_is_64_kib(self):
+        self.assertEqual(b.Config.__dataclass_fields__["max_block_tx_bytes"].default, 65536)
+
+    def test_the_boundary_is_in(self):
+        pool = {sender(i): [tx(sender(i), 0, price=100 - i, size=self.BODY)] for i in range(8)}
+        _, offered = self.offered(pool, 5000)
+        self.assertEqual(len(offered), 5)
+        self.assertEqual(sum((len(r) - 2) // 2 for r in offered), 5000)
+
+    def test_one_byte_under_the_boundary_is_out(self):
+        pool = {sender(i): [tx(sender(i), 0, price=100 - i, size=self.BODY)] for i in range(8)}
+        _, offered = self.offered(pool, 4999)
+        self.assertEqual(len(offered), 4)
+
+    def test_a_transaction_that_does_not_fit_ends_its_senders_turn_and_others_go_on(self):
+        a0 = tx(ALICE, 0, price=90, size=self.BODY)
+        a1 = tx(ALICE, 1, price=89, size=3000)       # does not fit in what is left
+        a2 = tx(ALICE, 2, price=88)                  # small, but it cannot run without a1
+        b0 = tx(BOB, 0, price=10)                    # small: fits
+        _, offered = self.offered({ALICE: [a0, a1, a2], BOB: [b0]}, 2000)
+        self.assertEqual(offered, [raw_of(a0), raw_of(b0)])
+
+    def test_the_first_transaction_is_offered_even_when_over_the_cap_so_none_waits_for_ever(self):
+        big, small = tx(ALICE, 0, price=90, size=5000), tx(BOB, 0, price=10)
+        _, offered = self.offered({ALICE: [big], BOB: [small]}, 2000)
+        self.assertEqual(offered, [raw_of(big)])
+
+    def test_the_block_is_filled_by_gas_used_inside_the_cap(self):
+        pool = {sender(i): [tx(sender(i), 0, gas=90_000, used=30_000, price=100 - i, size=self.BODY)] for i in range(20)}
+        s, offered = self.offered(pool, 12_000, gas_cap=3_000_000)
+        self.assertEqual(len(offered), 12)
+        (payload,) = s.engine("engine_newPayloadV4")[0][:1]
+        self.assertEqual(payload["transactions"], offered)
+
+    def test_the_fallback_by_gas_limits_is_capped_too(self):
+        pool = {sender(i): [tx(sender(i), 0, price=100 - i, size=self.BODY)] for i in range(8)}
+        s, offered = self.offered(pool, 3000, skip_invalid=False)
+        self.assertEqual(len(offered), 3)
+        self.assertEqual(s.builds()[-1], offered)
+
+    def test_the_built_line_names_the_cap_and_the_bytes(self):
+        pool = {sender(i): [tx(sender(i), 0, price=100 - i, size=self.BODY)] for i in range(8)}
+        s = self.setup(pool)
+        s.cfg.max_block_tx_bytes = 3500
+        attempt = Attempts()
+        with contextlib.redirect_stderr(io.StringIO()):
+            b.build_block(s.cfg, journal=attempt)
+        built = [f for n, f in attempt.events if n == "built"][0]
+        self.assertEqual((built["max_tx_bytes"], built["tx_bytes"]), (3500, 3000))
+
+    def test_a_transaction_that_vanished_from_the_pool_is_not_offered_nor_its_senders_later_ones(self):
+        a0, a1, b0 = tx(ALICE, 0, price=90), tx(ALICE, 1, price=89), tx(BOB, 0, price=10)
+        s = self.setup({ALICE: [a0, a1], BOB: [b0]})
+        s.reth.vanished.add(a0["hash"])   # replaced or evicted between txpool_content and the fetch
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = b.build_block(s.cfg)
+        self.assertTrue(result["committed"], result)
+        self.assertEqual(s.builds()[0], [raw_of(b0)])
+
+    def test_a_pool_where_every_transaction_vanished_builds_an_empty_block(self):
+        a0 = tx(ALICE, 0)
+        s = self.setup({ALICE: [a0]})
+        s.reth.vanished.add(a0["hash"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = b.build_block(s.cfg)
+        self.assertTrue(result["committed"], result)
+        self.assertEqual(s.builds()[0], [])
 
 
 class CommandLine(Case):
@@ -1333,6 +1416,15 @@ class CommandLine(Case):
         (sub,) = s.ledger.submitted
         self.assertEqual(sub["readAs"], [BUILDER, "op::1", "op2::2"])   # the builder first, no party twice
         self.assertEqual(sub["disclosedContracts"], disclosed)
+
+    def test_the_block_byte_cap_comes_from_the_command_line_and_a_bad_one_is_one_json_line(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        with mock.patch.object(b, "build_block", wraps=b.build_block) as built:
+            code, out = self.run_main(s, "--max-block-tx-bytes", "1234")
+        self.assertEqual((code, out["committed"]), (0, True))
+        self.assertEqual(built.call_args.args[0].max_block_tx_bytes, 1234)
+        for bad in ("0", "-5", "abc"):
+            self.assert_failure(self.run_main(self.setup({}), "--max-block-tx-bytes", bad), "max-block-tx-bytes")
 
     def test_a_bad_disclosed_file_is_one_json_line_before_anything_moves(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})

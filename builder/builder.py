@@ -71,6 +71,7 @@ class Config:
     resolve_seconds: float = 300.0   # how long an Advance with no answer may still commit: after it, with no completion seen, Canton's head decides
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
     traffic_url: str = ""         # where the builder's participant reports its traffic (CZE_TRAFFIC_URL); empty: the traffic is not read
+    max_block_tx_bytes: int = 65536   # the most raw transaction bytes a block is offered (--max-block-tx-bytes): our participant's Daml work grows with the Advance argument, about 23 ms per KB in each of two passes
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -897,16 +898,24 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         raws: dict = {}   # hash -> raw transaction, each fetched once
 
         def fetch(chosen: list) -> list:
-            """The (transaction, raw) pairs of the chosen ones, the raw ones in one batch. Stops adding once the raw hex of the list would pass
-            WS_REQUEST_BYTES (reth refuses a bigger request): a prefix of the list, so every sender's transactions stay in nonce order."""
+            """The (transaction, raw) pairs of the chosen ones, the raw ones in one batch. A transaction whose raw is null (replaced or evicted
+            since txpool_content), one that would take the block's raw bytes over cfg.max_block_tx_bytes, or one that would take the raw hex
+            over WS_REQUEST_BYTES (reth refuses a bigger request) is not offered, and nor are its sender's later ones: every sender's
+            transactions stay in nonce order. The first transaction is always offered, so one bigger than the cap does not wait for ever."""
             missing = [t["hash"] for t in chosen if t["hash"] not in raws]
             raws.update(zip(missing, reth.call_many("eth_getRawTransactionByHash", [[h] for h in missing])))
-            out, size = [], 0
+            out, stopped, tx_bytes, hex_chars = [], set(), 0, 0
             for t in chosen:
-                size += len(raws[t["hash"]])
-                if out and size > WS_REQUEST_BYTES:
-                    break
-                out.append((t, raws[t["hash"]]))
+                raw = raws[t["hash"]]
+                if t["from"] in stopped:
+                    continue
+                size = (len(raw) - 2) // 2 if raw else 0
+                if not raw or (out and (tx_bytes + size > cfg.max_block_tx_bytes or hex_chars + len(raw) > WS_REQUEST_BYTES)):
+                    stopped.add(t["from"])
+                    continue
+                out.append((t, raw))
+                tx_bytes += size
+                hex_chars += len(raw)
             return out
 
         # Offer reth every transaction that could fit if each one before it used the least gas a transaction can. reth runs them in this order and
@@ -969,7 +978,8 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     block_hash = payload["blockHash"]
     leg_txs = list(dict.fromkeys(e.tx for e in events))
     attempt.event("built", block_hash=block_hash, parent_hash=head, tx_hashes=[t["hash"] for t in chosen], gas_used=int(payload["gasUsed"], 16),
-                  legs=len(legs), rebuilds=rebuilds, left_out=left_out, **packing)
+                  legs=len(legs), rebuilds=rebuilds, left_out=left_out, tx_bytes=sum((len(r) - 2) // 2 for _, r in pairs),
+                  max_tx_bytes=cfg.max_block_tx_bytes, **packing)
 
     raw = bytes.fromhex(reth.call("debug_getRawBlock", [payload["blockNumber"]])[2:])
     header, txs = split_block(raw)
@@ -1809,6 +1819,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--exclude", action="append", default=[], metavar="TX_HASH", help="once only: leave this transaction (and its sender's later ones) out")
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
+    ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--idle-ms", type=int, default=500, help=f"run: how long to wait between looks at an empty pool (at least {MIN_IDLE_MS})")
     ap.add_argument("--strategy", default=os.environ.get("CZE_BLOCK_STRATEGY", "on_demand"), help=f"run: when a block is cut: {', '.join(STRATEGIES)} (default; also CZE_BLOCK_STRATEGY)")
     ap.add_argument("--gather-ms", type=float, default=0, help="run: after a transaction reaches an idle pool, wait this long for more before cutting (0: cut at once)")
@@ -1832,7 +1843,10 @@ def main() -> int:
             check_strategy(args.strategy, args.gather_ms, args.heartbeat_seconds)
         if args.idle_ms < MIN_IDLE_MS:
             raise BuilderError(f"bad arguments: --idle-ms must be at least {MIN_IDLE_MS}: a shorter wait would only keep reth busy")
+        if args.max_block_tx_bytes < 1:
+            raise BuilderError("bad arguments: --max-block-tx-bytes must be at least 1")
         cfg = Config.from_env()
+        cfg.max_block_tx_bytes = args.max_block_tx_bytes
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)

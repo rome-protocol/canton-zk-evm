@@ -82,6 +82,7 @@ class FakeReth:
     def __init__(self, pool: dict, gas_limit: int = 30_000_000, skip_invalid: bool = True, max_request: int = 15_000_000):
         self.pool, self.gas_limit = pool, gas_limit
         self.max_request = max_request   # reth refuses a WebSocket request over 15 MB (the connection is closed, code 1009)
+        self.vanished: set = set()       # hashes that txpool_content still lists but eth_getRawTransactionByHash answers null for (replaced or evicted since)
         self.ws_frames: list = []        # the size of each WebSocket request, in characters
         self.batches: list = []          # the number of calls in each JSON-RPC batch request
         # reth's --testing.skip-invalid-transactions, which network/reth/launch.sh always passes. On: a transaction whose gas limit is above the
@@ -183,6 +184,8 @@ class FakeReth:
         if method == "txpool_status":
             return {"pending": hex(sum(len(ts) for ts in self.pool.values())), "queued": "0x0"}
         if method == "eth_getRawTransactionByHash":
+            if params[0] in self.vanished:
+                return None
             return next(raw_of(t) for ts in self.pool.values() for t in ts if t["hash"] == params[0])
         if method == "eth_sendRawTransaction":
             return self.send_raw(params[0])
