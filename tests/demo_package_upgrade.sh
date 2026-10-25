@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A chain that runs is moved to the next version of the Daml package, and back, on the real network (the local one: the pinned Canton with three
 # participants, the real reth through network/reth/launch.sh with discovery off, the real builder, the real sidecar for the legs check). What is
-# not real is the zero-knowledge proof, as in tests/demo_rehearsal.sh: a stand-in prover and a stand-in in front of the sidecar for `verify`.
+# not real is the zero-knowledge proof, as in tests/demo_rehearsal.sh: a stand-in prover and a stand-in in front of the sidecar for `verify`/`verify2`.
 #
 #   1. The chain starts on 0.1.0: the DAR built from the tag v0.1.0 (its package id must be the one the live chain runs). Blocks commit with the
 #      builder pinned to that id (--package-id): a setup block, and a deposit whose leg settles.
@@ -79,7 +79,7 @@ is "$OLD" "$LIVE_PACKAGE_ID" "the package id of 0.1.0 as rebuilt from the tag"
 echo "0.1.0 is $OLD, 0.3.0 is $NEW"
 { echo "dar_sha256=$(sha256sum "$OLD_DAR" | cut -d' ' -f1)"; echo "package_id=$OLD"; } > "$NET/dar.txt"
 
-step "the sidecars: the real one for legs, the stand-in in front of it for verify"
+step "the sidecars: the real one for legs, the stand-in in front of it for verify/verify2"
 VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32)); PROOF=$(printf 'ee%.0s' $(seq 768))$VK$RC
 cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
 background real-sidecar "$ROOT/sidecar/target/release/zk-sidecar" --program-vk "$VK" --root-c "$RC" --listen 127.0.0.1:9085

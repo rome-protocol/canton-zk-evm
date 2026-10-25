@@ -8,10 +8,10 @@
 #   - the chain names the gateway party and the gateway contract's address from PINS, and the users' rights on the Ledger API are the right ones: the builder's user reads as the gateway and cannot act as it, the operator's acts as it;
 #   - a token (the test token's registry, and a wrapped token that the stand-in reth says the gateway made) is registered:
 #     proposed by the operator and the gateway, accepted by the confirmer;
-#   - a block whose "sidecar" answers are good commits, and a block is refused and changes nothing when the answer of `verify`
+#   - a block whose "sidecar" answers are good commits, and a block is refused and changes nothing when the answer of `verify`/`verify2`
 #     is `no`, when the answer of `legs` is `no` or is not the line Daml expects, also when only the confirmer's sidecar says
 #     `no` and the operator's says `ok`;
-#   - Canton makes the external calls (verify, then legs) on the operator's participant when the block is submitted and on
+#   - Canton makes the external calls (verify/verify2, then legs) on the operator's participant when the block is submitted and on
 #     both confirming participants when it validates it, and never needs a sidecar for the users participant.
 #   - the demo's Canton helpers (demo/canton.py) make an acceptance, DvP terms and a deposit request that the real package takes.
 # Needs Java 21 and network access to the registry in PINS. No GPU, no reth, no ZisK.
@@ -38,7 +38,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 
 H0=$(printf 'ab%.0s' $(seq 32)); H1=$(printf 'bb%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32))
 SR=$(printf '55%.0s' $(seq 32)); GW=${GATEWAY_ADDRESS#0x}
-# What the sidecar answers for `verify`: ok, programVK, rootC, blockHash, parentHash, number, stateRoot, timestamp, gasLimit, gasUsed, txCount.
+# What the sidecar answers for `verify`/`verify2`: ok, programVK, rootC, blockHash, parentHash, number, stateRoot, timestamp, gasLimit, gasUsed, txCount.
 VERIFY_OK="ok $VK $RC $H1 $H0 1 $SR 1700000000 30000000 0 0"
 # ... and for `legs`: ok, the state root and number it was given, the gateway's address, and how many legs (none here).
 LEGS_OK="ok $SR 1 $GW 0"

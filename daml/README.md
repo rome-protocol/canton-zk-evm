@@ -77,7 +77,7 @@ The line is sent as it is, not hexed again, which halves what Canton records and
 
 Input: `stateRoot,number,gateway,accountNodes,storageNodes,legs`.
 
-- `stateRoot` is the proven block's state root, from the answer of `verify`, and `number` the block's number in decimal. `gateway` is the gateway contract's address, from the chain record.
+- `stateRoot` is the proven block's state root, from the answer of the block check (`verify2`, the same line as `verify`), and `number` the block's number in decimal. `gateway` is the gateway contract's address, from the chain record.
 - `accountNodes` and `storageNodes` are the gateway's account proof and the storage proof of its `legs[number]` slot, as `eth_getProof` gives them: nodes in hex, joined by `;`. The storage list may be empty.
 - `legs` is empty, or the attached legs in order, joined by `|`. Each leg is six fields joined by `/`: `kind/id/token/account/amount/party`.
   - `kind` is `deposit`, `withdrawal` or `payment`. `id` is 64 hex digits, `token` and `account` are 40.

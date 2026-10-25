@@ -3,7 +3,7 @@
 # Daml package and the real token standard, the real builder, and the real sidecar for `legs` (the gateway's storage proofs), running
 # demo/run.sh start to end: the setup block, a deposit, a payment, a withdrawal, the gap that is closed, and the block whose proof has one byte flipped.
 # What is not real: the zero-knowledge proof. The prover is a stand-in that writes a fixed proof that carries the block hash (tests/demo_fake_prove.sh) and
-# the `verify` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
+# the `verify`/`verify2` call is answered by tests/demo_sidecar.py, which accepts only that proof and otherwise reads the block as the real
 # sidecar does. So this checks everything except the proof check itself, which the sidecar's own tests and the GPU session cover.
 # The explorer runs beside it, from its image (explorer/run.sh), with its own database and its indexer (run.sh starts both), and is checked against this
 # chain: the page of run 1's block once the indexer has written it, the Verify check (which says no, because the proof is a stand-in), the faucet, and the
