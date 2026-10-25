@@ -36,8 +36,10 @@
       propose  the operator's token: creates a GasCapProposal for the chain's one contract. Nothing is done if the same proposal is there already.
       accept   the confirmer's token: exercises AcceptGasCap on the proposal for exactly --new-gas-cap, given the chain's current contract.
     Both refuse, before anything is sent, a value that the Daml would refuse: not above the chain's current cap, more than double it, or over
-    300,000,000. With --dry-run nothing is submitted: the step prints what it would do ("dryRun": true). The accept stops the builder's
-    blocks for the moment it takes (the chain contract is replaced), as every block does.
+    300,000,000. With --dry-run nothing is submitted: the step prints what it would do ("dryRun": true). Stop the block producer before the
+    accept and start it again after (a block replaces the chain contract, and an accept given a replaced contract is refused: nothing changes,
+    and the accept is safe to run again). A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for a value
+    that is not wanted is archived by the operator (the Archive choice, with the operator's token) before another is proposed.
 
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
@@ -341,6 +343,19 @@ def check_gas_cap(current: int, new: int) -> None:
         raise SystemExit(f"the new gas cap {new} is over the highest a chain may have ({MAX_GAS_CAP})")
 
 
+def submit_gas_cap(ledger, command: dict, step: str) -> None:
+    """Submits one command; a refusal stops with the participant's message (an accept is refused when a block replaced the chain contract since it was read)."""
+    try:
+        ledger.submit(command)
+    except urllib.error.HTTPError as err:
+        hint = ": the chain may have advanced since it was read, run the accept again" if step == "accept" else ""
+        reason = err.read().decode(errors="replace")[:300]
+        err.close()
+        raise SystemExit(f"the {step} was refused: HTTP {err.code} {reason}{hint}") from None
+    except urllib.error.URLError as err:
+        raise SystemExit(f"the {step} could not be sent: {err.reason}") from None
+
+
 def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
     parties = propose.read_env_file(Path(os.environ.get("CZE_STATE_DIR", ROOT / "state")) / "canton" / "parties.env")
     missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") if not parties.get(k)]
@@ -363,20 +378,22 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
         check_gas_cap(current, new_cap)
         other = [p for p in proposals if p.get("newCap") != str(new_cap)]
         if other:
-            raise SystemExit(f"a proposal for the gas cap {other[0].get('newCap')} is on this participant already; it cannot be withdrawn from here, "
-                             "so ask the confirmer to accept it (or to leave it) before this one")
+            raise SystemExit(f"a proposal for the gas cap {other[0].get('newCap')} is on this participant already. Accept it only if that value is wanted (a raise cannot be undone); "
+                             "otherwise the operator archives it (the Archive choice of the GasCapProposal, with the operator's token) and proposes again")
         done = bool(proposals)
         if not done and not dry_run:
-            ledger.submit({"CreateCommand": {"templateId": propose.PKG + "GasCapProposal", "createArguments": {
-                "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"], "newCap": str(new_cap)}}})
+            submit_gas_cap(ledger, {"CreateCommand": {"templateId": propose.PKG + "GasCapProposal", "createArguments": {
+                "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"], "newCap": str(new_cap)}}}, "propose")
         return {**result, "submitted": not done and not dry_run, "alreadyProposed": done}
     mine = [p for p in proposals if p.get("newCap") == str(new_cap)]
     if not mine:
+        if current == new_cap:   # a re-run after the accept went through (or committed after a timeout): done
+            return {**result, "submitted": False, "alreadyAccepted": True}
         raise SystemExit(f"no proposal for the gas cap {new_cap} is on this participant")
     check_gas_cap(current, new_cap)
     if not dry_run:
-        ledger.submit({"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
-                                           "choiceArgument": {"chain": chain["contractId"]}}})
+        submit_gas_cap(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
+                                                    "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
 
 

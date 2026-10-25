@@ -1,5 +1,5 @@
 """network/external/setup.py against a fake participant (a stateful JSON Ledger API). Run: python3 -m unittest discover -s tests -p 'test_external_setup.py'"""
-import contextlib, io, json, os, re, sys, tempfile, threading, unittest, urllib.parse, zipfile
+import contextlib, io, json, os, re, sys, tempfile, threading, unittest, urllib.error, urllib.parse, zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
@@ -380,10 +380,15 @@ class Setup(unittest.TestCase):
         self.run_setup()
         before = len(self.sent())
         for value, why in ((30_000_000, "above"), (20_000_000, "above"), (60_000_001, "double")):
-            for step in ("propose",):
-                with self.subTest(value=value, step=step), self.assertRaises(SystemExit) as ctx:
-                    self.raise_step(step, value)
-                self.assertIn(why, str(ctx.exception))
+            with self.subTest(value=value), self.assertRaises(SystemExit) as ctx:
+                self.raise_step("propose", value)
+            self.assertIn(why, str(ctx.exception))
+            # a proposal for the value (made when the chain's cap was another, or by hand) is refused by the accept as well
+            self.node.contracts["GasCapProposal"] = [{"contractId": "g9", "args": {**self.chain_args(), "newCap": str(value)}}]
+            with self.subTest(value=value, step="accept"), self.assertRaises(SystemExit) as ctx:
+                self.raise_step("accept", value)
+            self.assertIn(why, str(ctx.exception))
+            self.node.contracts["GasCapProposal"] = []
         self.assertEqual(len(self.sent()), before)
         self.assertEqual(self.node.contracts["GasCapProposal"], [])
 
@@ -421,6 +426,70 @@ class Setup(unittest.TestCase):
             self.raise_step("propose", 45_000_000)
         self.assertIn("50000000", str(ctx.exception))
         self.assertEqual(len(self.sent()), before)
+
+    def chain_args(self):
+        return {k: self.node.contracts["ZkChain"][0]["args"][k] for k in ("operator", "confirmer", "chainId")}
+
+    def test_accept_takes_exactly_the_value_given_and_not_another_proposal(self):
+        self.run_setup()
+        self.raise_step("propose", 50_000_000)
+        before = len(self.sent())
+        for value in (40_000_000, 60_000_000):
+            with self.subTest(value=value), self.assertRaises(SystemExit) as ctx:
+                self.raise_step("accept", value)
+            self.assertIn("no proposal", str(ctx.exception))
+        self.assertEqual(len(self.sent()), before)
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "30000000")
+
+    def test_a_chain_of_other_parties_is_refused_by_both_steps(self):
+        self.run_setup()
+        for field in ("operator", "confirmer"):
+            self.node.contracts["ZkChain"][0]["args"][field] = "someone-else::1220fp"
+            for step in ("propose", "accept"):
+                before = len(self.sent())
+                with self.subTest(field=field, step=step), self.assertRaises(SystemExit) as ctx:
+                    self.raise_step(step, 50_000_000)
+                self.assertIn("operator and confirmer", str(ctx.exception))
+                self.assertEqual(len(self.sent()), before)
+            self.node.contracts["ZkChain"][0]["args"][field] = {"operator": "ostia-operator::1220fp", "confirmer": "ostia-confirmer::1220fp"}[field]
+
+    def test_exactly_double_is_proposed_and_accepted(self):
+        self.run_setup()
+        self.assertTrue(self.raise_step("propose", 60_000_000)["submitted"])
+        self.assertTrue(self.raise_step("accept", 60_000_000)["submitted"])
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "60000000")
+
+    def test_a_second_accept_after_it_went_through_is_done_not_an_error(self):
+        self.run_setup()
+        self.raise_step("propose", 50_000_000)
+        self.raise_step("accept", 50_000_000)
+        before = len(self.sent())
+        again = self.raise_step("accept", 50_000_000)
+        self.assertEqual((again["submitted"], again["alreadyAccepted"]), (False, True))
+        self.assertEqual(len(self.sent()), before)
+        with self.assertRaises(SystemExit):   # another value that nobody proposed is still an error
+            self.raise_step("accept", 55_000_000)
+
+    def test_a_refused_submit_stops_with_the_participants_reason(self):
+        self.run_setup()
+        def refused(self_, command):
+            raise urllib.error.HTTPError("u", 409, "Conflict", {}, io.BytesIO(b"CONTRACT_NOT_FOUND stale"))
+        with mock.patch.object(propose.Ledger, "submit", refused), self.assertRaises(SystemExit) as ctx:
+            self.raise_step("propose", 50_000_000)
+        self.assertIn("CONTRACT_NOT_FOUND", str(ctx.exception))
+        self.raise_step("propose", 50_000_000)
+        with mock.patch.object(propose.Ledger, "submit", refused), self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("CONTRACT_NOT_FOUND", str(ctx.exception))
+        self.assertIn("run the accept again", str(ctx.exception))
+
+    def test_the_message_for_another_proposal_points_to_the_archive(self):
+        self.run_setup()
+        self.raise_step("propose", 50_000_000)
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("propose", 45_000_000)
+        self.assertIn("Archive", str(ctx.exception))
+        self.assertNotIn("leave it", str(ctx.exception))
 
     def test_each_gas_cap_step_needs_only_its_own_token_and_sends_no_other(self):
         self.run_setup()
