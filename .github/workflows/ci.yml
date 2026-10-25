@@ -46,6 +46,8 @@ jobs:
         run: node --test load/mixed/scripts/classify.test.mjs
       - name: The load kit keeps its wallets funded and sets a swap's minimum from a fresh quote
         run: node --test load/mixed/scripts/refill.test.mjs
+      - name: The load kit's RPC budget is first come, first served, so the refill is never starved
+        run: node --test load/mixed/scripts/limiter.test.mjs
 
   refuses-missing-flag:
     runs-on: ubuntu-latest
