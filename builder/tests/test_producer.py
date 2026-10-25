@@ -1057,7 +1057,7 @@ class SavedBlock(Loop):
         wrapper.chmod(0o755)
         s.cfg.prove_cmd = str(wrapper)
         self.assertTrue(b.build_block(s.cfg)["committed"])
-        self.assertEqual(json.loads(seen.read_text()), [{"hash": t["hash"], "raw": tb.raw_of(t)}])
+        self.assertEqual(json.loads(seen.read_text()), [{"hash": t["hash"], "raw": tb.raw_of(t), "number": HEAD_NUMBER + 1}])
         self.assertFalse(self.saved(s).exists())
 
     def test_a_refused_block_and_a_failed_one_leave_nothing_on_disk(self):

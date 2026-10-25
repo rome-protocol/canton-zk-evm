@@ -187,38 +187,68 @@ class Reth:
             raise BuilderError(f"engine_forkchoiceUpdatedV3 answered {status}")
 
 
-SAVED_FILE = "kept-transactions.json"   # in the work folder: the transactions of the block being made, until Canton has it or reth has them back
+SAVED_FILE = "kept-transactions.json"   # in the work folder: the transactions of the blocks being made, until Canton has them or reth has them back
 
 
 def saved_path(cfg: Config) -> Path:
     return Path(cfg.work_dir) / SAVED_FILE
 
 
-def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None) -> None:
+def saved_entries(cfg: Config) -> list:
+    """The entries of the kept file as written, or [] when there is no readable file. An entry has `hash` and `raw`, and `number` (the block it
+    belongs to) when it was written with one: a file from an older builder has none, and then the entries are one block's."""
+    try:
+        entries = json.loads(saved_path(cfg).read_text())
+    except (OSError, ValueError):
+        return []
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def write_saved(cfg: Config, entries: list) -> None:
+    """Writes the kept file atomically and to disk; the file is removed when there is nothing to keep."""
+    path = saved_path(cfg)
+    if not entries:
+        path.unlink(missing_ok=True)
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(tmp, "w") as f:
+        f.write(json.dumps(entries))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def other_blocks(entries: list, number: int | None) -> list:
+    """The entries that are not block `number`'s. An entry with no number (an older file) is the block being made, so it is the block's own."""
+    return [e for e in entries if "number" in e and e["number"] != number]
+
+
+def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None, number: int | None = None) -> None:
     """Writes the (hash, raw transaction) pairs of the block about to be made, atomically and to disk, before reth takes them out of its
-    pool: reth does not give an unwound block's transactions back, so after a crash this file is all that is left of them. With a journal,
+    pool: reth does not give an unwound block's transactions back, so after a crash this file is all that is left of them. Each entry
+    carries the block's `number`; the entries of other blocks stay, and a block's earlier entries (a rebuild) are replaced. With a journal,
     each entry also names the run and attempt, so that the next run can close that attempt's record (`Producer.restore`)."""
     if not pairs:
         return
     path = saved_path(cfg)
-    tmp = path.with_name(path.name + ".tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "w") as f:
-            ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt is not None and attempt.journal is not None else {}
-            f.write(json.dumps([{"hash": h, "raw": raw, **ref} for h, raw in pairs]))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
+        ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt is not None and attempt.journal is not None else {}
+        tag = {} if number is None else {"number": number}
+        keep = other_blocks(saved_entries(cfg), number) if number is not None else []
+        write_saved(cfg, [*keep, *({"hash": h, "raw": raw, **tag, **ref} for h, raw in pairs)])
     except OSError as e:
         raise BuilderError(f"cannot save the block's transactions to {path}: {e}") from e
 
 
-def clear_saved(cfg: Config) -> None:
-    """Called once Canton has the block or the transactions are back in reth's pool. A file that cannot be removed is harmless: sent
-    again, its transactions are `already known` or have a used nonce."""
+def clear_saved(cfg: Config, number: int | None = None) -> None:
+    """Called once Canton has the block or the transactions are back in reth's pool. With a `number` only that block's entries go; the
+    others stay. A file that cannot be changed is harmless: sent again, its transactions are `already known` or have a used nonce."""
     try:
-        saved_path(cfg).unlink(missing_ok=True)
+        if number is None:
+            saved_path(cfg).unlink(missing_ok=True)
+        elif saved_path(cfg).exists():
+            write_saved(cfg, other_blocks(saved_entries(cfg), number))
     except OSError:
         pass
 
@@ -290,14 +320,14 @@ def check_chain(reth: Reth, u: dict) -> None:
                            f"this reth's is {genesis_hash(reth)}): if that chain is gone, remove that file and {saved_path(reth.cfg)}")
 
 
-def put_back(reth: Reth) -> list:
+def put_back(reth: Reth, number: int | None = None) -> list:
     """reth does not return an unwound block's transactions to its pool, so the builder sends them again. A transaction the pool already
     has, or one whose nonce is used, is not a problem. Returns [{transaction, error}] for the ones reth refused for another reason: they
-    are not in the pool, and the caller reports them. The saved copy is cleared when the transactions have been sent; when sending raises, nothing is forgotten
+    are not in the pool, and the caller reports them. The saved copy of the block `number` is cleared (only its entries) when the transactions have been sent; when sending raises, nothing is forgotten
     (the list and the saved copy stay), so a second put_back or the next start's recover_saved sends them all again."""
     lost = resend(reth, reth.imported)
     reth.imported = []   # only after the resend returned: if it dies midway, the failure handler's put_back sends everything again
-    clear_saved(reth.cfg)
+    clear_saved(reth.cfg, number)
     return lost
 
 
@@ -823,7 +853,7 @@ def build_block(cfg: Config, exclude: set = frozenset(), prove_empty: bool = Tru
             # recover_saved moves reth back first and sends them then.
             if not getattr(e, "rewind_error", None):
                 try:
-                    e.lost_transactions += put_back(reth)   # the loop reports them with the failure
+                    e.lost_transactions += put_back(reth, int(chain["headNumber"]) + 1)   # the loop reports them with the failure
                     e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
                 except Exception:   # the error that brought us here is the one to report; the saved copy stays for the next start
                     pass
@@ -866,9 +896,9 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
 
     def keep(pairs: list) -> None:
         kept = [(t["hash"], raw) for t, raw in pairs]
-        if not kept:   # a block with no transaction: nothing leaves reth's pool, and an earlier copy (the list before reth emptied it) is of transactions that are in the pool
-            clear_saved(cfg)
-        save_kept(cfg, kept, attempt)   # before reth drops them from its pool
+        if not kept:   # a block with no transaction: nothing leaves reth's pool, and this block's earlier copy (the list before reth emptied it) is of transactions that are in the pool
+            clear_saved(cfg, n)
+        save_kept(cfg, kept, attempt, n)   # before reth drops them from its pool
         reth.imported = kept
 
     def build_listed(offered: list) -> tuple:
@@ -957,7 +987,8 @@ class Built:
     chosen: list
     pairs: list
     lost: list
-    work: Path
+    work: Path           # the block's folder: `out` (the accepted proof) and `advance.json` end up here
+    attempt_dir: Path    # this attempt's own folder, for the files the prover's tools read and write
     account_nodes: list
     storage_nodes: list
 
@@ -999,7 +1030,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
                 left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         rebuilds += 1
         reth.forkchoice(head, head, head)
-        lost.extend(put_back(reth))   # the block's transactions are in the pool again: the next build chooses from it with the larger exclude set (each round adds an exclusion, so it ends)
+        lost.extend(put_back(reth, n))   # the block's transactions are in the pool again: the next build chooses from it with the larger exclude set (each round adds an exclusion, so it ends)
     if not chosen and not prove_empty:   # nothing to settle: no proof and no commit is spent on it
         attempt.event("skipped", left_out=left_out, rebuilds=rebuilds)
         reth.forkchoice(head, head, head)
@@ -1015,13 +1046,16 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     if "0x" + keccak256(header).hex() != block_hash:
         raise BuilderError("the block's header does not hash to its block hash")
     work = Path(cfg.work_dir) / f"block-{n}"
-    work.mkdir(parents=True, exist_ok=True)
-    (work / "block.json").write_text(json.dumps(reth.call("eth_getBlockByNumber", [payload["blockNumber"], True])))
-    (work / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
+    attempt_dir = work / f"attempt-{os.getpid()}-{time.time_ns()}"   # a folder of its own: a rebuilt block at this height never overwrites what an earlier attempt's tools may still read
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    for old in sorted(work.glob("attempt-*"), key=lambda p: int(p.name.rsplit("-", 1)[1]))[:-KEEP_ATTEMPTS]:
+        shutil.rmtree(old, ignore_errors=True)
+    (attempt_dir / "block.json").write_text(json.dumps(reth.call("eth_getBlockByNumber", [payload["blockNumber"], True])))
+    (attempt_dir / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
     # The gateway's proofs are read while this block is reth's tip, before the prover runs.
     account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
-                 left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work,
+                 left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes)
 
 
@@ -1029,20 +1063,18 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     """Stage two. Runs the prover on the block's input and checks that the proof commits to this block. A failure is a ProvingError that
     names the transactions to keep."""
     attempt = attempt or Attempt(None, 1)
-    work, block_hash = built.work, built.block_hash
+    work, attempt_dir, block_hash = built.work, built.attempt_dir, built.block_hash
     prover = Path(cfg.prove_cmd).name
     attempt.event("proof_queued", prover=prover)
     proving = time.monotonic()
     outcome = "failed"
     kept = [t["hash"] for t in built.chosen]
-    # Each attempt has its own output folder: a prover left behind by a killed builder writes into the old one, never into this one.
-    for old in work.glob("out*"):
-        shutil.rmtree(old, ignore_errors=True)
-    out = work / f"out-{os.getpid()}-{time.time_ns()}"
+    # Each attempt has its own folder, output included: a prover left behind by a killed builder writes into the old one, never into this one.
+    out = attempt_dir / "out"
     try:
         attempt.event("proof_started", prover=prover)
-        run(cfg.make_input_cmd, str(work / "block.json"), str(work / "witness.json"), cfg.genesis, str(work / "input.bin"))
-        run(cfg.prove_cmd, str(work / "input.bin"), str(out))
+        run(cfg.make_input_cmd, str(attempt_dir / "block.json"), str(attempt_dir / "witness.json"), cfg.genesis, str(attempt_dir / "input.bin"))
+        run(cfg.prove_cmd, str(attempt_dir / "input.bin"), str(out))
         proof_file = out / "wrapped-proof.hex"
         if not proof_file.is_file():
             raise BuilderError("the prover finished but left no wrapped-proof.hex")
@@ -1056,6 +1088,7 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     except BuilderError as e:
         attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300])
         raise ProvingError(str(e), kept) from e
+    shutil.rmtree(work / "out", ignore_errors=True)   # an earlier attempt's or run's proof of this height
     os.replace(out, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
     attempt.event("proof_ended", prover=prover, outcome="ok", seconds=prove_seconds)
@@ -1138,7 +1171,7 @@ def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs:
         put_back_lost = []
         if not rewind_error:   # after a failed move back reth's head is still this block, which would "have" every transaction (nonce too low):
             try:              # they stay in reth.imported and in the saved copy for the next start's recover_saved, which moves reth back first
-                put_back_lost = put_back(reth)
+                put_back_lost = put_back(reth, n)
             except Exception as again:
                 rewind_error = str(again) if isinstance(again, BuilderError) else f"{type(again).__name__}: {again}"
         if put_back_lost:
@@ -1157,7 +1190,7 @@ def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs:
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(block_hash, block_hash, block_hash)
     attempt.event("final_seen", number=n)
-    clear_saved(cfg)
+    clear_saved(cfg, n)
     clear_unresolved(cfg)   # last: should reth's move above fail, the record stays and the next start settles the block as committed
     return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
 
@@ -1357,6 +1390,7 @@ STATUS_TICK_SECONDS = 5.0   # how often the status file is rewritten while a blo
 STATUS_STALL_SECONDS = 300.0   # the ticker stops refreshing when the loop itself has written nothing for this long: a stuck step must show
 BACKOFF_CAP = 30.0    # the longest pause after a failed or refused block, in seconds
 RECHECK_BASE = 2.0    # how soon a pool that held nothing includable is looked at again, and the least between two looks
+KEEP_ATTEMPTS = 3     # the newest attempt folders of a block that are kept (the failed ones are what an operator looks at)
 KEEP_BLOCKS = 10      # the work folders of this many of the newest committed blocks are kept
 MIN_IDLE_MS = 50
 

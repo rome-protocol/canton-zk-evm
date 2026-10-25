@@ -929,7 +929,7 @@ class Refusal(Case):
         self.assertEqual(s.ledger.submitted, [])
         self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH)
 
-    def test_each_attempt_has_an_output_folder_of_its_own(self):
+    def test_each_attempt_has_a_folder_of_its_own(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, prover_fails=True)
         work = Path(s.cfg.work_dir) / f"block-{HEAD_NUMBER + 1}"
         outs = []
@@ -938,7 +938,7 @@ class Refusal(Case):
                 b.build_block(s.cfg)
             outs.append([x for x in (log.split()[2] for log in s.log.read_text().splitlines() if log.startswith("prove"))][-1])
         self.assertNotEqual(outs[0], outs[1])   # the prover is given a new folder each time
-        self.assertTrue(all(Path(o).parent == work and Path(o).name.startswith("out-") for o in outs))
+        self.assertTrue(all(Path(o).name == "out" and Path(o).parent.parent == work and Path(o).parent.name.startswith("attempt-") for o in outs))
 
     def test_the_committed_hash_reads_the_public_values(self):
         h = "11" * 32
@@ -1300,7 +1300,7 @@ class PackedWithLegsAndSizes(LegCase):
         pool[sender(5)] = [bad]
         saved = []
         real = b.save_kept
-        with self.bump_use_after_the_first_read(s, 40_000), mock.patch.object(b, "save_kept", lambda cfg, pairs, attempt=None: (saved.append([h for h, _ in pairs]), real(cfg, pairs, attempt))):
+        with self.bump_use_after_the_first_read(s, 40_000), mock.patch.object(b, "save_kept", lambda cfg, pairs, attempt=None, number=None: (saved.append([h for h, _ in pairs]), real(cfg, pairs, attempt, number))):
             self.build(s)
         (payload,) = [p[0] for p in s.engine("engine_newPayloadV4")][-1:]
         self.assertEqual(saved[-1], [hash_of(r) for r in payload["transactions"]])

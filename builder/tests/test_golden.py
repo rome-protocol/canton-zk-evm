@@ -25,7 +25,7 @@ VOLATILE_KEYS = {
     "proveSeconds", "advanceSeconds",   # how long the prover and Advance took (reports)
 }
 VOLATILE_PATTERNS = [   # text that differs from run to run, inside any string
-    (re.compile(r"/out-\d+-\d+"), "/out-<pid>-<ns>"),   # the prover's output folder: the process id and the wall clock in nanoseconds
+    (re.compile(r"/attempt-\d+-\d+"), "/attempt-<pid>-<ns>"),   # an attempt's own folder (the prover's tools read and write in it): the process id and the wall clock in nanoseconds
 ]
 # The test's own temporary folder is replaced by "<dir>" in every string (see clean()): it is different in every run.
 

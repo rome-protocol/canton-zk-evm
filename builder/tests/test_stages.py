@@ -36,7 +36,7 @@ class Stages(tb.Case):
         self.assertEqual(self.proof_reads(s), [["0x" + GATEWAY, [slot], hex(n)]])   # read at build time, for the new block
         self.assertEqual(s.reth.head, built.block_hash)                              # while that block is reth's head
         self.assertFalse(s.log.exists())                  # the prover has not run
-        self.assertEqual(sorted(p.name for p in built.work.iterdir()), ["block.json", "witness.json"])
+        self.assertEqual(sorted(p.name for p in built.attempt_dir.iterdir()), ["block.json", "witness.json"])   # the attempt's own folder
         self.assertEqual(s.ledger.submitted, [])          # nothing was sent to Canton
 
     def test_prove_leaves_the_proof_and_reads_nothing_from_reth(self):

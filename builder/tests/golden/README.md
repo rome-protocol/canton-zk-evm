@@ -13,7 +13,7 @@ Each file holds three lists, all from the builder as it is on main when the file
 
 The test replays the scenario and compares the three lists with the file. Exactly this is left out, and all of it is listed at the top of
 `test_golden.py`: the values of the keys `seconds`, `proveSeconds` and `advanceSeconds` (each keeps its place and shows as
-`<key>`), the prover's output folder name (`/out-<pid>-<ns>`), and the test's temporary folder (`<dir>`). The wall clock is fixed during a
+`<key>`), the attempt's folder name (`/attempt-<pid>-<ns>`), and the test's temporary folder (`<dir>`). The wall clock is fixed during a
 scenario, so block timestamps, block hashes and command ids are the same on every run and are compared. The two restart scenarios start the
 second process through `Producer.run()`, so its `run_started` and `run_stopped` lines and its start sequence are in the record.
 
