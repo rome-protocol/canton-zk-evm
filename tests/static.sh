@@ -88,6 +88,12 @@ grep -q 'network/reth/launch.sh' <<<"$cap_code" || fail "sidecar/tests/capture_f
 grep -q 'network/reth/check.sh' <<<"$cap_code" || fail "sidecar/tests/capture_fixtures.sh does not check that discovery is off"
 grep -q 'network/reth/stop.sh' <<<"$cap_code" || fail "sidecar/tests/capture_fixtures.sh does not stop reth through stop.sh"
 
+# The builder's gas limit ramp test starts reth only through launch.sh, checks the flags with check.sh and stops it with stop.sh.
+ramp_code=$(grep -v '^[[:space:]]*#' "$ROOT/builder/tests/real_reth_gas_ramp.sh" || true)  # the calls, not the header comment that names them
+grep -q 'network/reth/launch.sh' <<<"$ramp_code" || fail "builder/tests/real_reth_gas_ramp.sh does not start reth through launch.sh"
+grep -q 'network/reth/check.sh' <<<"$ramp_code" || fail "builder/tests/real_reth_gas_ramp.sh does not check that discovery is off"
+grep -q 'network/reth/stop.sh' <<<"$ramp_code" || fail "builder/tests/real_reth_gas_ramp.sh does not stop reth through stop.sh"
+
 # The genesis funds no account: the chain has no test accounts or keys.
 [ "$(jq '[.alloc[] | select((.balance // "0x0") != "0x0")] | length' "$ROOT/network/genesis.json")" = 0 ] || fail "genesis funds an account"
 # A rough guard only: it looks for the word "private" and cannot tell a key from other text.
