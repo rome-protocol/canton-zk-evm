@@ -80,13 +80,17 @@ A receipt only comes back once the block is final (next section), so a deploy wa
 ## Where a transaction becomes final
 
 1. You send a transaction to the RPC. If the RPC accepts it, it enters the transaction pool. The builder chooses transactions for the blocks it makes next, so acceptance does not guarantee a place in the very next block.
-2. The block is made, about every 16 seconds while there are transactions. The builder makes no empty blocks, so while no transaction waits, the chain makes no blocks at all, possibly for hours. An hours-old final block on the explorer is then expected. If a transaction the RPC accepted stays pending, check the status strip on the explorer's home page (or `/api/health`).
+2. The block is made, about every 17 seconds at the median while there are transactions (23 seconds at the 95th percentile, over the 24 hours to 2026-10-25 11:54 UTC; full blocks take 20 to 23 seconds). A block takes as many transactions as fit under the gas cap of 30,000,000, counting the gas they use, and under a cap on their raw bytes (196,608 on DevNet). When no transaction waits, the builder makes an empty block once a minute, so the newest final block on a healthy chain is not much older than a couple of minutes. If a transaction the RPC accepted stays pending, check the status strip on the explorer's home page (or `/api/health`).
 3. A zero-knowledge proof of the block is made. In the one-hour mixed load of 2026-10-24, the median proof time was 9.03 seconds across 223 blocks of 11 to 100 transactions.
 4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In the same run, a block was final about 9 to 12 seconds after it was made (about 9 seconds for a small block, about 11 seconds, at most 13, with 70 transactions in a block).
 
 The public RPC only shows final blocks. A transaction you have just sent does not show up in `eth_getTransactionReceipt` until its block is final, so a receipt takes roughly 10 to 30 seconds to appear. Tools that wait for a receipt just wait a little longer than on other chains.
 
 On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/block/<number>`). The block page shows the Canton update that holds the block's record, the time Canton recorded it, and the proof. Its Verify button checks the proof in your browser, with no server involved. The same data is in the API, for example `GET /api/blocks/<number>` and `GET /api/canton/updates/<update id>`.
+
+## Canton tokens on DevNet
+
+The gateway's legs are live on DevNet. wTKB, at `0x294d3049874526910a69f6b61da14d10a8b1b3af`, is the wrapped form of TKB, a Canton test token, and it is an ordinary ERC-20 with 10 decimals: read `balanceOf` and `totalSupply` like any other. The deposits, payments and withdrawals so far (25 October 2026, blocks 780, 783 and 784, and again 1465, 1471 and 1473) were made by Rome with test parties it runs. Open `https://ostia.devnet.romeprotocol.xyz/legs` to see every leg, or `GET /api/legs`. You cannot make a deposit, payment or withdrawal of your own yet: self-serve onboarding is not built, so the Canton-side accounts and signing steps that deposits, payments and withdrawals need are not available to outside users.
 
 ## Limits to know about
 

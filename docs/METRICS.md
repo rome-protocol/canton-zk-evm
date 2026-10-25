@@ -1,15 +1,17 @@
 # What was measured, and on what
 
-This page records test results, hardware and software versions for Ostia, a Canton zkEVM (chain id 770101). Every number comes from a file in this repository, from the benchmark run named below, from the reference-machine measurement described under "The indexer on a real chain (W1)", or from the CI run or laptop measurement named beside it. Missing information is marked "not recorded".
+This page records test results, hardware and software versions for Ostia, a Canton zkEVM (chain id 770101). Every number comes from a file in this repository, from the benchmark run named below, from the notes of the 2026-10-25 runs (their logs are not in this repository), from the reference-machine measurement described under "The indexer on a real chain (W1)", or from the CI run or laptop measurement named beside it. Missing information is marked "not recorded".
 
-Two sets of measurements are reported:
+Four sets of measurements are reported:
 
 - **The prover benchmark** (2026-10-03). ZisK 1.3.1-alpha proving blocks of three sizes. It used the unmodified reth guest that ships with zisk-eth-client v0.13.1, not this repository's guest, which adds a check of the chain's rules. Its raw logs are not in this repository.
+- **The largest block the prover was given** (2026-10-25). Blocks of plain transfers up to 62,500 transfers, on a temporary benchmark machine, with this repository's guest at v0.1.0. None of these blocks was committed to Canton. The raw logs are not in this repository.
+- **DevNet throughput** (2026-10-25). Plain-transfer and mixed load on Ostia DevNet, before and after Daml package 0.2.0 and the change to how the builder fills a block. The raw logs and driver output are not in this repository; the figures come from the notes of those runs.
 - **The runs on this chain** (2026-10-05). This repository's own guest, on the local Canton network, with the gateway: a smoke test, a setup block and five runs, from the files in [`demo/results/`](../demo/results/). The one-transfer proof of 2026-10-04 is in [`prover/fixtures/session.txt`](../prover/fixtures/session.txt).
 
 ## The machine
 
-Both sets ran on a machine with one NVIDIA RTX PRO 6000 GPU. The benchmark's machine is described below; for the runs on this chain only the GPU and the driver were recorded.
+The 2026-10-03 benchmark and the 2026-10-05 runs ran on a machine with one NVIDIA RTX PRO 6000 GPU; the 2026-10-25 benchmark machine is described in its own section, and the GPU of the DevNet runs is not recorded. The 2026-10-03 benchmark's machine is described below; for the runs on this chain only the GPU and the driver were recorded.
 
 | | Prover benchmark, 2026-10-03 | Runs on this chain, 2026-10-05 |
 |---|---|---|
@@ -102,6 +104,54 @@ The wrap takes 1.7 s in the running prover. It forces a reload of constant data 
 The GPU peak says little about what is required: the prover takes one large buffer sized to the card, so the reading is about the same for a 1-transfer block and a 5,000-transfer block.
 
 **The older release, ZisK 1.2.0-alpha,** was measured as a baseline on the same machine and the same blocks. The guest it used was the one from zisk-eth-client v0.12.0, not v0.13.1. A fresh process took 6.0, 9.2 and 23.8 s for the proof with the wrap, and 18.4, 21.8 and 36.9 s for the whole process, for the three block sizes. A prover that stays running could not produce a wrapped proof at all: each request failed to wrap and returned the 414 KB STARK proof, with the error `Failed to wrap Plonk proof ... Error generating witness for instance id 0 [0:0] of type RecursiveF` in the worker log. 1.3.1-alpha is the release this repository uses. Its authors mark it as still in security and correctness audit.
+
+## The largest block the prover was given
+
+**Date:** 2026-10-25, 03:35 to 04:35 UTC. **This is a benchmark machine, not Ostia DevNet.** A temporary spot machine with one NVIDIA RTX PRO 6000 Blackwell Server Edition GPU (96 GB, driver 580.178.04), an AMD EPYC 9B45 with 48 vCPUs and 176 GiB of RAM. It ran for one hour and was deleted. **Prover:** ZisK 1.3.1-alpha with the PLONK wrap, kept running, with this repository's guest at v0.1.0. **Blocks:** plain value transfers (21,000 gas and about 115 bytes each) on a throwaway reth with peer discovery off, whose gas limit was raised in that copy only. Every successful proof was checked with `cargo-zisk verify`. None of these blocks was committed to Canton: the last column is the size of the data a commit would carry.
+
+| Transfers in the block | Gas | Proof time | Verified | Prover memory (host) at peak | `Advance` argument |
+|---|---|---|---|---|---|
+| 1,000 | 21 M | 9.3 s (three runs: 9.30, 9.32, 9.35) | yes | 49 GB | 237 KB |
+| 5,000 | 105 M | 25.3 s | yes | 55 GB | 1.16 MB |
+| 10,000 | 210 M | 44.0 s | yes | 63 GB | 2.31 MB |
+| 20,000 | 420 M | 86.2 s | yes | 76 GB | 4.61 MB |
+| 45,557 | 957 M | 206.8 s | yes | 110 GB | 10.49 MB |
+| 50,000 | 1.05 G | 228.4 s | yes | 108 GB | 11.5 MB |
+| 62,500 | 1.31 G | 283.8 s | yes | 122 GB | 14.4 MB |
+| 75,000 | 1.58 G | failed | - | - | 17.3 MB |
+| 100,000 | 2.1 G | failed | - | - | 23.0 MB |
+
+- The 62,500-transfer block, 1.31 billion gas, was the largest that proved. DevNet's gas cap is 30,000,000, so DevNet blocks are far smaller than these.
+- The two failures were the ZisK coordinator's own limit ("Phase Contributions timed out (300s > 300s)"), not memory. Neither block was retried with a longer timeout, so whether it would prove is unknown.
+- The cost per added transfer was about 4.5 ms on one GPU (9.3 s at 1,000 transfers, 283.8 s at 62,500), or about 220 transfers a second of proving at large sizes. GPU memory stayed near 95 GB at every size, because the keys are preloaded; host memory grew with the block.
+- The `Advance` argument is about 230 bytes a transfer (the block's hex, twice over). Under a request limit of 10 MiB, which is Canton's default (the limit on DevNet's synchronizer was not read), the request size alone would allow at most 45,557 transfers. That is arithmetic from the sizes above, not a commit. The participant's Daml work would stop such a block first: at about 3 to 5 ms per KB per pass under package 0.2.0, a 10.49 MB argument is roughly 65 to 100 s of work over the two passes, well past the 20 s JSON API timeout. So that size has not been committed to Canton, and could not be on DevNet as it is set up today.
+
+## DevNet throughput, 2026-10-25
+
+These runs were on Ostia DevNet itself, on 25 October 2026, with one participant (Rome's), one builder and one prover. The GPU model is not recorded here. The raw logs and driver output are not in this repository. Every transaction sent in these runs became final, and none that was meant to succeed reverted (in the morning's burst of 20,000 plain transfers, four were lost from reth's transaction pool and were sent again). The chain was not reset.
+
+**Before package 0.2.0, 08:11 to 08:45 UTC.** The builder had just been changed to fill a block by the gas its transactions use, with a cap of 65,536 raw transaction bytes a block (the old builder counted the gas each transaction declared).
+
+| Load | Old builder (02:30 UTC) | New builder at saturation | What bound it |
+|---|---|---|---|
+| Mixed: 17 kinds of transaction, about 254 raw bytes each | about 7.5 tx/s | about 10.9 tx/s (10.1 over the whole busy window) | the 65,536-byte cap (65,480 bytes used), not gas (17 M of 30 M) |
+| Plain transfers: 21,000 gas, 110 raw bytes each | not measured | about 26 tx/s (595 per block, a block about every 23 s) | the same cap; 12.5 M of 30 M gas used |
+
+On the mixed load the new builder kept up at 10 tx/s sent and fell behind at 15 tx/s sent; the backlog then drained in about two minutes. This mixed-load figure has not been measured again since package 0.2.0.
+
+**After package 0.2.0, 11:36 to 11:46 UTC.** Package 0.2.0 (see [the Daml README](../daml/README.md#package-020-is-an-upgrade-of-010)) went live at block 1453 (11:29 UTC). The morning's run at the 65,536-byte cap, above, is the baseline: 595 transfers a block and 26 tx/s. Two bursts of 9,000 plain transfers each, sent from one account in about 25 seconds, with a separate driver sending 3 tx/s in the background. "Steady" runs from the cut of the first full block to the final of the last full block; "whole burst" runs from the first send to the final of the last block.
+
+| Cap on raw bytes per block | Transfers per block | Raw bytes per block | Proof | Commit (submit to answer) p50 / p95 | Block cut to final, p50 | Steady | Whole burst |
+|---|---|---|---|---|---|---|---|
+| 131,072 | 1,191 | 130,992 to 130,999 | 12.1 s | 6.7 s / 7.7 s | 20.2 s | 59 tx/s | 46 tx/s |
+| 196,608 | 1,428 | about 157,000 | 13.3 s | 7.8 s / 8.6 s | 22.4 s | 64 tx/s | 48 tx/s |
+
+- With the cap at 196,608 the byte cap is not reached: the 30,000,000 gas cap binds first, at 1,428 plain transfers (29,988,000 gas). Raising the cap past about 157 KB changes nothing for plain transfers. Going from 131,072 to 196,608 added 8% (59 to 64 tx/s), because a bigger block takes longer to prove (12.1 s to 13.3 s) and to commit.
+- A block takes about 20 to 23 seconds from cut to final, and in that time the proof and the Canton commit run one after the other. DevNet keeps one block in flight.
+- The participant's Daml time per KB of the `Advance` argument, per pass (there are two, submission and check), fell from about 23 and 22 ms under package 0.1.0 to a fitted 4.7 to 4.8 ms and 3.4 to 4.1 ms under 0.2.0, with about 3 ms on a typical block. A block of 270 to 330 KB of argument took 1.5 to 3.9 s of participant work, both passes together, under 0.2.0. On ordinary blocks of 35 to 54 transactions, `Advance` took a median of 3.9 s under 0.2.0 (blocks 1453 to 1457) against 6.4 s under 0.1.0 (blocks 1440 to 1452).
+- No block's outcome was unknown, and no JSON API timeout occurred, in either burst.
+
+What these numbers do not show: plain transfers are the cheapest transaction there is, so 64 tx/s is not a figure for contract-heavy traffic; one burst was run at each cap, so there is no spread; and they come from DevNet's setup (one participant, one builder, one confirmer), so they say nothing about more confirmers or builders.
 
 ## The runs on this chain
 
@@ -276,11 +326,11 @@ CI runs on GitHub-hosted `ubuntu-latest` runners. They have no GPU, so no proof 
 ## What is not measured yet
 
 - **A systematic benchmark of contract calls or precompiles.** The benchmark blocks are plain transfers. The demo records ERC-20 transfers, an approval, and calls to the gateway. The cost per gas depends on the mix of work, so the plain-transfer figures do not establish the cost of contract calls.
-- **Blocks above 105 Mgas**, or the benchmark's sizes with this repository's guest (the one with the chain-rules check). The benchmark used the upstream guest.
-- **More than one block in flight,** and more than one GPU. The benchmark sent one request at a time to a free GPU.
+- **Blocks above 105 Mgas on the upstream guest.** The 2026-10-03 benchmark used the upstream guest. The 2026-10-25 benchmark of large blocks used this repository's guest, up to 1.31 Ggas, on a benchmark machine; no block that large was committed to Canton.
+- **More than one block in flight.** A two-GPU prover was tried on a benchmark machine, where it proved 25 to 39% faster and every proof verified; those runs are not recorded here, and DevNet does not use it. The benchmark sent one request at a time to a free GPU.
 - **Building the witness from the chain.** The benchmark's "input to proof" starts from a witness file that already exists. On this chain, building the witness on a warm machine has not been timed on its own.
 - **The sidecar's proof check run natively.** Native verification latency has not been measured. The WebAssembly build took 8 to 32 ms in Node on CI runners for verifying the proof and rejecting a mismatched header. That is not a successful full-block check or a browser measurement; see [explorer/verify/README.md](../explorer/verify/README.md).
-- **Canton's commit of a large block.** The commits above are for an empty block and blocks of one to three transactions, with at most one leg.
+- **Canton's commit of a block with contract-heavy traffic at its largest.** The demo's commits are for an empty block and blocks of one to three transactions, with at most one leg. On DevNet the largest commits measured are blocks of 1,428 plain transfers, in the section "DevNet throughput, 2026-10-25".
 - **Repeat runs on this chain.** Each run was done once, on one machine, with one operator and one builder. There is no spread to report.
 - **The rest of the runs' machine.** Its CPU model, RAM, operating system and Node version were not recorded; only the GPU and driver were.
 - **ZisK's hints build.** The build did not complete, so no performance measurements are available. The cause has not been established.
