@@ -46,6 +46,7 @@ describe("the transactions page", () => {
     await open({ inFlight: () => reply(flight()), tx: byHash("") });
     expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toContain("Canton update");
     expect(rows()[0]).toHaveTextContent("not final yet");
+    expect(rows()[0]).toHaveTextContent(/Canton update\s*not final yet/);
     // rows 2 and 3 are the transactions of blocks 3 and 2: each links to the update of its own block
     expect(within(rows()[2]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(within(rows()[3]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(2)}`);

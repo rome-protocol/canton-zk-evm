@@ -83,7 +83,7 @@ function NotFinalRow({ f, t, c }: { f: InFlightTx; t: ApiTx | undefined; c: Ctx 
       <td>{t ? <To t={t} labels={c.labels} /> : <Dash />}</td>
       <td className="r">{seen ? <ProvingMoved d={{ ...seen, value: seen.value! }} coin={c.coin} labels={c.labels} /> : <Dash />}</td>
       <td className="r">{t?.fee ? <Fee raw={t.fee} coin={c.coin} /> : <Dash />}</td>
-      <td><span className="muted">not final yet</span></td>
+      <td className="c-upd"><span className="k-label">Canton update </span><span className="muted">not final yet</span></td>
       <td><Chip status={f.stage} /></td>
     </tr>
   );

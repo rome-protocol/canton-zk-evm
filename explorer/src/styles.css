@@ -72,11 +72,16 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
 .nav .navlink:hover { text-decoration: none; background: var(--surface-2); }
 .nav .navlink.active { background: var(--canton-tint); color: var(--canton); }
 .top .search { flex: 0 1 380px; }
-/* At laptop widths the nine links and the search share one row: the box is narrower and the links sit a little closer. */
-@media (min-width: 721px) and (max-width: 1500px) {
+/* Above a phone the nine links and the search share one row (the page is 1280 px wide at most, so a wide screen needs the same room): the links sit a little closer, and below 1366 px a little closer still, with a box that still shows the whole hint. */
+@media (min-width: 721px) {
   .top { gap: 16px; }
-  .top .search { flex-basis: 240px; }
+  .top .search { flex-basis: 380px; }
   .nav .navlink { padding: 6px 9px; }
+}
+@media (min-width: 721px) and (max-width: 1365px) {
+  .top { gap: 12px; }
+  .top .search { flex-basis: 366px; }
+  .nav .navlink { padding: 6px 7px; }
 }
 .thread { height: 2px; background: linear-gradient(90deg, var(--evm), var(--canton)); opacity: .85; }
 .main { flex: 1; width: 100%; max-width: 1344px; margin: 0 auto; padding: 26px 32px 30px; display: flex; flex-direction: column; gap: 18px; }
