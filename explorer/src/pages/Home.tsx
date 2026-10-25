@@ -73,7 +73,7 @@ export function Home() {
       <Strip status={data} health={health.data} />
       <Stats summary={summarize(data, flightRead === "ok" ? flight.data! : null)} flight={flightRead} {...homeStats} />
       <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} usual={usualProof(blocks.data?.items ?? [])} later={pending} />
-      <div className="cols">
+      <div className="cols home-cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
         <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} faucet={faucet} chain={data.chainName} />
       </div>

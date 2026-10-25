@@ -113,6 +113,7 @@ describe("a token amount chip", () => {
     const chip = screen.getByText("1,500,000 tUSD").closest(".tchip")!;
     expect(chip.getAttribute("title")).toMatch(/decimals are not known/i);
     expect(chip.getAttribute("title")).toMatch(/smallest unit/i);
+    expect(chip.getAttribute("title")).toMatch(/^1,500,000 tUSD /); // the exact count is on hover too
   });
 
   it("does not show an amount the logs did not carry", () => {

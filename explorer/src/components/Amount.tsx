@@ -1,13 +1,13 @@
 import type { Label, TokenMove } from "../api.ts";
-import { count, exact, short, units } from "../format.ts";
+import { compactUnits, count, exact, short, units } from "../format.ts";
 import { labelName } from "../labels.ts";
 import { Icon } from "./Icon.tsx";
 
 /** An amount in whole coins or tokens, with the exact amount in its tooltip. The symbol is the contract's own words, set apart in a bdi. */
-export function Amount({ raw, decimals, symbol }: { raw: string; decimals: number; symbol: string }) {
+export function Amount({ raw, decimals, symbol, compact = false }: { raw: string; decimals: number; symbol: string; compact?: boolean }) {
   return (
     <span title={`${exact(raw, decimals)} ${symbol}`}>
-      <span className="num">{units(raw, decimals)}</span> <bdi>{symbol}</bdi>
+      <span className="num">{compact ? compactUnits(raw, decimals) : units(raw, decimals)}</span> <bdi>{symbol}</bdi>
     </span>
   );
 }
@@ -17,7 +17,7 @@ export function Amount({ raw, decimals, symbol }: { raw: string; decimals: numbe
  * `label` is the token's label from `useLabels`. A token with no symbol is told by its short address, and the tooltip says so.
  * Where the decimals are not known (neither the move's nor the label's) it shows the raw count in the token's smallest unit and says that.
  */
-export function TokenChip({ move, label }: { move: TokenMove; label?: Label | null }) {
+export function TokenChip({ move, label, compact = false }: { move: TokenMove; label?: Label | null; compact?: boolean }) {
   const symbol = label?.symbol ?? null;
   const name = symbol ?? short(move.token, 8, 4);
   const notes: string[] = [];
@@ -34,7 +34,7 @@ export function TokenChip({ move, label }: { move: TokenMove; label?: Label | nu
   const decimals = move.decimals ?? label?.decimals ?? null;
   if (decimals === null) {
     notes.push("Its decimals are not known, so this is the raw count in the token's smallest unit.");
-    return <span className="tchip tchip-ft" title={notes.join(" ")}><Icon name="coin" size={12} />{text(`${count(move.amount)} ${name}`)}</span>;
+    return <span className="tchip tchip-ft" title={[`${count(move.amount)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${count(move.amount)} ${name}`)}</span>;
   }
-  return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${units(move.amount, decimals)} ${name}`)}</span>;
+  return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${compact ? compactUnits(move.amount, decimals) : units(move.amount, decimals)} ${name}`)}</span>;
 }

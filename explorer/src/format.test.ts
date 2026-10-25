@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseFee, bytesOf, count, dateTime, feeOf, gwei, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, compactUnits, count, dateTime, feeOf, gwei, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
 
 describe("a rate of transactions per second", () => {
   it("keeps one place from 1 up and two significant figures under 1, so a busiest minute of 1 or 2 transactions is not 0", () => {
@@ -120,5 +120,19 @@ describe("dateTime", () => {
   });
   it("reads an ISO time too", () => {
     expect(dateTime("2026-10-23T11:11:26.120Z")).toBe("23 Oct 2026, 11:11:26 UTC");
+  });
+});
+
+describe("compactUnits", () => {
+  it("shows at most six decimals, rounded, with a thousands separator, and says '<0.000001' for anything smaller that is not zero", () => {
+    expect(compactUnits("1", 18)).toBe("<0.000001");
+    expect(compactUnits("999999999999", 18)).toBe("<0.000001");
+    expect(compactUnits("1000000000000", 18)).toBe("0.000001");
+    expect(compactUnits("500000000000000000", 18)).toBe("0.5");
+    expect(compactUnits("1234567891234567000000000", 18)).toBe("1,234,567.891235");
+    expect(compactUnits("0", 18)).toBe("0");
+    expect(compactUnits("1999999999999999999", 18)).toBe("2");
+    expect(compactUnits("1500000", 6)).toBe("1.5");
+    expect(compactUnits("1", 6)).toBe("0.000001");
   });
 });
