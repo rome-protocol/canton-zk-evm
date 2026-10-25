@@ -7,6 +7,11 @@
   ],
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
     "activeAtOffset": 42,
@@ -137,6 +142,11 @@
   ],
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
     "activeAtOffset": 42,
@@ -160,6 +170,11 @@
      "verbose": false
     }
    }
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
   ],
   [
    "ledger",
@@ -237,7 +252,8 @@
   ],
   [
    "ledger",
-   "ledger-end"
+   "get",
+   "/v2/state/ledger-end"
   ],
   [
    "reth",

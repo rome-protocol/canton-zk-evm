@@ -49,7 +49,7 @@ def rlp_decode(b: bytes):
         if t < 0xB8:
             return b[i + 1:i + 1 + t - 0x80], i + 1 + t - 0x80
         if t < 0xC0:
-            n = int.from_bytes(b[i + 1:i + t - 0xB7], "big"); s = i + t - 0xB7
+            n = int.from_bytes(b[i + 1:i + t - 0xB6], "big"); s = i + t - 0xB6
             return b[s:s + n], s + n
         if t < 0xF8:
             n, s = t - 0xC0, i + 1
@@ -381,6 +381,7 @@ class FakeLedger:
         self.commit_count = 0
         self.submitted: list = []
         self.queries: list = []
+        self.gets: list = []   # the path of each GET it answers (ledger-end, traffic, ...)
         self.bad_auth = 0
         self.traffic: list = []   # the traffic states GET /traffic answers with, one for each read; when none is left it reports none (404)
         self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
@@ -516,6 +517,7 @@ class FakeLedger:
 
             def do_GET(self):
                 self._auth()
+                ledger.gets.append(self.path)
                 if self.path == "/traffic":
                     state = ledger.traffic.pop(0) if ledger.traffic else None   # one answer for each read
                     return self._reply(404, {}) if state is None else self._reply(200, state)

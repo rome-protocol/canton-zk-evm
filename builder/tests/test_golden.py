@@ -23,10 +23,12 @@ REGENERATE = os.environ.get("GOLDEN_REGENERATE") == "1"
 VOLATILE_KEYS = {
     "seconds",           # how long a step took (journal lines)
     "proveSeconds", "advanceSeconds",   # how long the prover and Advance took (reports)
+    "source_commit",     # the git commit the builder runs from (the run_started journal line)
 }
 VOLATILE_PATTERNS = [   # text that differs from run to run, inside any string
-    (re.compile(r"out-\d+-\d+"), "out-<pid>-<ns>"),   # the prover's output folder: the process id and the wall clock in nanoseconds
+    (re.compile(r"/out-\d+-\d+"), "/out-<pid>-<ns>"),   # the prover's output folder: the process id and the wall clock in nanoseconds
 ]
+# The test's own temporary folder is replaced by "<dir>" in every string (see clean()): it is different in every run.
 
 
 class Tee(list):
@@ -51,13 +53,14 @@ def clean(value, folder: str):
         return value.hex()
     if isinstance(value, str):
         value = value.replace(folder, "<dir>")
-        value = re.sub(r"127\.0\.0\.1:\d+", "127.0.0.1:<port>", value)
         for pattern, name in VOLATILE_PATTERNS:
             value = pattern.sub(name, value)
     return value
 
 
 class Golden(Loop):
+    maxDiff = None
+
     def tearDown(self):
         os.environ["FAKE_PROVER_FAILS"] = ""
 
@@ -70,17 +73,15 @@ class Golden(Loop):
         r.engine_calls = Tee(self.calls, "engine", lambda c: c)
         l.submitted = Tee(self.calls, "ledger", lambda body: ["submit-and-wait", body])
         l.queries = Tee(self.calls, "ledger", lambda body: ["active-contracts", body])
+        l.gets = Tee(self.calls, "ledger", lambda path: ["get", path])   # the ledger end before each read of the contracts, and /traffic
         l.completion_queries = Tee(self.calls, "ledger", lambda c: ["completions", *c])
-        real_end, real_run = b.Ledger.end, b.run
-        def end(ledger):
-            self.calls.append(["ledger", "ledger-end"])
-            return real_end(ledger)
+        real_run = b.run
         def run(cmd, *args):   # the prover's input tool and the prover itself
             self.calls.append(["prover", Path(cmd).name, *args])
             return real_run(cmd, *args)
-        for patch in (mock.patch.object(b.Ledger, "end", end), mock.patch.object(b, "run", run)):
-            patch.start()
-            self.addCleanup(patch.stop)
+        patch = mock.patch.object(b, "run", run)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.runs = 0
         patch = mock.patch.object(b.time, "time", lambda: WALL_CLOCK)
         patch.start()
@@ -110,7 +111,25 @@ class Golden(Loop):
         self.assertTrue(path.exists(), f"no fixture {path.name}: run with GOLDEN_REGENERATE=1 (golden/README.md)")
         want = json.loads(path.read_text())
         for part in ("calls", "journal", "reports"):
-            self.assertEqual(got[part], want[part], f"{name}: the {part} differ from golden/{path.name}")
+            g, w = got[part], want[part]
+            if g != w:
+                i = next((i for i in range(min(len(g), len(w))) if g[i] != w[i]), min(len(g), len(w)))
+                self.fail(f"{name}: the {part} differ from golden/{path.name} at entry {i} (got {len(g)} entries, want {len(w)})\n"
+                          f"want: {json.dumps(w[i]) if i < len(w) else '(none)'}\ngot:  {json.dumps(g[i]) if i < len(g) else '(none)'}")
+
+    def run_steps(self, p, *between):
+        """The producer's own run(), as a process starts it: run_started, load_unresolved, write_status, then steps. It does len(between) + 1 steps;
+        `between[i]` runs before step i + 2. Then it stops, and run_stopped is written."""
+        real, n = p.step, [0]
+        def step():
+            if n[0]:
+                between[n[0] - 1]()
+            n[0] += 1
+            real()
+            if n[0] > len(between):
+                self.stop.set()
+        with mock.patch.object(p, "step", step):
+            p.run()
 
     # The scenarios.
 
@@ -201,7 +220,7 @@ class Golden(Loop):
             b.build_and_import(s.cfg, reth, chain, head, set())
         self.assertTrue(b.saved_path(s.cfg).exists())
         p = self.process(s)   # a new process
-        p.step()
+        self.run_steps(p)
         self.assertEqual(self.reports[0]["recovered"], 2)
         self.check("restart_with_a_kept_file", s)
 
@@ -211,10 +230,9 @@ class Golden(Loop):
         first = self.process(s)
         first.step()
         second = self.process(s)   # a new process: it knows the command from the work folder
-        second.load_unresolved()
-        second.step()   # no completion yet
-        s.ledger.land(ok=True)
-        s.ledger.late = False
-        second.step()
+        def land():
+            s.ledger.land(ok=True)
+            s.ledger.late = False
+        self.run_steps(second, land)   # the first step finds no completion yet
         self.assertEqual(self.reports[-1]["resolved"], "committed")
         self.check("restart_with_a_record", s)

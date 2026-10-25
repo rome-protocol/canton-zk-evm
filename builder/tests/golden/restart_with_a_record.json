@@ -7,6 +7,11 @@
   ],
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
     "activeAtOffset": 42,
@@ -175,7 +180,8 @@
   ],
   [
    "ledger",
-   "ledger-end"
+   "get",
+   "/v2/state/ledger-end"
   ],
   [
    "reth",
@@ -252,6 +258,11 @@
     ],
     "userId": "builder-user"
    }
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
   ],
   [
    "ledger",
@@ -410,13 +421,32 @@
    "v": 1
   },
   {
+   "event": "run_started",
+   "run": "run-2",
+   "seq": 1,
+   "settings": {
+    "exclude_cooldown_seconds": 600,
+    "gather_ms": 0,
+    "heartbeat_seconds": 0,
+    "idle_ms": 500,
+    "max_in_flight": 1,
+    "strategy": "on_demand",
+    "test": false,
+    "traffic_read": false
+   },
+   "source_commit": "<source_commit>",
+   "strategy": "on_demand",
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
    "attempt": 1,
    "attempt_run": "run-1",
    "completion_offset": 43,
    "event": "resolved",
    "outcome": "committed",
    "run": "run-2",
-   "seq": 1,
+   "seq": 2,
    "time": "1970-01-12T13:46:40.000Z",
    "update_id": "u1",
    "v": 1,
@@ -428,7 +458,15 @@
    "event": "final_seen",
    "number": 5,
    "run": "run-2",
-   "seq": 2,
+   "seq": 3,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "event": "run_stopped",
+   "run": "run-2",
+   "seq": 4,
+   "state": "stopped",
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
   }

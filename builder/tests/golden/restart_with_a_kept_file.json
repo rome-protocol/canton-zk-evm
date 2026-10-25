@@ -2,6 +2,11 @@
  "calls": [
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
     "activeAtOffset": 42,
@@ -119,6 +124,11 @@
   ],
   [
    "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
    "active-contracts",
    {
     "activeAtOffset": 42,
@@ -173,6 +183,11 @@
    "reth",
    "txpool_status",
    []
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
   ],
   [
    "ledger",
@@ -353,7 +368,8 @@
   ],
   [
    "ledger",
-   "ledger-end"
+   "get",
+   "/v2/state/ledger-end"
   ],
   [
    "reth",
@@ -426,9 +442,28 @@
  ],
  "journal": [
   {
-   "event": "pool",
+   "event": "run_started",
    "run": "run-1",
    "seq": 1,
+   "settings": {
+    "exclude_cooldown_seconds": 600,
+    "gather_ms": 0,
+    "heartbeat_seconds": 0,
+    "idle_ms": 500,
+    "max_in_flight": 1,
+    "strategy": "on_demand",
+    "test": false,
+    "traffic_read": false
+   },
+   "source_commit": "<source_commit>",
+   "strategy": "on_demand",
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "event": "pool",
+   "run": "run-1",
+   "seq": 2,
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1,
    "waiting": 2
@@ -442,7 +477,7 @@
    "number": 5,
    "pool_waiting": 2,
    "run": "run-1",
-   "seq": 2,
+   "seq": 3,
    "strategy": "on_demand",
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
@@ -460,7 +495,7 @@
    "parent_hash": "0xabababababababababababababababababababababababababababababababab",
    "rebuilds": 0,
    "run": "run-1",
-   "seq": 3,
+   "seq": 4,
    "time": "1970-01-12T13:46:40.000Z",
    "tx_bytes": 66,
    "tx_hashes": [
@@ -474,7 +509,7 @@
    "event": "proof_queued",
    "prover": "fake-prove.sh",
    "run": "run-1",
-   "seq": 4,
+   "seq": 5,
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
   },
@@ -483,7 +518,7 @@
    "event": "proof_started",
    "prover": "fake-prove.sh",
    "run": "run-1",
-   "seq": 5,
+   "seq": 6,
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
   },
@@ -494,7 +529,7 @@
    "prover": "fake-prove.sh",
    "run": "run-1",
    "seconds": "<seconds>",
-   "seq": 6,
+   "seq": 7,
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
   },
@@ -504,7 +539,7 @@
    "command_id": "ostia-770101-5-20c2950efbcb6a10-1",
    "event": "submitted",
    "run": "run-1",
-   "seq": 7,
+   "seq": 8,
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
   },
@@ -515,7 +550,7 @@
    "outcome": "committed",
    "run": "run-1",
    "seconds": "<seconds>",
-   "seq": 8,
+   "seq": 9,
    "time": "1970-01-12T13:46:40.000Z",
    "traffic_after": null,
    "traffic_before": null,
@@ -528,7 +563,15 @@
    "event": "final_seen",
    "number": 5,
    "run": "run-1",
-   "seq": 9,
+   "seq": 10,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "event": "run_stopped",
+   "run": "run-1",
+   "seq": 11,
+   "state": "stopped",
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1
   }

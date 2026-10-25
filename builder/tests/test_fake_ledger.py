@@ -8,7 +8,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 from keccak import keccak256
-from fakes import BUILDER, HEAD_HASH, HEAD_NUMBER, LEDGER_TOKEN, FakeLedger, rlp
+from fakes import BUILDER, HEAD_HASH, HEAD_NUMBER, LEDGER_TOKEN, FakeLedger, rlp, rlp_decode
 
 
 def header(parent_hex: str, number: int, salt: int = 0) -> bytes:
@@ -113,6 +113,16 @@ class FakeLedgerChecks(unittest.TestCase):
         self.assertEqual(self.ledger.head["headHash"], keccak256(h).hex())
         self.assertEqual(self.ledger.outcomes["c1"]["status"], {})
         self.assertEqual(self.ledger.outcomes["c2"]["status"]["code"], 9)
+
+
+class RlpRoundTrip(unittest.TestCase):
+    def test_strings_of_every_length_round_trip(self):
+        for n in (0, 1, 55, 56, 60, 200, 300):
+            self.assertEqual(rlp_decode(rlp([b"x" * n])), [b"x" * n], n)
+
+    def test_nested_lists_with_long_strings_round_trip(self):
+        v = [b"a", [b"b" * 56, [b"c" * 300]], b"d" * 60]
+        self.assertEqual(rlp_decode(rlp(v)), v)
 
 
 if __name__ == "__main__":
