@@ -18,6 +18,7 @@ import { Pool } from "pg";
 import { loadConfig } from "../config.ts";
 import { connectionConfig } from "../db/connect.ts";
 import { ledgerFromConfig } from "../ledger-config.ts";
+import { createLedger, readLedgerToken } from "../ledger.ts";
 import { parseCommand, UsageError, type Command } from "./commands.ts";
 import { clearCheck, readerMoved, resetChain } from "./admin.ts";
 import { IndexerStop } from "./errors.ts";
@@ -25,7 +26,7 @@ import { createIndexer } from "./indexer.ts";
 import { createFinalReads } from "./reads.ts";
 import { readRecords, exportRecordsToFile } from "./records.ts";
 import { reindexRange } from "./reindex.ts";
-import { loadIndexerSettings } from "./settings.ts";
+import { IndexerSettingsError, loadIndexerSettings } from "./settings.ts";
 
 /** The login name, or the user id when the account has no entry (a container that runs as a bare uid). */
 function whoIsClearing(): string {
@@ -84,8 +85,13 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
     console.log(`reindex: ${done.blocks} blocks, ${done.from} to ${done.to}; their stage 2 rows are written again with them`);
     return 0;
   }
+  // The one Ledger API client that reads as the gateway party (the custody read): a token file of its own, checked here so that a wrong one stops the start.
+  const custody = settings.custody && (() => {
+    try { readLedgerToken(settings.custody.tokenFile, "GATEWAY_LEDGER_TOKEN_FILE"); } catch (e) { throw new IndexerSettingsError((e as Error).message); }
+    return { ledger: createLedger(config.ledgerUrl, config.rpcTimeoutMs, settings.custody.party, undefined, settings.custody.tokenFile), ms: settings.custody.ms };
+  })();
   const indexer = createIndexer({
-    pool, reads, ledger: ledgerFromConfig(config),
+    pool, reads, ledger: ledgerFromConfig(config), ...(custody ? { custody } : {}),
     pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, journalDir: settings.journalDir, producerStatusFile: settings.producerStatusFile, journalMs: settings.journalMs, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,
     log,
   });

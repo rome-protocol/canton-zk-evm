@@ -389,7 +389,7 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
     try {
       const all = body(await get("/api/legs")).items as { kind: string; party: string | null }[];
       expect(all.map((l) => [l.kind, l.party === null])).toEqual([["deposit", true], ["withdrawal", false]]);
-      same(all[0], F.legItem);
+      same(all[0]!, F.legItem);
     } finally { await sql("delete from gateway_legs where leg_id = $1", [Buffer.alloc(32, 7)]); }
   });
 

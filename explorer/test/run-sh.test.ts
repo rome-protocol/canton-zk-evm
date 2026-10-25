@@ -55,6 +55,21 @@ describe.skipIf(!HAS_BASH)("explorer/run.sh start", () => {
     }
   });
 
+  it("gives the indexer, and only the indexer, the gateway party and its token file for the custody read, the file mounted read-only and its value never on the command", () => {
+    const file = join(state, "gateway.token");
+    writeFileSync(file, "tok.secret-value-for-the-test\n", { mode: 0o600 });
+    const env = { GATEWAY_PARTY: "gateway::1220cd", GATEWAY_LEDGER_TOKEN_FILE: file, CUSTODY_MS: "5000" };
+    const cmd = indexerCommand(env).cmd;
+    expect(cmd).toContain(" -e GATEWAY_PARTY=gateway::1220cd");
+    expect(cmd).toContain(` -v ${file}:/run/explorer/gateway.token:ro -e GATEWAY_LEDGER_TOKEN_FILE=/run/explorer/gateway.token`);
+    expect(cmd).toContain(" -e CUSTODY_MS=5000");
+    expect(cmd).not.toContain("secret-value");
+    // Neither is set for the explorer's own container, which never reads as the gateway.
+    expect(start(env)).not.toContain("GATEWAY_PARTY");
+    expect(start(env)).not.toContain("gateway.token");
+    expect(indexerCommand().cmd).not.toContain("GATEWAY_PARTY");
+  });
+
   it("starts the indexer without a journal, and says so, when the producer has no work folder", () => {
     const { cmd, stderr } = indexerCommand();
     expect(cmd).not.toContain("JOURNAL_DIR");

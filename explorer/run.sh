@@ -51,6 +51,7 @@
 # the same path (the Docker daemon must see it there). The sandbox image is PINS' SOLC_SANDBOX_IMAGE (Debian slim: the official compilers need glibc's shared libraries), which must be on the machine already (docker pull it once). SOLC_LIST_URL (the compiler
 # release list; no default) is required, OUTSIDE_USER_AGENT (default "Rome Protocol rome@romeprotocol.com") is what the compiler download says it is, and SOLC_TIMEOUT_MS, SOLC_MEMORY_MB,
 # SOLC_MAX_OUTPUT_MB, SOLC_MAX_INPUT_KB and SOLC_CACHE_MAX_MB are passed on when set.
+# The custody check (the indexer only): GATEWAY_PARTY and GATEWAY_LEDGER_TOKEN_FILE (a 0600 file with a token for a user that can only read as the gateway party), set together; CUSTODY_MS is how often it is read.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
@@ -185,9 +186,12 @@ indexer_args() {
   local reth=${INDEXER_RETH_RPC_URL:-${RETH_RPC_URL:-}} ledger=${INDEXER_LEDGER_URL:-${LEDGER_URL:-}}
   [ -z "$reth" ] || ARGS+=(-e "RETH_RPC_URL=$reth")
   [ -z "$ledger" ] || ARGS+=(-e "LEDGER_URL=$ledger")
-  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS; do
+  for v in RPC_TIMEOUT_MS INDEX_DERIVE INDEX_POLL_MS INDEX_RETH_BEHIND_MS INDEX_TRACE_TIMEOUT_MS CUSTODY_MS; do
     [ -z "${!v:-}" ] || ARGS+=(-e "$v=${!v}")
   done
+  # The custody read (the registered tokens and what the gateway holds of each) is made as the gateway party, with a token of its own: the indexer's, never the explorer's.
+  [ -z "${GATEWAY_PARTY:-}" ] || ARGS+=(-e "GATEWAY_PARTY=$GATEWAY_PARTY")
+  [ -z "${GATEWAY_LEDGER_TOKEN_FILE:-}" ] || mount_file GATEWAY_LEDGER_TOKEN_FILE "$GATEWAY_LEDGER_TOKEN_FILE"
 }
 
 # The pinned Docker program, in <state>/explorer-verifier/bin/docker: downloaded once, and checked against PINS' SHA-256 before it is used.

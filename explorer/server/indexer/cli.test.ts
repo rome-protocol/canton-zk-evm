@@ -73,6 +73,28 @@ describe("the indexer's command", () => {
     }
   });
 
+  it("refuses to start when GATEWAY_LEDGER_TOKEN_FILE is open to others, or when only one of the gateway's party and token file is set, and never prints the token", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "explorer-cli-gateway-token-"));
+    const file = join(dir, "token");
+    const secret = "tok." + randomBytes(24).toString("hex");
+    const base = { READER_PARTY: FAKE_READER, GATEWAY_ADDRESS: "0x" + "9a".repeat(20), EXPLORER_DATABASE_URL: "postgres://nobody@127.0.0.1:1/none" };
+    try {
+      writeFileSync(file, secret, { mode: 0o640 });
+      chmodSync(file, 0o640);
+      const open = await run({ ...base, GATEWAY_PARTY: "gateway::1220" + "cd".repeat(32), GATEWAY_LEDGER_TOKEN_FILE: file }, null);
+      expect(open.code).toBe(1);
+      expect(open.out).toContain("GATEWAY_LEDGER_TOKEN_FILE");
+      expect(open.out).not.toContain(secret);
+      const half = await run({ ...base, GATEWAY_LEDGER_TOKEN_FILE: file }, null);
+      expect(half.code).toBe(1);
+      expect(half.out).toContain("GATEWAY_PARTY");
+      expect(half.out).not.toContain(secret);
+    } finally {
+      rmSync(file, { force: true });
+      rmdirSync(dir);
+    }
+  });
+
   describe.skipIf(!TEST_URL)("against the database", () => {
     checkRequired();
     it("reset --yes empties the tables and reader-moved records a move, through the command", async () => {
