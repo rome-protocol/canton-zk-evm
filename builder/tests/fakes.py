@@ -60,20 +60,36 @@ class Leg:
                 + word(self.amount) + word(0xC0) + word(len(text)) + text + bytes(-len(text) % 32))
 
 
-def tx(sender: str, nonce: int, gas: int = 21000, price: int = 10, name: str = "") -> dict:
+def tx(sender: str, nonce: int, gas: int = 21000, price: int = 10, name: str = "", used: int = 21000, size: int = 0) -> dict:
+    """`gas` is the transaction's gas limit, as the pool shows it. `used` (the `_used` field) is what the fake reth charges when it
+    runs the transaction. A real pool does not know it and the builder never reads it. `size` (the `_size` field) is the number of padding bytes
+    after the transaction's hash in its raw form, for a big transaction."""
     h = "0x" + hashlib.sha256(f"{sender}{nonce}{name}".encode()).hexdigest()
-    return {"hash": h, "from": sender, "nonce": hex(nonce), "gas": hex(gas), "maxFeePerGas": hex(price)}
+    return {"hash": h, "from": sender, "nonce": hex(nonce), "gas": hex(gas), "maxFeePerGas": hex(price), "_used": used, "_size": size}
 
 
 def raw_of(t: dict) -> str:
-    return "0x02" + t["hash"][2:]  # a typed transaction, as bytes
+    return "0x02" + t["hash"][2:] + "ab" * t.get("_size", 0)  # a typed transaction, as bytes: the hash, then padding
+
+
+def hash_of(raw: str) -> str:
+    return "0x" + raw[4:68]
 
 
 class FakeReth:
     """The builder-only WebSocket port and the Engine port of one reth. `pool` is txpool_content's pending part."""
 
-    def __init__(self, pool: dict, gas_limit: int = 30_000_000):
+    def __init__(self, pool: dict, gas_limit: int = 30_000_000, skip_invalid: bool = True, max_request: int = 15_000_000):
         self.pool, self.gas_limit = pool, gas_limit
+        self.max_request = max_request   # reth refuses a WebSocket request over 15 MB (the connection is closed, code 1009)
+        self.vanished: set = set()       # hashes that txpool_content still lists but eth_getRawTransactionByHash answers null for (replaced or evicted since)
+        self.ws_frames: list = []        # the size of each WebSocket request, in characters
+        self.batches: list = []          # the number of calls in each JSON-RPC batch request
+        # reth's --testing.skip-invalid-transactions, which network/reth/launch.sh always passes. On: a transaction whose gas limit is above the
+        # gas the block has left is left out, with its sender's later ones. Off: the build fails on it, as reth 2.5.2 does without the flag.
+        self.skip_invalid = skip_invalid
+        self.tamper: list = []   # one entry per build, first first: None (build as asked), "extra" (add a transaction nobody asked for), "reorder", or "over_cap" (report gasUsed above the cap); once used up, builds are honest
+        self.tamper_always = None   # a way of lying about every build from then on (the same names)
         self.genesis = "0x" + "66" * 32   # the hash of block 0
         self.mined: dict = {}   # hash -> transaction, for every transaction the pool lost when a block holding it became head
         self.engine_calls: list = []   # (method, params)
@@ -110,15 +126,26 @@ class FakeReth:
             pass
 
     def _one(self, conn, message):
+        self.ws_frames.append(len(message))
+        if len(message) > self.max_request:
+            conn.close(1009, "message too big")
+            return
         req = json.loads(message)
+        if isinstance(req, list):
+            self.batches.append(len(req))
+        if isinstance(req, list):   # a JSON-RPC batch: one frame holding an array, answered by one frame holding an array
+            conn.send(json.dumps([self._answer(r) for r in req]))
+            return
+        conn.send(json.dumps(self._answer(req)))
+
+    def _answer(self, req) -> dict:
         self.ws_calls.append((req["method"], req["params"]))
         try:
-            result = self._rpc(req["method"], req["params"])
-            conn.send(json.dumps({"jsonrpc": "2.0", "id": req["id"], "result": result}))
+            return {"jsonrpc": "2.0", "id": req["id"], "result": self._rpc(req["method"], req["params"])}
         except KeyError as e:
-            conn.send(json.dumps({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": f"unknown {e}"}}))
+            return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32601, "message": f"unknown {e}"}}
         except RpcError as e:
-            conn.send(json.dumps({"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32000, "message": str(e)}}))
+            return {"jsonrpc": "2.0", "id": req["id"], "error": {"code": -32000, "message": str(e)}}
 
     def became_head(self, block_hash):
         """What reth 2.5.2 does when a block becomes head: its transactions leave the pool as mined (and a sender left with none
@@ -135,7 +162,7 @@ class FakeReth:
 
     def send_raw(self, raw):
         """eth_sendRawTransaction: a transaction already in the pool is `already known`; one reth never saw is refused."""
-        hash_ = "0x" + raw[4:]
+        hash_ = hash_of(raw)
         if self.crash_on_send:
             self.crash_on_send = False
             raise RuntimeError("the connection broke")
@@ -157,6 +184,8 @@ class FakeReth:
         if method == "txpool_status":
             return {"pending": hex(sum(len(ts) for ts in self.pool.values())), "queued": "0x0"}
         if method == "eth_getRawTransactionByHash":
+            if params[0] in self.vanished:
+                return None
             return next(raw_of(t) for ts in self.pool.values() for t in ts if t["hash"] == params[0])
         if method == "eth_sendRawTransaction":
             return self.send_raw(params[0])
@@ -181,18 +210,47 @@ class FakeReth:
                     "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb01"]}]}
         raise KeyError(method)
 
+    def _run(self, raws):
+        """What reth 2.5.2's testing_buildBlockV1 does with a list of transactions: each one runs if its gas limit is no more than the gas the
+        block has left (the Ethereum rule: the gas used so far plus the limit is at most the block's gas limit). One that does not fit fails the build, or,
+        with skip_invalid, is left out together with its sender's later ones. Returns (the raw transactions that ran, the gas they used)."""
+        by_raw = {raw_of(t): t for ts in [*self.pool.values(), *([t] for t in self.mined.values())] for t in ts}
+        ran, used, stopped = [], 0, set()
+        for raw in raws:
+            t = by_raw[raw]
+            if t["from"] in stopped:
+                continue
+            limit = int(t["gas"], 16)
+            if limit > self.gas_limit - used:
+                if not self.skip_invalid:
+                    raise RpcError(f"transaction gas limit {limit} is more than blocks available gas {self.gas_limit - used}")
+                stopped.add(t["from"])
+                continue
+            ran.append(raw)
+            used += t["_used"]
+        return ran, used
+
     def _build(self, parent, attributes, raws, extra):
         p = self.blocks[parent]
-        number, gas_used = p["number"] + 1, 21000 * len(raws)
+        raws, gas_used = self._run(raws)
+        how = self.tamper.pop(0) if self.tamper else self.tamper_always
+        reported = gas_used
+        if how == "extra":
+            raws = [*raws, "0x02" + "ee" * 32]
+        elif how == "reorder":
+            raws = raws[::-1]
+        elif how == "over_cap":
+            reported = self.gas_limit + 1
+        number = p["number"] + 1
         header = rlp([bytes.fromhex(parent[2:]), number.to_bytes(4, "big"), gas_used.to_bytes(4, "big"),
                       int(attributes["timestamp"], 16).to_bytes(8, "big")])
         h = "0x" + keccak256(header).hex()
         self.blocks[h] = {"number": number, "timestamp": int(attributes["timestamp"], 16), "gasLimit": self.gas_limit}
-        self.block_txs[h] = ["0x" + r[4:] for r in raws]
+        self.block_txs[h] = [hash_of(r) for r in raws]
         self.by_number[number] = h
         self.raw_blocks[number] = "0x" + rlp([Raw(header), [bytes.fromhex(r[2:]) for r in raws], [], []]).hex()
         payload = {"parentHash": parent, "blockNumber": hex(number), "blockHash": h, "gasLimit": hex(self.gas_limit),
-                   "gasUsed": hex(gas_used), "timestamp": attributes["timestamp"], "transactions": raws}
+                   "gasUsed": hex(reported), "timestamp": attributes["timestamp"], "transactions": raws}
         return {"executionPayload": payload, "executionRequests": []}
 
     def _logs(self, flt):

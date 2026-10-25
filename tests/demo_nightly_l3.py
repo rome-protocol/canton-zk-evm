@@ -330,17 +330,35 @@ def from_database(body):
 
 
 class Sender(threading.Thread):
-    """Sends batches of transfers one after another, one batch ahead of the builder: the next batch goes into reth's pool while the builder cuts the block before it."""
+    """Sends batches of transfers one after another, one batch ahead of the builder: the next batch goes into reth's pool while the builder cuts the block before it.
+    V's nonce is read once, at the start, and counted up here: while the builder cuts a block, reth moves back and sends the block's transactions to the pool one at a
+    time, and a read of "pending" in that window answers the old nonce (reth 2.5.2 counts the unbroken run of pool transactions from the chain's nonce), so a batch
+    that read it would sign nonces that are taken."""
     def __init__(self, py, root, per_block):
         super().__init__(daemon=True)
         # At the lowest priority: on the runner the sender shares its cores with Canton, reth, the builder and the explorer, and a sender that is ahead of them starved
         # Canton into answering the builder's Advance too late (20 s) in two of four trial runs.
-        self.cmd, self.ready, self.stop, self.error = ["nice", "-n", "19", py, str(root / "demo_w1.py"), "plain", str(per_block)], queue.Queue(maxsize=1), False, None
+        self.prefix, self.script, self.per_block = ["nice", "-n", "19"], [py, str(root / "demo_w1.py")], per_block
+        self.nonce = None   # V's next nonce
+        self.ready, self.stop, self.error = queue.Queue(maxsize=1), False, None
+
+    def command(self, *args):
+        """The command line of a demo_w1.py call. Its output is kept, and its stderr is in the error when it fails."""
+        return [*self.prefix, *self.script, *map(str, args)]
+
+    def call(self, *args):
+        done = subprocess.run(self.command(*args), capture_output=True, text=True)
+        if done.returncode != 0:
+            raise RuntimeError(f"the sender's {' '.join(map(str, args[:2]))} returned non-zero exit status {done.returncode}: "
+                               f"{(done.stderr.strip() or done.stdout.strip())[-600:]}")
+        return done.stdout
 
     def run(self):
         try:
+            self.nonce = int(self.call("nonce").strip().splitlines()[-1])
             while not self.stop:
-                subprocess.run(self.cmd, check=True, capture_output=True)
+                self.call("plain", self.per_block, self.nonce)
+                self.nonce += self.per_block
                 while not self.stop:
                     try:
                         self.ready.put(True, timeout=0.5)

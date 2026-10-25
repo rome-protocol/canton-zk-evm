@@ -70,7 +70,7 @@ class WhenToBuild(Loop):
         self.assertEqual(len(self.reports), 1)
 
     def test_after_a_commit_the_next_block_is_made_at_once(self):
-        a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)   # too big for one block
+        a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)   # each uses 20M of the 30M block: too big for one block
         s = self.setup({ALICE: [a], BOB: [c]})
         p = self.producer(s)
         p.step(); p.step()
@@ -236,8 +236,8 @@ class Refusals(Loop):
         self.assertEqual(self.in_pool(s), {bad["hash"]})
 
     def test_refusals_with_a_commit_between_them_are_not_consecutive(self):
-        t = tx(ALICE, 0, gas=20_000_000)
-        u = tx(BOB, 0, gas=20_000_000, price=5)
+        t = tx(ALICE, 0, gas=20_000_000, used=20_000_000)
+        u = tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)
         s = self.setup({ALICE: [t], BOB: [u]}, refuse="no")
         p = self.producer(s)
         p.step()
@@ -605,7 +605,7 @@ class Housekeeping(Loop):
 
 class StatusFile(Loop):
     def test_the_status_after_a_commit_and_a_refusal(self):
-        a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)
+        a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)
         s = self.setup({ALICE: [a], BOB: [c]})
         p = self.producer(s)
         p.write_status()
@@ -644,7 +644,7 @@ class StatusFile(Loop):
 
 class TheCommand(Loop):
     def test_a_signal_lets_the_block_in_progress_finish_and_exits_zero(self):
-        a, c = tx(ALICE, 0, gas=20_000_000), tx(BOB, 0, gas=20_000_000, price=5)
+        a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)
         s = self.setup({ALICE: [a], BOB: [c]})
         status = str(Path(s.dir) / "status.json")
         proc = subprocess.Popen([sys.executable, str(HERE.parent / "builder.py"), "run", "--idle-ms", "50", "--status-file", status],
@@ -860,6 +860,34 @@ class SavedBlock(Loop):
             head = "0x" + chain["headHash"]
             reth.forkchoice(head, head, head)
             b.build_and_import(s.cfg, reth, chain, head, set())
+
+    def test_a_rebuild_that_reth_empties_leaves_no_saved_copy_and_the_next_step_backs_off_instead_of_restoring(self):
+        # BOB's leg has no Canton side. After the first build reth has less gas: the rebuild of ALICE's transaction is left out for its gas limit,
+        # so the rebuilt block is empty and (prove_empty False) is skipped. ALICE's transaction is back in the pool, so no saved copy may remain:
+        # it would be sent again by the next step as a recovered block.
+        good, bad = tx(ALICE, 0, gas=90_000, price=20), tx(BOB, 0, gas=90_000, price=10)
+        s = self.setup({ALICE: [good], BOB: [bad]})   # no terms
+        s.reth.tx_legs[bad["hash"]] = [tb.PAY]
+        real, seen = b.read_legs, []
+
+        def read(*a, **k):
+            out = real(*a, **k)
+            if not seen:
+                seen.append(1)
+                s.reth.gas_limit = 50_000
+            return out
+        p = self.producer(s)
+        with mock.patch.object(b, "read_legs", read):
+            p.step()
+        self.assertEqual([r.get("skipped") for r in self.reports], [True])
+        self.assertEqual([x["transaction"] for x in self.reports[0]["leftOut"]], [bad["hash"]])
+        self.assertFalse(self.saved(s).exists())
+        self.assertEqual({t["hash"] for ts in s.reth.pool.values() for t in ts}, {good["hash"], bad["hash"]})
+        looked = len(self.built(s))
+        p.step(); p.step()   # inside the pause: nothing is restored, built or reported
+        self.assertEqual(len(self.reports), 1)
+        self.assertEqual(len(self.built(s)), looked)
+        self.assertNotIn("recovered", json.dumps(self.reports))
 
     def test_the_transactions_are_on_disk_while_the_block_is_proven_and_gone_once_it_is_committed(self):
         t = tx(ALICE, 0)
@@ -1091,15 +1119,15 @@ class IdleChecks(Loop):
         s = self.setup({BOB: [t]})
         s.reth.tx_legs[t["hash"]] = [tb.PAY]
         p = self.producer(s)
-        p.step()   # one look: the pool is fetched once
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 1))
+        p.step()   # one look: the pool is fetched for the build and again for the rebuild without the left-out transaction
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 2))
         for _ in range(10):
             p.step()   # the clock has not moved
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 1))
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 2))
         self.now[0] += 2.0; p.step()   # the first pause is over: the pool is built from again (and the next pause is 4 s)
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (2, 2))
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (2, 4))
         self.now[0] += 2.0; p.step()   # the count is read again; it is unchanged and the pause is not over: no fetch
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (3, 2))
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (3, 4))
 
 
 if __name__ == "__main__":
