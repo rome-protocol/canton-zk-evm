@@ -1,7 +1,7 @@
 import { keccak256, parseTransaction, recoverTransactionAddress, type Hex } from "viem";
 import type { Tracker } from "./tracker.ts";
 import { isHexBytes } from "./hex.ts";
-import { createHeavyLimiter, isHeavy } from "./rpc-heavy.ts";
+import { createHeavyLimiter, isHeavy, MAX_IN_FLIGHT } from "./rpc-heavy.ts";
 
 /**
  * The public RPC: what a wallet or a script sees of the chain. It forwards to reth, but it shows only what is final on Canton.
@@ -60,7 +60,11 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 /** A block argument made public: a tag becomes the finalized number, a number above it is `above`, anything else is bad. */
 type Pinned = { value: unknown } | { above: true } | { bad: true };
 
-class Unreachable extends Error {}
+class Unreachable extends Error {
+  /** True when the explorer stopped waiting: reth may still be running the call. */
+  timedOut: boolean;
+  constructor(message: string, timedOut = false) { super(message); this.timedOut = timedOut; }
+}
 
 /**
  * What a client's bucket is keyed on. An IPv6 customer holds a whole /64, so each one is one client: rotating through the
@@ -78,7 +82,7 @@ export function clientKey(ip: string): string {
 }
 
 export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
-  const { rethUrl, timeoutMs, chainId, tracker, now = Date.now, finalizedTtlMs = 500, maxInFlight = 64, heavyConcurrency = 8, heavyQueue = 16 } = o;
+  const { rethUrl, timeoutMs, chainId, tracker, now = Date.now, finalizedTtlMs = 500, maxInFlight = MAX_IN_FLIGHT, heavyConcurrency = 8, heavyQueue = 16 } = o;
   const heavy = createHeavyLimiter(heavyConcurrency, heavyQueue);
   let inFlight = 0;
   const perMs = o.ratePerMinute / 60000;
@@ -114,7 +118,7 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       body = (await res.json()) as typeof body;
     } catch (e) {
-      throw new Unreachable(`${method}: ${(e as Error).message}`);
+      throw new Unreachable(`${method}: ${(e as Error).message}`, (e as Error).name === "TimeoutError");
     }
     if (body.error) return { error: { code: body.error.code, message: body.error.message, ...(body.error.data === undefined ? {} : { data: body.error.data }) } };
     if (!("result" in body)) throw new Unreachable(`${method}: no result`);
@@ -354,6 +358,13 @@ export function createPublicRpc(o: PublicRpcOptions): PublicRpc {
       return { jsonrpc: "2.0", id: callId, ...(await handle(req.method, (req.params as unknown[] | undefined) ?? [], fin)) };
     } catch (e) {
       console.error(`rpc: ${(e as Error).message}`);
+      // reth does not stop a call when the explorer stops waiting for it. A heavy call that timed out keeps its place for one more
+      // timeout, so abandoned calls that reth may still be running count against the cap and do not let more in meanwhile.
+      if (release && e instanceof Unreachable && e.timedOut) {
+        const held = release;
+        release = undefined;
+        setTimeout(held, timeoutMs).unref();
+      }
       return { jsonrpc: "2.0", id: callId, ...err(-32603, e instanceof Unreachable ? "The chain cannot be reached right now. Try again in a moment." : "Something went wrong in the RPC. Try again in a moment.") };
     } finally {
       release?.();

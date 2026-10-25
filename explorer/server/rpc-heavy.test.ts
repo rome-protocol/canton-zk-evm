@@ -1,10 +1,17 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { keccak256, type Hex } from "viem";
 import { createPublicRpc, type PublicRpc } from "./public-rpc.ts";
 import { createHeavyLimiter, HEAVY_METHODS, isHeavy } from "./rpc-heavy.ts";
 import { startFakeReth, type FakeReth } from "../test/fake-reth.ts";
 
 const hx = (n: number) => "0x" + n.toString(16);
 const block = { number: hx(5), hash: "0x" + "05".repeat(32), transactions: [] };
+
+let RAW: Hex;
+beforeAll(async () => {
+  RAW = await privateKeyToAccount(generatePrivateKey()).signTransaction({ type: "eip1559", chainId: 1, nonce: 3, to: "0x" + "ab".repeat(20), value: 1n, gas: 21000n, maxFeePerGas: 10n ** 9n, maxPriorityFeePerGas: 1n } as never);
+});
 
 let reth: FakeReth | undefined;
 afterEach(async () => { await reth?.close(); reth = undefined; });
@@ -21,15 +28,16 @@ function hold() {
   return { state, heavy, release };
 }
 
-async function boot(o: { concurrency: number; queue: number; maxInFlight?: number }) {
+async function boot(o: { concurrency: number; queue: number; maxInFlight?: number; timeoutMs?: number; heavy?: (p: unknown[]) => unknown; httpStatus?: number; gate?: (m: string) => Promise<void> | void }) {
   const h = hold();
   reth = await startFakeReth({
     eth_getBlockByNumber: block, eth_chainId: hx(1), eth_blockNumber: hx(5), eth_getBalance: "0x64", eth_gasPrice: "0x1",
-    eth_getTransactionCount: "0x3", eth_getCode: "0x", eth_sendRawTransaction: "0x" + "ab".repeat(32),
-    eth_call: h.heavy, eth_estimateGas: h.heavy, eth_getLogs: h.heavy,
-  });
+    eth_getTransactionCount: "0x3", eth_getCode: "0x", eth_sendRawTransaction: (p: unknown[]) => keccak256(p[0] as Hex),
+    eth_call: o.heavy ?? h.heavy, eth_estimateGas: o.heavy ?? h.heavy, eth_getLogs: o.heavy ?? h.heavy,
+    eth_getTransactionReceipt: null,
+  }, { httpStatus: o.httpStatus, gate: o.gate });
   const rpc: PublicRpc = createPublicRpc({
-    rethUrl: reth.url, timeoutMs: 5000, chainId: 1, ratePerMinute: 100000, heavyConcurrency: o.concurrency, heavyQueue: o.queue,
+    rethUrl: reth.url, timeoutMs: o.timeoutMs ?? 5000, chainId: 1, ratePerMinute: 100000, heavyConcurrency: o.concurrency, heavyQueue: o.queue,
     maxInFlight: o.maxInFlight, tracker: { admit: () => null, track: () => {} },
   });
   const send = (method: string, ip: string, params: unknown[] = []) => rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }), ip);
@@ -71,6 +79,26 @@ describe("the heavy limiter", () => {
   });
 });
 
+describe("the heavy limiter queue", () => {
+  it("passes slots to the waiters oldest first", async () => {
+    const l = createHeavyLimiter(1, 3);
+    const first = (await l.acquire())!;
+    const order: number[] = [];
+    const waiters = [1, 2, 3].map((n) => l.acquire().then((r) => { order.push(n); return r!; }));
+    expect(l.stats()).toEqual({ running: 1, queued: 3 });
+    first();
+    const r1 = await waiters[0]!;
+    expect(order).toEqual([1]);
+    r1();
+    const r2 = await waiters[1]!;
+    expect(order).toEqual([1, 2]);
+    r2();
+    (await waiters[2]!)();
+    expect(order).toEqual([1, 2, 3]);
+    expect(l.stats()).toEqual({ running: 0, queued: 0 });
+  });
+});
+
 describe("the public RPC under a heavy flood", () => {
   it("never runs more heavy calls at reth than the cap, from many clients", async () => {
     const { h, send } = await boot({ concurrency: 3, queue: 100 });
@@ -104,9 +132,10 @@ describe("the public RPC under a heavy flood", () => {
     const light = await Promise.all([
       send("eth_chainId", "10.2.5.1"), send("eth_blockNumber", "10.2.5.2"), send("eth_getBalance", "10.2.5.3", ["0x" + "11".repeat(20), "latest"]),
       send("eth_getTransactionCount", "10.2.5.4", ["0x" + "11".repeat(20), "pending"]), send("eth_getCode", "10.2.5.5", ["0x" + "11".repeat(20), "latest"]),
-      send("eth_gasPrice", "10.2.5.6"),
+      send("eth_gasPrice", "10.2.5.6"), send("eth_getTransactionReceipt", "10.2.5.7", ["0x" + "cd".repeat(32)]),
+      send("eth_sendRawTransaction", "10.2.5.8", [RAW]),
     ]);
-    expect(light.map((a) => a.status)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(light.map((a) => a.status)).toEqual([200, 200, 200, 200, 200, 200, 200, 200]);
     expect(light.every((a) => "result" in (a.body as object))).toBe(true);
     await drain(h, heavy);
   });
@@ -129,16 +158,41 @@ describe("the public RPC under a heavy flood", () => {
     void send;
   });
 
-  it("frees the slot when a heavy call fails", async () => {
-    const { h, send } = await boot({ concurrency: 1, queue: 0 });
-    reth!.calls.length = 0;
-    const first = send("eth_call", "10.4.0.1", [{}]);
-    await until(() => h.state.running === 1);
-    h.release();
-    expect((await first).status).toBe(200);
-    const second = send("eth_call", "10.4.0.2", [{}]);
-    await until(() => h.state.running === 1);
-    h.release();
-    expect((await second).status).toBe(200);
+  it("frees the slot when a heavy call fails at reth", async () => {
+    // reth answers the first call with a JSON-RPC error and the second with a value; one slot, no queue.
+    let n = 0;
+    const { send } = await boot({ concurrency: 1, queue: 0, heavy: () => { if (n++ === 0) throw new Error("execution reverted"); return "0x"; } });
+    const first = await send("eth_call", "10.4.0.1", [{}]);
+    expect((first.body as { error?: unknown }).error).toBeDefined();
+    const second = await send("eth_call", "10.4.0.2", [{}]);
+    expect(second.status).toBe(200);
+    expect((second.body as { result?: string }).result).toBe("0x");
+  });
+
+  it("frees the slot when reth cannot be reached", async () => {
+    const { send, rpc } = await boot({ concurrency: 1, queue: 0, httpStatus: 500 });
+    for (let i = 0; i < 3; i++) {
+      const a = await rpc(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{}] }), `10.4.1.${i}`);
+      expect((a.body as { error: { code: number } }).error.code).toBe(-32603); // unreachable, never the busy error
+      expect(a.status).toBe(200);
+    }
+    void send;
+  });
+
+  it("keeps the place of a call that timed out for one more timeout, because reth may still be running it", async () => {
+    // reth never answers an eth_call; the explorer gives up after 150 ms.
+    const { send } = await boot({ concurrency: 1, queue: 0, timeoutMs: 150, gate: (m) => (m === "eth_call" ? new Promise<void>(() => {}) : undefined) });
+    const t0 = Date.now();
+    const first = await send("eth_call", "10.5.0.1", [{}]);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(140);
+    expect((first.body as { error: { code: number } }).error.code).toBe(-32603);
+    // The first call is gone from the explorer's side but still counts: the next one is refused at once.
+    const busy = await send("eth_call", "10.5.0.2", [{}]);
+    expect(busy.status).toBe(429);
+    expect((busy.body as { error: { code: number } }).error.code).toBe(-32005);
+    // After another timeout the place is free again: the next call is let in (and times out in its turn).
+    await new Promise((r) => setTimeout(r, 200));
+    const later = await send("eth_call", "10.5.0.3", [{}]);
+    expect((later.body as { error: { code: number } }).error.code).toBe(-32603);
   });
 });

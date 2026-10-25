@@ -11,6 +11,11 @@
  */
 export const HEAVY_METHODS: ReadonlySet<string> = new Set(["eth_call", "eth_estimateGas", "eth_getLogs"]);
 
+/** The most requests the public RPC holds at once, from all clients together; the rest get a 503. */
+export const MAX_IN_FLIGHT = 64;
+/** Every running or queued heavy call holds one of those places, so heavy concurrency + queue may take at most half of them: the other half is for light calls. */
+export const MAX_HEAVY_PLACES = MAX_IN_FLIGHT / 2;
+
 export const isHeavy = (method: string): boolean => HEAVY_METHODS.has(method);
 
 export interface HeavyLimiter {

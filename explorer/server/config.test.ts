@@ -56,6 +56,10 @@ describe("settings", () => {
     expect(() => load({ RPC_RATE_PER_MINUTE: "0" })).toThrow(/RPC_RATE_PER_MINUTE/);
     expect(load({ RPC_HEAVY_CONCURRENCY: "4", RPC_HEAVY_QUEUE: "0" }).publicRpc).toMatchObject({ heavyConcurrency: 4, heavyQueue: 0 });
     expect(() => load({ RPC_HEAVY_CONCURRENCY: "0" })).toThrow(/RPC_HEAVY_CONCURRENCY/);
+    // Heavy calls hold request places (64 at once); concurrency + queue past half of them would starve light calls.
+    expect(load({ RPC_HEAVY_CONCURRENCY: "8", RPC_HEAVY_QUEUE: "24" }).publicRpc).toMatchObject({ heavyConcurrency: 8, heavyQueue: 24 });
+    expect(() => load({ RPC_HEAVY_CONCURRENCY: "8", RPC_HEAVY_QUEUE: "25" })).toThrow(/at most 32/);
+    expect(() => load({ RPC_HEAVY_QUEUE: "60" })).toThrow(/RPC_HEAVY_QUEUE/);
     expect(() => load({ TRUSTED_IP_HEADER: "bad header" })).toThrow(/TRUSTED_IP_HEADER/);
     expect(() => load({ TRACKER_MAX: "2" })).toThrow(/TRACKER_MAX/);
     expect(() => load({ TRACKER_MAX_BYTES: "10" })).toThrow(/TRACKER_MAX_BYTES/);
