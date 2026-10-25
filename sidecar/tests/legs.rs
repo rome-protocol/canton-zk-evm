@@ -536,3 +536,55 @@ fn the_reasons_come_in_this_order() {
     let b = gateway_block("three");
     assert_eq!(legs(&b.line_with(&b.legs[..2])), NOT_RECORDED);
 }
+
+/// The Daml side asserts that every node of the gateway's proofs is non-empty lowercase hex before it
+/// calls the sidecar. The sidecar carries the same rule alone: an empty node, a trailing or leading
+/// `;`, a capital letter, a `,` inside a node and an odd-length node are each refused as malformed.
+#[test]
+fn a_gateway_node_that_is_not_lowercase_hex_of_whole_bytes_is_refused() {
+    let b = gateway_block("three");
+    assert_eq!(legs(&b.line()), b.ok());
+    assert!(b.account_nodes.len() > 1 && !b.storage_nodes.is_empty());
+    // the two lists are tried in turn, each with the same mistakes
+    for storage in [false, true] {
+        let with = |nodes: Vec<String>| {
+            let mut c = b.clone();
+            if storage {
+                c.storage_nodes = nodes;
+            } else {
+                c.account_nodes = nodes;
+            }
+            c.line()
+        };
+        let good = if storage {
+            &b.storage_nodes
+        } else {
+            &b.account_nodes
+        };
+        let first = good[0].clone();
+        let rest = good[1..].to_vec();
+        let at = |node: String| [vec![node], rest.clone()].concat();
+        let mut bad = vec![
+            // an empty node: first, in the middle, last (a trailing ';' is an empty last node)
+            with([vec![String::new()], good.clone()].concat()),
+            with([vec![first.clone(), String::new()], rest.clone()].concat()),
+            with([good.clone(), vec![String::new()]].concat()),
+            // a capital letter
+            with(at(first.to_uppercase())),
+            with(at(format!("{}A{}", &first[..2], &first[3..]))),
+            // a ',' inside a node
+            with(at(format!("{},{}", &first[..2], &first[2..]))),
+            // an odd length, a prefix, a space, a non-hex letter
+            with(at(first[1..].to_string())),
+            with(at(format!("{first}0"))),
+            with(at(format!("0x{first}"))),
+            with(at(format!(" {first}"))),
+            with(at(format!("{}g{}", &first[..2], &first[3..]))),
+        ];
+        // a lone ';' is two empty nodes
+        bad.push(with(vec![";".into()]));
+        for line in bad {
+            assert_eq!(legs(&line), MALFORMED, "storage={storage} {line:.80}");
+        }
+    }
+}
