@@ -112,7 +112,7 @@ Both forms share all other source code, including every check that `Advance` and
 
 ## Versions and dependencies
 
-- **Daml SDK 3.5.12**, the version in `daml.yaml`, the latest 3.5 release when this was written. It compiles to LF 2.1, which Canton 3.5 and 3.6 both load. Canton 3.6 is the target network; the tests of the stub form still use the 3.5 SDK, and the DAR needs no change for 3.6 except the `external` form's toolchain, the released Daml 3.6 SDK.
+- **Daml SDK 3.5.12**, the version in `daml.yaml`, the latest 3.5 release when this was written. It compiles to LF 2.1, which Canton 3.5 and 3.6 both load. Canton 3.6 is the target network; the tests of the stub form run on the 3.5 SDK (the `test` job) and on the pinned 3.6.0 / LF 2.4 toolchain (the `upgrade` job), and the DAR needs no change for 3.6 except the `external` form's toolchain, the released Daml 3.6 SDK.
 - **Token standard (CIP-0056) API packages**, from the Splice 0.8.3 release, unchanged and pinned by `dars/SHA256SUMS`. The package builds against the metadata, holding, allocation and transfer-instruction packages. `dars/README.md` says where they come from. The reference token the tests use is Splice's own test token from the same release.
 
 ## Build and test
