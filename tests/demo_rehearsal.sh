@@ -309,6 +309,26 @@ for g in $(jq -r '.transactions[].gas' <<<"$pack_json"); do pack_limits=$((pack_
 [ "$pack_limits" -gt "$GAS_CAP" ] || fail "the 8 deployments' gas limits ($pack_limits) are not over the cap ($GAS_CAP): the check proves nothing"
 [ "$(jq -r '.gasUsed' <<<"$pack_json" | xargs printf '%d')" -le "$GAS_CAP" ] || fail "block $PACK_BLOCK used more gas than the cap"
 echo "block $PACK_BLOCK: 8 transactions that declare $pack_limits gas against a cap of $GAS_CAP, packed by gas used"
+# The cap, by gas used, with the heaviest calls: 21 Stress calls that each declare 2 Mgas (42 Mgas, over the 30 Mgas cap) and use about 1.45 Mgas. Packed by limits, 15
+# would fit; packed by gas used, reth runs each one while the gas left is at least its limit, so about 20 go in and the last waits for the next block.
+# This is the worst-case block of docs/METRICS.md under the packing the builder now does (its W1 re-measure).
+stress_txs=()
+while read -r h; do stress_txs+=("$h"); done < <(w1py stress "$STRESS" 21)
+[ "${#stress_txs[@]}" = 21 ] || fail "21 Stress calls were not sent: ${#stress_txs[@]}"
+cut_block
+STRESS_BLOCK=$(receipt_of "${stress_txs[0]}" | jq -r .block)
+[[ $STRESS_BLOCK =~ ^[0-9]+$ ]] || fail "the first of the 21 Stress calls is in no block: $(receipt_of "${stress_txs[0]}")"
+grep -Eq "^block $STRESS_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$CUT_ERR" \
+  || fail "block $STRESS_BLOCK was not packed by gas used: $(grep "^block " "$CUT_ERR" | tr '\n' '|')"
+stress_json=$(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$STRESS_BLOCK")\",true" | jq -c .result)
+stress_in=$(jq '.transactions | length' <<<"$stress_json"); stress_used=$(jq -r '.gasUsed' <<<"$stress_json" | xargs printf '%d')
+[ "$stress_in" -gt $((GAS_CAP / 2000000)) ] || fail "block $STRESS_BLOCK holds $stress_in Stress calls, no more than gas-limit packing's $((GAS_CAP / 2000000)): the builder did not pack by gas used"
+[ "$stress_in" -lt 21 ] || fail "block $STRESS_BLOCK holds all 21 Stress calls (42 Mgas of limits): the gas cap did not leave one out"
+[ "$stress_used" -le "$GAS_CAP" ] || fail "block $STRESS_BLOCK used $stress_used gas, more than the cap"
+[ "$(rpc eth_getTransactionByHash "\"${stress_txs[20]}\"" | jq -r '.result.blockNumber')" = null ] || fail "the 21st Stress call is in block $STRESS_BLOCK: the call that does not fit was not left out"
+cut_block
+[ "$(receipt_of "${stress_txs[20]}" | jq -r .block)" = $((STRESS_BLOCK + 1)) ] || fail "the 21st Stress call did not go into the next block, $((STRESS_BLOCK + 1)): $(receipt_of "${stress_txs[20]}")"
+echo "block $STRESS_BLOCK: $stress_in Stress calls (declared 2 Mgas each, $stress_used gas used of $GAS_CAP), packed by gas used; the 21st in block $((STRESS_BLOCK + 1))"
 # The cap on a block's raw transaction bytes (--max-block-tx-bytes), on the real reth: three deployments of about 30 KB each (initcode that returns at once, then
 # bytes that never run; 1.4 Mgas each, over the 1.22 Mgas that Prague's calldata floor asks for) against a cap of 70,000: the first two go into the block, the third ends the turn of V (it does not fit) and goes into the next block.
 "$PY" -c 'import sys; open(sys.argv[1], "w").write("5f5ff3" + "ff" * 30000)' "$WORK/w1/Big.bin"
