@@ -4,6 +4,24 @@ set -euo pipefail
 [ $# -eq 2 ] || { echo "usage: $0 input out" >&2; exit 2; }
 [ -s "$1" ] || { echo "missing $1" >&2; exit 1; }
 echo "prove $*" >> "${FAKE_LOG:?}"
+# A pool of provers: FAKE_PROVER_PLAN is a folder with a file per coordinator URL (the URL with every character outside a-z, 0-9 turned into "_"),
+# one line per job, taken in order: "ok", "fail", "connect" (the coordinator cannot be reached), "hang" (never finishes), "sleep <seconds>" (slow, then ok),
+# "wrong" (a proof of another block). No line left, or no file: "ok". Each job is also logged, as "<file> <line>", to the folder's own file "log".
+if [ -n "${FAKE_PROVER_PLAN:-}" ]; then
+  tag=$(printf %s "${ZISK_COORDINATOR_URL:-none}" | tr -c 'a-z0-9\n' _)
+  action=ok
+  if [ -s "$FAKE_PROVER_PLAN/$tag" ]; then
+    action=$(head -n 1 "$FAKE_PROVER_PLAN/$tag"); tail -n +2 "$FAKE_PROVER_PLAN/$tag" > "$FAKE_PROVER_PLAN/$tag.tmp"; mv "$FAKE_PROVER_PLAN/$tag.tmp" "$FAKE_PROVER_PLAN/$tag"
+  fi
+  echo "$tag $action" >> "$FAKE_PROVER_PLAN/log"
+  case "$action" in
+    fail) echo "the prover is down" >&2; exit 1 ;;
+    connect) echo "error trying to connect: tcp connect error: Connection refused (os error 111)" >&2; exit 1 ;;
+    hang) exec sleep 3607 ;;
+    sleep\ *) sleep "${action#sleep }" ;;
+    wrong) FAKE_PROVER_WRONG_BLOCK=1 ;;
+  esac
+fi
 sleep "${FAKE_PROVER_SLEEP:-0}"   # a slow prover, to signal the builder in the middle of a block
 if [ "${FAKE_PROVER_FAILS:-}" = 1 ]; then echo "the prover is down" >&2; exit 1; fi
 mkdir -p "$2"

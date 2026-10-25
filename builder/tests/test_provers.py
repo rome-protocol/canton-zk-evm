@@ -1,0 +1,297 @@
+"""The prover pool (provers.py) against the stand-in prover (fake-prove.sh), whose answer is set per job. Run: python3 -m unittest discover -s builder/tests"""
+import os, re, sys, tempfile, threading, time, unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent))
+import builder as b
+import provers as pv
+from journal import check_settings
+
+FAKE = str(HERE / "fake-prove.sh")
+BLOCK = "0x" + "12" * 32
+A, B_, C_ = "http://127.0.0.1:7001", "http://127.0.0.1:7002", "http://127.0.0.1:7003"
+
+
+def tag(url: str) -> str:
+    return re.sub(r"[^a-z0-9]", "_", url)
+
+
+class Case(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.dir, ignore_errors=True))
+        self.plan = self.dir / "plan"
+        self.plan.mkdir()
+        self.env = {"FAKE_LOG": str(self.dir / "fake.log"), "FAKE_PROVER_PLAN": str(self.plan)}
+        for k, v in self.env.items():
+            os.environ[k] = v
+            self.addCleanup(os.environ.pop, k, None)
+        self.input = self.dir / "input.bin"
+        self.input.write_text(BLOCK + "\n")
+        self.n = 0
+
+    def script(self, url, *lines):
+        (self.plan / tag(url)).write_text("".join(f"{l}\n" for l in lines))
+
+    def calls(self):
+        log = self.plan / "log"
+        return log.read_text().split("\n")[:-1] if log.exists() else []
+
+    def job(self, **k):
+        self.n += 1
+        return pv.Job(make_input=None, prove_cmd=FAKE, input_path=self.input, out_dir=self.dir / f"out-{self.n}", check=check_block, **k)
+
+    def pool(self, urls, timeout=20, **k):
+        return pv.Pool([pv.Prover(f"gpu{i}", u) for i, u in enumerate(urls)], timeout=timeout, cooldown_start=0.4, cooldown_max=1.6, **k)
+
+
+def check_block(proof):
+    if b.committed_hash(proof) != BLOCK:
+        raise pv.JobError("the proof commits to another block", outcome="wrong_block")
+
+
+class OneProver(Case):
+    def test_a_proof(self):
+        pool = self.pool([A])
+        done = pool.prove(self.job())
+        self.assertEqual(done.prover, "gpu0")
+        self.assertEqual(len(done.proof), 2688)
+        self.assertTrue((self.dir / "out-1" / "wrapped-proof.hex").is_file())
+        self.assertEqual((pool.events(), pool.status()), ([], None))
+
+    def test_a_failure_is_one_try_with_no_retry_no_health_and_no_event(self):
+        pool = self.pool([A])
+        self.script(A, "fail", "ok")
+        with self.assertRaises(pv.JobError) as e:
+            pool.prove(self.job())
+        self.assertTrue(str(e.exception).startswith("fake-prove.sh failed: the prover is down"))
+        self.assertEqual(self.calls(), [f"{tag(A)} fail"])
+        self.assertEqual((pool.events(), pool.status()), ([], None))
+        self.assertEqual(pool.prove(self.job()).prover, "gpu0")   # nothing marked it down: the next block goes to it
+
+    def test_a_connection_error_with_one_prover_marks_nothing_down(self):
+        pool = self.pool([A])
+        self.script(A, "connect", "ok")
+        with self.assertRaises(pv.JobError) as e:
+            pool.prove(self.job())
+        self.assertTrue(e.exception.connection)
+        self.assertEqual(pool.events(), [])
+        self.assertTrue(pool.any_up())
+        pool.prove(self.job())
+
+    def test_a_hang_is_killed_at_the_timeout(self):
+        pool = self.pool([A], timeout=1)
+        self.script(A, "hang")
+        start = time.monotonic()
+        with self.assertRaises(pv.JobError) as e:
+            pool.prove(self.job())
+        self.assertEqual(e.exception.outcome, "timeout")
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(self.calls(), [f"{tag(A)} hang"])
+        self.assertEqual(subprocess_count("sleep 3607"), 0)   # the whole group went
+
+    def test_one_prover_with_no_url_leaves_the_environment_alone(self):
+        os.environ["ZISK_COORDINATOR_URL"] = A
+        self.addCleanup(os.environ.pop, "ZISK_COORDINATOR_URL", None)
+        pool = pv.Pool([pv.Prover("fake-prove.sh")])
+        self.script(A, "ok")
+        self.assertEqual(pool.prove(self.job()).prover, "fake-prove.sh")
+        self.assertEqual(self.calls(), [f"{tag(A)} ok"])
+
+    def test_the_input_tool_failing_is_no_prover_fault(self):
+        pool = self.pool([A, B_])
+        job = pv.Job(make_input=[str(HERE / "fake-make-input.sh"), "nope", "nope", "nope", str(self.dir / "x")], prove_cmd=FAKE,
+                     input_path=self.input, out_dir=self.dir / "o")
+        with self.assertRaises(pv.JobError) as e:
+            pool.prove(job)
+        self.assertEqual(e.exception.stage, "input")
+        self.assertEqual((self.calls(), pool.events()), ([], []))
+
+
+class Pool2(Case):
+    def test_the_oldest_ready_blocks_go_to_different_provers_one_job_each(self):
+        pool = self.pool([A, B_])
+        self.script(A, "sleep 1")
+        self.script(B_, "sleep 1")
+        tickets = [pool.submit(self.job()) for _ in range(3)]
+        time.sleep(0.4)
+        self.assertEqual(len(self.calls()), 2)    # a third waits: a prover never gets a second job
+        self.assertEqual(sorted(c.split()[0] for c in self.calls()), sorted([tag(A), tag(B_)]))
+        for t in tickets:
+            t.result()
+        self.assertEqual(len(self.calls()), 3)
+
+    def test_a_failure_is_retried_once_on_the_other_prover_and_the_first_goes_down(self):
+        pool = self.pool([A, B_])
+        self.script(A, "fail")
+        done = pool.prove(self.job())
+        self.assertEqual((done.prover, done.tried), ("gpu1", ["gpu0"]))
+        self.assertEqual(self.calls(), [f"{tag(A)} fail", f"{tag(B_)} ok"])
+        (ev,) = pool.events()
+        self.assertEqual((ev["name"], ev["state"]), ("gpu0", "down"))
+        self.assertIn("then succeeded on gpu1", ev["reason"])
+        self.assertEqual([p["state"] for p in pool.status()], ["down", "up"])
+        pool.prove(self.job())   # gpu0 is in its cool-down: the next block goes to gpu1 though gpu0 is free
+        self.assertEqual(self.calls()[-1], f"{tag(B_)} ok")
+
+    def test_a_proof_of_another_block_counts_as_a_failure_and_is_retried(self):
+        pool = self.pool([A, B_])
+        self.script(A, "wrong")
+        self.assertEqual(pool.prove(self.job()).prover, "gpu1")
+        self.assertEqual([e["name"] for e in pool.events()], ["gpu0"])
+
+    def test_a_connection_error_takes_the_prover_down_at_once(self):
+        pool = self.pool([A, B_])
+        self.script(A, "connect")
+        self.assertEqual(pool.prove(self.job()).prover, "gpu1")
+        (ev,) = pool.events()
+        self.assertEqual((ev["name"], ev["state"]), ("gpu0", "down"))
+        self.assertIn("connection error", ev["reason"])
+
+    def test_a_connection_error_marks_it_down_even_when_the_retry_fails_too(self):
+        pool = self.pool([A, B_])
+        self.script(A, "connect")
+        self.script(B_, "fail")
+        with self.assertRaises(pv.JobError):
+            pool.prove(self.job())
+        self.assertEqual([(e["name"], e["state"]) for e in pool.events()], [("gpu0", "down")])   # gpu1 only failed a block
+
+    def test_a_hang_is_killed_retried_and_the_hung_prover_goes_down(self):
+        pool = self.pool([A, B_], timeout=1)
+        self.script(A, "hang")
+        done = pool.prove(self.job())
+        self.assertEqual(done.prover, "gpu1")
+        (ev,) = pool.events()
+        self.assertEqual((ev["name"], ev["state"]), ("gpu0", "down"))
+        self.assertIn("timeout", ev["reason"])
+        self.assertEqual(subprocess_count("sleep 3607"), 0)
+
+    def test_a_block_that_fails_on_every_prover_is_a_block_failure_and_marks_none_down(self):
+        pool = self.pool([A, B_])
+        self.script(A, "fail", "fail")
+        self.script(B_, "fail", "fail")
+        for _ in range(2):   # the hunt for the bad transaction sends several blocks: still none goes down
+            with self.assertRaises(pv.JobError) as e:
+                pool.prove(self.job())
+            self.assertIn("every prover", str(e.exception))
+        self.assertEqual(len(self.calls()), 4)   # one retry each, not more
+        self.assertEqual((pool.events(), [p["state"] for p in pool.status()]), ([], ["up", "up"]))
+
+    def test_one_slow_block_that_times_out_on_every_prover_takes_none_down(self):
+        pool = self.pool([A, B_], timeout=1)
+        self.script(A, "hang")
+        self.script(B_, "hang")
+        with self.assertRaises(pv.JobError) as e:
+            pool.prove(self.job())
+        self.assertEqual(e.exception.outcome, "timeout")
+        self.assertEqual((pool.events(), [p["state"] for p in pool.status()]), ([], ["up", "up"]))
+        self.assertEqual(subprocess_count("sleep 3607"), 0)
+
+    def test_cool_down_then_the_prover_is_tried_again_and_is_up(self):
+        pool = self.pool([A, B_])
+        self.script(A, "connect")
+        pool.prove(self.job())
+        pool.events()
+        time.sleep(0.5)   # the cool-down is 0.4 s here
+        self.script(B_, "sleep 1")
+        t = pool.submit(self.job())   # gpu0 is free and its cool-down is over; gpu1 is not: the job goes to gpu0 to try it
+        time.sleep(0.3)
+        self.assertEqual(t.result().prover, "gpu0")
+        self.assertEqual([(e["name"], e["state"]) for e in pool.events()], [("gpu0", "up")])
+        self.assertEqual(pool.status()[0]["state"], "up")
+
+    def test_the_cool_down_doubles_with_each_new_fault_and_a_proof_resets_it(self):
+        pool = self.pool([A, B_])
+        gpu0 = pool.provers[0]
+        self.script(A, "connect", "connect")
+        pool.prove(self.job())
+        self.assertEqual(gpu0.cooldown, 0.8)
+        time.sleep(0.5)
+        self.script(B_, "sleep 1")
+        t = pool.submit(self.job())     # gpu0 tried again: connection error again
+        t.result()
+        self.assertEqual(gpu0.cooldown, 1.6)
+        pool.events()
+        time.sleep(1.0)
+        self.script(B_, "sleep 1")
+        pool.prove(self.job())          # gpu0 answers ok now
+        self.assertEqual((gpu0.state, gpu0.cooldown), ("up", 0.4))
+
+    def test_with_every_prover_down_nothing_is_cut_and_a_job_waits_for_the_first_cool_down(self):
+        pool = self.pool([A, B_])
+        self.script(A, "connect")
+        self.script(B_, "connect")
+        with self.assertRaises(pv.JobError):
+            pool.prove(self.job())
+        self.assertEqual({e["name"] for e in pool.events()}, {"gpu0", "gpu1"})
+        self.assertFalse(pool.any_up())    # the producer cuts nothing now
+        start = time.monotonic()
+        self.assertEqual(pool.prove(self.job()).prover in ("gpu0", "gpu1"), True)   # the next job waits for a cool-down, then runs
+        self.assertGreater(time.monotonic() - start, 0.25)
+        self.assertTrue(pool.any_up())
+
+    def test_a_cancelled_block_is_not_retried_and_does_not_touch_health(self):
+        pool = self.pool([A, B_])
+        self.script(A, "sleep 1", "ok")
+        t = pool.submit(self.job())
+        time.sleep(0.4)
+        t.cancel()
+        t.result()    # the job ran to the end; its result is the caller's to throw away
+        self.assertEqual(pool.events(), [])
+        self.script(A, "fail")
+        self.script(B_, "ok")
+        t2 = pool.submit(self.job())
+        t2.cancel()
+        try:
+            t2.result()
+        except pv.JobError:
+            pass
+        self.assertEqual(pool.events(), [])    # a failed, cancelled job marks no prover down, and is not retried
+        self.assertEqual([p["state"] for p in pool.status()], ["up", "up"])
+
+    def test_a_remote_input_is_copied_to_the_shared_folder_and_removed(self):
+        shared = self.dir / "shared"
+        shared.mkdir()
+        seen = []
+        def fake_run(cmd, args, env=None, timeout=None):
+            seen.append((Path(args[0]), env["ZISK_COORDINATOR_URL"], Path(args[0]).read_text()))
+            raise pv.JobError("stop here")
+        pool = self.pool([A, B_], run=fake_run)
+        with self.assertRaises(pv.JobError):
+            pool.prove(self.job(input_dir=shared))
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all(p.parent == shared and text == BLOCK + "\n" for p, _, text in seen))
+        self.assertEqual({u for _, u, _ in seen}, {A, B_})
+        self.assertEqual(list(shared.iterdir()), [])
+
+
+class Settings(unittest.TestCase):
+    def test_the_heartbeat_floor_is_one_proof_whatever_the_number_of_provers(self):
+        for provers in (1, 2, 3):
+            with self.assertRaises(ValueError) as e:
+                check_settings("on_demand", 0, 3.2, provers=provers)
+            self.assertIn("cannot keep up", str(e.exception))
+            check_settings("on_demand", 0, 6.3, provers=provers)
+
+    def test_prover_flags(self):
+        ps = pv.parse_provers(["gpu0=http://127.0.0.1:7000", "gpu1=https://10.0.0.2:7000"], "prove-one.sh")
+        self.assertEqual([(p.name, p.url) for p in ps], [("gpu0", "http://127.0.0.1:7000"), ("gpu1", "https://10.0.0.2:7000")])
+        (one,) = pv.parse_provers([], "prove-one.sh", "http://127.0.0.1:7000")
+        self.assertEqual((one.name, one.url), ("prove-one.sh", "http://127.0.0.1:7000"))
+        for bad in ("gpu0", "=http://x", "gpu0=ftp://x", "a b=http://x"):
+            with self.assertRaises(ValueError):
+                pv.parse_provers([bad], "x")
+        with self.assertRaises(ValueError):
+            pv.parse_provers(["a=http://x", "a=http://y"], "x")
+
+
+def subprocess_count(pattern: str) -> int:
+    import subprocess
+    out = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True).stdout.split()
+    return len([p for p in out if p != str(os.getpid())])
+
+
+if __name__ == "__main__":
+    unittest.main()

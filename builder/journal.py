@@ -193,7 +193,8 @@ def check_settings(strategy: str, gather_ms: float, heartbeat_seconds: float, ma
         raise ValueError(f"bad arguments: gather_ms {gather_ms:g} is over {MAX_GATHER_MS}: a transaction would wait longer than a block takes to make")
     if max_in_flight != 1:
         raise ValueError("bad arguments: one block at a time is in flight; more needs overlapped proving, which is not built yet")
-    shortest = MEASURED_PROOF_SECONDS / provers
+    # A heartbeat block is made on its own, with nothing else in flight, so more provers do not shorten it: the floor is one proof.
+    shortest = MEASURED_PROOF_SECONDS
     if 0 < heartbeat_seconds < shortest:
         raise ValueError(f"bad arguments: heartbeat_seconds {heartbeat_seconds:g} cannot keep up: an empty block takes {MEASURED_PROOF_SECONDS:g} s "
-                           f"to prove on {provers} prover(s), so a block could not be made in less than {shortest:g} s")
+                           f"to prove, so a block could not be made in less than {shortest:g} s")
