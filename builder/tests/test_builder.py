@@ -803,6 +803,7 @@ class Visibility(Case):
         (sub,) = s.ledger.submitted
         self.assertEqual(sub["readAs"], [BUILDER])
         self.assertNotIn("disclosedContracts", sub)
+        self.assertNotIn("packageIdSelectionPreference", sub)   # no --package-id: Canton picks the version by package name, as before
 
     def test_read_as_parties_are_added_to_every_read_and_to_advance(self):
         t = tx(ALICE, 0)
@@ -823,6 +824,21 @@ class Visibility(Case):
         s.cfg.disclosed = disclosed
         self.assertTrue(b.build_block(s.cfg)["committed"])
         self.assertEqual(s.ledger.submitted[0]["disclosedContracts"], disclosed)
+
+
+PACKAGE_ID = "ea89dbab" + "0" * 56
+
+
+class PackagePin(Case):
+    """--package-id: Advance is submitted with packageIdSelectionPreference [id], so that vetting a newer version of the package never
+    switches the version Advance runs under by itself. Without it the command is exactly as before."""
+    def test_advance_carries_the_package_id_it_is_pinned_to(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        s.cfg.package_id = PACKAGE_ID
+        self.assertTrue(b.build_block(s.cfg)["committed"])
+        (sub,) = s.ledger.submitted
+        self.assertEqual(sub["packageIdSelectionPreference"], [PACKAGE_ID])
+        self.assertEqual(sub["commands"][0]["ExerciseCommand"]["templateId"], b.CHAIN)   # the template is still named by package name
 
 
 class Refusal(Case):
@@ -1486,6 +1502,26 @@ class CommandLine(Case):
         (sub,) = s.ledger.submitted
         self.assertEqual(sub["readAs"], [BUILDER, "op::1", "op2::2"])   # the builder first, no party twice
         self.assertEqual(sub["disclosedContracts"], disclosed)
+
+    def test_the_package_id_comes_from_the_command_line(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        code, out = self.run_main(s, "--package-id", PACKAGE_ID)
+        self.assertEqual((code, out["committed"]), (0, True))
+        (sub,) = s.ledger.submitted
+        self.assertEqual(sub["packageIdSelectionPreference"], [PACKAGE_ID])
+
+    def test_a_command_line_without_it_sends_no_preference(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        code, out = self.run_main(s)
+        self.assertEqual((code, out["committed"]), (0, True))
+        self.assertNotIn("packageIdSelectionPreference", s.ledger.submitted[0])
+
+    def test_a_bad_package_id_is_one_json_line_before_anything_moves(self):
+        for bad in ("", "xyz", "ea89dbab", "G" * 64, PACKAGE_ID + "00"):
+            s = self.setup({ALICE: [tx(ALICE, 0)]})
+            self.assert_failure(self.run_main(s, "--package-id", bad), "package-id")
+            self.assertEqual(s.reth.engine_calls, [])
+            self.assertEqual(s.ledger.submitted, [])
 
     def test_the_block_byte_cap_comes_from_the_command_line_and_a_bad_one_is_one_json_line(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})

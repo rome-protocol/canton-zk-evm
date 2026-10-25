@@ -7,7 +7,7 @@ One run makes one block (`once`); `run` keeps making them (see "Running it all t
 ## What one run does
 
 ```sh
-python3 builder/builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--max-block-tx-bytes 65536]
+python3 builder/builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--max-block-tx-bytes 65536]
 ```
 
 1. **Read Canton's head.** It asks the JSON Ledger API v2 for the chain's one active `ZkChain` contract whose `builder` is this builder's party (a chain built by another party, seen through `--read-as`, is not counted): head number, head hash, gas cap, the gateway party and the gateway contract's address. It then moves reth's head, safe and finalized block to that head, so a run after a crash starts clean.
@@ -59,6 +59,7 @@ These two options affect visibility only when supplied:
 
 - `--read-as <party>` (repeatable) adds that party to every Ledger API read and to `readAs` of `Advance`. The builder still acts only as itself. This is how a builder hosted by the operator sees the allocations whose executor is the operator.
 - `--disclosed <file>` is a JSON list of disclosed contracts, each as the Ledger API takes it (`templateId`, `contractId`, `createdEventBlob`, `synchronizerId`). The list is passed with `Advance` as `disclosedContracts`, for example the contracts of the token registry. A file that is missing or is not a JSON list of objects fails the run before anything moves.
+- `--package-id <id>` (a package id: 64 lowercase hex digits) pins the Daml package version `Advance` runs under. Every `Advance` is submitted with `packageIdSelectionPreference` set to `[<id>]`, so uploading and vetting a newer version of the package never switches the version by itself; the template is still named by package name. Without the flag nothing is sent and Canton picks the highest version that every participant hosting an informee has vetted, as before. The id is recorded as `package_id` in the journal's `built` and `submitted` events (the field is absent when the flag is not set). A malformed id fails the run before anything moves.
 
 ## What reth needs
 
@@ -99,10 +100,10 @@ The prover is whatever `CZE_PROVE_CMD` runs. By default that is `prove-one.sh`, 
 ## Running it all the time
 
 ```sh
-python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536]
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536]
 ```
 
-`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as` and `--disclosed` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
+`run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as`, `--disclosed` and `--package-id` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
 
 **Only one builder at a time.** `run` and `once` both take an exclusive lock on `builder.lock` in the work folder and refuse to start if another one has it, because two builders would move the same reth and race with their blocks. To make one block by hand while `run` is going, stop `run` first.
 
