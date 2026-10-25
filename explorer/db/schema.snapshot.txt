@@ -510,6 +510,10 @@ table stats_day
   column size_blocks_2 integer not null default 0
   column size_blocks_3 integer not null default 0
   column size_blocks_4 integer not null default 0
+  column accepted_final integer not null default 0
+  column delayed_by_redo integer not null default 0
+  column attempts_committed integer not null default 0
+  column attempts_unknown integer not null default 0
   constraint stats_day_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_day_pkey ON public.stats_day USING btree (bucket)
 
@@ -562,6 +566,10 @@ table stats_hour
   column size_blocks_2 integer not null default 0
   column size_blocks_3 integer not null default 0
   column size_blocks_4 integer not null default 0
+  column accepted_final integer not null default 0
+  column delayed_by_redo integer not null default 0
+  column attempts_committed integer not null default 0
+  column attempts_unknown integer not null default 0
   constraint stats_hour_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_hour_pkey ON public.stats_hour USING btree (bucket)
 
@@ -608,6 +616,10 @@ table stats_minute
   column size_blocks_2 integer not null default 0
   column size_blocks_3 integer not null default 0
   column size_blocks_4 integer not null default 0
+  column accepted_final integer not null default 0
+  column delayed_by_redo integer not null default 0
+  column attempts_committed integer not null default 0
+  column attempts_unknown integer not null default 0
   constraint stats_minute_pkey PRIMARY KEY (bucket)
   CREATE UNIQUE INDEX stats_minute_pkey ON public.stats_minute USING btree (bucket)
 
