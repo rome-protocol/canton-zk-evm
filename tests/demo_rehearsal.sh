@@ -223,7 +223,9 @@ w1py() { "$PY" "$ROOT/tests/demo_w1.py" "$@"; }
 cut_block() {
   local out
   out=$(CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json") || fail "the builder stopped: $out"
+    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$CZE_STATE_DIR/demo/disclosed.json" 2> "$WORK/cut.err") \
+    || { cat "$WORK/cut.err" >&2; fail "the builder stopped: $out"; }
+  cat "$WORK/cut.err" >&2   # the builder's stderr names how the block was packed ("block N: ..., packed by gas used"); the check below reads it
   jq -e '.committed == true' <<<"$out" >/dev/null || fail "the builder did not commit the block: $out"
   # The nightly's L3 reads the block's update id here when it can; it times a block from the update's offset on the reader's participant (canton_updates.reader_offset, found by update id).
   [ -z "${CUT_BLOCK_JSON:-}" ] || jq -c '{committed, completionOffset, updateId}' <<<"$out"
@@ -283,6 +285,24 @@ cut_block
 [ "$(receipt_of "$lab_kill" | jq -r .status)" = 1 ] || fail "Lab.kill() did not succeed: $(receipt_of "$lab_kill")"
 LAB_KILL_BLOCK=$(receipt_of "$lab_kill" | jq -r .block)
 echo "Lab $LAB: build in block $LAB_BUILD_BLOCK, the undone call in $LAB_UNDONE_BLOCK, the self-destruct in $LAB_KILL_BLOCK"
+
+# The builder fills a block by the gas its transactions use, not by the gas limits they declare: 8 deployments that declare 6 Mgas each (48 Mgas, over the
+# 30 Mgas cap) and use a small part of it. Packed by limits, 5 would fit and 3 would wait; packed by gas used, all 8 go in one block. A silent fallback to
+# gas-limit packing (reth started without --testing.skip-invalid-transactions, or a build the builder refused) fails here.
+pack_txs=()
+for _ in $(seq 1 8); do pack_txs+=("$(w1py deploy "$WORK/w1/Reverts.bin" 6000000)"); done
+cut_block
+PACK_BLOCK=$(receipt_of "${pack_txs[0]}" | jq -r .block)
+[[ $PACK_BLOCK =~ ^[0-9]+$ ]] || fail "the first of the 8 deployments is in no block: $(receipt_of "${pack_txs[0]}")"
+grep -Eq "^block $PACK_BLOCK: 8 transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$WORK/cut.err" \
+  || fail "block $PACK_BLOCK was not packed by gas used with its 8 transactions: $(grep "^block " "$WORK/cut.err" | tail -n 1)"
+pack_json=$(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$PACK_BLOCK")\",true" | jq -c .result)
+[ "$(jq '.transactions | length' <<<"$pack_json")" = 8 ] || fail "block $PACK_BLOCK does not hold the 8 deployments: $(jq -c '.transactions | length' <<<"$pack_json")"
+pack_limits=0
+for g in $(jq -r '.transactions[].gas' <<<"$pack_json"); do pack_limits=$((pack_limits + g)); done
+[ "$pack_limits" -gt "$GAS_CAP" ] || fail "the 8 deployments' gas limits ($pack_limits) are not over the cap ($GAS_CAP): the check proves nothing"
+[ "$(jq -r '.gasUsed' <<<"$pack_json" | xargs printf '%d')" -le "$GAS_CAP" ] || fail "block $PACK_BLOCK used more gas than the cap"
+echo "block $PACK_BLOCK: 8 transactions that declare $pack_limits gas against a cap of $GAS_CAP, packed by gas used"
 echo "== the Etherscan door's contract module: forge verify-contract (both formats), cast source and cast interface, against Box built and deployed here"
 # Box is built twice by the script (the pinned Foundry, checked against its SHA-256; the solc of PINS' image, copied out of it, is the compiler forge runs) and deployed twice with
 # the argument 42; the explorer's verifier compiles it again, in its sandbox, with the solc it downloads from the compiler list.
