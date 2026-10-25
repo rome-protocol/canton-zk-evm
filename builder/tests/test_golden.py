@@ -75,12 +75,17 @@ class Golden(Loop):
         l.gets = Tee(self.calls, "ledger", lambda path: ["get", path])   # the ledger end before each read of the contracts, and /traffic
         l.completion_queries = Tee(self.calls, "ledger", lambda c: ["completions", *c])
         real_run = b.run
-        def run(cmd, *args):   # the prover's input tool and the prover itself
+        def run(cmd, *args):   # the prover's input tool
             self.calls.append(["prover", Path(cmd).name, *args])
             return real_run(cmd, *args)
-        patch = mock.patch.object(b, "run", run)
-        patch.start()
-        self.addCleanup(patch.stop)
+        real_prover = b.run_prover
+        def run_prover(cmd, args, env=None, timeout=None):   # the prover itself, as the pool runs it
+            self.calls.append(["prover", Path(cmd).name, *args])
+            return real_prover(cmd, args, env, timeout)
+        for name, fake in (("run", run), ("run_prover", run_prover)):
+            patch = mock.patch.object(b, name, fake)
+            patch.start()
+            self.addCleanup(patch.stop)
         self.runs = 0
         patch = mock.patch.object(b.time, "time", lambda: WALL_CLOCK)
         patch.start()
