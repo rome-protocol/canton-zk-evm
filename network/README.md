@@ -190,6 +190,17 @@ python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --dar new.dar -
 
 The scenario's order is: blocks on 0.1.0 (the DAR built from the tag `v0.1.0`), a deposit made under 0.1.0, check, upload, dry run, vet on all three participants, a block pinned to 0.3.0 (it settles the deposits made under 0.1.0), a deposit made under 0.3.0, a block pinned back to 0.1.0, a deposit, and a block pinned to 0.3.0 again. At each block it reads the package id of the chain contract and of that block's record from the ledger, prints them, and compares both with the pin. After the vetting it waits (up to 30 s) until all three participants list the new package as vetted before the first block pinned to it.
 
+**Raising the gas cap of a chain that runs.** The gas cap is a field of the chain contract, and it can be raised (never lowered) in two steps by two different users, each printing one JSON line and each needing only its own token and the parties in `$CZE_STATE_DIR/canton/parties.env`. The operator proposes and the confirmer accepts:
+
+```sh
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --gas-cap-step propose --new-gas-cap 60000000 --dry-run   # operator's token; shows what it would do, submits nothing
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --gas-cap-step propose --new-gas-cap 60000000             # operator's token; creates the proposal
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --gas-cap-step accept  --new-gas-cap 60000000 --dry-run   # confirmer's token; checks the proposal, submits nothing
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --gas-cap-step accept  --new-gas-cap 60000000             # confirmer's token; raises the cap
+```
+
+The new cap must be above the chain's current one, at most double it, and at most 300,000,000. Both steps refuse any other value before they send anything, which is what the Daml would do too. `propose` does nothing if the same proposal is on the participant already, and stops if a proposal for another value is (the confirmer accepts or leaves it first). `accept` takes exactly the value given, so the confirmer sees what is accepted, and stops if no proposal for it exists. Accepting replaces the chain contract, so the builder's blocks stop for the moment it takes. The setup's chain check on a later run accepts a chain whose cap is the one in `PINS` or higher.
+
 **Privacy.** The operator of the participant sees every contract of every Ostia party, because all of them are hosted there, and holds what it takes to act as them. Nothing about Ostia keeps a chain's data from the validator's operator. Use a participant whose operator you trust with the chain, and keep the token files off shared machines.
 
 **The explorer.** It and its indexer read Canton as the reader party, with the reader user's token: make a 0600 token file for `ostia-reader` (HS256, audience `https://canton.network.global`, `sub` `ostia-reader`, or your `CZE_USER_PREFIX`'s reader) and give it to `explorer/run.sh` as `LEDGER_TOKEN_FILE` (or `CZE_TOKEN_FILE_READER`), with `LEDGER_URL` and `READER_PARTY` for this participant. The file is read again on every call, so refresh it in place. See `explorer/README.md`.
