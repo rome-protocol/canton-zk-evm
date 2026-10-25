@@ -92,8 +92,12 @@ export interface TokenItem {
   /** Who made the token's contract, in which block and when; none of the three where the explorer saw no creation (a contract of the genesis state). */
   creator: string | null; creationBlock: number | null; createdAt: string | null; verified: boolean;
 }
-/** The gateway's custody of a registered token on Canton (`gateway_tokens`): base units of 10 decimals, and when and at which ledger offset it was read. */
-export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; ledgerOffset: number; readAt: string }
+/**
+ * The gateway's custody of a registered token on Canton (`gateway_tokens`): base units of 10 decimals, and the token's own `supply` (its base units) read at the same
+ * block, `supplyBlock`, as the custody (at the ledger offset of that block's record), so the two are set against each other with nothing between them. `supply` is
+ * null when the token did not answer at that block. `readAt` is when the read was made.
+ */
+export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
 export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; party: string | null }
@@ -472,8 +476,8 @@ export function createAccountRest(pool: Pool) {
   async function token(a: string): Promise<TokenDetail | undefined> {
     const [r] = await query(`select ${tokenSelect} ${tokenFrom} where tk.address = $1`, [bytes(a)]);
     if (!r) return undefined;
-    const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
-    const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
+    const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, supply::text as supply, supply_block, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
+    const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), supply: g.supply ?? null, supplyBlock: Number(g.supply_block), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
     return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton };
   }
 

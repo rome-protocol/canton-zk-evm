@@ -19,10 +19,10 @@ describe("the indexer's settings", () => {
   });
   it("takes the custody read's party and token file together, and its interval", () => {
     const party = "gateway::1220" + "cd".repeat(32);
-    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/state/gateway.token" }).custody).toEqual({ party, tokenFile: "/state/gateway.token", ms: 30_000 });
-    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/state/gateway.token", CUSTODY_MS: "5000" }).custody?.ms).toBe(5000);
+    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/state/gateway.token" }).custody).toEqual({ party, tokenFile: "/state/gateway.token", ms: 30_000, limit: 200 });
+    expect(loadIndexerSettings({ GATEWAY_ADDRESS: GW, GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/state/gateway.token", CUSTODY_MS: "5000", CUSTODY_LIMIT: "50" }).custody).toMatchObject({ ms: 5000, limit: 50 });
     // The read is the one place the explorer reads as the gateway, so it needs both, or it is off: never the reader's own token for the gateway's party.
-    for (const env of [{ GATEWAY_PARTY: party }, { GATEWAY_LEDGER_TOKEN_FILE: "/state/gateway.token" }, { GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/t", CUSTODY_MS: "10" }]) {
+    for (const env of [{ GATEWAY_PARTY: party }, { GATEWAY_LEDGER_TOKEN_FILE: "/state/gateway.token" }, { GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/t", CUSTODY_MS: "10" }, { GATEWAY_PARTY: party, GATEWAY_LEDGER_TOKEN_FILE: "/t", CUSTODY_LIMIT: "0" }]) {
       expect(() => loadIndexerSettings({ GATEWAY_ADDRESS: GW, ...env })).toThrow(IndexerSettingsError);
     }
   });

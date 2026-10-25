@@ -60,9 +60,9 @@ export interface IndexerOptions {
   /** How often `start` runs the stats rollups (design section 8), in milliseconds. Default 10 seconds. */
   rollupMs?: number;
   /**
-   * The custody read (the registered tokens and the gateway's holdings, as the gateway party sees them): a Ledger API client built for the gateway party
+   * The custody read (the registered tokens and the gateway's holdings, as the gateway party sees them, at the offset of the newest indexed block, set against each token's supply at that block): a Ledger API client built for the gateway party
    * (a token of its own, with the right to read as it and nothing else). Left out, nothing is read and the table stays empty. `ms` is how often `start`
-   * reads it (default 30 seconds); `limit` is how many contracts to ask Canton for (default 1000), and a read that fills it fails.
+   * reads it (default 30 seconds); `limit` is how many contracts to ask Canton for (default 200, Canton's own list maximum), and a read that fills it fails.
    */
   custody?: { ledger: Ledger; ms?: number; limit?: number };
   /** For C6's choice of blocks. */
@@ -567,7 +567,7 @@ export function createIndexer(o: IndexerOptions) {
       let failing = "";
       while (running && o.custody) {
         try {
-          await custodyOnce(o.pool, o.custody.ledger, o.custody.limit ?? 1000);
+          await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200);
           failing = "";
         } catch (e) {
           // Said once for each kind of failure, not on every pass.

@@ -54,22 +54,22 @@ export function gatewayToken(evmToken: string, admin = FAKE_REGISTRY, id = "TKB"
 }
 
 /** A token standard Holding as an active contract: it has an interface view and no template the gateway asked for. */
-export function holding(n: number, owner: string, amount: string, admin = FAKE_REGISTRY, id = "TKB", lock: unknown = null, view: Json | null | "unreadable" = null): ActiveContract {
+export function holding(n: number, owner: string, amount: string, admin = FAKE_REGISTRY, id = "TKB", lock: unknown = null, view: Json | null | "unreadable" = null, signatories: string[] = [admin, owner]): ActiveContract {
   const value = view ?? { owner, instrumentId: { admin, id }, amount, lock, meta: { values: {} } };
   return {
-    contractId: "00" + n.toString(16).padStart(8, "0"), templateId: "999999:Some.Token:Holding",
+    contractId: "00" + n.toString(16).padStart(8, "0"), templateId: "999999:Some.Token:Holding", signatories,
     interfaceViews: [view === "unreadable" ? { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 3, message: "no view" } } : { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 0 }, viewValue: value }],
   };
 }
 
-export interface ActiveContract { contractId: string; templateId: string; createArgument?: Json; interfaceViews?: Json[] }
+export interface ActiveContract { contractId: string; templateId: string; createArgument?: Json; interfaceViews?: Json[]; signatories?: string[] }
 
 /** What the fake's active-contracts endpoint answers, as the JSON Ledger API shapes a JsActiveContract. */
 function activeEntry(c: ActiveContract, withView: boolean): Json {
   return { contractEntry: { JsActiveContract: { createdEvent: {
     offset: 5, nodeId: 0, contractId: c.contractId, templateId: c.templateId, createdAt: "2026-10-04T01:37:15.412Z", packageName: "canton-zk-evm",
     ...(c.createArgument ? { createArgument: c.createArgument } : {}), ...(withView && c.interfaceViews ? { interfaceViews: c.interfaceViews } : {}),
-    witnessParties: [FAKE_GATEWAY], signatories: [FAKE_GATEWAY], acsDelta: true, representativePackageId: "abc123def456",
+    witnessParties: [FAKE_GATEWAY], signatories: c.signatories ?? [FAKE_GATEWAY], acsDelta: true, representativePackageId: "abc123def456",
   }, synchronizerId: "sync::1220" + "99".repeat(32), reassignmentCounter: 0 } } };
 }
 
@@ -118,7 +118,8 @@ export async function startFakeLedger(items: Json[], opts: { httpStatus?: number
           const views = filters.map(iface).filter((v) => v !== undefined && (c.interfaceViews ?? []).some((i) => (i.interfaceId as string).endsWith(":" + v.interfaceId.split(":").slice(-2).join(":"))));
           if (byTemplate || views.length > 0) found.push(activeEntry(c, views.some((v) => v!.includeInterfaceView)));
         }
-        const limit = Number(u.searchParams.get("limit") ?? Infinity);
+        // As for the updates: `limit` is honoured, and a lower `cap` is Canton's own list maximum, which cuts the list short without saying so.
+        const limit = Math.min(Number(u.searchParams.get("limit") ?? Infinity), opts.cap ?? Infinity);
         return send(200, found.slice(0, limit));
       }
       send(404, { code: "NOT_FOUND" });

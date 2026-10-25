@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ALLOWED_ENDPOINTS, createLedger, GATEWAY_TOKEN_TEMPLATE, HOLDING_INTERFACE, LedgerError } from "./ledger.ts";
+import { ALLOWED_ENDPOINTS, createLedger, CUSTODY_ENDPOINTS, READER_ENDPOINTS, GATEWAY_TOKEN_TEMPLATE, HOLDING_INTERFACE, LedgerError } from "./ledger.ts";
 import { FAKE_GATEWAY, FAKE_READER, FAKE_REGISTRY, gatewayToken, holding, startFakeLedger, type ActiveContract, type FakeLedger } from "../test/fake-ledger.ts";
 
 const TKB = "0x" + "d1".repeat(20), OTHER = "0x" + "d2".repeat(20);
@@ -11,21 +11,31 @@ const SOMEONE = "alice::1220" + "ab".repeat(32);
 let fake: FakeLedger | undefined;
 afterEach(async () => { await fake?.close(); fake = undefined; });
 
-async function ledger(active: ActiveContract[], opts: { ledgerEnd?: number } = {}, tokenFile: string | null = null) {
-  fake = await startFakeLedger([], { ledgerEnd: 12, ...opts, active });
-  return createLedger(fake.url, 2000, FAKE_GATEWAY, 100, tokenFile);
+async function ledger(active: ActiveContract[], opts: { cap?: number } = {}, tokenFile: string | null = null) {
+  fake = await startFakeLedger([], { ledgerEnd: 99, ...opts, active });
+  return createLedger(fake.url, 2000, FAKE_GATEWAY, 100, tokenFile, CUSTODY_ENDPOINTS);
 }
 
 describe("the gateway's custody, read as the gateway", () => {
-  it("is one more call than the reader makes, and the only one that asks for contracts", () => {
-    expect([...ALLOWED_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id", "POST /v2/state/active-contracts"]);
+  it("is a client of its own with one call, and the reader's client cannot make it", async () => {
+    expect([...CUSTODY_ENDPOINTS]).toEqual(["POST /v2/state/active-contracts"]);
+    expect([...READER_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
+    expect([...ALLOWED_ENDPOINTS].sort()).toEqual([...READER_ENDPOINTS, ...CUSTODY_ENDPOINTS].sort());
+    fake = await startFakeLedger([], { active: [] });
+    // Each client reads with the rights of its own party only: the reader's refuses the contracts, the custody client refuses the updates and the ledger end.
+    await expect(createLedger(fake.url, 2000, FAKE_READER).gatewayCustody(5, 1)).rejects.toThrow(/not on the list/);
+    const custody = createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS);
+    await expect(custody.records(0, 5)).rejects.toThrow(/not on the list/);
+    await expect(custody.ledgerEnd()).rejects.toThrow(/not on the list/);
+    await expect(custody.participantId()).rejects.toThrow(/not on the list/);
+    expect(fake.requests).toEqual([]);
   });
 
-  it("asks for the gateway party's GatewayToken contracts and Holding views only, at the ledger end it read first", async () => {
+  it("asks for the gateway party's GatewayToken contracts and Holding views only, at the offset it is given and with one call", async () => {
     const l = await ledger([gatewayToken(TKB)]);
-    await l.gatewayCustody(500);
-    expect(fake!.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v2/state/ledger-end", "POST /v2/state/active-contracts"]);
-    const r = fake!.requests[1]!;
+    await l.gatewayCustody(500, 12);
+    expect(fake!.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["POST /v2/state/active-contracts"]);
+    const r = fake!.requests[0]!;
     expect(r.query.get("limit")).toBe("500");
     expect(r.body).toEqual({
       eventFormat: { filtersByParty: { [FAKE_GATEWAY]: { cumulative: [
@@ -39,7 +49,7 @@ describe("the gateway's custody, read as the gateway", () => {
 
   it("is empty when the gateway registered no token", async () => {
     const l = await ledger([holding(1, FAKE_GATEWAY, "5.0")]);
-    expect(await l.gatewayCustody(500)).toEqual({ offset: 12, tokens: [] });
+    expect(await l.gatewayCustody(500, 12)).toEqual({ offset: 12, tokens: [] });
   });
 
   it("adds up what the gateway holds of each registered instrument, in base units of 10 decimals, locked holdings included", async () => {
@@ -51,7 +61,7 @@ describe("the gateway's custody, read as the gateway", () => {
       holding(6, FAKE_GATEWAY, "50", "another-admin::1220" + "cc".repeat(32), "TKB"), // another registry's TKB: not this instrument
       holding(7, FAKE_GATEWAY, "3", FAKE_REGISTRY, "NOT-REGISTERED"),
     ]);
-    const got = await l.gatewayCustody(500);
+    const got = await l.gatewayCustody(500, 12);
     expect(got.offset).toBe(12);
     expect(got.tokens).toEqual([
       { evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 1070000000001n, holdings: 3 },
@@ -61,12 +71,12 @@ describe("the gateway's custody, read as the gateway", () => {
 
   it("says zero for a registered token with no holdings, and takes the token's address in any case, with or without 0x", async () => {
     const l = await ledger([gatewayToken(TKB.slice(2).toUpperCase())]);
-    expect((await l.gatewayCustody(500)).tokens).toEqual([{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 0n, holdings: 0 }]);
+    expect((await l.gatewayCustody(500, 12)).tokens).toEqual([{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: 0n, holdings: 0 }]);
   });
 
   it("keeps no owner, no contract id and no party but the instrument's admin", async () => {
     const l = await ledger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1"), holding(5, SOMEONE, "999")]);
-    const text = JSON.stringify(await l.gatewayCustody(500), (_, v) => (typeof v === "bigint" ? v.toString() : v));
+    const text = JSON.stringify(await l.gatewayCustody(500, 12), (_, v) => (typeof v === "bigint" ? v.toString() : v));
     for (const secret of [FAKE_GATEWAY, SOMEONE, "00000001", "00000005"]) expect(text).not.toContain(secret);
   });
 
@@ -84,30 +94,46 @@ describe("the gateway's custody, read as the gateway", () => {
     ];
     for (const [why, active] of bad) {
       await fake?.close();
-      await expect((await ledger(active)).gatewayCustody(500), why).rejects.toThrow(why === "registered twice" ? /twice/ : /custody|Canton sent/);
+      await expect((await ledger(active)).gatewayCustody(500, 12), why).rejects.toThrow(why === "registered twice" ? /twice/ : /custody|Canton sent/);
     }
   });
 
   it("refuses a list as long as its limit, which may be cut short, rather than show a total of part of the holdings", async () => {
     const l = await ledger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1"), holding(2, FAKE_GATEWAY, "1")]);
-    await expect(l.gatewayCustody(3)).rejects.toThrow(/limit/);
-    expect((await l.gatewayCustody(4)).tokens[0]!.custody).toBe(20000000000n);
+    await expect(l.gatewayCustody(3, 12)).rejects.toThrow(/limit/);
+    expect((await l.gatewayCustody(4, 12)).tokens[0]!.custody).toBe(20000000000n);
+  });
+
+  it("refuses a list that the participant's own maximum cut short, which is why the limit asked must not be above that maximum", async () => {
+    const active = [gatewayToken(TKB), ...[1, 2, 3, 4, 5].map((n) => holding(n, FAKE_GATEWAY, "1"))];
+    // The participant's maximum is 3. Asked for exactly that, it sends a list as long as the limit, and that is refused, not summed into a custody that is too small.
+    const capped = await ledger(active, { cap: 3 });
+    await expect(capped.gatewayCustody(3, 12)).rejects.toThrow(/cut short/);
+    // With room above the number of contracts, under the maximum, the whole list comes and is summed.
+    const roomy = await ledger(active, { cap: 10 });
+    expect((await roomy.gatewayCustody(7, 12)).tokens[0]!.custody).toBe(50000000000n);
+  });
+
+  it("counts a holding only where the instrument's admin signed it: a template of someone else's cannot claim the registry", async () => {
+    const forged = holding(2, FAKE_GATEWAY, "900", FAKE_REGISTRY, "TKB", null, null, [SOMEONE, FAKE_GATEWAY]);
+    const l = await ledger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1"), forged]);
+    expect(await l.gatewayCustody(500, 12)).toMatchObject({ tokens: [{ custody: 10000000000n, holdings: 1 }] });
   });
 
   it("fails as a LedgerError when Canton does not answer, and says nothing of a token", async () => {
     fake = await startFakeLedger([], { httpStatus: 500, active: [] });
     const l = createLedger(fake.url, 2000, FAKE_GATEWAY);
-    await expect(l.gatewayCustody(500)).rejects.toBeInstanceOf(LedgerError);
+    await expect(l.gatewayCustody(500, 12)).rejects.toBeInstanceOf(LedgerError);
   });
 
   describe("with a token file of its own", () => {
     const SECRET = "tok." + randomBytes(24).toString("hex");
-    it("sends that token on both calls", async () => {
+    it("sends that token on its call", async () => {
       const dir = mkdtempSync(join(tmpdir(), "custody-token-")), file = join(dir, "token");
       try {
         writeFileSync(file, SECRET + "\n", { mode: 0o600 }); chmodSync(file, 0o600);
-        await (await ledger([gatewayToken(TKB)], {}, file)).gatewayCustody(500);
-        expect(fake!.requests.map((r) => r.authorization)).toEqual([`Bearer ${SECRET}`, `Bearer ${SECRET}`]);
+        await (await ledger([gatewayToken(TKB)], {}, file)).gatewayCustody(500, 12);
+        expect(fake!.requests.map((r) => r.authorization)).toEqual([`Bearer ${SECRET}`]);
       } finally { rmSync(file, { force: true }); rmSync(dir, { recursive: true, force: true }); }   // the one file and the one folder this test made
     });
   });

@@ -395,12 +395,12 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
 
   it("shows a token's custody on Canton with the registered instrument, and null for a token the gateway did not register", async () => {
     expect(body(await get(`/api/tokens/${T1}`)).canton).toBeNull();
-    await sql("insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, ledger_offset, read_at) values ($1, 'registry::1220ff', 'TKB', 1230000000000, 3, 77, '2026-10-25T10:00:00Z')", [who(0xb1)]);
+    await sql("insert into gateway_tokens (evm_token, instrument_admin, instrument_id, custody, holdings, supply, supply_block, ledger_offset, read_at) values ($1, 'registry::1220ff', 'TKB', 1230000000000, 3, 123000000, 7, 77, '2026-10-25T10:00:00Z')", [who(0xb1)]);
     try {
       const t = body(await get(`/api/tokens/${T1}`));
       same(t, F.tokenDetail);
       same(t.canton, F.cantonCustody);
-      expect(t.canton).toEqual({ instrumentAdmin: "registry::1220ff", instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z" });
+      expect(t.canton).toEqual({ instrumentAdmin: "registry::1220ff", instrumentId: "TKB", custody: "1230000000000", custodyDecimals: 10, holdings: 3, supply: "123000000", supplyBlock: 7, ledgerOffset: 77, readAt: "2026-10-25T10:00:00.000Z" });
       expect(body(await get(`/api/tokens/${T2}`)).canton).toBeNull();
       // The list does not carry it: one read of the table is for the one token's page.
       for (const i of body(await get("/api/tokens")).items) expect(i).not.toHaveProperty("canton");

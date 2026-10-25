@@ -1,5 +1,5 @@
 import { ConfigError, type Config } from "./config.ts";
-import { createLedger, readLedgerToken } from "./ledger.ts";
+import { createLedger, CUSTODY_ENDPOINTS, readLedgerToken } from "./ledger.ts";
 
 type LedgerConfig = Pick<Config, "ledgerUrl" | "rpcTimeoutMs" | "readerParty" | "ledgerTokenFile">;
 
@@ -29,5 +29,5 @@ export function gatewayLedgerFromConfig(config: Pick<LedgerConfig, "ledgerUrl" |
   } catch (e) {
     throw new ConfigError((e as Error).message);
   }
-  return createLedger(config.ledgerUrl, config.rpcTimeoutMs, custody.party, undefined, custody.tokenFile);
+  return createLedger(config.ledgerUrl, config.rpcTimeoutMs, custody.party, undefined, custody.tokenFile, CUSTODY_ENDPOINTS);
 }

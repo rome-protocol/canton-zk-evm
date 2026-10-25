@@ -51,7 +51,7 @@ describe("the Ledger API client the server and the indexer build from the settin
     put(SECRET);
     fake = await startFakeLedger([], { ledgerEnd: 9, active: [] });
     const ledger = gatewayLedgerFromConfig({ ledgerUrl: fake.url, rpcTimeoutMs: 2000 }, { party: FAKE_GATEWAY, tokenFile: file });
-    expect(await ledger.gatewayCustody(10)).toEqual({ offset: 9, tokens: [] });
+    expect(await ledger.gatewayCustody(10, 9)).toEqual({ offset: 9, tokens: [] });
     expect(fake.requests.every((r) => r.authorization === `Bearer ${SECRET}`)).toBe(true);
     put(SECRET, 0o640);
     let message = "";

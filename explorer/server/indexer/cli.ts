@@ -85,7 +85,7 @@ async function dispatch(command: Command, config: ReturnType<typeof loadConfig>,
     return 0;
   }
   // The custody read is the one Ledger API client that reads as the gateway party, with a token file of its own.
-  const custody = settings.custody && { ledger: gatewayLedgerFromConfig(config, settings.custody), ms: settings.custody.ms };
+  const custody = settings.custody && { ledger: gatewayLedgerFromConfig(config, settings.custody), ms: settings.custody.ms, limit: settings.custody.limit };
   const indexer = createIndexer({
     pool, reads, ledger: ledgerFromConfig(config), ...(custody ? { custody } : {}),
     pins: config.pins, chainId: config.chainId, gateway: settings.gateway, genesisFile: settings.genesisFile, journalDir: settings.journalDir, producerStatusFile: settings.producerStatusFile, journalMs: settings.journalMs, derive: settings.derive, pollMs: settings.pollMs, rethBehindMs: settings.rethBehindMs,

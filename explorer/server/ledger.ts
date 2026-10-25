@@ -2,12 +2,17 @@ import { readFileSync, statSync } from "node:fs";
 import { isHexBytes } from "./hex.ts";
 
 /**
- * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, four calls only, all reads.
+ * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, three calls only, all reads.
  * It asks for the reader party's transactions, filtered to the block record, and keeps nothing else the answer might carry.
- * The fourth call is the custody read (`gatewayCustody`), made only when the gateway party and a token for it are configured: it is the one place
- * the explorer reads as the gateway, for the registered tokens and the sum of the holdings, and it keeps nothing else the answer carries.
+ * The custody read (`gatewayCustody`) is a second client with one call of its own, made only when the gateway party and a token for it are configured:
+ * it is the one place the explorer reads as the gateway, for the registered tokens and the sum of the holdings, and it keeps nothing else the answer carries.
+ * The gateway party must be hosted on the participant at the same URL, since the offset it reads at is that participant's.
  */
-export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id", "POST /v2/state/active-contracts"]);
+export const READER_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
+/** The custody client reads as the gateway with a token of its own, and may make this one call: each client may read only with the rights of its own party. */
+export const CUSTODY_ENDPOINTS: ReadonlySet<string> = new Set(["POST /v2/state/active-contracts"]);
+/** Every call either client may make (the two lists together), for the check against Canton's own OpenAPI document. */
+export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set([...READER_ENDPOINTS, ...CUSTODY_ENDPOINTS]);
 
 /** The package is named, not pinned by id, as the demo does; Canton picks the vetted version. */
 export const BLOCK_RECORD_TEMPLATE = "#canton-zk-evm:Zk.Chain:BlockRecord";
@@ -179,7 +184,10 @@ export function custodyFrom(items: unknown[], party: string): CustodyToken[] {
       if (status !== 0 || typeof v.viewValue !== "object" || v.viewValue === null) custodyFail("a holding has no readable view");
       const view = v.viewValue as Json;
       if (view.owner !== party) continue;
-      held.push({ ...instrumentOf(view.instrumentId, "a holding"), amount: baseUnits(view.amount) });
+      // The view is what the template says of itself: a holding counts only where the instrument's admin signed it, so a template of someone else's cannot claim the registry.
+      const instrument = instrumentOf(view.instrumentId, "a holding");
+      if (!(Array.isArray(e.signatories) ? e.signatories : []).includes(instrument.admin)) continue;
+      held.push({ ...instrument, amount: baseUnits(view.amount) });
     }
   }
   const seen = new Set<string>(), instruments = new Set<string>();
@@ -196,10 +204,10 @@ export function custodyFrom(items: unknown[], party: string): CustodyToken[] {
   }).sort((a, b) => (a.evmToken < b.evmToken ? -1 : 1));
 }
 
-export function createLedger(url: string, timeoutMs: number, readerParty: string | null, pageSize = 100, tokenFile: string | null = null) {
+export function createLedger(url: string, timeoutMs: number, readerParty: string | null, pageSize = 100, tokenFile: string | null = null, endpoints: ReadonlySet<string> = READER_ENDPOINTS) {
   async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     const route = `${method} ${path.split("?")[0]}`;
-    if (!ALLOWED_ENDPOINTS.has(route)) throw new LedgerError(`${route} is not on the list of calls the explorer may make`);
+    if (!endpoints.has(route)) throw new LedgerError(`${route} is not on the list of calls the explorer may make`);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (tokenFile) headers.authorization = `Bearer ${readLedgerToken(tokenFile)}`;
     try {
@@ -266,12 +274,12 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
   }
 
   /**
-   * What the gateway holds on Canton of each registered token's instrument, read as the gateway at the ledger end read first. One request, filtered to the
-   * GatewayToken template and the Holding interface. `limit` is asked of Canton, and a list as long as it may have been cut, so it is refused.
+   * What the gateway holds on Canton of each registered token's instrument, read as the gateway at `offset` (the caller's choice, so that it can set the answer
+   * against the EVM at the block that offset records). One request, filtered to the GatewayToken template and the Holding interface. `limit` is asked of Canton and
+   * must be at or below the participant's list maximum: a list as long as the limit may have been cut, so it is refused.
    */
-  async function gatewayCustody(limit: number): Promise<GatewayCustody> {
+  async function gatewayCustody(limit: number, offset: number): Promise<GatewayCustody> {
     if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
-    const offset = await ledgerEnd();
     const filter = (identifierFilter: unknown) => ({ identifierFilter });
     const items = await call("POST", `/v2/state/active-contracts?limit=${limit}`, {
       eventFormat: { filtersByParty: { [readerParty]: { cumulative: [
@@ -281,7 +289,7 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
       activeAtOffset: offset,
     });
     if (!Array.isArray(items)) return fail("an answer that is not a list");
-    if (items.length >= limit) throw new LedgerError(`the gateway's custody cannot be read: Canton sent ${items.length} contracts, the limit asked, so the list may be cut short`);
+    if (items.length >= limit) throw new LedgerError(`the gateway's custody cannot be read: Canton sent ${items.length} contracts, the limit asked, so the list may be cut short (CUSTODY_LIMIT must stay at or below the participant's list maximum, and above the number of contracts)`);
     return { offset, tokens: custodyFrom(items, readerParty) };
   }
 

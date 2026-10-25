@@ -127,8 +127,8 @@ export const REST_FIELDS = {
     "address", "standard", "name", "symbol", "decimals", "totalSupply", "holderCount", "transferCount", "firstTransferBlock", "gatewayWrapped", "metadataStatus", "creator", "creationBlock", "createdAt", "verified",
     "totalSupplyBlock", "balanceMode", "derived", "canton",
   ],
-  /** What the gateway holds on Canton of a registered token's instrument, as one read of its view at one ledger offset: the instrument is public, no holding, owner or contract is. */
-  cantonCustody: ["instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "ledgerOffset", "readAt"],
+  /** What the gateway holds on Canton of a registered token's instrument and the token's supply, both read at one block (the custody at the ledger offset of its record): the instrument is public, no holding, owner or contract is. */
+  cantonCustody: ["instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "supply", "supplyBlock", "ledgerOffset", "readAt"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */
   legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount", "party"],
