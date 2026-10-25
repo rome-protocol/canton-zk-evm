@@ -1,14 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getBlock, getTx, getUpdate, getUpdates, getUpdatesAround, type ApiBlock, type UpdateAroundItem, type UpdateDetail, type UpdateItem } from "../api.ts";
+import { getBlock, getTx, getUpdate, getUpdateTxs, getUpdates, getUpdatesAround, type ApiBlock, type UpdateAroundItem, type UpdateDetail, type UpdateItem } from "../api.ts";
 import { ErrorCard, LoadingCard, unready } from "../components/Cards.tsx";
+import { AddressCell } from "../components/AddressCell.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { CopyButton, HashLink, copyText } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
 import { bytesOf, count, duration, seconds, short, units, utc, utcDate } from "../format.ts";
+import { useLabels } from "../labels.ts";
 import { listPoll } from "../stats.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
 import { useLive } from "../useLive.ts";
@@ -26,22 +28,23 @@ export function CantonUpdates() {
   const items = p.data?.items;
   return (
     <>
-      <div className="ptitle"><h1>Canton updates</h1><span className="muted">the updates that carry a block, as the reader party sees them</span></div>
-      <div className="note">Each final block is one Canton transaction. The offset is the one the reader's participant gives the update ({READER}); it is not the builder's own completion offset.</div>
+      <div className="ptitle"><h1>Linked to Canton</h1><span className="muted">each Canton update and the block it settled</span></div>
+      <div className="note">Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof.</div>
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the Canton updates…</LoadingCard> : (
         <section className="card" aria-label="Canton updates">
           <div className="list-h"><span className="muted">{items.length ? "Newest first, by record time" : "No Canton updates yet."}</span><Pager p={p} label="Pages of Canton updates" /></div>
           <div className="scroll">
-            <table className="tbl">
-              <thead><tr><th className="r">Offset</th><th>Update id</th><th>Record time</th><th>Synchronizer</th><th>EVM block</th></tr></thead>
+            <table className="tbl stk stk-linked">
+              <thead><tr><th>Canton update</th><th>EVM block</th><th className="r">EVM transactions</th><th>Record time</th><th className="r">Offset</th><th>Synchronizer</th></tr></thead>
               <tbody>
                 {items.map((u: UpdateItem) => (
                   <tr key={u.updateId}>
-                    <td className="r num">{u.offset}</td>
-                    <td><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} /></td>
-                    <td className="mono">{u.recordTime}</td>
-                    <td><HashLink value={u.synchronizer} /></td>
-                    <td>{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
+                    <td className="k-u"><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} plain /></td>
+                    <td className="k-b">{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
+                    <td className="r num k-n">{u.txCount === null ? <span className="muted">—</span> : <>{count(u.txCount)}<span className="k-label"> EVM {u.txCount === 1 ? "transaction" : "transactions"}</span></>}</td>
+                    <td className="mono k-t">{u.recordTime}</td>
+                    <td className="r num k-o">{u.offset}</td>
+                    <td className="k-s"><HashLink value={u.synchronizer} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -222,6 +225,36 @@ function skipped(items: UpdateAroundItem[]): string | null {
   return words.length ? `${words.join(" ")} They carry no block, so they are not listed.` : null;
 }
 
+/** The EVM transactions this update settled, each linked to its page. */
+function SettledTxs({ id }: { id: string }) {
+  const p = usePaged(["canton", "update", id, "txs"], (after) => getUpdateTxs(id, after));
+  const items = p.data?.items;
+  const labels = useLabels((items ?? []).flatMap((t) => [t.from, t.to]));
+  return (
+    <section className="card" aria-labelledby="settled-h">
+      <div className="sec-h"><h3 id="settled-h">EVM transactions in this update</h3><span className="grow" /><Pager p={p} label="Pages of the update's transactions" /></div>
+      {p.error && !items ? <p className="muted">The explorer cannot read the transactions of this update right now.</p> : !items ? <p className="muted">Reading the transactions…</p> : !items.length ? <p className="muted">This update settled no EVM transactions.</p> : (
+        <div className="scroll">
+          <table className="tbl stk stk-settled">
+            <thead><tr><th className="r">Position</th><th>Transaction hash</th><th>From</th><th aria-hidden="true" /><th>To</th></tr></thead>
+            <tbody>
+              {items.map((t) => (
+                <tr key={t.hash}>
+                  <td className="r num k-p">{t.index}</td>
+                  <td className="c-hash k-h"><HashLink value={t.hash} to={`/tx/${t.hash}`} plain /></td>
+                  <td className="k-f"><AddressCell address={t.from} label={labels.get(t.from)} /></td>
+                  <td className="arrow muted k-a" aria-hidden="true">→</td>
+                  <td className="k-to">{t.to ? <AddressCell address={t.to} label={labels.get(t.to)} /> : <span className="muted">creates a contract</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** The updates just newer and just older than this one, from the route that gives the window by the list's own key. */
 function Around({ id }: { id: string }) {
   const q = useQuery({ queryKey: ["canton", "around", id], queryFn: () => getUpdatesAround(id), retry: false });
@@ -269,7 +302,7 @@ export function CantonUpdate() {
   const u = q.data!;
   return (
     <>
-      <div className="crumbs"><Link to="/canton">Canton</Link> / Update {u.updateId.slice(0, 12)}…</div>
+      <div className="crumbs"><Link to="/canton">Linked to Canton</Link> / Update {u.updateId.slice(0, 12)}…</div>
       <div className="ptitle">
         <h1>Canton update</h1><span className="chip chip-final"><i className="dot" />Final on Canton</span>
         {u.block !== null && <span className="muted">the record of block {u.block}</span>}
@@ -283,6 +316,7 @@ export function CantonUpdate() {
       </div>
       <p className="updid mono">{u.updateId} <CopyButton value={u.updateId} /></p>
       <div className="sides sides-join"><OnCanton u={u} now={now} /><Join hash={u.blockHash} /><OnEvm u={u} b={evm.data} failed={evm.isError} /></div>
+      {u.block !== null ? <SettledTxs id={u.updateId} /> : <section className="card" aria-labelledby="settled-h"><div className="sec-h"><h3 id="settled-h">EVM transactions in this update</h3></div><p className="muted">This update carries no block.</p></section>}
       {evm.data?.canton && u.block !== null && <RecordHolds c={evm.data.canton} block={u.block} />}
       <Privacy chain={st?.chainName} />
       <Around id={u.updateId} />

@@ -59,6 +59,7 @@ function Row({ t, c }: { t: TxListItem; c: Ctx }) {
       <td><To t={t} labels={c.labels} /></td>
       <td className="r"><Moved t={t} coin={c.coin} labels={c.labels} /></td>
       <td className="r"><Fee raw={fee(t.gasUsed, t.gasPrice)} coin={c.coin} /></td>
+      <td className="c-upd"><span className="k-label">Canton update </span><HashLink value={t.updateId} kind="update" to={`/canton/${t.updateId}`} plain /></td>
       <td><Chip status="final" /></td>
     </tr>
   );
@@ -82,12 +83,13 @@ function NotFinalRow({ f, t, c }: { f: InFlightTx; t: ApiTx | undefined; c: Ctx 
       <td>{t ? <To t={t} labels={c.labels} /> : <Dash />}</td>
       <td className="r">{seen ? <ProvingMoved d={{ ...seen, value: seen.value! }} coin={c.coin} labels={c.labels} /> : <Dash />}</td>
       <td className="r">{t?.fee ? <Fee raw={t.fee} coin={c.coin} /> : <Dash />}</td>
+      <td className="c-upd"><span className="k-label">Canton update </span><span className="muted">not final yet</span></td>
       <td><Chip status={f.stage} /></td>
     </tr>
   );
 }
 
-const head = (coin: Coin) => <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Value</th><th className="r">{`Fee (${coin.symbol})`}</th><th>Stage</th></tr></thead>;
+const head = (coin: Coin) => <thead><tr><th>Transaction hash</th><th>Method</th><th>Block</th><th>Age</th><th>From</th><th aria-hidden="true" /><th>To</th><th className="r">Value</th><th className="r">{`Fee (${coin.symbol})`}</th><th>Canton update</th><th>Stage</th></tr></thead>;
 
 /**
  * How many are not final yet in all, from the attempts and the pool; the in-flight list is capped by the server and is not the count. `atLeast` when the pool is

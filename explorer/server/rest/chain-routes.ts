@@ -228,6 +228,14 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     return cached(ok(pick({ ...u, template: pick(u.template, F.updateTemplate), signatories: u.signatories.map((s) => pick(s, F.signatory)), producerRecord: u.producerRecord && pick(u.producerRecord, F.producerRecord) }, F.updateDetail)), "composite");
   }
 
+  /** The EVM transactions an update settled: its block's, in order. */
+  async function updateTxs(id: string, q: URLSearchParams): Promise<Answer> {
+    if (!UPDATE.test(id)) return fail(400, "A Canton update is named by its id, 1220 and 64 hex digits.");
+    const limit = limitOf(q.get("limit")), after = afterOf(q, ["int4"]), n = await rest.updateBlock(id);
+    if (n === undefined) return fail(404, NOT_FOUND_HERE);
+    return cached(ok(txPage(await rest.blockTxs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (t) => keyOf(t.index))), "composite");
+  }
+
   /** The updates just newer and just older than one, by the list's key: a window of the list, so a newer update can still join it. */
   async function around(id: string, q: URLSearchParams): Promise<Answer> {
     const n = aroundOf(q.get("n"));
@@ -253,6 +261,7 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
     ["/api/txs/{hash}/trace", (hash, q) => trace(hash, q)],
     ["/api/canton/updates", (_, q) => updates(q)],
     ["/api/canton/updates/{updateId}", (id) => oneUpdate(id)],
+    ["/api/canton/updates/{updateId}/transactions", (id, q) => updateTxs(id, q)],
     ["/api/canton/updates/{updateId}/around", (id, q) => around(id, q)],
   ]);
 }

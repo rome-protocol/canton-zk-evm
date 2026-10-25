@@ -11,3 +11,24 @@
   .sides.sides-join { grid-template-columns: minmax(0, 1fr); }
   .join { flex-direction: row; justify-content: center; flex-wrap: wrap; }
 }
+
+/* On a phone the Canton tables stack, each row a short card: the fields the page is about stay on screen, none cut mid-text. */
+@media (max-width: 720px) {
+  .stk thead { display: none; }
+  .stk, .stk tbody { display: block; }
+  .tbl.stk tr { display: grid; gap: 4px 8px; padding: 10px 0; border-bottom: 1px solid var(--line-2); }
+  .stk tr:last-child { border-bottom: 0; }
+  .tbl.stk td { display: block; padding: 0; border: 0; white-space: normal; text-align: left; min-width: 0; overflow-wrap: anywhere; }
+  .stk-linked tr { grid-template-columns: auto 1fr; grid-template-areas: "u u" "b n" "t t"; }
+  .stk-linked .k-u { grid-area: u; }
+  .stk-linked .k-b { grid-area: b; }
+  .stk-linked .k-n { grid-area: n; }
+  .stk-linked .k-t { grid-area: t; font-size: 12px; color: var(--muted); }
+  .tbl.stk-linked .k-o, .tbl.stk-linked .k-s { display: none; }
+  .stk-settled tr { grid-template-columns: auto auto 1fr; grid-template-areas: "h h h" "f a t"; }
+  .stk-settled .k-h { grid-area: h; }
+  .stk-settled .k-f { grid-area: f; }
+  .stk-settled .k-a { grid-area: a; }
+  .stk-settled .k-to { grid-area: t; }
+  .tbl.stk-settled .k-p { display: none; }
+}

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { StatsSummary } from "../api.ts";
 import { summary } from "./stats-fixtures.ts";
 import type { Label } from "../api.ts";
-import { addr, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+import { addr, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, tx, txItem, update, waitingTx } from "../test-utils.tsx";
 
 /** The route `base` plus a labels route that answers only the addresses asked, as the server does (so a page that forgot to ask gets no name). */
 const withLabels = (base: (path: string) => { status: number; body: unknown }, items: unknown[]) => {
@@ -40,6 +40,18 @@ describe("the transactions page", () => {
     expect(rows()[2]).toHaveTextContent("Final");
     expect(within(rows()[2]!).getAllByRole("link")[0]).toHaveAttribute("href", `/tx/${hash(0xa3)}`);
     expect(within(rows()[2]!).getByRole("link", { name: "3" })).toHaveAttribute("href", "/block/3");
+  });
+
+  it("names the Canton update of each final transaction, linked to its page, and says 'not final yet' for the rest", async () => {
+    await open({ inFlight: () => reply(flight()), tx: byHash("") });
+    expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toContain("Canton update");
+    expect(rows()[0]).toHaveTextContent("not final yet");
+    expect(rows()[0]).toHaveTextContent(/Canton update\s*not final yet/);
+    // rows 2 and 3 are the transactions of blocks 3 and 2: each links to the update of its own block
+    expect(within(rows()[2]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(3)}`);
+    expect(within(rows()[3]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(2)}`);
+    // a phone has no column heads, so the cell names its own id
+    expect(rows()[2]).toHaveTextContent(/Canton update\s*1220/);
   });
 
   it("marks a failed transaction and shows the fee with every digit", async () => {

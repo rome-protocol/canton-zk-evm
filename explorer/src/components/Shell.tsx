@@ -19,7 +19,7 @@ const DEFAULT_NAME = "Ostia";
  */
 export const NAV: ReadonlyArray<readonly [path: string, label: string, built: boolean]> = [
   ["/", "Home", true], ["/blocks", "Blocks", true], ["/txs", "Transactions", true], ["/contracts", "Contracts", true], ["/tokens", "Tokens", true],
-  ["/canton", "Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/docs/api", "API", true],
+  ["/canton", "Linked to Canton", true], ["/stats", "Stats", true], ["/faucet", "Faucet", true], ["/docs/api", "API", true],
 ];
 
 /** The page of the header that owns a detail route: a block is read under Blocks, a transaction under Transactions. A route no page of the header owns keeps nothing lit. */

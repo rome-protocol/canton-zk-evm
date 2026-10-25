@@ -3,11 +3,11 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { UpdateAroundItem, UpdateDetail, UpdateItem } from "../api.ts";
-import { block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, tx, update } from "../test-utils.tsx";
+import { block, fakeApi, hash, NOT_FOUND, page, renderApp, reply, route, tx, txItem, update } from "../test-utils.tsx";
 
 const SYNC = "da::1220" + "e8".repeat(32);
 const item = (n: number, over: Partial<UpdateItem> = {}): UpdateItem => ({
-  updateId: update(n), recordTime: `2026-10-04T01:37:${10 + n}.230583Z`, effectiveAt: null, participant: "reader-1", offset: 60 + n, synchronizer: SYNC, block: n, ...over,
+  updateId: update(n), recordTime: `2026-10-04T01:37:${10 + n}.230583Z`, effectiveAt: null, participant: "reader-1", offset: 60 + n, synchronizer: SYNC, block: n, txCount: n % 3, ...over,
 });
 const near = (n: number, over: Partial<UpdateAroundItem> = {}): UpdateAroundItem => ({ ...item(n), submittedTemplate: "Zk.Chain:ZkChain", submittedChoice: "Advance", txCount: n * 2, ...over });
 const detail = (over: Partial<UpdateDetail> = {}): UpdateDetail => ({
@@ -38,10 +38,28 @@ describe("the Canton updates page", () => {
     expect(r.getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
   });
 
-  it("says that the offsets are the reader's participant's, not the builder's completion offset", async () => {
+  it("names the page so the link is obvious, says what an update carries, and shows the block, the number of EVM transactions and the record time of each", async () => {
+    await open({ updates: () => reply(page([item(4, { txCount: 7 }), item(3, { block: null, txCount: null })])) });
+    expect(screen.getByRole("heading", { name: "Linked to Canton" })).toBeInTheDocument();
+    expect(screen.getByText("carries one block and all of its EVM transactions", { exact: false })).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Canton update", "EVM block", "EVM transactions", "Record time", "Offset", "Synchronizer"]);
+    expect(rows()[0]).toHaveTextContent(/Block 4\s*7 EVM transactions\s*2026-10-04T01:37:14/);
+    expect(rows()[1]).toHaveTextContent(/none\s*—/);
+  });
+
+  it("names the count for a phone with the right singular and plural: 1 EVM transaction, 0 and 2 EVM transactions", async () => {
+    await open({ updates: () => reply(page([item(5, { txCount: 2 }), item(4, { txCount: 1 }), item(3, { txCount: 0 })])) });
+    expect(within(rows()[0]!).getByText("EVM transactions", { exact: false }).textContent).toBe(" EVM transactions");
+    expect(within(rows()[1]!).getByText("EVM transaction", { exact: false }).textContent).toBe(" EVM transaction");
+    expect(rows()[1]).not.toHaveTextContent("EVM transactions");
+    expect(within(rows()[2]!).getByText("EVM transactions", { exact: false })).toBeInTheDocument();
+  });
+
+  it("says in the table footer that the offsets are the reader's participant's, and keeps the page note to the one explanation", async () => {
     await open();
     expect(screen.getAllByText("on the reader's participant", { exact: false }).length).toBeGreaterThan(0);
-    expect(screen.getByText("not the builder's own completion offset", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText(/builder's own completion offset/)).toBeNull();
+    expect(screen.getByText(/^Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof\.$/)).toBeInTheDocument();
   });
 
   it("pages by the server's cursor", async () => {
@@ -55,6 +73,27 @@ describe("the Canton updates page", () => {
 });
 
 describe("one Canton update", () => {
+  it("lists the EVM transactions it settled, each linked to its page", async () => {
+    const calls = await open({ updateTxs: () => reply(page([txItem(3), txItem(4)])) });
+    const t = within(await screen.findByRole("region", { name: "EVM transactions in this update" }));
+    await t.findAllByRole("link", { name: /^0x/ });
+    expect(calls).toContain(`/api/canton/updates/${update(3)}/transactions?limit=25`);
+    expect(t.getAllByRole("link").map((l) => l.getAttribute("href"))).toEqual(expect.arrayContaining([`/tx/${txItem(3).hash}`, `/tx/${txItem(4).hash}`]));
+    expect(t.getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("says the update carries no block, without asking for transactions or suggesting an outage", async () => {
+    const calls = await open({ update: () => reply(detail({ block: null, txCount: null })), updateTxs: () => ({ status: 404, body: {} }) });
+    expect(await screen.findByText("This update carries no block.")).toBeInTheDocument();
+    expect(calls.some((c) => c.includes("/transactions"))).toBe(false);
+    expect(screen.queryByText(/cannot read the transactions/)).toBeNull();
+  });
+
+  it("says so when the update settled no transactions", async () => {
+    await open({ updateTxs: () => reply(page([])) });
+    expect(await screen.findByText("This update settled no EVM transactions.")).toBeInTheDocument();
+  });
+
   const open = async (h: Parameters<typeof route>[0] = {}, id = update(3)) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(NOW);

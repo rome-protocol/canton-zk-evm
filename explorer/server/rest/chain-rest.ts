@@ -33,6 +33,8 @@ export interface TxListItem {
    * none: `count` is 0 and `first` null for a transaction that moved no token. A count stops at TOKEN_MOVES_CAP; `more` says there are more than that.
    */
   tokenMoves: TokenMoves | null;
+  /** The Canton update that settled the transaction's block, and the time Canton recorded it (every transaction here is in a final block, so both are always there). */
+  updateId: string; recordTime: string;
 }
 export interface TokenMove { token: string; amount: string | null; tokenId: string | null; standard: string | null; decimals: number | null }
 export interface TokenMoves { count: number; more: boolean; first: TokenMove | null }
@@ -49,21 +51,23 @@ export interface InternalItem { traceAddress: number[]; callType: string; from: 
 export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
 export interface TxPlace { block: number; index: number }
 export interface TxTrace { callCount: number; revertReason: string | null; revertData: string | null }
-export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null }
+export interface UpdateItem { updateId: string; recordTime: string; effectiveAt: string | null; participant: string; offset: number; synchronizer: string; block: number | null;
+  /** How many EVM transactions the update settled (its block's); null for an update that carries no block. */
+  txCount: number | null }
 export interface UpdateDetail extends UpdateItem {
   template: { packageId: string; packageName: string | null; module: string; entity: string }; contractId: string | null; blockHash: string | null; signatories: { role: string; party: string }[];
   /** What the producer's journal says it submitted for the update; null for an update the journal does not hold. */
   producerRecord: { template: string | null; choice: string | null; commandId: string | null; argumentBytes: number | null; trafficBytes: number | null } | null;
 }
 /** An update in the list around one: what the producer's log says it submitted is null for an update the log does not hold. */
-export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null; txCount: number | null }
+export interface UpdateAroundItem extends UpdateItem { submittedTemplate: string | null; submittedChoice: string | null }
 export interface BlockRecordRow { number: number; hash: string; contractId: string; headerHex: string; txsHex: string; proofHex: string | null }
 
 export const txSelect = `t.block_number, t.tx_index, t.hash, extract(epoch from b.timestamp)::bigint as ts, t.from_address, t.to_address, t.value::text as value, t.nonce, t.type, t.gas_used,
-  t.effective_gas_price::text as price, t.status, t.created_contract, t.method_id`;
+  t.effective_gas_price::text as price, t.status, t.created_contract, t.method_id, b.update_id, ${US("b.record_time")} as record_time`;
 export const txItem = (r: Row): TxListItem => ({
   hash: hex(r.hash), block: Number(r.block_number), index: r.tx_index, timestamp: Number(r.ts), from: hex(r.from_address), to: hexOrNull(r.to_address), value: r.value, nonce: Number(r.nonce),
-  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract), methodId: hexOrNull(r.method_id), tokenMoves: null,
+  type: r.type, gasUsed: Number(r.gas_used), gasPrice: r.price, success: r.status === 1, created: hexOrNull(r.created_contract), methodId: hexOrNull(r.method_id), tokenMoves: null, updateId: r.update_id, recordTime: isoTime(r.record_time),
 });
 
 /**
@@ -258,10 +262,11 @@ export function createChainRest(pool: Pool) {
   const EPOCH = "timestamptz 'epoch'";
   const MICROS = "(extract(epoch from u.record_time) * 1000000)::bigint";
   const updateSelect = `u.update_id, ${US("u.record_time")} as record_time, ${US("u.effective_at")} as effective_at, p.participant_id, u.reader_offset, s.synchronizer_id, ${MICROS} as micros,
-    (select min(b.number) from blocks b where b.update_id = u.update_id) as block`;
+    (select min(b.number) from blocks b where b.update_id = u.update_id) as block,
+    (select b.tx_count from blocks b where b.update_id = u.update_id order by b.number limit 1) as tx_count`;
   const updateItem = (r: Row): UpdateItem => ({
     updateId: r.update_id, recordTime: isoTime(r.record_time), effectiveAt: r.effective_at && isoTime(r.effective_at), participant: r.participant_id, offset: Number(r.reader_offset),
-    synchronizer: r.synchronizer_id, block: r.block === null ? null : Number(r.block),
+    synchronizer: r.synchronizer_id, block: r.block === null ? null : Number(r.block), txCount: r.tx_count === null ? null : Number(r.tx_count),
   });
 
   /** Canton updates, newest first, after the key (record time in microseconds, update id). */
@@ -275,10 +280,10 @@ export function createChainRest(pool: Pool) {
     return rows.map((r) => ({ ...updateItem(r), micros: Number(r.micros) }));
   }
 
-  const aroundSelect = `${updateSelect}, u.submitted_template, u.submitted_choice, (select b.tx_count from blocks b where b.update_id = u.update_id order by b.number limit 1) as tx_count`;
+  const aroundSelect = `${updateSelect}, u.submitted_template, u.submitted_choice`;
   const aroundFrom = "from canton_updates u join canton_participants p on p.id = u.participant join canton_synchronizers s on s.id = u.synchronizer";
   const aroundItem = (r: Row): UpdateAroundItem & { micros: number } => ({
-    ...updateItem(r), submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, txCount: r.tx_count === null ? null : Number(r.tx_count), micros: Number(r.micros),
+    ...updateItem(r), submittedTemplate: r.submitted_template, submittedChoice: r.submitted_choice, micros: Number(r.micros),
   });
 
   /** One update as the list around it shows it; undefined when there is no such update. */
@@ -295,6 +300,12 @@ export function createChainRest(pool: Pool) {
       query(`select ${aroundSelect} ${aroundFrom} where (u.record_time, u.update_id) < ${key} order by u.record_time desc, u.update_id desc limit $3`, [at, updateId, n]),
     ]);
     return { newer: newer.reverse().map(aroundItem), older: older.map(aroundItem) };
+  }
+
+  /** The block an update carries (its lowest, when it carries more than one); undefined for an update that carries none. */
+  async function updateBlock(updateId: string): Promise<number | undefined> {
+    const [r] = await query("select min(number) as number from blocks where update_id = $1", [updateId]);
+    return r?.number === null || r === undefined ? undefined : Number(r.number);
   }
 
   async function update(updateId: string): Promise<UpdateDetail | undefined> {
@@ -316,5 +327,5 @@ export function createChainRest(pool: Pool) {
     };
   }
 
-  return { deriveCursor, numberOf, blocks, blockExtras, txs, txTotal, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, around, aroundOne };
+  return { deriveCursor, numberOf, blocks, blockExtras, txs, txTotal, blockTxs, blockLegs, record, placeOf, feeCapsOf, traceOf, txLogs, txInternal, txTransfers, updates, update, updateBlock, around, aroundOne };
 }

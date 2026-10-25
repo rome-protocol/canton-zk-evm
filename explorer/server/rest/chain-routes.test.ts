@@ -109,6 +109,32 @@ describe.skipIf(!TEST_URL)("the REST routes of the chain", () => {
     for (const s of u.signatories) same(s, F.signatory);
   });
 
+  it("links each transaction to the Canton update that settled its block, and each update to the transactions it settled", async () => {
+    const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
+    const list = body(await get("/api/txs")).items as { hash: string; block: number; updateId: string; recordTime: string }[];
+    expect(list.length).toBeGreaterThan(0);
+    for (const t of list) {
+      expect(t.updateId, `tx in block ${t.block}`).toBe(id(t.block));
+      expect(t.recordTime).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{3,6})?Z$/);
+    }
+    for (const t of body(await get("/api/blocks/2/transactions")).items) expect(t.updateId).toBe(id(2));
+    const updates = body(await get("/api/canton/updates")).items as { updateId: string; block: number; txCount: number }[];
+    for (const u of updates) expect(u.txCount, `update of block ${u.block}`).toBe(chain.blocks[u.block - 1]!.block.transactions.length);
+    const detail = body(await get(`/api/canton/updates/${id(2)}`));
+    expect(detail.txCount).toBe(chain.blocks[1]!.block.transactions.length);
+    const page = body(await get(`/api/canton/updates/${id(2)}/transactions`));
+    same(page, F.page);
+    expect(page.items.map((t: { hash: string }) => t.hash)).toEqual(chain.blocks[1]!.block.transactions.map((t: { hash: string }) => t.hash));
+    for (const t of page.items) { same(t, F.txItem); expect(t.updateId).toBe(id(2)); expect(t.block).toBe(2); }
+    const first = body(await get(`/api/canton/updates/${id(2)}/transactions?limit=1`));
+    expect(first.items).toHaveLength(1);
+    expect(first.next).not.toBeNull();
+    const rest = body(await get(`/api/canton/updates/${id(2)}/transactions?after=${first.next}`));
+    expect([...first.items, ...rest.items].map((t: { hash: string }) => t.hash)).toEqual(page.items.map((t: { hash: string }) => t.hash));
+    expect((await get("/api/canton/updates/nope/transactions")).status).toBe(400);
+    expect((await get(`/api/canton/updates/1220${"00".repeat(32)}/transactions`)).status).toBe(404);
+  });
+
   it("keeps a block's and a transaction's page small: the transactions and the logs are their own pages", async () => {
     const b = body(await get("/api/blocks/2")), t = body(await get(`/api/txs/${tx(2, 1)}`));
     expect(b).not.toHaveProperty("transactions");

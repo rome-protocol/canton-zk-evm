@@ -96,7 +96,7 @@ export function blockItem(n: number, over: Partial<BlockListItem> = {}): BlockLi
 }
 /** A final transaction as the list route gives it: the nth, in block n. */
 export function txItem(n: number, over: Partial<TxListItem> = {}): TxListItem {
-  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, tokenMoves: null, ...over };
+  return { hash: hash(0xa0 + n), block: n, index: 0, timestamp: T0 + (n - 2) * 8, from: addr(0x5b), to: addr(0xcb), value: "250000000000000000", nonce: n, type: 2, gasUsed: 21000, gasPrice: "1670000000", success: true, created: null, methodId: null, tokenMoves: null, updateId: update(n), recordTime: new Date((T0 + (n - 2) * 8) * 1000 + 7400).toISOString(), ...over };
 }
 /** One address as /api/addresses/:address gives it: an account that sent 3 transactions, with reth's balance at final block 21. */
 export function addressDetail(over: Partial<AddressDetail> = {}): AddressDetail {
@@ -127,7 +127,7 @@ export function route(h: {
   txDetail?: (hash: string) => Reply; txLogs?: (hash: string, path: string) => Reply; txInternal?: (hash: string, path: string) => Reply; txTransfers?: (hash: string, path: string) => Reply; txTrace?: (hash: string, path: string) => Reply; blockRecord?: (id: string) => Reply; txRaw?: (hash: string) => Reply;
   addresses?: (arg: string, sub: string, path: string) => Reply; tokens?: (arg: string) => Reply; tokenPages?: (arg: string, sub: string, path: string) => Reply; contracts?: (arg: string, sub: string, path: string) => Reply;
   labels?: (path: string) => Reply;
-  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply;
+  legs?: (id: string, path: string) => Reply; blockTxs?: (id: string, path: string) => Reply; blockLegs?: (id: string, path: string) => Reply; blockDetail?: (id: string) => Reply; faucet?: () => Reply; health?: () => Reply; updates?: (path: string) => Reply; update?: (id: string) => Reply; around?: (id: string) => Reply; updateTxs?: (id: string, path: string) => Reply;
 }) {
   const answer = (path: string): Reply => {
     const [, , kind, arg = "", sub = ""] = path.split("?")[0]!.split("/");
@@ -138,6 +138,7 @@ export function route(h: {
     if (kind === "blocks" && arg && sub === "record") return h.blockRecord ? h.blockRecord(decodeURIComponent(arg)) : gone();
     if (kind === "blocks" && arg) return h.blockDetail ? h.blockDetail(decodeURIComponent(arg)) : gone();
     if (kind === "blocks") return h.blocks ? h.blocks(path) : reply(page([blockItem(3), blockItem(2)]));
+    if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "transactions") return h.updateTxs ? h.updateTxs(decodeURIComponent(sub), path) : reply(page([]));
     if (kind === "canton" && arg === "updates" && path.split("?")[0]!.split("/")[5] === "around") return h.around ? h.around(decodeURIComponent(sub)) : gone();
     if (kind === "canton" && arg === "updates") return sub ? (h.update ? h.update(decodeURIComponent(sub)) : gone()) : h.updates ? h.updates(path) : reply(page([]));
     if (kind === "addresses") return h.addresses ? h.addresses(decodeURIComponent(arg), sub, path) : gone();
@@ -212,7 +213,7 @@ export function blockDetail(over: Partial<BlockDetail> = {}): BlockDetail {
 /** The Canton update that carries block n, as its own route gives it: the reader's offset 52, the synchronizer, and what the producer submitted. */
 export function updateDetail(n = 3, over: Partial<UpdateDetail> = {}): UpdateDetail {
   return {
-    updateId: update(n), recordTime: "2026-10-04T01:37:23.412Z", effectiveAt: null, participant: "reader::1220" + "11".repeat(32), offset: 52, synchronizer: "da::1220" + "e8".repeat(32), block: n,
+    updateId: update(n), recordTime: "2026-10-04T01:37:23.412Z", effectiveAt: null, participant: "reader::1220" + "11".repeat(32), offset: 52, synchronizer: "da::1220" + "e8".repeat(32), block: n, txCount: n % 3,
     template: { packageId: "ab".repeat(32), packageName: "zk-chain", module: "Zk.Chain", entity: "BlockRecord" }, contractId: "00" + "cc".repeat(32), blockHash: hash(n), signatories: [],
     producerRecord: { template: "Zk.Chain:ZkChain", choice: "Advance", commandId: "cmd-1", argumentBytes: 13760, trafficBytes: null },
     ...over,
