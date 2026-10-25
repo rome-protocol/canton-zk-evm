@@ -68,9 +68,9 @@ def verify(line: str) -> str:
 
 
 def length_prefixed(rest: str) -> tuple | None:
-    """Takes one field off the front of `rest`: 10 decimal digits for its length (even), then the field. Returns (field, the rest)."""
+    """Takes one field off the front of `rest`: 10 decimal digits for its length, then the field. Returns (field, the rest)."""
     digits = rest[:10]
-    if len(digits) != 10 or not re.fullmatch(r"[0-9]{10}", digits) or int(digits) % 2:
+    if len(digits) != 10 or not re.fullmatch(r"[0-9]{10}", digits):
         return None
     n = int(digits)
     return None if len(rest) < 10 + n else (rest[10:10 + n], rest[10 + n:])

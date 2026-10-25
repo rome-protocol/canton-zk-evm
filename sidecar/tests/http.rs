@@ -26,6 +26,17 @@ fn request(
     function: Option<&str>,
     body: &str,
 ) -> (u16, String) {
+    request_bytes(addr, method, path, function, body.as_bytes())
+}
+
+/// One request with a body of any bytes.
+fn request_bytes(
+    addr: &str,
+    method: &str,
+    path: &str,
+    function: Option<&str>,
+    body: &[u8],
+) -> (u16, String) {
     let mut head = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n",
         body.len()
@@ -36,9 +47,8 @@ fn request(
         ));
     }
     let mut stream = TcpStream::connect(addr).unwrap();
-    stream
-        .write_all(format!("{head}\r\n{body}").as_bytes())
-        .unwrap();
+    stream.write_all(format!("{head}\r\n").as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
     let mut reply = String::new();
     stream.read_to_string(&mut reply).unwrap();
     let status = reply.split(' ').nth(1).unwrap().parse().unwrap();
@@ -197,6 +207,20 @@ fn verify2_takes_the_line_as_the_body_and_answers_in_hex() {
     );
     // the old verb still wants hex
     assert_eq!(call("verify", &line).0, 400);
+}
+
+/// A body that is not UTF-8 text is the one error of the `verify2` call itself.
+#[test]
+fn verify2_refuses_a_body_that_is_not_text() {
+    let addr = start(config_accepting_any());
+    let (status, body) = request_bytes(
+        &addr,
+        "POST",
+        "/api/v1/external-call",
+        Some("verify2"),
+        b"\xff",
+    );
+    assert_eq!((status, body.as_str()), (400, "the body is not text"));
 }
 
 #[test]

@@ -2,9 +2,10 @@
 // Copyright 2026 Rome Protocol
 //! The service Canton calls through its external-call extension, one beside each confirming
 //! participant. Three functions, each a pure function of its input line (no state, no network, no
-//! clock): `verify` and `verify2` check a proven block (`verify2` takes it with length prefixes and a hash), `legs` checks that the Canton legs attached to a block are
-//! exactly the ones the block recorded in the gateway contract. The lines and the answers are those
-//! of `daml/README.md`.
+//! clock): `verify` and `verify2` check a proven block (`verify2` takes it with length prefixes
+//! and a hash), `legs` checks that the Canton legs attached to a block are exactly the ones the
+//! block recorded in the gateway contract. The lines and the answers are those of
+//! `daml/README.md` (`verify2`: see `sidecar/README.md` until it gains the line).
 
 pub mod block;
 pub mod http;
@@ -146,7 +147,7 @@ const HASH_LEN: usize = 64;
 const LENGTH_DIGITS: usize = 10;
 
 /// Takes one length-prefixed field off the front of `rest`: 10 decimal digits, then that many
-/// characters. The length must be even, and the field must fit in what is left.
+/// characters. The field must fit in what is left; whole bytes are checked by `unhex`.
 fn length_prefixed(rest: &str) -> Result<(&str, &str), &'static str> {
     let digits = rest.get(..LENGTH_DIGITS).ok_or(MALFORMED)?;
     digits
@@ -155,7 +156,6 @@ fn length_prefixed(rest: &str) -> Result<(&str, &str), &'static str> {
         .then_some(())
         .ok_or(MALFORMED)?;
     let n: usize = digits.parse().map_err(|_| MALFORMED)?;
-    n.is_multiple_of(2).then_some(()).ok_or(MALFORMED)?;
     let rest = &rest[LENGTH_DIGITS..];
     Ok((rest.get(..n).ok_or(MALFORMED)?, &rest[n..]))
 }

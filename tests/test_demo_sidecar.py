@@ -84,7 +84,10 @@ class StandInVerify2(unittest.TestCase):
 
     def test_a_short_line_or_a_bad_length_is_refused(self):
         self.assertEqual(s.verify2("ab"), "no malformed input")
-        for body in ["", "12", f"{len(PROOF) + 2:010d}{PROOF}", f"{len(PROOF) + 1:010d}{PROOF}0", f"{len(PROOF):010d}{PROOF}", f"000000000x{PROOF}"]:
+        header = BLOCK["header"]
+        past_end = [f"{len(PROOF):010d}{PROOF}{len(header) + 20:010d}{header}",
+                    f"{len(PROOF) + len(header) + 20:010d}{PROOF}{len(header):010d}{header}{BLOCK['txs']}"]
+        for body in past_end + ["", "12", f"{len(PROOF) + 2:010d}{PROOF}", f"{len(PROOF) + 1:010d}{PROOF}0", f"{len(PROOF):010d}{PROOF}", f"000000000x{PROOF}"]:
             self.assertEqual(s.verify2(self.line(body=body)), "no malformed input", body[:20])
 
     def test_a_field_that_is_not_whole_bytes_is_refused(self):

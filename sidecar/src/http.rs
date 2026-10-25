@@ -3,7 +3,8 @@
 //! Canton's HTTP contract for an external-call service: `GET /api/v1/version` answers JSON, and
 //! `POST /api/v1/external-call` takes the function in the `X-Daml-External-Function-Id` header and
 //! the hex of the input line as its body, and answers the hex of the answer line. `verify2` is the
-//! one exception on the way in: its body is the input line itself (already hex text), not the hex of it.
+//! one exception on the way in: its body is the input line itself (already hex text), not the hex
+//! of it.
 
 use crate::{hex, legs, unhex, verify, verify2, Config};
 use std::io::Read;

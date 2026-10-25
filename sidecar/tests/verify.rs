@@ -215,6 +215,28 @@ fn verify2_gives_verifys_refusals_for_the_same_fields() {
     assert_eq!(verify2(&cfg, &line2_of(&body2(short, &header, &txs))), one);
 }
 
+/// The two refusals of a real proof check, through `verify2`: the same answers as `verify`.
+#[test]
+fn verify2_gives_verifys_answers_under_the_real_proof_check() {
+    let s = session();
+    let b = reth_block();
+    let cfg = Config::new(s.program_vk, s.root_c);
+    let mut flipped = s.abi.clone();
+    flipped[10] ^= 1;
+    for (abi, want) in [
+        (
+            s.abi.clone(),
+            "no the header does not hash to the proven block hash",
+        ),
+        (flipped, "no the proof does not verify"),
+    ] {
+        let (abi, header, txs) = (hex(&abi), hex(&b.header), hex(&b.txs));
+        let one = verify(&cfg, &format!("{abi},{header},{txs}"));
+        assert_eq!(one, want);
+        assert_eq!(verify2(&cfg, &line2_of(&body2(&abi, &header, &txs))), one);
+    }
+}
+
 #[test]
 fn a_verify2_line_with_an_empty_transaction_field_is_read_to_the_end() {
     let cfg = config_accepting_any();
