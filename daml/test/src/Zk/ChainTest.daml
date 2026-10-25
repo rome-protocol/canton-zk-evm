@@ -541,6 +541,17 @@ testRefusesAnAnswerForAnotherBlockOrGatewayOrCount = do
 -- Advance does not check the hex of the block or of the gateway's proofs itself (the check ran one character at a time, and
 -- was most of the time Advance took); the sidecar of every confirmer does, more strictly (lowercase, whole bytes), answers
 -- "malformed input", and Canton refuses the transaction if the answers differ. The stub answers the same way.
+-- The lists are joined with ';' before the sidecar sees them, so a list holding one empty string reads as no nodes, the
+-- same as []: what commits and what is recorded are the same for both.
+testAnEmptyNodeAloneReadsAsNoNodes : Script ()
+testAnEmptyNodeAloneReadsAsNoNodes = do
+  f <- fixture
+  (_, _) <- submit (asBuilder f) $ advanceWith f.chain "01" "aa" [""] [] []
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headHash) === (1, stubHash1)      -- the values testABlockOfNoLegsCommits gets with no nodes at all
+  [(_, r)] <- query @BlockRecord f.reader
+  (r.number, r.blockHash, r.proofHex) === (1, stubHash1, "aa")
+
 testRefusesProofsThatAreNotHex : Script ()
 testRefusesProofsThatAreNotHex = do
   f <- fixture

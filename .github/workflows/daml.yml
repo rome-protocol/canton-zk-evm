@@ -2,10 +2,10 @@ name: daml
 
 on:
   pull_request:
-    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "PINS", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
   push:
     branches: [main]
-    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "PINS", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
 
 permissions:
   contents: read
@@ -52,6 +52,11 @@ jobs:
           java-version: "21"
       - name: Install the pinned Daml toolchain (every download is checked against PINS)
         run: network/canton/fetch.sh
+      - name: Run the Daml Script tests on the pinned toolchain (the one the network runs)
+        run: |
+          . ./PINS
+          export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
+          SDK_VERSION=$DAML_SDK_VERSION TARGET=$DAML_TARGET daml/test.sh
       - name: Rebuild 0.1.0 from the tag v0.1.0 and check its package id
         run: |
           git fetch --no-tags --depth=1 origin tag v0.1.0
