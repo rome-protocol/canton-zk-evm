@@ -125,7 +125,7 @@ class Reth:
     def __init__(self, cfg: Config, ws):
         self.cfg, self.ws, self.next_id = cfg, ws, 0
         self.imported: list = []   # the (hash, raw transaction) pairs of the block the builder last made reth's head
-        self.packed: dict = {}     # how the last build's transactions were chosen: `packed` (gas_used, gas_limits or listed), and for the first two `offered`; `pack_reason` when gas_limits is a fallback
+        self.packed: dict = {}     # how the last build's transactions were chosen: `packed` (gas_used or gas_limits), and `offered`; `pack_reason` when gas_limits is a fallback
 
     def call(self, method: str, params: list):
         """A call on the builder-only WebSocket port."""
@@ -852,8 +852,8 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     the excluded ones (and each such sender's later ones), every time: after a transaction was left out for its leg, put_back has sent the
     block's transactions to the pool again, so the choice is made again with the larger exclude set and the gas and bytes the left-out ones
     held go to others. `known` is the (transaction, raw) pairs of the block just unwound: one of them that the pool did not take back
-    (put_back reports it as lost) is still a candidate, with the raw bytes in hand, so a pool that refuses a resend does not drop an honest
-    transaction from the rebuilt block. (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
+    (put_back reports it as lost) is still a candidate, with the raw bytes in hand; if it does not make the rebuilt block it is reported in
+    lostTransactions. (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
     n, cap = int(chain["headNumber"]) + 1, int(chain["gasCap"])
     parent = reth.call("eth_getBlockByHash", [head, False])
     if not parent or int(parent["number"], 16) != n - 1:
@@ -926,8 +926,11 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     keep(pairs)
     payload = built["executionPayload"]
     how = {"gas_used": "gas used", "gas_limits": "gas limits"}[reth.packed["packed"]]
-    print(f"block {n}: {len(pairs)} transactions, gas used {int(payload['gasUsed'], 16)} of {cap}, packed by {how}"
-          + (f" ({reth.packed['pack_reason']})" if "pack_reason" in reth.packed else ""), file=sys.stderr, flush=True)
+    try:  # a closed pipe to a log collector must not stop the chain, as in Producer.emit
+        print(f"block {n}: {len(pairs)} transactions, gas used {int(payload['gasUsed'], 16)} of {cap}, packed by {how}"
+              + (f" ({reth.packed['pack_reason']})" if "pack_reason" in reth.packed else ""), file=sys.stderr, flush=True)
+    except OSError:
+        pass
     status = reth.engine("engine_newPayloadV4", [payload, [], ZERO32, built["executionRequests"]])["status"]
     if status != "VALID":
         raise BuilderError(f"engine_newPayloadV4 answered {status}")
