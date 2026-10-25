@@ -4,15 +4,17 @@ import type { Pool } from "pg";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
 import { createLedger, CUSTODY_ENDPOINTS, type Ledger } from "../ledger.ts";
-import { CHAIN_ID, GATEWAY, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
+import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { FAKE_GATEWAY, FAKE_REGISTRY, gatewayToken, holding, startFakeLedger, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
-import { custodyOnce } from "./custody.ts";
+import { custodyOnce as custodyAt } from "./custody.ts";
 
 const TKB = "0x" + "d1".repeat(20), TKC = "0x" + "d2".repeat(20);
 const SUPPLY = "0x18160ddd";
 const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
 const SOMEONE = "alice::1220" + "ab".repeat(32);
+/** The custody read as the indexer makes it, by default as the participant the synthetic chain reports. */
+const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayCustody">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT) => custodyAt(pool, ledger, reads, limit, participant);
 const fakes: FakeLedger[] = [];
 const opened: Indexer[] = [];
 afterEach(async () => {
@@ -72,6 +74,45 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       await indexer.runOnce();
       await custodyOnce(pool, ledger, chain.reads, 500);
       expect(await rows(pool)).toMatchObject([{ evm: "d1".repeat(20), custody: "10000000000", supply: null, supply_block: 2, ledger_offset: 20 }]);
+    });
+  });
+
+  it("reads at a block of the participant now read: after a reader move the older participant's offset is not used, the last rows stay, and nothing is asked of Canton", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 2, { [TKB]: 1_005_000_000n });
+      const { ledger, fake } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")]);
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      const before = await rows(pool);
+      expect(before).toMatchObject([{ supply_block: 2, ledger_offset: 20 }]);
+      const asked = fake.requests.length;
+      // the reader moved: the participant that holds every indexed record is no longer the one read, and the new one has no block yet
+      await pool.query("update canton_participants set moved_out_at = now()");
+      await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('new-participant', 0, now())");
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(fake.requests).toHaveLength(asked);
+      expect(await rows(pool)).toEqual(before);
+    });
+  });
+
+  it("reads nothing while the participant the reader reports is not the one of the newest block, and never reads an older block after a move A -> B -> A", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 2, { [TKB]: 1_005_000_000n });
+      const { ledger, fake } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")]);
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      const before = await rows(pool);
+      const asked = fake.requests.length;
+      // LEDGER_URL points at another participant, and the database has not been moved: nothing is read at the old participant's offset
+      expect(await custodyOnce(pool, ledger, chain.reads, 500, "other-participant")).toEqual({ tokens: 0, offset: 0, block: null });
+      // A -> B: B has one block; A <- B: the reader is back at A, which has no newer block than B's
+      await pool.query("update canton_participants set moved_out_at = now()");
+      const [b] = (await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('participant-b', 0, now()) returning id")).rows;
+      const [last] = (await pool.query("select update_id from blocks order by number desc limit 1")).rows;
+      await pool.query("update canton_updates set participant = $1 where update_id = $2", [b.id, last.update_id]);
+      await pool.query("update canton_participants set moved_out_at = now() where participant_id = 'participant-b'");
+      await pool.query("update canton_participants set first_offset = 0, last_offset = null, moved_in_at = now(), moved_out_at = null where participant_id = $1", [PARTICIPANT]);
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(fake.requests).toHaveLength(asked);
+      expect(await rows(pool)).toEqual(before);
     });
   });
 

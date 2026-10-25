@@ -58,7 +58,7 @@ export function holding(n: number, owner: string, amount: string, admin = FAKE_R
   const value = view ?? { owner, instrumentId: { admin, id }, amount, lock, meta: { values: {} } };
   return {
     contractId: "00" + n.toString(16).padStart(8, "0"), templateId: "999999:Some.Token:Holding", signatories,
-    interfaceViews: [view === "unreadable" ? { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 3, message: "no view" } } : { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 0 }, viewValue: value }],
+    interfaceViews: [view === "unreadable" ? { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 3, message: "no view" } } : { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 0, message: "" }, viewValue: value }],
   };
 }
 
@@ -68,7 +68,8 @@ export interface ActiveContract { contractId: string; templateId: string; create
 function activeEntry(c: ActiveContract, withView: boolean): Json {
   return { contractEntry: { JsActiveContract: { createdEvent: {
     offset: 5, nodeId: 0, contractId: c.contractId, templateId: c.templateId, createdAt: "2026-10-04T01:37:15.412Z", packageName: "canton-zk-evm",
-    ...(c.createArgument ? { createArgument: c.createArgument } : {}), ...(withView && c.interfaceViews ? { interfaceViews: c.interfaceViews } : {}),
+    // the document names createArgument as always present, so a contract picked by its interface alone carries an empty one
+    createArgument: c.createArgument ?? {}, ...(withView && c.interfaceViews ? { interfaceViews: c.interfaceViews } : {}),
     witnessParties: [FAKE_GATEWAY], signatories: c.signatories ?? [FAKE_GATEWAY], acsDelta: true, representativePackageId: "abc123def456",
   }, synchronizerId: "sync::1220" + "99".repeat(32), reassignmentCounter: 0 } } };
 }
