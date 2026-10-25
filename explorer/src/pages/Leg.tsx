@@ -30,6 +30,7 @@ function Facts({ l }: { l: LegListItem }) {
         <Item label="Token"><LegToken token={l.token} full /></Item>
         <Item label="Account"><HashLink value={l.account} to={`/address/${l.account}`} full /></Item>
         <Item label="Amount"><LegAmount l={l} /></Item>
+        {l.kind === "withdrawal" && <Item label="Canton receiver">{l.party ? <span className="mono">{l.party}</span> : <span className="muted">not recorded</span>}</Item>}
       </Kv>
     </section>
   );

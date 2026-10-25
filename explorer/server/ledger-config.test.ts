@@ -4,8 +4,8 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError } from "./config.ts";
-import { ledgerFromConfig } from "./ledger-config.ts";
-import { FAKE_READER, startFakeLedger, type FakeLedger } from "../test/fake-ledger.ts";
+import { gatewayLedgerFromConfig, ledgerFromConfig } from "./ledger-config.ts";
+import { FAKE_GATEWAY, FAKE_READER, startFakeLedger, type FakeLedger } from "../test/fake-ledger.ts";
 
 const SECRET = "tok." + randomBytes(24).toString("hex");   // made for each run
 let dir = "", file = "", fake: FakeLedger | undefined;
@@ -45,6 +45,19 @@ describe("the Ledger API client the server and the indexer build from the settin
     put("second.token.value");
     await l.ledgerEnd();
     expect(fake.requests.map((r) => r.authorization)).toEqual(["Bearer first.token.value", "Bearer second.token.value"]);
+  });
+
+  it("builds the custody read's client for the gateway party with its own token file, and refuses a file open to others without printing it", async () => {
+    put(SECRET);
+    fake = await startFakeLedger([], { ledgerEnd: 9, active: [] });
+    const ledger = gatewayLedgerFromConfig({ ledgerUrl: fake.url, rpcTimeoutMs: 2000 }, { party: FAKE_GATEWAY, tokenFile: file });
+    expect(await ledger.gatewayCustody(10)).toEqual({ offset: 9, tokens: [] });
+    expect(fake.requests.every((r) => r.authorization === `Bearer ${SECRET}`)).toBe(true);
+    put(SECRET, 0o640);
+    let message = "";
+    try { gatewayLedgerFromConfig({ ledgerUrl: fake.url, rpcTimeoutMs: 2000 }, { party: FAKE_GATEWAY, tokenFile: file }); } catch (e) { message = (e as Error).message; }
+    expect(message).toContain("GATEWAY_LEDGER_TOKEN_FILE");
+    expect(message).not.toContain(SECRET);
   });
 
   it("is the only way the server's and the indexer's entry points build their ledger", () => {

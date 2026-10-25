@@ -109,6 +109,22 @@ describe("the gateway leg page", () => {
     expect(within(kv("Account")).getByRole("link", { name: addr(0xa1) })).toHaveAttribute("href", `/address/${addr(0xa1)}`);
   });
 
+  it("names the Canton party a withdrawal paid, in full", async () => {
+    const party = "alice::1220" + "ab".repeat(32);
+    await openLeg({ kind: "withdrawal", party });
+    expect(kv("Canton receiver")).toHaveTextContent(party);
+  });
+
+  it("has no Canton receiver on a deposit or a payment", async () => {
+    await openLeg({ kind: "deposit", party: null });
+    expect(screen.queryByText("Canton receiver", { selector: "dt" })).toBeNull();
+  });
+
+  it("says a withdrawal's receiver is not recorded when the server has none", async () => {
+    await openLeg({ kind: "withdrawal", party: null });
+    expect(kv("Canton receiver")).toHaveTextContent("not recorded");
+  });
+
   it("links the block, the transaction and the block's Canton update", async () => {
     await openLeg();
     expect(within(kv("Block")).getByRole("link", { name: "21" })).toHaveAttribute("href", "/block/21");
