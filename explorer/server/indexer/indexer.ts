@@ -567,7 +567,7 @@ export function createIndexer(o: IndexerOptions) {
       let failing = "";
       while (running && o.custody) {
         try {
-          await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200);
+          await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()));
           failing = "";
         } catch (e) {
           // Said once for each kind of failure, not on every pass.
