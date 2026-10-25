@@ -245,12 +245,17 @@ class Golden(Loop):
         p = self.process(s)
         done = threading.Event()
         def go():
-            with mock.patch.object(b.Producer, "record", side_effect=RuntimeError("boom")):
-                self.run_steps(p)
-            done.set()
+            try:
+                with mock.patch.object(b.Producer, "record", side_effect=RuntimeError("boom")):
+                    self.run_steps(p)
+            finally:
+                done.set()
         t = threading.Thread(target=go, daemon=True)
+        # Cleanups run in reverse: stop is set first, so a run that still loops (a regression) exits, its patch is undone and it is joined.
+        self.addCleanup(t.join, 5)
+        self.addCleanup(self.stop.set)
         t.start()
         self.assertTrue(done.wait(20), "the run did not end after a raise out of step()")
         self.assertTrue(self.stop.is_set())
-        with self.assertRaises(AssertionError):
-            self.check("commit", s)
+        # Compared with the file directly, never through check(): with GOLDEN_REGENERATE=1 check() would write this faulty record.
+        self.assertNotEqual(self.record(s), json.loads((GOLDEN / "commit.json").read_text()))
