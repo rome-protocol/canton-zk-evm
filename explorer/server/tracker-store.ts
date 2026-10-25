@@ -110,10 +110,10 @@ const UPSERT = {
  * replaced by the newer word. The first accepted_at stays.
  */
 const LIFECYCLE = `
-  insert into tx_lifecycle (tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends, updated_at)
-  select tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends, now()
-    from unnest($1::bytea[], $2::timestamptz[], $3::text[], $4::bytea[], $5::bigint[], $6::text[], $7::text[], $8::int[])
-      as t(tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends)
+  insert into tx_lifecycle (tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends, drop_cause, updated_at)
+  select tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends, drop_cause, now()
+    from unnest($1::bytea[], $2::timestamptz[], $3::text[], $4::bytea[], $5::bigint[], $6::text[], $7::text[], $8::int[], $9::text[])
+      as t(tx_hash, accepted_at, accepted_via, sender, nonce, state, state_reason, resends, drop_cause)
   on conflict (tx_hash) do`;
 const LIFECYCLE_UPDATE = ` update set
     accepted_at = coalesce(tx_lifecycle.accepted_at, excluded.accepted_at),
@@ -121,6 +121,8 @@ const LIFECYCLE_UPDATE = ` update set
     sender = coalesce(tx_lifecycle.sender, excluded.sender),
     nonce = coalesce(tx_lifecycle.nonce, excluded.nonce),
     resends = excluded.resends,
+    -- Only a dropped transaction has a cause; one dropped before the cause was kept (an entry read back from the list) keeps what it had.
+    drop_cause = case when tx_lifecycle.state <> 'final' and excluded.state = 'dropped' then coalesce(excluded.drop_cause, tx_lifecycle.drop_cause) else null end,
     state = case when tx_lifecycle.state = 'final' then 'final' else excluded.state end,
     state_reason = case when tx_lifecycle.state = 'final' then tx_lifecycle.state_reason else excluded.state_reason end,
     updated_at = now()`;
@@ -147,7 +149,7 @@ export function databaseTrackerStore(pool: Pool, max: number): TrackerStore {
       await c.query(UPSERT.head + (keepExisting ? UPSERT.keep : UPSERT.update), params);
       await c.query(LIFECYCLE + (keepExisting ? LIFECYCLE_KEEP : LIFECYCLE_UPDATE), [
         col((e) => bytes(e.hash)), col((e) => at(e.addedAt)), col((e) => e.via ?? null), col((e) => bytes(e.from)), col((e) => e.nonce), col((e) => e.state), col((e) => e.reason),
-        col((e) => Math.max(0, e.attempts - 1)),
+        col((e) => Math.max(0, e.attempts - 1)), col((e) => (e.state === "dropped" ? e.cause ?? null : null)),
       ]);
       await c.query("commit");
     } catch (e) {

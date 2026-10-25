@@ -28,8 +28,8 @@ function heading(s: StatsSummary): string {
   return `${range}, by the ${step}, UTC`;
 }
 
-function Tile({ k, v, small, sub }: { k: string; v: React.ReactNode; small?: React.ReactNode; sub: React.ReactNode }) {
-  return <div className="card stat"><span className="stat-k">{k}</span><span className="stat-v">{v}{small && <small> {small}</small>}</span><span className="small muted">{sub}</span></div>;
+function Tile({ k, v, small, sub, note }: { k: string; v: React.ReactNode; small?: React.ReactNode; sub: React.ReactNode; note?: string }) {
+  return <div className="card stat"><span className="stat-k">{k}</span><span className="stat-v">{v}{small && <small> {small}</small>}</span><span className="small muted">{sub}</span>{note && <span className="small muted">{note}</span>}</div>;
 }
 const timeTile = (k: string, s: StatsSpread | null, sub: string) => <Tile k={k} v={s ? sec(s.median) : DASH} small={s && `p95 ${sec(s.p95)}`} sub={s ? sub : "no block in this window"} />;
 
@@ -47,7 +47,7 @@ function Reliability({ s }: { s: StatsSummary }) {
         <Cell k="Accepted" v={count(s.txs.accepted)} sub="only those sent through Ostia's RPC or the faucet" />
         <Cell k="Final" v={count(s.txs.count)} sub="every transaction in a final block, whether or not Ostia accepted it" />
         <Cell k="Not final yet" v={count(s.waiting.open)} sub={`${count(a.beingProven)} being proven · ${count(a.waiting)} waiting · ${count(a.stuck)} stuck`} />
-        <Cell k="Replaced or dropped" v={count(s.replaced.window + s.dropped.window)} sub={`replaced by the sender: ${count(s.replaced.window)} · dropped: ${count(s.dropped.window)}`} />
+        <Cell k="Replaced or dropped" v={count(s.replaced.window + s.dropped.window)} sub={`replaced by the sender: ${count(s.replaced.window)} · dropped: ${count(s.dropped.window)}, for any cause: no funds, a nonce gap, a fee too low, the explorer's own limit, a long wait, or the chain`} />
         <Cell k="Lost" v={count(lost)} tone={lost ? "bad" : "ok"} sub="accepted and never made final, all time" />
       </div>
       {s.lost.listed.length > 0 && (
@@ -174,7 +174,11 @@ export function Stats() {
             {timeTile("Canton commit", s.commitTime, "sent to record time")}
             <Tile k="Transactions" v={count(s.txs.count)} small={s.txs.allTime ? <span title={`All time, as of block ${s.txs.allTime.asOfBlock}; runs marked as tests are counted`}>{count(s.txs.allTime.total)} final all time · test runs included</span> : "total not counted yet"} sub={`in ${plural(s.blocks.count, "block")}${s.txsPerBlock.mean !== null ? ` · ${trim(s.txsPerBlock.mean, 1)} per block` : ""}${s.txs.allTime ? ` · all time as of block ${s.txs.allTime.asOfBlock}` : ""}`} />
             <Tile k="Peak rate" v={s.tps.peak !== null && s.txs.count > 0 ? rate(s.tps.peak) : DASH} small={s.tps.peak !== null && s.txs.count > 0 ? "tx/s" : undefined} sub={s.tps.peakAt ? `${s.tps.peak !== null && s.tps.peak < 1 ? `${peakCount(s.tps.peak)} in the busiest minute` : "busiest minute"}, ${pointTime(s.tps.peakAt, false)}` : "no transaction in this window"} />
-            <Tile k="Success rate" v={s.txs.successRate !== null ? pct(s.txs.successRate) : DASH} sub={s.txs.successRate !== null ? `${count(s.txs.failed)} reverted of ${count(s.txs.count)}` : "no transaction in this window"} />
+          </div>
+          <div className="stats six">
+            <Tile k="Success rate" v={s.txs.successRate !== null ? pct(s.txs.successRate) : DASH} sub={s.txs.successRate !== null ? `${count(s.txs.acceptedFinal + s.txs.lost + s.txs.droppedByChain)} accepted and settled · ${count(s.txs.lost)} lost · ${count(s.txs.droppedByChain)} dropped by the chain` : "no accepted transaction settled in this window"} note="Transactions sent through Ostia's RPC or the faucet that became final, over those and the ones lost or dropped. A drop the sender caused (no funds, a nonce gap, a fee too low), the explorer caused, or a long wait in the pool is not counted." />
+            <Tile k="Block attempts committed" v={s.blocks.firstTry !== null ? pct(s.blocks.firstTry) : DASH} sub={s.attempts.decided > 0 ? `${count(s.attempts.committed)} of ${count(s.attempts.decided)} attempts committed · ${count(s.attempts.refused)} refused · ${count(s.attempts.failed)} failed · ${count(s.attempts.unknown)} unknown` : "no block attempt decided in this window"} note="Over the attempts that committed, were refused, failed or got no answer." />
+            <Tile k="Delayed by a redo" v={count(s.txs.delayedByRedo)} sub={s.txs.delayedByRedo === 1 ? "transaction" : "transactions"} note="Every transaction, whoever sent it, carried by a block attempt that did not commit and then made final in a later block." />
           </div>
           <Reliability s={s} />
           <div className="cols">

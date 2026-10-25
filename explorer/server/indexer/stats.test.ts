@@ -239,6 +239,53 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     expect(await minuteRow(pool, 0)).toMatchObject({ attempts: 3, attempts_not_taken: 0, attempts_skipped: 1, attempts_cancelled: 1, attempts_refused: 0, attempts_failed: 0 });
   }));
 
+  it("the chain's own success rate: accepted and final, lost and dropped, and the delays from an attempt that did not commit, each counted once in the minute it was settled", () => inDb(async (pool) => {
+    const r = await run(pool, false), tr = await run(pool, true);
+    const refused = await attempt(pool, r, 1, { cut_at: at(1), outcome: "refused" });
+    const failed = await attempt(pool, r, 2, { cut_at: at(2), outcome: "failed" });
+    const found = await attempt(pool, r, 3, { cut_at: at(3), outcome: "unknown", resolved_outcome: "committed" });
+    const unknown = await attempt(pool, r, 4, { cut_at: at(4), outcome: "unknown" });
+    const proof = await attempt(pool, r, 5, { cut_at: at(5), proof_outcome: "failed" });
+    const good = await attempt(pool, r, 6, { cut_at: at(6), outcome: "committed", proof_outcome: "ok" });
+    const flood = await attempt(pool, tr, 7, { cut_at: at(7), outcome: "refused" });
+    const notTaken = await attempt(pool, r, 8, { cut_at: at(8), outcome: "not_taken" });
+    const cancelled = await attempt(pool, r, 9, { cut_at: at(9), outcome: "cancelled" });
+    const restarted = await attempt(pool, r, 10, { cut_at: at(10), resolved_outcome: "restarted" });
+    const carry = (a: number, n: number, left: string | null = null) => ins(pool, "attempt_transactions", { attempt_id: a, position: n, tx_hash: hex(200 + n), left_out_reason: left });
+    const fin = { state: "final", accepted_at: at(0), final_at: at(30) };
+    await life(pool, 1, fin); await carry(refused, 1); await carry(good, 1);   // redone after a refusal: a delay
+    await life(pool, 2, fin); await carry(good, 2);                             // first time: no delay
+    await life(pool, 3, fin); await carry(found, 3);                            // the unknown answer was found committed: no delay
+    await life(pool, 4, fin); await carry(unknown, 4);                          // the answer never came and it was not found committed: a delay
+    await life(pool, 5, fin); await carry(proof, 5);                            // a failed proof: a delay
+    await life(pool, 6, fin); await carry(failed, 6, "full");                   // it was left out of the failed attempt: no delay
+    await life(pool, 7, fin); await carry(flood, 7);                            // carried by a test run's attempt: left out of every count
+    await life(pool, 8, { ...fin, accepted_at: null }); await carry(refused, 8);  // never accepted by the RPC: not in the rate, but a redo delayed it all the same
+    await life(pool, 13, fin); await carry(notTaken, 13);                       // put back after a not-taken attempt: a delay
+    await life(pool, 14, fin); await carry(cancelled, 14);                      // voided after an earlier refusal: a delay
+    await life(pool, 15, fin); await carry(restarted, 15);                      // the producer restarted before the answer: a delay
+    await life(pool, 16, { state: "lost", accepted_at: null, updated_at: at(13) }); // lost, never accepted by the RPC: in lost, not in the rate's failures
+    await life(pool, 9, { state: "lost", accepted_at: at(0), updated_at: at(10) });
+    await life(pool, 10, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "chain" });   // went missing on every resend: the chain's, in the rate
+    await life(pool, 17, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "sender" });  // no funds, a nonce gap, a fee too low: not in the rate
+    await life(pool, 18, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "explorer" }); // the explorer's own backlog limit: not in the rate
+    await life(pool, 19, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "stuck" });    // waited in the pool with no block: not told apart, not in the rate
+    await life(pool, 20, { state: "dropped", accepted_at: at(0), updated_at: at(11) });                         // dropped before the cause was kept: not in the rate
+    await life(pool, 21, { state: "dropped", accepted_at: null, updated_at: at(11), drop_cause: "chain" });     // never accepted by the RPC or the faucet: not in the rate
+    await life(pool, 11, { state: "replaced", accepted_at: at(0), updated_at: at(12) });
+    await life(pool, 12, { state: "pending", accepted_at: at(0) });
+    await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
+    expect(await minuteRow(pool, 0)).toMatchObject({ accepted: 17, accepted_final: 9, accepted_lost: 1, accepted_dropped_chain: 1, delayed_by_redo: 7, lost: 2, dropped: 6, replaced: 1,
+      attempts: 9, attempts_not_taken: 1, attempts_cancelled: 1, attempts_committed: 2, attempts_unknown: 1, attempts_refused: 1, attempts_failed: 2, test_attempts: 1 });
+    // The hour and the day add the minutes; a transaction that turns lost after it was final is counted as lost only.
+    expect(await pool.query("select accepted_final, accepted_lost, accepted_dropped_chain, delayed_by_redo, attempts_committed from stats_day")).toMatchObject({ rows: [{ accepted_final: 9, accepted_lost: 1, accepted_dropped_chain: 1, delayed_by_redo: 7, attempts_committed: 2 }] });
+    await pool.query("update tx_lifecycle set state = 'lost', updated_at = $1 where tx_hash = $2", [at(90), hex(202)]);
+    await rollupStats(pool, { now: () => T0 + 6 * MINUTE });
+    expect((await minuteRow(pool, 0))?.accepted_final).toBe(8);
+    expect((await minuteRow(pool, 60))?.lost).toBe(1);
+    expect((await minuteRow(pool, 60))?.accepted_lost).toBe(1);
+  }));
+
   it("every read of a time window has an index to read by: no table scan on the big tables", () => inDb(async (pool) => {
     const db = await pool.connect();
     try {

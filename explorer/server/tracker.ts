@@ -9,6 +9,10 @@ import { fileTrackerStore, type TrackerStore } from "./tracker-store.ts";
  * went missing, and sending it again did not bring it back.
  */
 export type TxState = "pending" | "proving" | "final" | "replaced" | "dropped";
+/** Why a transaction was dropped. Only `chain` counts against the chain's success rate.
+ *  chain: it went missing on every resend, or reth refused it because its pool was full. sender: reth refused it for a reason of the sender's (no funds, a nonce gap, a fee or gas limit too low).
+ *  explorer: the explorer gave up on it. stuck: it waited in reth's pool for the longest wait with no block (the sender's fee or nonce, or the chain: not told apart). */
+export type DropCause = "chain" | "sender" | "explorer" | "stuck";
 
 /** What the tracker says about one transaction. `reason` is a plain sentence, or null when there is nothing to add. */
 export interface Tracked {
@@ -22,6 +26,8 @@ export interface Tracked {
   updateId: string | null;
   /** How many times the transaction has been sent to reth: the first time, and each time it was sent again. */
   attempts: number;
+  /** Why it was dropped, when it was. Written to tx_lifecycle.drop_cause. */
+  cause?: DropCause | null;
 }
 
 export interface Entry extends Tracked {
@@ -95,6 +101,10 @@ const SETTLED: ReadonlySet<TxState> = new Set(["final", "replaced", "dropped"]);
 const KNOWN = /already known|known transaction|already imported|already in the pool/i;
 /** reth refuses a transaction while another one holds the same nonce: a speed-up or a cancel, or one that is already in a block. */
 const HELD = /nonce too low|nonce is too low|replacement transaction underpriced|transaction underpriced|nonce already used/i;
+/** What reth says when its own pool has no room for the transaction or cannot take it: the chain's doing, not the sender's. */
+const POOL_FULL = /pool is full|txpool is full|discarded outright|pool size constraints|pool is over capacity|service unavailable|internal error/i;
+/** A refusal after repeated resends is the chain's fault only when reth's pool was full or reth failed; every other refusal (no funds, a nonce gap, a fee or gas limit too low, a bad signature) is the sender's. */
+export const refusalCause = (message: string): DropCause => (POOL_FULL.test(message) ? "chain" : "sender");
 const hexNumber = (v: unknown): number => (typeof v === "string" && /^0x[0-9a-f]+$/.test(v) ? Number(BigInt(v)) : NaN);
 
 /** What reth said, without the method name and the quoting around it. */
@@ -137,7 +147,7 @@ export function createTracker(o: TrackerOptions): Tracker {
     for (const e of entries.values()) {
       if (SETTLED.has(e.state)) continue;
       console.error(`tracker: full, so it stopped following ${e.hash} from ${e.from} (nonce ${e.nonce})`);
-      settle(e, "dropped", "The explorer was holding too many unconfirmed transactions, so it stopped following this one. It may still be sent on by the chain.");
+      settle(e, "dropped", "The explorer was holding too many unconfirmed transactions, so it stopped following this one. It may still be sent on by the chain.", "explorer");
       return;
     }
   }
@@ -198,15 +208,15 @@ export function createTracker(o: TrackerOptions): Tracker {
     return true;
   }
 
-  const settle = (e: Entry, state: TxState, reason: string | null): void => {
-    e.state = state; e.reason = reason; e.raw = null; e.settledAt = now();
+  const settle = (e: Entry, state: TxState, reason: string | null, cause: DropCause | null = null): void => {
+    e.state = state; e.reason = reason; e.cause = cause; e.raw = null; e.settledAt = now();
     save();
   };
 
   /** Sends a missing transaction again, at most once per `retryMs`. A refusal that says reth has it already counts as accepted. */
   async function resend(e: Entry): Promise<void> {
     if (!e.raw) return;
-    if (e.attempts >= maxAttempts) return settle(e, "dropped", `It was sent to the chain ${e.attempts} times and went missing each time.`);
+    if (e.attempts >= maxAttempts) return settle(e, "dropped", `It was sent to the chain ${e.attempts} times and went missing each time.`, "chain");
     if (now() - e.lastSendAt < retryMs) { e.state = "pending"; return; }
     e.lastSendAt = now();
     try {
@@ -223,7 +233,7 @@ export function createTracker(o: TrackerOptions): Tracker {
         e.refused++;
         e.state = "pending";
         e.reason = `The chain refused it when it was sent again: ${refusal(err)}.`;
-        if (e.refused >= maxRefusals) settle(e, "dropped", `The chain refused it ${e.refused} times in a row: ${refusal(err)}.`);
+        if (e.refused >= maxRefusals) settle(e, "dropped", `The chain refused it ${e.refused} times in a row: ${refusal(err)}.`, refusalCause(err.message));
         return;
       }
     }
@@ -239,7 +249,7 @@ export function createTracker(o: TrackerOptions): Tracker {
       e.reason = null;
       e.refused = 0;
       if (t.blockNumber === null) {
-        if (now() - e.addedAt >= maxPendingMs) return settle(e, "dropped", `It stayed in the chain's waiting list for ${Math.round(maxPendingMs / 60000)} minutes without going into a block, so it is no longer followed. The chain may still mine it.`);
+        if (now() - e.addedAt >= maxPendingMs) return settle(e, "dropped", `It stayed in the chain's waiting list for ${Math.round(maxPendingMs / 60000)} minutes without going into a block, so it is no longer followed. The chain may still mine it.`, "stuck");
         e.state = "pending";
         return;
       }
@@ -334,7 +344,7 @@ export function createTracker(o: TrackerOptions): Tracker {
     state(hash) {
       const e = entries.get(hash.toLowerCase());
       if (e && fillUpdate(e)) save();
-      return e && { state: e.state, reason: e.reason, from: e.from, nonce: e.nonce, block: e.block, updateId: e.updateId, attempts: e.attempts };
+      return e && { state: e.state, reason: e.reason, from: e.from, nonce: e.nonce, block: e.block, updateId: e.updateId, attempts: e.attempts, cause: e.cause ?? null };
     },
     poll,
     start() {

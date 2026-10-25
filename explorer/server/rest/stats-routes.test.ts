@@ -112,7 +112,8 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.tps).toEqual({ now: 0, peak: null, peakAt: null });
     for (const k of ["blockTime", "timeToFinal", "proofTime", "commitTime", "served", "fullness", "today"]) expect(s[k], k).toBeNull();
     expect(s.txsPerBlock).toEqual({ mean: null, median: null, max: null, nonEmptyMean: null, nonEmptyMedian: null });
-    expect(s.txs).toEqual({ count: 0, failed: 0, successRate: null, accepted: 0, allTime: null });
+    expect(s.txs).toEqual({ count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null });
+    expect(s.blocks.firstTry).toBeNull();
     expect(s.attempts).toMatchObject({ total: 0, refusedShare: null, failedShare: null, notTakenShare: null });
     expect(s.canton).toEqual({ argumentBytesPerBlock: null, argumentBytesPerTx: null, trafficBytesPerBlock: null, trafficReported: 0 });
     expect(s.prover).toEqual({ maxBusyRatio10m: 0, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0, busyMs: 0 });
@@ -155,19 +156,19 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     // Minute rows. 11:30 is outside the 1 h window (11:31 to 12:30 inclusive), and has the most transactions of all.
     await seed(pool, "stats_minute", t(11, 30), { blocks: 1, txs: 1000, max_minute_txs: 1000, max_txs_in_block: 1000, busy_gap_hist: time({ [A]: 1 }), proof_busy_ms: 999999 });
     await seed(pool, "stats_minute", t(11, 31), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 4, max_minute_txs: 4, gas_used: 100, gas_limit_sum: 2000, argument_bytes: 400, accepted: 4, attempts: 1, max_txs_in_block: 4, proof_busy_ms: 30000,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 4, max_minute_txs: 4, gas_used: 100, gas_limit_sum: 2000, argument_bytes: 400, accepted: 4, accepted_final: 4, attempts: 1, attempts_committed: 1, max_txs_in_block: 4, proof_busy_ms: 30000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 4 }), proof_hist: time({ [B]: 1 }), commit_hist: time({ [B]: 1 }), served_hist: time({ [B]: 1 }),
       txs_per_block_hist: count({ 0: 1, 4: 1 }), proof_size_hist: hist(5 * TL, { [B]: 1 }, 1 * TL),
     });
     await seed(pool, "stats_minute", t(12, 28), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, lost: 1, dropped: 1, replaced: 2, attempts: 3, attempts_refused: 1,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, accepted_final: 8, delayed_by_redo: 2, lost: 1, dropped: 1, accepted_lost: 1, accepted_dropped_chain: 1, replaced: 2, attempts: 3, attempts_committed: 1, attempts_refused: 1,
       attempts_failed: 1, ttf_without_acceptance: 1, clock_skew: 1, max_txs_in_block: 6, traffic_bytes: 1000, traffic_updates: 2, proof_busy_ms: 60000,
       test_blocks: 1, test_txs: 9, test_attempts: 1, test_proof_busy_ms: 5000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 1, [C]: 1 }), proof_hist: time({ [A]: 1 }), served_hist: time({ [C]: 1 }),
       txs_per_block_hist: count({ 0: 1, 6: 1 }), proof_size_hist: hist(5 * TL, { [A]: 1 }, 2 * TL),
     });
     await seed(pool, "stats_minute", t(12, 29), {
-      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, max_minute_txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, lost: 2, replaced: 1, attempts: 4, attempts_refused: 1,
+      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, max_minute_txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, accepted_final: 18, delayed_by_redo: 3, lost: 2, accepted_lost: 2, replaced: 1, attempts: 4, attempts_committed: 1, attempts_unknown: 1, attempts_refused: 1,
       attempts_not_taken: 1, max_txs_in_block: 12, traffic_bytes: 2000, traffic_updates: 3, proof_busy_ms: 10000, txs_per_block_hist: count({ 6: 1, 12: 2 }),
     });
     await seed(pool, "stats_minute", t(12, 30), { blocks: 1, size_blocks_1: 1, txs: 2, max_minute_txs: 2, gas_used: 50, gas_limit_sum: 1000, attempts: 1, max_txs_in_block: 2, txs_per_block_hist: count({ 2: 1 }) });
@@ -228,7 +229,9 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.tps).toEqual({ now: 6 / 60, peak: 30 / 60, peakAt: new Date(t(12, 29)).toISOString() });
     // blocks 2+2+3+1 = 8, empty 1+1 = 2, busy 1+1+3 = 5, transactions 4+6+30+2 = 42, failed 1+3 = 4
     expect(s.blocks).toMatchObject({ count: 8, empty: 2, busy: 5 });
-    expect(s.txs).toMatchObject({ count: 42, failed: 4, successRate: 38 / 42, accepted: 35 });
+    // The rate counts only the chain's own failures: 30 accepted and final, 3 lost, 1 dropped (the 5 replaced and the 4 reverted are in no count of it).
+    expect(s.txs).toMatchObject({ count: 42, failed: 4, reverted: 4, successRate: 30 / 34, accepted: 35, acceptedFinal: 30, lost: 3, droppedByChain: 1, delayedByRedo: 5 });
+    expect(s.blocks.firstTry).toBe(3 / 7);
     same(s.txs, F.statsTxs);
     // All time, whatever the window. These rows are seeded by hand and are not a rollup's output, so the number only shows the arithmetic: the day rows (500 + 70 + 1046), less the minute rows from a minute before the cursor on (12:29 with 30 and 12:30 with 2), plus the blocks from the same instant (6, 11, 17, 100 and 13).
     same(s.txs.allTime, F.statsAllTime);
@@ -250,7 +253,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.proofTime.bySize[1]).toEqual({ size: "1-10", median: edge(B), p95: edge(B), samples: 1, capped: false });
     expect(s.proofTime.bySize[2]).toMatchObject({ size: "11-100", median: edge(A), p95: edge(A) });
     // attempts 1+3+4+1 = 9: refused 1+1, failed 1, not taken 1
-    expect(s.attempts).toEqual({ total: 9, refused: 2, failed: 1, notTaken: 1, refusedShare: 2 / 9, failedShare: 1 / 9, notTakenShare: 1 / 9 });
+    expect(s.attempts).toEqual({ total: 9, committed: 3, unknown: 1, decided: 7, refused: 2, failed: 1, notTaken: 1, refusedShare: 2 / 9, failedShare: 1 / 9, notTakenShare: 1 / 9 });
     expect(s.fullness).toBe(950 / 8000);
     // argument bytes 400+600+3000 = 4000 over 8 blocks and 42 transactions; traffic 3000 over the 5 updates that reported it
     expect(s.canton).toEqual({ argumentBytesPerBlock: 500, argumentBytesPerTx: 4000 / 42, trafficBytesPerBlock: 600, trafficReported: 5 });
@@ -407,7 +410,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
   it("draws rates, shares and times: null where there is nothing to divide or to rank", async () => {
     const ok = await sum("/api/stats/series?metric=success_rate&window=1h");
     const at_ = (s: Record<string, any>, hhmm: string) => s.points.find((p: { at: string }) => p.at.slice(11, 16) === hhmm).value; // eslint-disable-line @typescript-eslint/no-explicit-any
-    expect([at_(ok, "12:28"), at_(ok, "12:29"), at_(ok, "11:31"), at_(ok, "12:00")]).toEqual([5 / 6, 27 / 30, 1, null]);
+    expect([at_(ok, "12:28"), at_(ok, "12:29"), at_(ok, "11:31"), at_(ok, "12:00")]).toEqual([8 / 10, 18 / 20, 1, null]);
     expect(ok.unit).toBe("ratio");
     const p95 = await sum("/api/stats/series?metric=time_to_final_p95&window=1h");
     const p50 = await sum("/api/stats/series?metric=time_to_final_p50&window=1h");

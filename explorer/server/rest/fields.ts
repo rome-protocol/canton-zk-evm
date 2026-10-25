@@ -146,12 +146,12 @@ export const REST_FIELDS = {
   statsProof: ["median", "p95", "samples", "capped", "bySize"],
   statsSize: ["size", "median", "p95", "samples", "capped"],
   statsTxsPerBlock: ["mean", "median", "max", "nonEmptyMean", "nonEmptyMedian"],
-  statsBlocks: ["count", "empty", "busy", "bySize"],
+  statsBlocks: ["count", "empty", "busy", "firstTry", "bySize"],
   statsBlockSize: ["size", "count"],
-  statsTxs: ["count", "failed", "successRate", "accepted", "allTime"],
+  statsTxs: ["count", "failed", "reverted", "successRate", "accepted", "acceptedFinal", "lost", "droppedByChain", "delayedByRedo", "allTime"],
   /** The chain's transactions since its first block, exact through the newest final block `asOfBlock` (its record time is `asOf`); null where the rollups cannot say. */
   statsAllTime: ["total", "asOfBlock", "asOf"],
-  statsAttempts: ["total", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
+  statsAttempts: ["total", "committed", "unknown", "decided", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
   statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
   statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],
   /** The switching rule's two numbers: the hours whose p95 time to final is above `slowAboveSeconds`, and the ten-minute windows above 0.6 of one prover for each UTC day. */

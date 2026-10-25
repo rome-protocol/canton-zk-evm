@@ -95,7 +95,7 @@ export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary
         </div>
       ) : <Stat icon="shield" label="Lost transactions" foot={noDay}>—</Stat>}
       {d ? (
-        <Stat icon="check" label="Success rate" note="24 h" foot={d.txs.successRate === null ? "no transaction in 24 h" : `${count(d.txs.count - d.txs.failed)} of ${count(d.txs.count)} final transactions; ${count(d.txs.failed)} reverted`}>{d.txs.successRate === null ? "—" : pct(d.txs.successRate)}</Stat>
+        <Stat icon="check" label="Success rate" note="24 h, RPC and faucet" foot={d.txs.successRate === null ? "no accepted transaction settled in 24 h" : `${count(d.txs.acceptedFinal + d.txs.lost + d.txs.droppedByChain)} accepted and settled · ${count(d.txs.lost)} lost · ${count(d.txs.droppedByChain)} dropped by the chain`}>{d.txs.successRate === null ? "—" : pct(d.txs.successRate)}</Stat>
       ) : <Stat icon="check" label="Success rate" note="24 h" foot={noDay}>—</Stat>}
       <Stat icon="activity" label="Time to final" note="72 h" foot={points ? "median per hour; gaps are hours with no blocks" : DASH_WHY(spark.read)}>
         {points ? <Spark points={points} label="Median time to final for each hour of the last 72 hours" /> : "—"}

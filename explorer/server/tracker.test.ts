@@ -175,6 +175,7 @@ describe("the tracker", () => {
     }
     expect(tracker.state(hashOf(1))).toMatchObject({ state: "dropped" });
     expect(tracker.state(hashOf(1))?.reason).toContain("insufficient funds");
+    expect(tracker.state(hashOf(1))?.cause).toBe("sender"); // the sender's doing: not a failure of the chain
     expect(chain.sent).toHaveLength(3);
     clock.now += 6000;
     await tracker.poll();
@@ -213,6 +214,18 @@ describe("the tracker", () => {
     for (let i = 0; i < 3; i++) { clock.now += 6000; await tracker.poll(); }
     expect(tracker.state(hashOf(1))).toMatchObject({ state: "dropped", attempts: 3 });
     expect(tracker.state(hashOf(1))?.reason).toMatch(/3 times/);
+    expect(tracker.state(hashOf(1))?.cause).toBe("chain");
+  });
+
+  it("names the cause of each drop: a pool that was full is the chain's, a fee too low or a nonce gap the sender's", async () => {
+    for (const [refusalText, cause] of [["txpool is full", "chain"], ["transaction discarded outright due to pool size constraints", "chain"], ["intrinsic gas too low", "sender"], ["fee cap less than block base fee", "sender"], ["nonce too high", "sender"]] as const) {
+      const chain = fakeChain();
+      chain.send = () => { throw refusalText; };
+      const { tracker, clock } = await make(chain, { maxRefusals: 2 });
+      tracker.track(rawOf(1), hashOf(1), SENDER, 0);
+      for (let i = 0; i < 2; i++) { clock.now += 6000; await tracker.poll(); }
+      expect(tracker.state(hashOf(1)), refusalText).toMatchObject({ state: "dropped", cause });
+    }
   });
 
   it("learns nothing while reth cannot be reached, and counts no failed send", async () => {
@@ -245,12 +258,26 @@ describe("the tracker", () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining(hashOf(1)));
   });
 
+  it.runIf(DATABASE_MODE)("writes the cause of a drop to tx_lifecycle, and a transaction that is not dropped has none", async () => {
+    const chain = fakeChain();
+    chain.send = () => { throw "txpool is full"; };
+    const { tracker, clock } = await make(chain, { maxRefusals: 2 });
+    tracker.track(rawOf(1), hashOf(1), SENDER, 0);
+    tracker.track(rawOf(2), hashOf(2), "0x" + "bb".repeat(20), 0);
+    chain.where.set(hashOf(2), null);
+    for (let i = 0; i < 2; i++) { clock.now += 6000; await tracker.poll(); }
+    await tracker.flush();
+    const rows = (await db!.pool.query("select encode(tx_hash,'hex') h, state, drop_cause from tx_lifecycle order by nonce, tx_hash")).rows;
+    expect(rows.filter((r) => r.state === "dropped")).toEqual([{ h: hashOf(1).slice(2), state: "dropped", drop_cause: "chain" }]);
+    expect(rows.filter((r) => r.state !== "dropped").every((r) => r.drop_cause === null)).toBe(true);
+  });
+
   it("never forgets an open transaction silently: when it must make room, it marks the oldest dropped, with the reason and its bytes gone", async () => {
     const { tracker } = await make(fakeChain(), { max: 2, maxBytes: 1_000_000 });
     for (const n of [1, 2, 3]) tracker.track(rawOf(n), hashOf(n), SENDER, n);
     const dropped = [1, 2, 3].map((n) => tracker.state(hashOf(n))).filter((t) => t?.state === "dropped");
     expect(tracker.size()).toBe(2);
-    expect(dropped.every((t) => /too many unconfirmed/.test(t!.reason ?? ""))).toBe(true);
+    expect(dropped.every((t) => /too many unconfirmed/.test(t!.reason ?? "") && t!.cause === "explorer")).toBe(true);
     expect(tracker.state(hashOf(3))?.state).toBe("pending");
   });
 
@@ -276,7 +303,7 @@ describe("the tracker", () => {
     expect(tracker.admit(rawOf(9), hashOf(9), "0x" + "9".repeat(40))).not.toBeNull();
     clock.now += 30000;
     await tracker.poll();
-    expect(tracker.state(hashOf(1))).toMatchObject({ state: "dropped", reason: expect.stringMatching(/without going into a block.*no longer followed/) });
+    expect(tracker.state(hashOf(1))).toMatchObject({ state: "dropped", reason: expect.stringMatching(/without going into a block.*no longer followed/), cause: "stuck" });
     expect(tracker.admit(rawOf(9), hashOf(9), "0x" + "9".repeat(40))).toBeNull(); // the slots are free again
   });
 

@@ -121,7 +121,9 @@ export const METRICS: Record<string, Metric> = {
   blocks: count("blocks"),
   empty_blocks: count("empty_blocks"),
   txs_per_block: { unit: "transactions", columns: ["txs", "blocks"], none: null, value: (rows) => ratio(sum(rows, "txs"), sum(rows, "blocks")) },
-  success_rate: { unit: "ratio", columns: ["txs", "txs_failed"], none: null, value: (rows) => ratio(sum(rows, "txs") - sum(rows, "txs_failed"), sum(rows, "txs")) },
+  // The chain's own success rate: accepted transactions that became final, over those and the lost and dropped ones (a revert in the EVM is a normal outcome and is not counted).
+  success_rate: { unit: "ratio", columns: ["accepted_final", "accepted_lost", "accepted_dropped_chain"], none: null, value: (rows) => ratio(sum(rows, "accepted_final"), sum(rows, "accepted_final") + sum(rows, "accepted_lost") + sum(rows, "accepted_dropped_chain")) },
+  delayed_by_redo: count("delayed_by_redo"),
   accepted: count("accepted"),
   lost: count("lost"), dropped: count("dropped"), replaced: count("replaced"),
   fullness: { unit: "ratio", columns: ["gas_used", "gas_limit_sum"], none: null, value: (rows) => ratio(sum(rows, "gas_used"), sum(rows, "gas_limit_sum")) },
@@ -153,7 +155,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime, endedHours] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
-        "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "attempts_refused", "attempts_failed", "attempts",
+        "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "accepted_final", "accepted_lost", "accepted_dropped_chain", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts_refused", "attempts_failed", "attempts",
         "attempts_not_taken", "dropped", "replaced", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates", "proof_busy_ms", "test_blocks",
         "test_txs", "test_attempts", "test_proof_busy_ms", "busy_gap_hist", "time_to_final_hist", "proof_hist", "commit_hist", "served_hist", "txs_per_block_hist", "proof_size_hist",
       ]),
@@ -166,6 +168,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       w.rows === "hour" ? Promise.resolve(null) : hourTo > hourFrom ? stats.rows("hour", hourFrom, hourTo, ["time_to_final_hist"]) : Promise.resolve([]),
     ]);
 
+    const decided = sum(rows, "attempts_committed") + sum(rows, "attempts_refused") + sum(rows, "attempts_failed") + sum(rows, "attempts_unknown");
     const blocks = sum(rows, "blocks"), txs = sum(rows, "txs"), empty = sum(rows, "empty_blocks"), attempts = sum(rows, "attempts");
     const perBlock = addHists("count", hists(rows, "txs_per_block_hist"));
     const nonEmpty = [...perBlock]; nonEmpty[0] = 0;
@@ -196,12 +199,19 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       }, F.statsTxsPerBlock),
       blocks: pick({
         count: blocks, empty, busy: sum(rows, "busy_blocks"),
+        // The share of decided attempts (committed, refused, failed, unknown) that committed; a share of attempts, not a per-height first-try share.
+        firstTry: ratio(sum(rows, "attempts_committed"), decided),
         bySize: SIZE_LABELS.map((size, k) => pick({ size, count: sum(rows, `size_blocks_${k}` as Column) }, F.statsBlockSize)),
       }, F.statsBlocks),
-      txs: pick({ count: txs, failed: sum(rows, "txs_failed"), successRate: ratio(txs - sum(rows, "txs_failed"), txs), accepted: sum(rows, "accepted"),
+      // The success rate counts only the chain's own failures: accepted and final over accepted and final, lost, or dropped by a chain-side cause (not one the sender or the explorer caused), all by the minute each was settled (a transaction the sender replaced, or one still waiting, is in neither).
+      // `reverted` is the count of final transactions whose EVM status is a revert, a normal outcome that is not in the rate; `failed` is the same number under its old name (deprecated).
+      txs: pick({ count: txs, failed: sum(rows, "txs_failed"), reverted: sum(rows, "txs_failed"),
+        successRate: ratio(sum(rows, "accepted_final"), sum(rows, "accepted_final") + sum(rows, "accepted_lost") + sum(rows, "accepted_dropped_chain")), accepted: sum(rows, "accepted"),
+        acceptedFinal: sum(rows, "accepted_final"), lost: sum(rows, "accepted_lost"), droppedByChain: sum(rows, "accepted_dropped_chain"), delayedByRedo: sum(rows, "delayed_by_redo"),
         allTime: allTime && pick({ total: allTime.total, asOfBlock: allTime.asOfBlock, asOf: iso(allTime.asOf) }, F.statsAllTime) }, F.statsTxs),
       attempts: pick({
-        total: attempts, refused: sum(rows, "attempts_refused"), failed: sum(rows, "attempts_failed"), notTaken: sum(rows, "attempts_not_taken"),
+        total: attempts, committed: sum(rows, "attempts_committed"), unknown: sum(rows, "attempts_unknown"), decided,
+        refused: sum(rows, "attempts_refused"), failed: sum(rows, "attempts_failed"), notTaken: sum(rows, "attempts_not_taken"),
         refusedShare: ratio(sum(rows, "attempts_refused"), attempts), failedShare: ratio(sum(rows, "attempts_failed"), attempts), notTakenShare: ratio(sum(rows, "attempts_not_taken"), attempts),
       }, F.statsAttempts),
       fullness: ratio(sum(rows, "gas_used"), sum(rows, "gas_limit_sum")),
