@@ -2,10 +2,10 @@ name: daml
 
 on:
   pull_request:
-    paths: ["daml/**", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "PINS", ".github/workflows/daml.yml"]
   push:
     branches: [main]
-    paths: ["daml/**", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "PINS", ".github/workflows/daml.yml"]
 
 permissions:
   contents: read
@@ -37,3 +37,37 @@ jobs:
       - name: Build the DAR and run the Daml Script tests
         run: daml/test.sh
 
+  # 0.2.0 must be a valid upgrade of the live 0.1.0. Both DARs are the external form, built with the toolchain in PINS
+  # (the one the network runs), so the old package id is the live one.
+  upgrade:
+    runs-on: ubuntu-latest
+    env:
+      LIVE_PACKAGE_ID: ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08
+      CZE_TOOLS_DIR: ${{ github.workspace }}/../tools
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Install the pinned Daml toolchain (every download is checked against PINS)
+        run: network/canton/fetch.sh
+      - name: Rebuild 0.1.0 from the tag v0.1.0 and check its package id
+        run: |
+          git fetch --no-tags --depth=1 origin tag v0.1.0
+          git worktree add "$RUNNER_TEMP/v0.1.0" v0.1.0
+          grep -qx 'version: 0.1.0' "$RUNNER_TEMP/v0.1.0/daml/daml.yaml"
+          old=$(cd "$RUNNER_TEMP/v0.1.0" && network/canton/build-dar.sh)
+          cp "$old" "$RUNNER_TEMP/old.dar"
+          id=$(network/canton/dar-id.sh "$RUNNER_TEMP/old.dar" | sed -n 's/^package_id=//p')
+          echo "0.1.0 package id: $id"
+          [ "$id" = "$LIVE_PACKAGE_ID" ] || { echo "FAIL: 0.1.0 rebuilt from the tag has package id $id, not $LIVE_PACKAGE_ID" >&2; exit 1; }
+      - name: Build this version and run the upgrade check
+        run: |
+          grep -qx 'version: 0.2.0' daml/daml.yaml
+          new=$(network/canton/build-dar.sh)
+          cp "$new" "$RUNNER_TEMP/new.dar"
+          network/canton/dar-id.sh "$RUNNER_TEMP/new.dar"
+          . ./PINS
+          export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
+          dpm upgrade-check --both "$RUNNER_TEMP/old.dar" "$RUNNER_TEMP/new.dar"

@@ -51,7 +51,7 @@ The sidecar is a service each confirming participant runs beside it. Daml calls 
 
 ### `verify`
 
-Input: `proofHex,headerHex,txsHex`. Each field is lowercase hex. `txsHex` is empty for a block with no transactions. The sidecar refuses a line that does not have exactly three such fields. `Advance` does not check the hex itself (from package 0.2.0; the check walked the block one character at a time and was most of the time Advance took): the sidecar of every confirmer accepts only lowercase, whole-byte hex in those three fields and in every gateway node (an empty node is refused too) and answers `no malformed input` otherwise, which aborts `Advance`. The test form answers the same way.
+Input: `proofHex,headerHex,txsHex`. Each field is lowercase hex. `txsHex` is empty for a block with no transactions. The sidecar refuses a line that does not have exactly three such fields. `Advance` does not check the hex itself (from package 0.2.0; the check walked the block one character at a time and was most of the time Advance took): the sidecar of every confirmer accepts only lowercase, whole-byte hex in those three fields and in every gateway node (an empty node is refused too) and answers `malformed input` otherwise, which aborts `Advance`. The test form answers the same way.
 
 Answer, if the block checks out:
 
@@ -126,3 +126,7 @@ cd daml
 ```
 
 CI (`.github/workflows/daml.yml`) does both on a GitHub runner. It downloads the release bundle for the SDK version in `daml.yaml`, checks it against the publisher's SHA256 for that file (pinned in the workflow, so a new SDK version needs a new hash), unpacks it and installs it with `dpm bootstrap`.
+
+### Package 0.2.0 is an upgrade of 0.1.0
+
+Both versions have the same package name, the same templates and types; only the bodies of choices and helpers differ, which Canton accepts as an upgrade. A running chain keeps its contracts: the first `Advance` under 0.2.0 consumes the 0.1.0 `ZkChain` and creates a 0.2.0 one. The `upgrade` job of the same workflow checks this on every change under `daml/`: it rebuilds 0.1.0 from the tag `v0.1.0` and requires its package id to be `ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08`, builds the current source, and runs `dpm upgrade-check --both` on the two DARs (Canton's own upgrade validator). Both are the `external` form, built with the toolchain pinned in `PINS` through `network/canton/build-dar.sh`, which is the toolchain the network runs.
