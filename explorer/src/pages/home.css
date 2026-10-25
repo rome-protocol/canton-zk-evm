@@ -45,23 +45,27 @@
 @media (min-width: 721px) {
   .home-txs { table-layout: fixed; }
   .home-txs .c-tx { width: 172px; }
-  .home-txs .c-val { width: 156px; }
+  .home-txs .c-val { width: 184px; }
   .home-txs .c-stage { width: 150px; }
   .home-txs td, .home-txs th { overflow: hidden; }
   .home-txs .who-cell .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .home-txs .who-cell .acell, .home-txs .who-cell .acell .hx { display: inline; }
   .home-txs .who-cell .acell .ic, .home-txs .who-cell .acell .verified { display: inline-block; vertical-align: -2px; margin-right: 5px; }
   .home-txs .who-cell .acell .aname { display: inline; max-width: none; }
-  .home-txs .val-cell { white-space: normal; }
-  .home-txs .val-cell .moved { justify-content: flex-end; }
+  .home-txs .val-cell { white-space: normal; overflow-wrap: anywhere; }
+  .home-txs .val-cell .moved { display: flex; min-width: 0; justify-content: flex-end; }
   .home-txs .val-cell .tchip { max-width: 100%; }
-  .home-txs .val-cell .tchip .tname { max-width: 12ch; } /* the chip's title has the whole name and amount */
+  .home-txs .val-cell .tchip .tname { max-width: none; min-width: 0; } /* the name takes the room of the cell; the chip's title has the whole name and amount */
 }
 
 /*
- * home: the two cards side by side on a desktop width: Latest final blocks has room to spare and takes the narrower share, Latest transactions the wider one.
+ * home: the two cards side by side only where both fit with no sideways scroll. From 901 px to 1199 px they keep one column each
+ * (so each table is whole); from 1200 px Latest final blocks takes the narrower share (never below what its table needs) and Latest transactions the wider one.
  * Below 901 px the cards keep the shared layout (auto-fit, then one column on a phone).
  */
 @media (min-width: 901px) {
-  .cols.home-cols { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+  .cols.home-cols { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 1200px) {
+  .cols.home-cols { grid-template-columns: minmax(min-content, 2fr) minmax(0, 3fr); }
 }

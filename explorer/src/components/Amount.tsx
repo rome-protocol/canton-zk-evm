@@ -34,7 +34,7 @@ export function TokenChip({ move, label, compact = false }: { move: TokenMove; l
   const decimals = move.decimals ?? label?.decimals ?? null;
   if (decimals === null) {
     notes.push("Its decimals are not known, so this is the raw count in the token's smallest unit.");
-    return <span className="tchip tchip-ft" title={notes.join(" ")}><Icon name="coin" size={12} />{text(`${count(move.amount)} ${name}`)}</span>;
+    return <span className="tchip tchip-ft" title={[`${count(move.amount)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${count(move.amount)} ${name}`)}</span>;
   }
   return <span className="tchip tchip-ft" title={[`${exact(move.amount, decimals)} ${name}`, ...notes].join(" ")}><Icon name="coin" size={12} />{text(`${compact ? compactUnits(move.amount, decimals) : units(move.amount, decimals)} ${name}`)}</span>;
 }
