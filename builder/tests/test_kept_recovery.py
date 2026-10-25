@@ -45,6 +45,19 @@ class Recovery(tb.Case):
     def closed(self, s, run):
         return sorted(((l["attempt_run"], l["attempt"], l["outcome"]) for l in self.journal(s, "resolved") if l["run"] == run), key=lambda r: r[1:] != (7, "restarted"))
 
+    def test_the_attempt_of_a_record_that_names_none_is_taken_from_its_own_block_first(self):
+        s, first, t1, t2 = self.in_doubt()
+        entries = json.loads(b.saved_path(s.cfg).read_text())
+        b.saved_path(s.cfg).write_text(json.dumps(list(reversed(entries))))   # the block above is the first entry of the file
+        u = json.loads(b.unresolved_path(s.cfg).read_text())
+        u.pop("run", None)
+        u.pop("attempt", None)
+        b.unresolved_path(s.cfg).write_text(json.dumps(u))
+        second = self.producer(s)
+        second.load_unresolved()
+        self.assertEqual((second.unresolved["attempt_run"], second.unresolved["attempt"]), (first.journal.run_id, 1))
+        self.assertEqual([p[0] for p in second.unresolved["pairs"]], [t2["hash"], t1["hash"]])
+
     def test_restart_where_the_command_committed_keeps_the_tip_and_closes_both_attempts(self):
         s, first, t1, t2 = self.in_doubt()
         u = json.loads(b.unresolved_path(s.cfg).read_text())
@@ -216,13 +229,13 @@ class Recovery(tb.Case):
     @contextlib.contextmanager
     def unreadable(self, s):
         """The kept file exists but reading it fails (permission, I/O error)."""
-        real = Path.read_text
+        real = Path.read_bytes
         target = b.saved_path(s.cfg)
-        def read_text(path, *a, **k):
+        def read_bytes(path, *a, **k):
             if path == target:
                 raise OSError(errno.EACCES, "Permission denied")
             return real(path, *a, **k)
-        with mock.patch.object(Path, "read_text", read_text):
+        with mock.patch.object(Path, "read_bytes", read_bytes):
             yield
 
     def test_an_unreadable_kept_file_survives_the_not_committed_settle_and_nothing_moves_until_it_reads(self):

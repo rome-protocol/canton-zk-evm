@@ -1,6 +1,7 @@
 """The kept file holds the transactions of every block being made, each entry tagged with its block's number, and each attempt has a folder of
 its own. Run: python3 -m unittest discover -s builder/tests"""
 import json, os, sys, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -140,6 +141,38 @@ class UnreadableFile(tb.Case):
                 self.assertFalse(b.saved_path(s.cfg).exists())
                 aside = list(b.saved_path(s.cfg).parent.glob(b.SAVED_FILE + ".unreadable-*"))
                 self.assertEqual([p.read_text() for p in aside], [text])   # moved aside, whole
+
+    def test_a_file_that_is_not_valid_text_is_checked_like_any_damaged_one(self):
+        raw = b"\xff["
+        s = self.setup({})
+        path = b.saved_path(s.cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        with self.assertRaises(b.BuilderError):
+            b.saved_file_entries(s.cfg)
+        with self.assertRaises(b.BuilderError):
+            b.save_kept(s.cfg, [("0xb", "0x02")], number=5)
+        b.clear_saved(s.cfg, 5)
+        b.clear_saved(s.cfg)
+        self.assertEqual(path.read_bytes(), raw)   # nothing dropped, rewritten or removed
+        with self.assertRaises(b.BuilderError):
+            b.read_saved_entries(s.cfg)
+        self.assertFalse(path.exists())
+        aside = list(path.parent.glob(b.SAVED_FILE + ".unreadable-*"))
+        self.assertEqual([p.read_bytes() for p in aside], [raw])   # moved aside, unchanged
+        self.assertIsNone(b.read_saved_entries(s.cfg))
+
+    def test_a_file_moved_aside_with_the_same_clock_reading_keeps_both_copies(self):
+        s = self.setup({})
+        path = b.saved_path(s.cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with mock.patch.object(b.time, "time_ns", return_value=42):
+            for text in ("[{not json", '["0xdead"]', "[1]"):
+                path.write_text(text)
+                with self.assertRaises(b.BuilderError):
+                    b.read_saved_entries(s.cfg)
+        aside = list(path.parent.glob(b.SAVED_FILE + ".unreadable-*"))
+        self.assertEqual(sorted(p.read_text() for p in aside), sorted(["[{not json", '["0xdead"]', "[1]"]))
 
     def test_a_file_moved_aside_never_overwrites_an_earlier_one(self):
         s = self.setup({})

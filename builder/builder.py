@@ -14,7 +14,7 @@ not known whether it committed ("committed": null; reth is left where it is: an 
 README.md), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
+import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -194,11 +194,14 @@ def saved_path(cfg: Config) -> Path:
     return Path(cfg.work_dir) / SAVED_FILE
 
 
-def parse_saved(text: str) -> list:
+def parse_saved(data: "bytes | str") -> list:
     """The entries of a kept file, checked: a JSON list in which every entry is an object with a string `hash` and a string `raw`, and an
     integer `number` (the block it belongs to) when it has one (a file from an older builder has none, and then the entries are one
-    block's). Raises ValueError for anything else. Every reader of the file uses this one check."""
-    entries = json.loads(text)
+    block's). Raises ValueError for anything else, bytes that are not valid text included. Every reader of the file uses this one check."""
+    try:
+        entries = json.loads(data)
+    except RecursionError as e:   # nested too deep to read
+        raise ValueError("nested too deep") from e
     if not isinstance(entries, list):
         raise ValueError("not a list")
     for e in entries:
@@ -208,14 +211,22 @@ def parse_saved(text: str) -> list:
     return entries
 
 
+def load_saved(path: Path) -> list | None:
+    """The entries of the file at `path`, checked, or None when there is no file. The bytes are read and checked in one step, so a file that
+    is not valid text fails the check like any other damaged one (ValueError); a file that cannot be read raises OSError."""
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    return parse_saved(data)
+
+
 def saved_file_entries(cfg: Config) -> list:
     """The entries of the kept file, [] when there is no file. A file that exists and cannot be read or checked is an error and stays as it
     is: the entries in it may be the only copy of other blocks' transactions, and they must not be overwritten or removed as if there were none."""
     path = saved_path(cfg)
     try:
-        return parse_saved(path.read_text())
-    except FileNotFoundError:
-        return []
+        return load_saved(path) or []
     except (OSError, ValueError) as e:
         raise BuilderError(f"cannot read {path}: {e}") from e
 
@@ -240,7 +251,7 @@ def other_blocks(entries: list, number: int | None) -> list:
     return [e for e in entries if "number" in e and e["number"] != number]
 
 
-def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None, number: int | None = None) -> None:
+def save_kept(cfg: Config, pairs: list, number: int, attempt: "Attempt | None" = None) -> None:
     """Writes the (hash, raw transaction) pairs of the block about to be made, atomically and to disk, before reth takes them out of its
     pool: reth does not give an unwound block's transactions back, so after a crash this file is all that is left of them. Each entry
     carries the block's `number`; the entries of other blocks stay, and a block's earlier entries (a rebuild) are replaced. With a journal,
@@ -250,9 +261,8 @@ def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None, number
     path = saved_path(cfg)
     try:
         ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt is not None and attempt.journal is not None else {}
-        tag = {} if number is None else {"number": number}
-        keep = other_blocks(saved_file_entries(cfg), number) if number is not None else []
-        write_saved(cfg, [*keep, *({"hash": h, "raw": raw, **tag, **ref} for h, raw in pairs)])
+        keep = other_blocks(saved_file_entries(cfg), number)   # a file that cannot be read and checked stops the save: it is not replaced
+        write_saved(cfg, [*keep, *({"hash": h, "raw": raw, "number": number, **ref} for h, raw in pairs)])
     except OSError as e:
         raise BuilderError(f"cannot save the block's transactions to {path}: {e}") from e
 
@@ -917,7 +927,7 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         kept = [(t["hash"], raw) for t, raw in pairs]
         if not kept:   # a block with no transaction: nothing leaves reth's pool, and this block's earlier copy (the list before reth emptied it) is of transactions that are in the pool
             clear_saved(cfg, n)
-        save_kept(cfg, kept, attempt, n)   # before reth drops them from its pool
+        save_kept(cfg, kept, n, attempt)   # before reth drops them from its pool
         reth.imported = kept
 
     def build_listed(offered: list) -> tuple:
@@ -1260,21 +1270,33 @@ def definite_rejection(code: int, body: str) -> bool:
     return isinstance(error, str) and error not in ("DUPLICATE_COMMAND", "SUBMISSION_ALREADY_IN_FLIGHT")
 
 
+def move_aside(path: Path, label: str) -> Path:
+    """Moves `path` to a name of its own, `<name>.<label>-<time>` (with a counter when that name is taken), and never over a file that is
+    there: the file is linked to the new name, which fails when the name exists, and only then is the old name removed."""
+    stamp = time.time_ns()
+    for i in itertools.count():
+        aside = path.with_name(f"{path.name}.{label}-{stamp}" + (f"-{i}" if i else ""))
+        try:
+            os.link(path, aside)
+        except FileExistsError:
+            continue
+        path.unlink()
+        return aside
+
+
 def read_saved_entries(cfg: Config) -> list | None:
     """The entries of the kept file, checked, or None when there is no file. Raises when the file cannot be read (it stays where it is) or
     is damaged (it is moved aside to a name of its own, never over an earlier copy)."""
     path = saved_path(cfg)
     try:
-        text = path.read_text()
-    except FileNotFoundError:
-        return None
+        return load_saved(path)
     except OSError as e:
         raise BuilderError(f"cannot read {path}: {e}") from e
-    try:
-        return parse_saved(text)
     except ValueError as e:
-        aside = path.with_name(f"{path.name}.unreadable-{time.time_ns()}")   # kept for a look, and out of the way
-        path.replace(aside)
+        try:
+            aside = move_aside(path, "unreadable")
+        except OSError as oe:   # it stays where it is, whole
+            raise BuilderError(f"{path} could not be read ({e}) and could not be moved aside: {oe}") from oe
         raise BuilderError(f"{path} could not be read ({e}); it was moved to {aside.name}") from e
 
 
@@ -1590,9 +1612,11 @@ class Producer:
             if not u:
                 return
             try:
-                pairs = read_saved(self.cfg) or []
-                ref = next(({"attempt_run": e["run"], "attempt": e["attempt"]} for e in json.loads(saved_path(self.cfg).read_text())
-                            if isinstance(e.get("run"), str) and type(e.get("attempt")) is int), {}) if pairs else {}
+                entries = read_saved_entries(self.cfg) or []
+                pairs = [(e["hash"], e["raw"]) for e in entries]
+                own = [e for e in entries if "number" not in e or e["number"] == u.get("number")]   # this block's attempt first
+                refs = attempt_refs(own) or attempt_refs(entries)
+                ref = {"attempt_run": refs[0][0], "attempt": refs[0][1]} if refs else {}
             except BuilderError as e:   # the kept transactions are damaged: the command is still in doubt, and it is still waited for
                 print(f"cannot read the kept transactions of the unresolved command: {e}", file=sys.stderr)
                 pairs, ref = [], {}
