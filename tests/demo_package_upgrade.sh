@@ -5,14 +5,14 @@
 #
 #   1. The chain starts on 0.1.0: the DAR built from the tag v0.1.0 (its package id must be the one the live chain runs). Blocks commit with the
 #      builder pinned to that id (--package-id): a setup block, and a deposit whose leg settles.
-#   2. A second deposit is made, still on 0.1.0. Then the new DAR (the current source, 0.2.0) goes onto each participant in the steps of
+#   2. A second deposit is made, still on 0.1.0. Then the new DAR (the current source, 0.3.0) goes onto each participant in the steps of
 #      network/external/setup.py --package-step: check (nothing kept), upload (not vetted: the package is listed and nothing else changes), vet with
 #      a dry run first (the dry run changes nothing), vet. The chain does not switch by itself.
-#   3. The builder is pinned to 0.2.0: the block commits, the chain contract and the block's record are made under 0.2.0, and the leg of the
+#   3. The builder is pinned to 0.3.0: the block commits, the chain contract and the block's record are made under 0.3.0, and the leg of the
 #      deposit that was made under 0.1.0 settles.
-#   4. A deposit is made (the participants pick 0.2.0 by package name now), then the builder is pinned back to 0.1.0, the downgrade: the block
-#      commits, 0.1.0 code consumes the 0.2.0 chain contract and the 0.2.0 deposit, and the new chain contract is a 0.1.0 one.
-#   5. Forward again: a deposit, the builder pinned to 0.2.0, the block commits.
+#   4. A deposit is made (the participants pick 0.3.0 by package name now), then the builder is pinned back to 0.1.0, the downgrade: the block
+#      commits, 0.1.0 code consumes the 0.3.0 chain contract and the 0.3.0 deposit, and the new chain contract is a 0.1.0 one.
+#   5. Forward again: a deposit, the builder pinned to 0.3.0, the block commits.
 # At every block the package id of the chain contract that Advance made is read from the ledger and compared with the pin.
 # Needs Docker, Java 21, Rust, Python 3.12, jq, curl, git and network access. No GPU.
 set -euo pipefail
@@ -61,7 +61,7 @@ rpc eth_chainId >/dev/null || fail "reth does not answer"
 GENESIS_HASH=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .hash)
 GENESIS_STATE_ROOT=$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .stateRoot)
 
-step "the two DARs: 0.1.0 from the tag v0.1.0, and 0.2.0 from this source, with the pinned Daml compiler"
+step "the two DARs: 0.1.0 from the tag v0.1.0, and 0.3.0 from this source, with the pinned Daml compiler"
 tools=$("$ROOT/network/canton/fetch.sh")
 CANTON_JAR=$(sed -n 's/^CANTON_JAR=//p' <<<"$tools")
 export CZE_TOOLS_DIR=${CZE_TOOLS_DIR:-$CZE_STATE_DIR/tools}
@@ -76,7 +76,7 @@ NEW=$("$ROOT/network/canton/dar-id.sh" "$NEW_DAR" | sed -n 's/^package_id=//p')
 is "$OLD" "$LIVE_PACKAGE_ID" "the package id of 0.1.0 as rebuilt from the tag"
 [[ $NEW =~ ^[0-9a-f]{64}$ ]] || fail "no package id for the current DAR: $NEW"
 [ "$NEW" != "$OLD" ] || fail "the current source has the package id of 0.1.0: it was not changed, so there is nothing to upgrade to"
-echo "0.1.0 is $OLD, 0.2.0 is $NEW"
+echo "0.1.0 is $OLD, 0.3.0 is $NEW"
 { echo "dar_sha256=$(sha256sum "$OLD_DAR" | cut -d' ' -f1)"; echo "package_id=$OLD"; } > "$NET/dar.txt"
 
 step "the sidecars: the real one for legs, the stand-in in front of it for verify"
@@ -159,7 +159,7 @@ deposit dep-1 "$OLD"
 block_under "$OLD" 2 1 "the first deposit's block, pinned to 0.1.0"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"10.0","supply":"10.0"}' "U's wTKB after block 2"
 
-step "stage 2: a deposit on 0.1.0, then 0.2.0 goes on every participant: check, upload (not vetted), vet with a dry run first"
+step "stage 2: a deposit on 0.1.0, then 0.3.0 goes on every participant: check, upload (not vetted), vet with a dry run first"
 deposit dep-2 "$OLD"
 step_on() {   # <participant port> <step> [--dry-run]: network/external/setup.py --package-step on one participant, which has no login here
   local port=$1; shift
@@ -198,20 +198,20 @@ for _ in $(seq 1 30); do
   seen=$(vetted_by || echo 0); [ "$seen" = 3 ] && break; sleep 1
 done
 [ "$seen" = 3 ] || fail "after 30 s only $seen of 3 participants list the package $NEW as vetted (the vetting did not reach them)"
-is "$(chain_package)" "$OLD" "the package the chain contract is under after 0.2.0 was vetted (nothing switched)"
+is "$(chain_package)" "$OLD" "the package the chain contract is under after 0.3.0 was vetted (nothing switched)"
 
-step "stage 3: the builder is pinned to 0.2.0; the legs of deposits made under 0.1.0 settle"
-block_under "$NEW" 3 2 "the block pinned to 0.2.0"   # dep-2 and dep-3, both made under 0.1.0
+step "stage 3: the builder is pinned to 0.3.0; the legs of deposits made under 0.1.0 settle"
+block_under "$NEW" 3 2 "the block pinned to 0.3.0"   # dep-2 and dep-3, both made under 0.1.0
 is "$(probe DepositRequest | jq '.contracts | length')" 0 "the requests of dep-2 and dep-3 are settled"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"30.0","supply":"30.0"}' "U's wTKB after block 3"
 
-step "stage 4: a deposit made under 0.2.0, then the builder is pinned back to 0.1.0 (the downgrade)"
+step "stage 4: a deposit made under 0.3.0, then the builder is pinned back to 0.1.0 (the downgrade)"
 deposit dep-4 "$NEW"
 block_under "$OLD" 4 1 "the block pinned back to 0.1.0"
 is "$(probe BlockRecord | jq -c '.contracts | length')" 4 "the block records after the downgrade"
 
-step "stage 5: forward again, to 0.2.0"
+step "stage 5: forward again, to 0.3.0"
 deposit dep-5 "$NEW"
-block_under "$NEW" 5 1 "the block pinned to 0.2.0 again"
+block_under "$NEW" 5 1 "the block pinned to 0.3.0 again"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"50.0","supply":"50.0"}' "U's wTKB after block 5"
 echo "package upgrade, downgrade and upgrade again: passed"

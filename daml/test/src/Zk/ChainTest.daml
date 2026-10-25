@@ -837,6 +837,11 @@ testVerify2LineLayout = do
   -- a block with no transactions ends after the header
   T.drop 64 (verify2Line "aa" "01" "") === "0000000002aa000000000201"
 
+-- One fixed line, the same literal as in sidecar/tests/verify.rs and tests/test_demo_sidecar.py: the three sides build it alike.
+testVerify2FixedVector : Script ()
+testVerify2FixedVector =
+  verify2Line "aa" "01" "cc" === "63bf501ac3036ecbde797c99ac847bfe8a41194cbe46468d4e668ea0a21686460000000002aa000000000201cc"
+
 testVerify2StubReadsTheLineAsTheSidecarDoes : Script ()
 testVerify2StubReadsTheLineAsTheSidecarDoes = do
   let malformed = "no malformed input"

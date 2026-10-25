@@ -59,6 +59,12 @@ class StandInVerify2(unittest.TestCase):
         self.assertTrue(want.startswith("ok "))
         self.assertEqual(s.verify2(self.line()), want)
 
+    def test_the_fixed_line_reads_as_its_fields(self):
+        # the same literal as in daml/test/src/Zk/ChainTest.daml and sidecar/tests/verify.rs: fields aa, 01, cc
+        fixed = "63bf501ac3036ecbde797c99ac847bfe8a41194cbe46468d4e668ea0a21686460000000002aa000000000201cc"
+        self.assertEqual(self.line(proof="aa", header="01", txs="cc"), fixed)
+        self.assertEqual(s.verify2(fixed), s.verify("aa,01,cc"))
+
     def test_an_empty_block_has_no_transactions(self):
         self.assertTrue(s.verify2(self.line(txs="")).endswith(" 0"))
 
