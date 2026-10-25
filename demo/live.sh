@@ -98,7 +98,7 @@ named() {
   local described name symbol state registered
   described=$(evm describe "$1" finalized); name=$(jq -r .name <<<"$described"); symbol=$(jq -r .symbol <<<"$described")
   if [ "$name" != "Wrapped TKB" ] || [ "$symbol" != wTKB ]; then
-    [ "${2:-}" != CZE_WTKB ] || fail "CZE_WTKB names the token at $1, which is called '$name' ($symbol), not 'Wrapped TKB' (wTKB): it was not registered, and it is not registered as TKB's EVM form. Check the address"
+    [ "${2:-}" != CZE_WTKB ] || fail "CZE_WTKB names the token at $1, which is called '$name' ($symbol), not 'Wrapped TKB' (wTKB). Setup registered nothing on Canton. Check the address"
     state=$(canton registered "$1"); registered=$(jq -r .registered <<<"$state")
     # Clearing wtkb.json makes another wTKB: never advised where this address is registered on Canton already.
     [ "$registered" != true ] || fail "the token at $1 is called '$name' ($symbol), not 'Wrapped TKB' (wTKB), and it is registered on Canton: stop and look at it"
