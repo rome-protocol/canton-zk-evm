@@ -119,8 +119,9 @@ fn lines_that_are_not_well_formed_are_refused_with_the_exact_reason() {
     }
 }
 
-/// The Daml side asserts the proof, header and transactions are lowercase hex before it calls the
-/// sidecar; the sidecar carries the same rule alone, so a capital letter in any one field is refused.
+/// The sidecar does not rely on Daml to check that the proof, header and transactions are lowercase hex:
+/// it refuses a capital letter in any one field itself, so the rule holds even when the caller does not
+/// check it.
 #[test]
 fn a_capital_letter_in_any_one_verify_field_is_refused() {
     let b = reth_block();
