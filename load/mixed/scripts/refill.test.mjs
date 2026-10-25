@@ -1,7 +1,7 @@
 // node --test load/mixed/scripts/refill.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle } from "./refill.mjs";
+import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
 
 const E = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 12n; // n units of an 18-decimal coin
 const U = (n) => BigInt(n) * 1_000_000n;
@@ -72,11 +72,12 @@ test("a wallet whose real balance is low is topped up, and the ledger follows", 
   const real = { a: { trome: E(30), tUSD: U(200), tETH: E(4) }, b: { trome: E(2), tUSD: U(3000), tETH: E(4) } };
   const io = { readBalances: async (as) => new Map(as.map((a) => [a, real[a]])), topUp: async (g, as) => { sent.push([g.name, as]); return true; } };
   await refillCycle({ ledger: l, groups: [{ name: "pool", addrs: ["a", "b", "c"], low: LOW, topUp: TOP }], budget: new RefillBudget({ perMinute: 10, perRun: 100 }), io, readPerCheck: 5, stats });
-  assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0][1].sort(), ["a", "b"]);
+  assert.equal(sent.length, 2); // a is low in tUSD only, b in tROME only: two calls
   assert.equal(stats.toppedUp, 2);
   assert.equal(l.get("a").tUSD, U(200) + U(3000));
+  assert.equal(l.get("a").trome, E(30)); // not topped up in what it was not low in
   assert.equal(l.get("b").trome, E(2) + E(30));
+  assert.equal(l.get("b").tUSD, U(3000));
 });
 
 test("the top-up is bounded per minute and per run, and what is held back is counted", async () => {
@@ -129,4 +130,150 @@ test("at the start of a run every wallet is read once, before the estimate is tr
   await refillCycle({ ledger: l, groups: g, budget, io, readPerCheck: 2, stats });
   assert.equal(l.unreadIn(["a", "b", "c"]).length, 0);
   assert.deepEqual(sent, [["b"]]);
+});
+
+test("a wallet low only in tUSD gets no tROME and no tETH; wallets low in the same kinds share one call", async () => {
+  const l = mkLedger(), stats = emptyRefillStats(), calls = [];
+  for (const a of ["a", "b", "c"]) l.spend(a, { tUSD: U(2900) });
+  l.spend("d", { tUSD: U(2900), trome: E(28) });
+  const io = { readBalances: async (as) => new Map(as.map((a) => [a, { trome: a === "d" ? E(2) : E(30), tUSD: U(100), tETH: E(4) }])), topUp: async (g, as, kinds) => { calls.push([as, kinds]); return true; } };
+  await refillCycle({ ledger: l, groups: [{ name: "pool", addrs: ["a", "b", "c", "d"], low: LOW, topUp: TOP }], budget: new RefillBudget({ perMinute: 10, perRun: 100 }), io, readPerCheck: 10, stats });
+  assert.equal(calls.length, 2);
+  const only = calls.find(([, k]) => k.length === 1);
+  assert.deepEqual(only[1], ["tUSD"]); assert.deepEqual(only[0].sort(), ["a", "b", "c"]);
+  assert.deepEqual(calls.find(([, k]) => k.length === 2)[1], ["trome", "tUSD"]);
+  assert.equal(l.get("a").trome, E(30)); assert.equal(l.get("a").tETH, E(4)); assert.equal(l.get("a").tUSD, U(3100));
+  assert.equal(l.get("d").trome, E(32));
+  assert.equal(stats.toppedUp, 4); assert.equal(stats.txs, 2);
+});
+
+test("a top-up that throws gives its places back to the bound", async () => {
+  const stats = emptyRefillStats(), logs = [];
+  const l = mkLedger(); l.spend("a", { tUSD: U(2900) });
+  const budget = new RefillBudget({ perMinute: 5, perRun: 5 });
+  const io = { readBalances: async (as) => new Map(as.map((a) => [a, { trome: E(30), tUSD: U(100), tETH: E(4) }])), topUp: async () => { throw new Error("no receipt in 75 s"); } };
+  for (let i = 0; i < 8; i++) await refillCycle({ ledger: l, groups: [{ name: "pool", addrs: ["a"], low: LOW, topUp: TOP }], budget, io, readPerCheck: 5, stats, log: (m) => logs.push(m) });
+  assert.equal(stats.failed, 8); // every try went out: the bound (5) was not used up by failures
+  assert.equal(budget.total, 0);
+  assert.match(logs[0], /no receipt/);
+});
+
+test("wallets not read for a while are read again (so the wrapped books are corrected)", () => {
+  let t = 0;
+  const l = new Ledger({ trome: E(30), tUSD: U(3000), tETH: E(4) }, () => t);
+  l.set("a", {}); t = 10 * 60_000; l.set("b", {});
+  t = 40 * 60_000;
+  assert.deepEqual(l.suspects(["a", "b"], LOW, 5, Infinity), []);
+  assert.deepEqual(l.suspects(["a", "b"], LOW, 5, 35 * 60_000), ["a"]);
+  assert.deepEqual(l.suspects(["a", "b"], LOW, 5, 20 * 60_000), ["a", "b"]); // the one read longest ago first
+});
+
+test("the refill check always gets a slot: it runs on budget, and is forced after twice its period", () => {
+  const g = (left, since) => refillGate({ left, need: 100, sinceLastCheckMs: since, checkMs: 15_000 });
+  assert.equal(g(150, 0), "run");
+  assert.equal(g(20, 10_000), "wait");
+  assert.equal(g(20, 29_999), "wait");
+  assert.equal(g(20, 30_000), "forced"); // above about 3.3 tx/s `left` never reaches the mark: the check still runs, waiting in the RPC queue
+  assert.equal(g(0, 120_000), "forced");
+});
+
+test("the per-minute line says plainly when the distributor is short and when the refill waited for the RPC budget", () => {
+  const s = emptyRefillStats();
+  assert.equal(refillLine(s), "refills: 0 wallets topped up in 0 txs");
+  s.distributorShort = 2; s.budgetWaits = 3; s.failed = 1;
+  const line = refillLine(s);
+  assert.match(line, /DISTRIBUTOR SHORT of tROME 2 times/); assert.match(line, /waited for RPC budget 3 times/); assert.match(line, /1 top-ups failed/);
+});
+
+const PLAN = { full: TOP, fundTopUps: 20, minTrome: E(200), gasMargin: E(1) };
+test("planTopUp: a call for tUSD only asks the distributor for tUSD (minted straight to the refill key), never tROME", () => {
+  const r = planTopUp({ ...PLAN, each: { trome: 0n, tUSD: U(3000), tETH: 0n }, n: 5n, mine: { trome: E(5), tUSD: U(2000), tETH: 0n }, distributorTrome: E(2500) });
+  assert.deepEqual(Object.keys(r.fund), ["tUSD"]);
+  assert.equal(r.fund.tUSD, U(3000 * 20) - U(2000)); // brought up to a bundle of 20 top-ups
+  assert.equal(r.short, false);
+});
+
+test("planTopUp: nothing is asked when the refill key already holds enough", () => {
+  const r = planTopUp({ ...PLAN, each: TOP, n: 2n, mine: { trome: E(600), tUSD: U(60_000), tETH: E(80) }, distributorTrome: E(2500) });
+  assert.deepEqual(r.fund, {}); assert.equal(r.short, false);
+});
+
+test("planTopUp: tROME is asked in a bundle but never beyond what the distributor can spare; short when it cannot cover the call", () => {
+  const base = { ...PLAN, each: { trome: E(30), tUSD: 0n, tETH: 0n }, n: 10n, mine: { trome: E(2), tUSD: 0n, tETH: 0n } };
+  const a = planTopUp({ ...base, distributorTrome: E(2468) });
+  assert.equal(a.fund.trome, E(599)); // a bundle: 20 x 30 + 1 margin - 2 held; the distributor can spare 2,268
+  const small = planTopUp({ ...base, distributorTrome: E(500) });
+  assert.equal(small.short, false); assert.equal(small.fund.trome, E(300)); // only what it can spare (500 - 200 kept)
+  const b = planTopUp({ ...base, distributorTrome: E(400) });
+  assert.equal(b.short, true); assert.equal(b.fund.trome, undefined); // 200 spare < the 299 this call needs
+  const c = planTopUp({ ...base, distributorTrome: E(1000) });
+  assert.equal(c.short, false); assert.equal(c.fund.trome, E(599)); // the bundle: 20 x 30 + 1 margin - 2 held
+});
+
+// ---- wrapped tROME: the books lean low, so a kind never sends what the wallet does not hold
+test("a booking settles: a final success keeps it, a failure takes it back, and a read of the real balance corrects the books", () => {
+  const b = new WrappedBooks();
+  b.book("w", E(0.5)); b.book("w", -E(0.2));
+  assert.equal(b.get("w"), E(0.3));
+  b.settle("w", E(0.5), true); b.settle("w", -E(0.2), false); // the second failed: its booking comes back
+  assert.equal(b.get("w"), E(0.5));
+  b.book("w", -E(0.2)); // in flight
+  b.correct("w", E(3)); // real balance 3 read: less the 0.2 still being spent
+  assert.equal(b.get("w"), E(2.8));
+  b.book("w", E(0.5)); b.correct("w", E(3)); // an adding booking in flight is not counted (it may already be in the real balance)
+  assert.equal(b.get("w"), E(2.8));
+  b.correct("x", 0n); b.book("x", -E(1)); b.correct("x", E(0.4)); assert.equal(b.get("x"), 0n); // never below zero
+});
+
+test("a swap into WtROME books only what its quote guarantees; with no fresh quote, nothing", () => {
+  assert.equal(wtDelta("swapUsdToTrome", E(0.17)), E(0.17));
+  assert.equal(wtDelta("swapUsdToTrome"), 0n);
+  assert.equal(wtDelta("removeLiquidity"), 0n);
+  assert.equal(wtAllowed("unwrap", E(0.19)), false); assert.equal(wtAllowed("unwrap", E(0.2)), true);
+  assert.equal(wtAllowed("wrap", E(8.1)), false); assert.equal(wtAllowed("wrap", E(0)), true);
+});
+
+test("hours of the weighted mix against a constant-product pool: no kind sends WtROME the wallet does not hold, and the wraps never stop", () => {
+  // a seeded generator keeps the run the same every time
+  let seed = 12345; const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const TUSD2 = "0xcc00000000000000000000000000000000000003";
+  let rUsd = U(50_000), rWt = E(5_000); // opens at 10 tUSD per WtROME
+  const quotes = new QuoteBook(30_000, () => step * 333); // one step is a third of a second (3 tx/s)
+  let step = 0;
+  const books = new WrappedBooks(), real = new Map(), W = 20;
+  for (let i = 0; i < W; i++) real.set("w" + i, E(10));
+  for (const [a, v] of real) books.correct(a, v);
+  const kinds = ["wrap", "wrap", "unwrap", "swapUsdToTrome", "swapUsdToTrome", "swapUsdToTrome", "swapTromeToUsd", "addLiquidity", "removeLiquidity"];
+  const counts = {}, stats = { wraps: 0, priceReverts: 0 };
+  const send = { wrap: E(0.5) * 0n, unwrap: E(0.2), swapTromeToUsd: E(0.2), addLiquidity: E(0.5) }; // WtROME each kind sends
+  const hours = 12, steps = hours * 3600 * 3;
+  for (step = 0; step < steps; step++) {
+    if (step % 30 === 0) quotes.set(TUSD2, rUsd, WT, rWt, step * 333); // the quote loop: a fresh reading every 10 s
+    const kind = kinds[Math.floor(rnd() * kinds.length)], a = "w" + Math.floor(rnd() * W);
+    if (!wtAllowed(kind, books.get(a))) continue;
+    counts[kind] = (counts[kind] ?? 0) + 1;
+    const minOut = kind === "swapUsdToTrome" ? quotes.minOut(TUSD2, WT, U(20), 5) : 0n;
+    const delta = wtDelta(kind, minOut);
+    assert.ok((real.get(a) ?? 0n) >= (send[kind] ?? 0n), `step ${step}: ${kind} would send ${send[kind]} but the wallet holds ${real.get(a)} (books ${books.get(a)})`);
+    books.book(a, delta);
+    let ok = true;
+    if (kind === "wrap") { real.set(a, real.get(a) + E(0.5)); stats.wraps++; }
+    else if (kind === "unwrap") real.set(a, real.get(a) - E(0.2));
+    else if (kind === "swapUsdToTrome") {
+      const out = amountOut(U(20), rUsd, rWt);
+      if (out < minOut) { ok = false; stats.priceReverts++; } else { rUsd += U(20); rWt -= out; real.set(a, real.get(a) + out); }
+    } else if (kind === "swapTromeToUsd") {
+      const out = amountOut(E(0.2), rWt, rUsd);
+      rWt += E(0.2); rUsd -= out; real.set(a, real.get(a) - E(0.2));
+    } else if (kind === "addLiquidity") {
+      const used = (U(5) * rWt) / rUsd; const wtUsed = used < E(0.5) ? used : E(0.5); // the pool takes what its ratio asks, at most 0.5
+      rWt += wtUsed; rUsd += (wtUsed * rUsd) / rWt; real.set(a, real.get(a) - wtUsed);
+    } // removeLiquidity returns a negligible amount (1e9 LP wei)
+    books.settle(a, delta, ok);
+    assert.ok(books.get(a) <= real.get(a), `step ${step}: the books (${books.get(a)}) are above the real balance (${real.get(a)}) for ${kind}`);
+    if (step % 3000 === 0 && rnd() < 0.5) books.correct(a, real.get(a)); // a read of the real balance now and then
+  }
+  assert.ok(rUsd > U(50_000) * 2n, "the price moved far, as it does on the soak (the old fixed booking would have run dry here)");
+  assert.ok(stats.wraps > steps / 20, "wraps did not stop: " + stats.wraps);
+  assert.ok(stats.priceReverts < steps / 100, "price reverts from a fresh quote stay rare: " + stats.priceReverts);
 });

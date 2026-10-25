@@ -31,8 +31,8 @@ for (const h of finals.keys()) if (sent.has(h)) outcomes[cls(h)]++;
 rep.outcomes = outcomes;
 // the top-ups the driver made during the run (events of older runs have none)
 const topUps = by("refill"), mints = by("refillMint");
-rep.refills = { topUps: topUps.length, wallets: topUps.reduce((a, x) => a + x.wallets, 0), mints: mints.length, byGroup: topUps.reduce((m, x) => ({ ...m, [x.group]: (m[x.group] ?? 0) + x.wallets }), {}) };
-rep.pass = { rule: "no unexpected revert and no deliberate revert that went through", ok: passes(outcomes) };
+const endStats = by("end")[0]?.refills ?? {}; // what the driver counted: top-ups that failed, wallets held back by the bound, the distributor short, checks that waited for RPC budget
+rep.refills = { failed: endStats.failed ?? 0, heldBack: endStats.heldBack ?? 0, distributorShort: endStats.distributorShort ?? 0, budgetWaits: endStats.budgetWaits ?? 0, topUps: topUps.length, wallets: topUps.reduce((a, x) => a + x.wallets, 0), mints: mints.length, byGroup: topUps.reduce((m, x) => ({ ...m, [x.group]: (m[x.group] ?? 0) + x.wallets }), {}) };
 rep.unexpectedRevertReasons = {};
 for (const [h, f] of finals) if (cls(h) === "unexpectedRevert") { const k = `${label(sent.get(h) ?? { kind: "?" })}: ${reasons.get(h) ?? "reason not read"}`; rep.unexpectedRevertReasons[k] = (rep.unexpectedRevertReasons[k] ?? 0) + 1; }
 // counts by kind
@@ -46,6 +46,7 @@ for (const [h, s] of sent) {
 rep.kinds = kinds;
 const accepted = sent.size, final = finals.size;
 const notFinal = [...sent.values()].filter((s) => !finals.has(s.hash));
+rep.pass = { rule: "no unexpected revert, no deliberate revert that went through, and no lost transaction", ok: passes(outcomes, notFinal.length) };
 const unexpectedFail = [...sent.values()].filter((s) => finals.get(s.hash) && !finals.get(s.hash).success && !s.expectRevert);
 const expectedOk = [...sent.values()].filter((s) => finals.get(s.hash)?.success && s.expectRevert);
 rep.totals = { accepted, rejected: rejected.length, final, lost: notFinal.length, unexpectedFailures: unexpectedFail.length, deliberateRevertsThatSucceeded: expectedOk.length,
@@ -123,7 +124,7 @@ if (busiest) out.push("", `Busiest block: ${busiest.n}, ${busiest.txCount} trans
 out.push("", `## Canton ledger`, "", `${rep.canton.blocksRead} blocks read from /api/canton/updates: argument bytes per block p50 ${r2(rep.canton.argumentBytesPerBlock.p50)}, p95 ${r2(rep.canton.argumentBytesPerBlock.p95)}, max ${r2(rep.canton.argumentBytesPerBlock.max)}; per transaction p50 ${r2(rep.canton.argumentBytesPerTx.p50)}. Traffic fields the explorer showed: ${rep.canton.trafficFieldsSeen.join(", ") || "none"}.`);
 out.push("", `## RPC`, "", `Budget ${rep.rpc.budgetPerMinute} calls a minute; the most used in any minute: ${rep.rpc.peakCallsInAMinute}; ${rep.rpc.calls} calls in all; ${rep.rpc.limitedAnswers} answers of "too many requests"; the driver waited ${rep.rpc.waitedForBudgetSeconds} s for budget; ${rep.rpc.receiptsChecked} receipts read through the RPC (${rep.rpc.receiptMismatches} differed from the explorer).`);
 out.push("", `## Outcome of the final transactions`, "", row("class", "count"), row("---", "---:"), row("success", outcomes.success), row("reverted on purpose (a test of a contract's refusal; the chain worked as intended)", outcomes.expectedRevert), row("UNEXPECTED revert", outcomes.unexpectedRevert), row("deliberate revert that went through", outcomes.unexpectedSuccess));
-out.push("", `## Refills`, "", `During the run the driver topped up ${rep.refills.wallets} wallets in ${rep.refills.topUps} transactions from the distributor (${fmt(rep.refills.byGroup)}) and minted test tokens for the distributor ${rep.refills.mints} times, so the wallets did not run dry and cause reverts of their own.`);
+out.push("", `## Refills`, "", `During the run the driver topped up ${rep.refills.wallets} wallets in ${rep.refills.topUps} transactions from the refill key (${fmt(rep.refills.byGroup)}) and minted test tokens ${rep.refills.mints} times, so the wallets did not run dry and cause reverts of their own. Top-ups that failed: ${rep.refills.failed}; wallets held back by the per-minute or per-run bound: ${rep.refills.heldBack}; times the distributor was short of tROME: ${rep.refills.distributorShort}; refill checks that had to wait for RPC budget: ${rep.refills.budgetWaits}.${rep.refills.distributorShort || rep.refills.failed ? " The refill did not keep every wallet funded in this run; read the unexpected reverts below with that in mind." : ""}`);
 out.push("", `Pass rule: ${rep.pass.rule}. This run: ${rep.pass.ok ? "PASS" : "FAIL"}.`);
 if (outcomes.unexpectedRevert) out.push("", `Unexpected reverts by reason: ${fmt(rep.unexpectedRevertReasons)}.`);
 out.push("", `## Reverts`, "", `Deliberate reverts (sent to fail): ${Object.values(kinds).reduce((a, v) => a + (v.expectedRevert ? v.reverted : 0), 0)} reverted as intended, ${rep.totals.deliberateRevertsThatSucceeded} succeeded when they should not have. Unexpected failures: ${unexpectedFail.length}${unexpectedFail.length ? ` (${rep.unexpectedFailures.map((u) => `${u.kind} ${u.hash} in block ${u.block}`).join("; ")})` : ""}.`);

@@ -27,6 +27,9 @@ test("the per-minute line shows expected and unexpected reverts apart, and the p
   t.unexpectedRevert = 0; t.unexpectedSuccess = 2;
   assert.match(tallyLine(t), /went through 2/);
   assert.equal(passes(t), false);
+  t.unexpectedSuccess = 0;
+  assert.equal(passes(t, 0), true);
+  assert.equal(passes(t, 3), false, "a transaction the chain accepted and never made final fails a soak");
 });
 
 test("decodeRevert reads Error(string), Panic, custom errors and empty data", () => {

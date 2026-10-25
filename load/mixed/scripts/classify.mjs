@@ -3,7 +3,7 @@
 //   expectedRevert    it was sent to revert (expectRevert) and it did: a test of the contract's refusal, the chain worked as intended
 //   unexpectedRevert  it was not sent to revert and it did (the kit's own fault, e.g. an empty wallet, or a real finding), kept with its reason
 //   unexpectedSuccess it was sent to revert and it went through (the deliberate case is wrong)
-// A soak passes only when it has no unexpected reverts (and no lost transactions, which the report counts on its own).
+// A soak passes only when it has no unexpected reverts, no deliberate revert that went through, and no lost transactions (accepted by the chain, never final).
 
 export const CLASSES = ["success", "expectedRevert", "unexpectedRevert", "unexpectedSuccess"];
 
@@ -20,8 +20,8 @@ export function tallyLine(t) {
   return `ok ${t.success}  reverted on purpose ${t.expectedRevert}  UNEXPECTED reverts ${t.unexpectedRevert}` + (t.unexpectedSuccess ? `  deliberate reverts that went through ${t.unexpectedSuccess}` : "");
 }
 
-/** The soak's pass rule on the counts: no unexpected revert and no deliberate revert that went through. */
-export const passes = (t) => t.unexpectedRevert === 0 && t.unexpectedSuccess === 0;
+/** The soak's pass rule on the counts: no unexpected revert, no deliberate revert that went through, and no lost transaction (`lost`: how many accepted ones never became final). */
+export const passes = (t, lost = 0) => t.unexpectedRevert === 0 && t.unexpectedSuccess === 0 && lost === 0;
 
 const PANIC = { 0x01: "assert failed", 0x11: "arithmetic overflow or underflow", 0x12: "division by zero", 0x21: "bad enum value", 0x22: "bad storage encoding", 0x31: "pop of an empty array", 0x32: "array index out of bounds", 0x41: "out of memory", 0x51: "call of an uninitialised function" };
 

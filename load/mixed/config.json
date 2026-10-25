@@ -49,8 +49,10 @@
       "maxWalletsPerMinute": 40,
       "maxWalletsPerRun": 2000,
       "distributorMinTrome": "200",
-      "mintAhead": 10,
-      "gasLimit": 12000000
+      "gasLimit": 12000000,
+      "rereadMinutes": 30,
+      "fundTopUps": 20,
+      "refillGasMarginTrome": "1"
     },
     "slippage": {
       "tolerancePercent": 5,
