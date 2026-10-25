@@ -38,7 +38,7 @@
                                    print the holder's TKA balance in whole tokens (eth_call balanceOf)
   evm.py wrapped <token> <holder> [block]
                                    print the holder's balance of a wrapped token and its supply, as Canton writes amounts ("10.0")
-  evm.py describe <token> [block]  print a wrapped token's name() and symbol(); both are null where there is no token (or no such function)
+  evm.py describe <token> [block]  print a wrapped token's name() and symbol(); both are null where there is no code at the address; an error from the chain stops the command
 
 [block] is latest (the default) or finalized: the block Canton has committed. Balances should be read at finalized.
 The transactions go to the chain's JSON-RPC: CZE_RPC_URL, or reth's HTTP port on this machine (RETH_HTTP_PORT, default 8545). They wait in
@@ -249,17 +249,15 @@ def legs_in(number: int) -> dict:
 
 
 def read_text(token: str, signature: str, tag: str) -> str | None:
-    """A string that a view function of the contract returns, or None where the call gives nothing (no code there, or no such function)."""
-    try:
-        answer = rpc("eth_call", [{"to": token, "data": "0x" + keccak(text=signature)[:4].hex()}, tag])
-    except SystemExit:   # reth refuses a call that reverts
-        return None
-    if not isinstance(answer, str) or len(answer) < 2 + 128:
+    """A string that a view function of the contract returns, or None where the call gives an empty answer (no code at that address). An error
+    from the chain, or an answer that is not a string, ends the command: a failed read is not the same as no token."""
+    answer = rpc("eth_call", [{"to": token, "data": "0x" + keccak(text=signature)[:4].hex()}, tag])
+    if answer == "0x":
         return None
     try:
         return decode(["string"], bytes.fromhex(answer[2:]))[0]
-    except Exception:
-        return None
+    except Exception as error:
+        raise SystemExit(f"{signature} at {token} gave an answer that is not a string: {answer!r} ({error})")
 
 
 def balance(token: str, holder: str, tag: str = "latest") -> int:

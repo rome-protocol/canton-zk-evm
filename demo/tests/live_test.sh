@@ -18,7 +18,8 @@ case $1 in
   register) echo '{"tx":"0xaaaa","token":"0x3333333333333333333333333333333333333333"}' ;;
   wait) echo '{"block":5,"blockHash":"0xbbbb","gasUsed":1,"status":1,"contract":null,"finalized":true}' ;;
   # name and symbol at the finalized block; $FAKE_DIR/name says what the token at that address is called, if it is not wTKB
-  describe) [ "$3" = finalized ] || { echo "fake evm: describe is read at finalized, not $3" >&2; exit 1; }
+  describe) [ ! -f "$FAKE_DIR/describe_fails" ] || { echo "fake evm: eth_call failed: rate limit exceeded" >&2; exit 1; }
+            [ "$3" = finalized ] || { echo "fake evm: describe is read at finalized, not $3" >&2; exit 1; }
             if [ -f "$FAKE_DIR/name" ]; then echo "{\"name\":\"$(cat "$FAKE_DIR/name")\",\"symbol\":\"X\"}"; else echo '{"name":"Wrapped TKB","symbol":"wTKB"}'; fi ;;
   *) echo "fake evm: unexpected $*" >&2; exit 1 ;;
 esac
@@ -118,6 +119,23 @@ rm "$FAKE/name"
 rm -f "$WORK/state/demo/wtkb.json"
 run setup || fail "setup failed once wtkb.json was cleared: $(tail -5 "$WORK/out")"
 [ "$(calls 'evm register')" = 2 ] || fail "setup did not make wTKB again after wtkb.json was cleared"
+
+# ---- a read that fails is not a token that is not there: setup stops with the error, does not advise clearing wtkb.json, and changes nothing
+reset
+run setup || fail "the first setup failed: $(tail -5 "$WORK/out")"
+touch "$FAKE/describe_fails"
+run setup && fail "setup went on although the token could not be read"
+grep -q "rate limit exceeded" "$WORK/out" || fail "the error of the read is not shown: $(tail -3 "$WORK/out")"
+grep -q "Clear " "$WORK/out" && fail "a failed read advised clearing wtkb.json"
+[ "$(calls 'evm register')" = 1 ] || fail "setup made another wTKB after a failed read"
+rm "$FAKE/describe_fails"
+
+# ---- a token with another name that is registered on Canton already: no advice to clear wtkb.json
+echo "Some Other Token" > "$FAKE/name"
+run setup && fail "setup went on although the registered token is not Wrapped TKB"
+grep -q "registered on Canton" "$WORK/out" || fail "the registered token is not named: $(tail -3 "$WORK/out")"
+grep -q "Clear " "$WORK/out" && fail "a token registered on Canton was advised to be cleared"
+rm "$FAKE/name"
 
 # ---- an existing wrapped token is used as it is
 reset

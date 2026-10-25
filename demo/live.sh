@@ -24,6 +24,7 @@
 # source that runs; legs), CZE_WTKB (an already registered wrapped TKB: setup then does not make one), CZE_LIVE_WAIT_SECONDS (default 600),
 # CZE_LIVE_RESULTS. CZE_LIVE_EVM and CZE_LIVE_CANTON name other commands in place of evm.py and canton.py (for tests only).
 set -euo pipefail
+shopt -s inherit_errexit 2>/dev/null || { echo "FAIL: demo/live.sh needs bash 4.4 or later" >&2; exit 1; }   # set -e then holds inside "$(...)" too
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 step() { echo "== $* ($(date -u +%T))"; }
@@ -74,7 +75,7 @@ GATEWAY=$(sed -n 's/^GATEWAY_ADDRESS=//p' "$ROOT/PINS" | head -1)
 addresses=$(evm keys)   # makes V's and U's keys if there are none (0600, never printed); prints only the addresses
 V_ADDR=$(jq -r .v <<<"$addresses"); U_ADDR=$(jq -r .u <<<"$addresses")
 [[ $V_ADDR =~ ^0x[0-9a-fA-F]{40}$ && $U_ADDR =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "evm.py keys gave no addresses: $addresses"
-# A command's result is stored first, as `x=$(command)`, and only then checked: set -e stops the run when the command fails, which it does not
+# A command's result is stored first, as `x=$(command)`, and only then checked: set -e (with inherit_errexit) stops the run when the command fails, which it does not
 # do for a command inside "$(...)" in the arguments of a check.
 for who in "$V_ADDR" "$U_ADDR"; do
   ether=$(evm ether "$who"); wei=$(jq -r .wei <<<"$ether")
@@ -89,12 +90,16 @@ final() {
   echo "$receipt"
 }
 
-# <token>: the token at that address, in the finalized block, is the one this script asked V to make. The address that `evm.py register` gives is
-# worked out before the transaction is sent; if another registration took it first, wtkb.json names an address that is some other token.
+# <token>: the gateway token at that address, in the finalized block, is named Wrapped TKB / wTKB. The address that `evm.py register` gives is
+# worked out before the transaction is sent; if something else is there, wtkb.json names an address that is some other token. An error from the
+# chain stops the run in `evm describe` (set -e): only an answer that says "no token" or another name gets here.
 named() {
-  local described name symbol
+  local described name symbol state registered
   described=$(evm describe "$1" finalized); name=$(jq -r .name <<<"$described"); symbol=$(jq -r .symbol <<<"$described")
   if [ "$name" != "Wrapped TKB" ] || [ "$symbol" != wTKB ]; then
+    state=$(canton registered "$1"); registered=$(jq -r .registered <<<"$state")
+    # Clearing wtkb.json makes another wTKB: never advised where this address is registered on Canton already.
+    [ "$registered" != true ] || fail "the token at $1 is called '$name' ($symbol), not 'Wrapped TKB' (wTKB), and it is registered on Canton: stop and look at it"
     fail "the token at $1 is called '$name' ($symbol), not 'Wrapped TKB' (wTKB): another registration took the address first. Clear $DEMO/wtkb.json and run setup again"
   fi
 }
