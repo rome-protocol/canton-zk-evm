@@ -27,8 +27,13 @@
   canton.py withdraw-allocation <label>
                                        U takes back its allocation with that label (the token standard's own withdrawal, by its sender).
                                        Demo only: it is how the fourth run takes the Canton side away after a block was proven
-  canton.py registered <address>       whether the wrapped token at that EVM address is registered for TKB (a GatewayToken the operator sees)
-  canton.py block <block number>       the chain's head, and that block's BlockRecord (hash, the proof's SHA-256), without the other blocks' proofs
+  canton.py registered <address>       whether the wrapped token at that EVM address is registered for TKB (a GatewayToken the operator sees),
+                                       and whether it is proposed (a proposal that the confirmer has not accepted yet: register-token accepts it)
+  canton.py accepted <u|v>             whether that party's own acceptance of withdrawals is there (not another party's on the participant)
+  canton.py block <block number> [u|v|gateway]
+                                       the chain's head, and that block's BlockRecord (hash, the proof's SHA-256), without the other blocks' proofs.
+                                       With a party the record is read from the update that made that party's newest TKB holding: one small read,
+                                       whatever the size of the chain. Without, every BlockRecord is read (they all stay active)
   canton.py balances                   status without the chain head and the block records: the TKB holdings, the custody, the allocations,
                                        terms, deposit requests and acceptances (a chain with many blocks has many records)
   canton.py status                     print what is on Canton now: the chain head, the block records, the TKB holdings of U and V and
@@ -67,7 +72,7 @@ UPLOAD_PATH = "/v2/packages?vetAllPackages=true&synchronizeVetting=true"
 # The role (the name of the token file, CZE_TOKEN_FILE_<ROLE>, and of the Ledger API user, after CZE_USER_PREFIX) that reads and acts for each party.
 ROLE_OF_PARTY = {"u": "demo", "v": "demo", "registry": "demo", "operator": "operator", "gateway": "operator", "reader": "reader", "builder": "builder", "confirmer": "confirmer"}
 # What each command needs of the participant, so that a missing or unsafe token file stops it before anything is sent.
-COMMAND_ROLES = {"upload-dars": ("admin",), "setup": ("demo",), "payment-id": (), "registered": ("operator",), "register-token": ("operator", "confirmer"),
+COMMAND_ROLES = {"upload-dars": ("admin",), "setup": ("demo",), "payment-id": (), "registered": ("operator",), "accepted": ("operator",), "register-token": ("operator", "confirmer"),
                  "accept": ("demo", "operator"), "withdraw-allocation": ("demo", "operator"), "resubmit": ("operator", "builder")}
 DEFAULT_ROLES = ("demo", "operator", "reader")
 # As network/external/setup.py: a token must not cross a network in the clear.
@@ -378,7 +383,26 @@ def propose_arguments(net: Network, token: str) -> list:
             "--factory", read_disclosed(net)[0]["contractId"], *rpc]
 
 
+def accept_left_proposal(net: Network, address: str) -> dict:
+    """A run that stopped between propose.py's two steps left the operator's proposal for this token, not yet accepted by the confirmer: accept it,
+    but only if it is the proposal this command would make (the same instrument and factory), as setup.py does for the chain's."""
+    [left] = token_contracts(net, address, "GatewayTokenProposal")
+    want = {"admin": net.party("registry"), "id": INSTRUMENT}
+    if left["createArgument"]["instrumentId"] != want or left["createArgument"]["factory"] != read_disclosed(net)[0]["contractId"]:
+        raise Fail(f"a proposal for {address} is there already and is not for TKB with these token rules: it cannot be withdrawn from here")
+    mine = [e for e in net.template("confirmer", "confirmer", CHAIN + "GatewayTokenProposal") if e["createArgument"]["evmToken"] == address]
+    [proposal] = mine or net.wait_for("the proposal at the confirmer", lambda: [e for e in net.template("confirmer", "confirmer", CHAIN + "GatewayTokenProposal")
+                                                                                 if e["createArgument"]["evmToken"] == address])
+    net.submit("confirmer", ["confirmer"], {"ExerciseCommand": {"templateId": CHAIN + "GatewayTokenProposal", "contractId": proposal["contractId"],
+                                                                "choice": "AcceptToken", "choiceArgument": {}}}, user="confirmer")
+    [made] = net.wait_for("the registered token", lambda: token_contracts(net, address, "GatewayToken"))
+    return {"contractId": made["contractId"], "evmToken": made["createArgument"]["evmToken"], "instrumentId": made["createArgument"]["instrumentId"]}
+
+
 def register_token(net: Network, token: str) -> dict:
+    address = evm_address(token)
+    if not token_contracts(net, address, "GatewayToken") and token_contracts(net, address, "GatewayTokenProposal"):
+        return accept_left_proposal(net, address)
     arguments = propose_arguments(net, token)
     # On one participant both of propose.py's Ledger APIs are that participant's; its user prefix and token files come from the environment as they are.
     env = {**os.environ, "CZE_CONFIRMER_LEDGER_URL": net.urls["confirmer"]} if net.external else None
@@ -391,14 +415,31 @@ def register_token(net: Network, token: str) -> dict:
 def registered(net: Network, token: str) -> dict:
     """Whether the wrapped token at this EVM address is registered for TKB: a GatewayToken that the operator sees."""
     address = evm_address(token)
-    return {"evmToken": address, "registered": any(e["createArgument"]["evmToken"] == address for e in net.template("operator", "operator", CHAIN + "GatewayToken"))}
+    return {"evmToken": address, "registered": bool(token_contracts(net, address, "GatewayToken")), "proposed": bool(token_contracts(net, address, "GatewayTokenProposal"))}
+
+
+def token_contracts(net: Network, address: str, template: str) -> list:
+    return [e for e in net.template("operator", "operator", CHAIN + template) if e["createArgument"]["evmToken"] == address]
+
+
+def acceptances_of(net: Network, who: str) -> list:
+    """The WithdrawalAcceptances of this party that the operator sees. Not everyone's: other parties on the participant have their own."""
+    if who not in ("u", "v"):
+        raise SystemExit(f"only u and v can accept withdrawals here, not {who!r}")
+    party = net.party(who)
+    return [e for e in net.template("operator", "operator", ACCEPTANCE) if e["createArgument"]["party"] == party]
+
+
+def accepted(net: Network, who: str) -> dict:
+    """Whether this party has a standing acceptance of withdrawals (its own, not another party's)."""
+    found = acceptances_of(net, who)
+    return {"party": net.party(who), "accepted": bool(found), "acceptances": len(found)}
 
 
 def accept(net: Network, who: str) -> dict:
-    if who not in ("u", "v"):
-        raise SystemExit(f"only u and v can accept withdrawals here, not {who!r}")
+    acceptances_of(net, who)   # refuses a party that is not u or v before anything is sent
     chain, party = chain_record(net), net.party(who)
-    mine = lambda: [e for e in net.template("operator", "operator", ACCEPTANCE) if e["createArgument"]["party"] == party]
+    mine = lambda: acceptances_of(net, who)
     before = {e["contractId"] for e in mine()}
     net.submit("users", [who], {"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": {
         "party": party, "chainId": chain["chainId"], "operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"]}}})
@@ -458,39 +499,67 @@ def resubmit(net: Network, path: str) -> dict:
     return {"committed": True}
 
 
+def update_at(net: Network, node: str, party: str, offset: int, identifier_filter: dict = None) -> dict:
+    """The transaction at this offset as `node` reports it to `party` (only the created events that the filter lets through): one bounded read,
+    whatever the size of the chain."""
+    wildcard = {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}
+    flt = [{"identifierFilter": identifier_filter or wildcard}]
+    body = {"offset": offset, "updateFormat": {"includeTransactions": {
+        "eventFormat": {"filtersByParty": {net.party(party): {"cumulative": flt}}, "verbose": False},
+        "transactionShape": "TRANSACTION_SHAPE_ACS_DELTA"}}}
+    found = net.post(node, "/v2/updates/update-by-offset", body, ROLE_OF_PARTY[party])
+    tx = found.get("update", {}).get("Transaction", {}).get("value")
+    if not tx or not tx.get("updateId"):
+        raise Fail(f"no transaction at offset {offset} on {node}: {json.dumps(found)[:300]}")
+    return tx
+
+
 def update_of(net: Network, node: str, party: str, event: dict) -> dict:
     """The update that created the contract of this created event, as `node` reports it to `party`: its id and its offset. The update is
     asked for by the event's offset, and it must list this very contract among the events it created."""
     offset = event.get("offset")
     if not isinstance(offset, int):
         raise Fail(f"the created event of {event['contractId'][:16]} has no offset")
-    wildcard = [{"identifierFilter": {"WildcardFilter": {"value": {"includeCreatedEventBlob": False}}}}]
-    body = {"offset": offset, "updateFormat": {"includeTransactions": {
-        "eventFormat": {"filtersByParty": {net.party(party): {"cumulative": wildcard}}, "verbose": False},
-        "transactionShape": "TRANSACTION_SHAPE_ACS_DELTA"}}}
-    found = net.post(node, "/v2/updates/update-by-offset", body, ROLE_OF_PARTY[party])
-    tx = found.get("update", {}).get("Transaction", {}).get("value")
-    if not tx or not tx.get("updateId"):
-        raise Fail(f"no transaction at offset {offset} on {node}: {json.dumps(found)[:300]}")
+    tx = update_at(net, node, party, offset)
     created = [e["CreatedEvent"]["contractId"] for e in tx.get("events", []) if "CreatedEvent" in e]
     if event["contractId"] not in created:
         raise Fail(f"the update at offset {offset} on {node} did not create {event['contractId'][:16]}")
     return {"updateId": tx["updateId"], "offset": offset, "contract": event["contractId"]}
 
 
-def settled(net: Network, number: int, holder: str = "v") -> dict:
-    """Where the block's BlockRecord and the holder's newest TKB holding were made, both read on one participant: the users participant
-    for U and V, the operator's for the gateway (which it hosts). Offsets are a participant's own, so only two read there can be compared."""
+def holder_node(holder: str) -> tuple:
     if holder not in HOLDER_NODES:
         raise SystemExit(f"the holder must be one of {', '.join(HOLDER_NODES)}, not {holder!r}")
-    node, reader = HOLDER_NODES[holder]
-    records = [e for e in net.template(node, reader, CHAIN + "BlockRecord") if int(e["createArgument"]["number"]) == number]
-    if len(records) != 1:
-        raise Fail(f"expected one BlockRecord for block {number}, found {len(records)}")
-    held = sorted(net.template(node, holder, TOKEN), key=lambda e: e["offset"])
+    return HOLDER_NODES[holder]
+
+
+def record_with_holding(net: Network, number: int, holder: str) -> dict:
+    """The BlockRecord of this block, found without reading the chain's records: the holder's newest TKB holding was made by the block's update,
+    so that update, read for the reader party and filtered to BlockRecord, holds the record. (BlockRecords are never archived: a read of all of them
+    grows with the chain, and a Ledger API caps the size of an answer.) The update must hold exactly one record, and it must be this block's."""
+    node, reader = holder_node(holder)
+    held = sorted(net.template(node, holder, TOKEN), key=lambda e: e.get("offset") or 0)
     if not held:
         raise Fail(f"{holder} has no TKB holding")
-    return {"record": update_of(net, node, reader, records[0]), "holding": update_of(net, node, holder, held[-1])}
+    offset = held[-1].get("offset")
+    if not isinstance(offset, int):
+        raise Fail(f"the created event of {held[-1]['contractId'][:16]} has no offset")
+    tx = update_at(net, node, reader, offset, {"TemplateFilter": {"value": {"templateId": CHAIN + "BlockRecord", "includeCreatedEventBlob": False}}})
+    made = [e["CreatedEvent"] for e in tx.get("events", []) if "CreatedEvent" in e]
+    if len(made) != 1 or int(made[0]["createArgument"]["number"]) != number:
+        raise Fail(f"the update of {holder}'s newest TKB holding (offset {offset}) did not make the BlockRecord of block {number}: "
+                   f"it made {[int(e['createArgument']['number']) for e in made]}")
+    return {"event": made[0], "updateId": tx["updateId"], "offset": offset, "holding": held[-1]}
+
+
+def settled(net: Network, number: int, holder: str = "v") -> dict:
+    """Where the block's BlockRecord and the holder's newest TKB holding were made, both read on one participant: the users participant
+    for U and V, the operator's for the gateway (which it hosts). Offsets are a participant's own, so only two read there can be compared.
+    The record is the one that the holding's update made (one bounded read, see record_with_holding), and the holding's own update is read too."""
+    found = record_with_holding(net, number, holder)
+    node, _ = holder_node(holder)
+    return {"record": {"updateId": found["updateId"], "offset": found["offset"], "contract": found["event"]["contractId"]},
+            "holding": update_of(net, node, holder, found["holding"])}
 
 
 def withdraw_allocation(net: Network, label: str) -> dict:
@@ -513,15 +582,21 @@ def head(net: Network) -> list:
     return [{"headNumber": int(c["createArgument"]["headNumber"]), "headHash": c["createArgument"]["headHash"]} for c in net.template("operator", "operator", CHAIN + "ZkChain")]
 
 
+def record_view(argument: dict) -> dict:
+    return {"number": int(argument["number"]), "blockHash": argument["blockHash"],
+            "proofSha256": hashlib.sha256(bytes.fromhex(argument["proofHex"])).hexdigest(), "proofHex": argument["proofHex"]}
+
+
 def block_records(net: Network) -> list:
-    records = net.template("users", "reader", CHAIN + "BlockRecord")
-    return sorted(({"number": int(r["createArgument"]["number"]), "blockHash": r["createArgument"]["blockHash"],
-                    "proofSha256": hashlib.sha256(bytes.fromhex(r["createArgument"]["proofHex"])).hexdigest(),
-                    "proofHex": r["createArgument"]["proofHex"]} for r in records), key=lambda r: r["number"])
+    """Every BlockRecord (all of them are active for good): a read that grows with the chain. Only `status` takes it."""
+    return sorted((record_view(r["createArgument"]) for r in net.template("users", "reader", CHAIN + "BlockRecord")), key=lambda r: r["number"])
 
 
-def block(net: Network, number: int) -> dict:
-    """The chain's head and one block's record. The record is one of many on a chain that has run for a while, so the others are not given."""
+def block(net: Network, number: int, holder: str = None) -> dict:
+    """The chain's head and one block's record. With a holder (u, v or gateway) the record is the one that holder's newest TKB holding was made
+    with: one bounded read, for a chain that has many blocks. Without, every record is read and the block picked from them."""
+    if holder is not None:
+        return {"chain": head(net), "record": record_view(record_with_holding(net, number, holder)["event"]["createArgument"])}
     found = [r for r in block_records(net) if r["number"] == number]
     if len(found) != 1:
         raise Fail(f"expected one BlockRecord for block {number}, found {len(found)}")
@@ -556,12 +631,16 @@ def main(argv: list) -> dict:
         return register_token(net, argv[1])
     if cmd == ["registered"] and n == 2:
         return registered(net, argv[1])
-    if cmd == ["block"] and n == 2 and WHOLE.fullmatch(argv[1]):
-        return block(net, int(argv[1]))
+    if cmd == ["block"] and n in (2, 3) and WHOLE.fullmatch(argv[1]):
+        if n == 3:
+            holder_node(argv[2])
+        return block(net, int(argv[1]), *argv[2:])
     if argv == ["balances"]:
         return balances(net)
     if cmd == ["accept"] and n == 2:
         return accept(net, argv[1])
+    if cmd == ["accepted"] and n == 2:
+        return accepted(net, argv[1])
     if cmd == ["deposit"] and n == 4:
         return deposit(net, argv[1], argv[2], argv[3])
     if cmd == ["dvp"] and n == 5 and WHOLE.fullmatch(argv[4]):

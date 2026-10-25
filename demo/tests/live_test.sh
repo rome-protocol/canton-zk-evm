@@ -26,8 +26,10 @@ echo "canton $*" >> "$FAKE_DIR/calls"
 case $1 in
   setup) echo '{}' ;;
   registered) [ -f "$FAKE_DIR/registered" ] && echo '{"registered":true}' || echo '{"registered":false}' ;;
-  register-token) touch "$FAKE_DIR/registered"; echo "{\"evmToken\":\"${2#0x}\"}" ;;
-  balances) [ -f "$FAKE_DIR/accepted" ] && echo '{"acceptances":1}' || echo '{"acceptances":0}' ;;
+  register-token) touch "$FAKE_DIR/registered"; echo "{\"evmToken\":\"$(tr A-F a-f <<<"${2#0x}")\"}" ;;
+  accepted) [ -f "$FAKE_DIR/accepted" ] && echo '{"accepted":true}' || echo '{"accepted":false}' ;;
+  # Another party on the participant has an acceptance of its own: only `accepted u` says whether U's is there.
+  balances) echo '{"acceptances":1}' ;;
   accept) touch "$FAKE_DIR/accepted"; echo '{}' ;;
   *) echo "fake canton: unexpected $*" >&2; exit 1 ;;
 esac
@@ -79,7 +81,7 @@ run setup || fail "setup failed: $(tail -5 "$WORK/out")"
 run setup || fail "the second setup failed: $(tail -5 "$WORK/out")"
 [ "$(calls 'evm register')" = 1 ] || fail "the second setup made another wTKB"
 [ "$(calls 'canton register-token')" = 1 ] || fail "the second setup registered wTKB again"
-[ "$(calls 'canton accept')" = 1 ] || fail "the second setup made another acceptance"
+[ "$(calls 'canton accept u')" = 1 ] || fail "the second setup made another acceptance"
 [ "$(calls 'canton setup')" = 2 ] || fail "canton.py setup (which keeps itself idempotent) is not run each time"
 
 # ---- a setup that stopped half way: wTKB made but not registered, no acceptance yet
@@ -87,7 +89,7 @@ rm "$FAKE/registered" "$FAKE/accepted"
 run setup || fail "the resumed setup failed: $(tail -5 "$WORK/out")"
 [ "$(calls 'evm register')" = 1 ] || fail "the resumed setup made another wTKB"
 [ "$(calls 'canton register-token')" = 2 ] || fail "the resumed setup did not register wTKB"
-[ "$(calls 'canton accept')" = 2 ] || fail "the resumed setup did not make the acceptance"
+[ "$(calls 'canton accept u')" = 2 ] || fail "the resumed setup did not make the acceptance"
 
 # ---- an existing wrapped token is used as it is
 reset
@@ -96,6 +98,12 @@ run setup || fail "setup with CZE_WTKB failed: $(tail -5 "$WORK/out")"
 [ "$(calls 'evm register')" = 0 ] || fail "setup made a wTKB although CZE_WTKB names one"
 [ "$(calls 'canton register-token 0x5555555555555555555555555555555555555555')" = 1 ] || fail "setup did not register the token CZE_WTKB names"
 [ ! -e "$WORK/state/demo/wtkb.json" ] || fail "setup kept a wtkb.json for a token it did not make"
+
+# ---- a wTKB address in mixed case is the same address
+reset
+EXTRA=(CZE_WTKB=0xAbCdEf0123456789aBcDeF0123456789AbCdEf01)
+run setup || fail "setup with a mixed-case CZE_WTKB failed: $(tail -5 "$WORK/out")"
+EXTRA=()
 
 # ---- legs, against a stand-in that keeps balances
 reset
@@ -117,6 +125,10 @@ for line in format=2 deposit_block=11 payment_block=14 withdrawal_block=15 one_l
   grep -qx "$line" "$results" || fail "$results has no line $line"
 done
 ! grep -q "$WORK" "$results" || fail "the results name a path of this machine"
+# Another party's acceptance is not U's: legs stops until U has its own.
+jq '.acc = 0' "$WORK/balances.json" > "$WORK/noacc.json"
+legs_run "$WORK/noacc.json" && fail "legs ran although U has no acceptance (another party's was counted)"
+grep -q "U has made no acceptance" "$WORK/out" || fail "the missing acceptance is not named: $(tail -3 "$WORK/out")"
 # Canton's custody and wTKB's supply must be equal before the runs, or live.sh stops.
 echo '{"u":100,"v":0,"cust":3,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$WORK/odd.json"
 legs_run "$WORK/odd.json" && fail "legs ran with a custody that differs from wTKB's supply"

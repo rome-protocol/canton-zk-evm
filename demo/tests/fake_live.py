@@ -32,10 +32,12 @@ if who=="evm":
 else:
     c=a[0]
     if c=="registered": out({"registered":True})
+    if c=="accepted": out({"accepted":st["acc"]>=1})
     if c=="balances": out({"tkb":{"u":[st["u"]],"v":[st["v"]]},"custody":[st["cust"]],"allocations":[],"terms":0,"deposits":0,"acceptances":1})
     if c=="deposit": out({"depositId":"d"*64,"request":"r"*40,"allocation":"a"*40})
     if c=="dvp": out({"id":"e"*64,"terms":"t"*40,"allocation":"a"*40})
     if c=="payment-id": out({"label":a[1],"id":"e"*64})
+    if c=="block" and len(a)!=3: sys.exit("canton block must name the party whose holding was made with the record")
     if c=="block": n=a[1]; out({"chain":[{"headNumber":st["block"],"headHash":"x"}],"record":{"number":int(n),"blockHash":"b%s"%n,"proofHex":"ab","proofSha256":"sha"}})
     if c=="settled": out({"record":{"updateId":"upd","offset":7},"holding":{"updateId":"upd","offset":7}})
     out({})

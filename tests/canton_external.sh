@@ -139,6 +139,7 @@ demo_setup2=$(canton setup) || fail "the second canton.py setup failed"
 [ "$demo_setup2" = "$demo_setup" ] || fail "the second canton.py setup changed something: $demo_setup2"
 wrapped=$(printf '12%.0s' $(seq 20))
 [ "$(canton registered "$wrapped" | jq -r .registered)" = false ] || fail "the wrapped token is registered before register-token"
+[ "$(canton accepted u | jq -r .accepted)" = false ] || fail "U has an acceptance of withdrawals before it made one"
 registered=$(canton register-token "$wrapped") || fail "canton.py register-token did not run on the participant"
 jq -e --arg t "$wrapped" '.evmToken == $t' <<<"$registered" >/dev/null || fail "the token was not registered as proposed: $registered"
 [ "$(canton registered "$wrapped" | jq -r .registered)" = true ] || fail "the operator does not see the registered token"

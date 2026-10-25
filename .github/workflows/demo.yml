@@ -16,13 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - run: shellcheck demo/*.sh tests/demo_*.sh explorer/test/l5/l5.sh
+      - run: shellcheck demo/*.sh demo/tests/*.sh tests/demo_*.sh explorer/test/l5/l5.sh
       - run: tests/demo_static.sh
       - run: tests/demo_explorer_static.sh
       - name: Install the demo's packages, by hash
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --require-hashes -r demo/requirements.txt
+      - name: demo/live.sh against stand-ins for evm.py and canton.py
+        run: demo/tests/live_test.sh
       - name: The EVM side (a fake reth) and the sidecar stand-in
         run: |
           "$RUNNER_TEMP/venv/bin/python" -W error::ResourceWarning -m unittest discover -s demo/tests -v

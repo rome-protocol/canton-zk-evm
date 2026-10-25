@@ -112,9 +112,10 @@ setup() {
   if [ "$(canton registered "$wtkb" | jq -r .registered)" = true ]; then
     echo "wTKB is registered already"
   else
-    is "$(canton register-token "$wtkb" | jq -r .evmToken)" "${wtkb#0x}" "the registered token"
+    # A proposal that an earlier run left for the confirmer is accepted by register-token. The address comes back in lowercase, as the user may not give it.
+    is "$(canton register-token "$wtkb" | jq -r .evmToken)" "$(tr A-F a-f <<<"${wtkb#0x}")" "the registered token"
   fi
-  if [ "$(canton balances | jq -r .acceptances)" -ge 1 ]; then
+  if [ "$(canton accepted u | jq -r .accepted)" = true ]; then
     echo "U accepts withdrawals already"
   else
     canton accept u | jq -c .
@@ -138,7 +139,7 @@ check_leg() {
   is "$(jq -r .legs <<<"$legs")" 1 "the legs in block $n"
   is "$(jq -c .kinds <<<"$legs")" "[\"$2\"]" "the kind of block $n's leg"
   [ "$(fin_number)" -ge "$n" ] || fail "reth's finalized block is below block $n"
-  found=$(canton block "$n")
+  found=$(canton block "$n" "$3")   # read from the update of that party's newest holding: not every record of a long chain
   record=$(jq -c .record <<<"$found")
   head=$(jq -r '.chain[0].headNumber' <<<"$found")
   [ "$head" -ge "$n" ] || fail "Canton's head $head is below block $n"
@@ -162,7 +163,7 @@ legs() {
   elif [ -f "$wtkb_file" ]; then WTKB=$(jq -r .token "$wtkb_file")
   else fail "no wTKB: run demo/live.sh setup first"; fi
   [ "$(canton registered "$WTKB" | jq -r .registered)" = true ] || fail "wTKB at $WTKB is not registered on Canton: run demo/live.sh setup first"
-  [ "$(canton balances | jq -r .acceptances)" -ge 1 ] || fail "U has made no acceptance of withdrawals: run demo/live.sh setup first"
+  [ "$(canton accepted u | jq -r .accepted)" = true ] || fail "U has made no acceptance of withdrawals: run demo/live.sh setup first"
   [ -f "$CZE_STATE_DIR/canton/parties.env" ] || fail "no $CZE_STATE_DIR/canton/parties.env: run network/external/setup.py --demo"
   # shellcheck disable=SC1091
   . "$CZE_STATE_DIR/canton/parties.env"
@@ -182,7 +183,7 @@ legs() {
   deposit_id=$(jq -r .depositId <<<"$deposit")
   claim_tx=$(evm claim u "$deposit_id" "$WTKB" 10 | jq -r .tx)
   r1=$(final "$claim_tx" "the claim"); n1=$(jq -r .block <<<"$r1"); h1=$(jq -r .blockHash <<<"$r1")
-  u1=$(check_leg "$n1" claim gateway "$h1"); local rec1; rec1=$(canton block "$n1" | jq -c .record)
+  u1=$(check_leg "$n1" claim gateway "$h1"); local rec1; rec1=$(canton block "$n1" gateway | jq -c .record)
   after1=$(canton balances); w1=$(wrapped "$U_ADDR")
   is "$(num "$(total "$after1" u)")" "$(sum "$(total "$start" u)" -10)" "U's TKB after run 1"
   is "$(num "$(total "$after1" gateway)")" "$(sum "$(total "$start" gateway)" 10)" "the custody after run 1"
@@ -208,7 +209,7 @@ legs() {
   is "$payment" "$(canton payment-id "$tag-dvp" | jq -r .id)" "the payment id of $tag-dvp"
   pay_tx=$(evm pay v "$payment" "$CZE_WTROME" "$U_ADDR" "$PAY" | jq -r .tx)
   r2=$(final "$pay_tx" "the payment"); n2=$(jq -r .block <<<"$r2"); h2=$(jq -r .blockHash <<<"$r2")
-  u2=$(check_leg "$n2" pay v "$h2"); local rec2; rec2=$(canton block "$n2" | jq -c .record)
+  u2=$(check_leg "$n2" pay v "$h2"); local rec2; rec2=$(canton block "$n2" v | jq -c .record)
   after2=$(canton balances)
   is "$(num "$(total "$after2" u)")" "$(sum "$(total "$after1" u)" -10)" "U's TKB after run 2"
   is "$(num "$(total "$after2" v)")" "$(sum "$(total "$after1" v)" 10)" "V's TKB after run 2"
@@ -222,7 +223,7 @@ legs() {
   local withdraw_tx r3 n3 h3 u3 after3 w3
   withdraw_tx=$(evm withdraw u "$WTKB" 4 "$U_PARTY" | jq -r .tx)
   r3=$(final "$withdraw_tx" "the withdrawal"); n3=$(jq -r .block <<<"$r3"); h3=$(jq -r .blockHash <<<"$r3")
-  u3=$(check_leg "$n3" withdraw u "$h3"); local rec3; rec3=$(canton block "$n3" | jq -c .record)
+  u3=$(check_leg "$n3" withdraw u "$h3"); local rec3; rec3=$(canton block "$n3" u | jq -c .record)
   after3=$(canton balances); w3=$(wrapped "$U_ADDR")
   is "$(num "$(total "$after3" u)")" "$(sum "$(total "$after2" u)" 4)" "U's TKB after run 3"
   is "$(num "$(total "$after3" gateway)")" "$(sum "$(total "$after2" gateway)" -4)" "the custody after run 3"

@@ -11,7 +11,7 @@ import canton
 from test_canton import PARTIES, CHAIN_RECORD, FakeLedger, record
 
 ROOT = canton.ROOT
-SECRET = "tok-secret-"   # every token file holds SECRET + the role: the tests look for this text in what is printed
+MARK = "fake-bearer-"   # every token file holds MARK + the role: the tests look for this text in what is printed
 TEST_TOKEN_PACKAGE = "da294b5651ed00af8565fd31351d0c1d8778f10393d250e32c9844311f681436"   # the main package of splice-test-token-v1-1.0.1.dar
 EVM_TOKEN = "0x" + "AB" * 20
 
@@ -78,11 +78,12 @@ class ExternalTestCase(unittest.TestCase):
         self.addCleanup(patch.stop)
         FakeLedger.contracts = {("op::1", canton.CHAIN + "ZkChain"): [{"contractId": "chain-1", "offset": 5, "createArgument": CHAIN_RECORD}]}
         FakeLedger.created, FakeLedger.submitted, FakeLedger.asked, FakeLedger.updates, FakeLedger.refuse = [], [], [], {}, None
+        FakeLedger.update_reads = []
         FakeParticipant.calls, FakeParticipant.uploads, FakeParticipant.vetted, FakeParticipant.vetted_by, FakeParticipant.vetting_status = [], [], False, "part::1", 200
 
     def token_file(self, role, text=None, mode=0o600):
         path = self.tokens / role
-        path.write_text((text or SECRET + role) + "\n")
+        path.write_text((text or MARK + role) + "\n")
         path.chmod(mode)
         return path
 
@@ -143,7 +144,7 @@ class TokenTests(ExternalTestCase):
         [(_, body)] = FakeLedger.submitted
         self.assertEqual(body["userId"], "ostia2-demo")
         sent = [a for m, p, a in FakeParticipant.calls if p == "/v2/commands/submit-and-wait"]
-        self.assertEqual(sent, ["Bearer " + SECRET + "demo"])
+        self.assertEqual(sent, ["Bearer " + MARK + "demo"])
 
     def test_every_read_uses_the_token_of_the_party_that_reads(self):
         FakeLedger.contracts[("re::1", canton.CHAIN + "BlockRecord")] = [{"contractId": "rec8", "offset": 50, "createArgument": {"number": "8", "blockHash": "00", "proofHex": "ab"}}]
@@ -151,22 +152,22 @@ class TokenTests(ExternalTestCase):
         by_party = {party: set() for _, party, _ in FakeLedger.asked}
         reads = [(p, a) for _, p, a in FakeParticipant.calls if p in ("/v2/state/ledger-end", "/v2/state/active-contracts")]
         self.assertTrue(reads)
-        self.assertEqual({a for _, a in reads}, {"Bearer " + SECRET + r for r in ("demo", "operator", "reader")})   # U and V; the operator and the gateway; the reader
+        self.assertEqual({a for _, a in reads}, {"Bearer " + MARK + r for r in ("demo", "operator", "reader")})   # U and V; the operator and the gateway; the reader
         self.assertEqual(set(by_party), {"op::1", "re::1", "u::1", "v::1", "gw::1"})
 
     def test_the_gateway_is_read_with_the_operators_token(self):
         canton.balances(canton.Network())
         asked = [(party, a) for (party, _), (_, p, a) in zip([(party, t) for _, party, t in FakeLedger.asked],
                                                               [c for c in FakeParticipant.calls if c[1] == "/v2/state/active-contracts"])]
-        self.assertIn(("gw::1", "Bearer " + SECRET + "operator"), asked)
-        self.assertIn(("u::1", "Bearer " + SECRET + "demo"), asked)
+        self.assertIn(("gw::1", "Bearer " + MARK + "operator"), asked)
+        self.assertIn(("u::1", "Bearer " + MARK + "demo"), asked)
 
     def test_the_token_is_read_at_every_call(self):
         net = canton.Network()
         net.get("operator", "/v2/state/ledger-end", "demo")
         self.token_file("demo", "second-token")
         net.get("operator", "/v2/state/ledger-end", "demo")
-        self.assertEqual(self.auth_of("/v2/state/ledger-end"), ["Bearer " + SECRET + "demo", "Bearer second-token"])
+        self.assertEqual(self.auth_of("/v2/state/ledger-end"), ["Bearer " + MARK + "demo", "Bearer second-token"])
 
     def test_the_resubmit_goes_out_as_the_builder(self):
         advance = {k: "00" for k in canton.ADVANCE_FIELDS}
@@ -176,14 +177,14 @@ class TokenTests(ExternalTestCase):
         canton.main(["resubmit", str(path)])
         [(_, body)] = FakeLedger.submitted
         self.assertEqual(body["userId"], "ostia2-builder")
-        self.assertEqual(self.auth_of("/v2/commands/submit-and-wait"), ["Bearer " + SECRET + "builder"])
+        self.assertEqual(self.auth_of("/v2/commands/submit-and-wait"), ["Bearer " + MARK + "builder"])
 
     def test_a_token_file_that_others_can_read_is_refused_before_anything_is_sent(self):
         self.token_file("demo", mode=0o644)
         with self.assertRaises(SystemExit) as why:
             canton.main(["setup"])
         self.assertIn("can be read by others", str(why.exception))
-        self.assertNotIn(SECRET, str(why.exception))
+        self.assertNotIn(MARK, str(why.exception))
         self.assertEqual(FakeParticipant.calls, [])
 
     def test_a_missing_or_empty_or_two_word_token_file_is_refused(self):
@@ -216,24 +217,24 @@ class TokenTests(ExternalTestCase):
         for role in ("operator", "reader", "builder", "confirmer", "admin"):
             del os.environ[f"CZE_TOKEN_FILE_{role.upper()}"]
         canton.main(["setup"])   # U's, V's and the registry's user only
-        self.assertEqual({a for _, _, a in FakeParticipant.calls}, {"Bearer " + SECRET + "demo"})
+        self.assertEqual({a for _, _, a in FakeParticipant.calls}, {"Bearer " + MARK + "demo"})
 
     def test_a_refusal_does_not_show_the_token(self):
         FakeLedger.refuse = "no right to act as that party"
         with self.assertRaises(canton.Refused) as why:
             canton.main(["accept", "u"])
         self.assertIn("no right to act", str(why.exception))
-        self.assertNotIn(SECRET, str(why.exception))
+        self.assertNotIn(MARK, str(why.exception))
 
     def test_the_command_line_never_prints_a_token(self):
         env = {**os.environ}
         done = subprocess.run([sys.executable, str(ROOT / "demo" / "canton.py"), "balances"], capture_output=True, text=True, env=env, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertNotIn(SECRET, done.stdout + done.stderr)
+        self.assertNotIn(MARK, done.stdout + done.stderr)
         self.token_file("reader", mode=0o666)
         done = subprocess.run([sys.executable, str(ROOT / "demo" / "canton.py"), "balances"], capture_output=True, text=True, env=env, timeout=60)
         self.assertNotEqual(done.returncode, 0)
-        self.assertNotIn(SECRET, done.stdout + done.stderr)
+        self.assertNotIn(MARK, done.stdout + done.stderr)
         self.assertIn("can be read by others", done.stdout + done.stderr)
 
 
@@ -243,9 +244,9 @@ class UploadTests(ExternalTestCase):
         sums = canton.read_sums(ROOT / "daml" / "dars")
         self.assertEqual(FakeParticipant.uploads, [(canton.UPLOAD_PATH, sums[canton.TEST_TOKEN_DAR])])
         self.assertEqual(out, {"uploaded": [canton.TEST_TOKEN_DAR], "vetted": True, "package": TEST_TOKEN_PACKAGE, "to": ["participant"]})
-        self.assertEqual(self.auth_of("/v2/packages"), ["Bearer " + SECRET + "admin"])
+        self.assertEqual(self.auth_of("/v2/packages"), ["Bearer " + MARK + "admin"])
         self.assertTrue(self.auth_of("/v2/package-vetting/list"))
-        self.assertEqual(set(self.auth_of("/v2")), {"Bearer " + SECRET + "admin"})   # all of it is the admin's: no other user is used
+        self.assertEqual(set(self.auth_of("/v2")), {"Bearer " + MARK + "admin"})   # all of it is the admin's: no other user is used
 
     def test_none_of_the_token_standards_packages_is_uploaded(self):
         canton.main(["upload-dars"])
@@ -345,11 +346,48 @@ class NewCommandTests(ExternalTestCase):
         self.assertEqual(FakeLedger.submitted, [])
 
     def test_registered_says_whether_the_gateway_has_the_token(self):
-        self.assertEqual(canton.main(["registered", EVM_TOKEN]), {"evmToken": "ab" * 20, "registered": False})
+        self.assertEqual(canton.main(["registered", EVM_TOKEN]), {"evmToken": "ab" * 20, "registered": False, "proposed": False})
         FakeLedger.contracts[("op::1", canton.CHAIN + "GatewayToken")] = [{"contractId": "t1", "offset": 3, "createArgument": {"evmToken": "ab" * 20}}]
         self.assertTrue(canton.main(["registered", EVM_TOKEN.lower()])["registered"])
         with self.assertRaises(SystemExit):
             canton.main(["registered", "nobody"])
+
+    def test_registered_says_when_the_proposal_is_waiting_for_the_confirmer(self):
+        FakeLedger.contracts[("op::1", canton.CHAIN + "GatewayTokenProposal")] = [{"contractId": "p1", "offset": 3, "createArgument": {"evmToken": "ab" * 20}}]
+        out = canton.main(["registered", EVM_TOKEN])
+        self.assertEqual((out["registered"], out["proposed"]), (False, True))
+
+    def test_register_token_accepts_the_proposal_an_earlier_run_left(self):
+        proposal = {"contractId": "p1", "offset": 3, "createArgument": {"evmToken": "ab" * 20, "instrumentId": {"admin": "rg::1", "id": "TKB"}, "factory": "rules-1"}}
+        FakeLedger.contracts[("op::1", canton.CHAIN + "GatewayTokenProposal")] = [proposal]
+        FakeLedger.contracts[("co::1", canton.CHAIN + "GatewayTokenProposal")] = [proposal]
+        out = canton.main(["register-token", EVM_TOKEN])
+        self.assertEqual(out["evmToken"], "ab" * 20)
+        [(node, body)] = FakeLedger.submitted
+        command = body["commands"][0]["ExerciseCommand"]
+        self.assertEqual((command["choice"], command["contractId"], body["actAs"], body["userId"]), ("AcceptToken", "p1", ["co::1"], "ostia2-confirmer"))
+
+    def test_a_left_proposal_for_another_instrument_is_refused(self):
+        proposal = {"contractId": "p1", "offset": 3, "createArgument": {"evmToken": "ab" * 20, "instrumentId": {"admin": "other::1", "id": "TKB"}, "factory": "rules-0"}}
+        FakeLedger.contracts[("op::1", canton.CHAIN + "GatewayTokenProposal")] = [proposal]
+        with self.assertRaises(canton.Fail):
+            canton.main(["register-token", EVM_TOKEN])
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_block_with_a_party_reads_the_holdings_update_and_not_every_record(self):
+        proof = "ab" * 1344
+        rec = {"contractId": "r8", "offset": 50, "createArgument": {"number": "8", "blockHash": f"{8:064x}", "proofHex": proof}}
+        FakeLedger.contracts[("re::1", canton.CHAIN + "BlockRecord")] = [rec]
+        FakeLedger.contracts[("v::1", canton.TOKEN)] = [{"contractId": "h", "offset": 50, "createArgument": {}}]
+        FakeLedger.updates = {50: ("upd-8", ["r8", "h"])}
+        out = canton.main(["block", "8", "v"])
+        self.assertEqual(out["record"]["blockHash"], f"{8:064x}")
+        self.assertEqual(out["record"]["proofHex"], proof)
+        self.assertNotIn(canton.CHAIN + "BlockRecord", [t for _, _, t in FakeLedger.asked])
+        with self.assertRaises(canton.Fail):
+            canton.main(["block", "9", "v"])
+        with self.assertRaises(SystemExit):
+            canton.main(["block", "8", "reader"])
 
     def test_block_gives_the_head_and_one_record_without_the_others(self):
         proof = "ab" * 1344

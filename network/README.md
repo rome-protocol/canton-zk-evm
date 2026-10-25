@@ -177,14 +177,15 @@ In (a), do not start the sidecar yourself first; if you did, `up.sh` finds it ru
 **The demo's helpers on this participant.** `demo/canton.py` and `demo/evm.py` run against it, and `demo/live.sh` runs the deposit, the payment (in WtROME) and the withdrawal on the running chain. They need the demo's parties and user as well: run `network/external/setup.py --demo` once more, with no chain arguments (it adds `u`, `v`, `registry` and the user `ostia-demo`, and changes nothing else). Then:
 
 ```sh
-export CZE_CANTON=external CZE_LEDGER_URL=https://<participant's Ledger API> CZE_RPC_URL=<the chain's RPC>
+export CZE_CANTON=external CZE_LEDGER_URL=https://<participant's Ledger API> CZE_RPC_URL=<the chain's RPC> CZE_USER_PREFIX=<the prefix of setup.py's users, ostia- unless you changed it>
 export CZE_TOKEN_FILE_DEMO=... CZE_TOKEN_FILE_OPERATOR=... CZE_TOKEN_FILE_CONFIRMER=... CZE_TOKEN_FILE_READER=... CZE_TOKEN_FILE_ADMIN=...   # 0600 files, one token each
-demo/canton.py upload-dars    # only the test token's DAR; the participant already has the token standard's packages; then checks it is vetted
-demo/live.sh setup            # the token rules and U's 100 TKB, wTKB made and registered, U's acceptance
-demo/live.sh legs             # the three legs, each waited for at the finalized block
+python3 demo/canton.py upload-dars   # only the test token's DAR; the participant already has the token standard's packages; then checks it is vetted
+demo/live.sh setup                   # the token rules and U's 100 TKB, wTKB made and registered, U's acceptance; writes $CZE_STATE_DIR/demo/disclosed.json
+# Restart the block producer with --disclosed $CZE_STATE_DIR/demo/disclosed.json: it needs the rules to build a block that settles a payment.
+CZE_WTROME=0x<WtROME on the chain> CZE_SOURCE_COMMIT=<the full hash of the source that runs> demo/live.sh legs   # the three legs, each waited for at the finalized block
 ```
 
-`CZE_USER_PREFIX` goes before the user ids as for the rest. A token is read again from its file at every call, so a short-lived one can be rewritten in place. The block producer must run with `--disclosed $CZE_STATE_DIR/demo/disclosed.json`, the file `canton.py setup` writes, and U's and V's EVM addresses (`demo/evm.py keys`) need the chain's coin. See `demo/README.md` and the header of `demo/live.sh`. `tests/canton_external.sh` runs `upload-dars`, `setup` and `register-token` against the pinned Canton with a login.
+`CZE_USER_PREFIX` goes before the user ids as for the rest (`canton.py` and `propose.py` use no prefix on an existing participant unless it is set, so without it they send the user `demo`, not `ostia-demo`, and Canton refuses). A token is read again from its file at every call, so a short-lived one can be rewritten in place. U's and V's EVM addresses (`python3 demo/evm.py keys`) need the chain's coin. The commands and settings are in `demo/README.md` and the header of `demo/live.sh`. `tests/canton_external.sh` runs `upload-dars`, `setup` and `register-token` against the pinned Canton with a login.
 
 ## The smoke test
 
