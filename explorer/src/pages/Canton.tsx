@@ -29,22 +29,22 @@ export function CantonUpdates() {
   return (
     <>
       <div className="ptitle"><h1>Linked to Canton</h1><span className="muted">each Canton update and the block it settled</span></div>
-      <div className="note">Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof. The offset is the one the reader's participant gives the update ({READER}); it is not the builder's own completion offset.</div>
+      <div className="note">Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof.</div>
       {p.error && !items ? <ErrorCard message={p.error.message} retrying /> : !items ? <LoadingCard>Reading the Canton updates…</LoadingCard> : (
         <section className="card" aria-label="Canton updates">
           <div className="list-h"><span className="muted">{items.length ? "Newest first, by record time" : "No Canton updates yet."}</span><Pager p={p} label="Pages of Canton updates" /></div>
           <div className="scroll">
-            <table className="tbl">
+            <table className="tbl stk stk-linked">
               <thead><tr><th>Canton update</th><th>EVM block</th><th className="r">EVM transactions</th><th>Record time</th><th className="r">Offset</th><th>Synchronizer</th></tr></thead>
               <tbody>
                 {items.map((u: UpdateItem) => (
                   <tr key={u.updateId}>
-                    <td><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} plain /></td>
-                    <td>{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
-                    <td className="r num">{u.txCount === null ? <span className="muted">—</span> : count(u.txCount)}</td>
-                    <td className="mono">{u.recordTime}</td>
-                    <td className="r num">{u.offset}</td>
-                    <td><HashLink value={u.synchronizer} /></td>
+                    <td className="k-u"><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} plain /></td>
+                    <td className="k-b">{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
+                    <td className="r num k-n">{u.txCount === null ? <span className="muted">—</span> : count(u.txCount)}</td>
+                    <td className="mono k-t">{u.recordTime}</td>
+                    <td className="r num k-o">{u.offset}</td>
+                    <td className="k-s"><HashLink value={u.synchronizer} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -235,16 +235,16 @@ function SettledTxs({ id }: { id: string }) {
       <div className="sec-h"><h3 id="settled-h">EVM transactions in this update</h3><span className="grow" /><Pager p={p} label="Pages of the update's transactions" /></div>
       {p.error && !items ? <p className="muted">The explorer cannot read the transactions of this update right now.</p> : !items ? <p className="muted">Reading the transactions…</p> : !items.length ? <p className="muted">This update settled no EVM transactions.</p> : (
         <div className="scroll">
-          <table className="tbl">
+          <table className="tbl stk stk-settled">
             <thead><tr><th className="r">Position</th><th>Transaction hash</th><th>From</th><th aria-hidden="true" /><th>To</th></tr></thead>
             <tbody>
               {items.map((t) => (
                 <tr key={t.hash}>
-                  <td className="r num">{t.index}</td>
-                  <td className="c-hash"><HashLink value={t.hash} to={`/tx/${t.hash}`} plain /></td>
-                  <td><AddressCell address={t.from} label={labels.get(t.from)} /></td>
-                  <td className="arrow muted" aria-hidden="true">→</td>
-                  <td>{t.to ? <AddressCell address={t.to} label={labels.get(t.to)} /> : <span className="muted">creates a contract</span>}</td>
+                  <td className="r num k-p">{t.index}</td>
+                  <td className="c-hash k-h"><HashLink value={t.hash} to={`/tx/${t.hash}`} plain /></td>
+                  <td className="k-f"><AddressCell address={t.from} label={labels.get(t.from)} /></td>
+                  <td className="arrow muted k-a" aria-hidden="true">→</td>
+                  <td className="k-to">{t.to ? <AddressCell address={t.to} label={labels.get(t.to)} /> : <span className="muted">creates a contract</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -316,7 +316,7 @@ export function CantonUpdate() {
       </div>
       <p className="updid mono">{u.updateId} <CopyButton value={u.updateId} /></p>
       <div className="sides sides-join"><OnCanton u={u} now={now} /><Join hash={u.blockHash} /><OnEvm u={u} b={evm.data} failed={evm.isError} /></div>
-      <SettledTxs id={u.updateId} />
+      {u.block !== null ? <SettledTxs id={u.updateId} /> : <section className="card" aria-labelledby="settled-h"><div className="sec-h"><h3 id="settled-h">EVM transactions in this update</h3></div><p className="muted">This update carries no block.</p></section>}
       {evm.data?.canton && u.block !== null && <RecordHolds c={evm.data.canton} block={u.block} />}
       <Privacy chain={st?.chainName} />
       <Around id={u.updateId} />

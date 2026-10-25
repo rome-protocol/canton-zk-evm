@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { StatsSummary } from "../api.ts";
 import { summary } from "./stats-fixtures.ts";
 import type { Label } from "../api.ts";
-import { addr, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, tx, txItem, waitingTx } from "../test-utils.tsx";
+import { addr, fakeApi, hash, inFlight, labelsOf, page, renderApp, reply, route, tx, txItem, update, waitingTx } from "../test-utils.tsx";
 
 /** The route `base` plus a labels route that answers only the addresses asked, as the server does (so a page that forgot to ask gets no name). */
 const withLabels = (base: (path: string) => { status: number; body: unknown }, items: unknown[]) => {
@@ -46,9 +46,9 @@ describe("the transactions page", () => {
     await open({ inFlight: () => reply(flight()), tx: byHash("") });
     expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toContain("Canton update");
     expect(rows()[0]).toHaveTextContent("not final yet");
-    const link = within(rows()[2]!).getByRole("link", { name: /^1220/ });
-    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/canton\/1220[0-9a-f]{64}$/));
-    expect(within(rows()[3]!).getByRole("link", { name: /^1220/ })).not.toHaveAttribute("href", link.getAttribute("href")!);
+    // rows 2 and 3 are the transactions of blocks 3 and 2: each links to the update of its own block
+    expect(within(rows()[2]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(3)}`);
+    expect(within(rows()[3]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(2)}`);
   });
 
   it("marks a failed transaction and shows the fee with every digit", async () => {

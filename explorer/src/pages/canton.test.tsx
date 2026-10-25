@@ -47,10 +47,11 @@ describe("the Canton updates page", () => {
     expect(rows()[1]).toHaveTextContent(/none\s*—/);
   });
 
-  it("says that the offsets are the reader's participant's, not the builder's completion offset", async () => {
+  it("says in the table footer that the offsets are the reader's participant's, and keeps the page note to the one explanation", async () => {
     await open();
     expect(screen.getAllByText("on the reader's participant", { exact: false }).length).toBeGreaterThan(0);
-    expect(screen.getByText("not the builder's own completion offset", { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText(/builder's own completion offset/)).toBeNull();
+    expect(screen.getByText(/^Each Canton update carries one block and all of its EVM transactions; the external call inside it checks the block's proof\.$/)).toBeInTheDocument();
   });
 
   it("pages by the server's cursor", async () => {
@@ -71,6 +72,13 @@ describe("one Canton update", () => {
     expect(calls).toContain(`/api/canton/updates/${update(3)}/transactions?limit=25`);
     expect(t.getAllByRole("link").map((l) => l.getAttribute("href"))).toEqual(expect.arrayContaining([`/tx/${txItem(3).hash}`, `/tx/${txItem(4).hash}`]));
     expect(t.getAllByRole("row")).toHaveLength(3);
+  });
+
+  it("says the update carries no block, without asking for transactions or suggesting an outage", async () => {
+    const calls = await open({ update: () => reply(detail({ block: null, txCount: null })), updateTxs: () => ({ status: 404, body: {} }) });
+    expect(await screen.findByText("This update carries no block.")).toBeInTheDocument();
+    expect(calls.some((c) => c.includes("/transactions"))).toBe(false);
+    expect(screen.queryByText(/cannot read the transactions/)).toBeNull();
   });
 
   it("says so when the update settled no transactions", async () => {
