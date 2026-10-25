@@ -10,6 +10,7 @@ import type { Pool, PoolClient } from "pg";
 import type { Pins } from "../config.ts";
 import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/partitions.ts";
 import type { BlockRecord, Ledger } from "../ledger.ts";
+import { custodyOnce } from "./custody.ts";
 import { RethError } from "../reth.ts";
 import { IndexerStop, Paused, RethBehind } from "./errors.ts";
 import { recordGenesisSupply, seedGenesis } from "./genesis.ts";
@@ -58,6 +59,12 @@ export interface IndexerOptions {
   auditMs?: number;
   /** How often `start` runs the stats rollups (design section 8), in milliseconds. Default 10 seconds. */
   rollupMs?: number;
+  /**
+   * The custody read (the registered tokens and the gateway's holdings, as the gateway party sees them): a Ledger API client built for the gateway party
+   * (a token of its own, with the right to read as it and nothing else). Left out, nothing is read and the table stays empty. `ms` is how often `start`
+   * reads it (default 30 seconds); `limit` is how many contracts to ask Canton for (default 1000), and a read that fills it fails.
+   */
+  custody?: { ledger: Ledger; ms?: number; limit?: number };
   /** For C6's choice of blocks. */
   random?: () => number;
   /** After this long without reth having a block the record names, the health says so. */
@@ -554,7 +561,23 @@ export function createIndexer(o: IndexerOptions) {
         for (let waited = 0; running && waited < rollupMs; waited += 50) await sleep(50);
       }
     };
-    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop()]);
+    // The custody is Canton's side only and never on the way of a block: a read that fails is logged, and the last rows stay with the time they were read at.
+    const custodyMs = o.custody?.ms ?? 30_000;
+    const custodyLoop = async () => {
+      let failing = "";
+      while (running && o.custody) {
+        try {
+          await custodyOnce(o.pool, o.custody.ledger, o.custody.limit ?? 1000);
+          failing = "";
+        } catch (e) {
+          // Said once for each kind of failure, not on every pass.
+          if (failing !== (e as Error).message) log(`indexer (custody): ${(e as Error).message}`);
+          failing = (e as Error).message;
+        }
+        for (let waited = 0; running && waited < custodyMs; waited += 50) await sleep(50);
+      }
+    };
+    const finished = Promise.all([...loops.map((l) => l()), checks(), balancesLoop(), journalLoop(), audits(), statsLoop(), custodyLoop()]);
     return async () => { stopRequested = true; running = false; await finished; };
   }
 

@@ -2,14 +2,21 @@ import { readFileSync, statSync } from "node:fs";
 import { isHexBytes } from "./hex.ts";
 
 /**
- * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, two calls only, both reads.
+ * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, four calls only, all reads.
  * It asks for the reader party's transactions, filtered to the block record, and keeps nothing else the answer might carry.
+ * The fourth call is the custody read (`gatewayCustody`), made only when the gateway party and a token for it are configured: it is the one place
+ * the explorer reads as the gateway, for the registered tokens and the sum of the holdings, and it keeps nothing else the answer carries.
  */
-export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
+export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id", "POST /v2/state/active-contracts"]);
 
 /** The package is named, not pinned by id, as the demo does; Canton picks the vetted version. */
 export const BLOCK_RECORD_TEMPLATE = "#canton-zk-evm:Zk.Chain:BlockRecord";
 const RECORD_SUFFIX = ":Zk.Chain:BlockRecord";
+export const GATEWAY_TOKEN_TEMPLATE = "#canton-zk-evm:Zk.Chain:GatewayToken";
+const GATEWAY_TOKEN_SUFFIX = ":Zk.Chain:GatewayToken";
+/** The token standard's Holding interface: what a holding shows as its view, whatever template the registry made it with. */
+export const HOLDING_INTERFACE = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding";
+const HOLDING_SUFFIX = ":Splice.Api.Token.HoldingV1:Holding";
 
 export class LedgerError extends Error {}
 
@@ -125,6 +132,70 @@ function recordsIn(item: unknown): { offset: number; records: BlockRecord[] } {
   return { offset: offset as number, records };
 }
 
+/** One registered token and what the gateway holds of its instrument. The amount is in base units of 10 decimals (a Canton amount's own). No owner and no contract id is kept. */
+export interface CustodyToken { evmToken: string; instrumentAdmin: string; instrumentId: string; custody: bigint; holdings: number }
+export interface GatewayCustody {
+  /** The ledger offset the contracts were read at. */
+  offset: number;
+  tokens: CustodyToken[];
+}
+
+const custodyFail = (what: string): never => { throw new LedgerError(`the gateway's custody cannot be read: ${what}`); };
+const SCALE = 10;
+/** A Daml Numeric(10) as the JSON API writes it, in base units. A negative amount, an exponent or more than 10 decimals is not one. */
+function baseUnits(amount: unknown): bigint {
+  const m = typeof amount === "string" ? /^(\d+)(?:\.(\d{1,10}))?$/.exec(amount) : null;
+  if (!m) return custodyFail("a holding's amount is not a decimal of at most 10 places");
+  return BigInt(m[1]!) * 10n ** BigInt(SCALE) + BigInt((m[2] ?? "").padEnd(SCALE, "0"));
+}
+const instrumentOf = (v: unknown, what: string): { admin: string; id: string } => {
+  const i = typeof v === "object" && v !== null ? (v as Json) : null;
+  if (!i || typeof i.admin !== "string" || i.admin === "" || typeof i.id !== "string" || i.id === "") return custodyFail(`${what} has no instrument`);
+  return { admin: i.admin, id: i.id };
+};
+
+/**
+ * The registered tokens and the gateway's holdings, from the active contracts of one party's view at one offset. `party` is the gateway: the
+ * holdings count only where it is the owner (the view may show others it is a stakeholder of), locked ones included, since a lock does not move the coin.
+ * A holding it cannot read, an amount that is not a decimal, a token registered twice or an instrument shared by two tokens fails the whole read:
+ * a total that might be short, or counted for two tokens, is worse than none.
+ */
+export function custodyFrom(items: unknown[], party: string): CustodyToken[] {
+  const registered: { evmToken: string; admin: string; id: string }[] = [];
+  const held: { admin: string; id: string; amount: bigint }[] = [];
+  for (const item of items) {
+    const entry = obj(obj(obj(item, "an active contract").contractEntry, "an active contract").JsActiveContract, "an active contract");
+    const e = obj(entry.createdEvent, "an active contract"), template = typeof e.templateId === "string" ? e.templateId : "";
+    if (template.endsWith(GATEWAY_TOKEN_SUFFIX)) {
+      const a = obj(e.createArgument, "a registered token");
+      const evm = typeof a.evmToken === "string" ? a.evmToken.replace(/^0x/, "").toLowerCase() : "";
+      if (!/^[0-9a-f]{40}$/.test(evm)) custodyFail("a registered token's evmToken is not an address");
+      const { admin, id } = instrumentOf(a.instrumentId, "a registered token");
+      registered.push({ evmToken: "0x" + evm, admin, id });
+    }
+    for (const v of Array.isArray(e.interfaceViews) ? (e.interfaceViews as Json[]) : []) {
+      if (typeof v.interfaceId !== "string" || !v.interfaceId.endsWith(HOLDING_SUFFIX)) continue;
+      const status = (v.viewStatus as Json | undefined)?.code ?? 0;
+      if (status !== 0 || typeof v.viewValue !== "object" || v.viewValue === null) custodyFail("a holding has no readable view");
+      const view = v.viewValue as Json;
+      if (view.owner !== party) continue;
+      held.push({ ...instrumentOf(view.instrumentId, "a holding"), amount: baseUnits(view.amount) });
+    }
+  }
+  const seen = new Set<string>(), instruments = new Set<string>();
+  for (const r of registered) {
+    if (seen.has(r.evmToken)) custodyFail(`token ${r.evmToken} is registered twice`);
+    seen.add(r.evmToken);
+    const key = JSON.stringify([r.admin, r.id]);
+    if (instruments.has(key)) custodyFail(`instrument ${r.id} is registered twice, for two tokens`);
+    instruments.add(key);
+  }
+  return registered.map((r): CustodyToken => {
+    const mine = held.filter((h) => h.admin === r.admin && h.id === r.id);
+    return { evmToken: r.evmToken, instrumentAdmin: r.admin, instrumentId: r.id, custody: mine.reduce((s, h) => s + h.amount, 0n), holdings: mine.length };
+  }).sort((a, b) => (a.evmToken < b.evmToken ? -1 : 1));
+}
+
 export function createLedger(url: string, timeoutMs: number, readerParty: string | null, pageSize = 100, tokenFile: string | null = null) {
   async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     const route = `${method} ${path.split("?")[0]}`;
@@ -194,7 +265,27 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
     return out;
   }
 
-  return { call, ledgerEnd, records, recordPages, participantId };
+  /**
+   * What the gateway holds on Canton of each registered token's instrument, read as the gateway at the ledger end read first. One request, filtered to the
+   * GatewayToken template and the Holding interface. `limit` is asked of Canton, and a list as long as it may have been cut, so it is refused.
+   */
+  async function gatewayCustody(limit: number): Promise<GatewayCustody> {
+    if (!readerParty) throw new LedgerError("the gateway party is not set: the custody read is for the gateway party only");
+    const offset = await ledgerEnd();
+    const filter = (identifierFilter: unknown) => ({ identifierFilter });
+    const items = await call("POST", `/v2/state/active-contracts?limit=${limit}`, {
+      eventFormat: { filtersByParty: { [readerParty]: { cumulative: [
+        filter({ TemplateFilter: { value: { templateId: GATEWAY_TOKEN_TEMPLATE, includeCreatedEventBlob: false } } }),
+        filter({ InterfaceFilter: { value: { interfaceId: HOLDING_INTERFACE, includeInterfaceView: true, includeCreatedEventBlob: false } } }),
+      ] } }, verbose: false },
+      activeAtOffset: offset,
+    });
+    if (!Array.isArray(items)) return fail("an answer that is not a list");
+    if (items.length >= limit) throw new LedgerError(`the gateway's custody cannot be read: Canton sent ${items.length} contracts, the limit asked, so the list may be cut short`);
+    return { offset, tokens: custodyFrom(items, readerParty) };
+  }
+
+  return { call, ledgerEnd, records, recordPages, participantId, gatewayCustody };
 }
 
 export type Ledger = ReturnType<typeof createLedger>;

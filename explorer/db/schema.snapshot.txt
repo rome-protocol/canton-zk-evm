@@ -333,6 +333,23 @@ table gateway_legs
   CREATE INDEX gateway_legs_token_block_number_idx ON public.gateway_legs USING btree (token, block_number DESC)
   CREATE UNIQUE INDEX gateway_legs_pkey ON public.gateway_legs USING btree (block_number, leg_index)
 
+table gateway_tokens
+  column evm_token bytea not null
+  column instrument_admin text not null
+  column instrument_id text not null
+  column custody numeric(40,0) not null
+  column holdings integer not null
+  column ledger_offset bigint not null
+  column read_at timestamp with time zone not null
+  constraint gateway_tokens_custody_check CHECK ((custody >= (0)::numeric))
+  constraint gateway_tokens_evm_token_check CHECK ((length(evm_token) = 20))
+  constraint gateway_tokens_holdings_check CHECK ((holdings >= 0))
+  constraint gateway_tokens_instrument_admin_check CHECK ((instrument_admin <> ''::text))
+  constraint gateway_tokens_instrument_id_check CHECK ((instrument_id <> ''::text))
+  constraint gateway_tokens_ledger_offset_check CHECK ((ledger_offset >= 0))
+  constraint gateway_tokens_pkey PRIMARY KEY (evm_token)
+  CREATE UNIQUE INDEX gateway_tokens_pkey ON public.gateway_tokens USING btree (evm_token)
+
 table health_checks
   column check_id text not null
   column status text not null

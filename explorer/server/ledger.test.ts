@@ -84,8 +84,8 @@ describe("block records", () => {
     await l.ledgerEnd();
     await l.records(0, 7);
     expect(fake!.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates"]);
-    expect([...ALLOWED_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
-    for (const [m, p] of [["POST", "/v2/commands/submit-and-wait"], ["POST", "/v2/state/active-contracts"], ["GET", "/v2/updates"], ["POST", "/v2/updates/update-by-offset"]] as const) {
+    expect([...ALLOWED_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id", "POST /v2/state/active-contracts"]);
+    for (const [m, p] of [["POST", "/v2/commands/submit-and-wait"], ["GET", "/v2/state/active-contracts"], ["GET", "/v2/updates"], ["POST", "/v2/updates/update-by-offset"]] as const) {
       await expect(l.call(m, p)).rejects.toThrow(/not on the list/);
     }
     expect(fake!.requests).toHaveLength(2);
