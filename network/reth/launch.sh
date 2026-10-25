@@ -93,8 +93,10 @@ require --ipcdisable
 require --engine.always-process-payload-attributes-on-canonical-head
 require --engine.allow-unwind-canonical-header
 require --builder.gaslimit "$GAS_CAP"
-# The builder fills a block by the gas its transactions use (the Ethereum rule): it offers more than fits and reth leaves out a transaction whose gas limit
-# is above what the block has left, and that sender's later ones. Without this flag reth refuses such a list and the builder packs by gas limits instead.
+# The builder fills a block by the gas its transactions use (the Ethereum rule): it offers more than fits and reth leaves out any transaction it cannot run
+# (a gas limit above what the block has left, a wrong nonce, too little balance, a fee under the base fee) and that sender's later ones. The builder's check
+# still requires the block to be the offered list in order, less some, under the cap. Without this flag reth refuses such a list and the builder packs by
+# gas limits instead.
 require --testing.skip-invalid-transactions
 require --rpc.eth-proof-window 1
 # No eth_call or eth_estimateGas runs past one block's gas, whoever asks (the public RPC, the Etherscan proxy, a token read): reth's default is 50M, above the chain's block limit.
