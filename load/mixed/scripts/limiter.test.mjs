@@ -57,6 +57,17 @@ test("first come, first served when slots free one at a time: the batch queued f
   assert.deepEqual(order, ["batch", "single", "single", "single", "single", "single"]);
 });
 
+test("a single call made while a batch waits does not take the slots the batch has reserved", async () => {
+  const c = clock(), lim = createLimiter({ limit: 20, now: c.now, sleep: c.sleep });
+  for (let i = 0; i < 20; i++) { await lim.acquire(1); c.advance(3_000); }
+  const order = [];
+  lim.acquire(15).then(() => order.push("batch"));
+  await c.run(10_000); // some slots have freed and the batch has reserved them, but it is not complete yet
+  lim.acquire(1).then(() => order.push("single")); // would be let straight through if the fast path ignored the queue
+  await c.run(300_000);
+  assert.deepEqual(order, ["batch", "single"]);
+});
+
 test("at the budget with a send loop that never stops, the refill check (batches of 20) still finishes within a bound", async () => {
   const c = clock(), lim = createLimiter({ limit: 285, now: c.now, sleep: c.sleep });
   let sends = 0, stopped = false;
