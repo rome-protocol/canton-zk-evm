@@ -1,7 +1,7 @@
 // node --test load/mixed/scripts/refill.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, readAllOnce, spendKinds, tromeText, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
+import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, pickWallet, readAllOnce, spendKinds, tromeText, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
 
 const E = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 12n; // n units of an 18-decimal coin
 const U = (n) => BigInt(n) * 1_000_000n;
@@ -358,4 +358,23 @@ test("the per-minute line shows what the refill key took from the distributor", 
   s.funded = 2; s.tromeTaken = E(12) + E("0.5");
   assert.match(refillLine(s), /the refill key took 12\.50 tROME from the distributor in 2 sends/);
   assert.equal(tromeText(0n), "0.00"); assert.equal(tromeText(E(3)), "3.00");
+});
+
+// ---- the wallet a send is drawn from
+test("pickWallet never returns a wallet that is unread, unfunded in something the kind spends, or busy; it returns null when none qualifies", () => {
+  const l = mkLedger();
+  for (const a of ["unread", "noUsd", "ok", "busy"]) l.set(a, { trome: E(30), tUSD: U(3000), tETH: E(4) });
+  l.markUnread(["unread"]);
+  l.markUnfunded("noUsd", ["tUSD"]);
+  const list = ["unread", "noUsd", "busy", "ok"].map((address) => ({ address }));
+  const busy = new Set(["busy"]);
+  let n = 0; const pick = (a) => a[n++ % a.length]; // walks the list in a fixed order, so every wallet is offered
+  for (let i = 0; i < 12; i++) assert.equal(pickWallet({ list, kind: "swapUsdToEth", busy, ledger: l, pick }).address, "ok");
+  // a kind that does not spend tUSD may use the wallet that is short of it
+  const seen = new Set(); n = 0;
+  for (let i = 0; i < 12; i++) seen.add(pickWallet({ list, kind: "erc721Mint", busy, ledger: l, pick }).address);
+  assert.deepEqual([...seen].sort(), ["noUsd", "ok"]);
+  // nobody qualifies: unread and unfunded wallets only, or the only good one is busy
+  assert.equal(pickWallet({ list: [list[0], list[1]], kind: "swapUsdToEth", busy: new Set(), ledger: l, pick }), null);
+  assert.equal(pickWallet({ list: [list[3]], kind: "addLiquidity", busy: new Set(["ok"]), ledger: l, pick }), null);
 });

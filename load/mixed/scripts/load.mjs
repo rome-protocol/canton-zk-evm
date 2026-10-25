@@ -9,7 +9,7 @@ import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync, chm
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
 import { fees } from "./fee.mjs";
-import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, readAllOnce, spendKinds, wtAllowed, wtDelta } from "./refill.mjs";
+import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, pickWallet, readAllOnce, wtAllowed, wtDelta } from "./refill.mjs";
 import { classify, emptyTally, tallyLine, passes, reasonFromError, reasonFinder } from "./classify.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
@@ -515,7 +515,7 @@ const totalW = weights.reduce((a, [, v]) => a + v, 0);
 const weighted = () => { let r = Math.random() * totalW; for (const [k, v] of weights) { if ((r -= v) < 0) return k; } return weights[0][0]; };
 const skipped = {};
 // a wallet sends only once its real balance has been read, and not while it is known low in what the action spends (until a top-up has gone out)
-const free = (list, kind) => { const needs = spendKinds(kind); for (let i = 0; i < 40; i++) { const w = pick(list); if (!busy.has(w.address) && ledger.canSpend(w.address, needs)) return w; } return null; };
+const free = (list, kind) => pickWallet({ list, kind, busy, ledger, pick });
 const walletFor = (kind) => {
   if (kind.startsWith("trex")) return free(holders, kind);
   if (kind === "mercesTransfer") { const l = pool.filter((w) => deposited.has(w.address)); return l.length ? free(l, kind) : null; }

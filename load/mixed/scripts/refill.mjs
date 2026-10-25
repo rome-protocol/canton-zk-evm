@@ -98,6 +98,16 @@ export function spendKinds(kind) {
   return ["trome"];
 }
 
+/**
+ * The wallet a mix transaction of this kind may send from: not busy, its balances read, and not known low in anything the kind spends. `pick` chooses a
+ * random entry of `list` (injected so a test can steer it). Gives up after `tries` draws and returns null.
+ */
+export function pickWallet({ list, kind, busy, ledger, pick, tries = 40 }) {
+  const needs = spendKinds(kind);
+  for (let i = 0; i < tries; i++) { const w = pick(list); if (!busy.has(w.address) && ledger.canSpend(w.address, needs)) return w; }
+  return null;
+}
+
 export const emptyRefillStats = () => ({ checks: 0, read: 0, low: 0, toppedUp: 0, txs: 0, minted: 0, funded: 0, failed: 0, heldBack: 0, distributorShort: 0, budgetWaits: 0, tromeTaken: 0n });
 
 /** A wei amount as tROME with two decimals ("12.50"), without any library. */
