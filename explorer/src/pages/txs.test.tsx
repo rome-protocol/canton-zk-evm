@@ -195,8 +195,8 @@ describe("the four cards, from the stats routes", () => {
     return w === "1h" ? reply(summary(hour)) : w === "24h" ? reply(summary(day)) : reply({ error: "no" }, 404);
   };
   const dayOf = (over: Partial<StatsSummary> = {}): Partial<StatsSummary> => ({
-    txs: { count: 1017, failed: 1, successRate: 1016 / 1017, accepted: 1017, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } },
-    blocks: { count: 21, empty: 0, busy: 0, bySize: [] }, ...over,
+    txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, dropped: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } },
+    blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] }, ...over,
   });
 
   it("shows, as screen 04 does, the day's transactions with the all-time total, the last hour's time to final, what is not final with how many are stuck, and the lost ones", async () => {

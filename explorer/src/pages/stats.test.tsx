@@ -65,11 +65,16 @@ describe("the stats page", () => {
     const peak = await tile("Peak rate");
     expect(peak).toHaveTextContent("20.8 tx/s"); expect(peak).toHaveTextContent("busiest minute, 15 Oct 14:07");
     const ok = await tile("Success rate");
-    expect(ok).toHaveTextContent("99.7%"); expect(ok).toHaveTextContent("16 reverted of 5,899");
+    expect(ok).toHaveTextContent("100%"); expect(ok).toHaveTextContent("5,903 accepted · 0 lost · 0 dropped");
+    const first = await tile("First-try blocks");
+    expect(first).toHaveTextContent("99%"); expect(first).toHaveTextContent("892 of 901 attempts committed · 6 refused · 2 failed · 1 unknown");
+    const redo = await tile("Delayed by a redo");
+    expect(redo).toHaveTextContent("9"); expect(redo).toHaveTextContent("Carried by a block attempt that did not commit");
+    expect(document.body.textContent).not.toMatch(/reverted of|revert rate/i);
   });
 
   it("shows the all-time total beside the window's transactions, with the block it is as of", async () => {
-    await open("/stats", { summary: () => reply(summary({ txs: { count: 5899, failed: 16, successRate: 5883 / 5899, accepted: 5903, allTime: { total: 6021, asOfBlock: 901, asOf: "2026-10-15T14:07:00.000Z" } } })) });
+    await open("/stats", { summary: () => reply(summary({ txs: { count: 5899, failed: 16, reverted: 16, successRate: 5900 / 5903, accepted: 5903, acceptedFinal: 5900, lost: 2, dropped: 1, delayedByRedo: 0, allTime: { total: 6021, asOfBlock: 901, asOf: "2026-10-15T14:07:00.000Z" } } })) });
     const txs = await tile("Transactions");
     expect(txs).toHaveTextContent("5,899 6,021 final all time · test runs included");
     expect(within(txs).getByText("6,021 final all time · test runs included")).toHaveAttribute("title", "All time, as of block 901; runs marked as tests are counted");
@@ -92,7 +97,7 @@ describe("the stats page", () => {
     expect(w.getByText("Not final yet").parentElement).toHaveTextContent("3 being proven · 1 waiting · 0 stuck");
     expect(w.getByText("Lost").parentElement).toHaveTextContent("0");
     expect(w.getByText("none lost")).toBeInTheDocument();
-    expect(card).toHaveTextContent("Blocks refused by Canton: 0 of 901 attempts");
+    expect(card).toHaveTextContent("Blocks refused by Canton: 6 of 901 attempts");
     expect(card).toHaveTextContent("Empty blocks: 1");
   });
 
@@ -331,8 +336,8 @@ describe("the stats page", () => {
       summary: () => reply(summary({
         window: "1h", rows: "minute", timeToFinal: null, proofTime: null, commitTime: null, blockTime: null, served: null,
         txsPerBlock: { mean: null, median: null, max: null, nonEmptyMean: null, nonEmptyMedian: null },
-        blocks: { count: 0, empty: 0, busy: 0, bySize: [] }, txs: { count: 0, failed: 0, successRate: null, accepted: 0, allTime: null }, tps: { now: 0, peak: null, peakAt: null },
-        attempts: { total: 0, refused: 0, failed: 0, notTaken: 0, refusedShare: null, failedShare: null, notTakenShare: null }, faucet: { requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null, turnedAwaySince: null },
+        blocks: { count: 0, empty: 0, busy: 0, firstTry: null, bySize: [] }, txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null }, tps: { now: 0, peak: null, peakAt: null },
+        attempts: { total: 0, committed: 0, unknown: 0, decided: 0, refused: 0, failed: 0, notTaken: 0, refusedShare: null, failedShare: null, notTakenShare: null }, faucet: { requests: 0, sent: 0, final: 0, failed: 0, timeToFinal: null, turnedAway: null, turnedAwaySince: null },
       })),
     });
     expect(await tile("Time to final")).toHaveTextContent("—");
