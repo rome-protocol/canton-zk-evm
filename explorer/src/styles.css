@@ -456,6 +456,7 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
   .txs .c-to::before { content: "\2192\00a0"; color: var(--muted); }
   .txs .c-did { grid-area: did; }
   .k-label { display: inline; color: var(--muted); }
+  .txs .c-upd { grid-column: 1 / -1; order: 1; }
   .rec { padding: 12px 16px; }
 }
 @media (max-width: 720px) { .fl-row { grid-template-columns: 1fr; } .fl-steps { grid-template-columns: 1fr; } .fl-step { padding: 0 0 0 24px; } .fl-step::before { display: none; } .fl-step i { top: 3px; } }

@@ -59,7 +59,7 @@ function Row({ t, c }: { t: TxListItem; c: Ctx }) {
       <td><To t={t} labels={c.labels} /></td>
       <td className="r"><Moved t={t} coin={c.coin} labels={c.labels} /></td>
       <td className="r"><Fee raw={fee(t.gasUsed, t.gasPrice)} coin={c.coin} /></td>
-      <td><span className="k-label">Canton update </span><HashLink value={t.updateId} kind="update" to={`/canton/${t.updateId}`} plain /></td>
+      <td className="c-upd"><span className="k-label">Canton update </span><HashLink value={t.updateId} kind="update" to={`/canton/${t.updateId}`} plain /></td>
       <td><Chip status="final" /></td>
     </tr>
   );
