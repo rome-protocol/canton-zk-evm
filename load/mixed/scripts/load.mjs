@@ -9,7 +9,7 @@ import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync, chm
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
 import { fees } from "./fee.mjs";
-import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, pickWallet, readAllOnce, wtAllowed, wtDelta } from "./refill.mjs";
+import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, refillEvents, pickWallet, readAllOnce, wtAllowed, wtDelta } from "./refill.mjs";
 import { classify, emptyTally, tallyLine, passes, reasonFromError, reasonFinder } from "./classify.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
@@ -610,16 +610,16 @@ async function topUp(g, addrs, kinds) {
   if (short) { refillStats.distributorShort++; log(`refill: the distributor is short of ${cfg.coin} (${ethers.formatEther(m.get(D.address).trome)}); ${g.name} wallets wait`); return false; }
   for (const [key, addr] of [["tUSD", A.tUSD], ["tETH", A.tETH]]) { // the distributor owns the test tokens: it mints straight to the refill key
     if (!fund[key]) continue;
-    await wsend(D, { to: addr, data: F.tok.encodeFunctionData("mint", [R.address, fund[key]]), gas: 300_000 }, "distributor");
-    refillStats.minted++; log(`refill: minted ${key} for the refill key`); ev({ e: "refillMint", token: key, amount: fund[key].toString() });
+    const rc = await wsend(D, { to: addr, data: F.tok.encodeFunctionData("mint", [R.address, fund[key]]), gas: 300_000 }, "distributor");
+    refillStats.minted++; log(`refill: minted ${key} for the refill key`); ev(refillEvents.mint(key, fund[key], rc));
   }
-  if (fund.trome) { await wsend(D, { to: R.address, data: "0x", value: fund.trome, gas: 100_000 }, "distributor"); refillStats.funded++; refillStats.tromeTaken += fund.trome; log(`refill: sent ${ethers.formatEther(fund.trome)} ${cfg.coin} to the refill key`); ev({ e: "refillFund", trome: fund.trome.toString() }); }
+  if (fund.trome) { const rc = await wsend(D, { to: R.address, data: "0x", value: fund.trome, gas: 100_000 }, "distributor"); refillStats.funded++; refillStats.tromeTaken += fund.trome; log(`refill: sent ${ethers.formatEther(fund.trome)} ${cfg.coin} to the refill key`); ev(refillEvents.fund(fund.trome, rc)); }
   if (!approvedSeeder && (each.tUSD || each.tETH)) {
     for (const addr of [A.tUSD, A.tETH]) await wsend(R, { to: addr, data: F.tok.encodeFunctionData("approve", [seederAddr, ethers.MaxUint256]), gas: 100_000 }, "refill key");
     approvedSeeder = true;
   }
   const r = await wsend(R, { to: seederAddr, data: F2.seeder.encodeFunctionData("seed", [addrs, each.trome, A.tUSD, each.tUSD, A.tETH, each.tETH]), value: each.trome * n, gas: RF.gasLimit }, "refill key");
-  ev({ e: "refill", group: g.name, wallets: addrs.length, kinds, tx: r.transactionHash, trome: each.trome.toString(), tUSD: each.tUSD.toString(), tETH: each.tETH.toString() });
+  ev(refillEvents.topUp({ group: g.name, wallets: addrs.length, kinds, each }, r));
   log(`refill: ${addrs.length} ${g.name} wallets topped up in ${kinds.join(", ")} (each ${[each.trome && `${ethers.formatEther(each.trome)} ${cfg.coin}`, each.tUSD && `${ethers.formatUnits(each.tUSD, 6)} tUSD`, each.tETH && `${ethers.formatEther(each.tETH)} tETH`].filter(Boolean).join(", ")})`);
   return true;
 }

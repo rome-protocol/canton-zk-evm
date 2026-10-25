@@ -111,6 +111,12 @@ export function pickWallet({ list, kind, busy, ledger, pick, tries = 40 }) {
 export const emptyRefillStats = () => ({ checks: 0, read: 0, low: 0, toppedUp: 0, txs: 0, minted: 0, funded: 0, failed: 0, heldBack: 0, distributorShort: 0, budgetWaits: 0, tromeTaken: 0n });
 
 /** A wei amount as tROME with two decimals ("12.50"), without any library. */
+/** The events the driver records for the three kinds of refill transaction. Each carries the transaction hash of its receipt, so a run's evidence needs no explorer search. */
+export const refillEvents = {
+  mint: (token, amount, receipt) => ({ e: "refillMint", token, amount: amount.toString(), tx: receipt.transactionHash }),
+  fund: (trome, receipt) => ({ e: "refillFund", trome: trome.toString(), tx: receipt.transactionHash }),
+  topUp: ({ group, wallets, kinds, each }, receipt) => ({ e: "refill", group, wallets, kinds, tx: receipt.transactionHash, trome: each.trome.toString(), tUSD: each.tUSD.toString(), tETH: each.tETH.toString() }),
+};
 export const tromeText = (wei) => { const c = BigInt(wei) / 10n ** 16n; return `${c / 100n}.${String(c % 100n).padStart(2, "0")}`; };
 
 export const refillLine = (s) => `refills: ${s.toppedUp} wallets topped up in ${s.txs} txs` + (s.failed ? `, ${s.failed} top-ups failed` : "") + (s.heldBack ? `, ${s.heldBack} held back by the bound` : "")

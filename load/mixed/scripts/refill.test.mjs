@@ -1,7 +1,7 @@
 // node --test load/mixed/scripts/refill.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, pickWallet, readAllOnce, spendKinds, tromeText, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
+import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, refillEvents, pickWallet, readAllOnce, spendKinds, tromeText, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
 
 const E = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 12n; // n units of an 18-decimal coin
 const U = (n) => BigInt(n) * 1_000_000n;
@@ -377,4 +377,14 @@ test("pickWallet never returns a wallet that is unread, unfunded in something th
   // nobody qualifies: unread and unfunded wallets only, or the only good one is busy
   assert.equal(pickWallet({ list: [list[0], list[1]], kind: "swapUsdToEth", busy: new Set(), ledger: l, pick }), null);
   assert.equal(pickWallet({ list: [list[3]], kind: "addLiquidity", busy: new Set(["ok"]), ledger: l, pick }), null);
+});
+
+test("every refill event (mint, fund, top-up) carries the hash of its transaction", () => {
+  const rc = { transactionHash: "0x" + "ab".repeat(32) };
+  const each = { trome: E(1), tUSD: U(5), tETH: 0n };
+  const events = [refillEvents.mint("tUSD", U(100), rc), refillEvents.fund(E(3), rc), refillEvents.topUp({ group: "swappers", wallets: 4, kinds: ["trome"], each }, rc)];
+  assert.deepEqual(events.map((x) => x.e), ["refillMint", "refillFund", "refill"]);
+  for (const x of events) assert.equal(x.tx, rc.transactionHash, `${x.e} carries no tx`);
+  assert.equal(events[0].amount, "100000000"); assert.equal(events[1].trome, E(3).toString());
+  assert.equal(events[2].wallets, 4);
 });
