@@ -6,6 +6,7 @@ def load():
     return json.load(open(S)) if os.path.exists(S) else {"u":100,"v":0,"cust":0,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{}, "reg":True, "acc":1, "alloc":[], "n":0, "blocks":{}}
 st = load()
 who = os.environ["FAKE_ROLE"]; a = sys.argv[1:]
+if a and a[0] == os.environ.get("FAKE_FAIL"): sys.exit("fake %s: %s failed" % (who, a[0]))   # a command that fails, named by FAKE_FAIL
 def out(o): json.dump(st, open(S,"w")); print(json.dumps(o)); sys.exit(0)
 def newtx(kind, **kw):
     st["n"]+=1; tx="0x%064x"%st["n"]; st["block"]+=1

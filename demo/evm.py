@@ -38,6 +38,7 @@
                                    print the holder's TKA balance in whole tokens (eth_call balanceOf)
   evm.py wrapped <token> <holder> [block]
                                    print the holder's balance of a wrapped token and its supply, as Canton writes amounts ("10.0")
+  evm.py describe <token> [block]  print a wrapped token's name() and symbol(); both are null where there is no code at the address; an error from the chain stops the command
 
 [block] is latest (the default) or finalized: the block Canton has committed. Balances should be read at finalized.
 The transactions go to the chain's JSON-RPC: CZE_RPC_URL, or reth's HTTP port on this machine (RETH_HTTP_PORT, default 8545). They wait in
@@ -48,7 +49,7 @@ Needs the packages in demo/requirements.txt. Prints one JSON object per command.
 import json, os, re, sys, time, urllib.request
 from pathlib import Path
 
-from eth_abi import encode
+from eth_abi import decode, encode
 from eth_account import Account
 from eth_utils import keccak, to_checksum_address
 
@@ -247,6 +248,18 @@ def legs_in(number: int) -> dict:
     return {"block": number, "legs": len(kinds), "kinds": kinds}
 
 
+def read_text(token: str, signature: str, tag: str) -> str | None:
+    """A string that a view function of the contract returns, or None where the call gives an empty answer (no code at that address). An error
+    from the chain, or an answer that is not a string, ends the command: a failed read is not the same as no token."""
+    answer = rpc("eth_call", [{"to": token, "data": "0x" + keccak(text=signature)[:4].hex()}, tag])
+    if answer == "0x":
+        return None
+    try:
+        return decode(["string"], bytes.fromhex(answer[2:]))[0]
+    except Exception as error:
+        raise SystemExit(f"{signature} at {token} gave an answer that is not a string: {answer!r} ({error})")
+
+
 def balance(token: str, holder: str, tag: str = "latest") -> int:
     return read_word(token, SELECTOR_BALANCE_OF + pad32(holder), tag) // ONE
 
@@ -315,6 +328,9 @@ def main(argv: list) -> dict:
         tag = block_tag(argv[3:])
         return {"balance": wrapped_text(read_word(argv[1], SELECTOR_BALANCE_OF + pad32(argv[2]), tag)),
                 "supply": wrapped_text(read_word(argv[1], SELECTOR_TOTAL_SUPPLY, tag))}
+    if cmd == ["describe"] and n in (2, 3):
+        token, tag = address_of(argv[1], "the token"), block_tag(argv[2:])
+        return {"name": read_text(token, "name()", tag), "symbol": read_text(token, "symbol()", tag)}
     raise SystemExit(__doc__)
 
 

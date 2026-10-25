@@ -390,6 +390,10 @@ def accept_left_proposal(net: Network, address: str) -> dict:
     want = {"admin": net.party("registry"), "id": INSTRUMENT}
     if left["createArgument"]["instrumentId"] != want or left["createArgument"]["factory"] != read_disclosed(net)[0]["contractId"]:
         raise Fail(f"a proposal for {address} is there already and is not for TKB with these token rules: it cannot be withdrawn from here")
+    rpc_url = os.environ.get("CZE_RPC_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}"
+    gateway = chain_record(net)["gatewayAddress"]
+    if not propose.gateway_made(rpc_url, gateway, address):   # as propose.py token checks, before it makes the proposal
+        raise Fail(f"the gateway at {gateway} did not make the token {address}: the proposal left for it is not accepted")
     mine = [e for e in net.template("confirmer", "confirmer", CHAIN + "GatewayTokenProposal") if e["createArgument"]["evmToken"] == address]
     [proposal] = mine or net.wait_for("the proposal at the confirmer", lambda: [e for e in net.template("confirmer", "confirmer", CHAIN + "GatewayTokenProposal")
                                                                                  if e["createArgument"]["evmToken"] == address])
@@ -441,6 +445,8 @@ def accept(net: Network, who: str) -> dict:
     chain, party = chain_record(net), net.party(who)
     mine = lambda: acceptances_of(net, who)
     before = {e["contractId"] for e in mine()}
+    if before:   # this party's acceptance is there already (a run that is repeated): it stands, and no second one is made
+        return {"party": party, "acceptance": mine()[0]["contractId"]}
     net.submit("users", [who], {"CreateCommand": {"templateId": ACCEPTANCE, "createArguments": {
         "party": party, "chainId": chain["chainId"], "operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "builder": chain["builder"]}}})
     # The builder looks for it on the operator's participant.
