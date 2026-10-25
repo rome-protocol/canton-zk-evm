@@ -1,5 +1,6 @@
 """The always-on loop (`builder.py run`), against the same fakes as test_builder.py. The tests drive `Producer.step()` by hand with a
-fake clock and a recording `wait`, so no test sleeps; one test runs the real command and signals it."""
+fake clock and a recording `wait`, so no test sleeps, except the status ticker's tests, which run its thread on short real ticks; one test
+runs the real command and signals it."""
 from datetime import datetime, timezone
 import json, os, shutil, signal, subprocess, sys, tempfile, threading, time, unittest
 from unittest import mock
