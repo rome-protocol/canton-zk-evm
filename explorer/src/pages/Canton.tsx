@@ -39,7 +39,7 @@ export function CantonUpdates() {
               <tbody>
                 {items.map((u: UpdateItem) => (
                   <tr key={u.updateId}>
-                    <td><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} /></td>
+                    <td><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} plain /></td>
                     <td>{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
                     <td className="r num">{u.txCount === null ? <span className="muted">—</span> : count(u.txCount)}</td>
                     <td className="mono">{u.recordTime}</td>
