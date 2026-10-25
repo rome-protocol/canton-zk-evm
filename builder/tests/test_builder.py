@@ -804,6 +804,7 @@ class Visibility(Case):
         self.assertEqual(sub["readAs"], [BUILDER])
         self.assertNotIn("disclosedContracts", sub)
         self.assertNotIn("packageIdSelectionPreference", sub)   # no --package-id: Canton picks the version by package name, as before
+        self.assertEqual(set(sub), {"commands", "commandId", "userId", "actAs", "readAs"})   # the unpinned body keeps exactly its old shape
 
     def test_read_as_parties_are_added_to_every_read_and_to_advance(self):
         t = tx(ALICE, 0)
@@ -1515,6 +1516,7 @@ class CommandLine(Case):
         code, out = self.run_main(s)
         self.assertEqual((code, out["committed"]), (0, True))
         self.assertNotIn("packageIdSelectionPreference", s.ledger.submitted[0])
+        self.assertEqual(set(s.ledger.submitted[0]), {"commands", "commandId", "userId", "actAs", "readAs"})
 
     def test_a_bad_package_id_is_one_json_line_before_anything_moves(self):
         for bad in ("", "xyz", "ea89dbab", "G" * 64, PACKAGE_ID + "00"):
