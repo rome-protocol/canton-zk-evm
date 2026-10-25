@@ -56,6 +56,13 @@ describe("the block page, for a final block", () => {
     expect(nav.getByRole("link", { name: "Next block, 4" })).toHaveAttribute("href", "/block/4");
   });
 
+  it("shows a gas limit above 30,000,000 as the block's own, in the EVM side and in the tiles", async () => {
+    await open(block({ gasUsed: 45_000_000, gasLimit: 60_000_000 }));
+    const evm = side("On the EVM");
+    expect(row(evm, "Gas used")).toHaveTextContent("45,000,000 (75.00% of 60,000,000)");
+    expect(screen.getByRole("group", { name: "This block in numbers" })).toHaveTextContent("45,000,000 gas");
+  });
+
   it("says the producer's times cannot be read right now when the detail request fails, never that the log has no row", async () => {
     await open(block(), status(), "3", { blockDetail: () => reply({ error: "Too many requests." }, 429) });
     const tiles = within(screen.getByRole("group", { name: "This block in numbers" }));

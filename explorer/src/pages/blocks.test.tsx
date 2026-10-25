@@ -103,6 +103,15 @@ describe("the blocks page", () => {
     expect(within(r).getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
   });
 
+  it("shows a gas limit above 30,000,000 as the block's own: the share is of 60,000,000 and a full block reads 100.0%", async () => {
+    await open({ blocks: () => reply(page([
+      blockItem(3, { txCount: 5, gasUsed: 45_000_000, gasLimit: 60_000_000 }), blockItem(2, { txCount: 5, gasUsed: 60_000_000, gasLimit: 60_000_000 }),
+    ])) });
+    const rs = rows();
+    expect(rs[1]).toHaveTextContent("45,000,000 75.0%");
+    expect(rs[2]).toHaveTextContent("60,000,000 100.0%");
+  });
+
   it("writes a block's transaction count with a thousands separator", async () => {
     await open({ blocks: () => reply(page([blockItem(3, { txCount: 1408 })])) });
     expect(within(rows()[1]!).getAllByRole("cell")[2]).toHaveTextContent(/^1,408$/);
