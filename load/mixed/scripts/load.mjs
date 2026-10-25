@@ -8,6 +8,7 @@
 import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
+import { fees } from "./fee.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
 const mode = process.argv[2];
@@ -216,7 +217,7 @@ const counters = { sent: 0, rejected: 0, resync: 0 };
 
 function signed(w, spec, nonce) {
   const t = ethers.Transaction.from({ type: 2, chainId: cfg.chainId, nonce, to: spec.to, data: spec.data, value: spec.value ?? 0n, gasLimit: spec.gas,
-    maxPriorityFeePerGas: 1_000_000_000n, maxFeePerGas: gasPrice * 2n });
+    ...fees(gasPrice) });
   t.signature = w.signingKey.sign(t.unsignedHash);
   return { raw: t.serialized, hash: t.hash };
 }
