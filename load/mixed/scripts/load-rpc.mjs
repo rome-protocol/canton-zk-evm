@@ -1,32 +1,21 @@
 // The load driver's one door to the chain's RPC. The public RPC allows about 300 calls a minute per client and a batch counts each call in it, so every call, a
 // send, a receipt read or a view, is counted here against one shared budget (a sliding minute) and waits when the budget is used up.
 import { RPC } from "./lib.mjs";
+import { createLimiter } from "./limiter.mjs";
 
 export const UA = "Rome Protocol rome@romeprotocol.com";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export { sleep };
 
-let limit = 285; // a little under the 300 the RPC allows
-export const setBudget = (n) => { limit = n; };
-const stamps = [];
-const prune = (now) => { while (stamps.length && now - stamps[0] > 60_000) stamps.shift(); };
-/** Calls made in the last minute. */
-export const used = () => { prune(Date.now()); return stamps.length; };
-/** Calls still free in this minute. */
-export const left = () => limit - used();
 export const stats = { calls: 0, httpLimited: 0, waits: 0, waitedMs: 0, errors: 0 };
-
-async function acquire(n) {
-  for (;;) {
-    const now = Date.now();
-    prune(now);
-    if (stamps.length + n <= limit) { for (let i = 0; i < n; i++) stamps.push(now); stats.calls += n; return; }
-    const idx = stamps.length + n - limit - 1; // the call whose expiry frees enough room
-    const wait = Math.max(30, stamps[Math.min(idx, stamps.length - 1)] + 60_000 - now + 5);
-    stats.waits++; stats.waitedMs += wait;
-    await sleep(wait);
-  }
-}
+// first come, first served (see limiter.mjs): a batch is not starved by single sends
+const limiter = createLimiter({ limit: 285, sleep, stats }); // a little under the 300 the RPC allows
+export const setBudget = limiter.setLimit;
+/** Calls made in the last minute. */
+export const used = limiter.used;
+/** Calls still free in this minute. */
+export const left = limiter.left;
+const acquire = limiter.acquire;
 
 async function post(body) {
   for (let attempt = 0; ; attempt++) {
@@ -48,7 +37,7 @@ async function post(body) {
 export async function rpc(method, params = []) {
   await acquire(1);
   const j = await post({ jsonrpc: "2.0", id: 1, method, params });
-  if (j.error) { const e = new Error(j.error.message ?? "rpc error"); e.code = j.error.code; throw e; }
+  if (j.error) { const e = new Error(j.error.message ?? "rpc error"); e.code = j.error.code; e.data = j.error.data; throw e; }
   return j.result;
 }
 
