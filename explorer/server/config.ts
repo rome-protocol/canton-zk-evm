@@ -39,6 +39,10 @@ export interface Config {
     on: boolean;
     /** Calls per client address per minute. A batch counts each of its calls. */
     ratePerMinute: number;
+    /** The most heavy calls (eth_call, eth_estimateGas, eth_getLogs) running at one time, all clients together. */
+    heavyConcurrency: number;
+    /** The most heavy calls waiting for a slot; one past that is refused at once. */
+    heavyQueue: number;
     /** The request header that carries the client's address, set only behind a proxy that is trusted to write it. Lower case; null means the socket's address. */
     trustedIpHeader: string | null;
   };
@@ -194,6 +198,8 @@ export function loadConfig(env: Env = process.env, readFile: ReadFile = (p) => r
     publicRpc: {
       on: flag(env, "PUBLIC_RPC"),
       ratePerMinute: whole(env, "RPC_RATE_PER_MINUTE", 300, 1),
+      heavyConcurrency: whole(env, "RPC_HEAVY_CONCURRENCY", 8, 1),
+      heavyQueue: whole(env, "RPC_HEAVY_QUEUE", 16, 0),
       trustedIpHeader: header(env, "TRUSTED_IP_HEADER"),
     },
     database: databaseSettings(env, readFile),
