@@ -46,6 +46,7 @@ class Recovery(tb.Case):
 
     def test_restart_where_the_command_committed_keeps_the_tip_and_closes_both_attempts(self):
         s, first, t1, t2 = self.in_doubt()
+        u = json.loads(b.unresolved_path(s.cfg).read_text())
         second = self.producer(s)
         second.load_unresolved()
         s.ledger.land(ok=True)
@@ -59,6 +60,8 @@ class Recovery(tb.Case):
                          [("old-run", 7, "restarted"), (first.journal.run_id, 1, "committed")])
         head = s.forkchoices()[-1]
         self.assertEqual(head["headBlockHash"], head["finalizedBlockHash"])
+        self.assertEqual(head["finalizedBlockHash"], "0x" + s.ledger.head["headHash"])   # Canton's head, which is block N
+        self.assertEqual(head["finalizedBlockHash"], u["hash"])
 
     def test_restart_where_the_command_failed_sends_the_whole_union_in_block_order_and_closes_both_attempts(self):
         s, first, t1, t2 = self.in_doubt()
@@ -92,21 +95,25 @@ class Recovery(tb.Case):
         seen = []
         def close(refs):
             seen.append((list(refs), b.saved_path(s.cfg).exists()))
+        block = json.loads(b.unresolved_path(s.cfg).read_text())["hash"]
         found = b.recover_saved(s.cfg, close=close)   # settles N as committed, then sends the block above it again
         self.assertEqual(seen, [([("old-run", 7)], True)])   # N's own attempt is for the settle step; the file was still there
         self.assertEqual((found["recovered"], found["attempts"]), (1, [{"run": "old-run", "attempt": 7}]))
+        self.assertEqual((found["settled"]["committed"], found["settled"]["blockHash"], found["lostTransactions"]), (True, block, []))
         self.assertEqual(self.in_pool(s), {t2["hash"]})
         self.assertFalse(b.saved_path(s.cfg).exists())
 
     def test_a_tip_the_record_names_stays_the_head_and_only_the_block_is_made_final(self):
         s, first, t1, t2 = self.in_doubt()
         s.ledger.land(ok=True)
-        u = {**json.loads(b.unresolved_path(s.cfg).read_text()), "tip": HEAD_HASH}
+        tip = "0x" + "cd" * 32   # a block above N, as the loop's tip would be
+        s.reth.blocks[tip] = {"number": N + 1, "timestamp": 0, "gasLimit": 30_000_000, "parent": json.loads(b.unresolved_path(s.cfg).read_text())["hash"]}
+        u = {**json.loads(b.unresolved_path(s.cfg).read_text()), "tip": tip}
         u["since"] = u["submittedAt"]
         committed, _, _, _ = b.resolve_unknown(s.cfg, u, b.read_saved(s.cfg) or [])
         self.assertTrue(committed)
         call = s.forkchoices()[-1]
-        self.assertEqual((call["headBlockHash"], call["finalizedBlockHash"]), (HEAD_HASH, u["hash"]))
+        self.assertEqual((call["headBlockHash"], call["finalizedBlockHash"]), (tip, u["hash"]))
         self.assertEqual([e["number"] for e in json.loads(b.saved_path(s.cfg).read_text())], [N + 1])
 
     def test_an_empty_rebuild_on_the_tip_leaves_the_union_and_a_restart_recovers_the_other_blocks_transactions(self):
@@ -125,17 +132,71 @@ class Recovery(tb.Case):
         found = b.recover_saved(s.cfg)
         self.assertEqual((found["recovered"], self.in_pool(s)), (1, {t1["hash"]}))
 
+    def restart_with_file(self, s, entries, *record):
+        """A new producer on a kept file made by earlier runs. Returns it and the list of (attempts closed, file still there) pairs."""
+        b.saved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        b.saved_path(s.cfg).write_text(json.dumps(entries))
+        p = self.producer(s)
+        seen, real = [], p.close_attempts
+        def close(refs):
+            seen.append((list(refs), b.saved_path(s.cfg).exists()))
+            real(refs)
+        p.close_attempts = close
+        return p, seen
 
-class ReadSaved(tb.Case):
-    def test_a_block_or_the_blocks_above_it_can_be_read(self):
+    def test_a_restart_with_no_record_closes_every_attempt_the_file_names_while_the_file_exists(self):
+        t1, t2 = tx(ALICE, 0), tx(BOB, 0)
         s = self.setup({})
-        for n, h in ((5, "0xa"), (6, "0xb"), (7, "0xc")):
-            b.save_kept(s.cfg, [(h, "0x" + h[2:] * 2)], number=n)
-        self.assertEqual(b.read_saved(s.cfg, number=6), [("0xb", "0xbb")])
-        self.assertEqual(b.read_saved(s.cfg, above=5), [("0xb", "0xbb"), ("0xc", "0xcc")])
-        self.assertEqual(b.read_saved(s.cfg, above=7), [])
-        b.saved_path(s.cfg).write_text(json.dumps([{"hash": "0xa", "raw": "0x01"}]))   # an older file: the block's own, never above anything
-        self.assertEqual((b.read_saved(s.cfg, number=9), b.read_saved(s.cfg, above=1)), ([("0xa", "0x01")], []))
+        s.reth.mined.update({t1["hash"]: t1, t2["hash"]: t2})
+        p, seen = self.restart_with_file(s, [
+            {"hash": t1["hash"], "raw": raw_of(t1), "number": N, "run": "run-a", "attempt": 3},
+            {"hash": t2["hash"], "raw": raw_of(t2), "number": N + 1, "run": "run-a", "attempt": 4}])
+        p.restore()
+        self.assertEqual(self.in_pool(s), {t1["hash"], t2["hash"]})
+        self.assertEqual(seen, [([("run-a", 3), ("run-a", 4)], True)])
+        lines = [(l["attempt_run"], l["attempt"], l["outcome"]) for l in self.journal(s, "resolved")]
+        self.assertEqual(lines, [("run-a", 3, "restarted"), ("run-a", 4, "restarted")])
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_an_old_format_file_with_no_record_is_sent_again_and_its_attempt_closed(self):
+        t1 = tx(ALICE, 0)
+        s = self.setup({})
+        s.reth.mined[t1["hash"]] = t1
+        p, seen = self.restart_with_file(s, [{"hash": t1["hash"], "raw": raw_of(t1), "run": "run-a", "attempt": 3}])
+        p.restore()
+        self.assertEqual(self.in_pool(s), {t1["hash"]})
+        self.assertEqual(seen, [([("run-a", 3)], True)])
+        self.assertEqual([(l["attempt_run"], l["attempt"], l["outcome"]) for l in self.journal(s, "resolved")], [("run-a", 3, "restarted")])
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_an_old_format_file_and_a_committed_record_clears_the_untagged_entries_as_the_blocks(self):
+        s, first, t1, t2 = self.in_doubt()
+        self.old_format_first(s)
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=True)
+        second.step()
+        self.assertEqual([e["number"] for e in json.loads(b.saved_path(s.cfg).read_text())], [N + 1])   # the untagged entry was N's
+        self.assertEqual(self.in_pool(s), set())
+        self.assertEqual(self.closed(s, second.journal.run_id)[-1:], [(first.journal.run_id, 1, "committed")])
+
+    def old_format_first(self, s):
+        """Takes the number off the entries of the in-doubt block (the first one in the file), as an older builder wrote them."""
+        entries = json.loads(b.saved_path(s.cfg).read_text())
+        entries[0].pop("number")
+        self.assertEqual(entries[0]["hash"], tx(ALICE, 0)["hash"])
+        b.saved_path(s.cfg).write_text(json.dumps(entries))
+
+    def test_an_old_format_file_and_a_record_that_did_not_commit_sends_all_of_it_again(self):
+        s, first, t1, t2 = self.in_doubt()
+        self.old_format_first(s)
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=False)
+        second.step()
+        self.assertEqual(self.in_pool(s), {t1["hash"], t2["hash"]})
+        self.assertFalse(b.saved_path(s.cfg).exists())
+        self.assertEqual(self.closed(s, second.journal.run_id), [("old-run", 7, "restarted"), (first.journal.run_id, 1, "not committed")])
 
 
 if __name__ == "__main__":

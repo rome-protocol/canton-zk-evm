@@ -87,6 +87,59 @@ class KeptFile(tb.Case):
         self.assertEqual(self.entries(s), [{"hash": "0xb", "raw": "0x02", "number": N + 1}])
         self.assertEqual(reth.imported, [])
 
+    def test_a_file_that_exists_and_cannot_be_read_is_not_overwritten_when_a_block_is_added(self):
+        s = self.setup({})
+        b.saved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        b.saved_path(s.cfg).write_text("[{not json")
+        with self.assertRaises(b.BuilderError):
+            b.save_kept(s.cfg, [("0xa", "0x01")], number=5)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), "[{not json")
+        b.clear_saved(s.cfg, 5)   # clearing is lenient: it raises nothing
+
+
+class OtherBlocksSurvive(tb.LegCase):
+    """Block N is put back, refused, fails or commits while block N+1's entry is in the file: only N's entries go."""
+    OTHER = {"hash": "0xb", "raw": "0x02", "number": N + 1}
+
+    def seeded(self, pool, **k):
+        s = self.setup(pool, **k)
+        b.save_kept(s.cfg, [(self.OTHER["hash"], self.OTHER["raw"])], number=N + 1)
+        return s
+
+    def entries(self, s):
+        return json.loads(b.saved_path(s.cfg).read_text())
+
+    def test_a_left_out_rebuild(self):
+        s = self.setup({tb.ALICE: []}, terms=[])
+        t = self.leg_tx(s, tb.PAY)
+        s.reth.pool[tb.ALICE] = [t]
+        b.save_kept(s.cfg, [("0xb", "0x02")], number=N + 1)
+        ws = connect(s.cfg.ws_url, max_size=None)
+        self.addCleanup(ws.close)
+        reth = b.Reth(s.cfg, ws)
+        reth.forkchoice(HEAD_HASH, HEAD_HASH, HEAD_HASH)
+        built = b.build(s.cfg, reth, b.Ledger(s.cfg).head(), HEAD_HASH, set())
+        self.assertEqual([x["transaction"] for x in built.left_out], [t["hash"]])   # the block was built a second time, without t
+        self.assertEqual(self.entries(s), [self.OTHER])
+
+    def test_a_refused_advance(self):
+        s = self.seeded({tb.ALICE: [tx(tb.ALICE, 0)]}, refuse="no")
+        self.assertFalse(b.build_block(s.cfg)["committed"])
+        self.assertEqual(self.entries(s), [self.OTHER])
+        self.assertEqual(self.in_pool(s), {tx(tb.ALICE, 0)["hash"]})   # block N's transaction is back in the pool
+
+    def test_a_build_failure_after_the_import(self):
+        s = self.seeded({tb.ALICE: [tx(tb.ALICE, 0)]}, prover_fails=True)
+        with self.assertRaises(b.BuilderError):
+            b.build_block(s.cfg)
+        self.assertEqual(self.entries(s), [self.OTHER])
+        self.assertEqual(self.in_pool(s), {tx(tb.ALICE, 0)["hash"]})
+
+    def test_a_commit(self):
+        s = self.seeded({tb.ALICE: [tx(tb.ALICE, 0)]})
+        self.assertTrue(b.build_block(s.cfg)["committed"])
+        self.assertEqual(self.entries(s), [self.OTHER])
+
 
 class AttemptFolders(tb.Case):
     def cut(self, s):

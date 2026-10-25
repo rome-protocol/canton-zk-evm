@@ -204,6 +204,21 @@ def saved_entries(cfg: Config) -> list:
     return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
 
 
+def saved_file_entries(cfg: Config) -> list:
+    """Like `saved_entries`, but a file that exists and cannot be read is an error: the entries in it may be the only copy of other
+    blocks' transactions, and they must not be overwritten as if there were none."""
+    path = saved_path(cfg)
+    try:
+        entries = json.loads(path.read_text())
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as e:
+        raise BuilderError(f"cannot read {path} to add to it: {e}") from e
+    if not isinstance(entries, list):
+        raise BuilderError(f"cannot read {path} to add to it: not a list")
+    return [e for e in entries if isinstance(e, dict)]
+
+
 def write_saved(cfg: Config, entries: list) -> None:
     """Writes the kept file atomically and to disk; the file is removed when there is nothing to keep."""
     path = saved_path(cfg)
@@ -235,7 +250,7 @@ def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None, number
     try:
         ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt is not None and attempt.journal is not None else {}
         tag = {} if number is None else {"number": number}
-        keep = other_blocks(saved_entries(cfg), number) if number is not None else []
+        keep = other_blocks(saved_file_entries(cfg), number) if number is not None else []
         write_saved(cfg, [*keep, *({"hash": h, "raw": raw, **tag, **ref} for h, raw in pairs)])
     except OSError as e:
         raise BuilderError(f"cannot save the block's transactions to {path}: {e}") from e
@@ -1260,18 +1275,11 @@ def read_saved_entries(cfg: Config) -> list | None:
     return entries
 
 
-def read_saved(cfg: Config, number: int | None = None, above: int | None = None) -> list | None:
-    """The (hash, raw transaction) pairs saved for the blocks being made, in the order they were kept, or None when there is no file. With
-    `number` only that block's (an entry with no number, from an older builder, is the block's own); with `above` only the blocks above
-    that number. Raises when the file is unreadable."""
+def read_saved(cfg: Config) -> list | None:
+    """The (hash, raw transaction) pairs saved for the blocks being made, in the order they were kept, or None when there is no file.
+    Raises when the file is unreadable."""
     entries = read_saved_entries(cfg)
-    if entries is None:
-        return None
-    if number is not None:
-        entries = [e for e in entries if e.get("number", number) == number]
-    if above is not None:
-        entries = [e for e in entries if isinstance(e.get("number"), int) and e["number"] > above]
-    return [(e["hash"], e["raw"]) for e in entries]
+    return None if entries is None else [(e["hash"], e["raw"]) for e in entries]
 
 
 def attempt_refs(entries: list, skip: tuple | None = None) -> list:
@@ -1385,7 +1393,11 @@ def recover_saved(cfg: Config, wait=None, close=None) -> dict | None:
     if close is not None:
         close(refs)   # every abandoned attempt is closed before the file that names them is cleared
     clear_saved(cfg)
-    return {"recovered": len(pairs), "lostTransactions": lost, "attempts": [{"run": r, "attempt": a} for r, a in refs]}
+    out = {"recovered": len(pairs), "lostTransactions": lost, "attempts": [{"run": r, "attempt": a} for r, a in refs]}
+    if settled:
+        out["lostTransactions"] = [*settled.pop("lostTransactions", []), *lost]
+        out["settled"] = settled
+    return out
 
 
 @contextlib.contextmanager
