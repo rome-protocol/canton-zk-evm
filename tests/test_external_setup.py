@@ -19,6 +19,7 @@ class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
         self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": []}, []
+        self.invalid_dar, self.updates = False, []   # a DAR that /v2/dars/validate refuses; the bodies of /v2/package-vetting/update
         self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
         node = self
 
@@ -34,7 +35,7 @@ class FakeParticipant:
                 raw = self.rfile.read(int(self.headers.get("content-length") or 0))
                 node.calls.append((method, self.path, self.headers.get("authorization")))
                 body = json.loads(raw) if raw and self.headers["content-type"] == "application/json" else None
-                answer = node.route(method, self.path, body, raw)
+                answer = node.route(method, self.path, body, raw)   # the query string stays in the path: a test reads it
                 self.send(*answer) if isinstance(answer, tuple) else self.send(answer)
 
             def do_GET(self): self.handle_any("GET")
@@ -48,14 +49,26 @@ class FakeParticipant:
         self.server.shutdown(); self.server.server_close()
 
     def mutations(self):
-        return [c for c in self.calls if c[0] == "POST" and c[1] not in ("/v2/state/active-contracts", "/v2/package-vetting/list")]
+        return [c for c in self.calls if c[0] == "POST" and c[1] not in ("/v2/state/active-contracts", "/v2/package-vetting/list") and not c[1].startswith("/v2/dars/validate")]
 
     def route(self, method, path, body, raw):
         if (method, path) == ("GET", "/v2/packages"):
             return {"packageIds": self.packages}
-        if (method, path) == ("POST", "/v2/packages"):
+        if method == "POST" and path.split("?")[0] == "/v2/packages":
             self.packages.append(PKG)
+            if path.endswith("?vetAllPackages=false"):
+                self.vetting = False   # the participant keeps the package and vets nothing
             return {}
+        if method == "POST" and path.split("?")[0] == "/v2/dars/validate":
+            return ({"code": "DAR_VALIDATION_FAILED", "cause": "not a valid upgrade"}, 400) if self.invalid_dar else {}
+        if (method, path) == ("POST", "/v2/package-vetting/update"):
+            self.updates.append(body)
+            ref, = body["changes"][0]["operation"]["Vet"]["value"]["packages"]
+            if ref["packageId"] not in self.packages:
+                return {"code": "PACKAGE_NOT_FOUND"}, 400
+            if not body["dryRun"]:
+                self.vetting = True
+            return {"newVettedPackages": {"participantId": self.vetted_by, "synchronizerId": body["synchronizerId"], "topologySerial": 2, "packages": [{"packageId": ref["packageId"]}]}}
         if path == "/v2/state/connected-synchronizers":
             return {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "global::1220"}]}
         if path == "/v2/parties/participant-id":
@@ -378,6 +391,105 @@ class Setup(unittest.TestCase):
             os.environ.pop("CZE_LEDGER_URL", None)
             with contextlib.redirect_stderr(io.StringIO()):
                 setup.main([])
+
+    def run_step(self, step, *extra):
+        """setup.py --package-step: only the package, with the admin token alone; returns the JSON line it printed."""
+        os.environ.pop("CZE_TOKEN_FILE_OPERATOR", None); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER", None)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), "--package-step", step, *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def test_the_default_upload_still_vets_and_sends_no_query(self):
+        self.run_setup(chain=False)
+        self.assertIn(("POST", "/v2/packages", "Bearer tok-admin-1"), self.node.calls)
+        self.assertFalse([c for c in self.node.calls if "vetAllPackages" in c[1] or "validate" in c[1] or "vetting/update" in c[1]])
+
+    def test_check_validates_the_dar_on_each_synchronizer_and_keeps_nothing(self):
+        line = self.run_step("check")
+        self.assertEqual(line, {"step": "check", "packageId": PKG, "valid": True})
+        self.assertIn(("POST", "/v2/dars/validate?synchronizerId=global%3A%3A1220", "Bearer tok-admin-1"), self.node.calls)
+        self.assertEqual(self.node.packages, [])
+        self.assertEqual(self.node.mutations(), [])
+
+    def test_check_stops_with_the_participants_reason_for_a_dar_it_refuses(self):
+        self.node.invalid_dar = True
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_step("check")
+        self.assertIn("not a valid upgrade", str(ctx.exception))
+        self.assertEqual(self.node.packages, [])
+
+    def test_upload_without_vetting_asks_for_vetAllPackages_false_and_vets_nothing(self):
+        line = self.run_step("upload")
+        self.assertEqual(line, {"step": "upload", "packageId": PKG, "uploaded": True, "vetted": False})
+        self.assertIn(("POST", "/v2/packages?vetAllPackages=false", "Bearer tok-admin-1"), self.node.calls)
+        self.assertNotIn(("POST", "/v2/packages", "Bearer tok-admin-1"), self.node.calls)
+        self.assertEqual(self.node.parties, [])
+        self.assertEqual(self.node.updates, [])
+
+    def test_upload_does_nothing_for_a_package_that_is_there(self):
+        self.node.packages = [PKG]
+        self.assertFalse(self.run_step("upload")["uploaded"])
+        self.assertEqual(self.node.mutations(), [])
+
+    def test_vet_with_a_dry_run_applies_nothing_and_without_it_vets_the_package_by_id(self):
+        self.run_step("upload")
+        line = self.run_step("vet", "--dry-run")
+        self.assertEqual(line, {"step": "vet", "packageId": PKG, "dryRun": True, "synchronizers": {"global::1220": "dry-run"}})
+        self.assertFalse(self.node.vetting)
+        line = self.run_step("vet")
+        self.assertEqual(line["synchronizers"], {"global::1220": "vetted"})
+        self.assertTrue(self.node.vetting)
+        self.assertEqual([u["dryRun"] for u in self.node.updates], [True, False])
+        self.assertEqual(self.node.updates[1], {"changes": [{"operation": {"Vet": {"value": {"packages": [{"packageId": PKG}]}}}}],
+                                                "dryRun": False, "synchronizerId": "global::1220"})
+
+    def test_vet_does_nothing_where_the_package_is_vetted_already(self):
+        self.node.packages = [PKG]
+        self.assertEqual(self.run_step("vet")["synchronizers"], {"global::1220": "already"})
+        self.assertEqual(self.node.updates, [])
+
+    def test_vet_stops_for_a_package_that_is_not_uploaded(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_step("vet")
+        self.assertIn("upload it first", str(ctx.exception))
+        self.assertEqual(self.node.updates, [])
+
+    def test_a_package_step_needs_only_the_admin_token_and_never_sends_another(self):
+        self.run_step("upload")
+        self.run_step("vet", "--dry-run")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-admin-1"})
+
+    def test_a_package_step_refuses_the_chain_arguments_the_demo_and_a_stray_dry_run(self):
+        for extra in (["--demo"], ["--", *CHAIN_ARGS]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), "--package-step", "check", *extra])
+        for argv in (["--dry-run"], ["--package-step", "upload", "--dry-run"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), *argv])
+        self.assertEqual(self.node.calls, [])
+
+    def test_a_package_step_still_refuses_an_admin_token_that_others_can_read(self):
+        self.tokens["admin"].chmod(0o644)
+        with self.assertRaises(SystemExit):
+            self.run_step("check")
+        self.assertEqual(self.node.calls, [])
+
+    def test_a_package_step_without_the_admin_token_file_stops_before_any_call(self):
+        os.environ.pop("CZE_TOKEN_FILE_ADMIN")
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_step("check")
+        self.assertIn("CZE_TOKEN_FILE_ADMIN", str(ctx.exception))
+        self.assertEqual(self.node.calls, [])
+
+    def test_the_upgrade_in_order_check_upload_vet(self):
+        # A 0.1.0 package is there and vetted; the DAR is the next version (another id): check, upload (not vetted), dry run, vet.
+        self.node.packages = ["01" * 32]
+        for step, extra in (("check", ()), ("upload", ()), ("vet", ("--dry-run",)), ("vet", ())):
+            self.run_step(step, *extra)
+        self.assertEqual(self.node.packages, ["01" * 32, PKG])
+        self.assertTrue(self.node.vetting)
 
 
 if __name__ == "__main__":
