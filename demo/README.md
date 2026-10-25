@@ -14,7 +14,7 @@ This demo runs Ostia, a Canton zkEVM (chain id 770101), on one machine with a lo
 
 **Run 5, a tampered proof.** U allocates again for the payment that is still waiting, and one byte of the proof is flipped on its way to the builder. `Advance` is refused, nothing moves on Canton, and reth goes back to the parent block.
 
-The demo is limited to these runs on one local network with one operator, one builder, test tokens and keys made for the run. Ostia does not yet run as a standing network; each run starts a new one. The gateway party that holds the locked TKB is hosted on the operator's participant, so whoever runs that participant can move the custody; this is a local proof where one party runs everything. See [docs/DESIGN.md](../docs/DESIGN.md) for the design.
+The demo is limited to these runs on one local network with one operator, one builder, test tokens and keys made for the run. The demo does not run on DevNet; each run starts a new local network. The gateway party that holds the locked TKB is hosted on the operator's participant, so whoever runs that participant can move the custody; this is a local proof where one party runs everything. See [docs/DESIGN.md](../docs/DESIGN.md) for the design.
 
 ## What is here
 
