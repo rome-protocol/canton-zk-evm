@@ -642,6 +642,84 @@ class StatusFile(Loop):
         self.assertNotEqual(self.status()["updatedAt"], before)
 
 
+class StatusTicker(Loop):
+    def slow_run(self, s, **k):
+        """`run` in a thread, with a build that takes 20 s on the fake clock (a slow prover); returns the producer and the thread."""
+        seen = []
+        def building(cfg, exclude, **kw):
+            for _ in range(20):   # 20 fake seconds, a little real time each, so the ticker gets its turns
+                self.now[0] += 1
+                time.sleep(0.03)
+                seen.append(self.status()["updatedAt"])
+            return b.build_block(cfg, exclude, **kw)
+        p = self.producer(s, build=building, status_tick=0.01, **k)
+        self.seen = seen
+        t = threading.Thread(target=p.run)
+        return p, t
+
+    def test_the_status_stays_fresh_during_a_block_longer_than_the_alive_rule(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        p, t = self.slow_run(s)
+        t.start()
+        deadline = time.time() + 20
+        while len(self.seen) < 20 and time.time() < deadline:
+            time.sleep(0.02)
+        self.stop.set()
+        t.join(30)
+        distinct = sorted(set(self.seen))
+        self.assertGreater(len(distinct), 10)   # it moved on, not only at the ends
+        parse = lambda x: datetime.strptime(x, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+        self.assertGreaterEqual(parse(distinct[-1]) - parse(distinct[0]), 15)   # past the 15 s the explorer allows
+        self.assertEqual(self.status()["state"], "stopped")
+
+    def test_only_updated_at_changes_between_writes_and_states_still_show(self):
+        s = self.setup({})
+        p = self.producer(s, status_tick=0.01)
+        p.write_status()
+        first = self.status()
+        self.now[0] += 30
+        time.sleep(0.1)
+        self.assertEqual(self.status(), first)   # nothing runs the ticker outside run()
+        t = threading.Thread(target=p.tick_status, args=(threading.Event(),), daemon=True)
+        t.start()
+        deadline = time.time() + 5
+        while self.status()["updatedAt"] == first["updatedAt"] and time.time() < deadline:
+            time.sleep(0.01)
+        again = self.status()
+        self.assertNotEqual(again["updatedAt"], first["updatedAt"])
+        self.assertEqual({k: v for k, v in again.items() if k != "updatedAt"}, {k: v for k, v in first.items() if k != "updatedAt"})
+        p.write_status("stopped", final=True)
+        t.join(5)
+        self.assertFalse(t.is_alive())   # a final write ends the ticker
+        self.assertEqual(self.status()["state"], "stopped")
+
+    def test_the_ticker_ends_with_the_run_and_writes_nothing_after_it(self):
+        s = self.setup({})
+        p = self.producer(s, status_tick=0.01)
+        self.stop.set()
+        p.run()
+        self.assertFalse([t for t in threading.enumerate() if t.name == "status-ticker"])
+        last = Path(self.status_file).read_text()
+        time.sleep(0.1)
+        self.assertEqual(Path(self.status_file).read_text(), last)
+        self.assertEqual(self.status()["state"], "stopped")
+
+    def test_a_status_path_that_cannot_be_written_is_logged_once_and_does_not_stop_the_ticker_or_the_chain(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        (Path(s.dir) / "blocker").write_text("a file, so the folder cannot be made")
+        p = self.producer(s, status_file=str(Path(s.dir) / "blocker" / "status.json"), status_tick=0.01)
+        err = mock.patch("sys.stderr", new_callable=__import__("io").StringIO)
+        with err as out:
+            t = threading.Thread(target=p.run)
+            t.start()
+            time.sleep(0.3)
+            self.stop.set()
+            t.join(30)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(out.getvalue().count("cannot write the status file"), 1)
+        self.assertTrue(self.reports and self.reports[0]["committed"])
+
+
 class TheCommand(Loop):
     def test_a_signal_lets_the_block_in_progress_finish_and_exits_zero(self):
         a, c = tx(ALICE, 0, gas=20_000_000, used=20_000_000), tx(BOB, 0, gas=20_000_000, used=20_000_000, price=5)

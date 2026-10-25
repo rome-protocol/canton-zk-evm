@@ -127,7 +127,7 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 
 **Work folders.** Every block keeps `block-<n>` in the work folder (block, witness, input, proof, `advance.json`). `run` removes the folders of committed blocks that are more than 10 behind the newest one. `once` removes nothing.
 
-**The status file.** `--status-file` (default `status.json` in the work folder) is JSON, replaced atomically after every block, at start, at stop, and every few seconds while idle, so its `updatedAt` shows the loop is alive:
+**The status file.** `--status-file` (default `status.json` in the work folder) is JSON, replaced atomically after every block, at start and at stop. While the producer runs, a small background ticker also rewrites it every 5 seconds with the same fields and a fresh `updatedAt`, so a long block (a slow proof or Advance) does not make the file look stale. `updatedAt` shows the producer process is alive:
 
 | Field | What it holds |
 |---|---|
@@ -144,7 +144,7 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 | `lostTransactions` | transactions that could not be put back in reth's pool after a block that did not commit or a restart, each with the error and the time (the last 100) |
 | `averageProveSeconds`, `averageAdvanceSeconds` | averages over the blocks that were proven, or `null` before the first |
 
-A status file that cannot be written is reported on stderr and does not stop the chain.
+A status file that cannot be written is reported once on stderr (again after a write has worked in between) and does not stop the chain.
 
 ## The block-cutting setting
 
