@@ -1,6 +1,6 @@
 # Try Ostia
 
-Ostia is an EVM chain on Canton DevNet. Ordinary Ethereum tools work on it: wallets, Foundry, Hardhat, ethers, viem. What is different is what happens after a block is made: a zero-knowledge proof of the block is made, and the block's record, with the proof, is written to Canton. This guide connects an existing Foundry or Hardhat project to Ostia. Before you start, have Foundry or Hardhat installed, a contract and a deploy script, and a key to sign with. The guide shows how to fund that key from the faucet, deploy, verify, and see where your transaction becomes final on Canton.
+Ostia is an EVM chain on Canton DevNet. Ordinary Ethereum tools work on it: wallets, Foundry, Hardhat, ethers, viem. What is different is what happens after a block is made: a zero-knowledge proof of the block is made, and the block's record, with the proof, is written to Canton. This guide connects an existing Foundry or Hardhat project to Ostia. Before you start, have Foundry or Hardhat installed, a contract (and, for Hardhat, a deploy script), and a key to sign with. The guide shows how to fund that key from the faucet, deploy, verify, and see where your transaction becomes final on Canton.
 
 Ostia is a DevNet. Its coin, tROME, has no value, and the chain can be reset.
 
@@ -36,7 +36,7 @@ export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
 forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version london --broadcast
 ```
 
-What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; their deposit and transfer transactions go through and the on-chain verifier accepts the proofs, but no MPC network runs, so nothing settles privately). Use `london` for your own contracts. Only these compiler and EVM-target pairs have been tried, so newer EVM features may not all work.
+What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; their deposit and transfer transactions go through and the on-chain verifier accepts the proofs, but no MPC network runs, so nothing settles privately). Ostia's rules include every fork up to Prague (`network/genesis.json`), so any EVM target up to `prague` is accepted; `london` is a safe choice. An opcode that only a later fork adds will not run.
 
 Verify the source on the explorer. It speaks the Etherscan API, so `forge verify-contract` works with the Etherscan verifier and any API key text:
 
@@ -80,7 +80,7 @@ A receipt only comes back once the block is final (next section), so a deploy wa
 ## Where a transaction becomes final
 
 1. You send a transaction to the RPC. If the RPC accepts it, it enters the transaction pool. The builder chooses transactions for the blocks it makes next, so acceptance does not guarantee a place in the very next block.
-2. The block is made, about every 16 seconds while there are transactions. The builder makes no empty blocks, so while no transaction waits, the chain makes no blocks at all, possibly for hours. An hours-old final block on the explorer is then expected. If a transaction the RPC accepted stays pending, check the health strip on the explorer's home page (or `/api/health`).
+2. The block is made, about every 16 seconds while there are transactions. The builder makes no empty blocks, so while no transaction waits, the chain makes no blocks at all, possibly for hours. An hours-old final block on the explorer is then expected. If a transaction the RPC accepted stays pending, check the status strip on the explorer's home page (or `/api/health`).
 3. A zero-knowledge proof of the block is made. In the one-hour mixed load of 2026-10-24, the median proof time was 9.03 seconds across 223 blocks of 11 to 100 transactions.
 4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In the same run, a block was final about 9 to 12 seconds after it was made (about 9 seconds for a small block, about 11 seconds, at most 13, with 70 transactions in a block).
 
@@ -91,6 +91,7 @@ On the explorer, open your transaction (`/tx/<hash>`) and then its block (`/bloc
 ## Limits to know about
 
 - The RPC allows about 300 calls a minute from one client. A batch counts every call in it, and a batch is at most 20 calls.
+- The RPC is HTTP only: there is no WebSocket, and no `eth_newFilter` or `eth_subscribe`. To follow events, poll `eth_getLogs` (in ethers v6, create the provider with `{ polling: true }`).
 - The nonce of a transaction must follow the account's last one with no gap, or the RPC refuses it.
 - `maxFeePerGas` must be at least the block's base fee (a few wei at the moment). Wallets and tools do this on their own.
 - The explorer's REST API allows 20 requests a second with bursts of 60, and the Etherscan-compatible API 10 a second and 600 a minute.
