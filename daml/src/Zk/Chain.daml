@@ -130,8 +130,6 @@ template ZkChain
         legs : [Leg]
       controller builder
       do
-        assertMsg "the header, transactions and proof must be lowercase hex" (hexField headerHex && isHex txsHex && hexField proofHex)
-        assertMsg "the gateway's proofs must be lowercase hex" (all hexField (gatewayAccountNodes <> gatewayStorageNodes))
         answer <- verifyCall (T.intercalate "," [proofHex, headerHex, txsHex])
         b <- either (\why -> abort ("the sidecar refused the block: " <> why)) pure (parseVerify answer)
         assertMsg "the block was proven by another program" (b.programVK == programVK)

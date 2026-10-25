@@ -51,7 +51,7 @@ The sidecar is a service each confirming participant runs beside it. Daml calls 
 
 ### `verify`
 
-Input: `proofHex,headerHex,txsHex`. Each field is lowercase hex. `txsHex` is empty for a block with no transactions. The sidecar refuses a line that does not have exactly three such fields.
+Input: `proofHex,headerHex,txsHex`. Each field is lowercase hex. `txsHex` is empty for a block with no transactions. The sidecar refuses a line that does not have exactly three such fields. `Advance` does not check the hex itself (from package 0.2.0; the check walked the block one character at a time and was most of the time Advance took): the sidecar of every confirmer accepts only lowercase, whole-byte hex in those three fields and in every gateway node (an empty node is refused too) and answers `no malformed input` otherwise, which aborts `Advance`. The test form answers the same way.
 
 Answer, if the block checks out:
 

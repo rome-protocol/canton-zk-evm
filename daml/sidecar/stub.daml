@@ -31,11 +31,21 @@ verifyCall input = pure (fromHex (stubService verifyAnswer (toHex input)))
 legsCall : Text -> Update Text
 legsCall input = pure (fromHex (stubService legsAnswer (toHex input)))
 
+-- The real sidecar takes hex only as whole bytes of lowercase digits (an odd length, a capital letter or any other character is
+-- refused) and answers "malformed input"; Advance does not check this itself. The three verify fields may be empty, a node of
+-- a gateway proof may not.
+wholeBytes : Text -> Bool
+wholeBytes s = T.length s % 2 == 0 && all (`elem` T.explode "0123456789abcdef") (T.explode s)
+
+nodesOk : Text -> Bool
+nodesOk s = s == "" || all (\n -> n /= "" && wholeBytes n) (T.splitOn ";" s)
+
 -- Header "01" is a good block 1 on the genesis; "11" a good block 2 on block 1. The rest each get one thing wrong.
 -- A block's state root is the one of its number: block 1's, then block 2's.
 verifyAnswer : Text -> Text
 verifyAnswer input = case T.splitOn "," input of
-  [proof, header, _txs]
+  [proof, header, txs]
+    | not (all wholeBytes [proof, header, txs]) -> "no malformed input"
     | proof == "ba" -> "no the proof does not verify"
     | header == "01" -> ok stubVK stubRoot stubHash1 stubHash0 1 30000000
     | header == "11" -> ok stubVK stubRoot stubHash2 stubHash1 2 30000000
@@ -44,7 +54,8 @@ verifyAnswer input = case T.splitOn "," input of
     | header == "04" -> ok stubVK stubRoot stubHash1 stubHash0 1 31000000   -- the gas limit is over the cap
     | header == "05" -> ok stubRoot stubRoot stubHash1 stubHash0 1 30000000 -- proven under another program
     | header == "06" -> ok stubVK stubVK stubHash1 stubHash0 1 30000000     -- proven under another ZisK release
-  _ -> "no unknown block"
+    | otherwise -> "no unknown block"
+  _ -> "no malformed input"
   where
     ok vk rc bh ph n gl = T.intercalate " " ["ok", vk, rc, bh, ph, show n, if n == 2 then stubStateRoot2 else stubStateRoot, "1700000000", show gl, "21000", "1"]
 
@@ -56,6 +67,7 @@ verifyAnswer input = case T.splitOn "," input of
 legsAnswer : Text -> Text
 legsAnswer input = case T.splitOn "," input of
   [root, number, gateway, account, storage, legs]
+    | not (nodesOk account && nodesOk storage) -> "no malformed input"
     | (root, number) `notElem` [(stubStateRoot, "1"), (stubStateRoot2, "2")] -> "no the account proof does not verify"
     | account == "ba" -> "no the account proof does not verify"
     | storage == "ba" -> "no the storage proof does not verify"

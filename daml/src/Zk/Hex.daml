@@ -2,15 +2,16 @@
 -- lowercase, with no newline at either end (README.md: "What the sidecar answers"). Both forms of Zk.Sidecar use these.
 module Zk.Hex where
 
-import DA.List ((!!))
+import qualified DA.Crypto.Text as C
 import qualified DA.Text as T
 
 hexDigits : [Text]
 hexDigits = T.explode "0123456789abcdef"
 
--- Two lowercase hex digits for each character. The lines are ASCII.
+-- Two lowercase hex digits for each byte of the text. The lines are ASCII. This is the builtin: a hand-written version walks the
+-- text one character at a time and was most of the time Advance took per kilobyte of block (the test checks the two agree).
 toHex : Text -> Text
-toHex s = T.implode [hexDigits !! (c / 16) <> hexDigits !! (c % 16) | c <- T.toCodePoints s]
+toHex = C.toHex
 
 -- The line a hex body spells; "" if the body is not whole bytes of hex, which no valid answer is.
 fromHex : Text -> Text

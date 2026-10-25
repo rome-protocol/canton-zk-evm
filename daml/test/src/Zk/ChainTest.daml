@@ -8,7 +8,7 @@ module Zk.ChainTest where
 
 import DA.Assert ((===))
 import DA.Foldable (forA_)
-import DA.List (sort)
+import DA.List ((!!), sort)
 import DA.Time (addRelTime, days)
 import qualified DA.Text as T
 import Daml.Script
@@ -19,6 +19,7 @@ import Splice.Api.Token.AllocationV1
 import Splice.Api.Token.AllocationInstructionV1
 import Splice.Testing.Tokens.TestTokenV1 (Token(..), TokenRules(..))
 
+import qualified DA.Crypto.Text as C
 import Zk.Chain
 import Zk.Hex
 import Zk.Sidecar
@@ -163,8 +164,11 @@ recordedNodes [] = []
 recordedNodes ls = [toHex (T.intercalate "|" ls)]
 
 advanceWith : ContractId ZkChain -> Text -> Text -> [Text] -> [Text] -> [Leg] -> Commands (ContractId ZkChain, ContractId BlockRecord)
-advanceWith chain header proof accountNodes storageNodes legs = exerciseCmd chain Advance with
-  headerHex = header; txsHex = ""; proofHex = proof
+advanceWith chain header proof = advanceWithTxs chain header "" proof
+
+advanceWithTxs : ContractId ZkChain -> Text -> Text -> Text -> [Text] -> [Text] -> [Leg] -> Commands (ContractId ZkChain, ContractId BlockRecord)
+advanceWithTxs chain header txs proof accountNodes storageNodes legs = exerciseCmd chain Advance with
+  headerHex = header; txsHex = txs; proofHex = proof
   gatewayAccountNodes = accountNodes; gatewayStorageNodes = storageNodes; ..
 
 -- A good call: the block recorded exactly `recorded`, and the builder attaches `legs`.
@@ -241,8 +245,29 @@ testHexOfTheAsciiLine = do
   toHex "ok 5,;" === "6f6b20352c3b"
   fromHex "6f6b20352c3b" === "ok 5,;"
   fromHex (toHex "no the proof does not verify") === "no the proof does not verify"
+  toHex "" === ""
+  fromHex "" === ""
   fromHex "6f6" === ""      -- an odd number of digits is not a body
   fromHex "6g" === ""       -- nor is a non-hex digit
+  fromHex "6F6B" === ""     -- nor is a capital letter: the body is lowercase
+  fromHex "6f6B" === ""
+  fromHex "6" === ""
+
+-- The hand-written version of toHex that Zk.Hex had in 0.1.0, kept here as the reference the builtin is checked against.
+oldToHex : Text -> Text
+oldToHex s = T.implode [hexDigits !! (c / 16) <> hexDigits !! (c % 16) | c <- T.toCodePoints s]
+
+-- Zk.Hex.toHex is the builtin now; it must give the bytes of every line the old one did: printable ASCII, a party id, nothing.
+testBuiltinToHexEqualsTheOldOne : Script ()
+testBuiltinToHexEqualsTheOldOne = do
+  let printable = T.fromCodePoints [32 .. 126]
+      partyId = "Builder::1220a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e9f0"
+  alice <- allocateParty "Alice"
+  forA_ (printable :: partyId :: partyToText alice :: "" :: T.explode printable) $ \t -> do
+    toHex t === oldToHex t
+    C.toHex t === oldToHex t
+    fromHex (toHex t) === t
+  toHex printable === mconcat [oldToHex (T.fromCodePoints [c]) | c <- [32 .. 126]]
 
 -- The sidecar reads a Canton amount as digits, a point and up to ten more digits. This is how Daml writes a Decimal.
 testTheFormInWhichDamlWritesADecimal : Script ()
@@ -513,13 +538,31 @@ testRefusesAnAnswerForAnotherBlockOrGatewayOrCount = do
   forA_ ["e1", "e2", "e3", "e4"] $ \tag ->
     refused (notRecorded <> ": ok") f $ advanceWith f.chain "01" "aa" [tag] (recordedNodes [paymentLine f.dvp1]) [paymentLeg f]
 
--- Daml turns a malformed proof away before asking.
+-- Advance does not check the hex of the block or of the gateway's proofs itself (the check ran one character at a time, and
+-- was most of the time Advance took); the sidecar of every confirmer does, more strictly (lowercase, whole bytes), answers
+-- "malformed input", and Canton refuses the transaction if the answers differ. The stub answers the same way.
 testRefusesProofsThatAreNotHex : Script ()
 testRefusesProofsThatAreNotHex = do
   f <- fixture
-  refused "must be lowercase hex" f $ advanceWith f.chain "01" "aa" ["a,a"] [] []
-  refused "must be lowercase hex" f $ advanceWith f.chain "01" "aa" ["aa"] ["nothex"] []
-  refused "must be lowercase hex" f $ advanceWith f.chain "01" "aa" ["aa;"] [] []
+  let malformedBlock = "the sidecar refused the block: no malformed input"
+      malformedNodes = notRecorded <> ": no malformed input"
+  -- the header, the transactions and the proof: an odd length, a capital letter, another character, a comma
+  refused malformedBlock f $ advanceWith f.chain "01" "aaa" ["aa"] [] []
+  refused malformedBlock f $ advanceWith f.chain "01" "AA" ["aa"] [] []
+  refused malformedBlock f $ advanceWith f.chain "0g" "aa" ["aa"] [] []
+  refused malformedBlock f $ advanceWith f.chain "01" "aa,aa" ["aa"] [] []
+  refused malformedBlock f $ advanceWith f.chain "0" "aa" ["aa"] [] []
+  refused malformedBlock f $ advanceWithTxs f.chain "01" "0" "aa" ["aa"] [] []
+  refused malformedBlock f $ advanceWithTxs f.chain "01" "AB" "aa" ["aa"] [] []
+  refused malformedBlock f $ advanceWithTxs f.chain "01" "nothex" "aa" ["aa"] [] []
+  -- the gateway's nodes: the same, and an empty node
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["a,a"] [] []
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["aa"] ["nothex"] []
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["aa;"] [] []
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["aa;;aa"] [] []
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["AA"] [] []
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["a"] [] []
+  refused malformedNodes f $ advanceWith f.chain "01" "aa" ["aa"] ["aa", "b"] []
 
 -- Terms that name another operator, or another confirmer, than the chain's are not settled by it, even when
 -- the builder (who is a controller of `Advance`) stands in the named role.
