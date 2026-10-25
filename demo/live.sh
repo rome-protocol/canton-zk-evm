@@ -450,7 +450,7 @@ cycle() {
     if [ "$CYCLES" != 0 ] && [ "$n" -ge "$CYCLES" ]; then cycle_line "end=count cycles=$n"; echo "done: $n cycles"; return 0; fi
     n=$((n + 1)); CYCLE_N=$n; started=$(date +%s)
     one_cycle "cyc-$(date -u +%m%d%H%M%S)-$n"
-    [ "$CYCLES" != 0 ] && [ "$n" -ge "$CYCLES" ] || interval_wait "$started"
+    if [ "$CYCLES" = 0 ] || [ "$n" -lt "$CYCLES" ]; then interval_wait "$started"; fi
   done
 }
 
