@@ -941,27 +941,63 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
         await client.query("begin");
         await client.query("set local enable_seqscan = off");
         await client.query("set local enable_bitmapscan = off");
-        // Many ERC-20 transfers over many senders, a few NFT ones: the shape the partial indexes are for (a table of a few rows is read in block order instead). Rolled back.
+        // The partial indexes are there so that a count of one list reads the rows of that list alone, and not the rows of the other list of the same address read and
+        // thrown away: an address with many NFT transfers and few ERC-20 ones is counted in its ERC-20 list from the ERC-20 rows, and the other way round. The planner cannot
+        // see that share (it knows how many rows of the table are of a list, not how many of one address), so which of two indexes that can serve the query it picks is a near
+        // tie, and a test of its pick fails now and then. What the query owns is that the partial index can serve it: its predicate is the one the index has. So the
+        // indexes by address that have no predicate are dropped in this transaction (it is rolled back), and the plan has to be the partial index of the list, by the address,
+        // on both sides, with nothing filtered after the read. If the query's filter stopped implying the index predicate, no index by address would be left to serve it.
         const [first] = (await client.query("select block_number, tx_index from token_transfers order by block_number limit 1")).rows;
-        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 20000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, g, null from generate_series(1, 4000) g", [first.block_number, first.tx_index, who(0xb1), who(0xa1), who(0xa2)]);
-        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 30000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, null, g from generate_series(1, 120) g", [first.block_number, first.tx_index, who(0xb3), who(0xa1), who(0xa2)]);
-        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 40000 + g, 0, $2, $3, case when g % 40 = 0 then $4::bytea else decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex') end, $5, g, g from generate_series(1, 120) g", [first.block_number, first.tx_index, who(0xb2), who(0xa1), who(0xa2)]);
+        const MOSTLY_NFT = who(0xd1), MOSTLY_ERC20 = who(0xd2);
+        let at = 20000;
+        // n rows in one list, with the address on the side given, the other side a spread of 40 addresses; log indexes of its own, so that no row repeats another.
+        const put = async (side: "from_address" | "to_address", address: Buffer, token: Buffer, n: number, nft: boolean, amount: boolean) => {
+          const other = "decode(repeat(lpad(to_hex(16 + g % 40), 2, '0'), 20), 'hex')";
+          const [a, b] = side === "from_address" ? ["$4::bytea", other] : [other, "$4::bytea"];
+          await client.query(`insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, ${at} + g, 0, $2, $3, ${a}, ${b}, ${amount ? "g" : "null"}, ${nft ? "g" : "null"} from generate_series(1, ${n}) g`, [first.block_number, first.tx_index, token, address]);
+          at += n + 1;
+        };
+        for (const side of ["from_address", "to_address"] as const) {
+          await put(side, MOSTLY_NFT, who(0xb2), 1500, true, true);
+          await put(side, MOSTLY_NFT, who(0xb3), 500, true, false);
+          await put(side, MOSTLY_NFT, who(0xb1), 20, false, true);
+          await put(side, MOSTLY_ERC20, who(0xb1), 2000, false, true);
+          await put(side, MOSTLY_ERC20, who(0xb2), 20, true, true);
+          await put(side, MOSTLY_ERC20, who(0xb3), 20, true, false);
+        }
+        // The background: the many senders and receivers of a real table, so that no address is a large part of it.
+        await client.query("insert into token_transfers (block_number, log_index, batch_index, tx_index, token, from_address, to_address, amount, token_id) select $1, 90000 + g, 0, $2, $3, decode(repeat(lpad(to_hex(16 + g % 97), 2, '0'), 20), 'hex'), decode(repeat(lpad(to_hex(16 + g % 89), 2, '0'), 20), 'hex'), g, null from generate_series(1, 30000) g", [first.block_number, first.tx_index, who(0xb1)]);
+        const general = (await client.query("select indexname from pg_indexes where tablename = 'token_transfers' and indexdef !~ 'WHERE' and indexdef ~ '\\((from|to)_address[,)]'")).rows.map((r) => String(r.indexname));
+        expect(general.length, "the indexes by address that have no predicate").toBeGreaterThanOrEqual(2);
+        for (const name of general) await client.query(`drop index ${name}`);
         await client.query("analyze token_transfers");
         // The partition that holds the rows (the others, ahead of the head, are empty and planned as empty ones are).
         const part = String((await client.query("select tableoid::regclass::text as p from token_transfers limit 1")).rows[0].p);
-        for (const [filter, list, predicate] of [["x.token_id is null", "erc20", /WHERE \(token_id IS NULL\)$/], ["x.token_id is not null", "nft", /WHERE \(token_id IS NOT NULL\)$/]] as const) {
+        for (const [filter, list, predicate, address, count] of [
+          ["x.token_id is null", "erc20", /WHERE \(token_id IS NULL\)$/, MOSTLY_NFT, 40], ["x.token_id is not null", "nft", /WHERE \(token_id IS NOT NULL\)$/, MOSTLY_ERC20, 80],
+        ] as const) {
           const text = `select ${transferCountSql(filter).replace(/\$3/g, "10000")} from (select $1::bytea as address) q`;
-          const p = (await client.query("explain " + text, [A])).rows.map((r) => r["QUERY PLAN"]).join("\n");
+          const p = (await client.query("explain " + text, [address])).rows.map((r) => r["QUERY PLAN"]).join("\n");
           expect(p, list).not.toMatch(/Seq Scan/);
+          // The predicate is left to the index: no row of the other list is read and filtered away after the read, on either side.
+          expect(p, list).not.toMatch(/Filter: \(token_id|Rows Removed/);
           for (const col of ["from_address", "to_address"]) {
-            // An index read by the address, with the predicate left to the index: no row filter after the read. Index-only or not is the planner's choice: rows
-            // inserted in this transaction are not yet marked all-visible, so either form can win, and both read the partial index this checks.
+            // An index read by the address. Index-only or not is the planner's choice: rows inserted in this transaction are not yet marked all-visible, so either form
+            // can win, and both read the partial index this checks.
             const node = new RegExp(`Index (?:Only )?Scan using (\\S+) on ${part} [^\\n]*\\n\\s*Index Cond: \\(${col} =`).exec(p);
             expect(node, `${list} ${col}\n${p}`).not.toBeNull();
             // The partition's index has a name of its own, so it is checked by its definition: the partial index of this list.
             const [def] = (await client.query("select indexdef from pg_indexes where indexname = $1", [node![1]])).rows;
             expect(String(def.indexdef), `${list} ${col}`).toMatch(predicate);
           }
+          // Every read of the partition that holds the rows is of that partial index: none is a walk of the feed index in block order with the address as a filter.
+          for (const m of p.matchAll(new RegExp(`Index (?:Only )?Scan using (\\S+) on ${part} `, "g"))) {
+            const [def] = (await client.query("select indexdef from pg_indexes where indexname = $1", [m[1]])).rows;
+            expect(String(def.indexdef), `${list} ${m[1]}`).toMatch(predicate);
+          }
+          // And the count is right: the rows of this list on the two sides of the address, each counted once.
+          const [row] = (await client.query("select " + transferCountSql(filter).replace(/\$3/g, "10000") + " as n from (select $1::bytea as address) q", [address])).rows;
+          expect(Number(row.n), list).toBe(count);
         }
         await client.query("rollback");
       } finally { await client.query("rollback"); client.release(); }
