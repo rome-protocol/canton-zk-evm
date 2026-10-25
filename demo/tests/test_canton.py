@@ -21,6 +21,7 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
     submitted: list = []     # (node, request body) of each command
     asked: list = []         # (node, party, template) of each look at the active contracts
     updates: dict = {}       # offset -> (update id, contract ids created)
+    update_reads: list = []  # (node, party, offset, template filter or None) of each look at one update
     refuse = None            # if set, the text of a refusal that every command gets
 
     def log_message(self, *args):
@@ -54,6 +55,10 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
             elif command["ExerciseCommand"]["choice"] == "AllocationFactory_Allocate":   # the token makes the allocation
                 FakeLedger.created.append({"contractId": f"cid-{n}", "templateId": canton.ALLOCATION_OF_TOKEN, "offset": 100 + n,
                                            "createArgument": {"allocation": command["ExerciseCommand"]["choiceArgument"]["allocation"]}})
+            elif command["ExerciseCommand"]["choice"] == "AcceptToken":   # the confirmer accepts a token proposal: the gateway token is made
+                made = [e for es in FakeLedger.contracts.values() for e in es if e["contractId"] == command["ExerciseCommand"]["contractId"]][0]
+                FakeLedger.created.append({"contractId": f"cid-{n}", "templateId": canton.CHAIN + "GatewayToken", "offset": 100 + n,
+                                           "createArgument": {k: made["createArgument"][k] for k in ("evmToken", "instrumentId")}})
             elif command["ExerciseCommand"]["choice"] == "Allocation_Withdraw":   # the sender takes the allocation back: it is gone for everyone
                 gone = command["ExerciseCommand"]["contractId"]
                 FakeLedger.created = [e for e in FakeLedger.created if e["contractId"] != gone]
@@ -63,8 +68,18 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
             found = FakeLedger.updates.get(body["offset"])
             if found is None:
                 return self.reply("", 404)
-            self.reply({"update": {"Transaction": {"value": {"updateId": found[0], "offset": body["offset"],
-                                                              "events": [{"CreatedEvent": {"contractId": c}} for c in found[1]]}}}})
+            [(party, flt)] = body["updateFormat"]["includeTransactions"]["eventFormat"]["filtersByParty"].items()
+            only = flt["cumulative"][0]["identifierFilter"].get("TemplateFilter", {}).get("value", {}).get("templateId")
+            FakeLedger.update_reads.append((self.node, party, body["offset"], only))
+            # A created event is as the active contracts give it (with its fields) when the contract is known to the fake; the filter keeps its template only.
+            known = {e["contractId"]: (t, e) for (_, t), es in FakeLedger.contracts.items() for e in es}
+            known.update({e["contractId"]: (e["templateId"], e) for e in FakeLedger.created})
+            events = []
+            for c in found[1]:
+                template, event = known.get(c, (None, {}))
+                if only is None or template == only:
+                    events.append({"CreatedEvent": {**event, "contractId": c, "templateId": template}})
+            self.reply({"update": {"Transaction": {"value": {"updateId": found[0], "offset": body["offset"], "events": events}}}})
         else:
             self.reply("", 404)
 
@@ -93,6 +108,7 @@ class LedgerTestCase(unittest.TestCase):
             os.environ[variable] = f"http://127.0.0.1:{server.server_address[1]}"
         FakeLedger.contracts = {("op::1", canton.CHAIN + "ZkChain"): [{"contractId": "chain-1", "offset": 5, "createArgument": CHAIN_RECORD}]}
         FakeLedger.created, FakeLedger.submitted, FakeLedger.asked, FakeLedger.updates, FakeLedger.refuse = [], [], [], {}, None
+        FakeLedger.update_reads = []
         (self.state / "demo").mkdir()
         (self.state / "demo" / "disclosed.json").write_text(json.dumps([{k: v for k, v in RULES.items()}]))
 
@@ -117,10 +133,28 @@ class SettledTests(LedgerTestCase):
         self.assertEqual(got["record"], {"updateId": "upd-8", "offset": 50, "contract": "rec8"})
         self.assertEqual(got["holding"], {"updateId": "upd-8", "offset": 50, "contract": "hold-new"})
 
-    def test_a_holding_made_elsewhere_gives_another_update(self):
+    def test_a_holding_made_elsewhere_has_no_block_record_in_its_update(self):
         FakeLedger.contracts[("v::1", canton.TOKEN)] = [record(0, 30, "hold-old")]
-        got = canton.settled(canton.Network(), 8)
-        self.assertNotEqual(got["record"]["updateId"], got["holding"]["updateId"])
+        with self.assertRaises(canton.Fail):
+            canton.settled(canton.Network(), 8)
+
+    def test_the_record_is_read_from_the_holdings_update_and_the_records_are_not_all_read(self):
+        canton.settled(canton.Network(), 8)
+        self.assertNotIn(canton.CHAIN + "BlockRecord", [t for _, _, t in FakeLedger.asked])
+        # One read of the update for the reader, filtered to BlockRecord, and one for the holder.
+        self.assertIn(("users", "re::1", 50, canton.CHAIN + "BlockRecord"), FakeLedger.update_reads)
+        self.assertIn(("users", "v::1", 50, None), FakeLedger.update_reads)
+
+    def test_the_update_of_another_block_is_refused(self):
+        FakeLedger.contracts[("v::1", canton.TOKEN)] = [record(0, 40, "hold-7")]
+        FakeLedger.updates[40] = ("upd-7", ["rec7", "hold-7"])
+        with self.assertRaises(canton.Fail):
+            canton.settled(canton.Network(), 8)
+
+    def test_two_records_in_the_update_are_refused(self):
+        FakeLedger.updates[50] = ("upd-8", ["rec8", "rec7", "hold-new"])
+        with self.assertRaises(canton.Fail):
+            canton.settled(canton.Network(), 8)
 
     def test_an_update_that_did_not_create_the_contract_is_refused(self):
         FakeLedger.updates[50] = ("upd-8", ["rec8"])
@@ -131,8 +165,8 @@ class SettledTests(LedgerTestCase):
         with self.assertRaises(canton.Fail):
             canton.settled(canton.Network(), 9)
 
-    def test_an_event_without_an_offset_is_refused(self):
-        del FakeLedger.contracts[("re::1", canton.CHAIN + "BlockRecord")][1]["offset"]
+    def test_a_holding_without_an_offset_is_refused(self):
+        del FakeLedger.contracts[("v::1", canton.TOKEN)][1]["offset"]
         with self.assertRaises(canton.Fail):
             canton.settled(canton.Network(), 8)
 
@@ -160,10 +194,10 @@ class SettledHolderTests(LedgerTestCase):
         self.assertEqual(got["holding"], {"updateId": "upd-8", "offset": 50, "contract": "unew"})
         self.assertEqual({node for node, _, _ in FakeLedger.asked}, {"users"})
 
-    def test_a_holding_made_elsewhere_gives_another_update(self):
+    def test_a_holding_made_elsewhere_has_no_block_record_in_its_update(self):
         FakeLedger.contracts[("gw::1", canton.TOKEN)] = [record(0, 20, "gold")]
-        got = canton.settled(canton.Network(), 8, "gateway")
-        self.assertNotEqual(got["record"]["updateId"], got["holding"]["updateId"])
+        with self.assertRaises(canton.Fail):
+            canton.settled(canton.Network(), 8, "gateway")
 
     def test_v_is_the_default(self):
         FakeLedger.contracts[("v::1", canton.TOKEN)] = [record(0, 50, "vnew")]
@@ -323,6 +357,16 @@ class AcceptTests(LedgerTestCase):
         self.assertEqual(out["party"], "u::1")
         # The operator's participant sees it, which is where the builder looks for it.
         self.assertIn(("operator", "op::1", canton.CHAIN + "WithdrawalAcceptance"), FakeLedger.asked)
+
+    def test_accepted_counts_only_that_partys_acceptances(self):
+        mine = lambda party, n: {"contractId": f"acc-{party}{n}", "offset": n, "createArgument": {"party": party}}
+        FakeLedger.contracts[("op::1", canton.ACCEPTANCE)] = [mine("someone-else::1", 1), mine("v::1", 2)]
+        self.assertEqual(canton.main(["accepted", "u"]), {"party": "u::1", "accepted": False, "acceptances": 0})
+        self.assertEqual(canton.main(["accepted", "v"]), {"party": "v::1", "accepted": True, "acceptances": 1})
+        FakeLedger.contracts[("op::1", canton.ACCEPTANCE)].append(mine("u::1", 3))
+        self.assertTrue(canton.main(["accepted", "u"])["accepted"])
+        with self.assertRaises(SystemExit):
+            canton.main(["accepted", "reader"])
 
     def test_each_party_gets_its_own_acceptance(self):
         u, v = canton.main(["accept", "u"]), canton.main(["accept", "v"])

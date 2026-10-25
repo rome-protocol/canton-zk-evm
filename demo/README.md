@@ -96,7 +96,15 @@ These are what the demo scripts call. Both programs print one JSON object per co
 | `evm.py claim <u\|v> <deposit id> <token> <amount>` | Claims a deposit: the gateway mints that many wrapped tokens to the sender. An amount is written as on Canton, such as `10` or `0.5`, with up to 10 decimals. |
 | `evm.py withdraw <u\|v> <token> <amount> <party>` | Burns wrapped tokens; the Canton token goes to the party, written in full. |
 | `evm.py wrapped <token> <holder> [latest\|finalized]` | A holder's balance of a wrapped token and its supply, written as Canton writes amounts (`10.0`). Read at `finalized`, the block Canton has committed. |
-| `canton.py register-token <address>` | Registers the wrapped token for TKB (runs `network/canton/propose.py token`). |
+| `evm.py wrap <u\|v> <token> <amount>` | Wraps that many whole coins of the chain into WtROME (the wrapped coin at `<token>`), so it can be paid through the gateway. |
+| `evm.py wait <tx> [seconds]` | Waits until the transaction is in a block at or below reth's finalized block (a block Canton has committed), and prints the receipt. |
+| `evm.py legs <block>` | How many of the block's transactions are gateway calls that make a leg (claim, pay, withdraw), and which. |
+| `evm.py block <latest\|finalized\|number>`, `evm.py ether <address>`, `evm.py code <address>`, `evm.py chain` | A block's number, hash and gas used; an address's balance of the chain's coin; the size and Keccak-256 of the code at an address; the chain id. |
+| `canton.py register-token <address>` | Registers the wrapped token for TKB (runs `network/canton/propose.py token`). A proposal that an earlier run left for the confirmer is accepted, not made again. |
+| `canton.py registered <address>` | Whether the wrapped token is registered for TKB, and whether it is proposed and waiting for the confirmer. |
+| `canton.py accepted <u\|v>` | Whether that party's own acceptance of withdrawals is there (not another party's on the participant). |
+| `canton.py block <block> [u\|v\|gateway]` | The chain's head and the block's `BlockRecord` (hash, proof's SHA-256). With a party, the record is read from the update that made that party's newest TKB holding: one small read, however long the chain. Without, every record is read. |
+| `canton.py balances` | `status` without the chain head and the block records. |
 | `canton.py accept <u\|v>` | That party signs a standing acceptance of withdrawals. |
 | `canton.py deposit <label> <address> <amount>` | U allocates TKB to the gateway and signs a deposit request for the EVM address. Prints the deposit id that the claim must carry. |
 | `canton.py dvp <label> <token> <payee> <amount>` | U allocates 10 TKB to V, and U and V sign the terms. Prints the payment id that the `pay` must carry. |
@@ -106,6 +114,8 @@ These are what the demo scripts call. Both programs print one JSON object per co
 | `canton.py withdraw-allocation <label>` | U takes back its allocation with that label, as the token standard lets its sender do until the block that settles it commits. Run 4 uses it through `prove-then-withdraw.sh`. |
 
 `canton.py setup` also writes the list of disclosed contracts (`state/demo/disclosed.json`) that holds the token's rules. The builder takes it with `--disclosed`. The rules are the registry's transfer factory, a withdrawal goes through it, and the participant that submits the block does not host the registry.
+
+`demo/live.sh` runs the deposit, the payment (in WtROME) and the withdrawal on a chain that is already running, on an existing participant (`CZE_CANTON=external`, see `network/README.md`): `live.sh setup` once, then `live.sh legs`. Its header lists its settings.
 
 `canton.py status` also shows the gateway's custody (its TKB holdings), and the number of active deposit requests and acceptances.
 
