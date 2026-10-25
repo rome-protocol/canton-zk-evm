@@ -144,8 +144,8 @@ describe("block records", () => {
 
 describe("updates with no block record", () => {
   it("skips a gas-cap change (other contracts created and archived, no record), and a transaction with no events, between records", async () => {
-    const cap = createdEvent(4, { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gasCap: "60000000" }, "abc123def456:Zk.Chain:GasCap");
-    const archived = { ArchivedEvent: { offset: 4, nodeId: 1, contractId: "00", templateId: "abc123def456:Zk.Chain:GasCap" } };
+    const cap = createdEvent(4, { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gasCap: "60000000" }, "abc123def456:Zk.Chain:ZkChain");
+    const archived = { ArchivedEvent: { offset: 4, nodeId: 1, contractId: "00", templateId: "abc123def456:Zk.Chain:GasCapProposal" } };
     const items = [
       transaction(2, "u1", [createdEvent(2, recordFields({ number: "1" }))]),
       transaction(4, "u2", [archived as never, cap]),
@@ -157,7 +157,7 @@ describe("updates with no block record", () => {
   });
 
   it("gives no records for a range whose only update is a gas-cap change", async () => {
-    const cap = createdEvent(4, { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gasCap: "60000000" }, "abc123def456:Zk.Chain:GasCap");
+    const cap = createdEvent(4, { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gasCap: "60000000" }, "abc123def456:Zk.Chain:ZkChain");
     const l = await ledger([transaction(4, "u2", [cap])]);
     expect(await l.records(0, 4)).toEqual([]);
   });

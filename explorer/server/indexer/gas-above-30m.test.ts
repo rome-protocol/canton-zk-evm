@@ -3,6 +3,7 @@ import { createApi } from "../api.ts";
 import { createChainDb } from "../chain-db.ts";
 import { createChainRest } from "../rest/chain-rest.ts";
 import { createStatsRest } from "../rest/stats-rest.ts";
+import { createEtherscanRest } from "../rest/etherscan-rest.ts";
 import { loadConfig } from "../config.ts";
 import { migrate } from "../db/migrate.ts";
 import { TEST_URL, checkRequired, makeDatabase, type TestDatabase } from "../db/testing.ts";
@@ -13,7 +14,8 @@ import { CHAIN_ID, CONFIRMER, GATEWAY, OPERATOR, PINS, makeChain, type Synthetic
 import { FAKE_READER, createdEvent, startFakeLedger, transaction, type FakeLedger } from "../../test/fake-ledger.ts";
 
 // A block header's gas limit above 30,000,000 (the limit a chain can be raised past) is stored whole, read back whole, and divided by in the
-// stats: nothing in the explorer holds 30,000,000 as a ceiling.
+// stats: nothing in the explorer holds 30,000,000 as a ceiling. Eight blocks of 300,000,000 (the highest a chain can be raised to) share one minute,
+// so that minute's sums pass 2^31 and a column narrowed to a 32-bit integer would fail here.
 const M = 1_000_000;
 const settings = `programVK=${PINS.programVK}\nrootC=${PINS.rootC}\n`;
 const config = loadConfig({ READER_PARTY: "reader::1220" + "11".repeat(32), PINS_FILE: "pins.txt" }, () => settings);
@@ -30,40 +32,49 @@ describe.skipIf(!TEST_URL)("blocks with a gas limit above 30M, through the index
     db = await makeDatabase();
     await migrate(db.pool);
     chain = makeChain([
+      ...Array.from({ length: 8 }, () => ({ txs: 2, gasLimit: 300 * M, gasUsed: 270 * M })),
       { txs: 3, gasLimit: 30 * M, gasUsed: 12 * M },
       { txs: 5, gasLimit: 60 * M, gasUsed: 45 * M },
       { txs: 4, gasLimit: 60 * M, gasUsed: 60 * M },
     ]);
     indexer = createIndexer({ pool: db.pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
     await indexer.open();
-    expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 3 });
+    expect(await indexer.runOnce()).toEqual({ state: "caught-up", indexed: 11 });
     await rollupStats(db.pool, { now: () => NOW });
   });
   afterAll(async () => { await indexer?.close().catch(() => undefined); await db?.drop(); });
 
   it("stores the limit and the gas used of each block as they are", async () => {
     const rows = (await db.pool.query("select number::int as number, gas_limit::text as gas_limit, gas_used::text as gas_used from blocks order by number")).rows;
-    expect(rows).toEqual([
-      { number: 1, gas_limit: "30000000", gas_used: "12000000" },
-      { number: 2, gas_limit: "60000000", gas_used: "45000000" },
-      { number: 3, gas_limit: "60000000", gas_used: "60000000" },
+    expect(rows.slice(0, 8)).toEqual(Array.from({ length: 8 }, (_, i) => ({ number: i + 1, gas_limit: "300000000", gas_used: "270000000" })));
+    expect(rows.slice(8)).toEqual([
+      { number: 9, gas_limit: "30000000", gas_used: "12000000" },
+      { number: 10, gas_limit: "60000000", gas_used: "45000000" },
+      { number: 11, gas_limit: "60000000", gas_used: "60000000" },
     ]);
   });
 
   it("serves them from the block route, the block list and the CSV export", async () => {
-    const one = (await get("/api/blocks/2")).body as Record<string, unknown>;
-    expect(one).toMatchObject({ number: 2, gasUsed: 45 * M, gasLimit: 60 * M });
-    const list = (await get("/api/blocks?limit=10")).body as { items?: Array<Record<string, unknown>>; blocks?: Array<Record<string, unknown>> };
-    const items = list.items ?? list.blocks ?? [];
-    expect(items.find((b) => b.number === 3)).toMatchObject({ gasUsed: 60 * M, gasLimit: 60 * M });
-    expect(items.find((b) => b.number === 1)).toMatchObject({ gasUsed: 12 * M, gasLimit: 30 * M });
+    const one = (await get("/api/blocks/10")).body as Record<string, unknown>;
+    expect(one).toMatchObject({ number: 10, gasUsed: 45 * M, gasLimit: 60 * M });
+    expect((await get("/api/blocks/1")).body).toMatchObject({ number: 1, gasUsed: 270 * M, gasLimit: 300 * M });
+    const list = (await get("/api/blocks?limit=20")).body as { items: Array<Record<string, unknown>> };
+    expect(list.items.find((b) => b.number === 11)).toMatchObject({ gasUsed: 60 * M, gasLimit: 60 * M });
+    expect(list.items.find((b) => b.number === 9)).toMatchObject({ gasUsed: 12 * M, gasLimit: 30 * M });
+    const csv = (await get("/api/blocks?format=csv")).body as string;
+    expect(csv.split("\n").find((l) => l.startsWith("10,"))).toContain(",45000000,60000000,");
   });
 
-  it("rolls the gas up in whole numbers, and fullness divides by the blocks' own limits", async () => {
+  it("rolls the gas up in whole numbers past 2^31, and fullness divides by the blocks' own limits", async () => {
     const rows = (await db.pool.query("select sum(gas_used)::text as used, sum(gas_limit_sum)::text as lim from stats_minute")).rows[0];
-    expect(rows).toEqual({ used: String(117 * M), lim: String(150 * M) });
+    expect(rows).toEqual({ used: String(2277 * M), lim: String(2550 * M) });
     const s = (await get("/api/stats/summary?window=1h")).body as { fullness: number | null };
-    expect(s.fullness).toBeCloseTo(117 / 150, 6);
+    expect(s.fullness).toBeCloseTo(2277 / 2550, 6);
+  });
+
+  it("gives the gas oracle each recent block's used share of its own limit", async () => {
+    const sample = await createEtherscanRest(db.pool).feeSample();
+    expect(sample?.usedRatios).toEqual([0.9, 0.9, 12 / 30, 0.75, 1]);
   });
 });
 
@@ -82,10 +93,11 @@ describe.skipIf(!TEST_URL)("an update with no block record, read from Canton by 
     const chain = makeChain([{ txs: 2, gasLimit: 30 * M }, { txs: 3, gasLimit: 60 * M, gasUsed: 50 * M }, { txs: 2, gasLimit: 60 * M, gasUsed: 55 * M }]);
     const rec = (i: number) => chain.blocks[i]!.record;
     const block = (i: number) => transaction(rec(i).offset, rec(i).updateId, [createdEvent(rec(i).offset, fields(rec(i)))], rec(i).recordTime);
-    // The gas cap's own update creates and archives contracts of other templates, and no block record. Offsets 15 and 25 sit between the blocks.
+    // Accepting a gas cap archives the proposal and the chain contract and creates a new chain contract, and no block record. Offsets 15 and 25 sit between the blocks.
     const capUpdate = (offset: number) => transaction(offset, `1220cap${offset}`, [
-      { ArchivedEvent: { offset, nodeId: 0, contractId: "00cap0", templateId: "abc123def456:Zk.Chain:GasCap" } },
-      createdEvent(offset, { operator: OPERATOR, confirmer: CONFIRMER, gasCap: "60000000" }, "abc123def456:Zk.Chain:GasCap"),
+      { ArchivedEvent: { offset, nodeId: 0, contractId: "00cap0", templateId: "abc123def456:Zk.Chain:GasCapProposal" } },
+      { ArchivedEvent: { offset, nodeId: 1, contractId: "00cap1", templateId: "abc123def456:Zk.Chain:ZkChain" } },
+      createdEvent(offset, { operator: OPERATOR, confirmer: CONFIRMER, gasCap: "60000000" }, "abc123def456:Zk.Chain:ZkChain"),
     ]);
     fake = await startFakeLedger([block(0), capUpdate(15), block(1), capUpdate(25), block(2), capUpdate(35)], { ledgerEnd: 35 });
     const ledger = createLedger(fake.url, 2000, FAKE_READER);
