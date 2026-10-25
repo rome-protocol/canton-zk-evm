@@ -941,8 +941,39 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     return payload, pairs
 
 
-def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None,
-           lost: list | None = None, attempt: "Attempt | None" = None) -> dict:
+@dataclass
+class Built:
+    """What the build stage hands on: the block reth built, its legs, the gateway's proofs, and the input folder the prover reads."""
+    n: int
+    chain: dict
+    head: str
+    payload: dict
+    block_hash: str
+    header: bytes
+    txs: bytes
+    legs: list
+    leg_txs: list
+    left_out: list
+    chosen: list
+    pairs: list
+    lost: list
+    work: Path
+    account_nodes: list
+    storage_nodes: list
+
+
+@dataclass
+class Proven:
+    """What the prove stage hands on: the wrapped proof, as lowercase hex, and how long the prover took."""
+    proof: str
+    seconds: float
+
+
+def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None,
+          lost: list | None = None, attempt: "Attempt | None" = None):
+    """Stage one. Cuts the block: chooses its transactions, has reth build it on Canton's head (again without any transaction whose leg has no
+    Canton side), reads the gateway's proofs while the block is reth's tip, and writes the prover's input files. Returns a Built, or, for a
+    block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block."""
     attempt = attempt or Attempt(None, 1)
     n = int(chain["headNumber"]) + 1
     if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
@@ -987,11 +1018,23 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     work.mkdir(parents=True, exist_ok=True)
     (work / "block.json").write_text(json.dumps(reth.call("eth_getBlockByNumber", [payload["blockNumber"], True])))
     (work / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
+    # The gateway's proofs are read while this block is reth's tip, before the prover runs.
+    account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
+    return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
+                 left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work,
+                 account_nodes=account_nodes, storage_nodes=storage_nodes)
+
+
+def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven:
+    """Stage two. Runs the prover on the block's input and checks that the proof commits to this block. A failure is a ProvingError that
+    names the transactions to keep."""
+    attempt = attempt or Attempt(None, 1)
+    work, block_hash = built.work, built.block_hash
     prover = Path(cfg.prove_cmd).name
     attempt.event("proof_queued", prover=prover)
     proving = time.monotonic()
     outcome = "failed"
-    kept = [t["hash"] for t in chosen]
+    kept = [t["hash"] for t in built.chosen]
     # Each attempt has its own output folder: a prover left behind by a killed builder writes into the old one, never into this one.
     for old in work.glob("out*"):
         shutil.rmtree(old, ignore_errors=True)
@@ -1016,8 +1059,17 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     os.replace(out, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
     attempt.event("proof_ended", prover=prover, outcome="ok", seconds=prove_seconds)
+    return Proven(proof, prove_seconds)
 
-    account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
+
+def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None) -> dict:
+    """Stage three. Sends the Advance with the proof and the gateway's proofs, and settles the answer: commit (reth's head moves to the block), refusal or
+    not taken (reth goes back to Canton's head and the transactions return to the pool), or unknown (nothing moves)."""
+    attempt = attempt or Attempt(None, 1)
+    n, chain, head, block_hash, header, txs, legs = built.n, built.chain, built.head, built.block_hash, built.header, built.txs, built.legs
+    chosen, left_out, leg_txs, lost, work = built.chosen, built.left_out, built.leg_txs, built.lost, built.work
+    account_nodes, storage_nodes = built.account_nodes, built.storage_nodes
+    proof, prove_seconds = proven.proof, proven.seconds
     argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proof,
                 "gatewayAccountNodes": account_nodes, "gatewayStorageNodes": storage_nodes, "legs": legs}
     argument_text = json.dumps(argument)
@@ -1109,6 +1161,15 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     clear_unresolved(cfg)   # last: should reth's move above fail, the record stays and the next start settles the block as committed
     return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
 
+
+def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None,
+           lost: list | None = None, attempt: "Attempt | None" = None) -> dict:
+    """One block through the three stages: build, prove, submit."""
+    attempt = attempt or Attempt(None, 1)
+    built = build(cfg, reth, chain, head, exclude, prove_empty, unknown_pairs, lost, attempt)
+    if isinstance(built, dict):   # skipped: nothing to prove or submit
+        return built
+    return submit(cfg, reth, built, prove(cfg, built, attempt), unknown_pairs, attempt)
 
 PUBLIC_AT = 832   # the proof (768), the program key (32) and the release root (32) come before the public values
 

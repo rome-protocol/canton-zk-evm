@@ -154,6 +154,17 @@
    ]
   ],
   [
+   "reth",
+   "eth_getProof",
+   [
+    "0xa7e0000000000000000000000000000000000000",
+    [
+     "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
+    ],
+    "0x5"
+   ]
+  ],
+  [
    "prover",
    "fake-make-input.sh",
    "<dir>/work/block-5/block.json",
@@ -166,17 +177,6 @@
    "fake-prove.sh",
    "<dir>/work/block-5/input.bin",
    "<dir>/work/block-5/out-<pid>-<ns>"
-  ],
-  [
-   "reth",
-   "eth_getProof",
-   [
-    "0xa7e0000000000000000000000000000000000000",
-    [
-     "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
-    ],
-    "0x5"
-   ]
   ],
   [
    "ledger",
@@ -514,6 +514,17 @@
    ]
   ],
   [
+   "reth",
+   "eth_getProof",
+   [
+    "0xa7e0000000000000000000000000000000000000",
+    [
+     "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
+    ],
+    "0x5"
+   ]
+  ],
+  [
    "prover",
    "fake-make-input.sh",
    "<dir>/work/block-5/block.json",
@@ -526,17 +537,6 @@
    "fake-prove.sh",
    "<dir>/work/block-5/input.bin",
    "<dir>/work/block-5/out-<pid>-<ns>"
-  ],
-  [
-   "reth",
-   "eth_getProof",
-   [
-    "0xa7e0000000000000000000000000000000000000",
-    [
-     "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
-    ],
-    "0x5"
-   ]
   ],
   [
    "ledger",
