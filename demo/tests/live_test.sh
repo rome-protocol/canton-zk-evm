@@ -145,6 +145,20 @@ run setup || fail "setup with CZE_WTKB failed: $(tail -5 "$WORK/out")"
 [ "$(calls 'canton register-token 0x5555555555555555555555555555555555555555')" = 1 ] || fail "setup did not register the token CZE_WTKB names"
 [ ! -e "$WORK/state/demo/wtkb.json" ] || fail "setup kept a wtkb.json for a token it did not make"
 
+# ---- CZE_WTKB: a token not registered on Canton must be called Wrapped TKB / wTKB; a mistyped address is not registered
+reset
+echo "Some Other Token" > "$FAKE/name"
+EXTRA=(CZE_WTKB=0x5555555555555555555555555555555555555555)
+run setup && fail "setup registered a token called Some Other Token as wTKB"
+grep -q "CZE_WTKB names the token" "$WORK/out" || fail "the wrong name does not name CZE_WTKB: $(tail -3 "$WORK/out")"
+[ "$(calls 'canton register-token')" = 0 ] || fail "setup registered a CZE_WTKB token that is not wTKB"
+[ "$(calls 'canton accept ')" = 0 ] || fail "setup made an acceptance although the CZE_WTKB token is not wTKB"
+# One that is registered already is used as it is: nothing is registered, and it is not read for its name.
+touch "$FAKE/registered"
+run setup || fail "setup with a registered CZE_WTKB failed: $(tail -3 "$WORK/out")"
+[ "$(calls 'canton register-token')" = 0 ] || fail "setup registered a CZE_WTKB token that was registered already"
+EXTRA=()
+
 # ---- a wTKB address in mixed case is the same address
 reset
 EXTRA=(CZE_WTKB=0xAbCdEf0123456789aBcDeF0123456789AbCdEf01)
@@ -182,7 +196,12 @@ grep -q "U holds less than 20 TKB" "$WORK/out" || fail "the short TKB is not nam
 jq '.u = 20' "$WORK/balances.json" > "$WORK/enough.json"
 legs_run "$WORK/enough.json" || fail "legs did not run with exactly 20 TKB: $(tail -3 "$WORK/out")"
 # A failed read of wTKB's supply stops legs: it is not taken for a number.
-FAKE_FAIL=wrapped legs_run "$WORK/balances.json" && fail "legs ran although reading wTKB's supply failed"
+# It runs on a fresh state (custody 0, supply 0, so nothing else could stop legs): it stops at the read, before run 1.
+echo '{"u":100,"v":0,"cust":0,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$WORK/fresh.json"
+FAKE_FAIL=wrapped legs_run "$WORK/fresh.json" && fail "legs ran although reading wTKB's supply failed"
+grep -q "wrapped failed" "$WORK/out" || fail "legs did not stop at the failed read of wTKB: $(tail -3 "$WORK/out")"
+grep -q '== run 1' "$WORK/out" && fail "run 1 started although reading wTKB's supply failed"
+[ "$(jq .cust "$WORK/fresh.json")" = 0 ] || fail "legs changed the custody although it stopped at the read"
 # Canton's custody and wTKB's supply must be equal before the runs, or live.sh stops.
 echo '{"u":100,"v":0,"cust":3,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$WORK/odd.json"
 legs_run "$WORK/odd.json" && fail "legs ran with a custody that differs from wTKB's supply"

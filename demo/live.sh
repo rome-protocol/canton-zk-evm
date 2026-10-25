@@ -21,7 +21,7 @@
 # (network/external/setup.py --demo), V's and U's addresses (evm.py keys prints them) holding the chain's coin, and the block producer running with
 # --disclosed $CZE_STATE_DIR/demo/disclosed.json (the file canton.py setup writes). Settings: CZE_STATE_DIR, CZE_LEDGER_URL, CZE_RPC_URL, the
 # token files and CZE_USER_PREFIX of demo/canton.py, CZE_WTROME (the WtROME address; legs), CZE_SOURCE_COMMIT (the full commit hash of the
-# source that runs; legs), CZE_WTKB (an already registered wrapped TKB: setup then does not make one), CZE_LIVE_WAIT_SECONDS (default 600),
+# source that runs; legs), CZE_WTKB (a wrapped TKB that setup does not make: one that is not yet registered on Canton must be called Wrapped TKB / wTKB), CZE_LIVE_WAIT_SECONDS (default 600),
 # CZE_LIVE_RESULTS. CZE_LIVE_EVM and CZE_LIVE_CANTON name other commands in place of evm.py and canton.py (for tests only).
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || { echo "FAIL: demo/live.sh needs bash 4.4 or later" >&2; exit 1; }   # set -e then holds inside "$(...)" too
@@ -93,10 +93,12 @@ final() {
 # <token>: the gateway token at that address, in the finalized block, is named Wrapped TKB / wTKB. The address that `evm.py register` gives is
 # worked out before the transaction is sent; if something else is there, wtkb.json names an address that is some other token. An error from the
 # chain stops the run in `evm describe` (set -e): only an answer that says "no token" or another name gets here.
+# A second argument "CZE_WTKB" is for the address the operator gave: the message names the setting, not wtkb.json.
 named() {
   local described name symbol state registered
   described=$(evm describe "$1" finalized); name=$(jq -r .name <<<"$described"); symbol=$(jq -r .symbol <<<"$described")
   if [ "$name" != "Wrapped TKB" ] || [ "$symbol" != wTKB ]; then
+    [ "${2:-}" != CZE_WTKB ] || fail "CZE_WTKB names the token at $1, which is called '$name' ($symbol), not 'Wrapped TKB' (wTKB): it was not registered, and it is not registered as TKB's EVM form. Check the address"
     state=$(canton registered "$1"); registered=$(jq -r .registered <<<"$state")
     # Clearing wtkb.json makes another wTKB: never advised where this address is registered on Canton already.
     [ "$registered" != true ] || fail "the token at $1 is called '$name' ($symbol), not 'Wrapped TKB' (wTKB), and it is registered on Canton: stop and look at it"
@@ -109,9 +111,12 @@ setup() {
   step "the token rules and U's TKB on Canton"
   canton setup | jq -c .   # makes the rules and U's holding only if they are not there
 
-  local wtkb_file=$DEMO/wtkb.json wtkb tx
+  local wtkb_file=$DEMO/wtkb.json wtkb tx state
   if [ -n "${CZE_WTKB:-}" ]; then
     wtkb=$CZE_WTKB
+    # An unregistered token is about to become TKB's EVM form: it must be the gateway's wTKB, or a mistyped address would be registered.
+    state=$(canton registered "$wtkb")
+    [ "$(jq -r .registered <<<"$state")" = true ] || named "$wtkb" CZE_WTKB
   elif [ -f "$wtkb_file" ]; then
     wtkb=$(jq -r .token "$wtkb_file"); tx=$(jq -r .tx "$wtkb_file")
     step "wTKB was made before, at $wtkb"
@@ -129,7 +134,7 @@ setup() {
   fi
 
   step "wTKB is registered on Canton as the EVM form of TKB, and U accepts withdrawals"
-  local state is_registered registered_token accepted_now accepted
+  local is_registered registered_token accepted_now accepted
   state=$(canton registered "$wtkb"); is_registered=$(jq -r .registered <<<"$state")
   if [ "$is_registered" = true ]; then
     echo "wTKB is registered already"
