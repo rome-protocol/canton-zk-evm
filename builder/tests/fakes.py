@@ -39,6 +39,29 @@ def rlp(x) -> bytes:
     return _len(len(body), 0xC0) + body
 
 
+def rlp_decode(b: bytes):
+    """The inverse of rlp(): a list of byte strings and lists."""
+    def item(i):
+        t = b[i]
+        if t < 0x80:
+            return b[i:i + 1], i + 1
+        if t < 0xB8:
+            return b[i + 1:i + 1 + t - 0x80], i + 1 + t - 0x80
+        if t < 0xC0:
+            n = int.from_bytes(b[i + 1:i + t - 0xB7], "big"); s = i + t - 0xB7
+            return b[s:s + n], s + n
+        if t < 0xF8:
+            n, s = t - 0xC0, i + 1
+        else:
+            n = int.from_bytes(b[i + 1:i + t - 0xF6], "big"); s = i + t - 0xF6
+        end, out, j = s + n, [], s
+        while j < end:
+            x, j = item(j)
+            out.append(x)
+        return out, end
+    return item(0)[0]
+
+
 def _len(n: int, base: int) -> bytes:
     if n < 56:
         return bytes([base + n])
@@ -339,6 +362,11 @@ class FakeLedger:
         self.garbage_reply = False   # Advance is answered with bytes that are not an HTTP reply (http.client.BadStatusLine)
         self.head_fails_after_submit = False   # once Advance has been submitted, reading the ZkChain contract fails (HTTP 500)
         self.head = {"headNumber": str(HEAD_NUMBER), "headHash": HEAD_HASH[2:]}
+        # The ZkChain contracts of the builder: the ids that can be exercised now. Each commit archives the contract it exercised and
+        # creates a new one with a new id (as Canton does), and a command on an archived or an unknown id is refused.
+        self.cids = ["chain-cid"] if chains == 1 else [f"chain-cid-{i}" for i in range(chains)]
+        self.consumed: list = []
+        self.commit_count = 0
         self.submitted: list = []
         self.queries: list = []
         self.bad_auth = 0
@@ -363,12 +391,32 @@ class FakeLedger:
 
     def land(self, ok: bool = True, message: str = "rejected") -> None:
         """The commands held back by `late` are decided now: committed (the head moves) or failed (the head stays)."""
-        for command_id, header in self.pending:
-            if ok:
-                self.head = {"headNumber": str(int(self.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
-            self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok else \
-                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": message}}
+        for command_id, header, cid in self.pending:
+            no = self.refusal(header, cid) if ok else None   # it is decided now, against the head as it is now, as Canton does
+            if ok and not no:
+                self.advance(header, cid)
+            self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok and not no else \
+                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": no[2] if no else message}}
         self.pending = []
+
+    def advance(self, header: bytes, cid: str) -> None:
+        """A committed Advance: the head moves to the block, the exercised contract is archived and a new one (a new id) is created."""
+        self.head = {"headNumber": str(int(self.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
+        self.commit_count += 1
+        self.consumed.append(cid)
+        self.cids[self.cids.index(cid)] = f"{cid.split('@')[0]}@{self.commit_count}"
+
+    def refusal(self, header: bytes, cid: str):
+        """What Canton says to an Advance that cannot run (Chain.daml:137-138, 151), as (HTTP status, error code, cause); None when it can."""
+        if cid not in self.cids:
+            known = "archived" if cid in self.consumed else "unknown"
+            return 404, "CONTRACT_NOT_FOUND", f"Contract could not be found: the contract id is {known}: {cid}"
+        parent, number = rlp_decode(header)[:2]
+        if parent.hex() != self.head["headHash"]:
+            return 409, "INTERPRETATION_ERROR", "the block's parent is not the chain's head"
+        if int.from_bytes(number, "big") != int(self.head["headNumber"]) + 1:
+            return 409, "INTERPRETATION_ERROR", "the block's number is not the head's plus one"
+        return None
 
     def close(self):
         self.http.shutdown()
@@ -420,7 +468,7 @@ class FakeLedger:
             return {"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "templateId": f"pkg:Zk.Chain:{name}", "createArgument": args}}}}
         if template.endswith(":ZkChain"):
-            own = [entry(f"chain-cid-{i}" if self.chains != 1 else "chain-cid", "ZkChain", self.chain_args()) for i in range(self.chains)]
+            own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
         for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms)):
             if template.endswith(":" + name):
@@ -502,13 +550,17 @@ class FakeLedger:
                         return self._reply(409, {"code": "INTERPRETATION_ERROR", "cause": ledger.refuse})
                     if ledger.reply_status:
                         return self._reply(ledger.reply_status, {"cause": "x"})
-                    arg = body["commands"][0]["ExerciseCommand"]["choiceArgument"]
-                    header = bytes.fromhex(arg["headerHex"])
+                    exercise = body["commands"][0]["ExerciseCommand"]
+                    header = bytes.fromhex(exercise["choiceArgument"]["headerHex"])
+                    no = ledger.refusal(header, exercise["contractId"])
+                    if no:   # Canton's own checks: the command is decided at once and fails
+                        ledger.outcomes[command_id] = failed
+                        return self._reply(no[0], {"code": no[1], "cause": no[2]})
                     if ledger.late:
-                        ledger.pending.append((command_id, header))
+                        ledger.pending.append((command_id, header, exercise["contractId"]))
                         return self._reply(503, {"code": "REQUEST_TIME_OUT", "cause": "The server was not able to produce a timely response"})
                     if ledger.commit:
-                        ledger.head = {"headNumber": str(int(ledger.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
+                        ledger.advance(header, exercise["contractId"])
                     ledger.outcomes[command_id] = {"commandId": command_id, "offset": 43, "updateId": "u1", "status": {}} if ledger.commit else failed
                     if ledger.garbage_reply:
                         self.close_connection = True
