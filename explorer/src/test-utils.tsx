@@ -262,7 +262,7 @@ export const tokenItem = (n: number, over: Partial<TokenListItem> = {}): TokenLi
 export const tokenDetail = (n = 0xcb, over: Partial<TokenDetail> = {}): TokenDetail => ({ ...tokenItem(n), totalSupplyBlock: 21, balanceMode: "derived", derived: true, canton: null, ...over });
 /** What the gateway holds on Canton of a registered token's instrument: 1,000 whole units of 10 decimals. */
 export const cantonCustody = (over: Partial<CantonCustody> = {}): CantonCustody => ({
-  instrumentAdmin: "registry::1220" + "ff".repeat(32), instrumentId: "TKB", custody: "10000000000000", custodyDecimals: 10, holdings: 2, ledgerOffset: 4242, readAt: "2026-10-25T10:00:00.000Z", ...over,
+  instrumentAdmin: "registry::1220" + "ff".repeat(32), instrumentId: "TKB", custody: "10000000000000", custodyDecimals: 10, holdings: 2, supply: "1000000000", supplyBlock: 21, ledgerOffset: 4242, readAt: "2026-10-25T10:00:00.000Z", ...over,
 });
 export const tokenHolder = (n: number, value: string, over: Partial<TokenHolder> = {}): TokenHolder => ({ holder: addr(n), tokenId: "0", value, updatedBlock: 20, ...over });
 export const tokenTransfer = (n: number, over: Partial<AddressTransferItem> = {}): AddressTransferItem => ({

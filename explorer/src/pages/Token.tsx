@@ -258,7 +258,7 @@ export function Token() {
           : "The explorer has not read this token's name, symbol or decimals from the contract yet, so amounts are shown raw until it has."}</p></aside>
       )}
       <Cards t={t} />
-      {(t.canton || t.gatewayWrapped) && <CantonCustody t={t} />}
+      {t.canton && <CantonCustody t={t} canton={t.canton} />}
       <Holders t={t} />
       <Transfers t={t} />
       <Information t={t} />

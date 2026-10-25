@@ -391,8 +391,11 @@ export interface TokenListItem extends TokenInfo {
 }
 export type TokenSort = "holders" | "transfers" | "newest";
 /** One token: `balanceMode` says whether its balances are summed from the Transfer logs ("derived") or read with balanceOf. */
-/** What the gateway holds on Canton of the instrument a token was registered for: `custody` is in base units of `custodyDecimals`, read at the ledger offset `ledgerOffset` at `readAt`. */
-export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; ledgerOffset: number; readAt: string }
+/**
+ * What the gateway holds on Canton of the instrument a token was registered for: `custody` is in base units of `custodyDecimals`, and `supply` the token's own
+ * totalSupply (null when it did not answer); both are read at block `supplyBlock` (the custody at the ledger offset `ledgerOffset` of that block's record), at `readAt`.
+ */
+export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 export interface TokenDetail extends TokenListItem { totalSupplyBlock: number | null; balanceMode: string; derived: boolean; canton: CantonCustody | null }
 export interface TokenHolder { holder: string; tokenId: string; value: string; updatedBlock: number }
 const tk = (a: string, sub = "") => `/api/tokens/${encodeURIComponent(a)}${sub}`;
