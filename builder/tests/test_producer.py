@@ -1057,7 +1057,7 @@ class SavedBlock(Loop):
         wrapper.chmod(0o755)
         s.cfg.prove_cmd = str(wrapper)
         self.assertTrue(b.build_block(s.cfg)["committed"])
-        self.assertEqual(json.loads(seen.read_text()), [{"hash": t["hash"], "raw": tb.raw_of(t)}])
+        self.assertEqual(json.loads(seen.read_text()), [{"hash": t["hash"], "raw": tb.raw_of(t), "number": HEAD_NUMBER + 1}])
         self.assertFalse(self.saved(s).exists())
 
     def test_a_refused_block_and_a_failed_one_leave_nothing_on_disk(self):
@@ -1186,7 +1186,20 @@ class SavedBlock(Loop):
         p.step()
         self.assertIn("could not be read", self.reports[0]["error"])
         self.assertFalse(self.saved(s).exists())
-        self.assertTrue(self.saved(s).with_name(self.saved(s).name + ".unreadable").exists())
+        self.assertEqual(len(list(self.saved(s).parent.glob(self.saved(s).name + ".unreadable-*"))), 1)
+        p.step()
+        self.assertEqual(len(self.reports), 1)
+
+    def test_a_file_that_is_not_valid_text_is_moved_aside_whole_and_does_not_stop_the_chain(self):
+        s = self.setup({})
+        self.saved(s).parent.mkdir(parents=True, exist_ok=True)
+        self.saved(s).write_bytes(b"\xff[")
+        p = self.producer(s)
+        p.step()
+        self.assertIn("could not be read", self.reports[0]["error"])
+        self.assertFalse(self.saved(s).exists())
+        aside = list(self.saved(s).parent.glob(self.saved(s).name + ".unreadable-*"))
+        self.assertEqual([x.read_bytes() for x in aside], [b"\xff["])
         p.step()
         self.assertEqual(len(self.reports), 1)
 

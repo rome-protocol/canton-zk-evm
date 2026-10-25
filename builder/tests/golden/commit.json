@@ -239,16 +239,16 @@
   [
    "prover",
    "fake-make-input.sh",
-   "<dir>/work/block-5/block.json",
-   "<dir>/work/block-5/witness.json",
+   "<dir>/work/block-5/attempt-<pid>-<ns>/block.json",
+   "<dir>/work/block-5/attempt-<pid>-<ns>/witness.json",
    "<dir>/genesis.json",
-   "<dir>/work/block-5/input.bin"
+   "<dir>/work/block-5/attempt-<pid>-<ns>/input.bin"
   ],
   [
    "prover",
    "fake-prove.sh",
-   "<dir>/work/block-5/input.bin",
-   "<dir>/work/block-5/out-<pid>-<ns>"
+   "<dir>/work/block-5/attempt-<pid>-<ns>/input.bin",
+   "<dir>/work/block-5/attempt-<pid>-<ns>/out"
   ],
   [
    "ledger",
