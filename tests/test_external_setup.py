@@ -21,7 +21,7 @@ FAKE_TOKENS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer"
 class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
-        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": []}, []
+        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": []}, []
         self.dep, self.dep_vetted, self.ignores_query = None, True, False   # a dependency of the package, whether it is vetted; a participant that ignores vetAllPackages
         self.invalid_dar, self.updates = False, []   # a DAR that /v2/dars/validate refuses; the bodies of /v2/package-vetting/update
         self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
@@ -114,7 +114,16 @@ class FakeParticipant:
             return [{"contractEntry": {"JsActiveContract": {"createdEvent": {"contractId": c["contractId"], "createArgument": c["args"]}}}} for c in self.contracts.get(name, [])]
         if path == "/v2/commands/submit-and-wait":
             command = body["commands"][0]
-            if "CreateCommand" in command:
+            self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
+            if "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].endswith("GasCapProposal"):
+                exercise = command["ExerciseCommand"]
+                [proposal] = [c for c in self.contracts["GasCapProposal"] if c["contractId"] == exercise["contractId"]]
+                [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["choiceArgument"]["chain"]]
+                self.contracts["GasCapProposal"].remove(proposal)
+                chain["args"]["gasCap"] = proposal["args"]["newCap"]
+            elif "CreateCommand" in command and command["CreateCommand"]["templateId"].endswith("GasCapProposal"):
+                self.contracts["GasCapProposal"].append({"contractId": "g1", "args": command["CreateCommand"]["createArguments"]})
+            elif "CreateCommand" in command:
                 self.contracts["ChainProposal"].append({"contractId": "p1", "args": command["CreateCommand"]["createArguments"]})
             else:
                 proposal, = self.contracts["ChainProposal"]
@@ -323,6 +332,129 @@ class Setup(unittest.TestCase):
         self.node.contracts["ZkChain"][0]["args"].update({"headNumber": "1", "headHash": "99" * 32, "headStateRoot": "98" * 32})
         _, out, _ = self.run_setup()
         self.assertEqual(json.loads(out)["headNumber"], "1")
+
+    def raise_step(self, step, new_cap, *extra):
+        """setup.py --gas-cap-step: only the operator's or the confirmer's token; returns the JSON line it printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--gas-cap-step", step, "--new-gas-cap", str(new_cap), *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def sent(self):
+        return getattr(self.node, "submitted", [])
+
+    def test_a_proposed_gas_cap_is_accepted_and_the_chain_check_takes_the_raised_cap(self):
+        self.run_setup()
+        before = len(self.sent())
+        proposed = self.raise_step("propose", 50_000_000)
+        self.assertEqual((proposed["submitted"], proposed["currentGasCap"], proposed["newGasCap"]), (True, "30000000", "50000000"))
+        [(command, acts)] = self.sent()[before:]
+        self.assertEqual(acts, ["ostia-operator::1220fp"])
+        self.assertEqual(command["CreateCommand"]["createArguments"]["newCap"], "50000000")
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "30000000")   # the proposal alone changes nothing
+        accepted = self.raise_step("accept", 50_000_000)
+        self.assertTrue(accepted["submitted"])
+        self.assertEqual(self.sent()[-1][1], ["ostia-confirmer::1220fp"])
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choiceArgument"], {"chain": "c1"})
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "50000000")
+        self.assertEqual(self.node.contracts["GasCapProposal"], [])
+        _, out, _ = self.run_setup()   # the chain check: the live cap is above PINS' and passes
+        self.assertFalse(json.loads(out)["created"])
+
+    def test_a_dry_run_submits_nothing_and_says_what_it_would_do(self):
+        self.run_setup()
+        before = len(self.sent())
+        dry = self.raise_step("propose", 40_000_000, "--dry-run")
+        self.assertEqual((dry["dryRun"], dry["submitted"]), (True, False))
+        self.assertEqual(self.node.contracts["GasCapProposal"], [])
+        self.raise_step("propose", 40_000_000)
+        before = len(self.sent())
+        dry = self.raise_step("accept", 40_000_000, "--dry-run")
+        self.assertEqual((dry["dryRun"], dry["submitted"], dry["newGasCap"]), (True, False, "40000000"))
+        self.assertEqual(len(self.sent()), before)
+        self.assertEqual(len(self.node.contracts["GasCapProposal"]), 1)
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "30000000")
+
+    def test_a_cap_the_daml_would_refuse_is_refused_before_anything_is_submitted(self):
+        self.run_setup()
+        before = len(self.sent())
+        for value, why in ((30_000_000, "above"), (20_000_000, "above"), (60_000_001, "double")):
+            for step in ("propose",):
+                with self.subTest(value=value, step=step), self.assertRaises(SystemExit) as ctx:
+                    self.raise_step(step, value)
+                self.assertIn(why, str(ctx.exception))
+        self.assertEqual(len(self.sent()), before)
+        self.assertEqual(self.node.contracts["GasCapProposal"], [])
+
+    def test_a_cap_over_300_million_is_refused(self):
+        self.run_setup()
+        self.node.contracts["ZkChain"][0]["args"]["gasCap"] = "200000000"   # a chain whose cap was raised before: double of it is over the highest
+        before = len(self.sent())
+        for value in (300_000_001, 400_000_000):
+            with self.subTest(value=value), self.assertRaises(SystemExit) as ctx:
+                self.raise_step("propose", value)
+            self.assertIn("300000000", str(ctx.exception))
+        self.raise_step("propose", 300_000_000, "--dry-run")
+        self.assertEqual(len(self.sent()), before)
+
+    def test_the_accept_refuses_a_cap_that_is_no_longer_a_raise_and_one_nobody_proposed(self):
+        self.run_setup()
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("no proposal", str(ctx.exception))
+        self.raise_step("propose", 50_000_000)
+        self.node.contracts["ZkChain"][0]["args"]["gasCap"] = "60000000"   # the chain moved on after the proposal
+        before = len(self.sent())
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("above", str(ctx.exception))
+        self.assertEqual(len(self.sent()), before)
+
+    def test_a_second_propose_for_the_same_cap_changes_nothing_and_another_cap_is_refused(self):
+        self.run_setup()
+        self.raise_step("propose", 50_000_000)
+        before = len(self.sent())
+        again = self.raise_step("propose", 50_000_000)
+        self.assertEqual((again["submitted"], again["alreadyProposed"]), (False, True))
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("propose", 45_000_000)
+        self.assertIn("50000000", str(ctx.exception))
+        self.assertEqual(len(self.sent()), before)
+
+    def test_each_gas_cap_step_needs_only_its_own_token_and_sends_no_other(self):
+        self.run_setup()
+        self.node.calls.clear()
+        os.environ.pop("CZE_TOKEN_FILE_ADMIN"); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        self.raise_step("propose", 50_000_000)
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-operator-2"})
+        os.environ["CZE_TOKEN_FILE_CONFIRMER"] = str(self.tokens["confirmer"]); os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
+        self.node.calls.clear()
+        self.raise_step("accept", 50_000_000)
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-confirmer-3"})
+        os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 60_000_000)
+        self.assertIn("CZE_TOKEN_FILE_CONFIRMER", str(ctx.exception))
+
+    def test_a_gas_cap_step_refuses_the_chain_arguments_the_demo_and_a_missing_value(self):
+        for extra in (["--demo"], ["--package-step", "check"], ["--", *CHAIN_ARGS]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--gas-cap-step", "propose", "--new-gas-cap", "5", *extra])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            setup.main(["--ledger-url", self.node.url, "--gas-cap-step", "propose"])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), "--new-gas-cap", "5"])
+
+    def test_a_chain_whose_cap_is_below_the_pinned_one_is_refused_and_one_above_it_is_found(self):
+        self.run_setup()
+        self.node.contracts["ZkChain"][0]["args"]["gasCap"] = "29999999"
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_setup()
+        self.assertIn("gasCap", str(ctx.exception))
+        self.node.contracts["ZkChain"][0]["args"]["gasCap"] = "90000000"
+        _, out, _ = self.run_setup()
+        self.assertFalse(json.loads(out)["created"])
 
     def test_a_chain_with_another_program_is_refused_at_any_block(self):
         self.run_setup()

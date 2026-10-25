@@ -29,6 +29,16 @@
               the vetting would be, and applies nothing). Does nothing where all of them are vetted by this participant.
     Without --package-step the setup above is unchanged: it uploads with vetting on, as before.
 
+  setup.py --ledger-url <URL> --gas-cap-step propose|accept --new-gas-cap <N> [--dry-run]
+
+    Raises the gas cap of a chain that runs (the cap is a field of the chain contract), in two steps, each by one user and each printing one JSON line.
+    No DAR, parties or users are touched: the parties are read from $CZE_STATE_DIR/canton/parties.env, as propose.py reads them.
+      propose  the operator's token: creates a GasCapProposal for the chain's one contract. Nothing is done if the same proposal is there already.
+      accept   the confirmer's token: exercises AcceptGasCap on the proposal for exactly --new-gas-cap, given the chain's current contract.
+    Both refuse, before anything is sent, a value that the Daml would refuse: not above the chain's current cap, more than double it, or over
+    300,000,000. With --dry-run nothing is submitted: the step prints what it would do ("dryRun": true). The accept stops the builder's
+    blocks for the moment it takes (the chain contract is replaced), as every block does.
+
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
@@ -318,6 +328,58 @@ def write_parties(parties: dict, state: Path) -> None:
     out.chmod(0o600)
 
 
+MAX_GAS_CAP = 300_000_000   # the Daml's maxGasCap
+
+
+def check_gas_cap(current: int, new: int) -> None:
+    """The refusals of the chain's SetGasCap, made before anything is submitted: a cap only goes up, by at most double, and never over MAX_GAS_CAP."""
+    if new <= current:
+        raise SystemExit(f"the new gas cap {new} must be above the chain's current one ({current}): a cap only goes up")
+    if new > 2 * current:
+        raise SystemExit(f"the new gas cap {new} is more than double the chain's current one ({current}): a cap may at most double in one change")
+    if new > MAX_GAS_CAP:
+        raise SystemExit(f"the new gas cap {new} is over the highest a chain may have ({MAX_GAS_CAP})")
+
+
+def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
+    parties = propose.read_env_file(Path(os.environ.get("CZE_STATE_DIR", ROOT / "state")) / "canton" / "parties.env")
+    missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") if not parties.get(k)]
+    if missing:
+        raise SystemExit(f"parties.env in the state directory does not name {missing}: run setup.py first")
+    # The proposal is the operator's alone, so this acts for the operator only (not for the gateway party that the chain's own user also acts for).
+    ledger = (propose.Ledger(url, propose.user_id("operator"), parties["OPERATOR_PARTY"], token=propose.role_token("operator")) if step == "propose"
+              else propose.confirmer_ledger(url, parties))
+    chains = ledger.active("ZkChain")
+    if len(chains) != 1:
+        raise SystemExit(f"expected one chain on this participant, found {len(chains)}")
+    [chain] = chains
+    if chain.get("operator") != parties["OPERATOR_PARTY"] or chain.get("confirmer") != parties["CONFIRMER_PARTY"]:
+        raise SystemExit("the chain on this participant is not between these operator and confirmer parties")
+    current = int(chain["gasCap"])
+    proposals = [p for p in ledger.active("GasCapProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+                 and p.get("confirmer") == chain["confirmer"]]
+    result = {"step": step, "chainId": chain["chainId"], "currentGasCap": str(current), "newGasCap": str(new_cap), "dryRun": dry_run}
+    if step == "propose":
+        check_gas_cap(current, new_cap)
+        other = [p for p in proposals if p.get("newCap") != str(new_cap)]
+        if other:
+            raise SystemExit(f"a proposal for the gas cap {other[0].get('newCap')} is on this participant already; it cannot be withdrawn from here, "
+                             "so ask the confirmer to accept it (or to leave it) before this one")
+        done = bool(proposals)
+        if not done and not dry_run:
+            ledger.submit({"CreateCommand": {"templateId": propose.PKG + "GasCapProposal", "createArguments": {
+                "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"], "newCap": str(new_cap)}}})
+        return {**result, "submitted": not done and not dry_run, "alreadyProposed": done}
+    mine = [p for p in proposals if p.get("newCap") == str(new_cap)]
+    if not mine:
+        raise SystemExit(f"no proposal for the gas cap {new_cap} is on this participant")
+    check_gas_cap(current, new_cap)
+    if not dry_run:
+        ledger.submit({"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
+                                           "choiceArgument": {"chain": chain["contractId"]}}})
+    return {**result, "submitted": not dry_run}
+
+
 def ensure_chain(args, named: dict, url: str) -> dict:
     parties = {name.upper() + "_PARTY": party for name, party in named.items()}   # as propose.py reads them from parties.env
     operator = propose.operator_ledger(url, parties)
@@ -328,12 +390,15 @@ def ensure_chain(args, named: dict, url: str) -> dict:
         [chain] = operator.wait_for("ZkChain")
         log("proposed the chain and accepted it")
     else:
-        # The chain is there. It must be this one: the same chain id, program, root key, rules, gas cap and gateway. ZkChain does not keep the genesis
+        # The chain is there. It must be this one: the same chain id, program, root key, rules, gateway and a gas cap that is not below the pinned one. ZkChain does not keep the genesis
         # (only the head), so a chain still at block 0 is checked by its head, which is the genesis; later blocks cannot be compared with it.
         want = {"chainId": str(args.chain_id), "programVK": args.program_vk, "rootC": args.root_c, "rulesHash": args.rules_hash,
-                "gasCap": str(args.gas_cap), "gatewayAddress": args.gateway_address,
+                "gatewayAddress": args.gateway_address,
                 **({"headHash": args.genesis_hash, "headStateRoot": args.genesis_state_root} if chain.get("headNumber") == "0" else {})}
         wrong = [k for k, v in want.items() if chain.get(k) != v]
+        # The gas cap may have been raised on a live chain (it only goes up), so the cap in PINS is the lowest this chain may have.
+        if not str(chain.get("gasCap")).isdigit() or int(chain["gasCap"]) < int(args.gas_cap):
+            wrong.append("gasCap")
         if wrong:
             raise SystemExit(f"a chain is on this participant already and differs in {wrong}: this setup only finds the chain it made")
         log(f"the chain is there already, at block {chain['headNumber']}")
@@ -346,13 +411,28 @@ def main(argv: list) -> int:
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step: nothing is submitted")
+    ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
+    ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
+    if own.gas_cap_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if own.new_gas_cap is None:
+            ap.error("--gas-cap-step needs --new-gas-cap")
+        if rest or own.demo or own.package_step:
+            ap.error("--gas-cap-step does only the gas cap: no --demo, no --package-step and no chain arguments")
+        check_settings(own.ledger_url, ("operator",) if own.gas_cap_step == "propose" else ("confirmer",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(gas_cap_step(own.ledger_url, own.gas_cap_step, own.new_gas_cap, own.dry_run)))
+        return 0
+    if own.new_gas_cap is not None:
+        ap.error("--new-gas-cap goes with --gas-cap-step")
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet")
+        ap.error("--dry-run goes with --package-step vet or --gas-cap-step")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)

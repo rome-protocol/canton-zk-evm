@@ -1,6 +1,7 @@
 # Pinned versions. Plain key=value, read by the scripts and checked by CI.
 CHAIN_ID=770101
-# The chain's gas limit and block gas cap: genesis gasLimit 0x1c9c380. tests/static.sh checks they agree.
+# The chain's gas limit and block gas cap: genesis gasLimit 0x1c9c380. tests/static.sh checks they agree. This is the cap a new chain starts with:
+# the cap can be raised on a live chain (setup.py --gas-cap-step), and the setup's chain check accepts a chain whose cap is this or higher.
 GAS_CAP=30000000
 RETH_VERSION=2.5.2
 # Each *_IMAGE has a *_IMAGE_ID next to it: the image ID (the config digest of its linux/amd64 manifest, which `docker image inspect --format '{{.Id}}'`
