@@ -27,7 +27,7 @@ CHAIN_ID=$(grep -o '"chainId": *[0-9]*' config.json | grep -o '[0-9]*$')
 RPC=${RPC:-$(grep -o '"rpc": *"[^"]*"' config.json | cut -d'"' -f4)}
 EXPLORER_API=$(grep -o '"explorerApi": *"[^"]*"' config.json | cut -d'"' -f4)
 
-node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir -e "RPC=$RPC" ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} ${LOAD_PHASES:+-e LOAD_PHASES} \
+node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir -e "RPC=$RPC" ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} ${ALLOW_PARTIAL:+-e ALLOW_PARTIAL} ${RESUBMIT_PARTIAL:+-e RESUBMIT_PARTIAL} ${LOAD_PHASES:+-e LOAD_PHASES} \
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
 forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
 

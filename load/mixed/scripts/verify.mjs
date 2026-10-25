@@ -2,7 +2,7 @@
 //   verify.mjs list    writes verify-list.tsv into the run folder: one line per contract that needs a forge call (one per distinct contract, since a copy with the same
 //                      code is matched by the explorer; contracts the explorer already verified are left out): name, address, source:Name, compiler version, evm version, optimizer runs,
 //                      project folder (- for this kit), constructor arguments.
-//                      With RESUBMIT_PARTIAL=1 a contract the explorer holds as partial is sent again too (a new build of the kit should give a full match; the explorer takes 30 an hour).
+//                      With RESUBMIT_PARTIAL=1 a contract the explorer holds as partial is sent again too (resubmitting helps only a contract whose code carries the metadata hash, for example a partial caused by library addresses; code deployed without the hash stays partial; the explorer takes 30 an hour).
 //   verify.mjs check   asks the explorer's /api/contracts/<address> about every deployed contract and prints its match type, then one summary line with the counts of full, similar,
 //                      partial and unverified. Exits 1 if one is unverified or only partial (every contract the kit builds is expected to be full, or similar for a copy made by a factory);
 //                      ALLOW_PARTIAL=1 turns a partial one into a warning, for a run folder from the build without the metadata hash.
