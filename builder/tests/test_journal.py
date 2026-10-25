@@ -63,6 +63,21 @@ class EveryOutcome(Lines):
         self.assertEqual((answered["outcome"], answered["update_id"], answered["completion_offset"], answered["traffic_bytes"]), ("committed", "u1", 43, None))
         self.assertEqual(self.one(s, "final_seen")["number"], HEAD_NUMBER + 1)
 
+    def test_a_pinned_package_is_named_in_built_and_submitted_and_otherwise_not(self):
+        for pin in ("", "ea89dbab" + "0" * 56):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]})
+            s.reth.tx_legs[t["hash"]] = []
+            s.cfg.package_id = pin
+            p = self.producer(s)
+            p.step()
+            for name in ("built", "submitted"):
+                line = self.one(s, name)
+                if pin:
+                    self.assertEqual(line["package_id"], pin)
+                else:
+                    self.assertNotIn("package_id", line)
+
     def test_a_block_canton_refused_ends_with_a_refusal_and_is_never_final(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]}, refuse="the registry says no")
         self.producer(s).step()
