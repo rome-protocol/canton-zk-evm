@@ -35,7 +35,7 @@ CZE_DAR=$("$ROOT/network/canton/build-dar.sh"); export CZE_DAR
 
 H0=$(printf 'ab%.0s' $(seq 32)); H1=$(printf 'bb%.0s' $(seq 32)); VK=$(printf 'cd%.0s' $(seq 32)); RC=$(printf 'ef%.0s' $(seq 32))
 SR=$(printf '55%.0s' $(seq 32)); GW=${GATEWAY_ADDRESS#0x}
-echo "ok $VK $RC $H1 $H0 1 $SR 1700000000 30000000 0 0" > "$FAKE_ANSWER.verify"
+for f in verify verify2; do echo "ok $VK $RC $H1 $H0 1 $SR 1700000000 30000000 0 0" > "$FAKE_ANSWER.$f"; done
 echo "ok $SR 1 $GW 0" > "$FAKE_ANSWER.legs"
 : > "$FAKE_LOG"
 for port in 8085 8086; do python3 "$ROOT/tests/fake_sidecar.py" $port & pids+=($!); done
@@ -81,7 +81,7 @@ after=$(advance head)
 package_id=$("$ROOT/network/canton/dar-id.sh" "$CZE_DAR" | sed -n 's/^package_id=//p')
 "$ROOT/network/canton/check-package.sh" "$package_id" http://127.0.0.1:7575 >/dev/null || fail "the Daml package is not on the operator's participant after the restart"
 # Canton still enforces the chain's rules: a block the sidecar refuses changes nothing.
-echo "no the proof does not verify" > "$FAKE_ANSWER.verify"
+for f in verify verify2; do echo "no the proof does not verify" > "$FAKE_ANSWER.$f"; done
 [ "$(advance refused 2>/dev/null)" = 1 ] || fail "after the restart a refused block moved the head"
 ! grep -qF "$pw" "$CZE_STATE_DIR/net/logs/canton.log" || fail "the database password is in the log"
 echo "persistent network test passed"

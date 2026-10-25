@@ -64,7 +64,7 @@ export CZE_LEDGER_URL=http://127.0.0.1:7575 CZE_READER_LEDGER_URL=http://127.0.0
 
 VERIFY_OK="ok $(printf 'cd%.0s' $(seq 32)) $(printf 'ef%.0s' $(seq 32)) $(printf 'bb%.0s' $(seq 32)) $(printf 'ab%.0s' $(seq 32)) 1 $(printf '55%.0s' $(seq 32)) 1700000000 30000000 0 0"
 LEGS_OK="ok $(printf '55%.0s' $(seq 32)) 1 ${GATEWAY_ADDRESS#0x} 0"
-answers() { echo "$VERIFY_OK" > "$FAKE_ANSWER.verify"; echo "$LEGS_OK" > "$FAKE_ANSWER.legs"; : > "$FAKE_LOG"; }
+answers() { echo "$VERIFY_OK" > "$FAKE_ANSWER.verify"; echo "$VERIFY_OK" > "$FAKE_ANSWER.verify2"; echo "$LEGS_OK" > "$FAKE_ANSWER.legs"; : > "$FAKE_LOG"; }
 mkdir -p "$CZE_STATE_DIR"; answers
 # One sidecar, on 8085: the only confirmer. Canton checks it at start-up (canton.conf), so it runs before Canton does. The idle participants of canton.conf
 # check 8086 at start-up, so a stand-in answers there too; the test fails if it is ever called.
@@ -146,17 +146,17 @@ jq -e --arg t "$wrapped" '.evmToken == $t' <<<"$registered" >/dev/null || fail "
 canton register-token "$wrapped" >/dev/null 2>&1 && fail "a token was registered twice"
 
 # One Advance. The stand-in refuses first: nothing moves. Then it agrees: the head is 1, and the same sidecar was asked in both modes.
-echo "no the proof does not verify" > "$FAKE_ANSWER.verify"
+for f in verify verify2; do echo "no the proof does not verify" > "$FAKE_ANSWER.$f"; done
 mint
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" refused 2>/dev/null)" = 0 ] || fail "a refused block moved the head"
 answers; mint
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" accepted)" = 1 ] || fail "a good block did not move the head to 1"
-for function in verify legs; do
+for function in verify2 legs; do
   for mode in submission validation; do
     grep -q "^8085 $function $mode\$" "$FAKE_LOG" || fail "no $mode-mode $function call on the sidecar"
   done
 done
-! grep -qvE '^8085 (verify|legs) ' "$FAKE_LOG" || fail "a call other than verify and legs, or a call on another port"
+! grep -qvE '^8085 (verify2?|legs) ' "$FAKE_LOG" || fail "a call other than verify, verify2 and legs, or a call on another port"
 # A third run, with the chain at block 1: it finds the chain, and does not move it back.
 third=$(setup 2>/dev/null) || fail "the third setup failed"
 jq -e '.created == false and .headNumber == "1"' <<<"$third" >/dev/null || fail "the third setup did not find the chain at block 1: $third"

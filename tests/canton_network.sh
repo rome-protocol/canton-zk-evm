@@ -42,7 +42,7 @@ SR=$(printf '55%.0s' $(seq 32)); GW=${GATEWAY_ADDRESS#0x}
 VERIFY_OK="ok $VK $RC $H1 $H0 1 $SR 1700000000 30000000 0 0"
 # ... and for `legs`: ok, the state root and number it was given, the gateway's address, and how many legs (none here).
 LEGS_OK="ok $SR 1 $GW 0"
-answers() { echo "$VERIFY_OK" > "$FAKE_ANSWER.verify"; echo "$LEGS_OK" > "$FAKE_ANSWER.legs"; rm -f "$FAKE_ANSWER".80*.*; : > "$FAKE_LOG"; }
+answers() { echo "$VERIFY_OK" > "$FAKE_ANSWER.verify"; echo "$VERIFY_OK" > "$FAKE_ANSWER.verify2"; echo "$LEGS_OK" > "$FAKE_ANSWER.legs"; rm -f "$FAKE_ANSWER".80*.*; : > "$FAKE_LOG"; }
 answers
 for port in 8085 8086; do
   python3 "$ROOT/tests/fake_sidecar.py" $port & pids+=($!)
@@ -102,16 +102,16 @@ helped=$(canton status)
 jq -e '.terms == 1 and .deposits == 1 and .acceptances == 1 and (.allocations | sort) == ["deposit-1", "dvp-1"] and .tkb.u == [80] and .custody == []' <<<"$helped" >/dev/null \
   || fail "the demo's helpers left Canton in another state than expected: $helped"
 
-# A refused block: the sidecar says no to verify. Nothing moves, and the head stays 0.
-echo "no the proof does not verify" > "$FAKE_ANSWER.verify"
+# A refused block: the sidecar says no to the block check (verify2). Nothing moves, and the head stays 0.
+for f in verify verify2; do echo "no the proof does not verify" > "$FAKE_ANSWER.$f"; done
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" refused 2>/dev/null)" = 0 ] || fail "a refused block moved the head"
 # A block the operator's sidecar accepts and the confirmer's sidecar does not: the confirmer's participant refuses it when it
 # validates, so nothing moves. The confirmer is a signatory of the chain: its own sidecar, not the operator's, decides for it.
 answers
-echo "no the confirmer's sidecar does not accept the proof" > "$FAKE_ANSWER.8086.verify"
+for f in verify verify2; do echo "no the confirmer's sidecar does not accept the proof" > "$FAKE_ANSWER.8086.$f"; done
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" refused 2>/dev/null)" = 0 ] || fail "a block the confirmer's sidecar refused moved the head"
-grep -q '^8085 verify submission$' "$FAKE_LOG" || fail "the operator's sidecar was not asked, so the case did not test the confirmer"
-grep -q '^8086 verify validation$' "$FAKE_LOG" || fail "the confirmer's sidecar was not asked, so the case did not test the confirmer"
+grep -qE '^8085 verify2? submission$' "$FAKE_LOG" || fail "the operator's sidecar was not asked, so the case did not test the confirmer"
+grep -qE '^8086 verify2? validation$' "$FAKE_LOG" || fail "the confirmer's sidecar was not asked, so the case did not test the confirmer"
 # The legs check: a sidecar that says no (the legs are not the ones the block recorded) stops the block, and so does an
 # answer that is `ok` but not the line Daml expects (here, a count that is not the number of legs attached).
 answers
@@ -131,11 +131,11 @@ grep -q '^8086 legs validation$' "$FAKE_LOG" || fail "the confirmer's sidecar wa
 answers
 [ "$(python3 "$ROOT/tests/canton_advance.py" "$CZE_STATE_DIR" accepted)" = 1 ] || fail "a good block did not move the head to 1"
 
-# Calls: Canton asked the operator's sidecar in submission mode and both sidecars in validation mode, for verify and for legs only.
-for function in verify legs; do
+# Calls: Canton asked the operator's sidecar in submission mode and both sidecars in validation mode, for verify2 (the block check) and for legs only.
+for function in verify2 legs; do
   grep -q "^8085 $function submission\$" "$FAKE_LOG" || fail "no submission-mode $function call on the operator's sidecar"
   grep -q "^8085 $function validation\$" "$FAKE_LOG" || fail "no validation-mode $function call on the operator's sidecar"
   grep -q "^8086 $function validation\$" "$FAKE_LOG" || fail "no validation-mode $function call on the confirmer's sidecar"
 done
-! grep -qvE ' (verify|legs) ' "$FAKE_LOG" || fail "a call other than verify and legs"
+! grep -qvE ' (verify2?|legs) ' "$FAKE_LOG" || fail "a call other than verify, verify2 and legs"
 echo "canton network test passed"
