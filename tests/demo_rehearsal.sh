@@ -294,8 +294,10 @@ for _ in $(seq 1 8); do pack_txs+=("$(w1py deploy "$WORK/w1/Reverts.bin" 6000000
 cut_block
 PACK_BLOCK=$(receipt_of "${pack_txs[0]}" | jq -r .block)
 [[ $PACK_BLOCK =~ ^[0-9]+$ ]] || fail "the first of the 8 deployments is in no block: $(receipt_of "${pack_txs[0]}")"
-grep -Eq "^block $PACK_BLOCK: 8 transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$WORK/cut.err" \
-  || fail "block $PACK_BLOCK was not packed by gas used with its 8 transactions: $(grep "^block " "$WORK/cut.err" | tail -n 1)"
+# The block is built again when a transaction of it has a leg with no Canton side (the demo's payout waits in the pool): the first build's line says how it was
+# packed, and the rebuild's says "the last build's list", so the line to look for is the first.
+grep -Eq "^block $PACK_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$WORK/cut.err" \
+  || fail "block $PACK_BLOCK was not packed by gas used: $(grep "^block " "$WORK/cut.err" | tr '\n' '|')"
 pack_json=$(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$PACK_BLOCK")\",true" | jq -c .result)
 [ "$(jq '.transactions | length' <<<"$pack_json")" = 8 ] || fail "block $PACK_BLOCK does not hold the 8 deployments: $(jq -c '.transactions | length' <<<"$pack_json")"
 pack_limits=0
