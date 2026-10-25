@@ -11,7 +11,7 @@ Four sets of measurements are reported:
 
 ## The machine
 
-The 2026-10-03 benchmark and the 2026-10-05 runs ran on a machine with one NVIDIA RTX PRO 6000 GPU; the 2026-10-25 benchmark machine is described in its own section, and the GPU of the DevNet runs is not recorded. The 2026-10-03 benchmark's machine is described below; for the runs on this chain only the GPU and the driver were recorded.
+The 2026-10-03 benchmark and the 2026-10-05 runs used one NVIDIA RTX PRO 6000 GPU (the benchmark's machine is described below; for the runs only the GPU and driver were recorded); the 2026-10-25 benchmark machine has its own section, and the DevNet runs used one prover on one RTX PRO 6000.
 
 | | Prover benchmark, 2026-10-03 | Runs on this chain, 2026-10-05 |
 |---|---|---|
@@ -124,11 +124,11 @@ The GPU peak says little about what is required: the prover takes one large buff
 - The 62,500-transfer block, 1.31 billion gas, was the largest that proved. DevNet's gas cap is 30,000,000, so DevNet blocks are far smaller than these.
 - The two failures were the ZisK coordinator's own limit ("Phase Contributions timed out (300s > 300s)"), not memory. Neither block was retried with a longer timeout, so whether it would prove is unknown.
 - The cost per added transfer was about 4.5 ms on one GPU (9.3 s at 1,000 transfers, 283.8 s at 62,500), or about 220 transfers a second of proving at large sizes. GPU memory stayed near 95 GB at every size, because the keys are preloaded; host memory grew with the block.
-- The `Advance` argument is about 230 bytes a transfer (the block's hex, twice over). Under a request limit of 10 MiB, which is Canton's default (the limit on DevNet's synchronizer was not read), the request size alone would allow at most 45,557 transfers. That is arithmetic from the sizes above, not a commit. The participant's Daml work would stop such a block first: at about 3 to 5 ms per KB per pass under package 0.2.0, a 10.49 MB argument is roughly 65 to 100 s of work over the two passes, well past the 20 s JSON API timeout. So that size has not been committed to Canton, and could not be on DevNet as it is set up today.
+- The `Advance` argument is about 230 bytes a transfer (the block's hex, twice over). Under a request limit of 10 MiB, which is Canton's default (the limit on DevNet's synchronizer was not read), the request size alone would allow at most 45,557 transfers. That is arithmetic from the sizes above, not a commit. The participant's Daml work would stop such a block first: at about 3 to 5 ms per KB per pass under package 0.2.0, a 10.49 MB argument is roughly 60 to 105 s of work over the two passes (an extrapolation from blocks of up to about 330 KB), well past the 20 s JSON API timeout. So that size has not been committed to Canton, and could not be on DevNet as it is set up today.
 
 ## DevNet throughput, 2026-10-25
 
-These runs were on Ostia DevNet itself, on 25 October 2026, with one participant (Rome's), one builder and one prover. The GPU model is not recorded here. The raw logs and driver output are not in this repository. Every transaction sent in these runs became final, and none that was meant to succeed reverted (in the morning's burst of 20,000 plain transfers, four were lost from reth's transaction pool and were sent again). The chain was not reset.
+These runs were on Ostia DevNet itself, on 25 October 2026, with one participant (Rome's), one builder and one prover. The DevNet prover is one NVIDIA RTX PRO 6000 GPU. The raw logs and driver output are not in this repository. Every transaction sent in these runs became final, and none that was meant to succeed reverted (in the morning's burst of 20,000 plain transfers, four were lost from reth's transaction pool and were sent again). The chain was not reset.
 
 **Before package 0.2.0, 08:11 to 08:45 UTC.** The builder had just been changed to fill a block by the gas its transactions use, with a cap of 65,536 raw transaction bytes a block (the old builder counted the gas each transaction declared).
 
