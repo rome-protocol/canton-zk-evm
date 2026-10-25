@@ -18,7 +18,7 @@ export function summary(over: Partial<StatsSummary> = {}): StatsSummary {
     },
     txsPerBlock: { mean: 6.5, median: 3, max: 100, nonEmptyMean: 6.6, nonEmptyMedian: 3 },
     blocks: { count: 901, empty: 1, busy: 640, firstTry: 892 / 901, bySize: sizes.map((size, k) => ({ size, count: [1, 813, 87, 0, 0][k]! })) },
-    txs: { count: 5899, failed: 16, reverted: 16, successRate: 1, accepted: 5903, acceptedFinal: 5903, lost: 0, dropped: 0, delayedByRedo: 9, allTime: null },
+    txs: { count: 5899, failed: 16, reverted: 16, successRate: 1, accepted: 5903, acceptedFinal: 5899, lost: 0, dropped: 0, delayedByRedo: 9, allTime: null },
     attempts: { total: 901, committed: 892, unknown: 1, decided: 901, refused: 6, failed: 2, notTaken: 0, refusedShare: 6 / 901, failedShare: 2 / 901, notTakenShare: 0 },
     fullness: 0.004,
     canton: { argumentBytesPerBlock: 4100, argumentBytesPerTx: 630, trafficBytesPerBlock: null, trafficReported: 0 },

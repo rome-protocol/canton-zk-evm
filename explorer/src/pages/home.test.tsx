@@ -412,7 +412,7 @@ describe("the numbers, from the stats routes", () => {
   it("counts the day's transactions and blocks, and gives the success rate from accepted, lost and dropped ones, cut and never rounded up", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1020, acceptedFinal: 1016, lost: 1, dropped: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
     expect(tile("Transactions · 24 h")).toHaveTextContent("1,017total not counted yetin 21 blocks, each one Canton transaction");
-    expect(tile("Success rate")).toHaveTextContent("99.9%1,017 accepted · 1 lost · 0 dropped");
+    expect(tile("Success rate")).toHaveTextContent("99.9%1,017 accepted and settled · 1 lost · 0 dropped");
     expect(tile("Success rate").textContent).not.toMatch(/revert/i);
   });
 
@@ -431,7 +431,7 @@ describe("the numbers, from the stats routes", () => {
   it("shows no success rate for a day with no transaction, and never makes one up", async () => {
     await withStats({ day: { txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 0, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
     expect(tile("Success rate").querySelector(".stat-v")!.textContent).toBe("—");
-    expect(tile("Success rate")).toHaveTextContent("no accepted transaction in 24 h");
+    expect(tile("Success rate")).toHaveTextContent("no accepted transaction settled in 24 h");
   });
 
   it("gives every card an icon before its label, as screen 01 does", async () => {

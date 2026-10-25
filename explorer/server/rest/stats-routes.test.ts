@@ -161,14 +161,14 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
       txs_per_block_hist: count({ 0: 1, 4: 1 }), proof_size_hist: hist(5 * TL, { [B]: 1 }, 1 * TL),
     });
     await seed(pool, "stats_minute", t(12, 28), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, accepted_final: 8, delayed_by_redo: 2, lost: 1, dropped: 1, replaced: 2, attempts: 3, attempts_committed: 1, attempts_refused: 1,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, accepted_final: 8, delayed_by_redo: 2, lost: 1, dropped: 1, accepted_lost: 1, accepted_dropped: 1, replaced: 2, attempts: 3, attempts_committed: 1, attempts_refused: 1,
       attempts_failed: 1, ttf_without_acceptance: 1, clock_skew: 1, max_txs_in_block: 6, traffic_bytes: 1000, traffic_updates: 2, proof_busy_ms: 60000,
       test_blocks: 1, test_txs: 9, test_attempts: 1, test_proof_busy_ms: 5000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 1, [C]: 1 }), proof_hist: time({ [A]: 1 }), served_hist: time({ [C]: 1 }),
       txs_per_block_hist: count({ 0: 1, 6: 1 }), proof_size_hist: hist(5 * TL, { [A]: 1 }, 2 * TL),
     });
     await seed(pool, "stats_minute", t(12, 29), {
-      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, max_minute_txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, accepted_final: 18, delayed_by_redo: 3, lost: 2, replaced: 1, attempts: 4, attempts_committed: 1, attempts_unknown: 1, attempts_refused: 1,
+      blocks: 3, busy_blocks: 3, size_blocks_1: 1, size_blocks_2: 2, txs: 30, max_minute_txs: 30, txs_failed: 3, gas_used: 600, gas_limit_sum: 3000, argument_bytes: 3000, accepted: 25, accepted_final: 18, delayed_by_redo: 3, lost: 2, accepted_lost: 2, replaced: 1, attempts: 4, attempts_committed: 1, attempts_unknown: 1, attempts_refused: 1,
       attempts_not_taken: 1, max_txs_in_block: 12, traffic_bytes: 2000, traffic_updates: 3, proof_busy_ms: 10000, txs_per_block_hist: count({ 6: 1, 12: 2 }),
     });
     await seed(pool, "stats_minute", t(12, 30), { blocks: 1, size_blocks_1: 1, txs: 2, max_minute_txs: 2, gas_used: 50, gas_limit_sum: 1000, attempts: 1, max_txs_in_block: 2, txs_per_block_hist: count({ 2: 1 }) });

@@ -122,7 +122,7 @@ export const METRICS: Record<string, Metric> = {
   empty_blocks: count("empty_blocks"),
   txs_per_block: { unit: "transactions", columns: ["txs", "blocks"], none: null, value: (rows) => ratio(sum(rows, "txs"), sum(rows, "blocks")) },
   // The chain's own success rate: accepted transactions that became final, over those and the lost and dropped ones (a revert in the EVM is a normal outcome and is not counted).
-  success_rate: { unit: "ratio", columns: ["accepted_final", "lost", "dropped"], none: null, value: (rows) => ratio(sum(rows, "accepted_final"), sum(rows, "accepted_final") + sum(rows, "lost") + sum(rows, "dropped")) },
+  success_rate: { unit: "ratio", columns: ["accepted_final", "accepted_lost", "accepted_dropped"], none: null, value: (rows) => ratio(sum(rows, "accepted_final"), sum(rows, "accepted_final") + sum(rows, "accepted_lost") + sum(rows, "accepted_dropped")) },
   delayed_by_redo: count("delayed_by_redo"),
   accepted: count("accepted"),
   lost: count("lost"), dropped: count("dropped"), replaced: count("replaced"),
@@ -155,7 +155,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime, endedHours] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
-        "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "accepted_final", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts_refused", "attempts_failed", "attempts",
+        "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "accepted_final", "accepted_lost", "accepted_dropped", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts_refused", "attempts_failed", "attempts",
         "attempts_not_taken", "dropped", "replaced", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "gas_limit_sum", "traffic_bytes", "traffic_updates", "proof_busy_ms", "test_blocks",
         "test_txs", "test_attempts", "test_proof_busy_ms", "busy_gap_hist", "time_to_final_hist", "proof_hist", "commit_hist", "served_hist", "txs_per_block_hist", "proof_size_hist",
       ]),
@@ -206,8 +206,8 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       // The success rate counts only the chain's own failures: accepted and final over accepted and final, lost or dropped, all by the minute each was settled (a transaction the sender replaced, or one still waiting, is in neither).
       // `reverted` is the count of final transactions whose EVM status is a revert, a normal outcome that is not in the rate; `failed` is the same number under its old name (deprecated).
       txs: pick({ count: txs, failed: sum(rows, "txs_failed"), reverted: sum(rows, "txs_failed"),
-        successRate: ratio(sum(rows, "accepted_final"), sum(rows, "accepted_final") + sum(rows, "lost") + sum(rows, "dropped")), accepted: sum(rows, "accepted"),
-        acceptedFinal: sum(rows, "accepted_final"), lost: sum(rows, "lost"), dropped: sum(rows, "dropped"), delayedByRedo: sum(rows, "delayed_by_redo"),
+        successRate: ratio(sum(rows, "accepted_final"), sum(rows, "accepted_final") + sum(rows, "accepted_lost") + sum(rows, "accepted_dropped")), accepted: sum(rows, "accepted"),
+        acceptedFinal: sum(rows, "accepted_final"), lost: sum(rows, "accepted_lost"), dropped: sum(rows, "accepted_dropped"), delayedByRedo: sum(rows, "delayed_by_redo"),
         allTime: allTime && pick({ total: allTime.total, asOfBlock: allTime.asOfBlock, asOf: iso(allTime.asOf) }, F.statsAllTime) }, F.statsTxs),
       attempts: pick({
         total: attempts, committed: sum(rows, "attempts_committed"), unknown: sum(rows, "attempts_unknown"), decided,

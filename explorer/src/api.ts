@@ -225,7 +225,7 @@ export interface StatsSummary {
   blockTime: StatsSpread | null; timeToFinal: StatsSpread | null; commitTime: StatsSpread | null; served: StatsSpread | null;
   proofTime: (StatsSpread & { bySize: StatsSize[] }) | null;
   txsPerBlock: { mean: number | null; median: number | null; max: number | null; nonEmptyMean: number | null; nonEmptyMedian: number | null };
-  blocks: { count: number; empty: number; busy: number; /** Committed attempts over all decided ones (committed, refused, failed, unknown); null when none was decided. */ firstTry: number | null; bySize: { size: string; count: number }[] };
+  blocks: { count: number; empty: number; busy: number; /** Committed attempts over the decided ones (committed, refused, failed, unknown), not a per-height first-try share; null when none was decided. */ firstTry: number | null; bySize: { size: string; count: number }[] };
   /** `successRate` is accepted transactions that became final over those and the lost and dropped ones; an EVM revert is not in it. `reverted` is the EVM-status count (a normal outcome); `failed` is its deprecated name. */
   txs: { count: number; failed: number; reverted: number; successRate: number | null; accepted: number; acceptedFinal: number; lost: number; dropped: number; delayedByRedo: number; allTime: { total: number; asOfBlock: number; asOf: string } | null };
   attempts: { total: number; committed: number; unknown: number; decided: number; refused: number; failed: number; notTaken: number; refusedShare: number | null; failedShare: number | null; notTakenShare: number | null };

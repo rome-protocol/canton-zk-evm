@@ -65,12 +65,12 @@ describe("the stats page", () => {
     const peak = await tile("Peak rate");
     expect(peak).toHaveTextContent("20.8 tx/s"); expect(peak).toHaveTextContent("busiest minute, 15 Oct 14:07");
     const ok = await tile("Success rate");
-    expect(ok).toHaveTextContent("100%"); expect(ok).toHaveTextContent("5,903 accepted · 0 lost · 0 dropped");
-    const first = await tile("First-try blocks");
+    expect(ok).toHaveTextContent("100%"); expect(ok).toHaveTextContent("5,899 accepted and settled · 0 lost · 0 dropped"); expect(ok).toHaveTextContent("sent through Ostia's RPC or the faucet");
+    const first = await tile("Block attempts committed");
     expect(first).toHaveTextContent("99%"); expect(first).toHaveTextContent("892 of 901 attempts committed · 6 refused · 2 failed · 1 unknown");
     const redo = await tile("Delayed by a redo");
-    expect(redo).toHaveTextContent("9"); expect(redo).toHaveTextContent("Carried by a block attempt that did not commit");
-    expect(document.body.textContent).not.toMatch(/reverted of|revert rate/i);
+    expect(redo).toHaveTextContent("9"); expect(redo).toHaveTextContent("carried by a block attempt that did not commit");
+    expect(document.body.textContent).not.toMatch(/revert/i);
   });
 
   it("shows the all-time total beside the window's transactions, with the block it is as of", async () => {

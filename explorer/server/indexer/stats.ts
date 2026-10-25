@@ -16,7 +16,7 @@ export const TABLES = { minute: "stats_minute", hour: "stats_hour", day: "stats_
 
 export const SCALARS = [
   "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "dropped", "replaced", "attempts_refused", "attempts_failed",
-  "accepted_final", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "max_minute_txs", "gas_limit_sum", "traffic_bytes", "traffic_updates",
+  "accepted_final", "accepted_lost", "accepted_dropped", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "max_minute_txs", "gas_limit_sum", "traffic_bytes", "traffic_updates",
   "proof_busy_ms", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "test_blocks", "test_txs", "test_attempts", "test_proof_busy_ms",
 ] as const;
 type Scalar = (typeof SCALARS)[number];
@@ -95,16 +95,17 @@ const NOT_TEST = `not exists (select 1 from attempt_transactions x join block_at
                                 where x.tx_hash = tx_lifecycle.tx_hash and coalesce(xr.settings->>'test', '') = 'true')`;
 const COUNT_BY = (col: string, where: string) =>
   `select floor(extract(epoch from ${col}) / 60)::bigint as m, count(*)::int as n from tx_lifecycle where ${col} >= $1 and ${col} < $2 ${where} and ${NOT_TEST} group by 1`;
-/** Accepted by the RPC and final, by the minute of the final record time. Its own state test keeps a transaction that was replaced out. */
+/** Accepted by the RPC or the faucet and final, by the minute of the final record time. Its own state test keeps a transaction that was replaced out. */
 const FINAL = COUNT_BY("final_at", "and accepted_at is not null and state = 'final'");
-/** The same, and carried earlier by an attempt that did not commit (refused, failed, or unknown and never found committed): a delay from a redo. */
-const REDO = COUNT_BY("final_at", `and accepted_at is not null and state = 'final' and exists (
+/** Every final transaction (not only those the RPC accepted) carried earlier by an attempt that did not commit: refused, failed, not taken, cancelled,
+ *  unknown and never found committed, resolved as not committed (a restart), or a failed or wrong-block proof. A delay from a redo, not a failure. */
+const REDO = COUNT_BY("final_at", `and state = 'final' and exists (
   select 1 from attempt_transactions rx join block_attempts ra on ra.attempt_id = rx.attempt_id
    where rx.tx_hash = tx_lifecycle.tx_hash and rx.left_out_reason is null and ra.outcome is distinct from 'committed' and ra.resolved_outcome is distinct from 'committed'
-     and (ra.outcome in ('refused', 'failed', 'unknown') or ra.proof_outcome in ('failed', 'wrong_block')))`);
+     and (ra.outcome in ('refused', 'failed', 'unknown', 'not_taken', 'cancelled') or ra.resolved_outcome is not null or ra.proof_outcome in ('failed', 'wrong_block')))`);
 /** Transactions that left the way to final, by the minute they first did and by what they are now. */
-const LOST = `select floor(extract(epoch from lost_at) / 60)::bigint as m, state, count(*)::int as n from tx_lifecycle
-               where lost_at >= $1 and lost_at < $2 and state in ('dropped', 'lost', 'replaced') and ${NOT_TEST} group by 1, 2`;
+const LOST = `select floor(extract(epoch from lost_at) / 60)::bigint as m, state, accepted_at is not null as acc, count(*)::int as n from tx_lifecycle
+               where lost_at >= $1 and lost_at < $2 and state in ('dropped', 'lost', 'replaced') and ${NOT_TEST} group by 1, 2, 3`;
 /** A proof longer than this is not looked for across the end of a chunk (it would need a read of all later attempts). */
 const PROOF_MAX = "6 hours";
 const ATTEMPTS = `
@@ -164,7 +165,12 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
   for (const x of (await db.query(COUNT_BY("accepted_at", ""), [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.accepted += Number(x.n);
   for (const x of (await db.query(FINAL, [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.accepted_final += Number(x.n);
   for (const x of (await db.query(REDO, [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars.delayed_by_redo += Number(x.n);
-  for (const x of (await db.query(LOST, [a, b])).rows) (at(Number(x.m) * MINUTE) as Row).scalars[x.state as "lost" | "dropped" | "replaced"] += Number(x.n);
+  for (const x of (await db.query(LOST, [a, b])).rows) {
+    const sc = (at(Number(x.m) * MINUTE) as Row).scalars;
+    sc[x.state as "lost" | "dropped" | "replaced"] += Number(x.n);
+    // The rate's own failures: only transactions the RPC or the faucet accepted, the same group its final side counts.
+    if (x.acc && x.state !== "replaced") sc[x.state === "lost" ? "accepted_lost" : "accepted_dropped"] += Number(x.n);
+  }
 
   const L = histLength("time");
   for (const x of (await db.query(ATTEMPTS, [a, b])).rows) {
