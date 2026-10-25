@@ -64,15 +64,19 @@ None of this is in the repository. `package.json` pins each package to an exact 
 
 The GPL contracts are compiled into the bytecode that is deployed (so are RedStone's BUSL contracts, in `PriceVault`); their sources are never copied into this repository. Anyone who runs the kit gets them from npm. The explorer's verification stores the source of each deployed contract, GPL ones included, which their licence allows.
 
-**The Uniswap pair hash.** The router finds a pair by CREATE2 with a hash of the pair's creation code written into its library. That hash belongs to the original build of the pair; our build is not byte for byte the same. `scripts/prepare.mjs` reads the pair's code from the first build, writes a copy of the router and its library into `contracts/gen/` (git ignores it) with the hash of our pair, and the second build compiles that. `run.sh build` stops if the pair code differs between the two builds. The pair's solc 0.5.16 output ends with a source hash that depends on the build settings, so the factory and the router of one deploy must come from the same build: after changing anything in `foundry.toml` or the packages, deploy a new factory and router together (this is why the example run below has a second Uniswap set).
+**The Uniswap pair hash.** The router finds a pair by CREATE2 with a hash of the pair's creation code written into its library. That hash belongs to the original build of the pair; our build is not byte for byte the same. `scripts/prepare.mjs` reads the pair's code from the first build, writes a copy of the router and its library into `contracts/gen/` (git ignores it) with the hash of our pair, and the second build compiles that. `run.sh build` stops if the pair code differs between the two builds. The pair's solc 0.5.16 output ends with a source hash that depends on the build settings, so the factory and the router of one deploy must come from the same build: after changing anything in `foundry.toml` or the packages, deploy a new factory and router together (this is why the example run below has a second Uniswap set). The metadata hash does not move the pair: solc 0.5.16 always carries its own hash, so the pair's code (and its init code hash) is the same with this setting as without it.
 
 ## Verification
 
 `./run.sh verify` sends every contract to the explorer with `forge verify-contract --verifier etherscan` and asks `/api/contracts/<address>` afterwards. The explorer takes 30 verifications an hour from one client, so the step waits about two minutes between submissions (copies made by a factory, such as the pairs and the identity proxies, share the code of the first and are matched by it). `./run.sh node scripts/verify.mjs check` prints which contracts are verified without submitting anything.
 
+**Full matches.** The explorer calls a match full when the compiled code and the metadata hash at its end are the same as on chain; with only the code the same it is partial. So the kit builds with the metadata hash that Foundry puts in by default (`foundry.toml`, and Merces's own project has it too), and a contract that is deployed and verified from one build is a full match. The same source, compiler and settings give the same hash. The Uniswap pair is a separate matter: it is solc 0.5.16, which always carries its own hash, so its code is the same as before this change (`run.sh build` checks that the pair code is the same in its two passes, and on a clean clone it equals the pair deployed on DevNet). The one thing that would make a match partial again is a change in what the hash covers: the library addresses go into the compiler settings, so `run.sh verify` does not send them (the code has holes where the libraries go, and the explorer reads the addresses from the chain). For full matches, deploy into a new `RUN_DIR`: `run.sh deploy` reuses every contract recorded in an existing one, so a folder from the build without the hash keeps its partial contracts (their code can never become a full match). `run.sh verify` ends with `verify.mjs check`, which prints a line `SUMMARY full …, similar …, partial …, unverified …` and exits 1 if a contract is unverified or only partial (`ALLOW_PARTIAL=1` makes partial a warning, for such an old folder; `RESUBMIT_PARTIAL=1` sends a partial contract again).
+
 The explorer's front proxy takes 300 KB a request. Forge's url-encoded body for `Merces` (23 source files, 265 KB of standard JSON) is 450 KB and gets `413`; `run.sh verify` then sends the same input to the explorer's JSON route (`POST /api/verify`, `scripts/verify-large.mjs`, 265 KB) and that passes.
 
 **ERC-3643 calls on the explorer.** The T-REX token, identity registry and the ONCHAINID identities are proxies of one kind: they keep the address of an implementation authority in a fixed slot and ask it, at each call, for the implementation (`getTokenImplementation()`, `getIRImplementation()` and so on; `getImplementation()` for an identity). The explorer follows them (kind `trex`, the authority in `beacon`, which the contract page labels as the implementation authority) from the change that closed this gap on, so inputs of `transfer`, `batchMint`, `batchRegisterIdentity` and `addClaim` on them show as decoded methods. The run of 2026-10-24 was read before that change, when they showed as raw data (see the results).
+
+The explorer's contract list sorts by interactions. The partial contracts of the run of 24 October carried the hour of traffic, so they stay on top and a reader sees mostly partial matches first. The contracts of a run from this build are full or similar; the old set stays partial and ranks first by traffic until the new set carries load.
 
 ## Layout
 
@@ -133,7 +137,7 @@ On Ostia DevNet (chain 770101), 24 October 2026. The deployer account is `0x5156
 - The first `WtROME` (block 35) was a line-for-line port of Dapphub's WETH9, which is GPL-3.0-or-later, labelled Apache-2.0 by mistake. It is replaced by the wrapper on OpenZeppelin's ERC20 in this folder, deployed again (block 178 on) with its own factory, router and two pools before the hour-long traffic started; the old `WtROME`, factory, router and pools are in the table "Deployed and not used" and nothing calls them. A first try of the new set against the old factory also left one router that cannot work (the factory's pair code came from a different build, see the pair hash above).
 - The explorer used to show the first `WtROME`'s source (`0xf5df8b56…2fb9`) as verified, labelled Apache-2.0. On 2026-10-24 Rome removed that verified-source record from the explorer, so the contract now shows as unverified; the file was never on `main`.
 
-**Verification result.** Every contract in use shows `verified: true` at `/api/contracts/<address>`. Matches are full, similar (copies made by a factory share the code of the first) or partial (only the metadata differs: the kit compiles without the metadata hash on purpose, as the pair hash needs a build that is the same byte for byte). Verified through the explorer's Etherscan API, paced under its 30 an hour; `Merces` through its JSON route (see Verification).
+**Verification result.** Every contract in use shows `verified: true` at `/api/contracts/<address>`. Matches are full, similar (copies made by a factory share the code of the first) or partial (only the metadata differs). The partial ones are the contracts of that run, which was built without the metadata hash, and they stay partial: code built without the hash can never be a full match. The kit now builds with the hash (see Verification), and a run from that build, listed in [A run from the build with the hash](#a-run-from-the-build-with-the-hash) below, shows no partial contract. `Merces` was partial for another reason, also fixed: the library addresses had been sent with it, and `Merces` is full in the new run (and was changed to full in the old one by sending it again without them). Verified through the explorer's Etherscan API, paced under its 30 an hour; `Merces` through its JSON route (see Verification).
 
 ### Contracts in use
 
@@ -261,3 +265,52 @@ Left on the chain by earlier runs of the deploy (see the notes above); nothing i
 | Uniswap V2: holder1 swaps 100 tUSD for WtROME | [`0x5b534e958d77f5951dc5ef3532f91a7d6d1453cabc03468a70c0119d1da2d7c7`](https://ostia.devnet.romeprotocol.xyz/tx/0x5b534e958d77f5951dc5ef3532f91a7d6d1453cabc03468a70c0119d1da2d7c7) |
 | ERC-3643: verified holder1 sends 5 OGB to verified holder2 | [`0xac0d77cd2fc4a128b77f111b10908118eac247ff183177e66e06a252ca28f7e1`](https://ostia.devnet.romeprotocol.xyz/tx/0xac0d77cd2fc4a128b77f111b10908118eac247ff183177e66e06a252ca28f7e1) |
 | ERC-3643: transfer to the unverified address (a call, not sent) | Transfer not possible |
+
+## A run from the build with the hash
+
+On Ostia DevNet (chain 770101), 25 October 2026, from the kit's build with the metadata hash, into a new `RUN_DIR`: `./run.sh build`, `merces-fetch`, `deploy`, `smoke`, `merces.mjs deploy`, `redstone.mjs` (it deployed `PriceVault`; the gateways refused, as described above, so no price was recorded), `load seed`, then `./run.sh verify`. The contracts were created by three wallets: the deployer (the same account as above, which sent `deploy` and `load seed`: the tokens, the Uniswap contracts, ONCHAINID, T-REX, `ClaimIssuer` and the `Seeder`; the proxies and identities were made by its factories), the run's `merces-deployer` wallet (`Merces`, its three libraries and its two verifiers) and the run's `oracle` wallet (`PriceVault`). Blocks 695 to 765. Two sizes in `config.json` were smaller for this run, because the deployer held about 3,735 tROME: 1,000 tROME wrapped and a 10,000 tUSD / 1,000 WtROME pool, and 20 test wallets with 10 tROME each. The code and the compiler settings are the kit's, so the sizes do not touch the match.
+
+`verify.mjs check` ends with `SUMMARY full 28, similar 12, partial 0, unverified 0 (of 40)` and exits 0. "Similar" is a contract whose code is the same as one the explorer already verified (the copies made by a factory, and the Uniswap and Merces contracts that the run of 24 October had verified).
+
+| Contract | Address | Match |
+|---|---|---|
+| tUSD | `0x2db9AC14CD3aEd121CE2281c2978b5F2D8fD547F` | full |
+| tETH | `0xC9eE0D52FAD7EfAb6fba2E580B162A312Fe88f2b` | full |
+| WtROME | `0xc221fc4aF51cAA9D198E70e3cB3B8F3D9D2Adc64` | full |
+| OstiaPass | `0x67d7ff1493c60dD1Bb298B64d0fe0f444352eEea` | full |
+| OstiaItems | `0xCA068e06a63340CAF07f56BB7A7E199d763bB768` | full |
+| UniswapV2Factory | `0xB8203531E77E74142e3F01fa2158Afc5986f91cF` | similar |
+| UniswapV2Router02 | `0x4fb1D81a8D57C4a51b145ee03231f8B328ab9F9D` | full |
+| UniswapV2Pair tUSD/WtROME | `0x6069d0d3adc5Af5a21979092F2d7Ef731543179F` | similar |
+| UniswapV2Pair tETH/tUSD | `0xD342397b95883613b438F360760a89f8A61C8160` | similar |
+| ONCHAINID Identity (library) | `0x7C6104b27e71e0397514cd1847fD359A6cE4F817` | full |
+| ONCHAINID ImplementationAuthority | `0x290776AeB2B695B9516e4F6beb6B27720b93B2EE` | full |
+| ONCHAINID IdFactory | `0x0b2b7835217c0D1c384e1bBb239723881B9feBe2` | full |
+| T-REX Token (implementation) | `0xc1Cb0E5a8f772F7cDc18F2d16CEbB9E44E89F410` | full |
+| T-REX ClaimTopicsRegistry (implementation) | `0x8a78f08Bd70e80a358069D503C67FD37D7B33CE6` | full |
+| T-REX IdentityRegistry (implementation) | `0x35E8dF684511774D652691A5F72Df58CF4FB5F2B` | full |
+| T-REX IdentityRegistryStorage (implementation) | `0xd38cd04BB891EA654614Fe064AC51734a2C87eD2` | full |
+| T-REX TrustedIssuersRegistry (implementation) | `0x0cDAA84a5883a49830B05E25d437C5d1d166F9d7` | full |
+| T-REX ModularCompliance (implementation) | `0x2515215B349FAEd51559eb3D72440f405F175A79` | full |
+| T-REX TREXImplementationAuthority | `0xbdE7c517D7Ec588C47bf9fD46C363F72Fb71bcae` | full |
+| T-REX TREXFactory | `0x2cFc36755d219Ea6F6802ea1c48B1D9199381f10` | full |
+| ONCHAINID ClaimIssuer | `0xD1A73BffDEd476b7e21ebf7e5b0223A6074a19B2` | full |
+| T-REX Token (proxy) | `0x6a5e3232513bd5912769701CdBCc172D2c700735` | full |
+| T-REX IdentityRegistry (proxy) | `0xDbc89a983fCD1e17FcF5bCD8A13Bc542B86fccCE` | full |
+| T-REX ModularCompliance (proxy) | `0xa89412E5c4F3A470526F5fff110DE9dFe983518E` | full |
+| T-REX IdentityRegistryStorage (proxy) | `0x75f035bf38ef1A12Ff0656aaB8440EB746BA094c` | full |
+| T-REX TrustedIssuersRegistry (proxy) | `0x586D3DEc998802530aCF73560673343cdc56610B` | full |
+| T-REX ClaimTopicsRegistry (proxy) | `0x6C6654f1949fADDE40A9aCcc635043c9cA89FAf7` | full |
+| T-REX token ONCHAINID (proxy) | `0xF1410A0A58970D3DD20733f5f02aFEcf2Fce683C` | full |
+| ONCHAINID identity holder1 (proxy) | `0x1F406b0f3A08656966B05024f7ca3E21E5074D74` | similar |
+| ONCHAINID identity holder2 (proxy) | `0xDa81DbD77871c0bb0C6Fed041f65F6B57E743176` | similar |
+| ONCHAINID identity holder3 (proxy) | `0xcf705545b90A6283779450bAB1AE8FeD46944D48` | similar |
+| ONCHAINID identity holder4 (proxy) | `0xa996B5b8BCC4812E49bC8BbF13DdF18A2b6EAb3D` | similar |
+| Seeder | `0x7f6B50B3ED309Da569306Ddc58666334dA551Bdf` | full |
+| Merces library BabyJubJub | `0x797eCEE3FEf9c2D8f2f14e044670687C922F499A` | similar |
+| Merces library ActionQueueLib | `0x4b4Cbdd4c07Bd615AC728D0A5169699ec09f1F9d` | similar |
+| Merces library Poseidon2T2_BN254 | `0x81E277BbcFECa7dfd0Ea77419D9e590A97497E58` | similar |
+| Merces ClientVerifier | `0xFAF0C5D65e13CcfE0392999175ef48A3e2b40966` | similar |
+| Merces ServerVerifier | `0xB5B344176a52630053F0aDb27a6284Df1BD9479D` | similar |
+| Merces | `0xe4B4Bf9771cC884e53998Bea44fAa51AD00deDd6` | full |
+| PriceVault | `0x4D72f294F9AeB0ea07dF840cA479ab6B1beC0f46` | full |

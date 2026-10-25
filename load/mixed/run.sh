@@ -27,7 +27,7 @@ CHAIN_ID=$(grep -o '"chainId": *[0-9]*' config.json | grep -o '[0-9]*$')
 RPC=${RPC:-$(grep -o '"rpc": *"[^"]*"' config.json | cut -d'"' -f4)}
 EXPLORER_API=$(grep -o '"explorerApi": *"[^"]*"' config.json | cut -d'"' -f4)
 
-node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir -e "RPC=$RPC" ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} ${LOAD_PHASES:+-e LOAD_PHASES} \
+node_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e npm_config_cache=/w/.npm-cache -e RUN_DIR=/run-dir -e "RPC=$RPC" ${REDSTONE_WAIT_MIN:+-e REDSTONE_WAIT_MIN} ${ALLOW_PARTIAL:+-e ALLOW_PARTIAL} ${RESUBMIT_PARTIAL:+-e RESUBMIT_PARTIAL} ${LOAD_PHASES:+-e LOAD_PHASES} \
   -v "$HERE:/w" -v "$RUN_DIR:/run-dir" -w /w "$EXPLORER_NODE_IMAGE" "$@"; }
 forge_c() { docker run --rm --user "$UIDGID" -e HOME=/w/.home -e FOUNDRY_PROFILE="${PROFILE:-default}" -v "$HERE:/w" -w /w --entrypoint forge "$FOUNDRY_IMAGE" "$@"; }
 
@@ -61,18 +61,18 @@ case ${1:-} in
   verify)
     node_c node scripts/verify.mjs list
     # The explorer takes 30 verifications an hour from one client: a submission that is refused is tried again after the pause it asks for.
-    while IFS=$'\t' read -r name addr target compiler evm runs root libs args; do
+    while IFS=$'\t' read -r name addr target compiler evm runs root args; do
       echo "== $name $addr"
       wd=/w; [ "$root" = "-" ] || wd=/w/$root
-      libflags=(); if [ "$libs" != "-" ]; then IFS=, read -ra L <<< "$libs"; for l in "${L[@]}"; do libflags+=(--libraries "$l"); done; fi
+      # No --libraries: the library addresses would go into the compiler settings and so into the metadata hash, which the contract was not built with (its code has holes where the libraries go; the explorer reads their addresses from the chain).
       for try in 1 2 3 4 5 6 7 8; do
-        out=$(forge_c_in "$wd" verify-contract "$addr" "$target" ${libflags[@]+"${libflags[@]}"} --chain-id "$CHAIN_ID" --verifier etherscan --verifier-url "$EXPLORER_API" --etherscan-api-key any \
+        out=$(forge_c_in "$wd" verify-contract "$addr" "$target" --chain-id "$CHAIN_ID" --verifier etherscan --verifier-url "$EXPLORER_API" --etherscan-api-key any \
           --rpc-url "$RPC" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" ${args:+--constructor-args "$args"} --watch --retries 60 --delay 5 2>&1) && rc=0 || rc=$?
         echo "$out" | tail -4 | cut -c1-300
         if echo "$out" | grep -q "413 Request Entity Too Large"; then
           # the front proxy refuses forge's body (Merces has 23 source files): send the same JSON to the explorer's JSON route
           echo "413: sending the standard JSON with scripts/verify-large.mjs"
-          forge_c_in "$wd" verify-contract "$addr" "$target" ${libflags[@]+"${libflags[@]}"} --chain-id "$CHAIN_ID" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" \
+          forge_c_in "$wd" verify-contract "$addr" "$target" --chain-id "$CHAIN_ID" --compiler-version "$compiler" --evm-version "$evm" --num-of-optimizations "$runs" \
             --show-standard-json-input > "$RUN_DIR/std.json" 2>/dev/null
           node_c node scripts/verify-large.mjs "$addr" "$target" /run-dir/std.json "$compiler" "$runs" "$evm" "${args:--}" 2>&1 | tail -4 && break || true
         fi
