@@ -79,8 +79,8 @@ A receipt only comes back once the block is final (next section), so a deploy wa
 ## Where a transaction becomes final
 
 1. You send a transaction to the RPC. It is put in the next block.
-2. The block is made, about every 16 seconds while there are transactions. When the chain is quiet, there can be minutes between blocks.
-3. A zero-knowledge proof of the block is made. In our measurements this took about 7.6 seconds for a small block and about 12.4 seconds for a block of more than a thousand transactions.
+2. The block is made, about every 16 seconds while there are transactions. When the chain is quiet, no blocks are made at all, possibly for hours. That is normal: the explorer then shows the newest final block as hours old.
+3. A zero-knowledge proof of the block is made. In the one-hour mixed load of 2026-10-24, the proof took 9.03 seconds at the median for blocks of 11 to 100 transactions (7.41 seconds for the two blocks of 1 to 10).
 4. The block's record, with its proof, is written to Canton DevNet. That write is what makes the block final. In our measurements a block was final about 9 to 12 seconds after it was made (about 9 seconds for a small block, about 11 seconds, at most 13, with 70 transactions in a block).
 
 The public RPC only shows final blocks. A transaction you have just sent does not show up in `eth_getTransactionReceipt` until its block is final, so a receipt takes roughly 10 to 30 seconds to appear. Tools that wait for a receipt just wait a little longer than on other chains.

@@ -39,7 +39,7 @@ flowchart LR
 | **Prover** | ZisK 1.3.1 running our copy of its EVM program, with our chain's rules built in. It outputs a small wrapped proof (1,344 bytes) that commits to the block's hash. |
 | **Daml package** | The chain's one state contract (its current head), a record per block, and the contracts for deposits, withdrawals, payments and registered tokens. See [daml/README.md](../daml/README.md). |
 | **Sidecar** | A small Rust program beside each confirming participant. It does two things: `verify` checks a proof, and `legs` checks that the legs attached to a block hash to the value the proven block recorded in the gateway (an account proof and a storage proof, at the block's state root). |
-| **Canton network** | A local network of our own, with a party for the gateway. |
+| **Canton network** | Where Ostia settles, with a party for the gateway. On DevNet that is Canton Network DevNet, on one participant that hosts every Ostia party and has one sidecar, so there is one confirmer. The local network of our own, which the demo ran on, has two confirming participants. |
 | **Explorer** | Shows each EVM block next to its Canton record, read as the reader party, from a database of its own that an indexer fills. It serves a REST API, an Etherscan-compatible API, a live stream and an optional public RPC that shows only final blocks. Its Verify button runs the sidecar's block check in the browser through WebAssembly. Its faucet sends the test coin, tROME, through reth. See [The explorer](#the-explorer). |
 
 ## One block
@@ -121,7 +121,16 @@ On our own local Canton network, in a setup block and five runs ([demo/README.md
 - **A payment whose allocation is taken back after the proof was made:** Canton refuses the block and nothing moves. The same proven block sent again without its leg is refused too ("the legs are not the ones the block recorded"). The next builder run leaves the payment out and commits.
 - **A tampered proof:** refused by the sidecar, and nothing moves.
 
-These ran on a local network started for the run; Ostia does not yet run as a standing network.
+These ran on a local network started for the run. The deposit, withdrawal and payment legs have not been run on DevNet, where no Canton token is registered.
+
+## Ostia on DevNet
+
+Ostia has run on Canton Network DevNet since 2026-10-22 (Canton 3.6.3, chain id 770101). The setup is in [network/README.md](../network/README.md#running-on-an-existing-participant-the-canton-network); how to use it is in [TRY-OSTIA.md](TRY-OSTIA.md).
+
+- **One confirmer.** One participant hosts every Ostia party, so its one sidecar is the only confirmer. The local network has two. The participant's operator can see every Ostia contract and act for every Ostia party, the gateway party included.
+- **Rome runs the rest.** One builder, the prover, the public RPC, the explorer and the faucet. There is no forced inclusion: the RPC and the builder can refuse or omit a transaction. The explorer's indexer checks every record against reth, but the RPC and the explorer are views that Rome runs, not trustless ones.
+- **What the proof fixes.** Each block was executed under this chain's compiled rules. The confirmer's sidecar checks the proof, the header and the transaction root before Canton commits, and anyone can check a block's proof again in the explorer.
+- **No privacy yet.** Merces transfers have run on DevNet, with their proofs made by the client and checked on-chain, but no MPC network runs and nothing is settled.
 
 ## Numbers we have
 
@@ -130,6 +139,7 @@ The machine, the versions and every measurement, with dates and sources, are in 
 - Proof: 6.7 s (1 transfer) to 21.2 s (5,000 transfers) on one NVIDIA RTX PRO 6000, with a prover that stays running. Measured in the prover benchmark on the upstream reth guest, not on this repository's guest; see [METRICS.md](METRICS.md).
 - Proof size: 1,344 bytes. Measured.
 - On this chain, in the demo (2026-10-05, one machine, commit `6b445073163832e9023850f53678617d90dfc808`): a block with no transactions was proved in 6.31 s, and the blocks of the runs in 6.71 to 6.75 s. The time from the finished proof to Canton's commit on both confirmers and reth marking the block final was 0.49 s for an empty block, 0.66 s for the deposit, 0.42 s for the payment and 0.58 s for the withdrawal. That interval also includes fetching the gateway's account and storage proofs from reth (one `eth_getProof` call), so it is more than Canton's commit alone. The builder matches the legs to Canton contracts before it proves the block, so that work is not in it. Measured; see [demo/results/](../demo/results/).
+- On DevNet, in the one-hour mixed load of 2026-10-24 (blocks 224 to 448, 13,496 transactions, all final): for blocks of 11 to 100 transactions the proof took 9.03 s at the median, and a block was final 11.01 s after it was made at the median. A block is "made" when the builder cuts it; "final" is when Canton has committed it. The run was capped by one client's RPC budget, not by the chain, so it did not find the chain's limit. See [load/mixed/RESULTS-2026-10-24.md](../load/mixed/RESULTS-2026-10-24.md).
 - Not yet measured on their own: building the witness on a warm machine, the sidecar's proof check run natively, and the Canton commit of a large block. The WebAssembly build took 8 to 32 ms in Node on CI runners for verifying a proof and rejecting a mismatched header; see [explorer/verify/README.md](../explorer/verify/README.md).
 
 The recorded GPU demo ran from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507). The Daml tests check the refusals of each leg kind; the GPU runs and the CI rehearsal check the cases listed in [demo/README.md](../demo/README.md#results).
@@ -140,4 +150,4 @@ The recorded GPU demo ran from commit `6b445073163832e9023850f53678617d90dfc808`
 
 ## Not now
 
-Throughput and block-time targets, more than one builder, forced inclusion, public Canton (the Global Synchronizer), privacy and hardening. Hardening includes custody that needs more than the operator's participant (for example, the gateway party hosted on both participants with a threshold), and a builder that remembers across runs which transaction a token registry refused (today the next run needs `--exclude`). The recipient of a deposit sends its own `claim` and so needs a little tROME for gas; the gateway's `claim` mints to its caller, so the recipient sends it; having the gateway mint for the recipient would need a key the gateway does not have.
+Throughput and block-time targets, more than one builder, forced inclusion, Canton TestNet and MainNet, privacy and hardening. Hardening includes custody that needs more than the operator's participant (for example, the gateway party hosted on both participants with a threshold), and a builder that remembers across runs which transaction a token registry refused (today the next run needs `--exclude`). The recipient of a deposit sends its own `claim` and so needs a little tROME for gas; the gateway's `claim` mints to its caller, so the recipient sends it; having the gateway mint for the recipient would need a key the gateway does not have.
