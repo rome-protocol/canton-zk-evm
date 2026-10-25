@@ -8,6 +8,7 @@ function clock() {
   let t = 1_000_000; const timers = [];
   return {
     now: () => t,
+    advance: (ms) => { t += ms; },
     sleep: (ms) => new Promise((r) => timers.push({ at: t + ms, r })),
     async run(untilMs, stop = () => false) {
       const end = t + untilMs;
@@ -43,6 +44,16 @@ test("first come, first served: a batch that came first is let through before th
   lim.acquire(15).then(() => order.push("batch"));
   for (let i = 0; i < 5; i++) lim.acquire(1).then(() => order.push("single"));
   await c.run(120_000);
+  assert.deepEqual(order, ["batch", "single", "single", "single", "single", "single"]);
+});
+
+test("first come, first served when slots free one at a time: the batch queued first gets them before the singles queued after it", async () => {
+  const c = clock(), lim = createLimiter({ limit: 20, now: c.now, sleep: c.sleep });
+  for (let i = 0; i < 20; i++) { await lim.acquire(1); c.advance(3_000); } // the minute's calls are 3 s apart, so they expire one by one
+  const order = [];
+  lim.acquire(15).then(() => order.push("batch"));
+  for (let i = 0; i < 5; i++) lim.acquire(1).then(() => order.push("single"));
+  await c.run(300_000);
   assert.deepEqual(order, ["batch", "single", "single", "single", "single", "single"]);
 });
 
