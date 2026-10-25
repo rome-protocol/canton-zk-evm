@@ -180,18 +180,18 @@ describe("the public RPC under a heavy flood", () => {
   });
 
   it("keeps the place of a call that timed out for one more timeout, because reth may still be running it", async () => {
-    // reth never answers an eth_call; the explorer gives up after 150 ms.
-    const { send } = await boot({ concurrency: 1, queue: 0, timeoutMs: 150, gate: (m) => (m === "eth_call" ? new Promise<void>(() => {}) : undefined) });
+    // reth never answers an eth_call; the explorer gives up after 600 ms (long enough that a loaded machine still reaches the next call inside the extra hold).
+    const { send } = await boot({ concurrency: 1, queue: 0, timeoutMs: 600, gate: (m) => (m === "eth_call" ? new Promise<void>(() => {}) : undefined) });
     const t0 = Date.now();
     const first = await send("eth_call", "10.5.0.1", [{}]);
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(140);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(580);
     expect((first.body as { error: { code: number } }).error.code).toBe(-32603);
     // The first call is gone from the explorer's side but still counts: the next one is refused at once.
     const busy = await send("eth_call", "10.5.0.2", [{}]);
     expect(busy.status).toBe(429);
     expect((busy.body as { error: { code: number } }).error.code).toBe(-32005);
     // After another timeout the place is free again: the next call is let in (and times out in its turn).
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 700));
     const later = await send("eth_call", "10.5.0.3", [{}]);
     expect((later.body as { error: { code: number } }).error.code).toBe(-32603);
   });
