@@ -17,12 +17,17 @@ case $1 in
   ether) echo '{"wei":1000,"ether":0}' ;;
   register) echo '{"tx":"0xaaaa","token":"0x3333333333333333333333333333333333333333"}' ;;
   wait) echo '{"block":5,"blockHash":"0xbbbb","gasUsed":1,"status":1,"contract":null,"finalized":true}' ;;
+  # name and symbol at the finalized block; $FAKE_DIR/name says what the token at that address is called, if it is not wTKB
+  describe) [ "$3" = finalized ] || { echo "fake evm: describe is read at finalized, not $3" >&2; exit 1; }
+            if [ -f "$FAKE_DIR/name" ]; then echo "{\"name\":\"$(cat "$FAKE_DIR/name")\",\"symbol\":\"X\"}"; else echo '{"name":"Wrapped TKB","symbol":"wTKB"}'; fi ;;
   *) echo "fake evm: unexpected $*" >&2; exit 1 ;;
 esac
 FAKE_EVM
 cat > "$WORK/canton" <<'FAKE_CANTON'
 #!/usr/bin/env bash
 echo "canton $*" >> "$FAKE_DIR/calls"
+# A command that fails: its name is in $FAKE_DIR/failing.
+if [ -f "$FAKE_DIR/failing" ] && [ "$1" = "$(cat "$FAKE_DIR/failing")" ]; then echo "fake canton: $1 failed" >&2; exit 1; fi
 case $1 in
   setup) echo '{}' ;;
   registered) [ -f "$FAKE_DIR/registered" ] && echo '{"registered":true}' || echo '{"registered":false}' ;;
@@ -91,6 +96,29 @@ run setup || fail "the resumed setup failed: $(tail -5 "$WORK/out")"
 [ "$(calls 'canton register-token')" = 2 ] || fail "the resumed setup did not register wTKB"
 [ "$(calls 'canton accept u')" = 2 ] || fail "the resumed setup did not make the acceptance"
 
+# ---- a failed read stops setup: it is not taken for "no"
+for failing in registered accepted; do
+  reset
+  echo "$failing" > "$FAKE/failing"
+  run setup && fail "setup went on although canton.py $failing failed"
+  [ "$(calls 'canton accept ')" = 0 ] || fail "setup made an acceptance after canton.py $failing failed"
+  [ "$failing" != registered ] || [ "$(calls 'canton register-token')" = 0 ] || fail "setup registered a token after canton.py registered failed"
+done
+
+# ---- a wTKB that is not at the address wtkb.json names stops setup, and the file is named
+reset
+echo "Some Other Token" > "$FAKE/name"
+run setup && fail "setup went on although the token at the address is not Wrapped TKB"
+grep -q "Clear .*wtkb.json" "$WORK/out" || fail "the wrong name does not say to clear wtkb.json: $(tail -3 "$WORK/out")"
+[ "$(calls 'canton register-token')" = 0 ] || fail "setup registered a token that is not wTKB"
+[ "$(calls 'canton accept ')" = 0 ] || fail "setup made an acceptance although the token is not wTKB"
+run setup && fail "the second setup went on although the token at the address is not Wrapped TKB"   # wtkb.json is there: it is checked on this path too
+[ "$(calls 'evm register')" = 1 ] || fail "the second setup made another wTKB"
+rm "$FAKE/name"
+rm -f "$WORK/state/demo/wtkb.json"
+run setup || fail "setup failed once wtkb.json was cleared: $(tail -5 "$WORK/out")"
+[ "$(calls 'evm register')" = 2 ] || fail "setup did not make wTKB again after wtkb.json was cleared"
+
 # ---- an existing wrapped token is used as it is
 reset
 EXTRA=(CZE_WTKB=0x5555555555555555555555555555555555555555)
@@ -116,7 +144,7 @@ chmod +x "$WORK/evm2" "$WORK/canton2"
 legs_run() {   # <the stand-in's balances file>
   env -i PATH="$PATH" HOME="$WORK" FAKE_STATE="$1" CZE_STATE_DIR="$WORK/state" CZE_LIVE_EVM="$WORK/evm2" CZE_LIVE_CANTON="$WORK/canton2" \
     CZE_LEDGER_URL=http://127.0.0.1:1 CZE_RPC_URL=http://127.0.0.1:2 CZE_WTROME=0x4444444444444444444444444444444444444444 \
-    CZE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567 CZE_LIVE_RESULTS="$WORK/results" "$LIVE" legs > "$WORK/out" 2>&1
+    CZE_SOURCE_COMMIT=0123456789abcdef0123456789abcdef01234567 CZE_LIVE_RESULTS="$WORK/results" FAKE_FAIL="${FAKE_FAIL:-}" "$LIVE" legs > "$WORK/out" 2>&1
 }
 legs_run "$WORK/balances.json" || fail "legs failed against the stand-in: $(tail -5 "$WORK/out")"
 results=$(ls "$WORK"/results/live-*.txt)
@@ -129,6 +157,14 @@ done
 jq '.acc = 0' "$WORK/balances.json" > "$WORK/noacc.json"
 legs_run "$WORK/noacc.json" && fail "legs ran although U has no acceptance (another party's was counted)"
 grep -q "U has made no acceptance" "$WORK/out" || fail "the missing acceptance is not named: $(tail -3 "$WORK/out")"
+# U needs 20 TKB for the two allocations (10 each): 15 stops legs before anything is made.
+jq '.u = 15' "$WORK/balances.json" > "$WORK/few.json"
+legs_run "$WORK/few.json" && fail "legs ran although U holds less than 20 TKB"
+grep -q "U holds less than 20 TKB" "$WORK/out" || fail "the short TKB is not named: $(tail -3 "$WORK/out")"
+jq '.u = 20' "$WORK/balances.json" > "$WORK/enough.json"
+legs_run "$WORK/enough.json" || fail "legs did not run with exactly 20 TKB: $(tail -3 "$WORK/out")"
+# A failed read of wTKB's supply stops legs: it is not taken for a number.
+FAKE_FAIL=wrapped legs_run "$WORK/balances.json" && fail "legs ran although reading wTKB's supply failed"
 # Canton's custody and wTKB's supply must be equal before the runs, or live.sh stops.
 echo '{"u":100,"v":0,"cust":3,"wu":0,"sup":0,"rome_u":0,"rome_v":0,"block":10,"tx":{},"reg":true,"acc":1,"alloc":[],"n":0,"blocks":{}}' > "$WORK/odd.json"
 legs_run "$WORK/odd.json" && fail "legs ran with a custody that differs from wTKB's supply"

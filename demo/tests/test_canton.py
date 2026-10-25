@@ -9,7 +9,7 @@ import canton
 ROOT = canton.ROOT
 PARTIES = {"OPERATOR": "op::1", "CONFIRMER": "co::1", "BUILDER": "bu::1", "GATEWAY": "gw::1", "READER": "re::1", "U": "u::1", "V": "v::1", "REGISTRY": "rg::1"}
 CHAIN_RECORD = {"chainId": "770101", "operator": "op::1", "confirmer": "co::1", "gateway": "gw::1", "builder": "bu::1", "reader": "re::1",
-                "headNumber": "3", "headHash": "ab" * 32}
+                "headNumber": "3", "headHash": "ab" * 32, "gatewayAddress": "a7" + "00" * 19}
 EVM_TOKEN = "0x" + "AB" * 20
 RULES = {"templateId": canton.RULES, "contractId": "rules-1", "createdEventBlob": "blob-1", "synchronizerId": "sync::1"}
 
@@ -367,6 +367,16 @@ class AcceptTests(LedgerTestCase):
         self.assertTrue(canton.main(["accepted", "u"])["accepted"])
         with self.assertRaises(SystemExit):
             canton.main(["accepted", "reader"])
+
+    def test_accepting_again_gives_the_acceptance_that_is_there_and_makes_no_other(self):
+        first = canton.main(["accept", "u"])
+        FakeLedger.submitted.clear()
+        again = canton.main(["accept", "u"])
+        self.assertEqual(again, first)
+        self.assertEqual(FakeLedger.submitted, [])
+        self.assertEqual(len(self.made(canton.CHAIN + "WithdrawalAcceptance")), 1)
+        canton.main(["accept", "v"])   # another party's acceptance is not U's
+        self.assertEqual(len(FakeLedger.submitted), 1)
 
     def test_each_party_gets_its_own_acceptance(self):
         u, v = canton.main(["accept", "u"]), canton.main(["accept", "v"])

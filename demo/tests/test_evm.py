@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import evm
-from eth_abi import decode
+from eth_abi import decode, encode
 from eth_account import Account
 from eth_account.typed_transactions import TypedTransaction
 from eth_utils import keccak
@@ -38,6 +38,10 @@ class FakeReth(http.server.BaseHTTPRequestHandler):
             return hex(25 * 10**9)                                    # 2.5 wrapped tokens, in base units
         if data[2:10] == selector("balanceOf(address)"):
             return hex(4 * 10**10) if to.lower() == WRAPPED else hex(7 * evm.ONE)   # 4 wrapped tokens, or 7 TKA
+        if data[2:10] == selector("name()"):
+            return "0x" + encode(["string"], ["Wrapped TKB"]).hex() if to.lower() == WRAPPED else "0x"
+        if data[2:10] == selector("symbol()"):
+            return "0x" + encode(["string"], ["wTKB"]).hex() if to.lower() == WRAPPED else "0x"   # no code, no answer, at any other address
         raise AssertionError(f"unexpected call {data}")
 
     def do_POST(self):
@@ -223,6 +227,18 @@ class EvmTests(unittest.TestCase):
         self.assertEqual({c["params"][1] for c in FakeReth.calls if c["method"] == "eth_call"}, {"finalized"})
         with self.assertRaises(SystemExit):
             evm.main(["wrapped", WRAPPED, "0x" + "22" * 20, "pending"])
+
+    def test_describe_reads_the_name_and_symbol_at_the_block_asked_for(self):
+        self.assertEqual(evm.main(["describe", WRAPPED, "finalized"]), {"name": "Wrapped TKB", "symbol": "wTKB"})
+        self.assertEqual({c["params"][1] for c in FakeReth.calls if c["method"] == "eth_call"}, {"finalized"})
+        self.assertEqual(evm.main(["describe", WRAPPED])["symbol"], "wTKB")
+        with self.assertRaises(SystemExit):
+            evm.main(["describe", WRAPPED, "pending"])
+        with self.assertRaises(SystemExit):
+            evm.main(["describe", "nobody"])
+
+    def test_describe_says_null_where_there_is_no_token(self):
+        self.assertEqual(evm.main(["describe", TOKEN, "finalized"]), {"name": None, "symbol": None})
 
 
 if __name__ == "__main__":

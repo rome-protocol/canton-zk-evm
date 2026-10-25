@@ -74,8 +74,11 @@ GATEWAY=$(sed -n 's/^GATEWAY_ADDRESS=//p' "$ROOT/PINS" | head -1)
 addresses=$(evm keys)   # makes V's and U's keys if there are none (0600, never printed); prints only the addresses
 V_ADDR=$(jq -r .v <<<"$addresses"); U_ADDR=$(jq -r .u <<<"$addresses")
 [[ $V_ADDR =~ ^0x[0-9a-fA-F]{40}$ && $U_ADDR =~ ^0x[0-9a-fA-F]{40}$ ]] || fail "evm.py keys gave no addresses: $addresses"
+# A command's result is stored first, as `x=$(command)`, and only then checked: set -e stops the run when the command fails, which it does not
+# do for a command inside "$(...)" in the arguments of a check.
 for who in "$V_ADDR" "$U_ADDR"; do
-  [ "$(evm ether "$who" | jq -r .wei)" != 0 ] || fail "$who has no coin for fees: send some to it first"
+  ether=$(evm ether "$who"); wei=$(jq -r .wei <<<"$ether")
+  [ "$wei" != 0 ] || fail "$who has no coin for fees: send some to it first"
 done
 
 # <tx> <what>: wait until the transaction is in a finalized block; its status must be 1. Prints the receipt.
@@ -84,6 +87,15 @@ final() {
   receipt=$(evm wait "$1" "$WAIT_SECONDS") || fail "$2: $1 is not in a finalized block"
   is "$(jq -r .status <<<"$receipt")" 1 "the status of $2 ($1)"
   echo "$receipt"
+}
+
+# <token>: the token at that address, in the finalized block, is the one this script asked V to make. The address that `evm.py register` gives is
+# worked out before the transaction is sent; if another registration took it first, wtkb.json names an address that is some other token.
+named() {
+  local described name symbol
+  described=$(evm describe "$1" finalized); name=$(jq -r .name <<<"$described"); symbol=$(jq -r .symbol <<<"$described")
+  [ "$name" = "Wrapped TKB" ] && [ "$symbol" = wTKB ] ||
+    fail "the token at $1 is called '$name' ($symbol), not 'Wrapped TKB' (wTKB): another registration took the address first. Clear $DEMO/wtkb.json and run setup again"
 }
 
 # ---------------------------------------------------------------- setup
@@ -98,6 +110,7 @@ setup() {
     wtkb=$(jq -r .token "$wtkb_file"); tx=$(jq -r .tx "$wtkb_file")
     step "wTKB was made before, at $wtkb"
     final "$tx" "the registration of wTKB" >/dev/null
+    named "$wtkb"
   else
     step "V makes wTKB"
     local made; made=$(evm register v "Wrapped TKB" wTKB)
@@ -106,21 +119,27 @@ setup() {
     mkdir -p "$DEMO"
     printf '{"tx":"%s","token":"%s"}\n' "$tx" "$wtkb" > "$wtkb_file"   # before the wait, so that a second run waits for this one and makes no other
     final "$tx" "the registration of wTKB" >/dev/null
+    named "$wtkb"
   fi
 
   step "wTKB is registered on Canton as the EVM form of TKB, and U accepts withdrawals"
-  if [ "$(canton registered "$wtkb" | jq -r .registered)" = true ]; then
+  local state is_registered registered_token accepted_now accepted
+  state=$(canton registered "$wtkb"); is_registered=$(jq -r .registered <<<"$state")
+  if [ "$is_registered" = true ]; then
     echo "wTKB is registered already"
   else
     # A proposal that an earlier run left for the confirmer is accepted by register-token. The address comes back in lowercase, as the user may not give it.
-    is "$(canton register-token "$wtkb" | jq -r .evmToken)" "$(tr A-F a-f <<<"${wtkb#0x}")" "the registered token"
+    registered_token=$(canton register-token "$wtkb")
+    is "$(jq -r .evmToken <<<"$registered_token")" "$(tr A-F a-f <<<"${wtkb#0x}")" "the registered token"
   fi
-  if [ "$(canton accepted u | jq -r .accepted)" = true ]; then
+  accepted_now=$(canton accepted u); accepted=$(jq -r .accepted <<<"$accepted_now")
+  if [ "$accepted" = true ]; then
     echo "U accepts withdrawals already"
   else
-    canton accept u | jq -c .
+    accepted_now=$(canton accept u); jq -c . <<<"$accepted_now"
   fi
-  is "$(canton registered "$wtkb" | jq -r .registered)" true "wTKB is registered on Canton"
+  state=$(canton registered "$wtkb"); is_registered=$(jq -r .registered <<<"$state")
+  is "$is_registered" true "wTKB is registered on Canton"
   echo "wTKB is at $wtkb"
 }
 
@@ -128,17 +147,18 @@ setup() {
 totals() { jq -c '{u: (.tkb.u | add // 0), v: (.tkb.v | add // 0), gateway: (.custody | add // 0)}' <<<"$1"; }
 total() { jq -r ".$2" <<<"$(totals "$1")"; }
 wrapped() { evm wrapped "$WTKB" "$1" finalized; }   # <holder address>: {"balance", "supply"}
-coin() { evm balance "$1" "$2" finalized | jq -r .tka; }   # <token> <holder>: whole tokens
-fin_number() { evm block finalized | jq -r .number; }
+coin() { local b; b=$(evm balance "$1" "$2" finalized) && jq -r .tka <<<"$b"; }   # <token> <holder>: whole tokens
+fin_number() { local b; b=$(evm block finalized); jq -r .number <<<"$b"; }
 
 # <block number> <kind> <party> <block hash>: one leg of that kind in the block, Canton's record is that block, and the block and the party's
 # newest TKB holding were made by one Canton update. Prints the update id.
 check_leg() {
-  local n=$1 found legs head update record
+  local n=$1 found legs head update record finalized
   legs=$(evm legs "$n")
   is "$(jq -r .legs <<<"$legs")" 1 "the legs in block $n"
   is "$(jq -c .kinds <<<"$legs")" "[\"$2\"]" "the kind of block $n's leg"
-  [ "$(fin_number)" -ge "$n" ] || fail "reth's finalized block is below block $n"
+  finalized=$(fin_number)
+  [ "$finalized" -ge "$n" ] || fail "reth's finalized block is below block $n"
   found=$(canton block "$n" "$3")   # read from the update of that party's newest holding: not every record of a long chain
   record=$(jq -c .record <<<"$found")
   head=$(jq -r '.chain[0].headNumber' <<<"$found")
@@ -154,7 +174,8 @@ check_leg() {
 }
 # <canton balances> <what>: Canton's custody is wTKB's supply at the finalized block.
 custody_is_supply() {
-  is "$(num "$(total "$1" gateway)")" "$(num "$(wrapped "$U_ADDR" | jq -r .supply)")" "Canton's custody and wTKB's supply $2"
+  local w; w=$(wrapped "$U_ADDR")
+  is "$(num "$(total "$1" gateway)")" "$(num "$(jq -r .supply <<<"$w")")" "Canton's custody and wTKB's supply $2"
 }
 
 legs() {
@@ -162,8 +183,11 @@ legs() {
   if [ -n "${CZE_WTKB:-}" ]; then WTKB=$CZE_WTKB
   elif [ -f "$wtkb_file" ]; then WTKB=$(jq -r .token "$wtkb_file")
   else fail "no wTKB: run demo/live.sh setup first"; fi
-  [ "$(canton registered "$WTKB" | jq -r .registered)" = true ] || fail "wTKB at $WTKB is not registered on Canton: run demo/live.sh setup first"
-  [ "$(canton accepted u | jq -r .accepted)" = true ] || fail "U has made no acceptance of withdrawals: run demo/live.sh setup first"
+  local state is_registered accepted_now accepted
+  state=$(canton registered "$WTKB"); is_registered=$(jq -r .registered <<<"$state")
+  [ "$is_registered" = true ] || fail "wTKB at $WTKB is not registered on Canton: run demo/live.sh setup first"
+  accepted_now=$(canton accepted u); accepted=$(jq -r .accepted <<<"$accepted_now")
+  [ "$accepted" = true ] || fail "U has made no acceptance of withdrawals: run demo/live.sh setup first"
   [ -f "$CZE_STATE_DIR/canton/parties.env" ] || fail "no $CZE_STATE_DIR/canton/parties.env: run network/external/setup.py --demo"
   # shellcheck disable=SC1091
   . "$CZE_STATE_DIR/canton/parties.env"
@@ -173,7 +197,8 @@ legs() {
 
   local start; start=$(canton balances)
   custody_is_supply "$start" "before the runs"
-  awk -v a="$(total "$start" u)" 'BEGIN { exit !(a >= 10) }' || fail "U holds less than 10 TKB: $(totals "$start")"
+  # Run 1 allocates 10 TKB and run 2 allocates 10 more (two allocations of 10): a U with less than 20 would stop in run 2, after run 1 had changed things.
+  awk -v a="$(total "$start" u)" 'BEGIN { exit !(a >= 20) }' || fail "U holds less than 20 TKB, which the deposit and the payment need (10 each): $(totals "$start")"
 
   # ---- run 1
   step "run 1, a deposit: U puts 10 TKB with the gateway and claims 10 wTKB"
@@ -206,7 +231,8 @@ legs() {
   final "$approve_tx" "V's approval of the gateway" >/dev/null
   dvp=$(canton dvp "$tag-dvp" "$CZE_WTROME" "$U_ADDR" "$PAY"); echo "$dvp" | jq -c .
   payment=$(jq -r .id <<<"$dvp")
-  is "$payment" "$(canton payment-id "$tag-dvp" | jq -r .id)" "the payment id of $tag-dvp"
+  local pid; pid=$(canton payment-id "$tag-dvp"); pid=$(jq -r .id <<<"$pid")
+  is "$payment" "$pid" "the payment id of $tag-dvp"
   pay_tx=$(evm pay v "$payment" "$CZE_WTROME" "$U_ADDR" "$PAY" | jq -r .tx)
   r2=$(final "$pay_tx" "the payment"); n2=$(jq -r .block <<<"$r2"); h2=$(jq -r .blockHash <<<"$r2")
   u2=$(check_leg "$n2" pay v "$h2"); local rec2; rec2=$(canton block "$n2" v | jq -c .record)
@@ -214,8 +240,9 @@ legs() {
   is "$(num "$(total "$after2" u)")" "$(sum "$(total "$after1" u)" -10)" "U's TKB after run 2"
   is "$(num "$(total "$after2" v)")" "$(sum "$(total "$after1" v)" 10)" "V's TKB after run 2"
   is "$(jq -c '[.allocations, .terms]' <<<"$after2")" "$(jq -c '[.allocations, .terms]' <<<"$after1")" "the allocations and terms after run 2"
-  is "$(coin "$CZE_WTROME" "$U_ADDR")" $((rome_u + PAY)) "U's WtROME after run 2"
-  is "$(coin "$CZE_WTROME" "$V_ADDR")" $((rome_v - PAY)) "V's WtROME after run 2"
+  local rome_u2 rome_v2; rome_u2=$(coin "$CZE_WTROME" "$U_ADDR"); rome_v2=$(coin "$CZE_WTROME" "$V_ADDR")
+  is "$rome_u2" $((rome_u + PAY)) "U's WtROME after run 2"
+  is "$rome_v2" $((rome_v - PAY)) "V's WtROME after run 2"
   custody_is_supply "$after2" "after run 2"
 
   # ---- run 3
@@ -233,6 +260,7 @@ legs() {
 
   # ---- results
   mkdir -p "$RESULTS"
+  local chain code_hash; chain=$(evm chain); code_hash=$(evm code "$GATEWAY")
   local out=$RESULTS/live-$day.txt
   [ ! -e "$out" ] || out=$RESULTS/live-$day-$(date -u +%H%M%S).txt
   {
@@ -241,9 +269,9 @@ legs() {
     echo "format=2"
     echo "date=$(date -u +%FT%TZ)"
     echo "source_commit=$CZE_SOURCE_COMMIT"
-    echo "chain_id=$(evm chain | jq -r .chainId)"
+    echo "chain_id=$(jq -r .chainId <<<"$chain")"
     echo "gateway=$GATEWAY"
-    echo "gateway_code_hash=$(evm code "$GATEWAY" | jq -r .codeHash)"
+    echo "gateway_code_hash=$(jq -r .codeHash <<<"$code_hash")"
     echo "wtkb=$WTKB"
     echo "wtrome=$CZE_WTROME"
     echo "u_address=$U_ADDR"

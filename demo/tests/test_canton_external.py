@@ -357,15 +357,43 @@ class NewCommandTests(ExternalTestCase):
         out = canton.main(["registered", EVM_TOKEN])
         self.assertEqual((out["registered"], out["proposed"]), (False, True))
 
-    def test_register_token_accepts_the_proposal_an_earlier_run_left(self):
+    def left_proposal(self):
         proposal = {"contractId": "p1", "offset": 3, "createArgument": {"evmToken": "ab" * 20, "instrumentId": {"admin": "rg::1", "id": "TKB"}, "factory": "rules-1"}}
         FakeLedger.contracts[("op::1", canton.CHAIN + "GatewayTokenProposal")] = [proposal]
         FakeLedger.contracts[("co::1", canton.CHAIN + "GatewayTokenProposal")] = [proposal]
-        out = canton.main(["register-token", EVM_TOKEN])
+
+    def test_register_token_accepts_the_proposal_an_earlier_run_left(self):
+        self.left_proposal()
+        os.environ.pop("RETH_HTTP_PORT", None)
+        with mock.patch.object(canton.propose, "gateway_made", return_value=True) as asked:
+            out = canton.main(["register-token", EVM_TOKEN])
+        asked.assert_called_once_with("http://127.0.0.1:8545", "a7" + "00" * 19, "ab" * 20)
         self.assertEqual(out["evmToken"], "ab" * 20)
         [(node, body)] = FakeLedger.submitted
         command = body["commands"][0]["ExerciseCommand"]
         self.assertEqual((command["choice"], command["contractId"], body["actAs"], body["userId"]), ("AcceptToken", "p1", ["co::1"], "ostia2-confirmer"))
+
+    def test_a_left_proposal_is_not_accepted_when_the_gateway_did_not_make_the_token(self):
+        self.left_proposal()
+        with mock.patch.object(canton.propose, "gateway_made", return_value=False):
+            with self.assertRaises(canton.Fail) as why:
+                canton.main(["register-token", EVM_TOKEN])
+        self.assertIn("did not make the token", str(why.exception))
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_the_gateway_is_asked_at_the_chains_rpc_when_it_is_set(self):
+        self.left_proposal()
+        os.environ["CZE_RPC_URL"] = "https://rpc.example"
+        with mock.patch.object(canton.propose, "gateway_made", return_value=True) as asked:
+            canton.main(["register-token", EVM_TOKEN])
+        self.assertEqual(asked.call_args.args[0], "https://rpc.example")
+
+    def test_the_gateway_is_asked_at_the_reth_port_otherwise(self):
+        self.left_proposal()
+        os.environ["RETH_HTTP_PORT"] = "9999"
+        with mock.patch.object(canton.propose, "gateway_made", return_value=True) as asked:
+            canton.main(["register-token", EVM_TOKEN])
+        self.assertEqual(asked.call_args.args[0], "http://127.0.0.1:9999")
 
     def test_a_left_proposal_for_another_instrument_is_refused(self):
         proposal = {"contractId": "p1", "offset": 3, "createArgument": {"evmToken": "ab" * 20, "instrumentId": {"admin": "other::1", "id": "TKB"}, "factory": "rules-0"}}
