@@ -315,6 +315,32 @@ class AttemptFolders(tb.Case):
             b.put_back(reth, built.n)
         self.assertEqual(sorted(p for p in built.work.glob("attempt-*")), sorted(folders[-b.KEEP_ATTEMPTS:]))
 
+    def test_a_folder_that_is_not_ours_neither_stops_a_build_nor_is_removed(self):
+        s = self.setup({tb.ALICE: [tx(tb.ALICE, 0)]})
+        reth, chain = self.cut(s)
+        first = b.build(s.cfg, reth, chain, HEAD_HASH, set())
+        stray = first.work / "attempt-copy"   # an operator's copy: not attempt-<pid>-<ns>
+        stray.mkdir()
+        for _ in range(b.KEEP_ATTEMPTS + 1):
+            reth.forkchoice(HEAD_HASH, HEAD_HASH, HEAD_HASH)
+            b.put_back(reth, first.n)
+            built = b.build(s.cfg, reth, chain, HEAD_HASH, set())   # would raise ValueError if the stray name were parsed
+        self.assertTrue(stray.is_dir())
+        self.assertEqual(len([p for p in built.work.glob("attempt-*") if p != stray]), b.KEEP_ATTEMPTS)
+
+    def test_the_folder_just_made_is_kept_when_the_clock_steps_back(self):
+        s = self.setup({tb.ALICE: [tx(tb.ALICE, 0)]})
+        reth, chain = self.cut(s)
+        for _ in range(b.KEEP_ATTEMPTS):
+            built = b.build(s.cfg, reth, chain, HEAD_HASH, set())
+            reth.forkchoice(HEAD_HASH, HEAD_HASH, HEAD_HASH)
+            b.put_back(reth, built.n)
+        with mock.patch.object(b.time, "time_ns", return_value=1):   # earlier than every folder made so far
+            late = b.build(s.cfg, reth, chain, HEAD_HASH, set())
+        self.assertTrue(late.attempt_dir.is_dir())
+        self.assertTrue((late.attempt_dir / "block.json").is_file())
+        self.assertEqual(len(list(late.work.glob("attempt-*"))), b.KEEP_ATTEMPTS)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1077,7 +1077,10 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     work = Path(cfg.work_dir) / f"block-{n}"
     attempt_dir = work / f"attempt-{os.getpid()}-{time.time_ns()}"   # a folder of its own: a rebuilt block at this height never overwrites what an earlier attempt's tools may still read
     attempt_dir.mkdir(parents=True, exist_ok=True)
-    for old in sorted(work.glob("attempt-*"), key=lambda p: int(p.name.rsplit("-", 1)[1]))[:-KEEP_ATTEMPTS]:
+    # Only earlier attempts' folders, named as above, are pruned: never the one just made (a clock that stepped back would sort it oldest),
+    # and never a name that is not ours (it would stop every build at this height).
+    others = sorted((p for p in work.glob("attempt-*") if p != attempt_dir and re.fullmatch(r"attempt-\d+-\d+", p.name)), key=lambda p: int(p.name.rsplit("-", 1)[1]))
+    for old in others[:max(0, len(others) - (KEEP_ATTEMPTS - 1))]:
         shutil.rmtree(old, ignore_errors=True)
     (attempt_dir / "block.json").write_text(json.dumps(reth.call("eth_getBlockByNumber", [payload["blockNumber"], True])))
     (attempt_dir / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))

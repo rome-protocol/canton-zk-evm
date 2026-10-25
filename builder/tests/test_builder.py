@@ -1300,7 +1300,7 @@ class PackedWithLegsAndSizes(LegCase):
         pool[sender(5)] = [bad]
         saved = []
         real = b.save_kept
-        with self.bump_use_after_the_first_read(s, 40_000), mock.patch.object(b, "save_kept", lambda cfg, pairs, attempt=None, number=None: (saved.append([h for h, _ in pairs]), real(cfg, pairs, attempt, number))):
+        with self.bump_use_after_the_first_read(s, 40_000), mock.patch.object(b, "save_kept", lambda cfg, pairs, number, attempt=None: (saved.append([h for h, _ in pairs]), real(cfg, pairs, number, attempt))):
             self.build(s)
         (payload,) = [p[0] for p in s.engine("engine_newPayloadV4")][-1:]
         self.assertEqual(saved[-1], [hash_of(r) for r in payload["transactions"]])
