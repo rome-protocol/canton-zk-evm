@@ -1,7 +1,7 @@
 // node --test load/mixed/scripts/refill.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
+import { amountOut, minOutFor, QuoteBook, Ledger, RefillBudget, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, readAllOnce, spendKinds, tromeText, WrappedBooks, wtFlows, wtAllowed, wtDelta } from "./refill.mjs";
 
 const E = (n) => BigInt(Math.round(n * 1e6)) * 10n ** 12n; // n units of an 18-decimal coin
 const U = (n) => BigInt(n) * 1_000_000n;
@@ -276,4 +276,86 @@ test("hours of the weighted mix against a constant-product pool: no kind sends W
   assert.ok(rUsd > U(50_000) * 2n, "the price moved far, as it does on the soak (the old fixed booking would have run dry here)");
   assert.ok(stats.wraps > steps / 20, "wraps did not stop: " + stats.wraps);
   assert.ok(stats.priceReverts < steps / 100, "price reverts from a fresh quote stay rare: " + stats.priceReverts);
+});
+
+// ---- a wallet sends only what it is known to hold
+const mk3 = (real) => ({ readBalances: async (as) => new Map(as.map((a) => [a, real[a]]).filter(([, r]) => r)), topUp: async () => true });
+const G = (addrs) => [{ name: "pool", addrs, low: LOW, topUp: TOP }];
+
+test("a wallet that has not been read yet sends nothing", () => {
+  const l = mkLedger(); l.markUnread(["a"]);
+  assert.equal(l.canSpend("a", ["trome"]), false);
+  l.set("a", { trome: E(30), tUSD: U(3000), tETH: E(4) });
+  assert.equal(l.canSpend("a", ["trome", "tUSD"]), true);
+});
+
+test("a wallet read low and not topped up (held back, distributor short, or failed) sends nothing that spends the kind it is short in", async () => {
+  const l = mkLedger(), stats = emptyRefillStats(); l.markUnread(["a", "b"]);
+  const real = { a: { trome: E(30), tUSD: U(10), tETH: E(4) }, b: { trome: E(30), tUSD: U(3000), tETH: E(4) } };
+  const budget = new RefillBudget({ perMinute: 0, perRun: 100 }); // nothing may be topped up: a is held back
+  await refillCycle({ ledger: l, groups: G(["a", "b"]), budget, io: mk3(real), readPerCheck: 5, stats });
+  assert.equal(stats.heldBack, 1);
+  assert.equal(l.canSpend("a", spendKinds("swapUsdToEth")), false); // short of tUSD: no swap of tUSD
+  assert.equal(l.canSpend("a", spendKinds("swapEthToUsd")), true); // but tETH and gas are fine
+  assert.equal(l.canSpend("a", spendKinds("addLiquidity")), false);
+  assert.equal(l.canSpend("a", spendKinds("erc721Mint")), true);
+  assert.equal(l.canSpend("b", spendKinds("addLiquidity")), true);
+});
+
+test("a failed top-up leaves the wallet unfunded; a later top-up frees it", async () => {
+  const l = mkLedger(), stats = emptyRefillStats(); l.markUnread(["a"]);
+  const real = { a: { trome: E(0), tUSD: U(3000), tETH: E(4) } };
+  let ok = false; const io = { readBalances: mk3(real).readBalances, topUp: async () => ok };
+  const budget = new RefillBudget({ perMinute: 10, perRun: 100 });
+  await refillCycle({ ledger: l, groups: G(["a"]), budget, io, readPerCheck: 5, stats });
+  assert.equal(l.canSpend("a", ["trome"]), false);
+  ok = true;
+  await refillCycle({ ledger: l, groups: G(["a"]), budget, io, readPerCheck: 5, stats });
+  assert.equal(l.canSpend("a", ["trome"]), true);
+});
+
+test("a distributor that is short leaves the low wallets unfunded, and they send nothing until it is not", async () => {
+  const l = mkLedger(), stats = emptyRefillStats(); l.markUnread(["a"]);
+  const real = { a: { trome: E(1), tUSD: U(3000), tETH: E(4) } };
+  let short = true; const io = { readBalances: mk3(real).readBalances, topUp: async () => !short };
+  const budget = new RefillBudget({ perMinute: 10, perRun: 100 });
+  await refillCycle({ ledger: l, groups: G(["a"]), budget, io, readPerCheck: 5, stats });
+  assert.equal(l.canSpend("a", ["trome"]), false);
+  short = false; real.a = { trome: E(1), tUSD: U(3000), tETH: E(4) };
+  await refillCycle({ ledger: l, groups: G(["a"]), budget, io, readPerCheck: 5, stats });
+  assert.equal(l.canSpend("a", ["trome"]), true);
+});
+
+test("the run starts only after every wallet has been read once", async () => {
+  const l = mkLedger(), stats = emptyRefillStats(), addrs = Array.from({ length: 25 }, (_, i) => `w${i}`);
+  l.markUnread(addrs);
+  const real = Object.fromEntries(addrs.map((a) => [a, { trome: E(30), tUSD: U(3000), tETH: E(4) }]));
+  const budget = new RefillBudget({ perMinute: 10, perRun: 100 });
+  const left = await readAllOnce({ ledger: l, groups: G(addrs), budget, io: mk3(real), readPerCheck: 6, stats });
+  assert.deepEqual(left, []);
+  assert.ok(addrs.every((a) => l.canSpend(a, ["trome", "tUSD", "tETH"])));
+  assert.equal(stats.checks, 5); // 25 wallets, 6 a check
+});
+
+test("when some wallets can not be read the start reports them (and gives up after the bound) instead of sending from them", async () => {
+  const l = mkLedger(), stats = emptyRefillStats(); l.markUnread(["a", "b"]);
+  const real = { a: { trome: E(30), tUSD: U(3000), tETH: E(4) } }; // b never answers
+  const left = await readAllOnce({ ledger: l, groups: G(["a", "b"]), budget: new RefillBudget({ perMinute: 10, perRun: 100 }), io: mk3(real), readPerCheck: 6, stats, maxChecks: 5 });
+  assert.deepEqual(left, ["b"]);
+  assert.equal(l.canSpend("b", ["trome"]), false);
+});
+
+test("spendKinds: gas always, plus the tokens a kind moves", () => {
+  assert.deepEqual(spendKinds("erc721Mint"), ["trome"]);
+  assert.deepEqual(spendKinds("swapUsdToTrome"), ["trome", "tUSD"]);
+  assert.deepEqual(spendKinds("swapEthToUsd"), ["trome", "tETH"]);
+  assert.deepEqual(spendKinds("addLiquidity"), ["trome", "tUSD", "tETH"]);
+});
+
+test("the per-minute line shows what the refill key took from the distributor", () => {
+  const s = emptyRefillStats();
+  assert.doesNotMatch(refillLine(s), /took/);
+  s.funded = 2; s.tromeTaken = E(12) + E("0.5");
+  assert.match(refillLine(s), /the refill key took 12\.50 tROME from the distributor in 2 sends/);
+  assert.equal(tromeText(0n), "0.00"); assert.equal(tromeText(E(3)), "3.00");
 });

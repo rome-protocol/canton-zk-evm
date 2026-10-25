@@ -44,7 +44,7 @@ export class QuoteBook {
 
 /** The kit's estimate of each wallet's balance of what it spends: { trome, tUSD, tETH } (smallest units). */
 export class Ledger {
-  constructor(initial, now = Date.now) { this.initial = initial; this.b = new Map(); this.unread = new Set(); this.readAt = new Map(); this.now = now; }
+  constructor(initial, now = Date.now) { this.initial = initial; this.b = new Map(); this.unread = new Set(); this.unfunded = new Map(); this.readAt = new Map(); this.now = now; }
   /** Wallets whose real balance has not been read yet (the start of a run: what they hold is not known until read). */
   markUnread(addrs) { for (const a of addrs) this.unread.add(a); }
   unreadIn(addrs) { return addrs.filter((a) => this.unread.has(a)); }
@@ -52,8 +52,13 @@ export class Ledger {
   /** A transaction left the wallet: spend is { trome?, tUSD?, tETH? }. */
   spend(addr, spend) { const x = this.get(addr); for (const [k, v] of Object.entries(spend ?? {})) if (k in x) x[k] -= v; }
   /** The real balances were read: they replace the estimate. */
-  set(addr, real) { this.unread.delete(addr); this.readAt.set(addr, this.now()); this.b.set(addr, { ...this.get(addr), ...real }); }
-  credit(addr, add) { const x = this.get(addr); for (const [k, v] of Object.entries(add)) if (k in x) x[k] += v; }
+  set(addr, real) { this.unread.delete(addr); this.unfunded.delete(addr); this.readAt.set(addr, this.now()); this.b.set(addr, { ...this.get(addr), ...real }); }
+  credit(addr, add) { const x = this.get(addr); for (const [k, v] of Object.entries(add)) if (k in x) x[k] += v; this.markFunded(addr, Object.keys(add)); }
+  /** The real balance of these kinds was read low and the wallet has not been topped up yet: it must not send what it does not have. */
+  markUnfunded(addr, kinds) { if (!kinds.length) return; this.unfunded.set(addr, new Set([...(this.unfunded.get(addr) ?? []), ...kinds])); }
+  markFunded(addr, kinds) { const u = this.unfunded.get(addr); if (!u) return; for (const k of kinds) u.delete(k); if (!u.size) this.unfunded.delete(addr); }
+  /** May this wallet send something that spends these kinds? Only once its real balance has been read, and not while it is known low in one of them. */
+  canSpend(addr, kinds) { if (this.unread.has(addr)) return false; const u = this.unfunded.get(addr); return !u || !kinds.some((k) => u.has(k)); }
   /** Which of the tracked kinds are under their low mark. */
   lowKinds(addr, low) { const x = this.get(addr); return Object.keys(low).filter((k) => x[k] < low[k]); }
   /**
@@ -85,10 +90,21 @@ export class RefillBudget {
   give(n) { for (let i = 0; i < n && this.stamps.length; i++) this.stamps.pop(); this.total = Math.max(0, this.total - n); }
 }
 
-export const emptyRefillStats = () => ({ checks: 0, read: 0, low: 0, toppedUp: 0, txs: 0, minted: 0, funded: 0, failed: 0, heldBack: 0, distributorShort: 0, budgetWaits: 0 });
+/** What each kind of mix transaction spends besides gas (gas and tROME are always spent, so "trome" is always in the list). */
+export function spendKinds(kind) {
+  if (kind === "swapUsdToTrome" || kind === "swapUsdToEth") return ["trome", "tUSD"];
+  if (kind === "swapEthToUsd") return ["trome", "tETH"];
+  if (kind === "addLiquidity") return ["trome", "tUSD", "tETH"];
+  return ["trome"];
+}
+
+export const emptyRefillStats = () => ({ checks: 0, read: 0, low: 0, toppedUp: 0, txs: 0, minted: 0, funded: 0, failed: 0, heldBack: 0, distributorShort: 0, budgetWaits: 0, tromeTaken: 0n });
+
+/** A wei amount as tROME with two decimals ("12.50"), without any library. */
+export const tromeText = (wei) => { const c = BigInt(wei) / 10n ** 16n; return `${c / 100n}.${String(c % 100n).padStart(2, "0")}`; };
 
 export const refillLine = (s) => `refills: ${s.toppedUp} wallets topped up in ${s.txs} txs` + (s.failed ? `, ${s.failed} top-ups failed` : "") + (s.heldBack ? `, ${s.heldBack} held back by the bound` : "")
-  + (s.distributorShort ? `, DISTRIBUTOR SHORT of tROME ${s.distributorShort} times (wallets wait)` : "") + (s.budgetWaits ? `, refill waited for RPC budget ${s.budgetWaits} times` : "");
+  + (s.funded ? `, the refill key took ${tromeText(s.tromeTaken)} tROME from the distributor in ${s.funded} sends` : "") + (s.distributorShort ? `, DISTRIBUTOR SHORT of tROME ${s.distributorShort} times (wallets wait)` : "") + (s.budgetWaits ? `, refill waited for RPC budget ${s.budgetWaits} times` : "");
 
 /**
  * Whether the refill check runs now. It runs when the RPC budget has room for it next to the sends (`left >= need`); and when no check has run for twice its
@@ -166,7 +182,8 @@ export async function refillCycle({ ledger, groups, budget, io, readPerCheck, st
         const r = real.get(a);
         if (!r) continue;
         ledger.set(a, r);
-        if (ledger.lowKinds(a, g.low).length) needy.push(a);
+        const low = ledger.lowKinds(a, g.low);
+        if (low.length) { needy.push(a); ledger.markUnfunded(a, low); } // it sends nothing that spends these kinds until a top-up has gone out
       }
       stats.low += needy.length;
       if (!needy.length) continue;
@@ -189,4 +206,14 @@ export async function refillCycle({ ledger, groups, budget, io, readPerCheck, st
       log(`refill ${g.name}: ${String(e?.message ?? e).slice(0, 120)}`);
     }
   }
+}
+
+/**
+ * The start of a run: every wallet is read once (and topped up where it is low) before anything is sent. Runs the refill check until no wallet is unread,
+ * at most `maxChecks` times. Returns the wallets still unread (empty when it worked).
+ */
+export async function readAllOnce({ ledger, groups, budget, io, readPerCheck, stats, maxChecks = 200, log = () => {} }) {
+  const all = groups.flatMap((g) => g.addrs);
+  for (let i = 0; i < maxChecks && ledger.unreadIn(all).length; i++) await refillCycle({ ledger, groups, budget, io, readPerCheck, stats, log });
+  return ledger.unreadIn(all);
 }

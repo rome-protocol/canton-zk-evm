@@ -9,7 +9,7 @@ import { appendFileSync, writeFileSync, readFileSync, existsSync, mkdirSync, chm
 import { ethers } from "ethers";
 import { cfg, state, save, log, provider, distributor, wallets, done, step, deploy, att, artifact, RUN } from "./lib.mjs";
 import { fees } from "./fee.mjs";
-import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, wtAllowed, wtDelta } from "./refill.mjs";
+import { Ledger, QuoteBook, RefillBudget, WrappedBooks, emptyRefillStats, refillCycle, refillGate, refillLine, planTopUp, readAllOnce, spendKinds, wtAllowed, wtDelta } from "./refill.mjs";
 import { classify, emptyTally, tallyLine, passes, reasonFromError, reasonFinder } from "./classify.mjs";
 import { rpc, rpcBatch, left, used, stats as rpcStats, setBudget, sleep, UA } from "./load-rpc.mjs";
 
@@ -117,7 +117,8 @@ function plan(kind, w) {
   const tx = (o) => out.push({ kind, ...o });
   switch (kind) {
     case "erc20Transfer": {
-      const t = pick(["tUSD", "tUSD", "tETH"]);
+      const t = pick(["tUSD", "tUSD", "tETH"].filter((k) => ledger.canSpend(w.address, [k])));
+      if (!t) return null; // the wallet is known low in both tokens: another wallet or kind
       const amt = t === "tUSD" ? U(1 + rnd(10)) : E("0.001") * BigInt(1 + rnd(9));
       tx({ to: A[t], data: F.tok.encodeFunctionData("transfer", [other(w).address, amt]), gas: G.erc20Transfer, spend: { [t]: amt } }); break;
     }
@@ -513,11 +514,12 @@ const weights = Object.entries(M.weights);
 const totalW = weights.reduce((a, [, v]) => a + v, 0);
 const weighted = () => { let r = Math.random() * totalW; for (const [k, v] of weights) { if ((r -= v) < 0) return k; } return weights[0][0]; };
 const skipped = {};
-const free = (list) => { for (let i = 0; i < 40; i++) { const w = pick(list); if (!busy.has(w.address)) return w; } return null; };
+// a wallet sends only once its real balance has been read, and not while it is known low in what the action spends (until a top-up has gone out)
+const free = (list, kind) => { const needs = spendKinds(kind); for (let i = 0; i < 40; i++) { const w = pick(list); if (!busy.has(w.address) && ledger.canSpend(w.address, needs)) return w; } return null; };
 const walletFor = (kind) => {
-  if (kind.startsWith("trex")) return free(holders);
-  if (kind === "mercesTransfer") { const l = pool.filter((w) => deposited.has(w.address)); return l.length ? free(l) : null; }
-  return free(pool);
+  if (kind.startsWith("trex")) return free(holders, kind);
+  if (kind === "mercesTransfer") { const l = pool.filter((w) => deposited.has(w.address)); return l.length ? free(l, kind) : null; }
+  return free(pool, kind);
 };
 function tryKind(kind) {
   for (let i = 0; i < 25; i++) {
@@ -611,7 +613,7 @@ async function topUp(g, addrs, kinds) {
     await wsend(D, { to: addr, data: F.tok.encodeFunctionData("mint", [R.address, fund[key]]), gas: 300_000 }, "distributor");
     refillStats.minted++; log(`refill: minted ${key} for the refill key`); ev({ e: "refillMint", token: key, amount: fund[key].toString() });
   }
-  if (fund.trome) { await wsend(D, { to: R.address, data: "0x", value: fund.trome, gas: 100_000 }, "distributor"); refillStats.funded++; log(`refill: sent ${ethers.formatEther(fund.trome)} ${cfg.coin} to the refill key`); ev({ e: "refillFund", trome: fund.trome.toString() }); }
+  if (fund.trome) { await wsend(D, { to: R.address, data: "0x", value: fund.trome, gas: 100_000 }, "distributor"); refillStats.funded++; refillStats.tromeTaken += fund.trome; log(`refill: sent ${ethers.formatEther(fund.trome)} ${cfg.coin} to the refill key`); ev({ e: "refillFund", trome: fund.trome.toString() }); }
   if (!approvedSeeder && (each.tUSD || each.tETH)) {
     for (const addr of [A.tUSD, A.tETH]) await wsend(R, { to: addr, data: F.tok.encodeFunctionData("approve", [seederAddr, ethers.MaxUint256]), gas: 100_000 }, "refill key");
     approvedSeeder = true;
@@ -627,19 +629,20 @@ const groups = [
 ];
 const holderAddrs = new Set(holders.map((h) => h.address));
 const refillBudget = new RefillBudget({ perMinute: RF.maxWalletsPerMinute, perRun: RF.maxWalletsPerRun });
-ledger.markUnread(groups.flatMap((g) => g.addrs));
+const refillOn = RF.enabled && !!seederAddr;
+if (refillOn) ledger.markUnread(groups.flatMap((g) => g.addrs)); // with the refill off nothing reads them: the books stay as seeded
+const io = {
+  readBalances: async (as) => {
+    const holder = as.every((a) => holderAddrs.has(a));
+    const m = await readBalances(as, !holder);
+    for (const [a, r] of m) if (r.wt != null) wbooks.correct(a, r.wt); // the books of wrapped tROME follow the real balance
+    return new Map([...m].map(([a, { wt, ...rest }]) => [a, rest]));
+  },
+  topUp,
+};
 async function refillLoop() {
   if (!RF.enabled || !seederAddr) { log(`refill is off${RF.enabled ? " (no Seeder in the state: run seed first)" : ""}`); return; }
   log(`refill: top-ups are sent from the refill key ${R.address} (fund it only through the distributor; nothing else may send from it)`);
-  const io = {
-    readBalances: async (as) => {
-      const holder = as.every((a) => holderAddrs.has(a));
-      const m = await readBalances(as, !holder);
-      for (const [a, r] of m) if (r.wt != null) wbooks.correct(a, r.wt); // the books of wrapped tROME follow the real balance
-      return new Map([...m].map(([a, { wt, ...rest }]) => [a, rest]));
-    },
-    topUp,
-  };
   let lastCheck = Date.now();
   while (running) {
     const unread = ledger.unreadIn(groups.flatMap((g) => g.addrs)).length;
@@ -673,6 +676,13 @@ try { // the holders' real T-REX balances (the books start from what the deploy 
 
 const phaseResults = [];
 const best = () => { const ok = phaseResults.filter((p) => p.ok); return ok.length ? Math.max(...ok.map((p) => p.rate)) : 2; };
+// every wallet is read once (and topped up where it is low) before the first send: what a wallet holds at the start of a run is not known until it is read
+if (refillOn) {
+  log(`reading every wallet once before sending (${ledger.unreadIn(groups.flatMap((g) => g.addrs)).length} wallets)`);
+  const still = await readAllOnce({ ledger, groups, budget: refillBudget, io, readPerCheck: RF.readWalletsPerCheck * 3, stats: refillStats, log });
+  if (still.length) { log(`stopping: ${still.length} wallets could not be read, so the run does not send from them (the RPC did not answer)`); process.exit(1); }
+  log(`all wallets read; ${refillStats.toppedUp} topped up before the start`);
+}
 const bg = [watch(), receipts(), redstoneLoop(), proofLoop(), misc(), vaultRead(), refillLoop(), quoteLoop()];
 for (const ph of M.phases) {
   const rate = ph.rate === "best" ? best() : ph.rate;
@@ -708,7 +718,7 @@ while (Date.now() < drainEnd && sent.size > finalCount) await sleep(5000);
 await Promise.race([Promise.all(bg), sleep(15_000)]);
 await Promise.race([Promise.all(reasonJobs), sleep(30_000)]); // the replays of unexpected reverts
 const notFinal = [...sent.values()].filter((r) => !r.finalAt).map((r) => ({ hash: r.hash, kind: r.kind, sentAt: r.sentAt }));
-const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length, outcomes, pass: passes(outcomes, notFinal.length), refills: { ...refillStats, quotes: quotes.stats } };
+const summary = { name: NAME, startedAt: t0, endedAt: Date.now(), counters, finalCount, notFinal, rpc: { ...rpcStats, budget: M.rpcCallsPerMinute }, receipts: rc, vaultReads, skipped, phases: phaseResults.map(({ name, rate, achieved, ok }) => ({ name, rate, achieved, ok })), wallets: pool.length, outcomes, pass: passes(outcomes, notFinal.length), refills: { ...refillStats, tromeTaken: refillStats.tromeTaken.toString(), quotes: quotes.stats } };
 ev({ e: "end", ...summary });
 writeFileSync(`${DIR}/summary.json`, JSON.stringify(summary, null, 2) + "\n");
 log(`done: ${tallyLine(outcomes)}; ${passes(outcomes, notFinal.length) ? "PASS" : "FAIL"} (unexpected reverts, deliberate reverts that went through, lost transactions). sent ${counters.sent}, final ${finalCount}, not final ${notFinal.length}, rejected ${counters.rejected}`);
