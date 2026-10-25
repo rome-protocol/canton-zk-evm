@@ -455,7 +455,7 @@
     "test": false,
     "traffic_read": false
    },
-   "source_commit": "<source_commit>",
+   "source_commit": "unknown",
    "strategy": "on_demand",
    "time": "1970-01-12T13:46:40.000Z",
    "v": 1

@@ -12,7 +12,7 @@ Each file holds three lists, all from the builder as it is on main when the file
 - `reports`: the reports it printed.
 
 The test replays the scenario and compares the three lists with the file. Exactly this is left out, and all of it is listed at the top of
-`test_golden.py`: the values of the keys `seconds`, `proveSeconds`, `advanceSeconds` and `source_commit` (each keeps its place and shows as
+`test_golden.py`: the values of the keys `seconds`, `proveSeconds` and `advanceSeconds` (each keeps its place and shows as
 `<key>`), the prover's output folder name (`/out-<pid>-<ns>`), and the test's temporary folder (`<dir>`). The wall clock is fixed during a
 scenario, so block timestamps, block hashes and command ids are the same on every run and are compared. The two restart scenarios start the
 second process through `Producer.run()`, so its `run_started` and `run_stopped` lines and its start sequence are in the record.
@@ -33,7 +33,7 @@ These files pin what the one-block producer does today. A later change to the bu
 - When the build, prove and submit stages are split, `eth_getProof` is read before the prover instead of after it.
 - When two blocks can be prepared at once, the input tool and the prove command get a folder of their own for each attempt, and the kept
   entries carry the block `number`.
-- Running more than one prover changes nothing in the one-block record.
+- Support for several provers changes nothing in these files, which run with one prover.
 - Work that only adds new behaviour beside the one-block path changes nothing in these files.
 
 Any other change in a file means the one-block producer behaves differently, which is a defect to fix in the code, not a reason to regenerate.

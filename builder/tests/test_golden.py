@@ -2,7 +2,7 @@
 fakes (reth's WebSocket and Engine ports, the Canton JSON Ledger API, the prover and its input tool), in order, with the journal's lines and
 the producer's reports, is compared with a fixture in golden/. See golden/README.md for how to regenerate the fixtures and when they may change.
 Run: python3 -m unittest discover -s builder/tests"""
-import contextlib, json, os, re, sys
+import contextlib, json, os, re, sys, threading
 from pathlib import Path
 from unittest import mock
 
@@ -23,7 +23,6 @@ REGENERATE = os.environ.get("GOLDEN_REGENERATE") == "1"
 VOLATILE_KEYS = {
     "seconds",           # how long a step took (journal lines)
     "proveSeconds", "advanceSeconds",   # how long the prover and Advance took (reports)
-    "source_commit",     # the git commit the builder runs from (the run_started journal line)
 }
 VOLATILE_PATTERNS = [   # text that differs from run to run, inside any string
     (re.compile(r"/out-\d+-\d+"), "/out-<pid>-<ns>"),   # the prover's output folder: the process id and the wall clock in nanoseconds
@@ -115,19 +114,22 @@ class Golden(Loop):
             if g != w:
                 i = next((i for i in range(min(len(g), len(w))) if g[i] != w[i]), min(len(g), len(w)))
                 self.fail(f"{name}: the {part} differ from golden/{path.name} at entry {i} (got {len(g)} entries, want {len(w)})\n"
-                          f"want: {json.dumps(w[i]) if i < len(w) else '(none)'}\ngot:  {json.dumps(g[i]) if i < len(g) else '(none)'}")
+                          f"want: {json.dumps(w[i], sort_keys=True) if i < len(w) else '(none)'}\n"
+                          f"got:  {json.dumps(g[i], sort_keys=True) if i < len(g) else '(none)'}")
 
     def run_steps(self, p, *between):
         """The producer's own run(), as a process starts it: run_started, load_unresolved, write_status, then steps. It does len(between) + 1 steps;
         `between[i]` runs before step i + 2. Then it stops, and run_stopped is written."""
         real, n = p.step, [0]
         def step():
-            if n[0]:
-                between[n[0] - 1]()
-            n[0] += 1
-            real()
-            if n[0] > len(between):
-                self.stop.set()
+            try:
+                if 0 < n[0] <= len(between):
+                    between[n[0] - 1]()
+                n[0] += 1
+                real()
+            finally:   # a step that raises out of the producer still ends the run: the golden test then shows a diff, never a hang
+                if n[0] > len(between):
+                    self.stop.set()
         with mock.patch.object(p, "step", step):
             p.run()
 
@@ -236,3 +238,19 @@ class Golden(Loop):
         self.run_steps(second, land)   # the first step finds no completion yet
         self.assertEqual(self.reports[-1]["resolved"], "committed")
         self.check("restart_with_a_record", s)
+
+    def test_a_step_that_raises_ends_the_run_with_a_diff(self):
+        """A fault in the producer's last step must not hang the run: it ends, and the record differs from the file."""
+        s = self.start({tb.ALICE: [tx(tb.ALICE, 0)]})
+        p = self.process(s)
+        done = threading.Event()
+        def go():
+            with mock.patch.object(b.Producer, "record", side_effect=RuntimeError("boom")):
+                self.run_steps(p)
+            done.set()
+        t = threading.Thread(target=go, daemon=True)
+        t.start()
+        self.assertTrue(done.wait(20), "the run did not end after a raise out of step()")
+        self.assertTrue(self.stop.is_set())
+        with self.assertRaises(AssertionError):
+            self.check("commit", s)
