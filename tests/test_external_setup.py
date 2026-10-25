@@ -1,5 +1,5 @@
 """network/external/setup.py against a fake participant (a stateful JSON Ledger API). Run: python3 -m unittest discover -s tests -p 'test_external_setup.py'"""
-import contextlib, io, json, os, re, sys, tempfile, threading, unittest, urllib.parse
+import contextlib, io, json, os, re, sys, tempfile, threading, unittest, urllib.parse, zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
@@ -9,7 +9,10 @@ sys.path.insert(0, str(ROOT / "network" / "canton"))
 sys.path.insert(0, str(ROOT / "network" / "external"))
 import propose, setup
 
+REAL_DAR_PACKAGE_IDS = setup.dar_package_ids   # the tests below replace it on the module with a fixed list
+
 PKG = "ab" * 32
+DEP = "cd" * 32   # a dependency the DAR carries, in the tests that say so
 H = "ab" * 32
 CHAIN_ARGS = ["--genesis-hash", H, "--genesis-state-root", "55" * 32, "--program-vk", "cd" * 32, "--root-c", "ef" * 32, "--rules-hash", "12" * 32]
 FAKE_TOKENS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer": "tok-confirmer-3"}
@@ -19,6 +22,7 @@ class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
         self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": []}, []
+        self.dep, self.dep_vetted, self.ignores_query = None, True, False   # a dependency of the package, whether it is vetted; a participant that ignores vetAllPackages
         self.invalid_dar, self.updates = False, []   # a DAR that /v2/dars/validate refuses; the bodies of /v2/package-vetting/update
         self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
         node = self
@@ -56,19 +60,22 @@ class FakeParticipant:
             return {"packageIds": self.packages}
         if method == "POST" and path.split("?")[0] == "/v2/packages":
             self.packages.append(PKG)
-            if path.endswith("?vetAllPackages=false"):
+            if path.endswith("?vetAllPackages=false") and not self.ignores_query:
                 self.vetting = False   # the participant keeps the package and vets nothing
             return {}
         if method == "POST" and path.split("?")[0] == "/v2/dars/validate":
             return ({"code": "DAR_VALIDATION_FAILED", "cause": "not a valid upgrade"}, 400) if self.invalid_dar else {}
         if (method, path) == ("POST", "/v2/package-vetting/update"):
             self.updates.append(body)
-            ref, = body["changes"][0]["operation"]["Vet"]["value"]["packages"]
-            if ref["packageId"] not in self.packages:
+            asked = [r["packageId"] for r in body["changes"][0]["operation"]["Vet"]["value"]["packages"]]
+            if any(a not in self.packages for a in asked):
                 return {"code": "PACKAGE_NOT_FOUND"}, 400
+            if self.dep and PKG in asked and DEP not in asked and not self.dep_vetted:
+                return {"code": "TOPOLOGY_DEPENDENCIES_NOT_VETTED"}, 400
             if not body["dryRun"]:
-                self.vetting = True
-            return {"newVettedPackages": {"participantId": self.vetted_by, "synchronizerId": body["synchronizerId"], "topologySerial": 2, "packages": [{"packageId": ref["packageId"]}]}}
+                self.vetting = self.vetting or PKG in asked
+                self.dep_vetted = self.dep_vetted or DEP in asked
+            return {"newVettedPackages": {"participantId": self.vetted_by, "synchronizerId": body["synchronizerId"], "topologySerial": 2, "packages": [{"packageId": a} for a in asked]}}
         if path == "/v2/state/connected-synchronizers":
             return {"connectedSynchronizers": [{"synchronizerAlias": "global", "synchronizerId": "global::1220"}]}
         if path == "/v2/parties/participant-id":
@@ -79,7 +86,7 @@ class FakeParticipant:
             asked = body["topologyStateFilter"]["participantIds"]
             if asked and self.vetted_by not in asked:
                 return {"vettedPackages": []}
-            return {"vettedPackages": [{"participantId": self.vetted_by, "synchronizerId": "global::1220", "packages": [{"packageId": PKG}] if self.vetting else []}]}
+            return {"vettedPackages": [{"participantId": self.vetted_by, "synchronizerId": "global::1220", "packages": [{"packageId": i} for i, on in ((PKG, self.vetting), (DEP, self.dep and self.dep_vetted)) if on and i in body["packageMetadataFilter"]["packageIds"]]}]}
         m = re.fullmatch(r"/v2/parties/([^/?]+)", path)
         if method == "GET" and m:
             # One party by id (url-encoded): the participant knows the remote ones too, with isLocal false. A party it has never heard of is 200 with an empty
@@ -133,6 +140,9 @@ class Setup(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, env)
         patcher.start(); self.addCleanup(patcher.stop)
         patcher = mock.patch.object(setup, "package_id_of", lambda dar: PKG)
+        patcher.start(); self.addCleanup(patcher.stop)
+        self.dar_packages = [PKG]   # the packages the DAR carries: the main one, then its dependencies
+        patcher = mock.patch.object(setup, "dar_package_ids", lambda dar: self.dar_packages)
         patcher.start(); self.addCleanup(patcher.stop)
         self.dar = Path(self.tmp.name) / "stand-in.dar"
         self.dar.write_bytes(b"PK stand-in")
@@ -482,6 +492,38 @@ class Setup(unittest.TestCase):
             self.run_step("check")
         self.assertIn("CZE_TOKEN_FILE_ADMIN", str(ctx.exception))
         self.assertEqual(self.node.calls, [])
+
+    def test_vet_vets_the_dependencies_the_dar_brings_with_the_main_package_in_one_change(self):
+        # A new dependency (not vetted yet): the participant refuses the main package alone, so the change carries both.
+        self.node.packages, self.node.dep, self.node.dep_vetted, self.dar_packages = [PKG, DEP], DEP, False, [PKG, DEP]
+        self.node.vetting = False
+        self.run_step("vet", "--dry-run")
+        self.assertFalse(self.node.vetting or self.node.dep_vetted)
+        self.run_step("vet")
+        self.assertEqual([[p["packageId"] for p in u["changes"][0]["operation"]["Vet"]["value"]["packages"]] for u in self.node.updates], [[PKG, DEP], [PKG, DEP]])
+        self.assertTrue(self.node.vetting and self.node.dep_vetted)
+        self.assertEqual(self.run_step("vet")["synchronizers"], {"global::1220": "already"})
+
+    def test_vet_leaves_out_a_dependency_that_is_vetted_already(self):
+        self.node.packages, self.node.dep, self.node.dep_vetted, self.dar_packages = [PKG, DEP], DEP, True, [PKG, DEP]
+        self.node.vetting = False
+        self.run_step("vet")
+        self.assertEqual([p["packageId"] for p in self.node.updates[0]["changes"][0]["operation"]["Vet"]["value"]["packages"]], [PKG])
+
+    def test_upload_stops_when_the_participant_lists_the_package_vetted_after_vetAllPackages_false(self):
+        self.node.ignores_query = True
+        with self.assertRaises(SystemExit) as ctx:
+            self.run_step("upload")
+        self.assertIn(PKG, str(ctx.exception))
+        self.assertIn("global::1220", str(ctx.exception))
+        self.assertIn("ignores", str(ctx.exception))
+
+    def test_the_dar_package_ids_are_the_main_package_then_every_dalf_of_the_dar(self):
+        dar = Path(self.tmp.name) / "real.dar"
+        with zipfile.ZipFile(dar, "w") as z:
+            for name in (f"ostia-0.2.0-{PKG}/ostia-0.2.0-{PKG}.dalf", f"daml-prim-{DEP}/daml-prim-{DEP}.dalf", "META-INF/MANIFEST.MF", "data/readme.txt"):
+                z.writestr(name, "x")
+        self.assertEqual(REAL_DAR_PACKAGE_IDS(dar), [PKG, DEP])
 
     def test_the_upgrade_in_order_check_upload_vet(self):
         # A 0.1.0 package is there and vetted; the DAR is the next version (another id): check, upload (not vetted), dry run, vet.

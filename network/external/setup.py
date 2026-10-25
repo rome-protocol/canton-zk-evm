@@ -21,9 +21,12 @@
       check   POST /v2/dars/validate: the participant checks the DAR (its packages, its dependencies, whether it is a valid upgrade of the one that
               is there) on each synchronizer it is connected to, and keeps nothing.
       upload  POST /v2/packages?vetAllPackages=false: the participant keeps the packages and vets none of them, so no submitter that picks a version
-              by package name can come to use the new one. Does nothing if the package is listed already.
-      vet     POST /v2/package-vetting/update: vets the DAR's main package, on each synchronizer, with --dry-run first (the participant prepares the
-              change and answers what the vetting would be, and applies nothing). Does nothing where the package is vetted by this participant.
+              by package name can come to use the new one. Does nothing if the package is listed already. Stops, naming the package, if the
+              participant lists the package as vetted afterwards (a participant that ignores the query parameter): the DAR is on it, vetted.
+      vet     POST /v2/package-vetting/update: vets, on each synchronizer, every package of the DAR that this participant has not vetted there yet (the
+              main package and the dependencies the DAR carries, read from its .dalf files: the upload vetted none of them, and the participant refuses
+              a package whose dependencies are not vetted), in one change, with --dry-run first (the participant prepares the change and answers what
+              the vetting would be, and applies nothing). Does nothing where all of them are vetted by this participant.
     Without --package-step the setup above is unchanged: it uploads with vetting on, as before.
 
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
@@ -33,7 +36,7 @@ applies the rules of check-env.sh itself, before it sends anything: the URL is h
 mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unless CZE_LEDGER_NO_AUTH=1 says the Ledger API has no login (then
 no token is sent). A token is never printed.
 """
-import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -117,16 +120,18 @@ class Participant:
         if self.call("/v2/dars/validate?synchronizerId=" + urllib.parse.quote(synchronizer, safe=""), dar.read_bytes(), content_type="application/octet-stream")[0] == 404:
             raise SystemExit("the participant has no POST /v2/dars/validate, so it cannot check a DAR without uploading it")
 
-    def vet(self, package_id: str, synchronizer: str, dry_run: bool) -> dict:
-        """POST /v2/package-vetting/update: vet the package on the synchronizer (this participant's vetting); with dry_run the participant prepares the
-        change and applies nothing. Returns the vetting it would hold after the change (a dry run) or holds now."""
-        status, answer = self.call("/v2/package-vetting/update", {"changes": [{"operation": {"Vet": {"value": {"packages": [{"packageId": package_id}]}}}}],
+    def vet(self, package_ids: list, synchronizer: str, dry_run: bool) -> dict:
+        """POST /v2/package-vetting/update: vet the packages (one change) on the synchronizer (this participant's vetting); with dry_run the participant
+        prepares the change and applies nothing. Returns the vetting it would hold after the change (a dry run) or holds now."""
+        status, answer = self.call("/v2/package-vetting/update", {"changes": [{"operation": {"Vet": {"value": {"packages": [{"packageId": p} for p in package_ids]}}}}],
                                                                   "dryRun": dry_run, "synchronizerId": synchronizer})
         if status == 404:
             raise SystemExit("the participant has no POST /v2/package-vetting/update, so the package cannot be vetted through the Ledger API")
         new = answer.get("newVettedPackages") or {}
-        if not any(p.get("packageId") == package_id for p in new.get("packages", [])):
-            raise SystemExit(f"the participant did not answer that the package {package_id} is vetted on {synchronizer} after the change")
+        listed = {p.get("packageId") for p in new.get("packages", [])}
+        for package_id in package_ids:
+            if package_id not in listed:
+                raise SystemExit(f"the participant did not answer that the package {package_id} is vetted on {synchronizer} after the change")
         return new
 
     def synchronizers(self) -> list:
@@ -200,6 +205,19 @@ def package_id_of(dar: Path) -> str:
     return next(line.split("=", 1)[1] for line in out.splitlines() if line.startswith("package_id="))
 
 
+def dar_package_ids(dar: Path) -> list:
+    """Every package of the DAR: the main package first, then the others (the dependencies the DAR carries), each read from the name of its .dalf
+    (the 64 hex digits before .dalf, as dar-id.sh reads the main one)."""
+    main = package_id_of(dar)
+    try:
+        with zipfile.ZipFile(dar) as z:
+            names = z.namelist()
+    except (zipfile.BadZipFile, OSError):
+        return [main]
+    found = [m[1] for m in (re.search(r"-([0-9a-f]{64})\.dalf$", n) for n in names) if m]
+    return [main] + sorted(set(found) - {main})
+
+
 def ensure_package(node: Participant, dar: Path) -> None:
     package_id = package_id_of(dar)
     if package_id in node.package_ids():
@@ -242,17 +260,23 @@ def package_step(node: Participant, dar: Path, step: str, dry_run: bool) -> dict
             log(f"uploaded the DAR without vetting; the package is {package_id}")
         else:
             log(f"the package {package_id} is on the participant already; nothing was uploaded")
-        return {"step": "upload", "packageId": package_id, "uploaded": uploaded, "vetted": node.vetted(package_id, connected(node))}
+        synchronizers = connected(node)
+        vetted = node.vetted(package_id, synchronizers)
+        if uploaded and vetted:
+            raise SystemExit(f"the participant lists the package {package_id} as vetted on {' and '.join(synchronizers)} although it was uploaded with vetAllPackages=false: "
+                             "it ignores that parameter, so the DAR is on it and vetted (nothing else was changed)")
+        return {"step": "upload", "packageId": package_id, "uploaded": uploaded, "vetted": vetted}
     if package_id not in node.package_ids():
         raise SystemExit(f"the package {package_id} is not on the participant: upload it first (--package-step upload)")
-    done = {}
+    wanted, done = dar_package_ids(dar), {}
     for synchronizer in connected(node):
-        if node.vetted(package_id, [synchronizer]):
-            log(f"the package is vetted on {synchronizer} already")
+        unvetted = [p for p in wanted if not node.vetted(p, [synchronizer])]
+        if not unvetted:
+            log(f"the package {package_id} and the {len(wanted) - 1} it depends on in the DAR are vetted on {synchronizer} already")
             done[synchronizer] = "already"
             continue
-        node.vet(package_id, synchronizer, dry_run)
-        log(f"{'dry run: would vet' if dry_run else 'vetted'} the package {package_id} on {synchronizer}")
+        node.vet(unvetted, synchronizer, dry_run)
+        log(f"{'dry run: would vet' if dry_run else 'vetted'} the package {package_id} and {len(unvetted) - (package_id in unvetted)} of its dependencies on {synchronizer}")
         done[synchronizer] = "dry-run" if dry_run else "vetted"
     return {"step": "vet", "packageId": package_id, "dryRun": dry_run, "synchronizers": done}
 

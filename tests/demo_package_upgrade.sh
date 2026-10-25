@@ -123,8 +123,12 @@ block_under() {
   is "$(jq -r .number <<<"$out")" "$2" "$4's block number"
   is "$(jq -r .legs <<<"$out")" "$3" "$4's legs"
   is "$(canton status | jq -r '.chain[0].headNumber')" "$2" "Canton's head after $4"
-  is "$(chain_package)" "$1" "the package the chain contract is under after $4"
-  is "$(probe BlockRecord | jq -r '.numbers | length')" "$2" "the block records after $4"
+  local chain records
+  chain=$(chain_package); records=$(probe BlockRecord)
+  echo "   after $4: the chain contract is under the package $chain; the record of block $2 is under $(jq -r --arg n "$2" '.records[$n]' <<<"$records")"
+  is "$chain" "$1" "the package the chain contract is under after $4"
+  is "$(jq -r --arg n "$2" '.records[$n]' <<<"$records")" "$1" "the package the record of block $2 is under after $4"
+  is "$(jq -r '.numbers | length' <<<"$records")" "$2" "the block records after $4"
   is "$(rpc eth_getBlockByNumber '"finalized",false' | jq -r .hash)" "$(jq -r .blockHash <<<"$out")" "reth's finalized block after $4"
 }
 # <label> <package id the request is made under>: U deposits 10 TKB and claims 10 wTKB. The request is a contract of the package, made by name.
@@ -182,7 +186,18 @@ for port in $PARTICIPANTS; do
   r=$(step_on "$port" vet); jq -e '.dryRun == false and (.synchronizers | to_entries | all(.value == "vetted"))' <<<"$r" >/dev/null || fail "vet on $port: $r"
   r=$(step_on "$port" vet); jq -e '.synchronizers | to_entries | all(.value == "already")' <<<"$r" >/dev/null || fail "the second vet on $port: $r"
 done
-sleep 5   # the vetting reaches the other participants' view of the synchronizer
+# The vetting reaches the other participants' view of the synchronizer: poll (the operator's participant lists every participant's vetting) until all
+# three list the new package, for up to 30 s.
+vetted_by() {
+  curl -sf -H 'content-type: application/json' --data "{\"packageMetadataFilter\":{\"packageIds\":[\"$NEW\"],\"packageNamePrefixes\":[]},\"topologyStateFilter\":{\"participantIds\":[],\"synchronizerIds\":[]}}" \
+    "http://127.0.0.1:7575/v2/package-vetting/list" \
+    | jq -r --arg p "$NEW" '[.vettedPackages[]? | select(any(.packages[]?; .packageId == $p)) | .participantId] | unique | length'
+}
+seen=0
+for _ in $(seq 1 30); do
+  seen=$(vetted_by || echo 0); [ "$seen" = 3 ] && break; sleep 1
+done
+[ "$seen" = 3 ] || fail "after 30 s only $seen of 3 participants list the package $NEW as vetted (the vetting did not reach them)"
 is "$(chain_package)" "$OLD" "the package the chain contract is under after 0.2.0 was vetted (nothing switched)"
 
 step "stage 3: the builder is pinned to 0.2.0; the legs of deposits made under 0.1.0 settle"

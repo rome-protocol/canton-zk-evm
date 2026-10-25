@@ -2,7 +2,8 @@
 """Part of tests/demo_package_upgrade.sh, on the local Canton network (no login).
 Usage: demo_package_probe.py <state dir> ZkChain|BlockRecord|DepositRequest
        Prints one JSON line: "contracts" maps the ledger id of each active contract of that template (the operator's view) to the package id
-       it was made under, which is the part before the first ':' of its template id; "numbers" lists the block numbers of BlockRecords."""
+       it was made under, which is the part before the first ':' of its template id; "numbers" lists the block numbers of BlockRecords and "records" maps
+       each block number to the package id its BlockRecord was made under."""
 import json, sys
 from pathlib import Path
 
@@ -18,4 +19,5 @@ body = {"eventFormat": {"filtersByParty": {parties["OPERATOR_PARTY"]: flt}, "ver
 events = [e["contractEntry"]["JsActiveContract"]["createdEvent"] for e in propose.post(url + "/v2/state/active-contracts", body)
           if "JsActiveContract" in e["contractEntry"]]
 print(json.dumps({"contracts": {e["contractId"]: e["templateId"].split(":")[0] for e in events},
-                  "numbers": sorted(e["createArgument"].get("number", "") for e in events)}))
+                  "numbers": sorted(e["createArgument"].get("number", "") for e in events),
+                  "records": {e["createArgument"]["number"]: e["templateId"].split(":")[0] for e in events if "number" in e["createArgument"]}}))

@@ -2,10 +2,10 @@ name: demo
 
 on:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
 
 permissions:
   contents: read
