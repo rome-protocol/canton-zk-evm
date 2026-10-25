@@ -43,8 +43,16 @@ describe("the Canton updates page", () => {
     expect(screen.getByRole("heading", { name: "Linked to Canton" })).toBeInTheDocument();
     expect(screen.getByText("carries one block and all of its EVM transactions", { exact: false })).toBeInTheDocument();
     expect(within(screen.getByRole("table")).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Canton update", "EVM block", "EVM transactions", "Record time", "Offset", "Synchronizer"]);
-    expect(rows()[0]).toHaveTextContent(/Block 4\s*7\s*2026-10-04T01:37:14/);
+    expect(rows()[0]).toHaveTextContent(/Block 4\s*7 EVM transactions\s*2026-10-04T01:37:14/);
     expect(rows()[1]).toHaveTextContent(/none\s*—/);
+  });
+
+  it("names the count for a phone with the right singular and plural: 1 EVM transaction, 0 and 2 EVM transactions", async () => {
+    await open({ updates: () => reply(page([item(5, { txCount: 2 }), item(4, { txCount: 1 }), item(3, { txCount: 0 })])) });
+    expect(within(rows()[0]!).getByText("EVM transactions", { exact: false }).textContent).toBe(" EVM transactions");
+    expect(within(rows()[1]!).getByText("EVM transaction", { exact: false }).textContent).toBe(" EVM transaction");
+    expect(rows()[1]).not.toHaveTextContent("EVM transactions");
+    expect(within(rows()[2]!).getByText("EVM transactions", { exact: false })).toBeInTheDocument();
   });
 
   it("says in the table footer that the offsets are the reader's participant's, and keeps the page note to the one explanation", async () => {

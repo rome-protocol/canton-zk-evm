@@ -31,6 +31,4 @@
   .stk-settled .k-a { grid-area: a; }
   .stk-settled .k-to { grid-area: t; }
   .tbl.stk-settled .k-p { display: none; }
-  .stk-linked .k-n::after { content: "\0000a0EVM transactions"; }
-  .stk-linked .k-n:has(.muted)::after { content: none; }
 }

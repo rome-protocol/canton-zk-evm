@@ -41,7 +41,7 @@ export function CantonUpdates() {
                   <tr key={u.updateId}>
                     <td className="k-u"><HashLink value={u.updateId} kind="update" to={`/canton/${u.updateId}`} plain /></td>
                     <td className="k-b">{u.block === null ? <span className="muted">none</span> : <Link className="num" to={`/block/${u.block}`}>Block {u.block}</Link>}</td>
-                    <td className="r num k-n">{u.txCount === null ? <span className="muted">—</span> : count(u.txCount)}</td>
+                    <td className="r num k-n">{u.txCount === null ? <span className="muted">—</span> : <>{count(u.txCount)}<span className="k-label"> EVM {u.txCount === 1 ? "transaction" : "transactions"}</span></>}</td>
                     <td className="mono k-t">{u.recordTime}</td>
                     <td className="r num k-o">{u.offset}</td>
                     <td className="k-s"><HashLink value={u.synchronizer} /></td>

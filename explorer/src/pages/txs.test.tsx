@@ -49,6 +49,8 @@ describe("the transactions page", () => {
     // rows 2 and 3 are the transactions of blocks 3 and 2: each links to the update of its own block
     expect(within(rows()[2]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(within(rows()[3]!).getByRole("link", { name: /^1220/ })).toHaveAttribute("href", `/canton/${update(2)}`);
+    // a phone has no column heads, so the cell names its own id
+    expect(rows()[2]).toHaveTextContent(/Canton update\s*1220/);
   });
 
   it("marks a failed transaction and shows the fee with every digit", async () => {
