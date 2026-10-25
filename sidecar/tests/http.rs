@@ -5,6 +5,7 @@
 mod common;
 
 use common::*;
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use zk_sidecar::{http, Config};
@@ -163,6 +164,41 @@ fn legs_answers_in_hex() {
     assert_eq!((status, text_of_hex(&body)), (200, none.ok()));
 }
 
+/// `verify2`'s body is the line itself (hex text with length prefixes and a hash in front), not the
+/// hex of it; the answer is the hex of the answer line, as for `verify`.
+#[test]
+fn verify2_takes_the_line_as_the_body_and_answers_in_hex() {
+    let b = reth_block();
+    let addr = start(config_accepting_any());
+    let (abi, header, txs) = (hex(&abi_for(&b.hash)), hex(&b.header), hex(&b.txs));
+    let body = format!("{:010}{abi}{:010}{header}{txs}", abi.len(), header.len());
+    let line = format!("{}{body}", hex(&Sha256::digest(body.as_bytes())));
+    let call = |function, body: &str| {
+        request(&addr, "POST", "/api/v1/external-call", Some(function), body)
+    };
+    let (status, answer) = call("verify2", &line);
+    assert_eq!(status, 200);
+    let answer = text_of_hex(&answer);
+    assert!(answer.starts_with(&format!("ok {} {}", hex(&[0xaa; 32]), hex(&[0xbb; 32]))));
+    // the same answer as verify gives for the same block
+    let (_, same) = call("verify", &hex(format!("{abi},{header},{txs}").as_bytes()));
+    assert_eq!(answer, text_of_hex(&same));
+    // the hex of the line is not the line: the hash is not what it should be
+    let (status, answer) = call("verify2", &hex(line.as_bytes()));
+    assert_eq!(
+        (status, text_of_hex(&answer)),
+        (200, "no malformed input".into())
+    );
+    // a changed line is an answer, not an error of the call
+    let (status, answer) = call("verify2", &format!("{line}00"));
+    assert_eq!(
+        (status, text_of_hex(&answer)),
+        (200, "no malformed input".into())
+    );
+    // the old verb still wants hex
+    assert_eq!(call("verify", &line).0, 400);
+}
+
 #[test]
 fn fact_is_no_longer_a_function() {
     let addr = start(config_accepting_any());
@@ -175,7 +211,7 @@ fn fact_is_no_longer_a_function() {
         &hex(b.line().as_bytes()),
     );
     assert_eq!(status, 400);
-    assert_eq!(body, "the function is not verify or legs");
+    assert_eq!(body, "the function is not verify, verify2 or legs");
 }
 
 #[test]
@@ -186,6 +222,7 @@ fn a_wrong_function_id_or_a_bad_request_is_refused() {
         Some("execute"),
         Some("Verify"),
         Some("Legs"),
+        Some("Verify2"),
         Some(""),
         None,
     ] {
