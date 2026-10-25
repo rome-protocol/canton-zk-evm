@@ -194,29 +194,30 @@ def saved_path(cfg: Config) -> Path:
     return Path(cfg.work_dir) / SAVED_FILE
 
 
-def saved_entries(cfg: Config) -> list:
-    """The entries of the kept file as written, or [] when there is no readable file. An entry has `hash` and `raw`, and `number` (the block it
-    belongs to) when it was written with one: a file from an older builder has none, and then the entries are one block's."""
-    try:
-        entries = json.loads(saved_path(cfg).read_text())
-    except (OSError, ValueError):
-        return []
-    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+def parse_saved(text: str) -> list:
+    """The entries of a kept file, checked: a JSON list in which every entry is an object with a string `hash` and a string `raw`, and an
+    integer `number` (the block it belongs to) when it has one (a file from an older builder has none, and then the entries are one
+    block's). Raises ValueError for anything else. Every reader of the file uses this one check."""
+    entries = json.loads(text)
+    if not isinstance(entries, list):
+        raise ValueError("not a list")
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("hash"), str) or not isinstance(e.get("raw"), str) \
+                or ("number" in e and type(e["number"]) is not int):
+            raise ValueError("an entry is not a transaction with a hash and a raw string")
+    return entries
 
 
 def saved_file_entries(cfg: Config) -> list:
-    """Like `saved_entries`, but a file that exists and cannot be read is an error: the entries in it may be the only copy of other
-    blocks' transactions, and they must not be overwritten as if there were none."""
+    """The entries of the kept file, [] when there is no file. A file that exists and cannot be read or checked is an error and stays as it
+    is: the entries in it may be the only copy of other blocks' transactions, and they must not be overwritten or removed as if there were none."""
     path = saved_path(cfg)
     try:
-        entries = json.loads(path.read_text())
+        return parse_saved(path.read_text())
     except FileNotFoundError:
         return []
     except (OSError, ValueError) as e:
-        raise BuilderError(f"cannot read {path} to add to it: {e}") from e
-    if not isinstance(entries, list):
-        raise BuilderError(f"cannot read {path} to add to it: not a list")
-    return [e for e in entries if isinstance(e, dict)]
+        raise BuilderError(f"cannot read {path}: {e}") from e
 
 
 def write_saved(cfg: Config, entries: list) -> None:
@@ -259,12 +260,14 @@ def save_kept(cfg: Config, pairs: list, attempt: "Attempt | None" = None, number
 def clear_saved(cfg: Config, number: int | None = None) -> None:
     """Called once Canton has the block or the transactions are back in reth's pool. With a `number` only that block's entries go; the
     others stay. A file that cannot be changed is harmless: sent again, its transactions are `already known` or have a used nonce. A file
-    that cannot be read stays as it is: it may be the only copy of other blocks' transactions."""
+    that cannot be read and checked stays as it is, with or without a number: it may be the only copy of other blocks' transactions."""
     try:
-        if number is None:
-            saved_path(cfg).unlink(missing_ok=True)
-        elif saved_path(cfg).exists():
-            write_saved(cfg, other_blocks(saved_file_entries(cfg), number))
+        if saved_path(cfg).exists():
+            entries = saved_file_entries(cfg)   # raises for a file that cannot be read and checked: it is left alone
+            if number is None:
+                saved_path(cfg).unlink(missing_ok=True)
+            else:
+                write_saved(cfg, other_blocks(entries, number))
     except (OSError, BuilderError):
         pass
 
@@ -1258,7 +1261,8 @@ def definite_rejection(code: int, body: str) -> bool:
 
 
 def read_saved_entries(cfg: Config) -> list | None:
-    """The entries of the kept file, checked, or None when there is no file. Raises when the file is unreadable (it is moved aside)."""
+    """The entries of the kept file, checked, or None when there is no file. Raises when the file cannot be read (it stays where it is) or
+    is damaged (it is moved aside to a name of its own, never over an earlier copy)."""
     path = saved_path(cfg)
     try:
         text = path.read_text()
@@ -1267,13 +1271,23 @@ def read_saved_entries(cfg: Config) -> list | None:
     except OSError as e:
         raise BuilderError(f"cannot read {path}: {e}") from e
     try:
-        entries = json.loads(text)
-        if not all(isinstance(e["hash"], str) and isinstance(e["raw"], str) for e in entries):
-            raise TypeError("not strings")
-    except (ValueError, KeyError, TypeError) as e:
-        path.replace(path.with_name(path.name + ".unreadable"))   # kept for a look, and out of the way
-        raise BuilderError(f"{path} could not be read ({e}); it was moved to {path.name}.unreadable") from e
-    return entries
+        return parse_saved(text)
+    except ValueError as e:
+        aside = path.with_name(f"{path.name}.unreadable-{time.time_ns()}")   # kept for a look, and out of the way
+        path.replace(aside)
+        raise BuilderError(f"{path} could not be read ({e}); it was moved to {aside.name}") from e
+
+
+def read_saved_or_none(cfg: Config) -> list:
+    """The entries of the kept file for a settle that needs them before it moves reth: [] when there is no file, or when a damaged one was
+    moved aside (what was given is all there is). A file that exists and cannot be read raises: it is not removed, and nothing is moved
+    until it can be read."""
+    try:
+        return read_saved_entries(cfg) or []
+    except BuilderError:
+        if saved_path(cfg).exists():
+            raise
+        return []
 
 
 def read_saved(cfg: Config) -> list | None:
@@ -1345,10 +1359,7 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
             clear_saved(cfg, u["number"] if isinstance(u.get("number"), int) else None)
             clear_unresolved(cfg)
             return True, [], how, {"updateId": found and found["updateId"], "completionOffset": found and found["completionOffset"]}
-        try:
-            kept = read_saved_entries(cfg) or []
-        except BuilderError:   # damaged and moved aside: what was given is all there is
-            kept = []
+        kept = read_saved_or_none(cfg)   # before reth moves: a file that cannot be read stays, and the loop backs off
         number = u["number"] if isinstance(u.get("number"), int) else 0
         kept = in_block_order(kept, number)
         in_file = {e["hash"] for e in kept}
@@ -1374,10 +1385,7 @@ def recover_saved(cfg: Config, wait=None, close=None) -> dict | None:
     settled = None
     while u:   # with `wait` (the `once` command) this waits for the command; without it (the loop) it raises and the loop tries again
         try:
-            try:
-                pairs = read_saved(cfg) or []
-            except BuilderError:   # the kept transactions are damaged (moved aside): the command is settled all the same
-                pairs = []
+            pairs = [(e["hash"], e["raw"]) for e in read_saved_or_none(cfg)]   # damaged and moved aside: the command is settled all the same; unreadable: it stays and this raises
             committed, lost, how, info = resolve_unknown(cfg, {**u, "since": u["submittedAt"], "tip": None}, pairs, close)
             settled = {"number": u.get("number"), "blockHash": u["hash"], "commandId": u["commandId"], "committed": committed, "resolved": how, **info}
             settled["lostTransactions"] = lost

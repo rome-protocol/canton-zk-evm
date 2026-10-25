@@ -1186,7 +1186,7 @@ class SavedBlock(Loop):
         p.step()
         self.assertIn("could not be read", self.reports[0]["error"])
         self.assertFalse(self.saved(s).exists())
-        self.assertTrue(self.saved(s).with_name(self.saved(s).name + ".unreadable").exists())
+        self.assertEqual(len(list(self.saved(s).parent.glob(self.saved(s).name + ".unreadable-*"))), 1)
         p.step()
         self.assertEqual(len(self.reports), 1)
 

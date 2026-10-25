@@ -119,6 +119,63 @@ class UnreadableFile(tb.Case):
         self.assertEqual(b.saved_path(s.cfg).read_text(), "[{not json")
         self.assertEqual(self.in_pool(s), {tx(tb.ALICE, 0)["hash"]})
 
+    WRONG_SHAPE = ['[{"hash": "0xa"}]', '["0xdead"]', '[{"hash": "0xa", "raw": "0x01"}, 5]', '[{"hash": "0xa", "raw": 1}]',
+                   '[{"hash": "0xa", "raw": "0x01", "number": "5"}]', '[{"hash": "0xa", "raw": "0x01", "number": true}]', "[null]", "{}"]
+
+    def test_every_reader_refuses_a_list_of_the_wrong_shape_and_none_changes_it(self):
+        for text in self.WRONG_SHAPE:
+            with self.subTest(text=text):
+                s = self.setup({})
+                b.saved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+                b.saved_path(s.cfg).write_text(text)
+                with self.assertRaises(b.BuilderError):
+                    b.saved_file_entries(s.cfg)
+                with self.assertRaises(b.BuilderError):
+                    b.save_kept(s.cfg, [("0xb", "0x02")], number=5)
+                b.clear_saved(s.cfg, 5)
+                b.clear_saved(s.cfg)
+                self.assertEqual(b.saved_path(s.cfg).read_text(), text)   # nothing dropped, rewritten or removed
+                with self.assertRaises(b.BuilderError):
+                    b.read_saved_entries(s.cfg)
+                self.assertFalse(b.saved_path(s.cfg).exists())
+                aside = list(b.saved_path(s.cfg).parent.glob(b.SAVED_FILE + ".unreadable-*"))
+                self.assertEqual([p.read_text() for p in aside], [text])   # moved aside, whole
+
+    def test_a_file_moved_aside_never_overwrites_an_earlier_one(self):
+        s = self.setup({})
+        b.saved_path(s.cfg).parent.mkdir(parents=True, exist_ok=True)
+        for text in ("[{not json", '["0xdead"]'):
+            b.saved_path(s.cfg).write_text(text)
+            with self.assertRaises(b.BuilderError):
+                b.read_saved_entries(s.cfg)
+        aside = list(b.saved_path(s.cfg).parent.glob(b.SAVED_FILE + ".unreadable-*"))
+        self.assertEqual(sorted(p.read_text() for p in aside), sorted(["[{not json", '["0xdead"]']))
+
+    def test_clearing_all_removes_only_a_file_that_reads_and_checks(self):
+        s = self.setup({})
+        b.save_kept(s.cfg, [("0xa", "0x01")], number=5)
+        b.clear_saved(s.cfg)
+        self.assertFalse(b.saved_path(s.cfg).exists())
+        b.saved_path(s.cfg).write_text('[{"hash": "0xa", "raw": "0x01"}]')   # an older builder's file reads
+        b.clear_saved(s.cfg)
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads any file")
+    def test_a_file_with_no_permission_to_read_stays_whatever_clears_it(self):
+        s = self.setup({})
+        b.save_kept(s.cfg, [("0xa", "0x01")], number=5)
+        before = b.saved_path(s.cfg).read_text()
+        os.chmod(b.saved_path(s.cfg), 0)
+        self.addCleanup(os.chmod, b.saved_path(s.cfg), 0o600)
+        b.clear_saved(s.cfg)
+        b.clear_saved(s.cfg, 5)
+        with self.assertRaises(b.BuilderError):
+            b.save_kept(s.cfg, [("0xb", "0x02")], number=6)
+        with self.assertRaises(b.BuilderError):
+            b.read_saved_entries(s.cfg)
+        os.chmod(b.saved_path(s.cfg), 0o600)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), before)
+
 
 class OtherBlocksSurvive(tb.LegCase):
     """Block N is put back, refused, fails or commits while block N+1's entry is in the file: only N's entries go."""

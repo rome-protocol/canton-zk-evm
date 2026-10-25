@@ -1,6 +1,6 @@
 """Recovery with several blocks kept: an in-doubt command settles by its own id, the blocks above it are sent again, and every abandoned
 attempt is closed. Run: python3 -m unittest discover -s builder/tests"""
-import json, sys, threading, unittest
+import contextlib, errno, json, sys, threading, unittest
 from unittest import mock
 from pathlib import Path
 
@@ -210,6 +210,78 @@ class Recovery(tb.Case):
         self.assertEqual(self.in_pool(s), {t1["hash"], t2["hash"]})
         self.assertFalse(b.saved_path(s.cfg).exists())
         self.assertEqual(self.closed(s, second.journal.run_id), [("old-run", 7, "restarted"), (first.journal.run_id, 1, "not committed")])
+
+
+    # -- a kept file that cannot be read is never removed or emptied
+    @contextlib.contextmanager
+    def unreadable(self, s):
+        """The kept file exists but reading it fails (permission, I/O error)."""
+        real = Path.read_text
+        target = b.saved_path(s.cfg)
+        def read_text(path, *a, **k):
+            if path == target:
+                raise OSError(errno.EACCES, "Permission denied")
+            return real(path, *a, **k)
+        with mock.patch.object(Path, "read_text", read_text):
+            yield
+
+    def test_an_unreadable_kept_file_survives_the_not_committed_settle_and_nothing_moves_until_it_reads(self):
+        s, first, t1, t2 = self.in_doubt()
+        before = b.saved_path(s.cfg).read_text()
+        second = self.producer(s)
+        second.load_unresolved()
+        s.ledger.land(ok=False)
+        moves = len(s.forkchoices())
+        with self.unreadable(s):
+            second.step()
+            second.step()
+        self.assertEqual(b.saved_path(s.cfg).read_text(), before)
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        self.assertEqual((self.in_pool(s), len(s.forkchoices())), (set(), moves))   # reth was not moved and nothing was sent
+        second.step()   # readable again: the whole file is sent, in block order
+        self.assertEqual(self.in_pool(s), {t1["hash"], t2["hash"]})
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_an_unreadable_kept_file_survives_recover_saved(self):
+        s, first, t1, t2 = self.in_doubt()
+        before = b.saved_path(s.cfg).read_text()
+        s.ledger.land(ok=False)
+        with self.unreadable(s), self.assertRaises(b.BuilderError):
+            b.recover_saved(s.cfg)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), before)
+        self.assertTrue(b.unresolved_path(s.cfg).exists())
+        found = b.recover_saved(s.cfg)
+        self.assertEqual(found["settled"]["committed"], False)
+        self.assertEqual(self.in_pool(s), {t1["hash"], t2["hash"]})
+
+    def test_an_unreadable_kept_file_with_no_command_in_doubt_survives_recover_saved(self):
+        s = self.setup({})
+        b.save_kept(s.cfg, [("0xa", "0x01")], number=N)
+        before = b.saved_path(s.cfg).read_text()
+        with self.unreadable(s), self.assertRaises(b.BuilderError):
+            b.recover_saved(s.cfg)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), before)
+
+    def committed_settle(self, record_number):
+        s, first, t1, t2 = self.in_doubt()
+        before = b.saved_path(s.cfg).read_text()
+        s.ledger.land(ok=True)
+        u = json.loads(b.unresolved_path(s.cfg).read_text())
+        u["since"] = u["submittedAt"]
+        if record_number:
+            self.assertIsInstance(u["number"], int)
+        else:
+            u["number"] = None   # a record with no integer number
+        with self.unreadable(s):
+            committed, _, _, _ = b.resolve_unknown(s.cfg, u, [])
+        self.assertTrue(committed)
+        self.assertEqual(b.saved_path(s.cfg).read_text(), before)
+
+    def test_an_unreadable_kept_file_survives_the_committed_settle_with_a_record_number(self):
+        self.committed_settle(True)
+
+    def test_an_unreadable_kept_file_survives_the_committed_settle_with_no_record_number(self):
+        self.committed_settle(False)
 
 
 if __name__ == "__main__":
