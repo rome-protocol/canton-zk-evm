@@ -696,9 +696,10 @@ class StatusTicker(Loop):
     def test_the_ticker_ends_with_the_run_and_writes_nothing_after_it(self):
         s = self.setup({})
         p = self.producer(s, status_tick=0.01)
+        before = {t for t in threading.enumerate() if t.name == "status-ticker"}   # a ticker another test left is not this run's
         self.stop.set()
         p.run()
-        self.assertFalse([t for t in threading.enumerate() if t.name == "status-ticker"])
+        self.assertFalse([t for t in threading.enumerate() if t.name == "status-ticker" and t not in before])
         last = Path(self.status_file).read_text()
         time.sleep(0.1)
         self.assertEqual(Path(self.status_file).read_text(), last)
@@ -776,6 +777,7 @@ class StatusTicker(Loop):
             p.write_status()
             t = threading.Thread(target=p.tick_status, args=(done,), name="status-ticker", daemon=True)
             t.start()
+            self.addCleanup(lambda: (done.set(), t.join(5)))   # the ticker ends even when an assertion fails
             time.sleep(0.15)
             self.assertEqual(said(out), 1)    # one line, though the ticker tried many times
             self.assertTrue(t.is_alive())
@@ -786,8 +788,9 @@ class StatusTicker(Loop):
             self.assertTrue((blocker / "status.json").exists())
             self.assertEqual(said(out), 1)
             time.sleep(0.05)
-            shutil.rmtree(blocker)
-            blocker.write_text("a file again")   # unwritable again
+            with p.status_lock:   # the ticker is not writing into the folder while it is swapped for a file
+                shutil.rmtree(blocker)
+                blocker.write_text("a file again")   # unwritable again
             deadline = time.time() + 5
             while said(out) < 2 and time.time() < deadline:
                 time.sleep(0.01)
