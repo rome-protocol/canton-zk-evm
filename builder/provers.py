@@ -29,6 +29,7 @@ class JobError(Exception):
     def __init__(self, message: str, outcome: str = "failed", connection: bool = False, stage: str = "prove"):
         super().__init__(message)
         self.outcome, self.connection, self.stage = outcome, connection, stage
+        self.tried: list = []   # the names of the provers the block was tried on (with two or more provers)
 
 
 @dataclass
@@ -74,7 +75,15 @@ def run_command(cmd: str, args: list, env: dict | None = None, timeout: float | 
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        proc.communicate()
+        try:   # a helper that left the group and still holds the pipes must not hold the producer: drain for a moment, then let go
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    pipe.close()
+                except Exception:
+                    pass
+            proc.wait()
         raise JobError(f"{name} did not finish in {timeout:g} s and was killed", outcome="timeout") from None
     if proc.returncode != 0:
         text = (err or out).strip()
@@ -155,7 +164,7 @@ class Pool:
             return [p.status() for p in self.provers] if self.managed else None
 
     def any_up(self) -> bool:
-        """True when a job could go to a prover now or when a cool-down is over. The producer cuts nothing while this is False."""
+        """True when a job could go to a prover now or when a cool-down is over. With two or more provers the producer cuts nothing while this is False."""
         now = self.clock()
         with self.cond:
             return any(p.state == "up" or now >= p.down_until for p in self.provers)
@@ -183,7 +192,7 @@ class Pool:
         started = self.clock()
         if job.make_input:   # no prover is held for it, and its failure is no prover's fault: it is neither retried nor counted
             try:
-                self.run(job.make_input[0], job.make_input[1:], timeout=self.timeout)
+                self.run(job.make_input[0], job.make_input[1:], timeout=self.timeout if self.managed else None)
             except JobError as e:
                 e.stage = "input"
                 raise
@@ -199,7 +208,9 @@ class Pool:
                 self._release(prover, e if e.connection else None, failed=True)
                 tried.append((prover, e))
                 if ticket.cancelled or not self.managed or len(tried) > 1 or not self._another(prover):
-                    raise self._failed(e, tried)
+                    err = self._failed(e, tried)
+                    err.tried = [t[0].name for t in tried]
+                    raise err
                 continue
             self._release(prover, None, failed=False)
             if not ticket.cancelled:
@@ -231,7 +242,8 @@ class Pool:
             shutil.copyfile(job.input_path, copy)
             source = copy
         try:
-            self.run(job.prove_cmd, [str(source), str(out)], env=env, timeout=self.timeout)
+            # With one prover the builder never kills: the prove command's own limit (CZE_PROVE_TIMEOUT) is the only one, as before.
+            self.run(job.prove_cmd, [str(source), str(out)], env=env, timeout=self.timeout if self.managed else None)
         finally:
             if copy:
                 copy.unlink(missing_ok=True)
@@ -282,9 +294,9 @@ class Pool:
                 prover.failures += 1
             elif self.managed:
                 prover.cooldown = self.cooldown_start   # a proof ends the run of faults
+            if connection_error is not None and self.managed:   # down in the same step as free, so no waiting job is sent to it
+                self._down(prover, f"connection error: {str(connection_error)[:150]}")
             self.cond.notify_all()
-        if connection_error is not None and self.managed:
-            self._down(prover, f"connection error: {str(connection_error)[:150]}")
 
     def _down(self, prover: Prover, reason: str) -> None:
         if not self.managed:

@@ -81,16 +81,30 @@ class OneProver(Case):
         self.assertTrue(pool.any_up())
         pool.prove(self.job())
 
-    def test_a_hang_is_killed_at_the_timeout(self):
+    def test_the_builder_never_kills_a_proof_with_one_prover(self):
+        pool = self.pool([A], timeout=1)   # prove-one.sh's own limit (CZE_PROVE_TIMEOUT) is the only one: a proof that runs past it ends, not killed
+        self.script(A, "sleep 2")
+        self.assertEqual(pool.prove(self.job()).prover, "gpu0")
+        self.assertEqual(self.calls(), [f"{tag(A)} sleep 2"])
+
+    def test_a_proof_that_hangs_is_not_cut_short_by_the_builder_with_one_prover(self):
         pool = self.pool([A], timeout=1)
-        self.script(A, "hang")
-        start = time.monotonic()
+        seen = []
+        pool.run = lambda cmd, args, env=None, timeout=None: seen.append(timeout) or (_ for _ in ()).throw(pv.JobError("prove-one.sh failed: its own timeout"))
         with self.assertRaises(pv.JobError) as e:
             pool.prove(self.job())
+        self.assertEqual((seen, e.exception.outcome), ([None], "failed"))   # no kill from the builder, and the end is the prove command's own
+
+    def test_a_helper_that_left_the_group_and_holds_the_pipes_does_not_hold_the_job(self):
+        pidfile = self.dir / "helper.pid"
+        self.addCleanup(lambda: pidfile.exists() and os.kill(int(pidfile.read_text()), 9) if pidfile.exists() else None)
+        code = ("import os,subprocess,time;p=subprocess.Popen(['sleep','37'],start_new_session=True);"
+                f"open({str(pidfile)!r},'w').write(str(p.pid));time.sleep(60)")
+        start = time.monotonic()
+        with self.assertRaises(pv.JobError) as e:
+            pv.run_command("python3", ["-c", code], timeout=1)
         self.assertEqual(e.exception.outcome, "timeout")
-        self.assertLess(time.monotonic() - start, 10)
-        self.assertEqual(self.calls(), [f"{tag(A)} hang"])
-        self.assertEqual(subprocess_count("sleep 3607"), 0)   # the whole group went
+        self.assertLess(time.monotonic() - start, 15)
 
     def test_one_prover_with_no_url_leaves_the_environment_alone(self):
         os.environ["ZISK_COORDINATOR_URL"] = A
@@ -141,6 +155,14 @@ class Pool2(Case):
         self.script(A, "wrong")
         self.assertEqual(pool.prove(self.job()).prover, "gpu1")
         self.assertEqual([e["name"] for e in pool.events()], ["gpu0"])
+
+    def test_a_prover_that_cannot_be_reached_is_down_before_a_waiting_job_can_be_given_it(self):
+        pool = self.pool([A, B_])
+        states = []
+        real = pool.cond.notify_all
+        pool.cond.notify_all = lambda: (states.append((pool.provers[0].busy, pool.provers[0].state)), real())[1]
+        pool._release(pool.provers[0], pv.JobError("refused", connection=True), failed=True)
+        self.assertEqual(states[-1], (False, "down"))   # when the waiters wake, the prover is already down
 
     def test_a_connection_error_takes_the_prover_down_at_once(self):
         pool = self.pool([A, B_])

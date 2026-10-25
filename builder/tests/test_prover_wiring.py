@@ -60,6 +60,7 @@ class Wiring(Loop):
         self.assertIn("every prover", self.reports[-1]["error"])
         self.assertEqual({x["state"] for x in self.status()["provers"]}, {"up"})
         self.assertEqual(self.lines(s, "prover"), [])
+        self.assertEqual(self.lines(s, "proof_ended")[-1]["tried"], ["a", "b"])   # a failed end names the provers it was tried on
 
     def test_a_prover_that_hangs_is_given_up_at_the_timeout_and_the_other_proves_it(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
@@ -69,15 +70,32 @@ class Wiring(Loop):
         self.assertTrue(self.reports[-1]["committed"])
         self.assertEqual(self.lines(s, "proof_ended")[-1]["prover"], "b")
 
-    def test_a_hang_with_one_prover_is_a_timeout_failure(self):
+    def test_a_slow_proof_with_one_prover_is_not_killed_by_the_builder(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
-        self.script(A, "hang")
-        p = self.producer_with(s, [f"a={A}"], timeout=2)
+        self.script(A, "sleep 2")
+        p = self.producer_with(s, [f"a={A}"], timeout=1)
+        p.step()
+        self.assertTrue(self.reports[-1]["committed"])
+        self.assertEqual(self.lines(s, "proof_ended")[-1]["outcome"], "ok")
+        self.assertNotIn("provers", self.status())
+
+    def test_with_every_prover_down_nothing_is_cut_until_a_cool_down_ends(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        self.script(A, "connect")
+        self.script(B_, "connect")
+        p = self.producer_with(s, [f"a={A}", f"b={B_}"])
+        clock = [1000.0]
+        s.cfg.pool.clock = lambda: clock[0]
         p.step()
         self.assertFalse(self.reports[-1]["committed"])
-        ended = self.lines(s, "proof_ended")[-1]
-        self.assertEqual(ended["outcome"], "timeout")
-        self.assertNotIn("provers", self.status())
+        cut = len(self.built(s))
+        self.assertFalse(s.cfg.pool.any_up())
+        p.step(); p.step()
+        self.assertEqual(len(self.built(s)), cut)   # nothing cut, reth untouched, no new attempt
+        self.assertEqual(self.waits[-1], 0.5)
+        clock[0] += 1000
+        p.step()
+        self.assertGreater(len(self.built(s)), cut)   # a cool-down is over: a block is cut and goes to the prover that is due
 
     def test_one_prover_writes_no_prover_line_and_no_provers_list(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
@@ -88,6 +106,14 @@ class Wiring(Loop):
         self.assertNotIn("provers", self.status())
         self.assertEqual(self.lines(s, "proof_ended")[-1]["prover"], "fake-prove.sh")
         self.assertIn(tag(A), (self.plan / "log").read_text())   # the one prover's URL still reached the prove command
+
+    def test_the_ok_end_keeps_its_old_key_order_with_one_prover(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        p = self.producer_with(s, [f"a={A}"])
+        p.step()
+        text = [x for f in sorted((Path(s.cfg.work_dir) / "journal").glob("*.jsonl")) for x in f.read_text().splitlines() if '"proof_ended"' in x][-1]
+        keys = list(json.loads(text))
+        self.assertEqual(keys[keys.index("prover"):], ["prover", "outcome", "seconds"])
 
     def test_no_provers_runs_the_prove_command_alone(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})

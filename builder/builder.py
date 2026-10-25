@@ -1117,7 +1117,7 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     pool = cfg.pool or new_pool([Prover(prover)])
     attempt.event("proof_queued", prover=prover)
     proving = time.monotonic()
-    outcome = "failed"
+    outcome, tried_on = "failed", []
     kept = [t["hash"] for t in built.chosen]
     # Each attempt has its own folder, output included: a prover left behind by a killed builder writes into the old one, never into this one.
     out = attempt_dir / "out"
@@ -1132,18 +1132,19 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
         try:
             proved = pool.prove(Job(None, cfg.prove_cmd, attempt_dir / "input.bin", out, check, cfg.prover_input_dir))
         except JobError as e:
-            outcome = e.outcome
+            outcome, tried_on = e.outcome, e.tried
             raise BuilderError(str(e)) from e
         finally:
             write_prover_lines(pool, attempt)
     except BuilderError as e:
-        attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300])
+        attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300],
+                      **({"tried": tried_on} if pool.managed and tried_on else {}))
         raise ProvingError(str(e), kept) from e
     os.replace(proved.out_dir, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
     # With two or more provers the end says which one proved it, and which a first try failed on; with one it says what it always did.
-    more = {"prover": proved.prover, **({"tried_first": proved.tried} if proved.tried else {})} if pool.managed else {"prover": prover}
-    attempt.event("proof_ended", outcome="ok", seconds=prove_seconds, **more)
+    attempt.event("proof_ended", prover=proved.prover if pool.managed else prover, outcome="ok", seconds=prove_seconds,
+                  **({"tried_first": proved.tried} if pool.managed and proved.tried else {}))
     return Proven(proved.proof, prove_seconds)
 
 
@@ -1745,6 +1746,11 @@ class Producer:
                 return self.settle_unknown()
             if saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
                 self.restore()
+            if self.cfg.pool and self.cfg.pool.managed and not self.cfg.pool.any_up():   # every prover is down: nothing is cut until one is due to be tried again
+                if now - self.last_written >= 5:
+                    self.write_status()
+                self.wait(min(self.idle, 1.0) if self.idle > 0 else 1.0)
+                return
             self.pause = 0.0
             trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
             if trigger is None:
