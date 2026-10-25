@@ -62,8 +62,8 @@ jobs:
   # A chain that runs is upgraded to the next version of the Daml package, its gas cap is raised, and the block gas limit goes over the old cap,
   # on the real network: the DAR of the tag v0.2.0 and the current source (0.3.0), the package put on each participant in the steps of
   # network/external/setup.py --package-step (check, upload not vetted, vet with a dry run first), the builder pinned to 0.3.0, the gas cap raised in
-  # the steps of --gas-cap-step (dry run, propose, accept), the builder's --target-gas-limit ramp with committed blocks over 30,000,000, a block whose
-  # header hex has a capital letter refused, the builder pinned back to 0.2.0 (the downgrade), and forward again. Real reth (launch.sh, discovery off),
+  # the steps of --gas-cap-step (dry run, propose, accept), a block whose header hex has a capital letter refused, the builder's
+  # --target-gas-limit ramp with committed blocks over 30,000,000, the builder pinned back to 0.2.0 (the downgrade), and forward again. Real reth (launch.sh, discovery off),
   # Canton, builder and sidecar for the legs; the proof is a stand-in (tests/demo_package_upgrade.sh).
   package-upgrade:
     runs-on: ubuntu-latest

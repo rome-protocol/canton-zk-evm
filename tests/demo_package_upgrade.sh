@@ -14,11 +14,13 @@
 #      under 0.3.0, and the legs of the deposits that were made under 0.2.0 settle. The block gas limit is still 30,000,000.
 #   4. The gas cap is raised from 30,000,000 to 60,000,000 with network/external/setup.py --gas-cap-step: a dry run of the proposal (nothing is
 #      proposed), the operator's proposal, a dry run of the acceptance on the confirmer's participant (the cap is unchanged), the confirmer's
-#      acceptance. A second proposal and a second acceptance change nothing, and a cap that is not higher is refused before anything is sent.
-#   5. The builder asks reth for a block gas limit of 31,000,000 (--target-gas-limit): the blocks commit under 0.3.0 and each header's gas limit
-#      moves up by exactly parent/1024 - 1, so the first block is over the old cap of 30,000,000. An Advance whose header hex has a capital letter in it
-#      is refused by Canton (the runtime lowercases what it sends, so the hash in the `verify2` line differs), the chain stays where it was, and the
-#      same block then commits.
+#      acceptance. A second proposal and a second acceptance change nothing, and a cap that is not higher is refused (its message is checked and no
+#      proposal exists afterwards).
+#   5. The builder asks reth for a block gas limit of 31,000,000 (--target-gas-limit). First an Advance whose header hex has a capital letter in it
+#      is refused by Canton at `verify2` (the runtime lowercases what it sends, so the hash in the line differs: the stand-in says it refused at the
+#      hash, and the refusal is the sidecar's, with the reason "no malformed input"), and the chain stays where it was. Then block 4 is built again
+#      without the capital letter and commits under 0.3.0, and each header's gas limit moves up by exactly parent/1024 - 1, so the first block is
+#      over the old cap of 30,000,000.
 #   6. The builder is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the 0.3.0 chain
 #      contract and deposit, and the new chain contract is a 0.2.0 one, with the raised cap.
 #   7. Forward again: a deposit, the builder pinned to 0.3.0, the block commits.
@@ -34,7 +36,7 @@ NET=$CZE_STATE_DIR/net
 DEMO=$CZE_STATE_DIR/demo
 umask 077
 mkdir -p "$NET/logs"
-: > "$FAKE_LOG"
+: > "$FAKE_LOG"; : > "$FAKE_LOG.refused"
 LIVE_PACKAGE_ID=a07a2e4d5fc10ba0ef486164dfadce6af066cb92879425ff1e0ec7629c43da7e   # 0.2.0, as the daml workflow says
 fail() { echo "FAIL: $*" >&2; exit 1; }
 step() { echo "== $* ($(date -u +%T))"; }
@@ -241,10 +243,10 @@ is "$(probe GasCapProposal | jq '.contracts | length')" 1 "the proposals after t
 # The proposal reaches the confirmer's participant a moment after the operator's commit: the dry run of the acceptance waits for it, up to 30 s.
 r=""
 for _ in $(seq 1 30); do
-  r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --gas-cap-step accept --new-gas-cap 60000000 --dry-run 2>/dev/null) && break
+  r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --gas-cap-step accept --new-gas-cap 60000000 --dry-run 2> "$WORK/setup.err") && break
   r=""; sleep 1
 done
-jq -e '.step == "accept" and .dryRun == true and .submitted == false and .currentGasCap == "30000000"' <<<"$r" >/dev/null || fail "the dry run of the acceptance: $r"
+jq -e '.step == "accept" and .dryRun == true and .submitted == false and .currentGasCap == "30000000"' <<<"$r" >/dev/null || fail "the dry run of the acceptance: $r $(tail -n 5 "$WORK/setup.err")"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 30000000 "the gas cap after the dry runs"
 r=$(cap_step 7576 accept 60000000); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance: $r"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 60000000 "the gas cap after the acceptance"
@@ -255,15 +257,17 @@ if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url h
   fail "a proposal for a cap that is not above the chain's was sent"
 fi
 grep -q "must be above" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal of a cap that is not higher does not say so"; }
+is "$(probe GasCapProposal | jq '.contracts | length')" 0 "the proposals after the refused proposal (nothing was sent)"
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the acceptance (SetGasCap is 0.3.0's)"
 
-step "stage 5: the builder asks for a gas limit of 31,000,000; the blocks commit over the old cap of 30,000,000; a capital letter in the header is refused"
+step "stage 5: a capital letter in the header is refused; then the builder asks for a gas limit of 31,000,000 and the blocks commit over the old cap of 30,000,000"
 BUILDER_EXTRA=(--target-gas-limit 31000000)
 deposit dep-4 "$NEW"
 # The header hex of this Advance has a capital letter in it. The runtime lowercases the line it sends, so the hash in the line is of text the sidecar
 # never sees: Canton refuses the block at verify2 (the legs are not asked), and nothing changes.
 BUILDER_PROGRAM=$ROOT/tests/demo_capital_advance.py
 verify2_before=$(calls verify2)
+refused_before=$(grep -c ' hash$' "$FAKE_LOG.refused" || true)
 set +e; out=$(build "$NEW"); status=$?; set -e
 BUILDER_PROGRAM=$ROOT/builder/builder.py
 echo "$out" | jq -c '{committed, rejected, reason: (.reason // "" | .[0:300])}'
@@ -271,10 +275,14 @@ is "$status" 2 "the builder's exit status for the block with a capital letter in
 is "$(jq -r .committed <<<"$out")" false "the block with a capital letter in its header committed"
 is "$(( $(calls verify2) > verify2_before ))" 1 "the sidecar was asked verify2 for the block with a capital letter"
 is "$(tail -n 1 "$FAKE_LOG" | cut -d' ' -f2)" verify2 "the last call of the refused block (the legs were not asked: it was refused at verify2)"
+jq -e '.rejected == true and (.reason | contains("the sidecar refused the block: no malformed input"))' <<<"$out" >/dev/null || fail "the refusal of the block with a capital letter is not the sidecar's: $out"
+# The stand-in says which of its checks refused the line: the hash in front (the runtime lowercased the text, so it differs), not the form of the hex.
+is "$(( $(grep -c ' hash$' "$FAKE_LOG.refused" || true) - refused_before ))" 1 "the verify2 refusals at the hash for the block with a capital letter (the text was lowercased in transit)"
+is "$(grep -c ' form$' "$FAKE_LOG.refused" || true)" 0 "the verify2 refusals at the form of the hex (the case was not kept)"
 is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the refused block"
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the refused block"
 is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .number)" 0x3 "reth's head after the refused block (it went back)"
-# The same block, without the capital letter, commits: the first one over the old cap.
+# Block 4 is built again, without the capital letter, and commits: the first one over the old cap.
 block_under "$NEW" 4 1 "the first block of the ramp, pinned to 0.3.0"
 is "$(gas_limit 4)" 30029295 "the gas limit of block 4 (30,000,000 and 30,000,000/1024 - 1)"
 deposit dep-5 "$NEW"
