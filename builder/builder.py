@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The builder: makes one block, gets it proven and submits it to Canton. See README.md.
 
-  builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>]
-  builder.py run [--read-as <party>]... [--disclosed <file>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
+  builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>]
+  builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
                  [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600]
 
 It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
@@ -68,6 +68,7 @@ class Config:
     prove_cmd: str         # <input.bin> <out-folder>; leaves <out-folder>/wrapped-proof.hex
     read_as: tuple = ()    # more parties whose contracts the builder may read (--read-as); the builder never acts as them
     disclosed: list = field(default_factory=list)   # contracts passed with Advance as they are (--disclosed)
+    package_id: str = ""   # the Daml package version Advance runs under (--package-id): sent as packageIdSelectionPreference; empty: Canton picks by package name
     resolve_seconds: float = 300.0   # how long an Advance with no answer may still commit: after it, with no completion seen, Canton's head decides
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
     traffic_url: str = ""         # where the builder's participant reports its traffic (CZE_TRAFFIC_URL); empty: the traffic is not read
@@ -515,6 +516,8 @@ class Ledger:
                 "actAs": [self.cfg.party], "readAs": self.readers()}
         if self.cfg.disclosed:
             body["disclosedContracts"] = self.cfg.disclosed
+        if self.cfg.package_id:   # without it Canton picks the highest version every hosting participant has vetted, so vetting a new one would switch it
+            body["packageIdSelectionPreference"] = [self.cfg.package_id]
         answer = post_json(self.cfg.ledger_url + "/v2/commands/submit-and-wait", body, self.auth)
         answer = answer if isinstance(answer, dict) else {}
         update_id, offset = answer.get("updateId"), answer.get("completionOffset")
@@ -974,7 +977,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     leg_txs = list(dict.fromkeys(e.tx for e in events))
     attempt.event("built", block_hash=block_hash, parent_hash=head, tx_hashes=[t["hash"] for t in chosen], gas_used=int(payload["gasUsed"], 16),
                   legs=len(legs), rebuilds=rebuilds, left_out=left_out, tx_bytes=sum((len(r) - 2) // 2 for _, r in pairs),
-                  max_tx_bytes=cfg.max_block_tx_bytes, **packing)
+                  max_tx_bytes=cfg.max_block_tx_bytes, **pinned(cfg), **packing)
 
     raw = bytes.fromhex(reth.call("debug_getRawBlock", [payload["blockNumber"]])[2:])
     header, txs = split_block(raw)
@@ -1033,7 +1036,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     resolve = {"number": n, "hash": block_hash, "commandId": command_id, "begin": begin, "submittedAt": time.time(), "genesis": genesis_hash(reth)}
     ref = {"run": attempt.journal.run_id, "attempt": attempt.seq} if attempt.journal is not None else {}   # as save_kept: an empty block has no kept file to say whose it is
     save_unresolved(cfg, {**resolve, **ref})
-    attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()))
+    attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()), **pinned(cfg))
     # The participant's traffic is read around the Advance only for a block that is alone in flight: with another one, whose bytes are whose is not known.
     watch = attempt.journal is not None and attempt.in_flight == 0
     traffic_before = read_traffic(cfg) if watch else None
@@ -1262,6 +1265,18 @@ def work_lock(work_dir: str):
         except OSError as e:
             raise BuilderError(f"another builder is running with the work folder {work_dir} (it holds builder.lock); only one may drive a reth") from e
         yield
+
+
+def pinned(cfg: Config) -> dict:
+    """The journal field that names the package version Advance is pinned to; nothing when it is not pinned."""
+    return {"package_id": cfg.package_id} if cfg.package_id else {}
+
+
+def check_package_id(value: str) -> str:
+    """A package id is the SHA-256 of its package, in 64 hex digits."""
+    if not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise BuilderError("bad arguments: --package-id must be a package id: 64 lowercase hex digits")
+    return value
 
 
 def read_disclosed(path: str) -> list:
@@ -1866,6 +1881,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--gather-ms", type=float, default=0, help="run: after a transaction reaches an idle pool, wait this long for more before cutting (0: cut at once)")
     ap.add_argument("--heartbeat-seconds", "--empty-every-seconds", dest="heartbeat_seconds", type=float, default=0,
                     help="run: make an empty block when none was made for this long (0: never; --empty-every-seconds is the old name)")
+    ap.add_argument("--package-id", metavar="ID", help="submit every Advance with packageIdSelectionPreference [ID], so that it runs under that Daml package version whatever else is vetted (default: Canton picks by package name)")
     ap.add_argument("--test", action="store_true", help="run: mark this run in the journal as a flood or another test, so that the explorer's statistics can leave it out")
     ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
     ap.add_argument("--exclude-cooldown-seconds", type=float, default=600, help="run: how long a transaction in two refused blocks in a row is left out")
@@ -1891,6 +1907,8 @@ def main() -> int:
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
+        if args.package_id is not None:
+            cfg.package_id = check_package_id(args.package_id)
         with work_lock(cfg.work_dir):
             if args.command == "run":
                 return produce(cfg, args)
