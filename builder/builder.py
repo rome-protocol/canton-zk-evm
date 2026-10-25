@@ -73,6 +73,7 @@ class Config:
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
     traffic_url: str = ""         # where the builder's participant reports its traffic (CZE_TRAFFIC_URL); empty: the traffic is not read
     max_block_tx_bytes: int = 65536   # the most raw transaction bytes a block is offered (--max-block-tx-bytes): our participant's Daml work grows with the Advance argument, about 23 ms per KB in each of two passes
+    target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked and reth keeps its own limit. The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -922,6 +923,9 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         raise BuilderError("reth does not have Canton's head block")
     attributes = {"timestamp": hex(max(int(time.time()), int(parent["timestamp"], 16) + 1)), "prevRandao": ZERO32,
                   "suggestedFeeRecipient": cfg.fee_recipient, "withdrawals": [], "parentBeaconBlockRoot": ZERO32}
+    target = target_for(cfg, cap)
+    if target is not None:   # reth moves each block's limit toward this by less than 1/1024 of the parent's; without it, reth keeps its own limit
+        attributes["targetGasLimit"] = hex(target)
 
     def keep(pairs: list) -> None:
         kept = [(t["hash"], raw) for t, raw in pairs]
@@ -1068,7 +1072,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     leg_txs = list(dict.fromkeys(e.tx for e in events))
     attempt.event("built", block_hash=block_hash, parent_hash=head, tx_hashes=[t["hash"] for t in chosen], gas_used=int(payload["gasUsed"], 16),
                   legs=len(legs), rebuilds=rebuilds, left_out=left_out, tx_bytes=sum((len(r) - 2) // 2 for _, r in pairs),
-                  max_tx_bytes=cfg.max_block_tx_bytes, **pinned(cfg), **packing)
+                  max_tx_bytes=cfg.max_block_tx_bytes, **pinned(cfg), **targeting(cfg, int(chain["gasCap"])), **packing)
 
     raw = bytes.fromhex(reth.call("debug_getRawBlock", [payload["blockNumber"]])[2:])
     header, txs = split_block(raw)
@@ -1458,6 +1462,20 @@ def pinned(cfg: Config) -> dict:
     return {"package_id": cfg.package_id} if cfg.package_id else {}
 
 
+def target_for(cfg: Config, cap: int) -> "int | None":
+    """The gas limit to ask reth for in a block's attributes: --target-gas-limit, or the chain's gasCap if that is lower (a header over the cap
+    is refused by check_built, so a larger ask would stop the chain). None when no target was set."""
+    return min(cfg.target_gas_limit, cap) if cfg.target_gas_limit else None
+
+
+def targeting(cfg: Config, cap: int) -> dict:
+    """The journal fields of a block's target: what was sent, and, when the chain's cap held it down, what was asked. Nothing when none is set."""
+    target = target_for(cfg, cap)
+    if target is None:
+        return {}
+    return {"target_gas_limit": target, **({"target_gas_limit_asked": cfg.target_gas_limit, "target_gas_limit_clamped_to_cap": True} if target < cfg.target_gas_limit else {})}
+
+
 def check_package_id(value: str) -> str:
     """A package id is the SHA-256 of its package, in 64 hex digits."""
     if not re.fullmatch(r"[0-9a-f]{64}", value):
@@ -1541,7 +1559,8 @@ class Producer:
         self.journal = journal or Journal(Path(cfg.work_dir) / "journal", clock=clock)
         self.source_commit = source_commit
         self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": 1,
-                         "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "test": test, "traffic_read": bool(cfg.traffic_url)}
+                         "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "test": test, "traffic_read": bool(cfg.traffic_url),
+                         **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {})}
         self.status_tick, self.status_stall = status_tick, status_stall
         self.status_lock = threading.Lock()   # the loop's and the ticker's writes of the status file never interleave
         self.status_last = None               # what the loop last wrote: the ticker repeats it with a fresh updatedAt
@@ -2068,6 +2087,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
+    ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
     ap.add_argument("--idle-ms", type=int, default=500, help=f"run: how long to wait between looks at an empty pool (at least {MIN_IDLE_MS})")
     ap.add_argument("--strategy", default=os.environ.get("CZE_BLOCK_STRATEGY", "on_demand"), help=f"run: when a block is cut: {', '.join(STRATEGIES)} (default; also CZE_BLOCK_STRATEGY)")
     ap.add_argument("--gather-ms", type=float, default=0, help="run: after a transaction reaches an idle pool, wait this long for more before cutting (0: cut at once)")
@@ -2094,8 +2114,11 @@ def main() -> int:
             raise BuilderError(f"bad arguments: --idle-ms must be at least {MIN_IDLE_MS}: a shorter wait would only keep reth busy")
         if args.max_block_tx_bytes < 1:
             raise BuilderError("bad arguments: --max-block-tx-bytes must be at least 1")
+        if args.target_gas_limit is not None and args.target_gas_limit < 1:
+            raise BuilderError("bad arguments: --target-gas-limit must be at least 1")
         cfg = Config.from_env()
         cfg.max_block_tx_bytes = args.max_block_tx_bytes
+        cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)

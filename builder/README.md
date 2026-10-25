@@ -9,7 +9,7 @@ One run makes one block (`once`); `run` keeps making them (see "Running it all t
 In the code a run is three stages, which `_build` composes under `build_block`: `build` (steps 1 to 6, and the start of step 7: it saves the block and its witness and reads the gateway's proofs), `prove` (the rest of step 7: the input tool, the prover and the check of its proof) and `submit` (steps 8 and 9: the `Advance` and the answer). Each can be called alone with the test fakes (`builder/tests/test_stages.py`). One block is in flight at a time.
 
 ```sh
-python3 builder/builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--max-block-tx-bytes 65536]
+python3 builder/builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>]
 ```
 
 1. **Read Canton's head.** It asks the JSON Ledger API v2 for the chain's one active `ZkChain` contract whose `builder` is this builder's party (a chain built by another party, seen through `--read-as`, is not counted): head number, head hash, gas cap, the gateway party and the gateway contract's address. It then moves reth's head, safe and finalized block to that head, so a run after a crash starts clean.
@@ -66,6 +66,8 @@ These two options affect visibility only when supplied:
 
 `--package-id <id>` (a package id: 64 lowercase hex digits) is optional. It pins the Daml package version `Advance` runs under. Every `Advance` is submitted with `packageIdSelectionPreference` set to `[<id>]`, so uploading and vetting a newer version of the package never switches the version by itself; the template is still named by package name. Without the flag nothing is sent and Canton picks the highest version that every participant hosting an informee has vetted, as before. The id is recorded as `package_id` in the journal's `built` and `submitted` events (the field is absent when the flag is not set). A malformed id fails the run before anything moves.
 
+`--target-gas-limit <gas>` (a whole number of at least 1) is optional. It asks reth to move the block gas limit toward the target: the builder sends `targetGasLimit` in the payload attributes of every `testing_buildBlockV1` call, and reth moves each block's limit toward it by less than 1/1024 of the parent's, stopping at the target. The target is never more than the chain's `gasCap`: the builder reads the cap from the chain record in Canton for every block and sends the lower of the two, because a header over the cap is refused and would stop the chain. A target above the cap is held at it, and the `built` event says so. Without the flag no `targetGasLimit` is sent and reth keeps its own limit, exactly as before. The target is recorded as `target_gas_limit` in the `run_started` settings and in the `built` event; when the cap held it down, the event also has `target_gas_limit_asked` (the flag's value) and `target_gas_limit_clamped_to_cap: true`. None of these fields is present without the flag.
+
 ## What reth needs
 
 Start reth only with `network/reth/launch.sh`, with discovery off as it always is. The builder relies on these flags, which `launch.sh` passes and checks:
@@ -105,7 +107,7 @@ The prover is whatever `CZE_PROVE_CMD` runs. By default that is `prove-one.sh`, 
 ## Running it all the time
 
 ```sh
-python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536]
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>]
 ```
 
 `run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as`, `--disclosed` and `--package-id` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
@@ -173,7 +175,7 @@ A journal that cannot be written never stops the chain. The failure is in the st
 | Event | When | Fields |
 |---|---|---|
 | `cut` | the producer decides to build | `number` (Canton's head plus one), `strategy`, `cut_reason` (`pool`, `gather`, `heartbeat`, `retry` or `probe`), `pool_waiting`, `idle_before_cut_ms`, `in_flight_at_cut` |
-| `built` | reth has made the block its head and the legs are matched | `block_hash`, `parent_hash`, `tx_hashes` in order, `gas_used`, `legs`, `rebuilds`, `left_out` (each with its reason), `packed` (how the block's last build, the one that went on, chose its transactions: `gas_used`, or `gas_limits` when the builder fell back, with `pack_reason`), `offered` (how many transactions reth was offered), `tx_bytes` (the raw bytes of the block's transactions), `max_tx_bytes` (the cap in force, `--max-block-tx-bytes`), `package_id` (only with `--package-id`) |
+| `built` | reth has made the block its head and the legs are matched | `block_hash`, `parent_hash`, `tx_hashes` in order, `gas_used`, `legs`, `rebuilds`, `left_out` (each with its reason), `packed` (how the block's last build, the one that went on, chose its transactions: `gas_used`, or `gas_limits` when the builder fell back, with `pack_reason`), `offered` (how many transactions reth was offered), `tx_bytes` (the raw bytes of the block's transactions), `max_tx_bytes` (the cap in force, `--max-block-tx-bytes`), `package_id` (only with `--package-id`), `target_gas_limit` (what was sent to reth; only with `--target-gas-limit`), `target_gas_limit_asked` and `target_gas_limit_clamped_to_cap` (only when the chain's cap held the target down) |
 | `skipped` | a build with no transaction that can go in (the attempt ends) | `left_out`, `rebuilds` |
 | `proof_queued`, `proof_started`, `proof_ended` | around the prover | `prover`; on the end `outcome` (`ok`, `failed` or `wrong_block`), `seconds`, and for a block that did not prove, `reason` (the first 300 characters of the error) |
 | `submitted` | just before `Advance`, and after the in-doubt record is on disk (see below) | `command_id`, `argument_bytes` (the size of `advance.json`), `package_id` (only with `--package-id`) |
