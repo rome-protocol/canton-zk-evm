@@ -148,7 +148,7 @@ export const REST_FIELDS = {
   statsTxsPerBlock: ["mean", "median", "max", "nonEmptyMean", "nonEmptyMedian"],
   statsBlocks: ["count", "empty", "busy", "firstTry", "bySize"],
   statsBlockSize: ["size", "count"],
-  statsTxs: ["count", "failed", "reverted", "successRate", "accepted", "acceptedFinal", "lost", "dropped", "delayedByRedo", "allTime"],
+  statsTxs: ["count", "failed", "reverted", "successRate", "accepted", "acceptedFinal", "lost", "droppedByChain", "delayedByRedo", "allTime"],
   /** The chain's transactions since its first block, exact through the newest final block `asOfBlock` (its record time is `asOf`); null where the rollups cannot say. */
   statsAllTime: ["total", "asOfBlock", "asOf"],
   statsAttempts: ["total", "committed", "unknown", "decided", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],

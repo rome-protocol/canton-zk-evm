@@ -112,7 +112,7 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.tps).toEqual({ now: 0, peak: null, peakAt: null });
     for (const k of ["blockTime", "timeToFinal", "proofTime", "commitTime", "served", "fullness", "today"]) expect(s[k], k).toBeNull();
     expect(s.txsPerBlock).toEqual({ mean: null, median: null, max: null, nonEmptyMean: null, nonEmptyMedian: null });
-    expect(s.txs).toEqual({ count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null });
+    expect(s.txs).toEqual({ count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null });
     expect(s.blocks.firstTry).toBeNull();
     expect(s.attempts).toMatchObject({ total: 0, refusedShare: null, failedShare: null, notTakenShare: null });
     expect(s.canton).toEqual({ argumentBytesPerBlock: null, argumentBytesPerTx: null, trafficBytesPerBlock: null, trafficReported: 0 });
@@ -161,7 +161,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
       txs_per_block_hist: count({ 0: 1, 4: 1 }), proof_size_hist: hist(5 * TL, { [B]: 1 }, 1 * TL),
     });
     await seed(pool, "stats_minute", t(12, 28), {
-      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, accepted_final: 8, delayed_by_redo: 2, lost: 1, dropped: 1, accepted_lost: 1, accepted_dropped: 1, replaced: 2, attempts: 3, attempts_committed: 1, attempts_refused: 1,
+      blocks: 2, empty_blocks: 1, busy_blocks: 1, size_blocks_0: 1, size_blocks_1: 1, txs: 6, max_minute_txs: 6, txs_failed: 1, gas_used: 200, gas_limit_sum: 2000, argument_bytes: 600, accepted: 6, accepted_final: 8, delayed_by_redo: 2, lost: 1, dropped: 1, accepted_lost: 1, accepted_dropped_chain: 1, replaced: 2, attempts: 3, attempts_committed: 1, attempts_refused: 1,
       attempts_failed: 1, ttf_without_acceptance: 1, clock_skew: 1, max_txs_in_block: 6, traffic_bytes: 1000, traffic_updates: 2, proof_busy_ms: 60000,
       test_blocks: 1, test_txs: 9, test_attempts: 1, test_proof_busy_ms: 5000,
       busy_gap_hist: time({ [A]: 1 }), time_to_final_hist: time({ [B]: 1, [C]: 1 }), proof_hist: time({ [A]: 1 }), served_hist: time({ [C]: 1 }),
@@ -230,7 +230,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     // blocks 2+2+3+1 = 8, empty 1+1 = 2, busy 1+1+3 = 5, transactions 4+6+30+2 = 42, failed 1+3 = 4
     expect(s.blocks).toMatchObject({ count: 8, empty: 2, busy: 5 });
     // The rate counts only the chain's own failures: 30 accepted and final, 3 lost, 1 dropped (the 5 replaced and the 4 reverted are in no count of it).
-    expect(s.txs).toMatchObject({ count: 42, failed: 4, reverted: 4, successRate: 30 / 34, accepted: 35, acceptedFinal: 30, lost: 3, dropped: 1, delayedByRedo: 5 });
+    expect(s.txs).toMatchObject({ count: 42, failed: 4, reverted: 4, successRate: 30 / 34, accepted: 35, acceptedFinal: 30, lost: 3, droppedByChain: 1, delayedByRedo: 5 });
     expect(s.blocks.firstTry).toBe(3 / 7);
     same(s.txs, F.statsTxs);
     // All time, whatever the window. These rows are seeded by hand and are not a rollup's output, so the number only shows the arithmetic: the day rows (500 + 70 + 1046), less the minute rows from a minute before the cursor on (12:29 with 30 and 12:30 with 2), plus the blocks from the same instant (6, 11, 17, 100 and 13).

@@ -399,37 +399,37 @@ describe("the numbers, from the stats routes", () => {
   });
 
   it.each([[1, "0.017"], [2, "0.033"]] as const)("shows a busiest minute of %i transaction(s) as peak %s, never peak 0, and says how many it was", async (txs, shown) => {
-    await withStats({ day: { tps: { now: 0, peak: txs / 60, peakAt: "2026-10-04T12:49:00.000Z" }, txs: { count: txs, failed: 0, reverted: 0, successRate: 1, accepted: txs, acceptedFinal: txs, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null } } })();
+    await withStats({ day: { tps: { now: 0, peak: txs / 60, peakAt: "2026-10-04T12:49:00.000Z" }, txs: { count: txs, failed: 0, reverted: 0, successRate: 1, accepted: txs, acceptedFinal: txs, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null } } })();
     expect(tile("Transactions per second")).toHaveTextContent(`0 now peak ${shown}peak: ${txs} tx in the busiest minute in 24 h, 12:49 UTC`);
   });
 
   it("shows a rate of nothing as 0, and no peak when the day had no transaction", async () => {
-    await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null } } })();
+    await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null } } })();
     expect(tile("Transactions per second")).toHaveTextContent("0 nowno transaction in 24 h");
     expect(tile("Transactions per second")).not.toHaveTextContent("peak");
   });
 
   it("counts the day's transactions and blocks, and gives the success rate from accepted, lost and dropped ones, cut and never rounded up", async () => {
-    await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1020, acceptedFinal: 1016, lost: 1, dropped: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
+    await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1020, acceptedFinal: 1016, lost: 1, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
     expect(tile("Transactions · 24 h")).toHaveTextContent("1,017total not counted yetin 21 blocks, each one Canton transaction");
-    expect(tile("Success rate")).toHaveTextContent("99.9%1,017 accepted and settled · 1 lost · 0 dropped");
+    expect(tile("Success rate")).toHaveTextContent("99.9%1,017 accepted and settled · 1 lost · 0 dropped by the chain");
     expect(tile("Success rate").textContent).not.toMatch(/revert/i);
   });
 
   it("shows the all-time total under the day's count, with the block it is as of", async () => {
-    await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, dropped: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
+    await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
     expect(tile("Transactions · 24 h")).toHaveTextContent("1,0171,021 final in all · as of block 21 · test runs includedin 21 blocks, each one Canton transaction");
     expect(screen.getByText("1,021 final in all · as of block 21")).toHaveAttribute("title", "All time, as of block 21; runs marked as tests are counted");
   });
 
   it("says not counted yet, never 0, when the all-time total is not known", async () => {
-    await withStats({ day: { txs: { count: 5, failed: 0, reverted: 0, successRate: 1, accepted: 5, acceptedFinal: 5, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 2, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
+    await withStats({ day: { txs: { count: 5, failed: 0, reverted: 0, successRate: 1, accepted: 5, acceptedFinal: 5, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 2, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
     expect(within(tile("Transactions · 24 h")).getByText("total not counted yet")).toBeInTheDocument();
     expect(tile("Transactions · 24 h")).not.toHaveTextContent("0 in all");
   });
 
   it("shows no success rate for a day with no transaction, and never makes one up", async () => {
-    await withStats({ day: { txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, dropped: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 0, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
+    await withStats({ day: { txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 0, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
     expect(tile("Success rate").querySelector(".stat-v")!.textContent).toBe("—");
     expect(tile("Success rate")).toHaveTextContent("no accepted transaction settled in 24 h");
   });

@@ -16,7 +16,7 @@ export const TABLES = { minute: "stats_minute", hour: "stats_hour", day: "stats_
 
 export const SCALARS = [
   "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "dropped", "replaced", "attempts_refused", "attempts_failed",
-  "accepted_final", "accepted_lost", "accepted_dropped", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "max_minute_txs", "gas_limit_sum", "traffic_bytes", "traffic_updates",
+  "accepted_final", "accepted_lost", "accepted_dropped_chain", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts", "attempts_not_taken", "attempts_skipped", "attempts_cancelled", "ttf_without_acceptance", "clock_skew", "max_txs_in_block", "max_minute_txs", "gas_limit_sum", "traffic_bytes", "traffic_updates",
   "proof_busy_ms", "size_blocks_0", "size_blocks_1", "size_blocks_2", "size_blocks_3", "size_blocks_4", "test_blocks", "test_txs", "test_attempts", "test_proof_busy_ms",
 ] as const;
 type Scalar = (typeof SCALARS)[number];
@@ -104,8 +104,8 @@ const REDO = COUNT_BY("final_at", `and state = 'final' and exists (
    where rx.tx_hash = tx_lifecycle.tx_hash and rx.left_out_reason is null and ra.outcome is distinct from 'committed' and ra.resolved_outcome is distinct from 'committed'
      and (ra.outcome in ('refused', 'failed', 'unknown', 'not_taken', 'cancelled') or ra.resolved_outcome is not null or ra.proof_outcome in ('failed', 'wrong_block')))`);
 /** Transactions that left the way to final, by the minute they first did and by what they are now. */
-const LOST = `select floor(extract(epoch from lost_at) / 60)::bigint as m, state, accepted_at is not null as acc, count(*)::int as n from tx_lifecycle
-               where lost_at >= $1 and lost_at < $2 and state in ('dropped', 'lost', 'replaced') and ${NOT_TEST} group by 1, 2, 3`;
+const LOST = `select floor(extract(epoch from lost_at) / 60)::bigint as m, state, accepted_at is not null as acc, drop_cause = 'chain' as chain, count(*)::int as n from tx_lifecycle
+               where lost_at >= $1 and lost_at < $2 and state in ('dropped', 'lost', 'replaced') and ${NOT_TEST} group by 1, 2, 3, 4`;
 /** A proof longer than this is not looked for across the end of a chunk (it would need a read of all later attempts). */
 const PROOF_MAX = "6 hours";
 const ATTEMPTS = `
@@ -168,8 +168,10 @@ export async function computeMinutes(db: Pool | PoolClient, from: number, to: nu
   for (const x of (await db.query(LOST, [a, b])).rows) {
     const sc = (at(Number(x.m) * MINUTE) as Row).scalars;
     sc[x.state as "lost" | "dropped" | "replaced"] += Number(x.n);
-    // The rate's own failures: only transactions the RPC or the faucet accepted, the same group its final side counts.
-    if (x.acc && x.state !== "replaced") sc[x.state === "lost" ? "accepted_lost" : "accepted_dropped"] += Number(x.n);
+    // The rate's own failures: only transactions the RPC or the faucet accepted, the same group its final side counts, and only the chain's own: lost, or dropped for a chain-side cause.
+    // A drop the sender caused (no funds, a nonce gap, a fee too low) or the explorer caused (its backlog limit), one that only stayed in reth's pool, and one with no cause stored are not in it.
+    if (x.acc && x.state === "lost") sc.accepted_lost += Number(x.n);
+    else if (x.acc && x.state === "dropped" && x.chain) sc.accepted_dropped_chain += Number(x.n);
   }
 
   const L = histLength("time");

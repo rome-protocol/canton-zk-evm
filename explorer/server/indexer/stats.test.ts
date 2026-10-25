@@ -266,14 +266,19 @@ describe.skipIf(!TEST_URL)("the stats rollups", () => {
     await life(pool, 15, fin); await carry(restarted, 15);                      // the producer restarted before the answer: a delay
     await life(pool, 16, { state: "lost", accepted_at: null, updated_at: at(13) }); // lost, never accepted by the RPC: in lost, not in the rate's failures
     await life(pool, 9, { state: "lost", accepted_at: at(0), updated_at: at(10) });
-    await life(pool, 10, { state: "dropped", accepted_at: at(0), updated_at: at(11) });
+    await life(pool, 10, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "chain" });   // went missing on every resend: the chain's, in the rate
+    await life(pool, 17, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "sender" });  // no funds, a nonce gap, a fee too low: not in the rate
+    await life(pool, 18, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "explorer" }); // the explorer's own backlog limit: not in the rate
+    await life(pool, 19, { state: "dropped", accepted_at: at(0), updated_at: at(11), drop_cause: "stuck" });    // waited in the pool with no block: not told apart, not in the rate
+    await life(pool, 20, { state: "dropped", accepted_at: at(0), updated_at: at(11) });                         // dropped before the cause was kept: not in the rate
+    await life(pool, 21, { state: "dropped", accepted_at: null, updated_at: at(11), drop_cause: "chain" });     // never accepted by the RPC or the faucet: not in the rate
     await life(pool, 11, { state: "replaced", accepted_at: at(0), updated_at: at(12) });
     await life(pool, 12, { state: "pending", accepted_at: at(0) });
     await rollupStats(pool, { now: () => T0 + 5 * MINUTE });
-    expect(await minuteRow(pool, 0)).toMatchObject({ accepted: 13, accepted_final: 9, accepted_lost: 1, accepted_dropped: 1, delayed_by_redo: 7, lost: 2, dropped: 1, replaced: 1,
+    expect(await minuteRow(pool, 0)).toMatchObject({ accepted: 17, accepted_final: 9, accepted_lost: 1, accepted_dropped_chain: 1, delayed_by_redo: 7, lost: 2, dropped: 6, replaced: 1,
       attempts: 9, attempts_not_taken: 1, attempts_cancelled: 1, attempts_committed: 2, attempts_unknown: 1, attempts_refused: 1, attempts_failed: 2, test_attempts: 1 });
     // The hour and the day add the minutes; a transaction that turns lost after it was final is counted as lost only.
-    expect(await pool.query("select accepted_final, accepted_lost, accepted_dropped, delayed_by_redo, attempts_committed from stats_day")).toMatchObject({ rows: [{ accepted_final: 9, accepted_lost: 1, accepted_dropped: 1, delayed_by_redo: 7, attempts_committed: 2 }] });
+    expect(await pool.query("select accepted_final, accepted_lost, accepted_dropped_chain, delayed_by_redo, attempts_committed from stats_day")).toMatchObject({ rows: [{ accepted_final: 9, accepted_lost: 1, accepted_dropped_chain: 1, delayed_by_redo: 7, attempts_committed: 2 }] });
     await pool.query("update tx_lifecycle set state = 'lost', updated_at = $1 where tx_hash = $2", [at(90), hex(202)]);
     await rollupStats(pool, { now: () => T0 + 6 * MINUTE });
     expect((await minuteRow(pool, 0))?.accepted_final).toBe(8);
