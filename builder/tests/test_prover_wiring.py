@@ -1,6 +1,7 @@
 """The prover pool in the builder's loop: --prover and --prove-timeout, the `prover` journal lines and the status file's `provers` list with two
 or more provers, and nothing of them with one. The stand-in prover's answers are set per job (fake-prove.sh, FAKE_PROVER_PLAN)."""
-import json, os, re, sys, tempfile, unittest
+import contextlib, io, json, os, re, sys, tempfile, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -137,6 +138,10 @@ class Wiring(Loop):
         self.assertEqual((d.prover, d.prove_timeout), ([], pv.DEFAULT_TIMEOUT))
         with self.assertRaises(ValueError):
             pv.parse_provers(["a=nonsense"], "x")
+        for bad in ("0", "0.5", "-3"):   # the prove command reads whole seconds, and 0 means no limit there
+            with mock.patch.object(sys, "argv", ["builder", "run", "--prove-timeout", bad]), contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(b.main(), 1)
+            self.assertIn("--prove-timeout must be at least 1", out.getvalue())
 
 
 if __name__ == "__main__":
