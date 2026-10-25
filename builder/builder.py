@@ -316,17 +316,6 @@ def resend(reth: Reth, pairs: list) -> list:
     return lost
 
 
-def without(pairs: list, exclude: set) -> list:
-    """The last build's (transaction, raw bytes), less the excluded ones and each such sender's later ones."""
-    stopped, kept = set(), []
-    for t, raw in pairs:
-        if t["from"] in stopped or t["hash"] in exclude:
-            stopped.add(t["from"])
-            continue
-        kept.append((t, raw))
-    return kept
-
-
 def price(t: dict) -> int:
     return int(t.get("maxFeePerGas") or t.get("gasPrice") or "0x0", 16)
 
@@ -858,10 +847,13 @@ def build_exactly(reth: Reth, head: str, attributes: dict, raws: list, cap: int)
     return built
 
 
-def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, previous: list | None = None, attempt: "Attempt | None" = None) -> tuple:
-    """Builds a block on Canton's head and makes it reth's head. The transactions come from reth's pending pool the first time, and
-    afterwards from the last build's list (`previous`) less the excluded ones: reth no longer has them in its pool once a block that
-    held them was its head. (payload, the (transaction, raw bytes) pairs in the block)."""
+def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, attempt: "Attempt | None" = None, known: list | None = None) -> tuple:
+    """Builds a block on Canton's head and makes it reth's head. The transactions are chosen from reth's pending pool, best price first, less
+    the excluded ones (and each such sender's later ones), every time: after a transaction was left out for its leg, put_back has sent the
+    block's transactions to the pool again, so the choice is made again with the larger exclude set and the gas and bytes the left-out ones
+    held go to others. `known` is the (transaction, raw) pairs of the block just unwound: one of them that the pool did not take back
+    (put_back reports it as lost) is still a candidate, with the raw bytes in hand, so a pool that refuses a resend does not drop an honest
+    transaction from the rebuilt block. (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
     n, cap = int(chain["headNumber"]) + 1, int(chain["gasCap"])
     parent = reth.call("eth_getBlockByHash", [head, False])
     if not parent or int(parent["number"], 16) != n - 1:
@@ -886,56 +878,54 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         by_raw = {raw: (t, raw) for t, raw in offered}
         return built, [by_raw[raw] for raw in built["executionPayload"]["transactions"]]
 
-    if previous is not None:
-        # The last build's list less the excluded ones. The kept transactions can use more gas on the new state than they did, so reth may
-        # leave a tail one out: the block is the list less some, as in the pool path, and what reth left out is in the pool again.
-        listed = without(previous, exclude)
-        keep(listed)   # the saved copy was cleared when put_back sent them to the pool: it holds the list again before reth builds
-        built, pairs = build_listed(listed)
-        keep(pairs)    # and then what reth built
-        reth.packed = {"packed": "listed"}
-    else:
-        pending = reth.call("txpool_content", [])["pending"]
-        budget = min(cap, int(parent["gasLimit"], 16))
-        raws: dict = {}   # hash -> raw transaction, each fetched once
+    pending = reth.call("txpool_content", [])["pending"]
+    budget = min(cap, int(parent["gasLimit"], 16))
+    raws: dict = {}   # hash -> raw transaction, each fetched once
+    stopped: set = set()
+    for t, raw in known or []:   # in the pool already, or not taken back: either way the raw bytes are in hand
+        if t["hash"] in exclude or t["from"] in stopped:   # an excluded transaction ends its sender's turn: the later ones could not run without it
+            stopped.add(t["from"])
+            continue
+        pending.setdefault(t["from"], {}).setdefault(str(int(t["nonce"], 16)), t)
+        raws[t["hash"]] = raw
 
-        def fetch(chosen: list) -> list:
-            """The (transaction, raw) pairs of the chosen ones, the raw ones in one batch. A transaction whose raw is null (replaced or evicted
-            since txpool_content), one that would take the block's raw bytes over cfg.max_block_tx_bytes, or one that would take the raw hex
-            over WS_REQUEST_BYTES (reth refuses a bigger request) is not offered, and nor are its sender's later ones: every sender's
-            transactions stay in nonce order. The first transaction is always offered, so one bigger than the cap does not wait for ever."""
-            missing = [t["hash"] for t in chosen if t["hash"] not in raws]
-            raws.update(zip(missing, reth.call_many("eth_getRawTransactionByHash", [[h] for h in missing])))
-            out, stopped, tx_bytes, hex_chars = [], set(), 0, 0
-            for t in chosen:
-                raw = raws[t["hash"]]
-                if t["from"] in stopped:
-                    continue
-                size = (len(raw) - 2) // 2 if raw else 0
-                if not raw or (out and (tx_bytes + size > cfg.max_block_tx_bytes or hex_chars + len(raw) > WS_REQUEST_BYTES)):
-                    stopped.add(t["from"])
-                    continue
-                out.append((t, raw))
-                tx_bytes += size
-                hex_chars += len(raw)
-            return out
+    def fetch(chosen: list) -> list:
+        """The (transaction, raw) pairs of the chosen ones, the raw ones in one batch. A transaction whose raw is null (replaced or evicted
+        since txpool_content), one that would take the block's raw bytes over cfg.max_block_tx_bytes, or one that would take the raw hex
+        over WS_REQUEST_BYTES (reth refuses a bigger request) is not offered, and nor are its sender's later ones: every sender's
+        transactions stay in nonce order. The first transaction is always offered, so one bigger than the cap does not wait for ever."""
+        missing = [t["hash"] for t in chosen if t["hash"] not in raws]
+        raws.update(zip(missing, reth.call_many("eth_getRawTransactionByHash", [[h] for h in missing])))
+        out, stopped, tx_bytes, hex_chars = [], set(), 0, 0
+        for t in chosen:
+            raw = raws[t["hash"]]
+            if t["from"] in stopped:
+                continue
+            size = (len(raw) - 2) // 2 if raw else 0
+            if not raw or (out and (tx_bytes + size > cfg.max_block_tx_bytes or hex_chars + len(raw) > WS_REQUEST_BYTES)):
+                stopped.add(t["from"])
+                continue
+            out.append((t, raw))
+            tx_bytes += size
+            hex_chars += len(raw)
+        return out
 
-        # Offer reth every transaction that could fit if each one before it used the least gas a transaction can. reth runs them in this order and
-        # leaves out any it cannot run (a gas limit over what the block has left, a wrong nonce, too little balance, a fee under the base fee) with
-        # its sender's later ones: the block is full by gas used.
-        offered = fetch(choose_txs(pending, budget, exclude, used_each=MIN_TX_GAS))
-        try:
-            built, pairs = build_listed(offered)
-            reth.packed = {"packed": "gas_used", "offered": len(offered)}
-        except BuilderError as e:
-            # Not what was asked for, or reth cannot build it (it was started without --testing.skip-invalid-transactions): this block is
-            # packed by gas limits, as it was before, and never over the cap.
-            pairs = fetch(choose_txs(pending, budget, exclude))
-            built = build_exactly(reth, head, attributes, [raw for _, raw in pairs], cap)
-            reth.packed = {"packed": "gas_limits", "offered": len(offered), "pack_reason": str(e)[:300]}
-        keep(pairs)
+    # Offer reth every transaction that could fit if each one before it used the least gas a transaction can. reth runs them in this order and
+    # leaves out any it cannot run (a gas limit over what the block has left, a wrong nonce, too little balance, a fee under the base fee) with
+    # its sender's later ones: the block is full by gas used.
+    offered = fetch(choose_txs(pending, budget, exclude, used_each=MIN_TX_GAS))
+    try:
+        built, pairs = build_listed(offered)
+        reth.packed = {"packed": "gas_used", "offered": len(offered)}
+    except BuilderError as e:
+        # Not what was asked for, or reth cannot build it (it was started without --testing.skip-invalid-transactions): this block is
+        # packed by gas limits, as it was before, and never over the cap.
+        pairs = fetch(choose_txs(pending, budget, exclude))
+        built = build_exactly(reth, head, attributes, [raw for _, raw in pairs], cap)
+        reth.packed = {"packed": "gas_limits", "offered": len(offered), "pack_reason": str(e)[:300]}
+    keep(pairs)
     payload = built["executionPayload"]
-    how = {"gas_used": "gas used", "gas_limits": "gas limits", "listed": "the last build's list"}[reth.packed["packed"]]
+    how = {"gas_used": "gas used", "gas_limits": "gas limits"}[reth.packed["packed"]]
     print(f"block {n}: {len(pairs)} transactions, gas used {int(payload['gasUsed'], 16)} of {cap}, packed by {how}"
           + (f" ({reth.packed['pack_reason']})" if "pack_reason" in reth.packed else ""), file=sys.stderr, flush=True)
     status = reth.engine("engine_newPayloadV4", [payload, [], ZERO32, built["executionRequests"]])["status"]
@@ -952,15 +942,15 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
     if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
         raise BuilderError("the chain record's gateway address is not 40 lowercase hex digits")
     rebuilds = 0
-    packing: dict = {}   # how the first build of this block chose its transactions
+    packing: dict = {}   # how the last build of this block chose its transactions
     left_out, pairs = [], None   # the transactions left out because a leg of theirs had no Canton side, each with the reason; the last build's transactions
     lost = [] if lost is None else lost   # the ones reth would not take back (the caller's list, so that a failure keeps them)
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
         # every leg of the block has its Canton side, and a block with no transaction left out is the one that goes on.
-        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, pairs, attempt)
-        packing = packing or reth.packed   # how the first build chose: a rebuild only takes the first one's list less some
+        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs)
+        packing = reth.packed   # how this build chose its transactions: the last one is the block's
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
         legs, missing = match_legs(Canton(Ledger(cfg), chain, utcnow()), events) if events else ([], [])
@@ -972,7 +962,7 @@ def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_
                 left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         rebuilds += 1
         reth.forkchoice(head, head, head)
-        lost.extend(put_back(reth))   # the left-out transactions wait in the pool again; the next build is made from the list in hand
+        lost.extend(put_back(reth))   # the block's transactions are in the pool again: the next build chooses from it with the larger exclude set (each round adds an exclusion, so it ends)
     if not chosen and not prove_empty:   # nothing to settle: no proof and no commit is spent on it
         attempt.event("skipped", left_out=left_out, rebuilds=rebuilds)
         reth.forkchoice(head, head, head)

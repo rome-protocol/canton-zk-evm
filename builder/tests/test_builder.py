@@ -622,6 +622,17 @@ class Rebuilding(LegCase):
         self.assertEqual((result["legs"], result["transactions"]), (1, [honest["hash"]]))
         self.assertEqual(self.attached(s, "PaymentLeg"), {"terms": "terms-1"})
 
+    def test_a_pool_that_refuses_the_resend_still_leaves_out_the_left_out_senders_later_transactions(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), ALICE, 0, price=9)   # no terms
+        later = self.leg_tx(s, PAY, ALICE, 1, price=9)   # waits behind it: never offered without it
+        other = self.leg_tx(s, PAY, BOB, price=1)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [bad, later], [other]
+        s.reth.refuse_resend = True
+        result = self.build(s)
+        self.assertEqual(s.builds(), [[raw_of(bad), raw_of(later), raw_of(other)], [raw_of(other)]])
+        self.assertEqual(result["transactions"], [other["hash"]])
+
     def test_a_broken_connection_while_putting_left_out_transactions_back_keeps_the_saved_copy(self):
         """The left-out rebuild empties nothing before the resend has returned: when the resend dies at the transport level, the
         failure handler sends everything again and clears the copy only if that works; here the connection is gone for good."""
@@ -1181,9 +1192,9 @@ class PackedWithLegsAndSizes(LegCase):
             return out
         return mock.patch.object(b, "read_legs", read)
 
-    def test_a_left_out_leg_and_limits_above_the_cap_rebuild_the_list_less_some(self):
+    def test_a_left_out_leg_and_limits_above_the_cap_rebuild_from_the_pool_less_the_left_out(self):
         # Declared limits of 90,000 against a cap of 300,000 and 30,000 used: 8 of the 10 fit. Transaction 5 has a leg without a Canton side. On
-        # the new state the others use 40,000 each, so the 7 left do not all fit: the rebuild is the list less 5 and less its tail.
+        # the new state the others use 40,000 each, so the 9 offered do not all fit: reth runs 6 of them and the rest wait in the pool.
         pool = {sender(i): [tx(sender(i), 0, gas=90_000, used=30_000, price=100 - i)] for i in range(10)}
         s = self.setup(pool, gas_cap=300_000, terms=[TERMS])
         bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), sender(5), gas=90_000, used=30_000, price=95)   # no terms
@@ -1195,7 +1206,7 @@ class PackedWithLegsAndSizes(LegCase):
         self.assertTrue(result["committed"], result)
         first, second = s.builds()
         self.assertEqual(first, [raw_of(t) for t in everyone])
-        self.assertEqual(second, [raw_of(t) for t in everyone[:5] + everyone[6:8]])   # the first block's list less the left-out one
+        self.assertEqual(second, [raw_of(t) for t in everyone[:5] + everyone[6:]])   # chosen again from the pool less the left-out one: 9 offered, reth runs 6
         (payload,) = [p[0] for p in s.engine("engine_newPayloadV4")][-1:]
         want = everyone[:5] + everyone[6:7]   # reth ran 6 of the 7: 5 * 40,000 used, the 7th's 90,000 limit is over the 60,000 left
         self.assertEqual([hash_of(r) for r in payload["transactions"]], [t["hash"] for t in want])
@@ -1205,6 +1216,65 @@ class PackedWithLegsAndSizes(LegCase):
         self.assertEqual(built["rebuilds"], 1)
         self.assertIn("packed by", err.getvalue())
         self.assertEqual(self.in_pool(s), {bad["hash"], everyone[7]["hash"], everyone[8]["hash"], everyone[9]["hash"]})   # not lost: in the pool for a later block
+
+    def stuck_pool(self, **k):
+        """A top-priced transaction whose Payment leg has no Canton side (a made-up id: no terms), and small ones from other senders."""
+        pool = {sender(i): [tx(sender(i), 0, price=100 - i, size=967, name="small")] for i in range(1, 71)}
+        s = self.setup(pool, terms=[TERMS], gas_cap=k.pop("gas_cap", 30_000_000))
+        bad = self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), sender(0), price=1000, **k)
+        pool[sender(0)] = [bad]
+        return s, bad, pool
+
+    def test_a_top_priced_transaction_over_the_byte_cap_with_no_canton_side_does_not_stall_the_chain(self):
+        # 70 KB against the 64 KiB cap, offered alone (the first transaction always is), left out for its leg: the next block choice is made again
+        # from the pool and holds the small transactions.
+        s, bad, pool = self.stuck_pool(size=70_000)
+        small = [pool[sender(i)][0]["hash"] for i in range(1, 71)]
+        result = self.build(s)
+        first, second = s.builds()
+        self.assertEqual(first, [raw_of(bad)])
+        self.assertEqual([hash_of(r) for r in second], small[:65])   # 65 of 1,000 bytes fit 65,536
+        self.assertLessEqual(sum((len(r) - 2) // 2 for r in second), s.cfg.max_block_tx_bytes)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [bad["hash"]])
+        self.assertEqual(len(result["transactions"]), 65)
+        self.assertNotIn(bad["hash"], result["transactions"])
+
+    def test_a_left_out_transaction_of_60_kb_leaves_the_rest_of_the_cap_to_others(self):
+        s, bad, pool = self.stuck_pool(size=60_000 - 33)
+        result = self.build(s)
+        first, second = s.builds()
+        self.assertEqual(first[0], raw_of(bad))
+        self.assertEqual(len(first), 6)   # 60,000 + 5 * 1,000 is under 65,536, a 6th is not
+        self.assertEqual(len(second), 65)   # the 60 KB the left-out one held is refilled
+        self.assertEqual(len(result["transactions"]), 65)
+        self.assertLessEqual(sum((len(r) - 2) // 2 for r in second), s.cfg.max_block_tx_bytes)
+
+    def test_a_cap_sized_gas_limit_with_no_canton_side_stays_fixed(self):
+        s, bad, pool = self.stuck_pool(gas=30_000_000)
+        result = self.build(s)
+        first, second = s.builds()
+        self.assertEqual(first[0], raw_of(bad))
+        self.assertNotIn(raw_of(bad), second)
+        self.assertGreaterEqual(len(second), 60)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [bad["hash"]])
+        self.assertEqual(len(result["transactions"]), len(second))
+
+    def test_every_left_out_round_adds_an_exclusion_and_the_last_block_is_what_reth_built(self):
+        # Two fit a block (limit 100,000 against 130,000, 21,000 used). The first four senders have no Canton side: two are found in each of
+        # the first two blocks, so there are two rebuilds, each chosen from the pool with more excluded, and the third block is the good one.
+        pool = {sender(i): [tx(sender(i), 0, gas=100_000, price=100 - i)] for i in range(6)}
+        s = self.setup(pool, gas_cap=130_000, terms=[TERMS])
+        for i in range(4):
+            pool[sender(i)] = [self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), sender(i), gas=100_000, price=100 - i)]
+        good = [pool[sender(i)][0]["hash"] for i in (4, 5)]
+        attempt = Attempts()
+        result = b.build_block(s.cfg, journal=attempt)
+        self.assertTrue(result["committed"], result)
+        self.assertEqual([len(x) for x in s.builds()], [2, 2, 2])
+        built = [f for n, f in attempt.events if n == "built"][0]
+        self.assertEqual((built["rebuilds"], built["packed"]), (2, "gas_used"))
+        self.assertEqual(len(result["leftOut"]), 4)
+        self.assertEqual(result["transactions"], good)
 
     def test_the_kept_copy_after_a_rebuild_is_what_reth_built(self):
         pool = {sender(i): [tx(sender(i), 0, gas=90_000, used=30_000, price=100 - i)] for i in range(10)}

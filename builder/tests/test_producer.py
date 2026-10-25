@@ -1119,15 +1119,15 @@ class IdleChecks(Loop):
         s = self.setup({BOB: [t]})
         s.reth.tx_legs[t["hash"]] = [tb.PAY]
         p = self.producer(s)
-        p.step()   # one look: the pool is fetched once
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 1))
+        p.step()   # one look: the pool is fetched for the build and again for the rebuild without the left-out transaction
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 2))
         for _ in range(10):
             p.step()   # the clock has not moved
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 1))
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (1, 2))
         self.now[0] += 2.0; p.step()   # the first pause is over: the pool is built from again (and the next pause is 4 s)
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (2, 2))
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (2, 4))
         self.now[0] += 2.0; p.step()   # the count is read again; it is unchanged and the pause is not over: no fetch
-        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (3, 2))
+        self.assertEqual((self.calls(s, "txpool_status"), self.calls(s, "txpool_content")), (3, 4))
 
 
 if __name__ == "__main__":

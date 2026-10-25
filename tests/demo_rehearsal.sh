@@ -298,9 +298,10 @@ for _ in $(seq 1 8); do pack_txs+=("$(w1py deploy "$WORK/w1/Reverts.bin" 6000000
 cut_block
 PACK_BLOCK=$(receipt_of "${pack_txs[0]}" | jq -r .block)
 [[ $PACK_BLOCK =~ ^[0-9]+$ ]] || fail "the first of the 8 deployments is in no block: $(receipt_of "${pack_txs[0]}")"
-# The block is built again when a transaction of it has a leg with no Canton side (the demo's payout waits in the pool): the first build's line says how it was
-# packed, and the rebuild's says "the last build's list", so the line to look for is the first.
-grep -Eq "^block $PACK_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$CUT_ERR" \
+# The block is built again when a transaction of it has a leg with no Canton side (the demo's payout waits in the pool): the rebuild chooses from the pool again
+# and its line says how it was packed too, so the line to look for is the last one of the block, the one that went on. (The line is made from the same field
+# as the journal's `built` line, `packed`; `once` writes no journal.)
+[ "$(grep "^block $PACK_BLOCK: " "$CUT_ERR" | tail -1 | grep -Ec "^block $PACK_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used$")" = 1 ] \
   || fail "block $PACK_BLOCK was not packed by gas used: $(grep "^block " "$CUT_ERR" | tr '\n' '|')"
 pack_json=$(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$PACK_BLOCK")\",true" | jq -c .result)
 [ "$(jq '.transactions | length' <<<"$pack_json")" = 8 ] || fail "block $PACK_BLOCK does not hold the 8 deployments: $(jq -c '.transactions | length' <<<"$pack_json")"
@@ -318,7 +319,7 @@ while read -r h; do stress_txs+=("$h"); done < <(w1py stress "$STRESS" 21)
 cut_block
 STRESS_BLOCK=$(receipt_of "${stress_txs[0]}" | jq -r .block)
 [[ $STRESS_BLOCK =~ ^[0-9]+$ ]] || fail "the first of the 21 Stress calls is in no block: $(receipt_of "${stress_txs[0]}")"
-grep -Eq "^block $STRESS_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used" "$CUT_ERR" \
+[ "$(grep "^block $STRESS_BLOCK: " "$CUT_ERR" | tail -1 | grep -Ec "^block $STRESS_BLOCK: [0-9]+ transactions, gas used [0-9]+ of $GAS_CAP, packed by gas used$")" = 1 ] \
   || fail "block $STRESS_BLOCK was not packed by gas used: $(grep "^block " "$CUT_ERR" | tr '\n' '|')"
 stress_json=$(rpc eth_getBlockByNumber "\"0x$(printf '%x' "$STRESS_BLOCK")\",true" | jq -c .result)
 stress_in=$(jq '.transactions | length' <<<"$stress_json"); stress_used=$(jq -r '.gasUsed' <<<"$stress_json" | xargs printf '%d')
