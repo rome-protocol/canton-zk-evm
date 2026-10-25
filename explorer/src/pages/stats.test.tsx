@@ -66,6 +66,7 @@ describe("the stats page", () => {
     expect(peak).toHaveTextContent("20.8 tx/s"); expect(peak).toHaveTextContent("busiest minute, 15 Oct 14:07");
     const ok = await tile("Success rate");
     expect(ok).toHaveTextContent("100%"); expect(ok).toHaveTextContent("5,899 accepted and settled · 0 lost · 0 dropped by the chain"); expect(ok).toHaveTextContent("sent through Ostia's RPC or the faucet");
+    expect(ok).toHaveTextContent("A drop the sender caused (no funds, a nonce gap, a fee too low), the explorer caused, or a long wait in the pool is not counted.");
     const first = await tile("Block attempts committed");
     expect(first).toHaveTextContent("99%"); expect(first).toHaveTextContent("901 of 910 attempts committed · 6 refused · 2 failed · 1 unknown");
     const redo = await tile("Delayed by a redo");

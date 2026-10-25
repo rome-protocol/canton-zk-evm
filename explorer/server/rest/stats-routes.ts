@@ -199,7 +199,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       }, F.statsTxsPerBlock),
       blocks: pick({
         count: blocks, empty, busy: sum(rows, "busy_blocks"),
-        // The share of decided attempts (committed, refused, failed, unknown) that committed on their first attempt.
+        // The share of decided attempts (committed, refused, failed, unknown) that committed; a share of attempts, not a per-height first-try share.
         firstTry: ratio(sum(rows, "attempts_committed"), decided),
         bySize: SIZE_LABELS.map((size, k) => pick({ size, count: sum(rows, `size_blocks_${k}` as Column) }, F.statsBlockSize)),
       }, F.statsBlocks),
