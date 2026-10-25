@@ -14,6 +14,7 @@ LEDGER_TOKEN = "ledger-test-token"
 BUILDER = "builder::1220aa"
 HEAD_HASH = "0x" + "ab" * 32
 HEAD_NUMBER = 4
+PROOF_WINDOW = 1   # reth is run with --rpc.eth-proof-window 1
 HEAD_TIME = 1000
 GATEWAY = "a7e0" + "00" * 18   # the gateway contract's address, 40 lowercase hex digits, as the chain record writes it
 LEG_TOPIC = "0x" + keccak256(b"Leg(uint8,bytes32,address,address,uint256,string)").hex()   # the gateway's Leg event
@@ -37,6 +38,29 @@ def rlp(x) -> bytes:
         return _len(len(x), 0x80) + x
     body = b"".join(rlp(i) for i in x)
     return _len(len(body), 0xC0) + body
+
+
+def rlp_decode(b: bytes):
+    """The inverse of rlp(): a list of byte strings and lists."""
+    def item(i):
+        t = b[i]
+        if t < 0x80:
+            return b[i:i + 1], i + 1
+        if t < 0xB8:
+            return b[i + 1:i + 1 + t - 0x80], i + 1 + t - 0x80
+        if t < 0xC0:
+            n = int.from_bytes(b[i + 1:i + t - 0xB6], "big"); s = i + t - 0xB6
+            return b[s:s + n], s + n
+        if t < 0xF8:
+            n, s = t - 0xC0, i + 1
+        else:
+            n = int.from_bytes(b[i + 1:i + t - 0xF6], "big"); s = i + t - 0xF6
+        end, out, j = s + n, [], s
+        while j < end:
+            x, j = item(j)
+            out.append(x)
+        return out, end
+    return item(0)[0]
 
 
 def _len(n: int, base: int) -> bytes:
@@ -160,6 +184,14 @@ class FakeReth:
                 if not self.pool[sender]:
                     del self.pool[sender]
 
+    def chain_txs(self) -> set:
+        """The hashes of the transactions of every block on the head's chain (the head and each parent back to the first block reth knows)."""
+        out, h = set(), self.head
+        while h in self.blocks:
+            out.update(self.block_txs.get(h, []))
+            h = self.blocks[h].get("parent")
+        return out
+
     def send_raw(self, raw):
         """eth_sendRawTransaction: a transaction already in the pool is `already known`; one reth never saw is refused."""
         hash_ = hash_of(raw)
@@ -168,7 +200,7 @@ class FakeReth:
             raise RuntimeError("the connection broke")
         if self.refuse_resend:
             raise RpcError("refused")
-        if hash_ in self.block_txs.get(self.head, []):   # in the head block: its state has the transaction, so the nonce is used
+        if hash_ in self.chain_txs():   # in any block on the head's chain: the head's state has the transaction, so the nonce is used
             raise RpcError("nonce too low")
         if any(t["hash"] == hash_ for ts in self.pool.values() for t in ts):
             raise RpcError("already known")
@@ -206,6 +238,9 @@ class FakeReth:
         if method == "eth_getLogs":
             return self._logs(params[0])
         if method == "eth_getProof":   # only the gateway's account and its legs slot are ever asked for
+            # reth --rpc.eth-proof-window 1: the state of a block more than one below the head is gone, and the call fails
+            if int(params[2], 16) < self.blocks[self.head]["number"] - PROOF_WINDOW:
+                raise RpcError(f"distance to target block exceeds maximum proof window {PROOF_WINDOW}")
             return {"codeHash": "0x" + "c0" * 32, "accountProof": ["0xaa01", "0xaa02"],
                     "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb01"]}]}
         raise KeyError(method)
@@ -245,7 +280,7 @@ class FakeReth:
         header = rlp([bytes.fromhex(parent[2:]), number.to_bytes(4, "big"), gas_used.to_bytes(4, "big"),
                       int(attributes["timestamp"], 16).to_bytes(8, "big")])
         h = "0x" + keccak256(header).hex()
-        self.blocks[h] = {"number": number, "timestamp": int(attributes["timestamp"], 16), "gasLimit": self.gas_limit}
+        self.blocks[h] = {"number": number, "timestamp": int(attributes["timestamp"], 16), "gasLimit": self.gas_limit, "parent": parent}
         self.block_txs[h] = [hash_of(r) for r in raws]
         self.by_number[number] = h
         self.raw_blocks[number] = "0x" + rlp([Raw(header), [bytes.fromhex(r[2:]) for r in raws], [], []]).hex()
@@ -339,8 +374,14 @@ class FakeLedger:
         self.garbage_reply = False   # Advance is answered with bytes that are not an HTTP reply (http.client.BadStatusLine)
         self.head_fails_after_submit = False   # once Advance has been submitted, reading the ZkChain contract fails (HTTP 500)
         self.head = {"headNumber": str(HEAD_NUMBER), "headHash": HEAD_HASH[2:]}
+        # The ZkChain contracts of the builder: the ids that can be exercised now. Each commit archives the contract it exercised and
+        # creates a new one with a new id (as Canton does), and a command on an archived or an unknown id is refused.
+        self.cids = ["chain-cid"] if chains == 1 else [f"chain-cid-{i}" for i in range(chains)]
+        self.consumed: list = []
+        self.commit_count = 0
         self.submitted: list = []
         self.queries: list = []
+        self.gets: list = []   # the path of each GET it answers (ledger-end, traffic, ...)
         self.bad_auth = 0
         self.traffic: list = []   # the traffic states GET /traffic answers with, one for each read; when none is left it reports none (404)
         self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
@@ -363,12 +404,32 @@ class FakeLedger:
 
     def land(self, ok: bool = True, message: str = "rejected") -> None:
         """The commands held back by `late` are decided now: committed (the head moves) or failed (the head stays)."""
-        for command_id, header in self.pending:
-            if ok:
-                self.head = {"headNumber": str(int(self.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
-            self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok else \
-                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": message}}
+        for command_id, header, cid in self.pending:
+            no = self.refusal(header, cid) if ok else None   # it is decided now, against the head as it is now, as Canton does
+            if ok and not no:
+                self.advance(header, cid)
+            self.outcomes[command_id] = {"commandId": command_id, "offset": self.land_offset, "updateId": "u1", "status": {}} if ok and not no else \
+                {"commandId": command_id, "offset": self.land_offset, "status": {"code": 9, "message": no[2] if no else message}}
         self.pending = []
+
+    def advance(self, header: bytes, cid: str) -> None:
+        """A committed Advance: the head moves to the block, the exercised contract is archived and a new one (a new id) is created."""
+        self.head = {"headNumber": str(int(self.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
+        self.commit_count += 1
+        self.consumed.append(cid)
+        self.cids[self.cids.index(cid)] = f"{cid.split('@')[0]}@{self.commit_count}"
+
+    def refusal(self, header: bytes, cid: str):
+        """What Canton says to an Advance that cannot run (Chain.daml:137-138, 151), as (HTTP status, error code, cause); None when it can."""
+        if cid not in self.cids:
+            known = "archived" if cid in self.consumed else "unknown"
+            return 404, "CONTRACT_NOT_FOUND", f"Contract could not be found: the contract id is {known}: {cid}"
+        parent, number = rlp_decode(header)[:2]
+        if parent.hex() != self.head["headHash"]:
+            return 409, "INTERPRETATION_ERROR", "the block's parent is not the chain's head"
+        if int.from_bytes(number, "big") != int(self.head["headNumber"]) + 1:
+            return 409, "INTERPRETATION_ERROR", "the block's number is not the head's plus one"
+        return None
 
     def close(self):
         self.http.shutdown()
@@ -420,7 +481,7 @@ class FakeLedger:
             return {"contractEntry": {"JsActiveContract": {"createdEvent": {
                 "contractId": cid, "templateId": f"pkg:Zk.Chain:{name}", "createArgument": args}}}}
         if template.endswith(":ZkChain"):
-            own = [entry(f"chain-cid-{i}" if self.chains != 1 else "chain-cid", "ZkChain", self.chain_args()) for i in range(self.chains)]
+            own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
         for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms)):
             if template.endswith(":" + name):
@@ -456,6 +517,7 @@ class FakeLedger:
 
             def do_GET(self):
                 self._auth()
+                ledger.gets.append(self.path)
                 if self.path == "/traffic":
                     state = ledger.traffic.pop(0) if ledger.traffic else None   # one answer for each read
                     return self._reply(404, {}) if state is None else self._reply(200, state)
@@ -502,13 +564,17 @@ class FakeLedger:
                         return self._reply(409, {"code": "INTERPRETATION_ERROR", "cause": ledger.refuse})
                     if ledger.reply_status:
                         return self._reply(ledger.reply_status, {"cause": "x"})
-                    arg = body["commands"][0]["ExerciseCommand"]["choiceArgument"]
-                    header = bytes.fromhex(arg["headerHex"])
+                    exercise = body["commands"][0]["ExerciseCommand"]
+                    header = bytes.fromhex(exercise["choiceArgument"]["headerHex"])
+                    no = ledger.refusal(header, exercise["contractId"])
+                    if no:   # Canton's own checks: the command is decided at once and fails
+                        ledger.outcomes[command_id] = failed
+                        return self._reply(no[0], {"code": no[1], "cause": no[2]})
                     if ledger.late:
-                        ledger.pending.append((command_id, header))
+                        ledger.pending.append((command_id, header, exercise["contractId"]))
                         return self._reply(503, {"code": "REQUEST_TIME_OUT", "cause": "The server was not able to produce a timely response"})
                     if ledger.commit:
-                        ledger.head = {"headNumber": str(int(ledger.head["headNumber"]) + 1), "headHash": keccak256(header).hex()}
+                        ledger.advance(header, exercise["contractId"])
                     ledger.outcomes[command_id] = {"commandId": command_id, "offset": 43, "updateId": "u1", "status": {}} if ledger.commit else failed
                     if ledger.garbage_reply:
                         self.close_connection = True

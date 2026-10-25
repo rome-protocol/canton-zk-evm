@@ -1,0 +1,866 @@
+{
+ "calls": [
+  [
+   "reth",
+   "txpool_status",
+   []
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
+   "active-contracts",
+   {
+    "activeAtOffset": 42,
+    "eventFormat": {
+     "filtersByParty": {
+      "builder::1220aa": {
+       "cumulative": [
+        {
+         "identifierFilter": {
+          "TemplateFilter": {
+           "value": {
+            "includeCreatedEventBlob": false,
+            "templateId": "#canton-zk-evm:Zk.Chain:ZkChain"
+           }
+          }
+         }
+        }
+       ]
+      }
+     },
+     "verbose": false
+    }
+   }
+  ],
+  [
+   "engine",
+   "engine_forkchoiceUpdatedV3",
+   [
+    {
+     "finalizedBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "headBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "safeBlockHash": "0xabababababababababababababababababababababababababababababababab"
+    },
+    null
+   ]
+  ],
+  [
+   "reth",
+   "eth_getBlockByHash",
+   [
+    "0xabababababababababababababababababababababababababababababababab",
+    false
+   ]
+  ],
+  [
+   "reth",
+   "txpool_content",
+   []
+  ],
+  [
+   "reth",
+   "eth_getRawTransactionByHash",
+   [
+    "0x65dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ]
+  ],
+  [
+   "reth",
+   "testing_buildBlockV1",
+   [
+    "0xabababababababababababababababababababababababababababababababab",
+    {
+     "parentBeaconBlockRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "prevRandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "suggestedFeeRecipient": "0xfefefefefefefefefefefefefefefefefefefefe",
+     "timestamp": "0x713fb300",
+     "withdrawals": []
+    },
+    [
+     "0x0265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+    ],
+    null
+   ]
+  ],
+  [
+   "engine",
+   "engine_newPayloadV4",
+   [
+    {
+     "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "blockNumber": "0x5",
+     "gasLimit": "0x1c9c380",
+     "gasUsed": "0x5208",
+     "parentHash": "0xabababababababababababababababababababababababababababababababab",
+     "timestamp": "0x713fb300",
+     "transactions": [
+      "0x0265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+     ]
+    },
+    [],
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+    []
+   ]
+  ],
+  [
+   "engine",
+   "engine_forkchoiceUpdatedV3",
+   [
+    {
+     "finalizedBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "headBlockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "safeBlockHash": "0xabababababababababababababababababababababababababababababababab"
+    },
+    null
+   ]
+  ],
+  [
+   "reth",
+   "eth_getLogs",
+   [
+    {
+     "address": "0xa7e0000000000000000000000000000000000000",
+     "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "topics": [
+      "0x2c8d8a818d8b0cf47fad57ecfb27123142da12932ee060bfb9ef6983af4b2487"
+     ]
+    }
+   ]
+  ],
+  [
+   "reth",
+   "debug_getRawBlock",
+   [
+    "0x5"
+   ]
+  ],
+  [
+   "reth",
+   "eth_getBlockByNumber",
+   [
+    "0x5",
+    true
+   ]
+  ],
+  [
+   "reth",
+   "debug_executionWitness",
+   [
+    "0x5"
+   ]
+  ],
+  [
+   "prover",
+   "fake-make-input.sh",
+   "<dir>/work/block-5/block.json",
+   "<dir>/work/block-5/witness.json",
+   "<dir>/genesis.json",
+   "<dir>/work/block-5/input.bin"
+  ],
+  [
+   "prover",
+   "fake-prove.sh",
+   "<dir>/work/block-5/input.bin",
+   "<dir>/work/block-5/out-<pid>-<ns>"
+  ],
+  [
+   "reth",
+   "eth_getProof",
+   [
+    "0xa7e0000000000000000000000000000000000000",
+    [
+     "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
+    ],
+    "0x5"
+   ]
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "reth",
+   "eth_getBlockByNumber",
+   [
+    "0x0",
+    false
+   ]
+  ],
+  [
+   "ledger",
+   "submit-and-wait",
+   {
+    "actAs": [
+     "builder::1220aa"
+    ],
+    "commandId": "ostia-770101-5-07a9c4aef00c646c-1",
+    "commands": [
+     {
+      "ExerciseCommand": {
+       "choice": "Advance",
+       "choiceArgument": {
+        "gatewayAccountNodes": [
+         "aa01",
+         "aa02"
+        ],
+        "gatewayStorageNodes": [
+         "bb01"
+        ],
+        "headerHex": "f4a0abababababababababababababababababababababababababababababababab840000000584000052088800000000713fb300",
+        "legs": [],
+        "proofHex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab2007a9c400000000aef00c64000000006c38ecf90000000037114c9d00000000044feebe0000000064b2736b00000000b9512eba00000000fc27e6750000000098000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "txsHex": "e2a10265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+       },
+       "contractId": "chain-cid",
+       "templateId": "#canton-zk-evm:Zk.Chain:ZkChain"
+      }
+     }
+    ],
+    "readAs": [
+     "builder::1220aa"
+    ],
+    "userId": "builder-user"
+   }
+  ],
+  [
+   "ledger",
+   "completions",
+   "/v2/commands/completions?limit=500&stream_idle_timeout_ms=1000",
+   {
+    "beginExclusive": 42,
+    "parties": [
+     "builder::1220aa"
+    ],
+    "userId": "builder-user"
+   }
+  ],
+  [
+   "reth",
+   "eth_getBlockByNumber",
+   [
+    "0x0",
+    false
+   ]
+  ],
+  [
+   "ledger",
+   "completions",
+   "/v2/commands/completions?limit=500&stream_idle_timeout_ms=1000",
+   {
+    "beginExclusive": 42,
+    "parties": [
+     "builder::1220aa"
+    ],
+    "userId": "builder-user"
+   }
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
+   "active-contracts",
+   {
+    "activeAtOffset": 42,
+    "eventFormat": {
+     "filtersByParty": {
+      "builder::1220aa": {
+       "cumulative": [
+        {
+         "identifierFilter": {
+          "TemplateFilter": {
+           "value": {
+            "includeCreatedEventBlob": false,
+            "templateId": "#canton-zk-evm:Zk.Chain:ZkChain"
+           }
+          }
+         }
+        }
+       ]
+      }
+     },
+     "verbose": false
+    }
+   }
+  ],
+  [
+   "reth",
+   "eth_getBlockByNumber",
+   [
+    "0x0",
+    false
+   ]
+  ],
+  [
+   "ledger",
+   "completions",
+   "/v2/commands/completions?limit=500&stream_idle_timeout_ms=1000",
+   {
+    "beginExclusive": 42,
+    "parties": [
+     "builder::1220aa"
+    ],
+    "userId": "builder-user"
+   }
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
+   "active-contracts",
+   {
+    "activeAtOffset": 42,
+    "eventFormat": {
+     "filtersByParty": {
+      "builder::1220aa": {
+       "cumulative": [
+        {
+         "identifierFilter": {
+          "TemplateFilter": {
+           "value": {
+            "includeCreatedEventBlob": false,
+            "templateId": "#canton-zk-evm:Zk.Chain:ZkChain"
+           }
+          }
+         }
+        }
+       ]
+      }
+     },
+     "verbose": false
+    }
+   }
+  ],
+  [
+   "engine",
+   "engine_forkchoiceUpdatedV3",
+   [
+    {
+     "finalizedBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "headBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "safeBlockHash": "0xabababababababababababababababababababababababababababababababab"
+    },
+    null
+   ]
+  ],
+  [
+   "reth",
+   "eth_sendRawTransaction",
+   [
+    "0x0265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ]
+  ],
+  [
+   "reth",
+   "txpool_status",
+   []
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
+   "active-contracts",
+   {
+    "activeAtOffset": 42,
+    "eventFormat": {
+     "filtersByParty": {
+      "builder::1220aa": {
+       "cumulative": [
+        {
+         "identifierFilter": {
+          "TemplateFilter": {
+           "value": {
+            "includeCreatedEventBlob": false,
+            "templateId": "#canton-zk-evm:Zk.Chain:ZkChain"
+           }
+          }
+         }
+        }
+       ]
+      }
+     },
+     "verbose": false
+    }
+   }
+  ],
+  [
+   "engine",
+   "engine_forkchoiceUpdatedV3",
+   [
+    {
+     "finalizedBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "headBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "safeBlockHash": "0xabababababababababababababababababababababababababababababababab"
+    },
+    null
+   ]
+  ],
+  [
+   "reth",
+   "eth_getBlockByHash",
+   [
+    "0xabababababababababababababababababababababababababababababababab",
+    false
+   ]
+  ],
+  [
+   "reth",
+   "txpool_content",
+   []
+  ],
+  [
+   "reth",
+   "eth_getRawTransactionByHash",
+   [
+    "0x65dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ]
+  ],
+  [
+   "reth",
+   "testing_buildBlockV1",
+   [
+    "0xabababababababababababababababababababababababababababababababab",
+    {
+     "parentBeaconBlockRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "prevRandao": "0x0000000000000000000000000000000000000000000000000000000000000000",
+     "suggestedFeeRecipient": "0xfefefefefefefefefefefefefefefefefefefefe",
+     "timestamp": "0x713fb300",
+     "withdrawals": []
+    },
+    [
+     "0x0265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+    ],
+    null
+   ]
+  ],
+  [
+   "engine",
+   "engine_newPayloadV4",
+   [
+    {
+     "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "blockNumber": "0x5",
+     "gasLimit": "0x1c9c380",
+     "gasUsed": "0x5208",
+     "parentHash": "0xabababababababababababababababababababababababababababababababab",
+     "timestamp": "0x713fb300",
+     "transactions": [
+      "0x0265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+     ]
+    },
+    [],
+    "0x0000000000000000000000000000000000000000000000000000000000000000",
+    []
+   ]
+  ],
+  [
+   "engine",
+   "engine_forkchoiceUpdatedV3",
+   [
+    {
+     "finalizedBlockHash": "0xabababababababababababababababababababababababababababababababab",
+     "headBlockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "safeBlockHash": "0xabababababababababababababababababababababababababababababababab"
+    },
+    null
+   ]
+  ],
+  [
+   "reth",
+   "eth_getLogs",
+   [
+    {
+     "address": "0xa7e0000000000000000000000000000000000000",
+     "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "topics": [
+      "0x2c8d8a818d8b0cf47fad57ecfb27123142da12932ee060bfb9ef6983af4b2487"
+     ]
+    }
+   ]
+  ],
+  [
+   "reth",
+   "debug_getRawBlock",
+   [
+    "0x5"
+   ]
+  ],
+  [
+   "reth",
+   "eth_getBlockByNumber",
+   [
+    "0x5",
+    true
+   ]
+  ],
+  [
+   "reth",
+   "debug_executionWitness",
+   [
+    "0x5"
+   ]
+  ],
+  [
+   "prover",
+   "fake-make-input.sh",
+   "<dir>/work/block-5/block.json",
+   "<dir>/work/block-5/witness.json",
+   "<dir>/genesis.json",
+   "<dir>/work/block-5/input.bin"
+  ],
+  [
+   "prover",
+   "fake-prove.sh",
+   "<dir>/work/block-5/input.bin",
+   "<dir>/work/block-5/out-<pid>-<ns>"
+  ],
+  [
+   "reth",
+   "eth_getProof",
+   [
+    "0xa7e0000000000000000000000000000000000000",
+    [
+     "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
+    ],
+    "0x5"
+   ]
+  ],
+  [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "reth",
+   "eth_getBlockByNumber",
+   [
+    "0x0",
+    false
+   ]
+  ],
+  [
+   "ledger",
+   "submit-and-wait",
+   {
+    "actAs": [
+     "builder::1220aa"
+    ],
+    "commandId": "ostia-770101-5-07a9c4aef00c646c-2",
+    "commands": [
+     {
+      "ExerciseCommand": {
+       "choice": "Advance",
+       "choiceArgument": {
+        "gatewayAccountNodes": [
+         "aa01",
+         "aa02"
+        ],
+        "gatewayStorageNodes": [
+         "bb01"
+        ],
+        "headerHex": "f4a0abababababababababababababababababababababababababababababababab840000000584000052088800000000713fb300",
+        "legs": [],
+        "proofHex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab2007a9c400000000aef00c64000000006c38ecf90000000037114c9d00000000044feebe0000000064b2736b00000000b9512eba00000000fc27e6750000000098000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "txsHex": "e2a10265dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+       },
+       "contractId": "chain-cid",
+       "templateId": "#canton-zk-evm:Zk.Chain:ZkChain"
+      }
+     }
+    ],
+    "readAs": [
+     "builder::1220aa"
+    ],
+    "userId": "builder-user"
+   }
+  ],
+  [
+   "ledger",
+   "completions",
+   "/v2/commands/completions?limit=5&stream_idle_timeout_ms=1000",
+   {
+    "beginExclusive": 42,
+    "parties": [
+     "builder::1220aa"
+    ],
+    "userId": "builder-user"
+   }
+  ],
+  [
+   "engine",
+   "engine_forkchoiceUpdatedV3",
+   [
+    {
+     "finalizedBlockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "headBlockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+     "safeBlockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598"
+    },
+    null
+   ]
+  ]
+ ],
+ "journal": [
+  {
+   "event": "pool",
+   "run": "run-1",
+   "seq": 1,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1,
+   "waiting": 1
+  },
+  {
+   "attempt": 1,
+   "cut_reason": "pool",
+   "event": "cut",
+   "idle_before_cut_ms": 0,
+   "in_flight_at_cut": 0,
+   "number": 5,
+   "pool_waiting": 1,
+   "run": "run-1",
+   "seq": 2,
+   "strategy": "on_demand",
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 1,
+   "block_hash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+   "event": "built",
+   "gas_used": 21000,
+   "left_out": [],
+   "legs": 0,
+   "max_tx_bytes": 65536,
+   "offered": 1,
+   "packed": "gas_used",
+   "parent_hash": "0xabababababababababababababababababababababababababababababababab",
+   "rebuilds": 0,
+   "run": "run-1",
+   "seq": 3,
+   "time": "1970-01-12T13:46:40.000Z",
+   "tx_bytes": 33,
+   "tx_hashes": [
+    "0x65dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ],
+   "v": 1
+  },
+  {
+   "attempt": 1,
+   "event": "proof_queued",
+   "prover": "fake-prove.sh",
+   "run": "run-1",
+   "seq": 4,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 1,
+   "event": "proof_started",
+   "prover": "fake-prove.sh",
+   "run": "run-1",
+   "seq": 5,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 1,
+   "event": "proof_ended",
+   "outcome": "ok",
+   "prover": "fake-prove.sh",
+   "run": "run-1",
+   "seconds": "<seconds>",
+   "seq": 6,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "argument_bytes": 2997,
+   "attempt": 1,
+   "command_id": "ostia-770101-5-07a9c4aef00c646c-1",
+   "event": "submitted",
+   "run": "run-1",
+   "seq": 7,
+   "time": "1970-01-12T13:46:40.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 1,
+   "event": "answered",
+   "outcome": "unknown",
+   "reason": "no usable reply from Canton: Remote end closed connection without response",
+   "run": "run-1",
+   "seconds": "<seconds>",
+   "seq": 8,
+   "time": "1970-01-12T13:46:40.000Z",
+   "traffic_after": null,
+   "traffic_before": null,
+   "traffic_bytes": null,
+   "v": 1
+  },
+  {
+   "attempt": 1,
+   "event": "resolved",
+   "outcome": "not committed",
+   "run": "run-1",
+   "seq": 9,
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1,
+   "via": "window"
+  },
+  {
+   "attempt": 2,
+   "cut_reason": "pool",
+   "event": "cut",
+   "idle_before_cut_ms": 0,
+   "in_flight_at_cut": 0,
+   "number": 5,
+   "pool_waiting": 1,
+   "run": "run-1",
+   "seq": 10,
+   "strategy": "on_demand",
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 2,
+   "block_hash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+   "event": "built",
+   "gas_used": 21000,
+   "left_out": [],
+   "legs": 0,
+   "max_tx_bytes": 65536,
+   "offered": 1,
+   "packed": "gas_used",
+   "parent_hash": "0xabababababababababababababababababababababababababababababababab",
+   "rebuilds": 0,
+   "run": "run-1",
+   "seq": 11,
+   "time": "1970-01-12T16:33:20.000Z",
+   "tx_bytes": 33,
+   "tx_hashes": [
+    "0x65dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ],
+   "v": 1
+  },
+  {
+   "attempt": 2,
+   "event": "proof_queued",
+   "prover": "fake-prove.sh",
+   "run": "run-1",
+   "seq": 12,
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 2,
+   "event": "proof_started",
+   "prover": "fake-prove.sh",
+   "run": "run-1",
+   "seq": 13,
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 2,
+   "event": "proof_ended",
+   "outcome": "ok",
+   "prover": "fake-prove.sh",
+   "run": "run-1",
+   "seconds": "<seconds>",
+   "seq": 14,
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1
+  },
+  {
+   "argument_bytes": 2997,
+   "attempt": 2,
+   "command_id": "ostia-770101-5-07a9c4aef00c646c-2",
+   "event": "submitted",
+   "run": "run-1",
+   "seq": 15,
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1
+  },
+  {
+   "attempt": 2,
+   "completion_offset": 43,
+   "event": "answered",
+   "outcome": "committed",
+   "run": "run-1",
+   "seconds": "<seconds>",
+   "seq": 16,
+   "time": "1970-01-12T16:33:20.000Z",
+   "traffic_after": null,
+   "traffic_before": null,
+   "traffic_bytes": null,
+   "update_id": "u1",
+   "v": 1
+  },
+  {
+   "attempt": 2,
+   "event": "final_seen",
+   "number": 5,
+   "run": "run-1",
+   "seq": 17,
+   "time": "1970-01-12T16:33:20.000Z",
+   "v": 1
+  }
+ ],
+ "reports": [
+  {
+   "advanceSeconds": "<advanceSeconds>",
+   "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+   "commandId": "ostia-770101-5-07a9c4aef00c646c-1",
+   "committed": null,
+   "keptTransactions": [
+    "0x65dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ],
+   "leftOut": [],
+   "legTransactions": [],
+   "number": 5,
+   "proveSeconds": "<proveSeconds>",
+   "reason": "no usable reply from Canton: Remote end closed connection without response; the command has no completion yet, so it is not known whether the block committed",
+   "resolve": {
+    "begin": 42,
+    "commandId": "ostia-770101-5-07a9c4aef00c646c-1",
+    "genesis": "0x6666666666666666666666666666666666666666666666666666666666666666",
+    "hash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+    "number": 5,
+    "submittedAt": 1900000000.0
+   }
+  },
+  {
+   "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+   "number": 5,
+   "resolved": "not committed"
+  },
+  {
+   "advanceSeconds": "<advanceSeconds>",
+   "blockHash": "0x07a9c4aef00c646c38ecf937114c9d044feebe64b2736bb9512ebafc27e67598",
+   "commandId": "ostia-770101-5-07a9c4aef00c646c-2",
+   "committed": true,
+   "completionOffset": 43,
+   "leftOut": [],
+   "legTransactions": [],
+   "legs": 0,
+   "number": 5,
+   "proveSeconds": "<proveSeconds>",
+   "transactions": [
+    "0x65dd50c80aada0122cae6c8cce84851d96db3f3341dab20b3f8faaae221e035d"
+   ],
+   "updateId": "u1"
+  }
+ ]
+}
