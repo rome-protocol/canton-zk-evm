@@ -21,6 +21,7 @@ from pathlib import Path
 
 from websockets.sync.client import connect
 
+from provers import DEFAULT_TIMEOUT, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
 
@@ -73,6 +74,8 @@ class Config:
     ledger_token_file: str = ""   # a file holding the bearer token, read again on every Ledger call; it replaces ledger_token
     traffic_url: str = ""         # where the builder's participant reports its traffic (CZE_TRAFFIC_URL); empty: the traffic is not read
     max_block_tx_bytes: int = 65536   # the most raw transaction bytes a block is offered (--max-block-tx-bytes): our participant's Daml work grows with the Advance argument, about 23 ms per KB in each of two passes
+    prover_input_dir: Path | None = None   # --prover-input-dir: a folder the provers' machines also see; the input is copied there and its path is given to the prover (default: the input's own path)
+    pool: object = None               # the prover pool (provers.Pool), made by main(); None: one local prover, the prove command alone, made for each block
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
     @classmethod
@@ -612,6 +615,15 @@ def run(cmd: str, *args: str) -> None:
         raise BuilderError(f"{Path(cmd.split()[0]).name} failed: {(done.stderr or done.stdout).strip()[-400:]}")
 
 
+def run_prover(cmd: str, args: list, env: dict | None = None, timeout: float | None = None) -> None:
+    """Runs the prove command for the pool: one call per try, so that a test can see each (the pool looks this name up at every call)."""
+    run_command(cmd, args, env, timeout)
+
+
+def new_pool(provers: list, timeout: float = DEFAULT_TIMEOUT) -> Pool:
+    return Pool(provers, timeout, run=lambda *a, **k: run_prover(*a, **k))
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1097,38 +1109,50 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
 
 def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven:
     """Stage two. Runs the prover on the block's input and checks that the proof commits to this block. A failure is a ProvingError that
-    names the transactions to keep."""
+    names the transactions to keep. With two or more provers (cfg.pool) the block goes to a free prover, and a failure is tried once more on
+    another; with one, or none configured, the prove command runs once, as it always did."""
     attempt = attempt or Attempt(None, 1)
     work, attempt_dir, block_hash = built.work, built.attempt_dir, built.block_hash
     prover = Path(cfg.prove_cmd).name
+    pool = cfg.pool or new_pool([Prover(prover)])
     attempt.event("proof_queued", prover=prover)
     proving = time.monotonic()
-    outcome = "failed"
+    outcome, tried_on = "failed", []
     kept = [t["hash"] for t in built.chosen]
     # Each attempt has its own folder, output included: a prover left behind by a killed builder writes into the old one, never into this one.
     out = attempt_dir / "out"
     shutil.rmtree(work / "out", ignore_errors=True)   # the block's `out` holds only the proof of the attempt that is accepted: an earlier attempt's or run's proof of this height goes now
+    def check(proof: str) -> None:
+        committed = committed_hash(proof)
+        if committed != block_hash:   # never submit a proof of another block
+            raise JobError(f"the proof commits to block hash {committed or 'none'}, not this block's {block_hash}", outcome="wrong_block")
     try:
         attempt.event("proof_started", prover=prover)
         run(cfg.make_input_cmd, str(attempt_dir / "block.json"), str(attempt_dir / "witness.json"), cfg.genesis, str(attempt_dir / "input.bin"))
-        run(cfg.prove_cmd, str(attempt_dir / "input.bin"), str(out))
-        proof_file = out / "wrapped-proof.hex"
-        if not proof_file.is_file():
-            raise BuilderError("the prover finished but left no wrapped-proof.hex")
-        proof = proof_file.read_text().strip()
-        if len(proof) != 2688 or proof.strip("0123456789abcdef"):
-            raise BuilderError("the wrapped proof is not 1,344 bytes of lowercase hex")
-        committed = committed_hash(proof)
-        if committed != block_hash:   # never submit a proof of another block
-            outcome = "wrong_block"
-            raise BuilderError(f"the proof commits to block hash {committed or 'none'}, not this block's {block_hash}")
+        try:
+            proved = pool.prove(Job(None, cfg.prove_cmd, attempt_dir / "input.bin", out, check, cfg.prover_input_dir))
+        except JobError as e:
+            outcome, tried_on = e.outcome, e.tried
+            raise BuilderError(str(e)) from e
+        finally:
+            write_prover_lines(pool, attempt)
     except BuilderError as e:
-        attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300])
+        attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300],
+                      **({"tried": tried_on} if pool.managed and tried_on else {}))
         raise ProvingError(str(e), kept) from e
-    os.replace(out, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
+    os.replace(proved.out_dir, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
-    attempt.event("proof_ended", prover=prover, outcome="ok", seconds=prove_seconds)
-    return Proven(proof, prove_seconds)
+    # With two or more provers the end says which one proved it, and which a first try failed on; with one it says what it always did.
+    attempt.event("proof_ended", prover=proved.prover if pool.managed else prover, outcome="ok", seconds=prove_seconds,
+                  **({"tried_first": proved.tried} if pool.managed and proved.tried else {}))
+    return Proven(proved.proof, prove_seconds)
+
+
+def write_prover_lines(pool: Pool, attempt: "Attempt") -> None:
+    """A `prover` line for each change of a prover's health since the last look (only a pool of two or more has any)."""
+    for change in pool.events():
+        if attempt.journal is not None:
+            attempt.journal.event("prover", attempt=attempt.seq, prover=change["name"], state=change["state"], reason=change["reason"])
 
 
 def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None) -> dict:
@@ -1572,7 +1596,8 @@ class Producer:
         self.source_commit = source_commit
         self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": 1,
                          "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "test": test, "traffic_read": bool(cfg.traffic_url),
-                         **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {})}
+                         **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {}),
+                         **({"provers": [p.name for p in cfg.pool.provers], "prove_timeout_seconds": cfg.pool.timeout} if cfg.pool and cfg.pool.managed else {})}
         self.status_tick, self.status_stall = status_tick, status_stall
         self.status_lock = threading.Lock()   # the loop's and the ticker's writes of the status file never interleave
         self.status_last = None               # what the loop last wrote: the ticker repeats it with a fresh updatedAt
@@ -1721,6 +1746,11 @@ class Producer:
                 return self.settle_unknown()
             if saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
                 self.restore()
+            if self.cfg.pool and self.cfg.pool.managed and not self.cfg.pool.any_up():   # every prover is down: nothing is cut until one is due to be tried again
+                if now - self.last_written >= 5:
+                    self.write_status()
+                self.wait(min(self.idle, 1.0) if self.idle > 0 else 1.0)
+                return
             self.pause = 0.0
             trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
             if trigger is None:
@@ -1991,7 +2021,8 @@ class Producer:
                 "waitingToBeResolved": self.unresolved and {"number": self.unresolved["number"], "hash": self.unresolved["hash"],
                                                             "commandId": self.unresolved.get("commandId"), "why": self.unresolved.get("why")},
                 "lostTransactions": self.lost,
-                "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total)}
+                "averageProveSeconds": avg(self.prove_total), "averageAdvanceSeconds": avg(self.advance_total),
+                **({"provers": pool_status} if (pool_status := self.cfg.pool.status() if self.cfg.pool else None) else {})}
 
     def write_status(self, state: str = "running", final: bool = False) -> None:
         """Atomic: a reader sees the old file or the new one. A file that cannot be written never stops the chain."""
@@ -2100,6 +2131,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
+    ap.add_argument("--prover", action="append", default=[], metavar="NAME=URL", help="a prover: the URL of one ZisK coordinator (repeatable; also CZE_PROVERS, comma-separated). Each takes one block at a time. With two or more, a block that fails goes once to another prover and a prover that cannot be reached is left alone for a while. None, or one: the prove command alone, as ever")
+    ap.add_argument("--prove-timeout", type=float, default=float(os.environ.get("CZE_PROVE_TIMEOUT", DEFAULT_TIMEOUT)), metavar="SECONDS", help=f"how long one proof may take before it is given up (default {DEFAULT_TIMEOUT:g}; also CZE_PROVE_TIMEOUT)")
+    ap.add_argument("--prover-input-dir", metavar="DIR", help="a folder the provers' machines also see: the input is copied there for each proof and its path is given to the prover (default: the input's own path is given)")
     ap.add_argument("--idle-ms", type=int, default=500, help=f"run: how long to wait between looks at an empty pool (at least {MIN_IDLE_MS})")
     ap.add_argument("--strategy", default=os.environ.get("CZE_BLOCK_STRATEGY", "on_demand"), help=f"run: when a block is cut: {', '.join(STRATEGIES)} (default; also CZE_BLOCK_STRATEGY)")
     ap.add_argument("--gather-ms", type=float, default=0, help="run: after a transaction reaches an idle pool, wait this long for more before cutting (0: cut at once)")
@@ -2128,7 +2162,16 @@ def main() -> int:
             raise BuilderError("bad arguments: --max-block-tx-bytes must be at least 1")
         if args.target_gas_limit is not None and args.target_gas_limit < 5000:   # the protocol's minimum gas limit: a lower target would walk the limit down until blocks are refused
             raise BuilderError("bad arguments: --target-gas-limit must be at least 5000")
+        if args.prove_timeout <= 0:
+            raise BuilderError("bad arguments: --prove-timeout must be above 0")
         cfg = Config.from_env()
+        try:
+            specs = args.prover or [x for x in os.environ.get("CZE_PROVERS", "").split(",") if x.strip()]
+            cfg.pool = new_pool(parse_provers(specs, Path(cfg.prove_cmd).name), args.prove_timeout)
+        except ValueError as e:
+            raise BuilderError(f"bad arguments: {e}") from e
+        if args.prover_input_dir:
+            cfg.prover_input_dir = Path(args.prover_input_dir)
         cfg.max_block_tx_bytes = args.max_block_tx_bytes
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
