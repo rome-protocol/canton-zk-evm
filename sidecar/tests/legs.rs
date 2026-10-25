@@ -580,7 +580,7 @@ fn a_gateway_node_that_is_not_lowercase_hex_of_whole_bytes_is_refused() {
             with(at(first[1..].to_string())),
             with(at(format!("{first}0"))),
             with(at(format!("0x{first}"))),
-            with(at(format!(" {first}"))),
+            with(at(format!(" {}", &first[1..]))),
             with(at(format!("{}g{}", &first[..2], &first[3..]))),
         ];
         // a lone ';' is two empty nodes
