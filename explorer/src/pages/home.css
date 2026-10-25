@@ -50,7 +50,9 @@
   .home-txs td, .home-txs th { overflow: hidden; }
   .home-txs .who-cell .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .home-txs .who-cell .acell, .home-txs .who-cell .acell .hx { display: inline; }
-  .home-txs .who-cell .acell .ic, .home-txs .who-cell .acell .verified { display: inline-block; vertical-align: -2px; margin-right: 5px; }
+  .home-txs .who-cell .acell .ic { display: inline-block; vertical-align: -2px; margin-right: 5px; }
+  .home-txs .who-cell .acell .verified { display: inline-block; vertical-align: -2px; margin-left: 5px; }
+  .home-txs .who-cell > .muted { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .home-txs .who-cell .acell .aname { display: inline; max-width: none; }
   .home-txs .val-cell { white-space: normal; overflow-wrap: anywhere; }
   .home-txs .val-cell .moved { display: flex; min-width: 0; justify-content: flex-end; }

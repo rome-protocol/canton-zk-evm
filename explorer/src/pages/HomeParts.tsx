@@ -249,7 +249,7 @@ export function LatestTxs({ txs, coin, error, pending = [], pendingRead = "ok", 
                   return (
                     <tr key={p.hash}>
                       <TxCell hash={p.hash} ago={duration(now - Date.parse(p.at))} />
-                      <td className="small who-cell">{d === "reading" ? <span className="muted">reading…</span> : d === "error" ? <span className="muted">cannot be read right now</span> : <Parties from={d.from} to={d.to} created={d.created} labels={labels} faucet={faucet} chain={chain} />}</td>
+                      <td className="small who-cell">{d === "reading" ? <span className="muted" title="reading…">reading…</span> : d === "error" ? <span className="muted" title="cannot be read right now">cannot be read right now</span> : <Parties from={d.from} to={d.to} created={d.created} labels={labels} faucet={faucet} chain={chain} />}</td>
                       <td className="r val-cell">{typeof d === "object" && d.value !== null ? <ProvingMoved d={{ ...d, value: d.value }} coin={coin} labels={labels} compact /> : <span className="muted">—</span>}</td>
                       <td><Chip status={p.stage} /></td>
                     </tr>
