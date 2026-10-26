@@ -238,6 +238,6 @@ fi
 submits=$(jq .submitted <<<"$stats")
 seen=$(grep -cE '^(forwarded|dropped) ' "$WORK/proxy.log")
 # a run killed between writing "submitted" and sending the command leaves one line more, and none else can
-[ "$seen" -le "$submits" ] && [ "$submits" -le "$(( seen + kills ))" ] || fail "the proxy saw $(grep -cE '^(forwarded|dropped) ' "$WORK/proxy.log") submits, the journal has $submits"
+if [ "$seen" -gt "$submits" ] || [ "$submits" -gt "$(( seen + kills ))" ]; then fail "the proxy saw $seen submits, the journal has $submits"; fi
 cp "$WORK/proxy.log" "$WORK/proved.log" "$OUT/"
 echo "== the pipeline scenario passed at depth $DEPTH: $stats"
