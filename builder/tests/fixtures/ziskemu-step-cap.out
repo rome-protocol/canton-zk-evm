@@ -1,0 +1,17 @@
+
+REPORT                                  
+----------------------------------------
+STEPS                              1,000
+
+COST DISTRIBUTION                   COST       %
+------------------------------------------------
+MAIN                              68,000   0.02%
+OPCODES                           16,031   0.01%
+PRECOMPILES                            0   0.00%
+MEMORY                           293,395   0.10%
+                        ------------------------
+VARIABLE                         377,426   0.13%
+BASE                         287,309,824  99.87%
+                        ------------------------
+TOTAL                        287,687,250 100.00%
+Error during emulation: EmulationNoCompleted
