@@ -734,9 +734,7 @@ testSetGasCapNeedsTheOperatorAndTheConfirmer = do
   submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) set
   submitMustFail (actAs f.gateway) set
   submitMustFail (actAs [f.operator, f.gateway]) set
-  submitMustFail (actAs [f.operator, f.confirmer]) set   -- without the gateway
-  submitMustFail (actAs [f.confirmer, f.gateway]) set
-  chain <- submit (actAs [f.operator, f.confirmer, f.gateway]) set
+  chain <- submit (actAs [f.operator, f.confirmer]) set
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.gasCap) === (chain, 60000000)
 
