@@ -161,7 +161,8 @@ out_l=$(run_with "$WORK/a" "$WORK/later.json") || fail "build with a genesis pat
 out_l2=$(run_with "$WORK/a" "$WORK/later.json") || fail "the second build with a genesis path failed: $out_l2"
 [ "$(vk "$out_l2")" = "$(vk "$out_l")" ] || fail "two builds from the same other genesis gave different programVKs"
 rules() { grep '^rulesHash=' <<<"$1" | cut -d= -f2; }
-[ -n "$(rules "$out_l")" ] && [ "$(rules "$out_l")" != "$(rules "$out_a")" ] || fail "the rulesHash of another genesis is the default's: it was not taken from the genesis that was built"
+[ -n "$(rules "$out_l")" ] || fail "no rulesHash was printed for another genesis"
+[ "$(rules "$out_l")" != "$(rules "$out_a")" ] || fail "the rulesHash of another genesis is the default's: it was not taken from the genesis that was built"
 [ "$(rules "$out_l2")" = "$(rules "$out_l")" ] || fail "two builds from the same other genesis gave different rulesHashes"
 out_d=$(run_with "$WORK/a" "$WORK/a/network/genesis.json") || fail "build with the repository's genesis path failed: $out_d"
 [ "$(vk "$out_d")" = "$(vk "$out_a")" ] || fail "naming the default genesis changed the programVK"
