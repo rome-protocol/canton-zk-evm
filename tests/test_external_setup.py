@@ -21,7 +21,7 @@ FAKE_TOKENS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer"
 class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
-        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": []}, []
+        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": [], "ProgramProposal": []}, []
         self.dep, self.dep_vetted, self.ignores_query = None, True, False   # a dependency of the package, whether it is vetted; a participant that ignores vetAllPackages
         self.invalid_dar, self.updates = False, []   # a DAR that /v2/dars/validate refuses; the bodies of /v2/package-vetting/update
         self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
@@ -121,6 +121,15 @@ class FakeParticipant:
                 [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["choiceArgument"]["chain"]]
                 self.contracts["GasCapProposal"].remove(proposal)
                 chain["args"]["gasCap"] = proposal["args"]["newCap"]
+            elif "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].endswith("ProgramProposal"):
+                exercise = command["ExerciseCommand"]
+                [proposal] = [c for c in self.contracts["ProgramProposal"] if c["contractId"] == exercise["contractId"]]
+                [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["choiceArgument"]["chain"]]
+                self.contracts["ProgramProposal"].remove(proposal)
+                for field in ("programVK", "rootC", "rulesHash"):
+                    chain["args"][field] = proposal["args"]["new" + field[0].upper() + field[1:]]
+            elif "CreateCommand" in command and command["CreateCommand"]["templateId"].endswith("ProgramProposal"):
+                self.contracts["ProgramProposal"].append({"contractId": "q1", "args": command["CreateCommand"]["createArguments"]})
             elif "CreateCommand" in command and command["CreateCommand"]["templateId"].endswith("GasCapProposal"):
                 self.contracts["GasCapProposal"].append({"contractId": "g1", "args": command["CreateCommand"]["createArguments"]})
             elif "CreateCommand" in command:
@@ -514,6 +523,113 @@ class Setup(unittest.TestCase):
             setup.main(["--ledger-url", self.node.url, "--gas-cap-step", "propose"])
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), "--new-gas-cap", "5"])
+
+    NEW_PROGRAM = ("ab" * 32, "cd" * 32, "ef" * 32)
+
+    def program_step(self, step, values=None, *extra):
+        """setup.py --program-step: only the operator's or the confirmer's token; returns the JSON line it printed."""
+        vk, root, rules = values or self.NEW_PROGRAM
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--program-step", step, "--program-vk", vk, "--root-c", root, "--rules-hash", rules, *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def chain_program(self):
+        args = self.node.contracts["ZkChain"][0]["args"]
+        return (args["programVK"], args["rootC"], args["rulesHash"])
+
+    def test_a_proposed_program_is_accepted_and_changed_back(self):
+        self.run_setup()
+        old = self.chain_program()
+        before = len(self.sent())
+        proposed = self.program_step("propose")
+        self.assertEqual((proposed["submitted"], proposed["alreadyProposed"]), (True, False))
+        [(command, acts)] = self.sent()[before:]
+        self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])   # the operator's user acts for the operator and the gateway
+        self.assertEqual(command["CreateCommand"]["createArguments"]["gateway"], "ostia-gateway::1220fp")
+        self.assertEqual({k: v for k, v in command["CreateCommand"]["createArguments"].items() if k.startswith("new")},
+                         {"newProgramVK": "ab" * 32, "newRootC": "cd" * 32, "newRulesHash": "ef" * 32})
+        self.assertEqual(self.chain_program(), old)   # the proposal alone changes nothing
+        self.assertFalse(self.program_step("propose")["submitted"])   # the same proposal again: nothing is sent
+        self.assertEqual(len(self.node.contracts["ProgramProposal"]), 1)
+        accepted = self.program_step("accept")
+        self.assertTrue(accepted["submitted"])
+        self.assertEqual(self.sent()[-1][1], ["ostia-confirmer::1220fp"])
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "AcceptProgram")
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choiceArgument"], {"chain": "c1"})
+        self.assertEqual(self.chain_program(), self.NEW_PROGRAM)
+        self.assertEqual(self.node.contracts["ProgramProposal"], [])
+        again = self.program_step("accept")   # a re-run after it went through
+        self.assertEqual((again["submitted"], again["alreadyAccepted"]), (False, True))
+        # The rollback is the same two steps with the old values.
+        self.program_step("propose", old)
+        self.program_step("accept", old)
+        self.assertEqual(self.chain_program(), old)
+
+    def test_a_program_dry_run_submits_nothing(self):
+        self.run_setup()
+        before = len(self.sent())
+        dry = self.program_step("propose", None, "--dry-run")
+        self.assertEqual((dry["dryRun"], dry["submitted"]), (True, False))
+        self.assertEqual(self.node.contracts["ProgramProposal"], [])
+        self.program_step("propose")
+        before = len(self.sent())
+        dry = self.program_step("accept", None, "--dry-run")
+        self.assertEqual((dry["dryRun"], dry["submitted"], dry["new"]["programVK"]), (True, False, "ab" * 32))
+        self.assertEqual(len(self.sent()), before)
+        self.assertEqual(len(self.node.contracts["ProgramProposal"]), 1)
+
+    def test_a_program_step_refuses_what_the_daml_would_and_a_wrong_proposal(self):
+        self.run_setup()
+        with self.assertRaises(SystemExit) as ctx:
+            self.program_step("propose", self.chain_program())
+        self.assertIn("holds these values already", str(ctx.exception))
+        with self.assertRaises(SystemExit) as ctx:
+            self.program_step("accept")   # no proposal
+        self.assertIn("no proposal", str(ctx.exception))
+        self.program_step("propose")
+        with self.assertRaises(SystemExit) as ctx:
+            self.program_step("propose", ("11" * 32, "cd" * 32, "ef" * 32))   # another proposal is there
+        self.assertIn("Archive", str(ctx.exception))
+        with self.assertRaises(SystemExit) as ctx:
+            self.program_step("accept", ("11" * 32, "cd" * 32, "ef" * 32))   # accept takes exactly the values given
+        self.assertIn("no proposal", str(ctx.exception))
+        self.assertEqual(len(self.node.contracts["ProgramProposal"]), 1)
+
+    def test_a_program_value_must_be_64_lowercase_hex_digits(self):
+        self.run_setup()
+        before = len(self.sent())
+        for bad in ("AB" * 32, "ab" * 31, "0x" + "ab" * 32, "zz" * 32, ""):
+            for position in range(3):
+                values = [*self.NEW_PROGRAM]
+                values[position] = bad
+                with self.subTest(bad=bad, position=position), self.assertRaises(SystemExit):
+                    self.program_step("propose", tuple(values))
+        self.assertEqual(len(self.sent()), before)
+
+    def test_each_program_step_needs_only_its_own_token(self):
+        self.run_setup()
+        self.node.calls.clear()
+        os.environ.pop("CZE_TOKEN_FILE_ADMIN"); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        self.program_step("propose")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-operator-2"})
+        os.environ["CZE_TOKEN_FILE_CONFIRMER"] = str(self.tokens["confirmer"]); os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
+        self.node.calls.clear()
+        self.program_step("accept")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-confirmer-3"})
+
+    def test_a_program_step_refuses_the_other_modes_and_a_missing_value(self):
+        keys = ["--program-vk", "ab" * 32, "--root-c", "cd" * 32, "--rules-hash", "ef" * 32]
+        for extra in (["--demo"], ["--package-step", "check"], ["--gas-cap-step", "propose"], ["--", *CHAIN_ARGS]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--program-step", "propose", *keys, *extra])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            setup.main(["--ledger-url", self.node.url, "--program-step", "propose", "--program-vk", "ab" * 32])
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), *keys])   # the keys go with --program-step
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            setup.main(["--ledger-url", self.node.url, "--gas-cap-step", "propose", "--new-gas-cap", "5", *keys])
 
     def test_a_chain_whose_cap_is_below_the_pinned_one_is_refused_and_one_above_it_is_found(self):
         self.run_setup()
