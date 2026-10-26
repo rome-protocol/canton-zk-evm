@@ -2,10 +2,10 @@ name: network
 
 on:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", "builder/keccak.py", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", "builder/keccak.py", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
 
 permissions:
   contents: read
@@ -26,6 +26,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_external_setup.py' -v
       - name: Moving reth to Canton's head after a restart, against a fake reth
         run: python3 -m unittest discover -s tests -p 'test_sync_reth.py' -v
+      - name: Rebuilding reth from Canton's block records, against a fake Ledger API and a fake reth
+        run: python3 -m unittest discover -s tests -p 'test_replay_from_canton.py' -v
 
   # The Canton side for real: the pinned released Canton and Daml compiler (PINS), the real form of the Daml package,
   # the config and bootstrap, the chain proposal, and one Advance, against a stand-in for the sidecars.
