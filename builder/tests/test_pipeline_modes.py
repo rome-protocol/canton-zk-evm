@@ -1,7 +1,7 @@
 """The producer that keeps several blocks in flight, where a block has to be made with nothing in flight: a leg that waits for the blocks before it
 (it has its Canton side, and the block is built on a block in flight), the heartbeat, the retries after a refusal, and a leg that has no Canton side
 at all (no drain). Built directly at two and three blocks."""
-import sys, threading, time, unittest
+import json, sys, threading, time, unittest
 from unittest import mock
 from pathlib import Path
 
@@ -123,6 +123,57 @@ class Legs(Modes):
         self.assertIn(bogus["hash"], self.in_pool(s))
         self.drive(p, lambda: len(self.committed()) == 2)
         self.assertEqual([x["in_flight_at_cut"] for x in self.cuts(s)][:2], [0, 1], "blocks kept being cut on the tip")
+
+
+class InFlightStatus(Modes):
+    """The status file lists the blocks in flight now, with their states, once the producer can keep more than one."""
+
+    def test_the_status_lists_the_blocks_in_flight_with_their_states_at_three(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 3)
+        listed = p.status()["inFlight"]
+        self.assertEqual([(x["number"], x["state"]) for x in listed], [(FIRST, "proving")])
+        self.assertEqual(listed[0]["attempt"], p.flight[0].attempt.seq)
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        self.drive(p, lambda: len(p.flight) == 2)
+        self.assertEqual([x["number"] for x in p.status()["inFlight"]], [FIRST, FIRST + 1], "the oldest first")
+        self.assertEqual(json.loads(json.dumps(p.status()))["inFlight"], p.status()["inFlight"], "it is plain JSON")
+
+    def test_the_status_names_each_block_hash_and_the_prover_it_is_on_at_three(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 3)
+        listed = p.status()["inFlight"][0]
+        self.assertEqual(listed["hash"], p.flight[0].hash)
+        self.assertEqual(listed["prover"], p.flight[0].proving.ticket.prover)
+        self.assertEqual(set(listed), {"number", "hash", "attempt", "state", "prover"})
+
+    def test_the_written_status_lists_a_new_block_at_once_at_three(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 3)
+        self.assertEqual([x["number"] for x in p.status_last["inFlight"]], [FIRST], "the file was written when the block was cut")
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        self.drive(p, lambda: len(p.flight) == 2)
+        self.assertEqual([x["number"] for x in p.status_last["inFlight"]], [FIRST, FIRST + 1])
+
+    def test_the_final_status_of_a_stop_lists_no_block_in_flight_at_two(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 2)
+        p.abandon()
+        p.write_status("stopped", final=True)
+        self.assertEqual(p.status_last["inFlight"], [], "the blocks given up are not in flight")
+
+    def test_the_status_lists_nothing_once_every_block_is_final_at_two(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 2)
+        self.drive(p, lambda: not p.flight and self.committed())
+        self.assertEqual(p.status()["inFlight"], [])
+
+    def test_the_status_of_one_block_at_a_time_has_no_in_flight_list(self):
+        s = self.setup({})
+        self.engine = None   # `Producer`, the engine of `run` at depth 1
+        p = self.producer(s)
+        self.assertNotIn("inFlight", p.status())
+        self.assertNotIn("submitting", p.status())
 
 
 class Heartbeat(Modes):
@@ -351,6 +402,63 @@ class Stop(Modes):
         self.assertEqual([x["recovered"] for x in self.reports if "recovered" in x], [2])
         self.drive(later, lambda: not later.flight and not self.in_pool(s) and self.committed())
         self.assertEqual(self.numbers(s), [FIRST], "both blocks' transactions went in again, as one block on Canton's head")
+
+    def test_a_stop_with_three_blocks_in_flight_gives_up_all_three_and_the_next_start_sends_them_again(self):
+        s = self.setup({})
+        self.script(tp.A, "sleep 4")   # the first block's proof is the slow one: the others are cut on the other prover while it runs
+        p = self.pipeline(s, 3)
+        real = p.cut
+        def cut(*a, **kw):
+            found = real(*a, **kw)
+            if len(self.cuts(s)) == 3:
+                self.stop.set()   # the signal arrives with the loop full
+            return found
+        p.cut = cut
+        for i, sender in enumerate((ALICE, BOB, CAROL)):
+            s.reth.pool[sender] = [tx(sender, 0)]
+            self.drive(p, lambda i=i: len(self.cuts(s)) == i + 1)
+        self.assertEqual([e.number for e in p.flight], [FIRST, FIRST + 1, FIRST + 2])
+        p.abandon()
+        self.assertEqual(self.numbers(s), [], "no Advance is sent after the signal")
+        self.assertTrue(all(e.proving.ticket.cancelled for e in p.flight), "every proof is given up")
+        self.assertEqual(sorted(x["number"] for x in b.read_saved_entries(s.cfg)), [FIRST, FIRST + 1, FIRST + 2], "every block's transaction is kept")
+        self.stop.clear()
+        self.script(tp.A, "true")
+        later = self.producer(s, max_in_flight=3)
+        self.step(later)
+        self.assertEqual([x["recovered"] for x in self.reports if "recovered" in x], [3])
+        self.drive(later, lambda: not later.flight and not self.in_pool(s) and self.committed())
+        self.assertEqual(self.numbers(s), [FIRST], "the three blocks' transactions went in again, as one block on Canton's head")
+
+    def test_an_empty_block_given_up_at_a_stop_gets_its_last_line(self):
+        """Its transactions are none, so no kept file names its attempt, and the next start closes nothing for it: the stop does."""
+        s = self.setup({})
+        self.script(tp.A, "sleep 3")
+        p = self.pipeline(s, 2)
+        p.empty_every = 5
+        self.now[0] += 100
+        self.drive(p, lambda: len(p.flight) == 1)
+        empty, run = p.flight[0].attempt.seq, p.journal.run_id
+        self.assertEqual(self.cuts(s)[-1]["cut_reason"], "heartbeat")
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        real = p.cut
+        def cut(*a, **kw):
+            found = real(*a, **kw)
+            self.stop.set()   # the signal arrives with the second block cut above the empty one
+            return found
+        p.cut = cut
+        self.step(p)
+        self.assertEqual(len(p.flight), 2)
+        full = p.flight[1].attempt.seq
+        p.abandon()
+        closed = [x for x in self.lines(s, "resolved") if x.get("attempt") == empty]
+        self.assertEqual([(x["outcome"], x.get("attempt_run", run)) for x in closed], [("restarted", run)], "one last line, from the stop")
+        self.assertEqual([x for x in self.lines(s, "resolved") if x.get("attempt") == full], [], "a block with transactions is closed by the next start, from the kept file")
+        self.stop.clear()
+        later = self.producer(s, max_in_flight=2)
+        self.step(later)
+        self.assertEqual(len([x for x in self.lines(s, "resolved") if x.get("attempt") == empty and x.get("attempt_run") == run]), 1, "the next start does not close it a second time")
+        self.assertEqual(len([x for x in self.lines(s, "resolved") if x.get("attempt") == full and x.get("attempt_run") == run]), 1)
 
     def test_the_running_submit_finishes_and_the_next_start_recovers_the_rest(self):
         s = self.setup({})

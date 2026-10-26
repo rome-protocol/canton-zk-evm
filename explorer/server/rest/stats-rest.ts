@@ -47,6 +47,8 @@ export interface StatsRest {
   lost(): Promise<{ lost: { total: number; items: LostItem[] }; dropped: { total: number; items: LostItem[] }; replaced: number }>;
   /** The newest run of the producer that is not a test run: its strategy and when it started. Null when no run is known. */
   cutting(): Promise<{ strategy: string; since: number } | null>;
+  /** The time each prover spent proving in [from, to) (ms): the span of each proof clipped to the window, whatever its outcome, test runs left out, by the prover's name. Busiest first. */
+  proverBusy(from: number, to: number): Promise<{ prover: string; busyMs: number; proofs: number }[]>;
   /** The chain's transactions since its first block, exact through the newest final block (one function with /api/txs); null where the rollups cannot say. */
   txTotal(): Promise<TxTotal | null>;
   /** The faucet's requests made in [from, to): by state, and the time from request to final as a time histogram (empty when none is final). */
@@ -146,6 +148,17 @@ export function createStatsRest(pool: Pool): StatsRest {
     return r ? { strategy: String(r.strategy), since: Number(r.at) } : null;
   }
 
+  async function proverBusy(from: number, to: number) {
+    const rows = await query(
+      `select coalesce(a.prover, '') as prover, count(*)::int as proofs,
+              sum(extract(epoch from least(a.proof_ended_at, $2::timestamptz) - greatest(a.proof_started_at, $1::timestamptz)) * 1000)::float8 as busy
+         from block_attempts a left join producer_runs r on r.run_id = a.run_id
+        where a.proof_ended_at >= $1 and a.proof_started_at < $2 and a.proof_ended_at > a.proof_started_at and coalesce(r.settings->>'test', '') <> 'true'
+        group by 1 order by busy desc, 1`,
+      [new Date(from), new Date(to)]);
+    return rows.map((r) => ({ prover: String(r.prover), busyMs: Math.round(Number(r.busy)), proofs: Number(r.proofs) }));
+  }
+
   async function faucet(from: number, to: number) {
     const [c = {}] = await query(
       `select count(*)::int as requests, count(*) filter (where sent_at is not null)::int as sent, count(*) filter (where state = 'final')::int as final,
@@ -165,5 +178,5 @@ export function createStatsRest(pool: Pool): StatsRest {
     return { requests: Number(c.requests ?? 0), sent: Number(c.sent ?? 0), final: Number(c.final ?? 0), failed: Number(c.failed ?? 0), hist, turnedAway: { since, byReason } };
   }
 
-  return { rows, peak, lastMinuteTxs, state, txTotal: () => totalOf(query), pool: poolSample, open, stuck, lost, cutting, faucet };
+  return { rows, peak, lastMinuteTxs, state, txTotal: () => totalOf(query), pool: poolSample, open, stuck, lost, cutting, proverBusy, faucet };
 }

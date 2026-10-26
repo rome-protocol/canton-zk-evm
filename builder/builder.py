@@ -2409,6 +2409,7 @@ class Pipeline(Producer):
         self.leg_wait = False   # a block built on a block in flight left a leg out for it: nothing is cut until nothing is in flight, and then the leg goes in on Canton's head
         self.back_pending: "tuple | None" = None   # a block built on the tip failed and reth could not be taken back to the tip, or its transactions not be sent again: (tip hash, number)
         self.send_fault: "Exception | None" = None   # the next block's Advance could not be written down after a commit
+        self.given_up = False   # `abandon` has run: the status no longer lists the blocks it gave up
         self.sending: "Sending | None" = None   # the oldest block's Advance, in its thread, until the producer's own thread has settled the answer
 
     def provers(self) -> int:
@@ -2474,7 +2475,8 @@ class Pipeline(Producer):
 
     def abandon(self) -> None:
         """A stop (SIGTERM) cuts nothing more, and the step in progress, a submit included, has finished. The blocks still in flight are given up: their
-        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted).
+        proofs are given up (one not yet on a prover is never sent; one already running finishes on its own and its result is dropped), and their transactions stay in the kept file: the
+        next start sends them to reth's pool again, in block order, and cuts them on Canton's head (it closes their attempts as restarted; an empty block has nothing kept, so its attempt is closed here).
         An Advance in its thread is never given up mid-call: it is waited for and its answer booked, and what cannot be booked stays in the record for
         the next start. No further block is submitted."""
         if self.sending is not None:
@@ -2486,9 +2488,17 @@ class Pipeline(Producer):
         for entry in self.flight:
             if entry.proving is not None:
                 entry.proving.ticket.cancel()
+            if not entry.pairs and not entry.attempt.closed:   # an empty block (a heartbeat) has no kept entry for the next start to close it by
+                entry.attempt.closed = True
+                self.close_attempts([(self.journal.run_id, entry.attempt.seq)])
+        self.given_up = True
 
     def status(self, state: str = "running") -> dict:
         found = super().status(state)
+        found["inFlight"] = [] if self.given_up else [
+            {"number": e.number, "hash": e.hash, "attempt": e.attempt.seq, "state": e.state,
+             "prover": e.proving.ticket.prover if e.proving is not None else None}
+            for e in self.flight]
         if self.head_fault:
             found["headFault"] = self.head_fault
         if self.sending is not None:
@@ -2549,6 +2559,8 @@ class Pipeline(Producer):
                         if result is not None:   # nothing to settle
                             return self.settle_result(result, [], now)
                         attempt = None   # the block is in flight: a later fault in this step is not its own
+                        if self.k > 1:
+                            self.write_status()   # the status lists the new block now, not at the next idle write
             if not self.flight:
                 if now - self.last_written >= 5:   # tells a monitor the loop is alive
                     self.write_status()
@@ -2596,6 +2608,8 @@ class Pipeline(Producer):
                 self.check_head(oldest)   # fails closed: nothing is submitted, and the step ends in the failure back-off
                 attempt = oldest.attempt
                 self.start_send(oldest)
+                if self.k > 1:
+                    self.write_status()   # the block is shown as submitting while its Advance is out
                 if fault:   # the failed cut ends the step in the failure back-off, while the Advance is on its way
                     return self.cut_failed(fault)
                 return self.wait_send(now, full)

@@ -215,6 +215,8 @@ describe.skipIf(!TEST_URL)("the routes over what the indexer wrote", () => {
         r.add(base + 4200, "answered", { attempt: 5, outcome: "refused", reason: "stale", update_id: null, completion_offset: null, seconds: 0.1, traffic_bytes: null }); // ended: not in flight
         cut(6, 6, base + 5000); built(6, base + 5100, "0x" + "66".repeat(32));
         r.add(base + 5200, "answered", { attempt: 6, outcome: "committed", reason: null, update_id: "1220" + "66".repeat(32), completion_offset: 60, seconds: 0.1, traffic_bytes: null }); // committed, not final yet
+        cut(8, 8, base + 5500); built(8, base + 5600, "0x" + "88".repeat(32)); r.add(base + 5700, "proof_started", { attempt: 8, prover: "prover-b" });
+        r.add(base + 5800, "cancelled", { attempt: 8, number: 8, depends_on: 6, reason: "an earlier block was refused" }); // built on a block that did not commit: closed, not in flight
         cut(7, 1, base - 7_200_000); // an hour old and more: a run that stopped
         r.add(base + 6000, "pool", { waiting: 4 });
         putFile(dir, "2026-10-21.jsonl", r.lines);

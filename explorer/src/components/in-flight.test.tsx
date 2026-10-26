@@ -16,6 +16,14 @@ const show = (attempts: InFlightAttempt[], waiting: number | null, stream: Strea
 const steps = (n: number) => within(screen.getByRole("list", { name: `Steps of block ${n}` })).getAllByRole("listitem");
 
 describe("the in-flight panel", () => {
+  it("treats a cancelled block as closed: it is not listed, and the blocks around it are", () => {
+    const base = inFlight().attempts[0]!;
+    show([{ ...base, number: 4 }, { ...base, number: 5, stage: "built", outcome: "cancelled" }, { ...base, number: 6, stage: "cut", proofStartedAt: null, builtAt: null }], 0);
+    expect(screen.getByRole("link", { name: "4" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "6" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "5" })).toBeNull();
+  });
+
   it("says it is not final, and shows a block being proven with the time of each step", () => {
     show(inFlight().attempts, 1);
     expect(screen.getByText(/Not final yet\. These can still change/)).toBeInTheDocument();

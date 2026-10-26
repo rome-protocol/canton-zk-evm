@@ -22,7 +22,7 @@ export function summary(over: Partial<StatsSummary> = {}): StatsSummary {
     attempts: { total: 910, committed: 901, unknown: 1, decided: 910, refused: 6, failed: 2, notTaken: 0, refusedShare: 6 / 910, failedShare: 2 / 910, notTakenShare: 0 },
     fullness: 0.004,
     canton: { argumentBytesPerBlock: 4100, argumentBytesPerTx: 630, trafficBytesPerBlock: null, trafficReported: 0 },
-    prover: { maxBusyRatio10m: 0.035, windowsOver: 0, windowsCounted: 1008, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0.012, busyMs: 7_300_000 },
+    prover: { maxBusyRatio10m: 0.035, windowsOver: 0, windowsCounted: 1008, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0.012, busyMs: 7_300_000, byProver: [{ prover: "prover-a", busyMs: 4_300_000, proofs: 310, busyShare: 0.007 }, { prover: "prover-b", busyMs: 3_000_000, proofs: 215, busyShare: 0.005 }] },
     quality: { withoutAcceptanceTime: 0, clockSkew: 0 },
     rule: { slowAboveSeconds: 20, hoursCounted: 168, hoursMeasured: 168, hoursAbove: 0, worstHourP95: 9.5, worstHourAt: "2026-10-18T14:00:00.000Z", windowsOverByDay: [{ day: "2026-10-17", windowsOver: 0, windowsCounted: 144 }, { day: "2026-10-18", windowsOver: 0, windowsCounted: 144 }] },
     test: { blocks: 0, txs: 0, attempts: 0, proverBusyMs: 0 },

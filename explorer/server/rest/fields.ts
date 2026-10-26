@@ -155,7 +155,9 @@ export const REST_FIELDS = {
   statsAllTime: ["total", "asOfBlock", "asOf"],
   statsAttempts: ["total", "committed", "unknown", "decided", "refused", "failed", "notTaken", "refusedShare", "failedShare", "notTakenShare"],
   statsCanton: ["argumentBytesPerBlock", "argumentBytesPerTx", "trafficBytesPerBlock", "trafficReported"],
-  statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs"],
+  statsProver: ["maxBusyRatio10m", "windowsOver", "windowsCounted", "windowSeconds", "loadedAbove", "meanBusyRatio", "busyMs", "byProver"],
+  /** One prover's busy time in the window (ms), its proofs, and its share of the window that has happened (a prover's name is empty where the journal named none). */
+  statsProverShare: ["prover", "busyMs", "proofs", "busyShare"],
   /** The switching rule's two numbers: the hours whose p95 time to final is above `slowAboveSeconds`, and the ten-minute windows above 0.6 of one prover for each UTC day. */
   statsRule: ["slowAboveSeconds", "hoursCounted", "hoursMeasured", "hoursAbove", "worstHourP95", "worstHourAt", "windowsOverByDay"],
   statsRuleDay: ["day", "windowsOver", "windowsCounted"],

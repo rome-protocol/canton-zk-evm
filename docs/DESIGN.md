@@ -4,7 +4,7 @@ Rome Protocol
 
 ## What we want
 
-Ostia, a Canton zkEVM (chain id 770101): one EVM chain whose blocks are ordered by Canton and proven by a zkVM (ZisK), so that an EVM block and the Canton actions it needs settle together in one Canton transaction. A Canton token can move onto the EVM and back, and an EVM payment can be tied to the Canton payment it stands for. On DevNet the builder runs all the time (`builder.py run`) and cuts a block whenever transactions wait, one block at a time, and makes an empty block when a minute passes with none; `builder.py once` makes a single block, as the local network and the demo do. There are no throughput targets yet.
+Ostia, a Canton zkEVM (chain id 770101): one EVM chain whose blocks are ordered by Canton and proven by a zkVM (ZisK), so that an EVM block and the Canton actions it needs settle together in one Canton transaction. A Canton token can move onto the EVM and back, and an EVM payment can be tied to the Canton payment it stands for. On DevNet the builder runs all the time (`builder.py run`) and cuts a block whenever transactions wait, and makes an empty block when a minute passes with none. By default it makes one block at a time; with `--max-in-flight` above 1 it cuts the next block while earlier ones prove, builds it on the newest, and submits only the oldest to Canton, in a thread of its own; `builder.py once` makes a single block, as the local network and the demo do. There are no throughput targets yet.
 
 ## The idea
 

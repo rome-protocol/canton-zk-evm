@@ -152,7 +152,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
     const t = now(), w = WINDOWS[name], span = { minute: MINUTE, hour: HOUR, day: DAY }[w.rows];
     const to = Math.floor(t / span) * span + span, from = to - w.ms;
     const hourFrom = Math.ceil(from / HOUR) * HOUR, hourTo = Math.floor(t / HOUR) * HOUR;
-    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime, endedHours] = await Promise.all([
+    const [state, rows, peak, lastMinute, pool, today, lost, busyMinutes, cutting, faucet, allTime, endedHours, byProver] = await Promise.all([
       stats.state(),
       stats.rows(w.rows, from, to, [
         "blocks", "empty_blocks", "busy_blocks", "txs", "txs_failed", "gas_used", "argument_bytes", "accepted", "lost", "accepted_final", "accepted_lost", "accepted_dropped_chain", "delayed_by_redo", "attempts_committed", "attempts_unknown", "attempts_refused", "attempts_failed", "attempts",
@@ -166,6 +166,7 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
       stats.cutting(), stats.faucet(from, to), stats.txTotal(),
       // The hours that have ended: the window's own rows when it is read from hours, else the hour rows of the same stretch.
       w.rows === "hour" ? Promise.resolve(null) : hourTo > hourFrom ? stats.rows("hour", hourFrom, hourTo, ["time_to_final_hist"]) : Promise.resolve([]),
+      stats.proverBusy(from, Math.min(to, t)),
     ]);
 
     const decided = sum(rows, "attempts_committed") + sum(rows, "attempts_refused") + sum(rows, "attempts_failed") + sum(rows, "attempts_unknown");
@@ -223,6 +224,8 @@ export function statsRoutes({ stats, now = Date.now }: StatsRouteDeps) {
         maxBusyRatio10m: busy.maxRatio, windowsOver: busy.over, windowsCounted: busy.counted, windowSeconds: BUSY_WINDOW_MS / 1000, loadedAbove: BUSY_LOADED,
         // The mean over the part of the window that has happened; the 10-minute figures above are what the switching rule reads.
         meanBusyRatio: sum(rows, "proof_busy_ms") / Math.max(1, Math.min(w.ms, t - from)), busyMs: sum(rows, "proof_busy_ms"),
+        // Each prover's share of the part of the window that has happened: the time its proofs took, from the journal's proof start and end lines (one proof at a time on a prover).
+        byProver: byProver.map((x) => pick({ prover: x.prover, busyMs: x.busyMs, proofs: x.proofs, busyShare: x.busyMs / Math.max(1, Math.min(w.ms, t - from)) }, F.statsProverShare)),
       }, F.statsProver),
       rule: pick({
         slowAboveSeconds: SLOW_FINAL_SECONDS, hoursCounted: hourly.counted, hoursMeasured: hourly.measured, hoursAbove: hourly.above,

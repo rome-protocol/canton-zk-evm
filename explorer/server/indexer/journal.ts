@@ -224,6 +224,21 @@ async function applyLines(c: PoolClient, lines: JournalLine[]): Promise<number> 
         }
         break;
       }
+      case "paid_traffic": {
+        // The paid traffic of a commit whose next block's Advance went first: its own line, after the `answered` line (which has no traffic then).
+        // It fills a traffic that is not known and never overwrites one that is, on the attempt and, as the `answered` branch does, on the update.
+        const id = await idOf(ev.run, ev.attempt);
+        if (id === null) { orphans++; break; }
+        const bytes_ = whole(ev.traffic_bytes);
+        if (bytes_ === null) break;
+        await c.query("update block_attempts set traffic_bytes = coalesce(traffic_bytes, $2) where attempt_id = $1", [id, bytes_]);
+        await c.query(
+          `update canton_updates u set traffic_bytes = coalesce(u.traffic_bytes, a.traffic_bytes)
+             from block_attempts a where a.attempt_id = $1 and u.update_id = a.update_id and u.command_id is not null and u.traffic_bytes is null and a.traffic_bytes is not null`,
+          [id],
+        );
+        break;
+      }
       case "resolved": {
         const id = await idOf(typeof ev.attempt_run === "string" ? ev.attempt_run : ev.run, ev.attempt);
         if (id === null) { orphans++; break; }
