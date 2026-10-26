@@ -74,8 +74,10 @@ const PILL: Record<StreamState, string> = { connecting: "connecting…", live: "
  * The blocks that are not final yet, and the transactions waiting for one. Everything here can still change, and the panel says so. It says
  * that every block is final only when the route answered with no attempts: while it is being read, or cannot be, it says that instead.
  */
-export function InFlightPanel({ attempts, waiting, stream, read = "ok", usual = null, later = [] }: { attempts: InFlightAttempt[]; waiting: number | null; stream: StreamState; read?: Read; usual?: Usual; later?: InFlightTx[] }) {
+export function InFlightPanel({ attempts: listed, waiting, stream, read = "ok", usual = null, later = [] }: { attempts: InFlightAttempt[]; waiting: number | null; stream: StreamState; read?: Read; usual?: Usual; later?: InFlightTx[] }) {
   const now = useNow();
+  // A block that was cancelled (built on one that did not commit) is closed: its transactions are back in the pool, so it is not in flight.
+  const attempts = listed.filter((a) => a.outcome !== "cancelled");
   const newest = Math.max(...attempts.map((a) => a.number));
   const cut = new Set(attempts.map((a) => a.number));
   const idle = waiting !== null && waiting > 0 && !attempts.length;

@@ -116,7 +116,7 @@ describe.skipIf(!TEST_URL)("the stats routes: a database with nothing in it", ()
     expect(s.blocks.firstTry).toBeNull();
     expect(s.attempts).toMatchObject({ total: 0, refusedShare: null, failedShare: null, notTakenShare: null });
     expect(s.canton).toEqual({ argumentBytesPerBlock: null, argumentBytesPerTx: null, trafficBytesPerBlock: null, trafficReported: 0 });
-    expect(s.prover).toEqual({ maxBusyRatio10m: 0, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0, busyMs: 0 });
+    expect(s.prover).toEqual({ maxBusyRatio10m: 0, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 0, busyMs: 0, byProver: [] });
     expect(s.waiting).toEqual({ open: 0, pool: null });
     expect(s.acceptedNotFinal).toMatchObject({ normal: null, slow: null, stuck: 0, noAcceptanceTime: 0, slowAfterSeconds: null, stuckAfterSeconds: 120, listed: [] });
     expect(s.lost).toEqual({ window: 0, total: 0, listed: [] });
@@ -259,7 +259,7 @@ describe.skipIf(!TEST_URL)("the stats routes", () => {
     expect(s.canton).toEqual({ argumentBytesPerBlock: 500, argumentBytesPerTx: 4000 / 42, trafficBytesPerBlock: 600, trafficReported: 5 });
     // busy 30 + 60 + 10 s = 100 s (the 11:30 minute's is outside), and the test run's 5 s and block are apart. The five ten-minute windows 11:40 to 12:30 hold 70 s in
     // the 12:20 one; the 30 s of 11:31 is before the first whole window. The mean is over the 59 min 20 s that have happened of the window, not the whole hour.
-    expect(s.prover).toEqual({ maxBusyRatio10m: 70000 / 600000, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 100000 / 3560000, busyMs: 100000 });
+    expect(s.prover).toEqual({ maxBusyRatio10m: 70000 / 600000, windowsOver: 0, windowsCounted: 5, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 100000 / 3560000, busyMs: 100000, byProver: expect.any(Array) });
     expect(s.test).toEqual({ blocks: 1, txs: 9, attempts: 1, proverBusyMs: 5000 });
     expect(s.quality).toEqual({ withoutAcceptanceTime: 1, clockSkew: 1 });
     same(s.today, F.statsToday);
@@ -673,7 +673,7 @@ describe.skipIf(!TEST_URL)("the stats routes: a day with two busy hours", () => 
   it("gives the largest ten-minute ratio and the windows above 0.6, and the mean only as a mean", async () => {
     const s = body(await get("/api/stats/summary?window=24h"));
     // 24 h window: from 13:00 the day before (the hour's end is 13:00) to 12:30:20; whole ten-minute windows 13:00 .. 12:30 = 141; twelve are fully busy
-    expect(s.prover).toEqual({ maxBusyRatio10m: 1, windowsOver: 12, windowsCounted: 141, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 7230000 / 84620000, busyMs: 7230000 });
+    expect(s.prover).toEqual({ maxBusyRatio10m: 1, windowsOver: 12, windowsCounted: 141, windowSeconds: 600, loadedAbove: 0.6, meanBusyRatio: 7230000 / 84620000, busyMs: 7230000, byProver: expect.any(Array) });
     expect(s.prover.meanBusyRatio).toBeLessThan(0.09);
   });
 
@@ -699,6 +699,34 @@ describe.skipIf(!TEST_URL)("the stats routes: minutes with blocks and no transac
     const s = body(await get("/api/stats/summary?window=1h"));
     expect(s.blocks.count).toBe(3);
     expect(s.tps).toEqual({ now: 0, peak: null, peakAt: null });
+  });
+});
+
+describe.skipIf(!TEST_URL)("the stats routes: each prover's busy share", () => {
+  let db: TestDatabase, get: ReturnType<typeof apiFor>;
+  beforeAll(async () => {
+    db = await makeDatabase(); await base(db.pool); get = apiFor(db.pool, () => NOW);
+    const live = await run(db.pool, false), test = await run(db.pool, true);
+    const proof = (r: string, prover: string | null, from: number[], to: number[], outcome = "ok") =>
+      attempt(db.pool, r, { cut_at: at(t(from[0]!, from[1]!, 0) - 1000), proof_started_at: at(t(from[0]!, from[1]!, from[2])), proof_ended_at: at(t(to[0]!, to[1]!, to[2])), proof_outcome: outcome, prover });
+    await proof(live, "prover-a", [12, 0, 0], [12, 0, 30]);
+    await proof(live, "prover-a", [12, 10, 0], [12, 10, 10]);
+    await proof(live, "prover-b", [12, 5, 0], [12, 5, 20], "failed");   // a failed proof used the prover as well
+    await proof(live, "prover-b", [11, 30, 50], [11, 31, 10]);          // begins before the window: only the 10 s inside count
+    await proof(live, null, [12, 15, 0], [12, 15, 2]);                  // the journal named no prover
+    await proof(test, "prover-a", [12, 20, 0], [12, 20, 5]);            // a test run is left out
+  });
+  afterAll(async () => { await db?.drop(); });
+
+  it("adds the proofs of each prover in the part of the window that has happened, clipped to it, test runs left out, the busiest first", async () => {
+    const s = body(await get("/api/stats/summary?window=1h"));
+    const elapsed = 3560000; // 59 min 20 s of the hour have happened
+    expect(s.prover.byProver).toEqual([
+      { prover: "prover-a", busyMs: 40000, proofs: 2, busyShare: 40000 / elapsed },
+      { prover: "prover-b", busyMs: 30000, proofs: 2, busyShare: 30000 / elapsed },
+      { prover: "", busyMs: 2000, proofs: 1, busyShare: 2000 / elapsed },
+    ]);
+    for (const x of s.prover.byProver) same(x, F.statsProverShare);
   });
 });
 

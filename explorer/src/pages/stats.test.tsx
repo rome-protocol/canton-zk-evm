@@ -197,6 +197,14 @@ describe("the stats page", () => {
     expect(card).toHaveTextContent("a block when transactions wait");
   });
 
+  it("gives each prover's busy share, and leaves the row out when no proof was timed", async () => {
+    await open();
+    const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+    expect(card).toHaveTextContent("Each prover busy");
+    expect(card).toHaveTextContent("prover-a 0.7% 310 proofs");
+    expect(card).toHaveTextContent("prover-b 0.5% 215 proofs");
+  });
+
   it("draws the transactions-per-second chart with two series, the average as bars and the busiest minute as a line, and a legend that names both", async () => {
     const calls = await open("/stats?window=7d");
     const card = (await screen.findByRole("heading", { name: "Transactions per second" })).closest("section")!;
