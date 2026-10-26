@@ -894,7 +894,8 @@ testAdvanceFollowsTheProgram = do
   refused "another program" f $ advanceWith switched "06" "aa" ["aa"] [] []
   (next, _) <- submit (asBuilder f) $ advanceWith switched "05" "aa" ["aa"] [] []
   [(cid, c)] <- query @ZkChain f.operator
-  (cid, c.programVK, c.rootC, c.rulesHash, c.headNumber, c.headHash) === (next, stubRoot, stubRoot, stubVK, 1, stubHash1)
+  (cid, c.headNumber, c.headHash) === (next, 1, stubHash1)
+  (c.programVK, c.rootC, c.rulesHash) === (stubRoot, stubRoot, stubVK)
   -- the contract before the switch is spent: the old key does not come back by a stale handle
   submitMustFail (asBuilder f) $ advanceWith f.chain "01" "aa" ["aa"] [] []
 
