@@ -74,12 +74,13 @@ class FakeParticipant:
             if paused or (cooldown and now < datetime.fromisoformat(cooldown.replace("Z", "+00:00"))):
                 self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "the legs are paused already, or the cooldown has not passed"}, 400)
             else:
-                args["pausedUntil"], args["pauseCooldownUntil"] = stamp(now + limit), stamp(now + 2 * limit)
+                args["pausedUntil"], args["pauseCooldownUntil"], args["pauseStartedAt"] = stamp(now + limit), stamp(now + 2 * limit), stamp(now)
         elif choice == "UnpauseLegs":
             if not paused:
                 self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "the legs are not paused"}, 400)
             else:
-                args["pausedUntil"], args["pauseCooldownUntil"] = None, stamp(now + limit)
+                began = datetime.fromisoformat((args.get("pauseStartedAt") or stamp(now)).replace("Z", "+00:00"))
+                args["pausedUntil"], args["pauseCooldownUntil"] = None, stamp(now + (now - began))   # as long as the pause ran
         elif choice in ("ProposeLegLimits", "ProposeRenewPause"):
             made = "LegLimitsProposal" if choice == "ProposeLegLimits" else "RenewPauseProposal"
             self.contracts[made].append({"contractId": {"LegLimitsProposal": "l1", "RenewPauseProposal": "r1"}[made], "args": {
@@ -97,7 +98,8 @@ class FakeParticipant:
                     self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "a pause may last at most the longest pause"}, 400)
                     return True
                 until = now + timedelta(microseconds=int(proposal["args"]["forHowLong"]["microseconds"]))
-                args["pausedUntil"], args["pauseCooldownUntil"] = stamp(until), stamp(until + limit)
+                began = datetime.fromisoformat(args["pauseStartedAt"].replace("Z", "+00:00")) if paused else now
+                args["pausedUntil"], args["pauseCooldownUntil"], args["pauseStartedAt"] = stamp(until), stamp(until + (until - began)), stamp(began)
             self.contracts[name].remove(proposal)
         return True
 
@@ -941,6 +943,10 @@ class Setup(unittest.TestCase):
         self.assertEqual(len(self.sent()), self.base)
         done = self.pause("pause")
         self.assertTrue(done["submitted"])
+        # what is printed is the chain as it is after the step, not before it
+        self.assertEqual((done["paused"], done["pausedUntil"], done["pauseCooldownUntil"]),
+                         (True, self.chain_args()["pausedUntil"], self.chain_args().get("pauseCooldownUntil")))
+        self.assertIsNotNone(done["pausedUntil"])
         command, acting = self.sent()[-1]
         self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"], self.node.submitted_users[-1]), ("PauseLegs", {}, "ostia-confirmer"))
         self.assertEqual(acting, ["ostia-confirmer::1220fp"])
@@ -950,7 +956,10 @@ class Setup(unittest.TestCase):
         self.assertEqual(len(self.sent()), self.base + 1)
         self.assertTrue(self.pause("unpause", "--dry-run")["paused"])
         self.assertEqual(len(self.sent()), self.base + 1)
-        self.assertTrue(self.pause("unpause")["submitted"])
+        lifted = self.pause("unpause")
+        self.assertTrue(lifted["submitted"])
+        self.assertEqual((lifted["paused"], lifted["pausedUntil"]), (False, None))
+        self.assertEqual(lifted["pauseCooldownUntil"], self.chain_args()["pauseCooldownUntil"])
         self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "UnpauseLegs")
         self.assertIsNone(self.chain_args()["pausedUntil"])
         self.assertTrue(self.pause("unpause")["alreadyUnpaused"])
@@ -959,7 +968,10 @@ class Setup(unittest.TestCase):
     def test_the_confirmer_alone_cannot_pause_again_before_the_cooldown_but_the_two_together_can(self):
         self.run_setup()
         self.base = len(self.sent())
-        self.pause("pause"); self.pause("unpause")
+        self.pause("pause")
+        # the pause ran for an hour when it is lifted, so the confirmer alone waits an hour
+        self.chain_args()["pauseStartedAt"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        self.pause("unpause")
         sent = len(self.sent())
         self.assertIn("may start a new pause from", str(self.refused("--pause-step", "pause")))
         # the ledger refuses it too, when the check here is skipped
@@ -992,7 +1004,9 @@ class Setup(unittest.TestCase):
         self.assertIn("no proposal to pause for 60 s", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "60")))
         self.assertEqual(self.pause("renew-accept", "--pause-seconds", "7200", "--dry-run")["submitted"], False)
         self.assertIsNone(self.chain_args().get("pausedUntil"))
-        self.assertTrue(self.pause("renew-accept", "--pause-seconds", "7200")["submitted"])
+        renewed = self.pause("renew-accept", "--pause-seconds", "7200")
+        self.assertTrue(renewed["submitted"])
+        self.assertEqual((renewed["paused"], renewed["pausedUntil"]), (True, self.chain_args()["pausedUntil"]))
         command, acting = self.sent()[-1]
         self.assertEqual((command["ExerciseCommand"]["choice"], self.node.submitted_users[-1]), ("AcceptRenewPause", "ostia-confirmer"))
         self.assertEqual(command["ExerciseCommand"]["choiceArgument"], {"chain": "c1"})

@@ -68,23 +68,25 @@
 
   setup.py --ledger-url <URL> --pause-step pause|unpause|renew-propose|renew-accept [--pause-seconds <N>] [--dry-run]
 
-    The pause of the Canton legs (deposits and withdrawals; the chain's Advance refuses a block that carries a leg while the pause is in force). Each step prints
+    The pause of the Canton legs (deposits, withdrawals and payments; the chain's Advance refuses a block that carries a leg while the pause is in force). Each step prints
     one JSON line with "paused", "pausedUntil", "pauseCooldownUntil" and "pauseLimitSeconds" (the longest a pause may run from the moment it is made: the chain's
     pauseMax, or 3 days). A pause always ends by itself at its "pausedUntil"; legs work again then, and nothing has to be done.
       pause           the confirmer's token, alone, the emergency brake: exercises PauseLegs on the chain's one contract. The pause runs for the longest a pause may run.
-                      The confirmer alone may start a new one only from "pauseCooldownUntil" on (a pause that ended or was lifted early, then that long again); the
-                      step refuses before that (CZE_SKIP_WAIT_CHECK=1 sends it anyway, for the ledger to refuse). Does nothing, "alreadyPaused", if the legs are paused.
+                      The confirmer alone may start a new one only from "pauseCooldownUntil" on (a pause that ended or was lifted early, then as long again as it ran); the
+                      step refuses before that (CZE_SKIP_WAIT_CHECK=1 sends it anyway, for the ledger to refuse). Does nothing, "alreadyPaused", if the legs are paused. The pause consumes the chain's
+                      contract, so a block committed at the same moment makes the ledger refuse it: the step is safe to run again. The printed state is read again after it.
       unpause         the confirmer's token: exercises UnpauseLegs, which lifts the pause early. Does nothing, "alreadyUnpaused", if the legs are not paused.
       renew-propose   the operator's token: exercises ProposeRenewPause for --pause-seconds (1 up to the longest a pause may run). Nothing is done if the same proposal is there already.
       renew-accept    the confirmer's token: exercises AcceptRenewPause on the proposal for exactly --pause-seconds. The legs are then paused until that long from the
                       moment of the accept, which also starts a pause from nothing and is not held to the cooldown. This is how a pause is renewed: only the operator and the
-                      confirmer together can keep it going, and each renewal ends within the longest a pause may run from its own accept. There is no wait before it.
+                      confirmer together can keep it going, and each renewal ends within the longest a pause may run from its own accept. There is no wait before it, but the accept is refused
+                      for a proposal more than an hour old: propose it again for the incident at hand.
     A proposal that is not wanted is taken back by the operator (--withdraw-proposal renew-pause). With --dry-run nothing is submitted.
 
   setup.py --ledger-url <URL> --leg-limits-step propose|accept (--quota <units> --quota-window-seconds <N> | --no-quota) [--pause-max-seconds <N>] [--dry-run]
 
     Sets the withdrawal quota of the chain's legs and the longest a pause may run, in two steps, each by one user and each printing one JSON line.
-    The quota is at most --quota units of each token withdrawn in any --quota-window-seconds (1 up to 30 days); --no-quota takes it away (no quota is the
+    The quota is at most --quota units of each Canton instrument withdrawn in any --quota-window-seconds (1 up to 30 days); --no-quota takes it away (no quota is the
     behaviour of a chain made before it). Without --pause-max-seconds the longest pause is the default of 3 days; it may be set from 1 second to 14 days.
     All three values are replaced together, so name all that are wanted: the line prints "current" and "new" for a check before the accept.
       propose  the operator's token: exercises ProposeLegLimits on the chain's one contract. Nothing is done if the same proposal is there already.
@@ -715,6 +717,15 @@ def pause_state(chain: dict, now: datetime) -> dict:
     return {"paused": bool(until) and now < parse_time(until), "pausedUntil": until, "pauseCooldownUntil": cooldown, "pauseLimitSeconds": limit}
 
 
+def chain_after(ledger, before: dict) -> dict:
+    """The pause state of the chain as it is after a step, read again: a step that went through consumed the chain contract, so what was read before it is stale.
+    The step has already been accepted by the ledger; if the chain cannot be read again, the stale state is not printed as if it were new."""
+    found = [c for c in ledger.active("ZkChain") if c.get("chainId") == before["chainId"]]
+    if len(found) != 1:
+        return {"note": "the step went through, but the chain could not be read again; read it with --pause-step pause --dry-run"}
+    return pause_state(found[0], datetime.now(timezone.utc))
+
+
 def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
     """The pause of the legs. pause and unpause are the confirmer's alone (PauseLegs, UnpauseLegs: the emergency brake, which ends on its own and cannot be
     started again before its cooldown); renew-propose (the operator, ProposeRenewPause) and renew-accept (the confirmer, AcceptRenewPause) are the two together
@@ -751,7 +762,8 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
         if not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "RenewPauseProposal", "contractId": mine[0]["contractId"], "choice": "AcceptRenewPause",
                                                         "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
-        return {**result, "submitted": not dry_run}
+            return {**result, **chain_after(ledger, chain), "submitted": True}
+        return {**result, "submitted": False}
     if step == "pause":
         if state["paused"]:
             return {**result, "submitted": False, "alreadyPaused": True}
@@ -760,12 +772,14 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
             raise SystemExit(f"the confirmer alone may start a new pause from {cooldown}; the operator and the confirmer together may pause now (--pause-step renew-propose, then renew-accept)")
         if not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "PauseLegs", "choiceArgument": {}}}, "pause")
-        return {**result, "submitted": not dry_run}
+            return {**result, **chain_after(ledger, chain), "submitted": True}
+        return {**result, "submitted": False}
     if not state["paused"]:
         return {**result, "submitted": False, "alreadyUnpaused": True}
     if not dry_run:
         submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "UnpauseLegs", "choiceArgument": {}}}, "unpause")
-    return {**result, "submitted": not dry_run}
+        return {**result, **chain_after(ledger, chain), "submitted": True}
+    return {**result, "submitted": False}
 
 
 def ensure_chain(args, named: dict, url: str) -> dict:
@@ -811,7 +825,7 @@ def main(argv: list) -> int:
     ap.add_argument("--pause-step", choices=("pause", "unpause", "renew-propose", "renew-accept"), help="pause the Canton legs, lift the pause, or renew it by the operator and the confirmer together (see the top of this file)")
     ap.add_argument("--pause-seconds", type=int, help="with --pause-step renew-propose or renew-accept: how long the pause runs from the accept")
     ap.add_argument("--leg-limits-step", choices=("propose", "accept"), help="set the withdrawal quota and the longest pause: the operator proposes, the confirmer accepts after the change delay (see the top of this file)")
-    ap.add_argument("--quota", help="with --leg-limits-step: the most units of each token that may be withdrawn in one window")
+    ap.add_argument("--quota", help="with --leg-limits-step: the most units of each Canton instrument that may be withdrawn in one window")
     ap.add_argument("--quota-window-seconds", type=int, help="with --leg-limits-step: the window of the quota in seconds (1 up to 30 days)")
     ap.add_argument("--no-quota", action="store_true", help="with --leg-limits-step: no withdrawal quota")
     ap.add_argument("--pause-max-seconds", type=int, help="with --leg-limits-step: the longest a pause may run (1 second up to 14 days); without it, the default of 3 days")

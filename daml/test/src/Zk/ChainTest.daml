@@ -103,8 +103,12 @@ fixtureWith naming = do
 
 -- The gateway's registration of a token: this Canton instrument (TKB of the registry) is what the EVM token wraps.
 makeToken : Party -> Party -> Party -> Party -> Int -> Reg -> Text -> Script (ContractId GatewayToken)
-makeToken operator confirmer gateway builder chainId reg evmToken = do
-  let instrumentId = H.InstrumentId with admin = reg.registry; id = "TKB"
+makeToken operator confirmer gateway builder chainId reg evmToken = makeTokenOf "TKB" operator confirmer gateway builder chainId reg evmToken
+
+-- A wrapped token of the instrument called `inst`.
+makeTokenOf : Text -> Party -> Party -> Party -> Party -> Int -> Reg -> Text -> Script (ContractId GatewayToken)
+makeTokenOf inst operator confirmer gateway builder chainId reg evmToken = do
+  let instrumentId = H.InstrumentId with admin = reg.registry; id = inst
   p <- submit (actAs [operator, gateway]) $ createCmd GatewayTokenProposal with
     factory = toInterfaceContractId reg.rulesCid; ..
   submit confirmer $ exerciseCmd p AcceptToken
@@ -189,9 +193,13 @@ withdrawalLeg f holding = WithdrawalLeg with
 
 -- The gateway's custody: a holding of 10 TKB, which only withdrawals draw on.
 custody : F -> Script (ContractId H.Holding)
-custody f = do
+custody f = custodyOf f "TKB"
+
+-- The same for the instrument called `inst`.
+custodyOf : F -> Text -> Script (ContractId H.Holding)
+custodyOf f inst = do
   c <- submit (actAs [f.gateway, f.registry]) $ createCmd Token with
-    holding = H.HoldingView with owner = f.gateway; instrumentId = H.InstrumentId with admin = f.registry; id = "TKB"
+    holding = H.HoldingView with owner = f.gateway; instrumentId = H.InstrumentId with admin = f.registry; id = inst
                                  amount = 10.0; lock = None; meta = emptyMetadata
   pure (toInterfaceContractId @H.Holding c)
 
@@ -1338,14 +1346,45 @@ testALoneConfirmerCannotKeepTheLegsPaused = do
   Some c <- queryContractId f.operator again
   isSome c.pausedUntil === True
 
-testALiftedPauseHasTheSameCooldown : Script ()
-testALiftedPauseHasTheSameCooldown = do
+-- A pause lifted early leaves a cooldown as long as it ran, so a false alarm does not lock the brake out for days.
+testALiftedPauseCoolsDownForAsLongAsItRan : Script ()
+testALiftedPauseCoolsDownForAsLongAsItRan = do
   f <- fixture
   chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  passTime (secs 300)
   open <- submit f.confirmer $ exerciseCmd chain UnpauseLegs
   submitMustFail f.confirmer $ exerciseCmd open PauseLegs
-  passTime (secs (3 * 24 * 3600))
+  passTime (secs 299)
+  submitMustFail f.confirmer $ exerciseCmd open PauseLegs
+  passTime (secs 1)
   _ <- submit f.confirmer $ exerciseCmd open PauseLegs
+  pure ()
+
+-- A renewal keeps the pause's start, so the cooldown is as long as the whole pause ran.
+testARenewedPauseCoolsDownForTheWholePause : Script ()
+testARenewedPauseCoolsDownForTheWholePause = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  passTime (secs 1000)
+  renewed <- renew f chain (secs 500)
+  -- it ran 1000 s, will have run 1500 s at the expiry, and is lifted at once: 1000 s of cooldown from now
+  open <- submit f.confirmer $ exerciseCmd renewed UnpauseLegs
+  passTime (secs 999)
+  submitMustFail f.confirmer $ exerciseCmd open PauseLegs
+  passTime (secs 1)
+  _ <- submit f.confirmer $ exerciseCmd open PauseLegs
+  pure ()
+
+-- A proposal that waited too long no longer lets the confirmer alone pause the legs.
+testAStaleRenewalProposalIsRefused : Script ()
+testAStaleRenewalProposalIsRefused = do
+  f <- fixture
+  p <- submit f.operator $ exerciseCmd f.chain ProposeRenewPause with forHowLong = days 1
+  passTime (secs 3601)
+  submitMustFail f.confirmer $ exerciseCmd p AcceptRenewPause with chain = f.chain
+  q <- submit f.operator $ exerciseCmd f.chain ProposeRenewPause with forHowLong = days 1
+  passTime (secs 3600)
+  _ <- submit f.confirmer $ exerciseCmd q AcceptRenewPause with chain = f.chain
   pure ()
 
 testRenewingAPauseNeedsBothAndNeverMoreThanTheMaximum : Script ()
@@ -1445,7 +1484,7 @@ testABlockAtTheQuotaIsAccepted = do
   holds f.u "TKB" >>= \xs -> xs === [5.0]
   Some c <- queryContractId f.operator c1
   Some [t] <- pure c.withdrawn
-  (t.tallyToken, t.tallyAmount) === (wTkb, 5.0)
+  (t.tallyToken, t.tallyAmount) === (partyToText f.registry <> "/TKB", 5.0)
 
 testTheWithdrawalsOfOneBlockAreAddedUp : Script ()
 testTheWithdrawalsOfOneBlockAreAddedUp = do
@@ -1487,17 +1526,31 @@ testTwoBlocksOfOneBucketAreOneTally = do
   Some [t] <- pure c.withdrawn
   t.tallyAmount === 5.0
 
-testTheQuotaIsPerToken : Script ()
-testTheQuotaIsPerToken = do
+testTheQuotaIsPerInstrument : Script ()
+testTheQuotaIsPerInstrument = do
   f <- fixture
   h1 <- custody f
-  h2 <- custody f
-  other <- makeToken f.operator f.confirmer f.gateway f.builder 770101 f.reg tokenAddr
+  h2 <- custodyOf f "OTH"
+  other <- makeTokenOf "OTH" f.operator f.confirmer f.gateway f.builder 770101 f.reg tokenAddr
   chain <- quota5 f
   (c1, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 5.0 f.u, wLine tokenAddr 5.0 f.u] [withdrawalOf f f.token h1 5.0, withdrawalOf f other h2 5.0]
   Some c <- queryContractId f.operator c1
   Some ts <- pure c.withdrawn
   length ts === 2
+
+-- Two wrapped tokens of one instrument draw on one custody, so they share one quota: a forged proof gets Q out of it, not k times Q.
+testTwoTokensOfOneInstrumentShareTheQuota : Script ()
+testTwoTokensOfOneInstrumentShareTheQuota = do
+  f <- fixture
+  h1 <- custody f
+  h2 <- custody f
+  h3 <- custody f
+  other <- makeToken f.operator f.confirmer f.gateway f.builder 770101 f.reg tokenAddr
+  chain <- quota5 f
+  refused "over the withdrawal quota" f $ advance chain "01" [wLine wTkb 5.0 f.u, wLine tokenAddr 5.0 f.u] [withdrawalOf f f.token h1 5.0, withdrawalOf f other h2 5.0]
+  -- and a second block counts against what the first took, whichever token it went through
+  (c1, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h1 3.0]
+  mustRefuse "over the withdrawal quota" f $ advance c1 "11" [wLine tokenAddr 3.0 f.u] [withdrawalOf f other h3 3.0]
 
 testWithNoQuotaNothingIsCounted : Script ()
 testWithNoQuotaNothingIsCounted = do

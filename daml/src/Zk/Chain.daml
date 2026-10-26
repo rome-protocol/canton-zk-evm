@@ -9,7 +9,7 @@ import DA.Date (date, Month(Jan))
 import DA.Foldable (forA_)
 import DA.List (dedup)
 import DA.Optional (fromOptional, isSome)
-import DA.Time (RelTime, addRelTime, subTime, time, days, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
+import DA.Time (RelTime, addRelTime, subTime, time, days, hours, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
 import qualified DA.Text as T
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV1 (Holding, InstrumentId)
@@ -102,7 +102,7 @@ template ChainProposal
       do
         create ZkChain with
           headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; changeDelay = None
-          pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None; ..
+          pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; pauseStartedAt = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None; ..
 
 -- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
 -- The gateway is the party that holds the Canton tokens locked for the EVM tokens that stand for them.
@@ -134,6 +134,9 @@ template ZkChain
     pausedUntil : Optional Time
     -- The confirmer alone may start a pause only from this time on; the operator and the confirmer together are not held to it.
     pauseCooldownUntil : Optional Time
+    -- When the pause that is running (or ran last) began. A lifted or ended pause leaves a cooldown as long as it ran, at most `pauseMax` of
+    -- it from the moment it ends, so a false alarm lifted after five minutes does not lock the confirmer's brake out for days.
+    pauseStartedAt : Optional Time
     -- At most this many units of each token may be withdrawn in any `quotaWindow`; `None` is no quota.
     withdrawalQuota : Optional Decimal
     quotaWindow : Optional RelTime
@@ -179,9 +182,9 @@ template ZkChain
 
     -- The brake. The confirmer alone can pause deposits, withdrawals and payments (every leg) for at most `pauseMax`, when it sees a
     -- forged or doubtful block or a report of a fault. Advance then refuses a block that carries a leg, and legs work again on their
-    -- own at the expiry. The confirmer alone may start a pause again only one `pauseMax` after the last one ended (or was lifted), so
-    -- a lone confirmer cannot keep the legs paused; to keep them paused longer, the operator and the confirmer together renew it
-    -- (`RenewPause`).
+    -- own at the expiry. The confirmer alone may start a pause again only as long after the last one ended (or was lifted) as that pause
+    -- ran, so a lone confirmer cannot keep the legs paused for more than half the time; to keep them paused longer, the operator and the
+    -- confirmer together renew it (`RenewPause`).
     choice PauseLegs : ContractId ZkChain
       controller confirmer
       do
@@ -189,15 +192,15 @@ template ZkChain
         assertMsg "the legs are paused already" (not (pausedAt this now))
         assertMsg ("the confirmer alone may start a new pause from " <> optional "" show pauseCooldownUntil) (optional True (\t -> now >= t) pauseCooldownUntil)
         let expiry = addRelTime now (pauseLimit this)
-        create this with pausedUntil = Some expiry; pauseCooldownUntil = Some (addRelTime expiry (pauseLimit this))
+        create this with pausedUntil = Some expiry; pauseStartedAt = Some now; pauseCooldownUntil = Some (coolingAfter now expiry)
 
-    -- The confirmer lifts a pause early. The cooldown of `PauseLegs` then runs from now.
+    -- The confirmer lifts a pause early. The cooldown of `PauseLegs` then runs from now, for as long as the pause ran.
     choice UnpauseLegs : ContractId ZkChain
       controller confirmer
       do
         now <- getTime
         assertMsg "the legs are not paused" (pausedAt this now)
-        create this with pausedUntil = None; pauseCooldownUntil = Some (addRelTime now (pauseLimit this))
+        create this with pausedUntil = None; pauseCooldownUntil = Some (coolingAfter (fromOptional now pauseStartedAt) now)
 
     -- The operator and the confirmer together pause the legs for `forHowLong` from now, or renew a pause that is running: the new
     -- expiry is `forHowLong` from now, which may be at most `pauseMax`. A pause therefore always ends, unless both keep renewing it.
@@ -210,7 +213,8 @@ template ZkChain
         assertMsg "a pause must last longer than zero" (convertRelTimeToMicroseconds forHowLong > 0)
         assertMsg ("a pause may last at most " <> show (convertRelTimeToMicroseconds (pauseLimit this) / 1000000) <> " s from now") (convertRelTimeToMicroseconds forHowLong <= convertRelTimeToMicroseconds (pauseLimit this))
         let expiry = addRelTime now forHowLong
-        create this with pausedUntil = Some expiry; pauseCooldownUntil = Some (addRelTime expiry (pauseLimit this))
+        let began = if pausedAt this now then fromOptional now pauseStartedAt else now
+        create this with pausedUntil = Some expiry; pauseStartedAt = Some began; pauseCooldownUntil = Some (coolingAfter began expiry)
 
     -- The withdrawal quota and the longest pause are replaced together by the operator and the confirmer, through a proposal that
     -- waited out the change delay; see `LegLimitsProposal`.
@@ -374,9 +378,20 @@ template RenewPauseProposal
       do
         c <- fetch chain
         assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer)
+        now <- getTime
+        assertMsg "the proposal is too old: a pause is proposed afresh for the incident at hand" (now <= addRelTime proposedAt renewProposalLife)
         exercise chain RenewPause with forHowLong
 
+-- The confirmer alone may start a pause again from the moment the last one ended plus as long as it ran: it may hold the legs for at most
+-- half the time, and a pause lifted early costs it little.
+coolingAfter : Time -> Time -> Time
+coolingAfter began ended = addRelTime ended (subTime ended began)
+
 -- The longest pause that a chain without a `pauseMax` allows, the longest `pauseMax` it may be given, and the longest quota window.
+-- How long a proposal to pause or renew a pause may wait for the confirmer.
+renewProposalLife : RelTime
+renewProposalLife = hours 1
+
 defaultPauseMax, maxPauseMax, maxQuotaWindow : RelTime
 defaultPauseMax = days 3
 maxPauseMax = days 14
@@ -423,13 +438,14 @@ addTally t (x :: xs)
   | x.tallyToken == t.tallyToken && x.countedUntil == t.countedUntil = (x with tallyAmount = x.tallyAmount + t.tallyAmount) :: xs
   | otherwise = x :: addTally t xs
 
--- The withdrawals a block's legs make, as (the EVM token, the amount).
+-- The withdrawals a block's legs make, as (the Canton instrument that leaves custody, the amount). Counting by instrument and not by
+-- EVM token address means that several wrapped tokens of one instrument share one quota.
 withdrawalsOf : [Leg] -> Update [(Text, Decimal)]
 withdrawalsOf legs = fmap concat (mapA one legs)
   where
     one (WithdrawalLeg _ tokenCid _ amount _ _) = do
       t <- fetch tokenCid
-      pure [(t.evmToken, amount)]
+      pure [(partyToText t.instrumentId.admin <> "/" <> t.instrumentId.id, amount)]
     one _ = pure []
 
 -- Refuse a block whose withdrawals would take a token over the quota, and give the tallies that the chain keeps after it. Without a quota
@@ -442,7 +458,7 @@ takeAgainstQuota chain now legs = case (chain.withdrawalQuota, chain.quotaWindow
     forA_ (dedup (map fst taken)) $ \tok -> do
       let already = sum [t.tallyAmount | t <- live, t.tallyToken == tok]
       let adding = sum [a | (k, a) <- taken, k == tok]
-      assertMsg ("the block's withdrawals of the token " <> tok <> " are over the withdrawal quota: " <> show adding <> " more would make "
+      assertMsg ("the block's withdrawals of the instrument " <> tok <> " are over the withdrawal quota: " <> show adding <> " more would make "
         <> show (already + adding) <> " in the last " <> show (convertRelTimeToMicroseconds w / 1000000) <> " s, and the quota is " <> show q)
         (already + adding <= q)
     let expiry = tallyExpiry now w
