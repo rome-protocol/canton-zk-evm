@@ -939,15 +939,22 @@ def check_built(built: dict, asked: list, cap: int, may_leave_out: bool) -> None
         raise BuilderError("reth built a block other than the one asked for, or over the gas cap")
 
 
+class ExactBuildRefused(BuilderError):
+    """reth would not build a block of exactly the transactions asked for (an error answer, or a different block)."""
+
+
 def build_exactly(reth: Reth, head: str, attributes: dict, raws: list, cap: int) -> dict:
     """Asks reth to build a block of exactly these transactions."""
-    built = reth.call("testing_buildBlockV1", [head, attributes, raws, None])   # always a list, never null
-    check_built(built, raws, cap, may_leave_out=False)
+    try:
+        built = reth.call("testing_buildBlockV1", [head, attributes, raws, None])   # always a list, never null
+        check_built(built, raws, cap, may_leave_out=False)
+    except BuilderError as e:
+        raise ExactBuildRefused(str(e)) from e
     return built
 
 
 def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, attempt: "Attempt | None" = None, known: list | None = None,
-                     settled=None, only: list | None = None) -> tuple:
+                     settled=None, only: list | None = None, timestamp: str | None = None) -> tuple:
     """Builds a block on `head` (Canton's head, or with several blocks in flight the newest of them) and makes it reth's head. `settled` says
     which block reth's safe and finalized are: the last one Canton committed, read when the block is imported (default: `head`). The transactions are chosen from reth's pending pool, best price first, less
     the excluded ones (and each such sender's later ones), every time: after a transaction was left out for its leg, put_back has sent the
@@ -955,12 +962,13 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     held go to others. `known` is the (transaction, raw) pairs of the block just unwound: one of them that the pool did not take back
     (put_back reports it as lost) is still a candidate, with the raw bytes in hand; if it does not make the rebuilt block it is reported in
     lostTransactions. `only`, when given, is the (transaction, raw) pairs of the block to build exactly, as they are, in place of a choice from the pool (the pre-check's
-    prefix of a block). (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
+    prefix of a block). `timestamp` (hex), when given, is the block's time in place of the clock's, so that a block built again from the same transactions is the
+    same block. (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
     n, cap = int(chain["headNumber"]) + 1, int(chain["gasCap"])
     parent = reth.call("eth_getBlockByHash", [head, False])
     if not parent or int(parent["number"], 16) != n - 1:
         raise BuilderError("reth does not have Canton's head block")
-    attributes = {"timestamp": hex(max(int(time.time()), int(parent["timestamp"], 16) + 1)), "prevRandao": ZERO32,
+    attributes = {"timestamp": timestamp or hex(max(int(time.time()), int(parent["timestamp"], 16) + 1)), "prevRandao": ZERO32,
                   "suggestedFeeRecipient": cfg.fee_recipient, "withdrawals": [], "parentBeaconBlockRoot": ZERO32}
     target = target_for(cfg, cap)
     if target is not None:   # reth moves each block's limit toward this by less than 1/1024 of the parent's; without it, toward --builder.gaslimit (the genesis cap)
@@ -1071,6 +1079,7 @@ class Built:
     attempt_dir: Path    # this attempt's own folder, for the files the prover's tools read and write
     account_nodes: list
     storage_nodes: list
+    checked_input: bool = False   # the pre-check already made input.bin of this very block in `attempt_dir`
 
 
 @dataclass
@@ -1080,19 +1089,29 @@ class Proven:
     seconds: float
 
 
-def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, payload: dict, pairs: list, settled, lost: list, attempt: "Attempt", work: Path) -> "tuple | None":
-    """The pre-check of a block (precheck.py, README.md "Pre-check"). `payload` and `pairs` are the block that is reth's tip now. The block is run in the fast
-    emulator; if it is within the budgets nothing changes and the answer is None. If not, the longest prefix that fits is found by halves:
-    each try is a block of exactly those transactions (build_exactly), made reth's tip, with its input made and run, and then taken back.
-    The rest wait for the next block, and a transaction over the budget alone is convicted, with the reason for the explorer, and left out
-    for the cool-down (its sender's later ones wait). Returns (payload, pairs, convicted) of the block that is reth's tip now, which is
-    exactly the prefix; the caller reads its legs again. `convicted` is [{"transaction", "reason", "overBudget": True}]."""
+def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, payload: dict, pairs: list, settled, lost: list, attempt: "Attempt", work: Path,
+                 reuse: dict | None = None) -> "tuple | None":
+    """The pre-check of a block (precheck.py, README.md "Pre-check"). `payload` and `pairs` are the block that is reth's tip now. The block is run in the
+    emulator; if it is within the budgets nothing changes and the answer is None (and `reuse`, when given, gets the folder of the checked block's
+    files and its hash: the input is made once). If not, the longest prefix that fits is found by halves: each try is a block of exactly those
+    transactions at the first build's time (so that a block built again from the same transactions is the same block), made reth's tip, with its
+    input made and run, and then taken back. The rest wait for the next block, and a transaction over the budget alone, wherever it stands, is
+    convicted, with the reason for the explorer, and left out for the cool-down (its sender's later ones wait). Returns (payload, pairs, convicted)
+    of the block that is reth's tip now, which is exactly the prefix that was checked; the caller reads its legs again. `convicted` is
+    [{"transaction", "reason", "overBudget": True}]. A failure of the check itself (the emulator killed or unreadable, reth or the input tool
+    broken) is a BuilderError that blames nobody."""
     setup = cfg.precheck
     n = int(chain["headNumber"]) + 1
+    for old in work.glob("precheck-*"):   # a crash leaves its folder behind (the input, up to the budget's size, and the witness)
+        if re.fullmatch(r"precheck-\d+-\d+", old.name):
+            shutil.rmtree(old, ignore_errors=True)
     folder = work / f"precheck-{os.getpid()}-{time.time_ns()}"
     folder.mkdir(parents=True, exist_ok=True)
     by_hash = {t["hash"]: (t, raw) for t, raw in pairs}
     state = {"tip": [t["hash"] for t, _ in pairs], "imported": True, "payload": payload}
+    passed: dict = {}   # the transactions of each block that passed -> that block's hash
+    moment = payload["timestamp"]
+    keep_folder = False
 
     def rewind() -> None:
         if state["imported"]:
@@ -1107,9 +1126,11 @@ def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, 
             return
         rewind()
         state["tip"] = None
-        state["payload"], got = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs, settled=settled, only=[by_hash[h] for h in hashes])
+        state["payload"], got = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs, settled=settled, only=[by_hash[h] for h in hashes], timestamp=moment)
         state["imported"] = True
         state["tip"] = hashes
+        if passed.get(tuple(hashes), state["payload"]["blockHash"]) != state["payload"]["blockHash"]:
+            raise BuilderError("the block built again for a prefix is not the block that was checked")
 
     def make_input() -> tuple:
         block, witness, out = folder / "block.json", folder / "witness.json", folder / "input.bin"
@@ -1122,22 +1143,32 @@ def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, 
         return out, witness
 
     def check(items: list) -> "pc.Verdict":
+        block = None
         try:
             move_to(items)
-        except BuilderError as e:   # reth cannot build exactly these (a transaction needed one that is not in the set): not a block, over budget
+        except ExactBuildRefused as e:   # reth cannot build exactly these (a transaction needed one that is not in the set): not a block, over budget
             state["imported"] = True   # the failed build may have moved reth: the next move goes back first
             state["tip"] = None
             v = pc.Verdict(pc.INPUT_TOOL, detail=f"reth cannot build this set of transactions: {str(e)[:150]}")
-        else:
+        else:   # any other error (reth's engine, the parent block, the pool) is the service's, not the transactions': it propagates
+            block = state["payload"]["blockHash"]
             v = pc.check_block(setup.emu, setup.budgets, make_input)
-        attempt.event("precheck", transactions=len(items), **v.fields(), **({"detail": v.detail} if v.detail else {}))
+            if v.ok:
+                passed[tuple(t["hash"] for t in items)] = state["payload"]["blockHash"]
+        attempt.event("precheck", transactions=len(items), block=block, **v.fields(), **({"detail": v.detail} if v.detail else {}))
         return v
 
     items = [t for t, _ in pairs]
     try:
         # the whole block is reth's tip: its first check needs no rebuild
-        sel = pc.select(items, check, setup.max_checks, dependents=lambda c, later: [t for t in later if t["from"] == c["from"]])
+        try:
+            sel = pc.select(items, check, setup.max_checks, dependents=lambda c, later: [t for t in later if t["from"] == c["from"]], max_seconds=setup.max_seconds)
+        except pc.PrecheckFailed as e:
+            raise BuilderError(f"the pre-check could not run: {e}") from e
         if not sel.convicted and not sel.waiting and not sel.exhausted:
+            if reuse is not None:   # the whole block passed: the files of its check are the prover's input
+                reuse.update(folder=folder, hash=payload["blockHash"])
+                keep_folder = True
             return None
         convicted = [{"transaction": t["hash"], "reason": v.reason(), "overBudget": True} for t, v in sel.convicted]
         attempt.event("precheck_cut", kept=len(sel.kept), waiting=[t["hash"] for t in sel.waiting], convicted=[x["transaction"] for x in convicted],
@@ -1145,7 +1176,8 @@ def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, 
         move_to(sel.kept)
         return state["payload"], [by_hash[t["hash"]] for t in sel.kept], convicted
     finally:
-        shutil.rmtree(folder, ignore_errors=True)
+        if not keep_folder:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True,
@@ -1164,6 +1196,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     left_out, pairs = [], None   # the transactions left out because a leg of theirs had no Canton side, each with the reason; the last build's transactions
     lost = [] if lost is None else lost   # the ones reth would not take back (the caller's list, so that a failure keeps them)
     checked, staged = False, None   # with the pre-check on: whether this block was checked, and the prefix it cut the block back to (reth's tip already)
+    reuse: dict = {}   # the files of the pre-check of the whole block, when it passed (the prover's input is made once)
     work = Path(cfg.work_dir) / f"block-{n}"
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
@@ -1185,7 +1218,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
                 break
             # Every leg has its Canton side. Before the block is proven it is run in the emulator and kept within the budgets (README.md, "Pre-check").
             checked = True
-            cut = precheck_cut(cfg, reth, chain, head, exclude, payload, pairs, settled, lost, attempt, work)
+            cut = precheck_cut(cfg, reth, chain, head, exclude, payload, pairs, settled, lost, attempt, work, reuse)
             if cut is None:
                 break
             staged = cut   # the legs of the prefix are read again, as for any block
@@ -1224,13 +1257,24 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     others = sorted((p for p in work.glob("attempt-*") if p != attempt_dir and re.fullmatch(r"attempt-\d+-\d+", p.name)), key=lambda p: int(p.name.rsplit("-", 1)[1]))
     for old in others[:max(0, len(others) - (KEEP_ATTEMPTS - 1))]:
         shutil.rmtree(old, ignore_errors=True)
-    (attempt_dir / "block.json").write_text(json.dumps(reth.call("eth_getBlockByNumber", [payload["blockNumber"], True])))
-    (attempt_dir / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
+    checked_input = False
+    if reuse.get("folder") is not None:   # the files of the pre-check of this very block: no second fetch of the witness, no second input tool run
+        try:
+            if reuse["hash"] == block_hash:
+                for name in ("block.json", "witness.json", "input.bin"):
+                    shutil.move(str(reuse["folder"] / name), str(attempt_dir / name))
+                checked_input = True
+        except OSError:
+            checked_input = False
+        shutil.rmtree(reuse["folder"], ignore_errors=True)
+    if not checked_input:
+        (attempt_dir / "block.json").write_text(json.dumps(reth.call("eth_getBlockByNumber", [payload["blockNumber"], True])))
+        (attempt_dir / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
     # The gateway's proofs are read while this block is reth's tip, before the prover runs.
     account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
-                 account_nodes=account_nodes, storage_nodes=storage_nodes)
+                 account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input)
 
 
 @dataclass
@@ -1269,7 +1313,8 @@ def start_proof(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> 
             raise JobError(f"the proof commits to block hash {committed or 'none'}, not this block's {block_hash}", outcome="wrong_block")
     try:
         attempt.event("proof_started", prover=prover)
-        run(cfg.make_input_cmd, str(attempt_dir / "block.json"), str(attempt_dir / "witness.json"), cfg.genesis, str(attempt_dir / "input.bin"))
+        if not built.checked_input:
+            run(cfg.make_input_cmd, str(attempt_dir / "block.json"), str(attempt_dir / "witness.json"), cfg.genesis, str(attempt_dir / "input.bin"))
         ticket = pool.submit(Job(None, cfg.prove_cmd, attempt_dir / "input.bin", out, check, cfg.prover_input_dir))
     except BuilderError as e:
         attempt.event("proof_ended", prover=prover, outcome="failed", seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300])
@@ -1998,13 +2043,16 @@ class Producer:
         """A transaction the pre-check found over the proving budget on its own is left out for the cool-down, with the reason the explorer shows."""
         for x in left_out:
             if x.get("overBudget") and x["transaction"] not in self.excluded:
-                self.hold(x["transaction"], now, x["reason"])
-                self.excluded_why[x["transaction"]] = x["reason"]
+                tx = x["transaction"]
+                self.convictions[tx] = self.convictions.get(tx, 0) + 1   # convicted again: held back twice as long as the last time (up to a day)
+                self.hold(tx, now, x["reason"], min(self.cooldown * 2 ** (self.convictions[tx] - 1), max(self.cooldown, 86400)))
+                self.excluded_why[tx] = x["reason"]
 
-    def hold(self, tx: str, now: float, why: str) -> None:
-        """Leaves a transaction out of the blocks for the cool-down."""
-        self.excluded[tx] = now + self.cooldown
-        self.journal.event("excluded", transaction=tx, until=iso(now + self.cooldown), reason=why)
+    def hold(self, tx: str, now: float, why: str, cooldown: float | None = None) -> None:
+        """Leaves a transaction out of the blocks for the cool-down (`cooldown` seconds, the flat one by default)."""
+        cooldown = self.cooldown if cooldown is None else cooldown
+        self.excluded[tx] = now + cooldown
+        self.journal.event("excluded", transaction=tx, until=iso(now + cooldown), reason=why)
 
     def close_attempts(self, refs: list) -> None:
         """The attempts of an earlier run that never got their last line (their blocks were cut short by a restart): this run closes them."""
@@ -2816,7 +2864,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--ziskemu", default=os.environ.get("CZE_ZISKEMU"), metavar="CMD", help="the emulator program for --precheck (default: $ZISK_DIR/bin/ziskemu if it is there, else ziskemu on the PATH; also CZE_ZISKEMU)")
     ap.add_argument("--guest-elf", default=os.environ.get("CZE_GUEST_ELF"), metavar="FILE", help="the guest ELF for --precheck: the file the prover uses (default: CZE_GUEST_ELF, else the one prover/build-guest.sh made)")
     ap.add_argument("--precheck-max-steps", type=int, default=pc.DEFAULT_MAX_STEPS, metavar="N", help=f"--precheck: the most emulator steps a block may take (default {pc.DEFAULT_MAX_STEPS:,})")
-    ap.add_argument("--precheck-timeout", type=float, default=pc.DEFAULT_TIMEOUT, metavar="SECONDS", help=f"--precheck: the most wall time the check itself may take; over it the emulator is killed and the block is over budget (default {pc.DEFAULT_TIMEOUT:g})")
+    ap.add_argument("--precheck-timeout", type=float, default=pc.DEFAULT_TIMEOUT, metavar="SECONDS", help=f"--precheck: the most wall time one emulator run may take (the witness fetch and the input tool are not counted); over it the emulator's process group is killed and the block is over budget (default {pc.DEFAULT_TIMEOUT:g})")
+    ap.add_argument("--precheck-budget-seconds", type=float, default=pc.DEFAULT_BUDGET_SECONDS, metavar="SECONDS", help=f"--precheck: the most proof time a block may be predicted to need, from the emulator's cost figure (default {pc.DEFAULT_BUDGET_SECONDS:g})")
+    ap.add_argument("--precheck-cost-per-second", type=float, default=pc.DEFAULT_COST_PER_SECOND, metavar="COST", help=f"--precheck: cost units of proof work per second, the slope of the prediction: seconds = cost_total / this + the intercept (default {pc.DEFAULT_COST_PER_SECOND:,})")
+    ap.add_argument("--precheck-cost-intercept", type=float, default=pc.DEFAULT_COST_INTERCEPT, metavar="SECONDS", help=f"--precheck: the seconds of proof time every block is predicted to need besides its cost (default {pc.DEFAULT_COST_INTERCEPT:g})")
+    ap.add_argument("--precheck-cut-seconds", type=float, default=pc.DEFAULT_CUT_SECONDS, metavar="SECONDS", help=f"--precheck: the most time the search for a prefix that fits may take; then the longest prefix known to fit is kept (default {pc.DEFAULT_CUT_SECONDS:g})")
     ap.add_argument("--precheck-max-input-bytes", type=int, default=pc.DEFAULT_MAX_INPUT_BYTES, metavar="BYTES", help=f"--precheck: the most bytes the block's input may have (default {pc.DEFAULT_MAX_INPUT_BYTES})")
     ap.add_argument("--precheck-max-codes", type=int, default=pc.DEFAULT_MAX_CODES, metavar="N", help=f"--precheck: the most distinct contract codes a block may load (default {pc.DEFAULT_MAX_CODES})")
     ap.add_argument("--precheck-max-code-bytes", type=int, default=pc.DEFAULT_MAX_CODE_BYTES, metavar="BYTES", help=f"--precheck: the most bytes of contract code a block may load (default {pc.DEFAULT_MAX_CODE_BYTES})")
@@ -2832,8 +2884,12 @@ def precheck_setup(args) -> "pc.Precheck":
     for name in ("max_steps", "max_input_bytes", "max_codes", "max_code_bytes"):
         if getattr(args, "precheck_" + name) < 1:
             raise BuilderError(f"bad arguments: --precheck-{name.replace('_', '-')} must be at least 1")
-    if not math.isfinite(args.precheck_timeout) or args.precheck_timeout <= 0:
-        raise BuilderError("bad arguments: --precheck-timeout must be more than 0")
+    for name in ("timeout", "budget_seconds", "cost_per_second", "cut_seconds"):
+        v = getattr(args, "precheck_" + name)
+        if not math.isfinite(v) or v <= 0:
+            raise BuilderError(f"bad arguments: --precheck-{name.replace('_', '-')} must be more than 0")
+    if not math.isfinite(args.precheck_cost_intercept) or args.precheck_cost_intercept < 0:
+        raise BuilderError("bad arguments: --precheck-cost-intercept must be 0 or more")
     zisk = os.environ.get("ZISK_DIR") or str(Path.home() / ".zisk")
     program = args.ziskemu or (str(Path(zisk) / "bin" / "ziskemu") if (Path(zisk) / "bin" / "ziskemu").exists() else "ziskemu")
     elf = args.guest_elf or str(Path(os.environ.get("CZE_PROVER_STATE") or ROOT / "state" / "prover") / "guest" / "zec-reth.elf")
@@ -2842,8 +2898,9 @@ def precheck_setup(args) -> "pc.Precheck":
         pc.check_start(emu)
     except pc.PrecheckError as e:
         raise BuilderError(f"bad arguments: {e}") from e
-    return pc.Precheck(emu, pc.Budgets(args.precheck_max_steps, args.precheck_timeout, args.precheck_max_input_bytes,
-                                       args.precheck_max_codes, args.precheck_max_code_bytes))
+    return pc.Precheck(emu, pc.Budgets(args.precheck_max_steps, args.precheck_timeout, args.precheck_max_input_bytes, args.precheck_max_codes,
+                                       args.precheck_max_code_bytes, args.precheck_budget_seconds, args.precheck_cost_per_second, args.precheck_cost_intercept),
+                       max_seconds=args.precheck_cut_seconds)
 
 
 def main() -> int:

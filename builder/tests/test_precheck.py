@@ -43,7 +43,8 @@ class TestVerdicts(Case):
         self.assertTrue(v.ok)
         self.assertEqual((v.steps, v.codes, v.code_bytes), (1000, 1, 1))
         self.assertGreater(v.input_bytes, 0)
-        self.assertEqual(sorted(v.fields()), ["codeBytes", "codes", "inputBytes", "seconds", "steps", "verdict"])
+        self.assertEqual(sorted(v.fields()), ["codeBytes", "codes", "cost", "inputBytes", "predictedSeconds", "seconds", "steps", "verdict"])
+        self.assertEqual((v.cost, round(v.predicted, 3)), (3000, 15.0))
 
     def test_over_steps(self):
         v = self.verdict("steps=1001")
@@ -87,9 +88,59 @@ class TestVerdicts(Case):
     def test_guest_failure(self):
         self.assertEqual(self.verdict("abort=fail").verdict, pc.GUEST)
 
-    def test_no_steps_line_is_not_a_pass(self):
+    def test_over_the_predicted_proof_time(self):
+        b = pc.Budgets(max_steps=10**9, timeout=5, max_input_bytes=1000, max_codes=3, max_code_bytes=100, budget_seconds=120)
+        self.assertTrue(self.verdict("steps=5 cost=%d" % int(105 * pc.DEFAULT_COST_PER_SECOND), budgets=b).ok)
+        v = self.verdict("steps=5 cost=%d" % int(106 * pc.DEFAULT_COST_PER_SECOND), budgets=b)
+        self.assertEqual(v.verdict, pc.COST)
+        self.assertAlmostEqual(v.predicted, 121, delta=0.01)
+        self.assertIn("predicted proof time", v.reason())
+
+    def test_the_cost_line_is_read_with_commas_and_a_space_or_equals(self):
+        self.assertEqual(pc.parse_cost("cost_total: 1,234,567"), 1234567)
+        self.assertEqual(pc.parse_cost("COST_TOTAL = 99"), 99)
+        self.assertIsNone(pc.parse_cost("no figure here"))
+
+    def test_the_emulator_is_started_with_the_cost_flag(self):
+        self.assertTrue(self.verdict().ok)   # the stand-in prints the cost figure only for -X, and a run without it would be a service failure
+        self.assertEqual(self.emulated(), 1)
+
+    def test_an_emulator_killed_by_a_signal_is_a_service_failure_not_a_verdict(self):
+        with self.assertRaisesRegex(pc.PrecheckFailed, "signal 9"):
+            self.verdict("abort=kill")
+
+    def test_an_emulator_that_prints_no_figures_is_a_service_failure(self):
+        with self.assertRaisesRegex(pc.PrecheckFailed, "no steps figure"):
+            self.verdict("abort=nosteps")
         self.emu = pc.Emulator("true", str(self.elf))
-        self.assertEqual(self.verdict().verdict, pc.GUEST)
+        with self.assertRaises(pc.PrecheckFailed):
+            self.verdict()
+
+    def test_an_emulator_that_crashes_without_a_guest_message_is_a_service_failure(self):
+        with self.assertRaisesRegex(pc.PrecheckFailed, "exit 3"):
+            self.verdict("abort=crash")
+
+    def test_an_interrupt_kills_the_emulator_group(self):
+        child = self.dir / "child.pid"
+        i, _ = self.files(f"steps=5 sleep=20 child={child}")
+        import threading
+        real = pc.subprocess.Popen.communicate
+        def boom(self_, *a, **k):
+            for _ in range(100):   # let the stand-in start its helper
+                if child.exists() and child.read_text().strip():
+                    break
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+        pc.subprocess.Popen.communicate = boom
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                pc.run_emulator(self.emu, i, 30)
+        finally:
+            pc.subprocess.Popen.communicate = real
+        pid = int(child.read_text())
+        time.sleep(0.3)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
     def test_input_tool_refused(self):
         def refuse():
@@ -113,7 +164,8 @@ class TestVerdicts(Case):
     def test_defaults(self):
         b = pc.Budgets()
         self.assertEqual((b.max_steps, b.timeout, b.max_input_bytes, b.max_codes, b.max_code_bytes),
-                         (233_000_000, 20.0, 64 * 1024 * 1024, 1000, 24 * 1024 * 1024))
+                         (1_000_000_000, 40.0, 64 * 1024 * 1024, 1000, 24 * 1024 * 1024))
+        self.assertEqual((b.budget_seconds, b.cost_intercept, round(1 / b.cost_per_second, 12)), (120.0, 15.0, 3.64e-9))
 
 
 def verdict_of(ok, why=pc.STEPS):
@@ -148,21 +200,34 @@ class TestSelect(unittest.TestCase):
         self.assertEqual((len(s.kept), len(s.waiting)), (3, 3))
 
     def test_a_lone_transaction_is_convicted_and_the_rest_go_on(self):
-        s, _ = self.run_select(list("abcde"), lambda items: "b" not in items)
-        self.assertEqual(s.kept, ["a"])
-        self.assertEqual([t for t, _ in s.convicted], [])
+        s, _ = self.run_select(list("abcde"), lambda items: "b" not in items)   # not the first, yet convicted in this same block
+        self.assertEqual((s.kept, s.waiting, [t for t, _ in s.convicted]), (["a"], list("cde"), ["b"]))
         s, _ = self.run_select(list("abcde"), lambda items: "a" not in items)
         self.assertEqual((s.kept, s.waiting), (list("bcde"), []))
         self.assertEqual([t for t, _ in s.convicted], ["a"])
         self.assertFalse(s.convicted[0][1].ok)
         self.assertIn("over the proving budget", s.convicted[0][1].reason())
 
-    def test_a_convicted_transaction_in_the_middle_waits_with_the_rest(self):
-        s, _ = self.run_select(list("abcde"), lambda items: "c" not in items)
+    def test_a_lone_offender_in_the_middle_is_convicted_in_that_block(self):
+        s, calls = self.run_select(list("abcde"), lambda items: "c" not in items)
+        self.assertEqual((s.kept, s.waiting, [t for t, _ in s.convicted]), (list("ab"), list("de"), ["c"]))
+        self.assertEqual(calls[-1], 1)   # one extra check: the transaction after the cut, alone
+        self.assertFalse(s.convicted[0][1].ok)
+
+    def test_the_first_after_the_offender_is_not_blamed_when_it_fits_alone(self):
+        s, _ = self.run_select(list("T1 B T2 T3".split()), lambda items: "B" not in items)
+        self.assertEqual((s.kept, s.waiting, [t for t, _ in s.convicted]), (["T1"], ["T2", "T3"], ["B"]))
+        s, _ = self.run_select(list("T4 B T2 T3".split()), lambda items: "B" not in items)
+        self.assertEqual((s.kept, [t for t, _ in s.convicted]), (["T4"], ["B"]))
+
+    def test_the_offenders_later_transactions_wait_wherever_it_stands(self):
+        s, _ = self.run_select([("a", 1), ("b", 1), ("a", 2), ("c", 1)], lambda items: ("b", 1) not in items,
+                               dependents=lambda c, later: [t for t in later if t[0] == c[0]])
+        self.assertEqual((s.kept, s.waiting, [t for t, _ in s.convicted]), ([("a", 1)], [("a", 2), ("c", 1)], [("b", 1)]))
+
+    def test_a_pair_bad_only_together_is_not_convicted_by_the_extra_check(self):
+        s, _ = self.run_select(list("abcde"), lambda items: not ("b" in items and "c" in items))
         self.assertEqual((s.kept, s.waiting, s.convicted), (list("ab"), list("cde"), []))
-        # next block: c leads, is convicted on its own, d and e go on
-        s, _ = self.run_select(list("cde"), lambda items: "c" not in items)
-        self.assertEqual((s.kept, [t for t, _ in s.convicted]), (list("de"), ["c"]))
 
     def test_everything_convicted(self):
         s, _ = self.run_select([1, 2, 3], lambda items: False)
@@ -192,6 +257,24 @@ class TestSelect(unittest.TestCase):
         self.assertEqual(s.kept, [])   # checks of 64, 32, 16: none fit
         s, _ = self.run_select(list(range(64)), lambda items: len(items) <= 20, max_checks=4)
         self.assertEqual((len(s.kept), len(s.waiting)), (16, 48))
+
+    def test_the_checks_of_one_cut_are_bounded_by_the_block_size(self):
+        s, calls = self.run_select(list(range(200)), lambda items: False)   # every transaction is over budget alone
+        self.assertTrue(s.exhausted)
+        self.assertLessEqual(len(calls), 2 * 8 + 4)
+        self.assertEqual(s.kept, [])
+        self.assertEqual(len(s.convicted) + len(s.waiting), 200)
+
+    def test_a_time_limit_keeps_the_longest_prefix_known_to_fit(self):
+        now = [0.0]
+
+        def check(items):
+            now[0] += 100   # each check takes 100 s
+            return verdict_of(len(items) <= 10)
+        s = pc.select(list(range(64)), check, max_seconds=250, clock=lambda: now[0])
+        self.assertTrue(s.exhausted)
+        self.assertEqual(s.checks, 3)   # 64, 32 and 16 are over; the next would start at 300 s
+        self.assertEqual(s.kept + s.waiting, list(range(64)))
 
     def test_empty(self):
         s, calls = self.run_select([], lambda items: False)

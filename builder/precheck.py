@@ -1,12 +1,14 @@
-"""The pre-check: before a block is proven, run the fast ZisK emulator on its input and keep the block within five budgets.
+"""The pre-check: before a block is proven, run the ZisK emulator on its input and keep the block within its budgets.
 
-  1. emulator steps                    <= max_steps
-  2. the check's own wall time         <= timeout (over: the emulator's process group is killed)
-  3. input size in bytes               <= max_input_bytes
-  4. distinct contract codes loaded    <= max_codes, and their total bytes <= max_code_bytes
-  5. an input tool that fails, or a guest that aborts or fails in the emulator, counts as over budget.
+  1. predicted proof time              <= budget_seconds: cost_total * (1 / cost_per_second) + cost_intercept, from the emulator's own cost figure
+  2. emulator steps                    <= max_steps (a sanity ceiling well above honest blocks)
+  3. the emulator run's wall time      <= timeout (over: the emulator's process group is killed)
+  4. input size in bytes               <= max_input_bytes
+  5. distinct contract codes loaded    <= max_codes, and their total bytes <= max_code_bytes
+  6. an input tool that fails, or a guest that aborts or fails in the emulator, counts as over budget.
 
-The check bounds a block, it does not predict its proof time. The code loads are read from the witness the input tool was given
+An emulator that is missing, killed, or whose output cannot be read is a service failure (PrecheckFailed), not a verdict: nobody is
+blamed for it. The check bounds a block, it does not predict its proof time exactly. The code loads are read from the witness the input tool was given
 (its "codes" list; the input itself is the same codes in a binary form). Everything here is plain functions over files and callbacks:
 building a prefix of a block and making its input is the caller's job, handed in as a callback."""
 import json, os, re, shutil, signal, subprocess, time
@@ -14,18 +16,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MIB = 1024 * 1024
-DEFAULT_MAX_STEPS = 233_000_000          # 120 s of proof at the worst measured cost per step
-DEFAULT_TIMEOUT = 20.0                   # seconds, for the check itself
+DEFAULT_MAX_STEPS = 1_000_000_000        # a ceiling, well above an honest block (about 100M steps at 30M gas, 200M at 60M)
+DEFAULT_TIMEOUT = 40.0                   # seconds, for the emulator run
+DEFAULT_BUDGET_SECONDS = 120.0           # the proof time a block may be predicted to need
+DEFAULT_COST_PER_SECOND = 274_725_275    # cost units of proof work per second: proof_s = cost_total / this + intercept (3.64e-9 s per unit)
+DEFAULT_COST_INTERCEPT = 15.0            # seconds
+DEFAULT_CUT_SECONDS = 300.0              # the most time one cut may spend searching before it keeps the longest prefix known to fit
 DEFAULT_MAX_INPUT_BYTES = 64 * MIB       # the prover's inline limit is 134 MB
 DEFAULT_MAX_CODES = 1000                 # the proof still passes at about 1,350 loads of 24 KB codes
 DEFAULT_MAX_CODE_BYTES = 24 * MIB
 EMULATOR_INPUT_MEMORY = 512 * MIB        # the emulator's own default (128 MiB) is below the guest's real input limit
 STEPS_LINE = re.compile(r"STEPS:\s*([\d,]+)")
+COST_LINE = re.compile(r"cost_total\s*[:=]?\s*([\d,_]+)", re.IGNORECASE)
+GUEST_MARKERS = ("OOM limit of heap", "Block validation failed", "panicked at")   # what the guest's own failure looks like in the output
 
 # The verdicts. "ok" is the only one that lets a block go to the prover.
-OK, STEPS, TIME, INPUT_BYTES, CODES, CODE_BYTES, GUEST, INPUT_TOOL = (
-    "ok", "steps", "time", "input_bytes", "codes", "code_bytes", "guest", "input_tool")
+OK, COST, STEPS, TIME, INPUT_BYTES, CODES, CODE_BYTES, GUEST, INPUT_TOOL = (
+    "ok", "cost", "steps", "time", "input_bytes", "codes", "code_bytes", "guest", "input_tool")
 WHY = {
+    COST: "the predicted proof time is over the proving budget",
     STEPS: "the emulator needs more steps than the proving budget",
     TIME: "the pre-check did not finish in time",
     INPUT_BYTES: "the input is bigger than the proving budget",
@@ -40,6 +49,11 @@ class PrecheckError(Exception):
     """The pre-check cannot run at all (a missing emulator or guest file): a start-up error, not a verdict."""
 
 
+class PrecheckFailed(Exception):
+    """The emulator did not give a usable answer (it was killed, crashed, or printed nothing readable). A service failure: the caller backs
+    off and no transaction is blamed."""
+
+
 class InputToolFailed(Exception):
     """The input tool refused the block (for example the execution witness is too big). The pre-check counts it as over budget."""
 
@@ -51,6 +65,12 @@ class Budgets:
     max_input_bytes: int = DEFAULT_MAX_INPUT_BYTES
     max_codes: int = DEFAULT_MAX_CODES
     max_code_bytes: int = DEFAULT_MAX_CODE_BYTES
+    budget_seconds: float = DEFAULT_BUDGET_SECONDS
+    cost_per_second: float = DEFAULT_COST_PER_SECOND
+    cost_intercept: float = DEFAULT_COST_INTERCEPT
+
+    def predicted_seconds(self, cost_total: int) -> float:
+        return cost_total / self.cost_per_second + self.cost_intercept
 
 
 @dataclass(frozen=True)
@@ -65,13 +85,16 @@ class Precheck:
     """What the builder is configured with when --precheck is on."""
     emu: Emulator
     budgets: Budgets = Budgets()
-    max_checks: int = 64   # the most blocks one cut may try before it keeps the longest prefix known to fit
+    max_checks: int = 64   # the most blocks one cut may try, whatever its size, before it keeps the longest prefix known to fit
+    max_seconds: float = DEFAULT_CUT_SECONDS   # and the most time it may take
 
 
 @dataclass
 class Verdict:
     verdict: str = OK
     steps: int | None = None
+    cost: int | None = None
+    predicted: float | None = None
     seconds: float | None = None
     input_bytes: int | None = None
     codes: int | None = None
@@ -88,7 +111,8 @@ class Verdict:
 
     def fields(self) -> dict:
         """The journal line's fields."""
-        return {"verdict": self.verdict, "steps": self.steps, "seconds": None if self.seconds is None else round(self.seconds, 3),
+        return {"verdict": self.verdict, "steps": self.steps, "cost": self.cost,
+                "predictedSeconds": None if self.predicted is None else round(self.predicted, 1), "seconds": None if self.seconds is None else round(self.seconds, 3),
                 "inputBytes": self.input_bytes, "codes": self.codes, "codeBytes": self.code_bytes}
 
 
@@ -109,19 +133,24 @@ def check_start(emu: Emulator) -> None:
         raise PrecheckError(f"--precheck is on, but the guest ELF {emu.elf!r} does not exist")
 
 
+def _kill_group(proc) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def run_emulator(emu: Emulator, input_path: str | Path, timeout: float) -> Emulated:
-    """Runs the fast emulator in its own session; at the timeout the whole process group is killed."""
-    args = [*emu.cmd.split(), "-e", emu.elf, "-i", str(input_path), "--max-input-mem", str(emu.input_memory), "--steps"]
+    """Runs the emulator (with -X, which prints the cost figure) in its own session; at the timeout, or when anything interrupts the wait,
+    the whole process group is killed."""
+    args = [*emu.cmd.split(), "-e", emu.elf, "-i", str(input_path), "--max-input-mem", str(emu.input_memory), "--steps", "-X"]
     started = time.monotonic()
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:
         out, _ = proc.communicate(timeout=timeout)
         return Emulated(proc.returncode, out or "", time.monotonic() - started)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_group(proc)
         try:   # a helper that left the group and still holds the pipe must not hold the check: drain for a moment, then let go
             proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
@@ -132,11 +161,32 @@ def run_emulator(emu: Emulator, input_path: str | Path, timeout: float) -> Emula
                     pass
             proc.wait()
         return Emulated(None, "", time.monotonic() - started, timed_out=True)
+    except BaseException:   # an interrupt must not leave the emulator running on its own
+        _kill_group(proc)
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                pipe and pipe.close()
+            except Exception:
+                pass
+        raise
+
+
+def _number(text: str) -> int:
+    return int(text.replace(",", "").replace("_", ""))
 
 
 def parse_steps(output: str) -> int | None:
     m = STEPS_LINE.search(output)
-    return int(m.group(1).replace(",", "")) if m else None
+    return _number(m.group(1)) if m else None
+
+
+def parse_cost(output: str) -> int | None:
+    m = COST_LINE.search(output)
+    return _number(m.group(1)) if m else None
 
 
 def code_loads(witness_path: str | Path) -> tuple[int, int]:
@@ -165,11 +215,21 @@ def evaluate(emu: Emulator, budgets: Budgets, input_path: str | Path, witness_pa
     if run.timed_out:
         v.verdict, v.detail = TIME, f"over {budgets.timeout:g} s, the emulator was killed"
         return v
-    v.steps = parse_steps(run.output)
-    if run.returncode != 0 or v.steps is None:
-        v.verdict, v.detail = GUEST, (run.output.strip().splitlines() or [f"exit {run.returncode}"])[-1][:200]
-    elif v.steps > budgets.max_steps:
+    last = (run.output.strip().splitlines() or [""])[-1][:200]
+    if run.returncode is not None and run.returncode > 0 and any(m in run.output for m in GUEST_MARKERS):   # the guest's own failure
+        v.verdict, v.detail = GUEST, last
+        return v
+    if run.returncode != 0:   # killed by a signal (the host's out-of-memory killer, say), or the emulator itself failed: not the block's fault
+        how = f"killed by signal {-run.returncode}" if run.returncode < 0 else f"exit {run.returncode}"
+        raise PrecheckFailed(f"the emulator failed ({how}): {last}")
+    v.steps, v.cost = parse_steps(run.output), parse_cost(run.output)
+    if v.steps is None or v.cost is None:
+        raise PrecheckFailed(f"the emulator's output has no {'steps' if v.steps is None else 'cost'} figure: {last}")
+    v.predicted = budgets.predicted_seconds(v.cost)
+    if v.steps > budgets.max_steps:
         v.verdict, v.detail = STEPS, f"{v.steps} > {budgets.max_steps}"
+    elif v.predicted > budgets.budget_seconds:
+        v.verdict, v.detail = COST, f"about {v.predicted:.0f} s > {budgets.budget_seconds:g} s"
     return v
 
 
@@ -215,42 +275,57 @@ def longest_prefix(n: int, check) -> tuple[int, Verdict | None]:
     return lo, bad
 
 
-def select(txs: list, check, max_checks: int = 64, dependents=None) -> Selection:
+def select(txs: list, check, max_checks: int = 64, dependents=None, max_seconds: float | None = None, clock=time.monotonic) -> Selection:
     """Cuts a block back to what fits. `check(list of transactions)` returns a Verdict for a block of exactly those transactions.
-    The whole list is checked first; over budget, the longest prefix that fits is found by halves and the rest wait. When not even
-    the first transaction fits on its own it is convicted, and the search starts again on the transactions after it. A pair that
-    is bad only together is cut between them. After `max_checks` checks the search stops: the longest prefix known to fit is kept.
+    The whole list is checked first; over budget, the longest prefix that fits is found by halves, and the transaction right after it is
+    checked alone: over budget on its own, it is convicted (wherever it stands in the block), otherwise the trouble is the combination and
+    it waits with the rest. When not even the first transaction fits on its own it is convicted, and the search starts again on the
+    transactions after it. A pair that is bad only together is cut between them. The search is bounded: at most 2 * log2(n) + 4 checks (and
+    `max_checks`), and `max_seconds` for all of it; then the longest prefix known to fit is kept.
     `dependents(convicted transaction, the transactions after it)`, when given, says which of those cannot run without it (the same
     sender's later ones): they wait, and are not tried."""
     selection = Selection([], [], [], 0)
     rest = list(txs)
     stuck: list = []   # waiting for a convicted transaction they depend on
     fit = 0   # the longest prefix of `rest` seen to pass
+    limit = min(max_checks, 2 * len(rest).bit_length() + 4)
+    started = clock()
 
-    def counted(items: list) -> Verdict:
+    def counted(items: list, prefix: bool = True) -> Verdict:
         nonlocal fit
-        if selection.checks >= max_checks:
+        if selection.checks >= limit or (max_seconds is not None and clock() - started > max_seconds):
             raise _Exhausted
         selection.checks += 1
         v = check(items)
-        if v.ok:
+        if v.ok and prefix:
             fit = max(fit, len(items))
         return v
+
+    def convict(tx, v: Verdict) -> list:
+        selection.convicted.append((tx, v))
+        return list(dependents(tx, rest[rest.index(tx) + 1:])) if dependents else []
 
     try:
         while rest:
             fit = 0
             k, bad = longest_prefix(len(rest), lambda m: counted(rest[:m]))
-            if k > 0:
-                selection.kept, selection.waiting = rest[:k], rest[k:] + stuck
-                return selection
-            selection.convicted.append((rest[0], bad))
-            gone = list(dependents(rest[0], rest[1:])) if dependents else []
-            stuck += gone
-            rest = [t for t in rest[1:] if not any(t is g for g in gone)]
+            if k == 0:
+                gone = convict(rest[0], bad)
+                stuck += gone
+                rest = [t for t in rest[1:] if not any(t is g for g in gone)]
+                continue
+            kept, later = rest[:k], rest[k:]
+            if later:
+                alone = counted([later[0]], prefix=False)
+                if not alone.ok:   # over budget by itself, though it is not the first: it is the offender, not the block
+                    gone = convict(later[0], alone)
+                    stuck += gone
+                    later = [t for t in later[1:] if not any(t is g for g in gone)]
+            selection.kept, selection.waiting = kept, later + stuck
+            return selection
     except _Exhausted:
         selection.exhausted = True
-        selection.kept, selection.waiting = rest[:fit], rest[fit:] + stuck
+        selection.kept, selection.waiting = rest[:fit], [t for t in rest[fit:] if not any(t is c for c, _ in selection.convicted)] + stuck
     else:
         selection.waiting = stuck
     return selection

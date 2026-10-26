@@ -13,7 +13,7 @@ import precheck as pc
 import test_builder as tb
 import test_pipeline as tp
 from test_producer import Loop
-from fakes import HEAD_NUMBER, hash_of, raw_of, tx
+from fakes import HEAD_HASH, HEAD_NUMBER, RpcError, hash_of, raw_of, tx
 
 ALICE, BOB, CAROL = tb.ALICE, tb.BOB, tb.CAROL
 FIRST = HEAD_NUMBER + 1
@@ -81,7 +81,7 @@ class Blocks(Checked, tb.Case):
         (cut,) = self.lines(s, "precheck_cut")
         self.assertEqual((cut["kept"], cut["waiting"], cut["convicted"]), (2, [ts[2]["hash"]], []))
         verdicts = [(x["transactions"], x["verdict"]) for x in self.lines(s, "precheck")]
-        self.assertEqual(verdicts, [(3, "steps"), (1, "ok"), (2, "ok")])
+        self.assertEqual(verdicts, [(3, "steps"), (1, "ok"), (2, "ok"), (1, "ok")])   # the last: the transaction after the cut, alone
         self.assertNotIn("lostTransactions", result)
 
     def test_a_single_transaction_over_the_budget_is_left_out_with_a_reason(self):
@@ -153,6 +153,68 @@ class Blocks(Checked, tb.Case):
         self.assertEqual(result["transactions"], [t["hash"] for t in ts[1:]])
         self.assertIn("cannot make an input", result["leftOut"][0]["reason"])
 
+    def test_the_block_that_goes_on_is_the_block_that_was_checked(self):
+        # the clock moves a second at every build: a block built again for the kept prefix must still be the one whose check passed
+        ticks = iter(range(10**6))
+        real = b.time.time
+        b.time.time = lambda: real() + next(ticks)
+        self.addCleanup(setattr, b.time, "time", real)
+        s, ts, result = self.run_three()
+        self.assertEqual(result["transactions"], [t["hash"] for t in ts[:2]])
+        two = [x for x in self.lines(s, "precheck") if x["transactions"] == 2 and x["verdict"] == "ok"]
+        self.assertEqual(result["blockHash"], two[-1]["block"])
+
+    def test_a_lone_offender_in_the_middle_is_left_out_in_that_block(self):
+        ts, plan = self.three((0, 300, 0))
+        s = self.checked(self.setup({t["from"]: [t] for t in ts}), plan)
+        result = self.block(s)
+        self.assertEqual(result["transactions"], [ts[0]["hash"]])
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [ts[1]["hash"]])
+        self.assertEqual(self.in_pool(s), {ts[1]["hash"], ts[2]["hash"]})   # both are back in the pool; the producer holds the convicted one
+
+    def test_an_emulator_killed_by_a_signal_blames_nobody(self):
+        for word in ("kill", "nosteps", "crash"):
+            ts, plan = self.three()
+            s = self.checked(self.setup({t["from"]: [t] for t in ts}), {t["hash"]: {"steps": 100, "abort": word} for t in ts})
+            with self.assertRaises(b.BuilderError) as e:
+                self.block(s)
+            self.assertIn("pre-check could not run", str(e.exception), word)
+            self.assertEqual(self.in_pool(s) | {x["transaction"] for x in getattr(e.exception, "lost_transactions", [])}, {t["hash"] for t in ts}, word)
+            self.assertEqual(s.forkchoices()[-1]["headBlockHash"], HEAD_HASH, word)   # reth is back on Canton's head
+
+    def test_a_reth_error_in_a_trial_build_blames_nobody(self):
+        ts, plan = self.three()
+        s = self.checked(self.setup({t["from"]: [t] for t in ts}), plan)
+        real, calls = s.reth._rpc, []
+        def flaky(method, params):
+            if method == "txpool_content":
+                calls.append(1)
+                if len(calls) > 1:   # the first is the block's own build; the next is a trial's
+                    raise RpcError("reth is busy")
+            return real(method, params)
+        s.reth._rpc = flaky
+        with self.assertRaises(b.BuilderError):
+            self.block(s)
+        self.assertEqual(self.lines(s, "precheck_cut"), [])
+
+    def test_the_input_of_a_block_that_passes_is_made_once(self):
+        ts, plan = self.three()
+        s = self.checked(self.setup({t["from"]: [t] for t in ts}), plan, max_steps=10**6)
+        real, seen = s.reth._rpc, []
+        s.reth._rpc = lambda method, params: (seen.append(method), real(method, params))[1]
+        self.assertTrue(self.block(s)["committed"])
+        self.assertEqual(seen.count("debug_executionWitness"), 1)
+        self.assertEqual(list(Path(s.cfg.work_dir).glob("block-*/precheck-*")), [])
+
+    def test_a_stale_precheck_folder_is_removed(self):
+        ts, plan = self.three()
+        s = self.checked(self.setup({t["from"]: [t] for t in ts}), plan)
+        old = Path(s.cfg.work_dir) / f"block-{FIRST}" / "precheck-1-2"
+        old.mkdir(parents=True)
+        (old / "input.bin").write_bytes(b"x")
+        self.block(s)
+        self.assertFalse(old.exists())
+
     def test_with_the_switch_off_there_is_no_check(self):
         ts, plan = self.three()
         s = self.checked(self.setup({t["from"]: [t] for t in ts}), plan)
@@ -172,7 +234,8 @@ class Blocks(Checked, tb.Case):
                                       "--precheck-max-steps", "7"])
         setup = b.precheck_setup(args)
         self.assertEqual((setup.budgets.max_steps, setup.budgets.timeout, setup.budgets.max_input_bytes, setup.budgets.max_codes, setup.budgets.max_code_bytes),
-                         (7, 20.0, 64 * 1024 * 1024, 1000, 24 * 1024 * 1024))
+                         (7, 40.0, 64 * 1024 * 1024, 1000, 24 * 1024 * 1024))
+        self.assertEqual((setup.budgets.budget_seconds, setup.budgets.cost_intercept, setup.max_seconds), (120.0, 15.0, 300.0))
 
 
 class Held(Checked, Loop):
@@ -186,6 +249,18 @@ class Held(Checked, Loop):
         self.assertEqual(held["transaction"], ts[0]["hash"])
         self.assertIn("over the proving budget", held["reason"])
         self.assertEqual([x["event"] for x in self.lines(s, "excluded")], ["excluded"])
+
+
+    def test_a_transaction_convicted_again_is_held_twice_as_long_up_to_a_day(self):
+        ts, plan = self.three((300, 0, 0))
+        p = self.producer(self.checked(self.setup({t["from"]: [t] for t in ts}), plan))
+        x = {"transaction": ts[0]["hash"], "reason": "over the proving budget: x", "overBudget": True}
+        held = []
+        for _ in range(14):
+            p.hold_over_budget([x], 1000.0)
+            held.append(p.excluded.pop(x["transaction"]) - 1000.0)
+        self.assertEqual(held[:4], [p.cooldown * k for k in (1, 2, 4, 8)])
+        self.assertEqual(held[-1], max(p.cooldown, 86400))
 
 
 class InFlight(Checked, tp.Depth):
