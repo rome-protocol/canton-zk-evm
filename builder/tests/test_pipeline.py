@@ -416,6 +416,7 @@ class Failures(Depth):
         self.assertFalse(b.saved_path(s.cfg).exists())
         self.assertEqual([r for r in self.reports if r.get("lostTransactions")], [])
         self.assertEqual(self.status()["blocksRefused"], 0)
+        self.assertEqual(self.lines(s, "resolved"), [], "no attempt is closed as restarted: none was left by a restart")
 
     def test_a_forkchoice_that_fails_in_the_unwind_at_two(self):
         self.unwind_that_cannot_finish(2, "forkchoice")
@@ -463,12 +464,86 @@ class Failures(Depth):
         self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
         self.assertEqual(self.in_pool(s), self.hashes(k))
         self.assertFalse(b.saved_path(s.cfg).exists())
+        self.assertEqual(self.lines(s, "resolved"), [], "no attempt is closed as restarted: none was left by a restart")
 
     def test_a_refusal_whose_move_back_fails_is_finished_by_the_next_step_at_two(self):
         self.check_refused_and_stuck(2)
 
     def test_a_refusal_whose_move_back_fails_is_finished_by_the_next_step_at_three(self):
         self.check_refused_and_stuck(3)
+
+
+    # reth that cannot be reached
+    def check_reth_down(self, k, refused):
+        """reth's WebSocket is down in the unwind of a failed or a refused block: the unwind is pending, the answer of a refused block is booked all
+        the same, and the next step finishes it."""
+        s = self.setup({}, refuse="the sidecar refused the proof" if refused else None)
+        self.script(A, "sleep 1")
+        p = self.pipeline(s, k)
+        real, down = b.connect, {"on": False}
+        def connect(*a, **kw):
+            if down["on"]:
+                raise OSError("reth's WebSocket is down")
+            return real(*a, **kw)
+        for i in range(k - 1):
+            s.reth.pool[self.SENDERS[i]] = [tx(self.SENDERS[i], 0)]
+            self.drive(p, lambda: len(self.lines(s, "cut")) == i + 1)
+        s.reth.pool[self.SENDERS[k - 1]] = [tx(self.SENDERS[k - 1], 0)]
+        if refused:   # reth is down from the answer of Canton on
+            real_submit = b.submit
+            def submit(*a, **kw):
+                result = real_submit(*a, **kw)
+                down["on"] = True
+                return result
+            patch = mock.patch.object(b, "submit", submit)
+        else:
+            real_finish = b.finish_proof
+            def finish(cfg, built, running, attempt=None):
+                real_finish(cfg, built, running, attempt)
+                down["on"] = True
+                raise b.ProvingError("the prover is down", running.kept)
+            patch = mock.patch.object(b, "finish_proof", finish)
+        patch.start()
+        self.addCleanup(patch.stop)
+        with mock.patch.object(b, "connect", connect):
+            self.drive(p, lambda: p.unwind_pending, limit=20)
+            self.assertEqual(len(self.lines(s, "cancelled")), k - 1)
+            self.assertEqual(p.flight, [])
+            if refused:
+                self.assertEqual(self.reports[-1]["committed"], False)
+                self.assertEqual(self.status()["blocksRefused"], 1, "the refusal is booked")
+            down["on"] = False
+            patch.stop()
+        self.step(p)
+        self.assertFalse(p.unwind_pending)
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
+        self.assertEqual(self.in_pool(s), self.hashes(k))
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_reth_down_in_the_unwind_of_a_failed_block_at_two(self):
+        self.check_reth_down(2, refused=False)
+
+    def test_reth_down_in_the_unwind_of_a_refused_block_at_two(self):
+        self.check_reth_down(2, refused=True)
+
+    def test_reth_down_in_the_unwind_of_a_refused_block_at_three(self):
+        self.check_reth_down(3, refused=True)
+
+    # a head that lags
+    def test_a_head_below_the_last_committed_block_moves_nothing(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        p = self.pipeline(s, 2)
+        self.drive(p, lambda: self.committed())
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        before, cuts = len(s.reth.engine_calls), len(self.lines(s, "cut"))
+        real = b.Ledger.head
+        with mock.patch.object(b.Ledger, "head", lambda l: {**real(l), "headNumber": HEAD_NUMBER, "headHash": HEAD_HASH[2:]}):   # a read that lags the commit
+            self.step(p)
+        self.assertEqual(len(s.reth.engine_calls), before, "reth does not move")
+        self.assertIn("below block", self.reports[-1]["error"])
+        self.assertEqual(len(self.lines(s, "cut")), cuts, "nothing was cut")
+        self.drive(p, lambda: len(self.committed()) == 2)   # the head is read again, and the block is made
+        self.assert_final_never_back(s)
 
 
 class InputToolFails(Depth):
