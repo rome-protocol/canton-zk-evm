@@ -21,7 +21,7 @@ Because of this, some weaknesses are known and written down in the READMEs and i
 
 ## ZisK releases and the advisory GHSA-3j5v-j2rm-9c5f
 
-ZisK 1.3.1-alpha has a critical soundness flaw, published as the advisory [GHSA-3j5v-j2rm-9c5f](https://github.com/advisories/GHSA-3j5v-j2rm-9c5f): a prover could make a proof of a statement that is false. ZisK 1.3.2-alpha fixes it (its release notes: the recursive aggregation now binds the airgroup values to the transcript). This repository builds on 1.3.2-alpha.
+ZisK 1.3.1-alpha has a critical soundness flaw, published as the advisory [GHSA-3j5v-j2rm-9c5f](https://github.com/0xPolygonHermez/zisk/security/advisories/GHSA-3j5v-j2rm-9c5f) (`circuitType = 0` disables execution checking in `vadcop_final`): a prover could make a proof of a statement that is false. ZisK 1.3.2-alpha fixes it: a prover could mark every child proof in the recursive aggregation as null, which switched off their checks, and supply the aggregated values by hand; 1.3.2 requires at least one real proof and fixes the values of null children. It also binds the airgroup values to the transcript. This repository builds on 1.3.2-alpha.
 
 Proofs that were made under 1.3.1-alpha are still accepted for the blocks of chains that ran on it, because those blocks are part of those chains. A proof made under 1.3.1 is only as trustworthy as the prover that made it: the check cannot tell an honest 1.3.1 proof from one made by a prover that used the flaw. The 1.3.1 key therefore stays in the code for a chain that already runs on it, and a new chain is set up on 1.3.2. The sidecar and the explorer choose the key by the ZisK release of the chain (the sidecar's `--zisk-release`, the pins file's `zisk=`), and a chain that names no release is on 1.3.1.
 

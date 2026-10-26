@@ -19,6 +19,8 @@ ZisK 1.2.0 has its own key, so a 1.2.0 proof is refused under the 1.3 key. ZisK 
 | `vk::ZISK_1_3_1` | `zisk-contracts/PlonkVerifier.sol` at tag `v1.3.1-alpha` of github.com/0xPolygonHermez/zisk (commit `306a9c934ba4947b1d586d69b67120f8b4c41466`) |
 | `vk::ZISK_1_3_2` | the same key, found again in the `PlonkVerifier.sol` that the SNARK setup of ZisK 1.3.2-alpha (commit `1e22630bb7e143c30705a1603ed87cfd3da8c6ec`) installs. The tests check that it is equal to `ZISK_1_3_1` |
 
+The root of the final circuit that each release pins (`rootC`) is the `vadcop_final` root in ZisK's own published `zisk-verifykey-<release>.tar.gz` (`vadcop_final.verkey.bin`, four little-endian 64-bit words), for 1.3.1-alpha and for 1.3.2-alpha, so the pins have a second source besides the installed setup.
+
 ZisK 1.3.1 has a soundness advisory that 1.3.2 fixes (see [SECURITY.md](../SECURITY.md)). The 1.3.1 key stays for the blocks that chains proved under 1.3.1; new proofs are 1.3.2's.
 
 The ZisK 1.2.0 key is in the source too, but only for the tests: it sits behind the `zisk-1-2-0-test-key` feature, which the crate's own dev-dependency switches on. It lets the tests check that a 1.2.0 proof is refused under the 1.3 key and the other way round. A crate that depends on `zk-verifier` does not get it unless it turns the feature on by name.

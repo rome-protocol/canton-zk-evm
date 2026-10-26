@@ -91,6 +91,11 @@ grep -q 'run.sh" resume' "$R" || fail "restart.sh does not resume Canton"
 grep -q 'CZE_RESUME=1' "$R" || fail "restart.sh does not tell reth's launch.sh to resume"
 grep -q 'network/sync_reth.py' "$R" || fail "restart.sh does not check Canton's head against reth"
 [ "$(grep -n 'sidecar-\$port\|run.sh" resume' "$R" | head -1 | grep -c sidecar)" = 1 ] || fail "restart.sh starts Canton before the sidecars"
+# A restart keeps the chain's own keys and ZisK release: the sidecars (local, or the external one through its record) read guest.txt, never the recorded session.
+grep -q 'CZE_SESSION_FILE="$NET/guest.txt" "$ROOT/network/external/sidecar.sh" start' "$R" || fail "restart.sh starts the external sidecar from something other than the chain's guest.txt"
+grep -q 'ZISK_RELEASE=$(guest zisk)' "$R" && grep -q -- '--zisk-release "$ZISK_RELEASE"' "$R" || fail "restart.sh does not start the sidecars under the release recorded in guest.txt"
+grep -q 'echo "zisk=$ZISK_VERSION" >> "$NET/guest.txt"' "$ROOT/network/up.sh" || fail "up.sh does not record the chain's ZisK release in guest.txt"
+grep -q 'CZE_SESSION_FILE="$NET/guest.txt" "$ROOT/network/external/sidecar.sh" start' "$ROOT/network/up.sh" || fail "up.sh starts the external sidecar from something other than the chain's guest.txt"
 # It refuses to run without a persistent chain, and says how to make one.
 EMPTY=$(mktemp -d)
 refusal=$(CZE_STATE_DIR=$EMPTY "$R" 2>&1) && fail "restart.sh ran without a persistent chain"

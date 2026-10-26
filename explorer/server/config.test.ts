@@ -185,6 +185,7 @@ describe("pin key ranges", () => {
     bad(`programvk@100=${VK2}\nrootc@100=${ROOT2}\n`, /not a key line/);
     bad(`programVK@ 100=${VK2}\nrootC@100=${ROOT2}\n`, /not a key line/);
     bad(`programVK@100 =${VK2}\nrootC@100=${ROOT2}\nfoo@1=2\n`, /not a key line/);
+    for (const z of ["zisk =1.3.2", "zisk = 1.3.2", "Zisk=1.3.2"]) bad(`${z}\n`, /not a key line/);
     bad(`programVK=${VK2}\n`, /programVK= is given twice/);
     bad(`rootC=${ROOT2}\n`, /rootC= is given twice/);
     bad(`programVK@9007199254740992=${VK2}\nrootC@9007199254740993=${ROOT2}\n`, /block number above 0/);

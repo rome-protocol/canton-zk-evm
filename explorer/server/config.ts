@@ -191,7 +191,7 @@ export function parsePins(text: string, file: string): Pins {
     const t = line.trim();
     const at = /^(programVK|rootC|zisk)@([^=\s]*)\s*=(.*)$/.exec(t);
     // A line that looks like a key line but is not in the exact form is refused, not skipped: a range dropped without a word would be a wrong key.
-    if (!at && !t.startsWith("#") && !/^(programVK|rootC|zisk)=/.test(t) && /^(programvk|rootc)|^[^=]*@/i.test(t)) {
+    if (!at && !t.startsWith("#") && !/^(programVK|rootC|zisk)=/.test(t) && /^(programvk|rootc)|^zisk\s*=|^[^=]*@/i.test(t)) {
       throw new ConfigError(`${file}: "${t.split("=")[0]!.trim()}" is not a key line: write programVK=, rootC=, zisk=, programVK@<fromBlock>=, rootC@<fromBlock>= or zisk@<fromBlock>= (no space between the name and the @)`);
     }
     if (at) {
