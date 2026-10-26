@@ -252,6 +252,39 @@ class TestSelect(unittest.TestCase):
                                dependents=lambda c, later: [t for t in later if t[0] == c[0]])
         self.assertEqual((s.kept, s.waiting, [t for t, _ in s.convicted]), ([("a", 1)], [("a", 2), ("c", 1)], [("b", 1)]))
 
+    def test_the_transaction_after_the_cut_is_not_tried_alone_when_a_kept_one_has_its_sender(self):
+        same = lambda c, later: [t for t in later if t[0] == c[0]]
+        calls = []
+
+        def check(items):
+            calls.append(list(items))
+            return verdict_of(len(items) <= 2)
+        txs = [("a", 0), ("a", 1), ("a", 2)]
+        s = pc.select(txs, check, dependents=same)
+        self.assertEqual((s.kept, s.waiting, s.convicted), (txs[:2], txs[2:], []))
+        self.assertNotIn([("a", 2)], calls)   # a lone ("a", 2) would be refused for its nonce: it is not asked
+        # another sender's transaction after the cut is still tried alone
+        s = pc.select([("a", 0), ("a", 1), ("b", 0)], lambda items: verdict_of(("b", 0) not in items), dependents=same)
+        self.assertEqual(([t for t, _ in s.convicted], s.kept), ([("b", 0)], [("a", 0), ("a", 1)]))
+
+    def test_a_transaction_reth_cannot_build_alone_waits_when_it_is_not_first(self):
+        def check(items):   # only a block that starts with "a" can be built; "c" fits no budget
+            if items[0] != "a":
+                return pc.Verdict(pc.UNBUILDABLE, detail="x")
+            return verdict_of(len(items) <= 2)
+        s = pc.select(list("abcd"), check)
+        self.assertEqual((s.kept, s.waiting, s.convicted), (list("ab"), list("cd"), []))
+        # not first after a conviction either: "b" cannot be built without "a", which is convicted, so it waits; "c" goes on
+        def check2(items):
+            if items == ["a"] or "a" in items:
+                return pc.Verdict(pc.GUEST, detail="x")
+            return pc.Verdict(pc.UNBUILDABLE, detail="x") if items[0] == "b" else pc.Verdict()
+        s = pc.select(list("abc"), check2)
+        self.assertEqual(([t for t, _ in s.convicted], s.kept, s.waiting), (["a"], list("c"), list("b")))
+        # the first of the block is still convicted when reth cannot build it: nothing earlier explains it
+        s = pc.select(list("ab"), lambda items: pc.Verdict(pc.UNBUILDABLE, detail="x"))
+        self.assertEqual([t for t, _ in s.convicted][:1], ["a"])
+
     def test_a_pair_bad_only_together_is_not_convicted_by_the_extra_check(self):
         s, _ = self.run_select(list("abcde"), lambda items: not ("b" in items and "c" in items))
         self.assertEqual((s.kept, s.waiting, s.convicted), (list("ab"), list("cde"), []))

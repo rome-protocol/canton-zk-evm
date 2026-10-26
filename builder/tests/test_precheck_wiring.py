@@ -13,6 +13,7 @@ import precheck as pc
 import test_builder as tb
 import test_pipeline as tp
 from test_producer import Loop
+from test_pipeline import A
 from fakes import HEAD_HASH, HEAD_NUMBER, RpcError, hash_of, raw_of, tx
 
 ALICE, BOB, CAROL = tb.ALICE, tb.BOB, tb.CAROL
@@ -238,6 +239,42 @@ class Blocks(Checked, tb.Case):
         self.assertEqual((setup.budgets.budget_seconds, setup.budgets.cost_intercept, setup.max_seconds), (120.0, 15.0, 300.0))
 
 
+class SameSender(Checked, tb.Case):
+    """A cut between two transactions of one sender: reth enforces nonces (a later one cannot be built without the earlier ones), so the
+    transaction after the cut cannot be tried alone, and nobody is convicted for it."""
+
+    def three_of_alice(self, plan=None, **budgets):
+        ts = [tx(ALICE, n, price=30) for n in range(3)]
+        s = self.checked(self.setup({ALICE: ts}), {t["hash"]: v for t, v in zip(ts, plan or [None] * 3) if v}, **budgets)
+        s.reth.enforce_nonces = True
+        return s, ts
+
+    def test_one_senders_transactions_cut_between_two_nothing_is_convicted_and_the_last_lands_next(self):
+        s, ts = self.three_of_alice()
+        first = self.block(s)
+        self.assertTrue(first["committed"], first)
+        self.assertEqual(first["transactions"], [t["hash"] for t in ts[:2]])
+        self.assertEqual(first["leftOut"], [])
+        (cut,) = self.lines(s, "precheck_cut")
+        self.assertEqual((cut["kept"], cut["convicted"], cut["waiting"]), (2, [], [ts[2]["hash"]]))
+        self.assertNotIn("input_tool", [x["verdict"] for x in self.lines(s, "precheck")])
+        self.assertNotIn("unbuildable", [x["verdict"] for x in self.lines(s, "precheck")])
+        self.assertEqual(self.in_pool(s), {ts[2]["hash"]})
+        second = self.block(s)
+        self.assertTrue(second["committed"], second)
+        self.assertEqual(second["transactions"], [ts[2]["hash"]])
+
+    def test_a_lone_offender_behind_its_senders_earlier_one_is_convicted_once_that_is_mined(self):
+        s, ts = self.three_of_alice([None, None, {"steps": 300}])
+        first = self.block(s)
+        self.assertEqual((first["transactions"], first["leftOut"]), ([t["hash"] for t in ts[:2]], []))
+        second = self.block(s)   # alone and first now: over the budget by itself
+        self.assertEqual(second["transactions"], [])
+        (left,) = second["leftOut"]
+        self.assertEqual(left["transaction"], ts[2]["hash"])
+        self.assertTrue(left["overBudget"])
+
+
 class Held(Checked, Loop):
     def test_the_producer_holds_a_convicted_transaction_with_the_reason(self):
         ts, plan = self.three((300, 0, 0))
@@ -272,6 +309,30 @@ class InFlight(Checked, tp.Depth):
         self.assertIn("over the proving budget", p.excluded_why[ts[0]["hash"]])
         self.assertEqual([x["event"] for x in self.lines(s, "precheck_cut")], ["precheck_cut"])
         self.assertNotIn(ts[0]["hash"], {t["hash"] for t in p.flight[0].built.chosen})
+
+    def test_a_cut_on_top_of_a_block_in_flight(self):
+        DAVE = "0x" + "dd" * 20
+        s = self.checked(self.setup({}))   # every transaction is 100 steps; the budget is 250
+        self.script(A, "sleep 3")   # the first block's proof is slow: the second block is built on it while it is in flight
+        p = self.pipeline(s, 2)
+        s.reth.pool[ALICE] = [tx(ALICE, 0, price=30)]
+        self.drive(p, lambda: len(self.lines(s, "cut")) == 1)
+        later = [tx(BOB, 0, price=30), tx(CAROL, 0, price=20), tx(DAVE, 0, price=10)]
+        for t in later:
+            s.reth.pool[t["from"]] = [t]
+        self.drive(p, lambda: len(self.committed()) == 3)
+        first, second, third = [r for r in self.reports if r.get("committed")][:3]
+        self.assertEqual(second["transactions"], [t["hash"] for t in later[:2]])   # cut back to two of the three
+        self.assertEqual(third["transactions"], [later[2]["hash"]])   # the third waited in the pool and went into the next block
+        self.assertEqual(second["leftOut"], [])
+        (cut,) = self.lines(s, "precheck_cut")
+        self.assertEqual((cut["kept"], cut["convicted"], cut["waiting"]), (2, [], [later[2]["hash"]]))
+        # the prefix was built on the block in flight, never on Canton's head
+        self.assertEqual(s.reth.blocks[second["blockHash"]]["parent"], first["blockHash"])
+        heads = [q[0]["headBlockHash"] for m, q in s.reth.engine_calls if m == "engine_forkchoiceUpdatedV3"]
+        built_first = heads.index(first["blockHash"])
+        self.assertNotIn(HEAD_HASH, heads[built_first:], "reth went below the block in flight")
+        self.assert_final_never_back(s)
 
 
 if __name__ == "__main__":
