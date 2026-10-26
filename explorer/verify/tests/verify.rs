@@ -5,6 +5,10 @@
 //! last test goes through the exported functions the browser calls.
 
 use zk_explorer_verify::{alloc, answer, answer_ptr, dealloc, verify_block};
+use zk_sidecar::Release;
+
+/// The release the recorded session was made with.
+const RELEASE: Release = Release::V1_3_2;
 
 const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -60,11 +64,17 @@ fn line(proof: &[u8], header: &[u8], txs: &[u8]) -> String {
 
 /// What the sidecar answers, asked the way the sidecar asks.
 fn sidecar(s: &Session, line: &str) -> String {
-    zk_sidecar::verify(&zk_sidecar::Config::new(s.program_vk, s.root_c), line)
+    zk_sidecar::verify(
+        &zk_sidecar::Config::for_release(s.program_vk, s.root_c, RELEASE),
+        line,
+    )
 }
 
 fn check(s: &Session, line: &str, expected: &str) {
-    assert_eq!(answer(s.program_vk, s.root_c, line.as_bytes()), expected);
+    assert_eq!(
+        answer(s.program_vk, s.root_c, RELEASE, line.as_bytes()),
+        expected
+    );
     assert_eq!(
         sidecar(s, line),
         expected,
@@ -104,12 +114,12 @@ fn other_pins_refuse_a_proof_that_verifies() {
     let mut other = session();
     other.program_vk[0] ^= 1;
     assert_eq!(
-        answer(other.program_vk, other.root_c, line.as_bytes()),
+        answer(other.program_vk, other.root_c, RELEASE, line.as_bytes()),
         "no the proof was made by another program or ZisK release"
     );
     assert_eq!(
         sidecar(&other, &line),
-        answer(other.program_vk, other.root_c, line.as_bytes())
+        answer(other.program_vk, other.root_c, RELEASE, line.as_bytes())
     );
 }
 
@@ -140,7 +150,7 @@ fn lines_that_are_not_well_formed_are_malformed_input() {
     }
     // Bytes that are not text at all get the same answer.
     assert_eq!(
-        answer(s.program_vk, s.root_c, &[0xff, 0xfe]),
+        answer(s.program_vk, s.root_c, RELEASE, &[0xff, 0xfe]),
         "no malformed input"
     );
 }
@@ -149,13 +159,13 @@ fn lines_that_are_not_well_formed_are_malformed_input() {
 fn the_exported_functions_answer_the_same() {
     let s = session();
     let (header, txs) = other_block();
-    let pins = [s.program_vk, s.root_c].concat();
+    let pins = [s.program_vk.as_slice(), s.root_c.as_slice(), &[1]].concat();
     for line in [
         line(&s.proof, &header, &txs),
         "nonsense".to_string(),
         String::new(),
     ] {
-        let expected = answer(s.program_vk, s.root_c, line.as_bytes());
+        let expected = answer(s.program_vk, s.root_c, RELEASE, line.as_bytes());
         // Copy the input in the way the browser does.
         let (pins_at, line_at) = (alloc(pins.len()), alloc(line.len()));
         let got = unsafe {
@@ -169,4 +179,42 @@ fn the_exported_functions_answer_the_same() {
         };
         assert_eq!(got, expected);
     }
+}
+
+/// Calls the exported check with `pins` (65 bytes) and `line`, the way the browser does.
+fn exported(pins: &[u8], line: &str) -> String {
+    let (pins_at, line_at) = (alloc(pins.len()), alloc(line.len()));
+    unsafe {
+        std::ptr::copy_nonoverlapping(pins.as_ptr(), pins_at, pins.len());
+        std::ptr::copy_nonoverlapping(line.as_ptr(), line_at, line.len());
+        let len = verify_block(pins_at, line_at, line.len());
+        let text = std::slice::from_raw_parts(answer_ptr(), len).to_vec();
+        dealloc(pins_at, pins.len());
+        dealloc(line_at, line.len());
+        String::from_utf8(text).unwrap()
+    }
+}
+
+#[test]
+fn the_release_byte_picks_the_release_and_an_unknown_one_is_refused() {
+    let s = session();
+    let (header, txs) = other_block();
+    let l = line(&s.proof, &header, &txs);
+    let with = |code: u8| {
+        exported(
+            &[s.program_vk.as_slice(), s.root_c.as_slice(), &[code]].concat(),
+            &l,
+        )
+    };
+    // Releases 1.3.1 and 1.3.2 share one wrapping circuit, so the proof is good under both codes.
+    assert_eq!(
+        with(1),
+        answer(s.program_vk, s.root_c, Release::V1_3_2, l.as_bytes())
+    );
+    assert_eq!(
+        with(0),
+        answer(s.program_vk, s.root_c, Release::V1_3_1, l.as_bytes())
+    );
+    assert_eq!(with(2), "no unknown ZisK release");
+    assert_eq!(with(255), "no unknown ZisK release");
 }

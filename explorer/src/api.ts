@@ -9,7 +9,7 @@ export interface ApiStatus {
   networkName: string | null;
   coin: { symbol: string; decimals: number };
   /** `programVK`, `rootC` and `file` are the current key, the last range. `keys` lists every key and the block it starts at; a server from before key ranges does not send it. */
-  pins: { programVK: string; rootC: string; file: string; keys?: { fromBlock: number; programVK: string; rootC: string }[] };
+  pins: { programVK: string; rootC: string; file: string; keys?: { fromBlock: number; programVK: string; rootC: string; /** The ZisK release the key is under, as 1.3.1 or 1.3.2; a server from before releases were named does not send it, and the key is 1.3.1's. */ zisk?: string }[] };
   /** True when reth and Canton can be read and every check the index runs passes. */
   ok: boolean;
   /** True while the explorer is still reading up to the newest block, for the first time or after a new run. `ok` is false meanwhile. A failed check or a failed look is never "starting". */

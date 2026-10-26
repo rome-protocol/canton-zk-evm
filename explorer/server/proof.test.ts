@@ -23,7 +23,7 @@ describe("the facts a proof carries", () => {
   });
 
   it("shows the value it read and says no when the pins are other pins", () => {
-    const other = { ...pins, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32) };
+    const other = { ...pins, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32), zisk: "1.3.1" as const };
     const c = checkProofFacts(readProofFacts(recorded)!, other, BLOCK_HASH);
     expect(c.programVK).toEqual({ value: pins.programVK, ok: false });
     expect(c.rootC).toEqual({ value: pins.rootC, ok: false });
@@ -55,8 +55,8 @@ describe("the facts a proof carries", () => {
 });
 
 describe("a proof against the key for its block's height", () => {
-  const key2 = { fromBlock: 100, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32) };
-  const ranged = { ...pins, programVK: key2.programVK, rootC: key2.rootC, keys: [{ fromBlock: 0, programVK: pins.programVK, rootC: pins.rootC }, key2] };
+  const key2 = { fromBlock: 100, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32), zisk: "1.3.1" as const };
+  const ranged = { ...pins, programVK: key2.programVK, rootC: key2.rootC, keys: [{ fromBlock: 0, programVK: pins.programVK, rootC: pins.rootC, zisk: "1.3.1" as const }, key2] };
 
   it("is ok under the key of its own range, and not ok under the key of the other", () => {
     const facts = readProofFacts(recorded)!; // proven under key 1

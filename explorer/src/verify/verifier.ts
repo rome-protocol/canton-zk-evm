@@ -4,8 +4,8 @@
 
 /** A block record's three fields, as lowercase hex without 0x, exactly as /api/block gives them. */
 export interface BlockFields { proofHex: string; headerHex: string; txsHex: string }
-/** The two pins, as /api/status gives them: 0x and 64 hex digits each. */
-export interface Pins { programVK: string; rootC: string }
+/** The two pins, as /api/status gives them: 0x and 64 hex digits each. `zisk` is the ZisK release the proofs are made with, 1.3.1 or 1.3.2; the proof is checked under that release's key. Without it, the release is 1.3.1. */
+export interface Pins { programVK: string; rootC: string; zisk?: string }
 /** Runs the check and returns the sidecar's answer line. */
 export type Verifier = (block: BlockFields, pins: Pins) => string;
 
@@ -21,9 +21,15 @@ interface Exports {
   answer_ptr(): number;
 }
 
-/** The 64 bytes the module takes: the program key, then the ZisK release root. */
+/** The byte the module takes for each ZisK release. */
+const RELEASE_CODES: Record<string, number> = { "1.3.1": 0, "1.3.2": 1 };
+
+/** The 65 bytes the module takes: the program key, then the ZisK release root, then the ZisK release. */
 export function pinBytes(pins: Pins): Uint8Array {
-  const bytes = new Uint8Array(64);
+  const code = RELEASE_CODES[pins.zisk ?? "1.3.1"];
+  if (code === undefined) throw new Error(`ZisK ${pins.zisk} is not a release this check knows (1.3.1 or 1.3.2).`);
+  const bytes = new Uint8Array(65);
+  bytes[64] = code;
   [pins.programVK, pins.rootC].forEach((pin, i) => {
     const m = /^(?:0x)?([0-9a-f]{64})$/i.exec(pin);
     if (!m) throw new Error("A pin must be 64 hex digits, with or without 0x.");
@@ -42,7 +48,7 @@ export async function loadVerifier(source: BufferSource | Response | Promise<Res
 
   return (block, pins) => {
     const line = new TextEncoder().encode(`${block.proofHex},${block.headerHex},${block.txsHex}`);
-    const p = x.alloc(64);
+    const p = x.alloc(65);
     const l = x.alloc(line.length);
     try {
       // Take the view after both allocations: the module's memory may have grown, which makes an older view useless.
@@ -52,7 +58,7 @@ export async function loadVerifier(source: BufferSource | Response | Promise<Res
       const len = x.verify_block(p, l, line.length);
       return new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.answer_ptr(), len));
     } finally {
-      x.dealloc(p, 64);
+      x.dealloc(p, 65);
       x.dealloc(l, line.length);
     }
   };

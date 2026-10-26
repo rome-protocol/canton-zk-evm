@@ -37,6 +37,61 @@ pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// The ZisK release a chain's proofs were made with. It picks the verifying key the proof is
+/// checked under. A chain that was set up before releases were named is on 1.3.1, so that is the
+/// default.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Release {
+    #[default]
+    V1_3_1,
+    V1_3_2,
+}
+
+impl Release {
+    /// A release by its number: `1.3.1` or `1.3.2`, with or without the `-alpha` that ZisK's own
+    /// tags carry.
+    pub fn parse(s: &str) -> Option<Release> {
+        match s.strip_suffix("-alpha").unwrap_or(s) {
+            "1.3.1" => Some(Release::V1_3_1),
+            "1.3.2" => Some(Release::V1_3_2),
+            _ => None,
+        }
+    }
+
+    /// The release's number.
+    pub fn name(self) -> &'static str {
+        match self {
+            Release::V1_3_1 => "1.3.1",
+            Release::V1_3_2 => "1.3.2",
+        }
+    }
+
+    /// The verifying key of the release's final circuit.
+    pub fn key(self) -> &'static zk_verifier::vk::VerifyingKey {
+        match self {
+            Release::V1_3_1 => &zk_verifier::vk::ZISK_1_3_1,
+            Release::V1_3_2 => &zk_verifier::vk::ZISK_1_3_2,
+        }
+    }
+
+    /// The release for a byte of the WebAssembly interface (0 is 1.3.1, 1 is 1.3.2).
+    pub fn from_code(code: u8) -> Option<Release> {
+        match code {
+            0 => Some(Release::V1_3_1),
+            1 => Some(Release::V1_3_2),
+            _ => None,
+        }
+    }
+}
+
+fn check_1_3_1(abi: &[u8]) -> Result<bool, zk_verifier::Error> {
+    zk_verifier::verify(Release::V1_3_1.key(), abi)
+}
+
+fn check_1_3_2(abi: &[u8]) -> Result<bool, zk_verifier::Error> {
+    zk_verifier::verify(Release::V1_3_2.key(), abi)
+}
+
 /// What `verify` pins, and how it checks a proof.
 #[derive(Clone)]
 pub struct Config {
@@ -44,17 +99,29 @@ pub struct Config {
     pub program_vk: [u8; 32],
     /// The root of the ZisK release's final circuit.
     pub root_c: [u8; 32],
-    /// The proof check: always ZisK 1.3.1's, except in this crate's own tests (see
+    /// The ZisK release the proofs are made with.
+    pub release: Release,
+    /// The proof check: always the release's, except in this crate's own tests (see
     /// `with_proof_check`). It is private so that no caller can replace it.
     check_proof: fn(&[u8]) -> Result<bool, zk_verifier::Error>,
 }
 
 impl Config {
+    /// The pins of a chain on ZisK 1.3.1, which is what a chain is on when its release is not named.
     pub fn new(program_vk: [u8; 32], root_c: [u8; 32]) -> Config {
+        Config::for_release(program_vk, root_c, Release::V1_3_1)
+    }
+
+    /// The pins of a chain whose proofs are made with `release`.
+    pub fn for_release(program_vk: [u8; 32], root_c: [u8; 32], release: Release) -> Config {
         Config {
             program_vk,
             root_c,
-            check_proof: |abi| zk_verifier::verify(&zk_verifier::vk::ZISK_1_3_1, abi),
+            release,
+            check_proof: match release {
+                Release::V1_3_1 => check_1_3_1,
+                Release::V1_3_2 => check_1_3_2,
+            },
         }
     }
 

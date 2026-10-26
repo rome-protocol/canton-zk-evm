@@ -113,7 +113,7 @@ else
   cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
   SIDECAR=$ROOT/sidecar/target/release/zk-sidecar
   for port in 8085 8086; do
-    background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --listen "127.0.0.1:$port"
+    background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --zisk-release 1.3.2 --listen "127.0.0.1:$port"
     for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null && break; sleep 0.5; done
     curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null || fail "the sidecar on $port does not answer"
   done

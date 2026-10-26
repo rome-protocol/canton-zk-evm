@@ -14,7 +14,7 @@ export const FIELDS = {
   healthCheck: ["id", "role", "status", "written", "value", "threshold", "detail", "sinceSeconds", "changedAt", "refreshedAt", "refreshedAgoSeconds", "intervalSeconds", "stale", "elsewhere"],
   /** The current key, as before there were ranges. `keys` is the list of every key and the block it starts at. */
   pins: ["programVK", "rootC", "file", "keys"],
-  pinsKey: ["fromBlock", "programVK", "rootC"],
+  pinsKey: ["fromBlock", "programVK", "rootC", "zisk"],
   final: ["number", "hash", "timestamp", "recordTime"],
   proving: ["number", "hash", "timestamp"],
   /** One of the newest final blocks, for the home page's list. */

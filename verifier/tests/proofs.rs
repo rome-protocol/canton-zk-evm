@@ -302,3 +302,11 @@ fn the_recorded_proof_of_the_one_transfer_block_is_accepted_and_carries_its_pins
     other[800..832].copy_from_slice(&load("1.3.1", 14).root_c);
     assert_eq!(verify(&vk::ZISK_1_3_1, &other), Ok(false));
 }
+
+#[test]
+fn the_1_3_2_key_is_the_1_3_1_key() {
+    assert_eq!(vk::ZISK_1_3_2, vk::ZISK_1_3_1);
+    for (block, abi) in all("1.3.2") {
+        assert_eq!(verify(&vk::ZISK_1_3_2, &abi), Ok(true), "block {block}");
+    }
+}

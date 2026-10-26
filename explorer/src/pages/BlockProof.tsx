@@ -5,7 +5,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { count, short } from "../format.ts";
 import { Bad, Good } from "./BlockSides.tsx";
-import { pinsAt } from "../pins.ts";
+import { FIRST_ZISK_RELEASE, pinsAt } from "../pins.ts";
 import "./block.css";
 
 const PROOF_LENGTH = "This proof is not 1,344 bytes, so its facts cannot be read.";
@@ -23,8 +23,8 @@ function FactRows({ label, fact, match, mismatch }: { label: string; fact: Fact;
   );
 }
 
-/** The release is named only for the key from block 0; a later key is for a later guest or release, so it reads "pinned for this height". */
-const release = (pins: { fromBlock: number } | undefined) => (pins && pins.fromBlock > 0 ? "pinned for this height" : "ZisK 1.3.1");
+/** The release the block's key range is under, as the pins name it. */
+const release = (pins: { zisk: string } | undefined) => `ZisK ${pins?.zisk ?? FIRST_ZISK_RELEASE}`;
 
 /** The compact form of a transaction's page: the three facts as rows of the card, value and verdict on one line, with nothing around them. */
 function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ReturnType<typeof pinsAt> | undefined; block: number }) {

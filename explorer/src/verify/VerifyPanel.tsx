@@ -112,7 +112,7 @@ export function VerifyPanel({ block, blockHash, pins, proving, moduleUrl, module
       await paint();
       if (run.current !== mine) return;
       const t0 = now();
-      const line = verify(block, { programVK: pins.programVK, rootC: pins.rootC });
+      const line = verify(block, { programVK: pins.programVK, rootC: pins.rootC, zisk: pins.zisk });
       const ms = now() - t0;
       const answer = parseAnswer(line);
       if (run.current !== mine) return;

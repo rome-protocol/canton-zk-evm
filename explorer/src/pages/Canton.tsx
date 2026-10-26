@@ -13,7 +13,7 @@ import { bytesOf, count, duration, seconds, short, units, utc, utcDate } from ".
 import { useLabels } from "../labels.ts";
 import { listPoll } from "../stats.ts";
 import { useFollowing, useNow, useStatus } from "../useStatus.ts";
-import { pinsAt } from "../pins.ts";
+import { FIRST_ZISK_RELEASE, pinsAt } from "../pins.ts";
 import { useLive } from "../useLive.ts";
 import { Bad, Good } from "./BlockSides.tsx";
 import "./block.css";
@@ -109,7 +109,7 @@ function Transactions({ b }: { b: ApiBlock }) {
 }
 
 /** The size of the proof and each fact read from its own bytes, against the explorer's pins. */
-function ProofFacts({ c, later }: { c: NonNullable<ApiBlock["canton"]>; /** The block is checked under a key from a later range, not the key from block 0. */ later: boolean }) {
+function ProofFacts({ c, zisk }: { c: NonNullable<ApiBlock["canton"]>; /** The ZisK release of the key range the block is checked under. */ zisk: string }) {
   const f = c.proof;
   return (
     <>
@@ -117,7 +117,7 @@ function ProofFacts({ c, later }: { c: NonNullable<ApiBlock["canton"]>; /** The 
       {!f ? <span className="muted">its facts cannot be read</span> : (
         <>
           {f.programVK.ok ? <Good>ours</Good> : <Bad>program key is not ours</Bad>} <span className="muted">·</span>{" "}
-          {f.rootC.ok ? <Good>{later ? "pinned for this height" : "ZisK 1.3.1"}</Good> : <Bad>{later ? "release is not the pinned one" : "ZisK release is not 1.3.1"}</Bad>} <span className="muted">·</span>{" "}
+          {f.rootC.ok ? <Good>{`ZisK ${zisk}`}</Good> : <Bad>{`ZisK release is not ${zisk}`}</Bad>} <span className="muted">·</span>{" "}
           {f.blockHash.ok ? <Good>this block</Good> : <Bad>not this block's hash</Bad>}
         </>
       )}
@@ -143,7 +143,7 @@ function OnEvm({ u, b, failed }: { u: UpdateDetail; b: ApiBlock | undefined; fai
             <Item label="Transactions"><Transactions b={b} /></Item>
             <Item label="Gas used"><span className="num">{count(b.gasUsed)}</span> <span className="muted">of {count(b.gasLimit)}</span></Item>
             <Item label="State root"><HashLink value={b.stateRoot} /></Item>
-            {c && <Item label="Proof"><ProofFacts c={c} later={!!pins && pinsAt(pins, b.number).fromBlock > 0} /></Item>}
+            {c && <Item label="Proof"><ProofFacts c={c} zisk={pins ? pinsAt(pins, b.number).zisk : FIRST_ZISK_RELEASE} /></Item>}
             {c && <Item label="Hashes">{c.hashesMatch ? <Good>reth, the record and the record's header give the same hash</Good> : <Bad>reth, the record and the record's header do not all give the same hash</Bad>}</Item>}
           </>
         )}

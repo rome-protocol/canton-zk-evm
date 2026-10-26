@@ -14,7 +14,18 @@ describe("pinBytes", () => {
   it("reads 0x and bare hex, any case, into the program key and then the root", () => {
     const bytes = pinBytes({ programVK: "0x" + "01".repeat(32), rootC: "AB".repeat(32) });
     expect([...bytes.slice(0, 32)]).toEqual(Array(32).fill(1));
-    expect([...bytes.slice(32)]).toEqual(Array(32).fill(0xab));
+    expect([...bytes.slice(32, 64)]).toEqual(Array(32).fill(0xab));
+    expect(bytes).toHaveLength(65);
+    expect(bytes[64]).toBe(0);
+  });
+  it("ends with the ZisK release: 0 for 1.3.1, which is also what no release means, and 1 for 1.3.2", () => {
+    const pins = { programVK: "0x" + "01".repeat(32), rootC: "0x" + "02".repeat(32) };
+    expect(pinBytes(pins)[64]).toBe(0);
+    expect(pinBytes({ ...pins, zisk: "1.3.1" })[64]).toBe(0);
+    expect(pinBytes({ ...pins, zisk: "1.3.2" })[64]).toBe(1);
+  });
+  it("refuses a release it does not know", () => {
+    expect(() => pinBytes({ programVK: "00".repeat(32), rootC: "00".repeat(32), zisk: "1.2.0" })).toThrow("not a release this check knows");
   });
   it("refuses a pin that is not 32 bytes of hex", () => {
     for (const bad of ["", "0x12", "zz".repeat(32), "00".repeat(33)]) {
@@ -51,6 +62,13 @@ describe.skipIf(!process.env.VERIFY_WASM)("the built module, through the loader"
   it("refuses a proof made for other pins", async () => {
     const wrong = { ...pins, programVK: "0x" + "00".repeat(32) };
     expect((await load())(block, wrong)).toBe("no the proof was made by another program or ZisK release");
+  });
+  it("takes the release from the pins: both releases check the session proof, and the page cannot name another", async () => {
+    const verify = await load();
+    const key = pins.keys[0]!;
+    expect(key.zisk).toBe("1.3.2");
+    for (const zisk of ["1.3.1", "1.3.2"]) expect(verify(block, { ...pins, zisk })).toBe("no the header does not hash to the proven block hash");
+    expect(() => verify(block, { ...pins, zisk: "1.2.0" })).toThrow("not a release this check knows");
   });
   it("answers a malformed line, and keeps answering after one", async () => {
     const verify = await load();

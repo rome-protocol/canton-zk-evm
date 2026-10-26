@@ -197,6 +197,11 @@ pub const ZISK_1_3_1: VerifyingKey = VerifyingKey::new(
     ),
 );
 
+/// The key of ZisK 1.3.2-alpha. It is the key of 1.3.1-alpha: the two releases have one wrapping
+/// circuit (see above). It has its own name so that a caller picks its key by release, and does not
+/// have to know that two releases share one.
+pub const ZISK_1_3_2: VerifyingKey = ZISK_1_3_1;
+
 /// [1]_1, the G1 generator (1, 2).
 pub const G1_GENERATOR: [u8; 64] = {
     let mut g = [0u8; 64];
