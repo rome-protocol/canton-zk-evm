@@ -80,7 +80,7 @@
       renew-accept    the confirmer's token: exercises AcceptRenewPause on the proposal for exactly --pause-seconds. The legs are then paused until that long from the
                       moment of the accept, which also starts a pause from nothing and is not held to the cooldown. This is how a pause is renewed: only the operator and the
                       confirmer together can keep it going, and each renewal ends within the longest a pause may run from its own accept. There is no wait before it, but the accept is refused
-                      for a proposal more than an hour old: propose it again for the incident at hand. The line prints the proposal's "proposedAt" and
+                      for a proposal more than an hour old: the operator takes it back (--withdraw-proposal renew-pause) and proposes it again for the incident at hand (renew-propose refuses while the old one is there). The line prints the proposal's "proposedAt" and
                       "acceptableUntil" (an hour later) and the step refuses, before sending, once that time has passed. A re-run after an accept that went through, when no
                       proposal is there and the legs are paused, prints the pause state with "noProposal": true and succeeds.
     A proposal that is not wanted is taken back by the operator (--withdraw-proposal renew-pause). With --dry-run nothing is submitted.
@@ -756,6 +756,12 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
             if proposals and not mine:
                 raise SystemExit("a proposal to pause for another time is on this participant already. Accept it only if that value is wanted; "
                                  "otherwise the operator takes it back (--withdraw-proposal renew-pause: the Withdraw choice of the RenewPauseProposal, with the operator's token) and proposes again")
+            if mine and mine[0].get("proposedAt"):
+                made = parse_time(mine[0]["proposedAt"])
+                result["proposedAt"], result["acceptableUntil"] = mine[0]["proposedAt"], show_time(made + RENEW_PROPOSAL_LIFE)
+                if now > made + RENEW_PROPOSAL_LIFE:
+                    raise SystemExit(f"a proposal past its hour is there (made at {mine[0]['proposedAt']}, acceptable until {result['acceptableUntil']}): "
+                                     "--withdraw-proposal renew-pause first (the operator's token), then propose again")
             if not mine and not dry_run:
                 submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeRenewPause",
                                                             "choiceArgument": {"forHowLong": rel_value(seconds)}}}, "propose")
@@ -769,7 +775,7 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
             result["proposedAt"], result["acceptableUntil"] = mine[0]["proposedAt"], show_time(made + RENEW_PROPOSAL_LIFE)
             if now > made + RENEW_PROPOSAL_LIFE:
                 raise SystemExit(f"the proposal was made at {mine[0]['proposedAt']} and could be accepted until {result['acceptableUntil']}: the chain refuses it now. "
-                                 "The operator takes it back (--withdraw-proposal renew-pause) or proposes it again for the incident at hand")
+                                 "The operator takes it back (--withdraw-proposal renew-pause) and proposes it again for the incident at hand")
         if not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "RenewPauseProposal", "contractId": mine[0]["contractId"], "choice": "AcceptRenewPause",
                                                         "choiceArgument": {"chain": chain["contractId"]}}}, "accept")

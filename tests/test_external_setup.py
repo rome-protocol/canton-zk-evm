@@ -1044,6 +1044,24 @@ class Setup(unittest.TestCase):
             self.assertIn("could be accepted until", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "7200", *extra)))
         self.assertEqual(len(self.sent()), sent)
 
+    def test_renew_propose_does_not_stand_in_for_a_proposal_that_is_past_its_hour(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.node.ledger_time = datetime.now(timezone.utc) - timedelta(hours=1, minutes=1)
+        self.addCleanup(setattr, self.node, "ledger_time", None)
+        self.pause("renew-propose", "--pause-seconds", "7200")
+        sent = len(self.sent())
+        for extra in ((), ("--dry-run",)):
+            self.assertIn("past its hour", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "7200", *extra)))
+        self.assertIn("another time", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "60")))
+        self.assertEqual(len(self.sent()), sent)   # nothing was sent
+        self.node.ledger_time = None                          # the clock is back: the stale proposal is taken back, then proposed afresh
+        self.assertEqual(self.withdraw("renew-pause")["withdrawn"], 1)
+        fresh = self.pause("renew-propose", "--pause-seconds", "7200")
+        self.assertEqual((fresh["submitted"], fresh["alreadyProposed"]), (True, False))
+        self.assertTrue(self.pause("renew-propose", "--pause-seconds", "7200")["alreadyProposed"])
+        self.assertIn("acceptableUntil", self.pause("renew-propose", "--pause-seconds", "7200"))
+
     def test_a_renewal_is_held_to_the_longest_pause_the_chain_has(self):
         self.run_setup()
         self.base = len(self.sent())
