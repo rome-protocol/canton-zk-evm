@@ -280,6 +280,41 @@ class Failures(Depth):
         found = self.lines(s, "cancelled")
         self.assertEqual([(x["attempt"], x["depends_on"]) for x in found], [(i, culprit) for i in range(culprit + 1, k + 1)])
 
+    def move_back_fails_at_one(self, engine):
+        """One block in flight, its proof fails, and reth cannot be moved back: the next step finishes it."""
+        self.engine = engine
+        s = self.setup({})
+        numbers = {HEAD_NUMBER + 1}
+        self.failing(numbers)
+        s.reth.no_state_for_genesis = True
+        p = self.pipeline(s, 1, provers=1)
+        s.reth.pool[ALICE] = [t := tx(ALICE, 0)]
+        self.step(p)
+        self.assertEqual([r["committed"] for r in self.reports], [False])
+        numbers.clear()
+        s.reth.no_state_for_genesis = False
+        cuts = len(self.lines(s, "cut"))
+        self.step(p)
+        return s, p, t, len(self.lines(s, "cut")) - cuts
+
+    def test_a_failed_move_back_at_one_ends_the_same_on_both_engines(self):
+        """The one difference at one block in flight (design 3.1): the single block producer sends the kept transactions again and cuts in the
+        step after the failure, with a `resolved restarted` line; the pipeline finishes the move back in that step (it first reads Canton's head,
+        which must still be the block it goes back to), writes no such line, and cuts in the step after. Both end with the same block."""
+        s, p, t, cut = self.move_back_fails_at_one(b.Producer)
+        self.assertEqual((cut, [x["outcome"] for x in self.lines(s, "resolved")], self.committed()), (1, ["restarted"], [HEAD_NUMBER + 1]))
+        self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
+        mine_blocks = self.reports[-1]["blockHash"]
+        self.reports.clear()
+        s, p, t, cut = self.move_back_fails_at_one(b.Pipeline)
+        self.assertEqual((cut, self.lines(s, "resolved"), self.committed()), (0, [], []))
+        self.assertEqual(self.in_pool(s), {t["hash"]}, "the transaction is back in the pool")
+        self.assertFalse(p.unwind_pending)
+        self.step(p)
+        self.assertEqual(self.committed(), [HEAD_NUMBER + 1])
+        self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
+        self.assertEqual(self.reports[-1]["blockHash"], mine_blocks, "the same block")
+
     # nothing is cut
     def test_nothing_is_cut_while_a_block_in_flight_has_failed(self):
         s = self.setup({})

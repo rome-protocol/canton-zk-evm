@@ -2126,7 +2126,9 @@ def each_once(lost: list) -> list:
 
 class Pipeline(Producer):
     """The producer that keeps up to `max_in_flight` blocks in flight: a block is cut while earlier ones prove, built on the newest of them, and
-    only the oldest is submitted. At `max_in_flight` 1 it does what `Producer` does, call for call. See README.md, "Provers".
+    only the oldest is submitted. At `max_in_flight` 1 it makes the same calls and the same bytes as `Producer` on the golden scenarios (tests/test_golden_pipeline.py). The one
+    difference is after a move back that failed: the next step finishes it (after a read of Canton's head, with no `resolved restarted` line) and
+    the block is cut a step later (tests/test_pipeline.py pins it). See README.md, "Provers".
 
     `self.last` is the last block this process saw Canton commit, as (number, hash): reth's head never goes below it, and its safe and
     finalized blocks are never any other."""
