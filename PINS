@@ -20,6 +20,9 @@ ZISK_COMMIT=1e22630bb7e143c30705a1603ed87cfd3da8c6ec
 ZISK_ETH_CLIENT_VERSION=0.13.1
 ZISK_ETH_CLIENT_COMMIT=edf8adcda75c015f4225abe3aabb3bed03e21beb
 ZISKUP_SHA256=a2d1781f64f31719ef251f55a48c664ab35cdb7431d42167894f94b5fbec64e1
+# The Rust toolchain the guest is built with: a release of 0xPolygonHermez/rust and the checksum of its linux-x86_64 archive. Without this pin ZisK's installer takes the highest zisk-4.x.y release there is.
+ZISK_TOOLCHAIN=zisk-4.0.0
+ZISK_TOOLCHAIN_SHA256=c4c44b5612dd025f630c2f984ae5f8a862b885c4b14bfc57c980eb8073b8cf62
 NODE_VERSION=20.20.2
 NODE_SHA256=df770b2a6f130ed8627c9782c988fda9669fa23898329a61a871e32f965e007d
 # The Docker command-line program (the static linux x86_64 build), which the verifier's sandbox tests mount into the pinned Node image (alpine, where the
