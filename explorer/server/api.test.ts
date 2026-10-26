@@ -363,11 +363,17 @@ describe.skipIf(!TEST_URL)("pin key ranges", () => {
     checkFields("status", body);
     expect(body.pins).toEqual({
       programVK: "0x" + "ee".repeat(32), rootC: "0x" + "ee".repeat(32), file: "guest.txt",
-      keys: [{ fromBlock: 0, programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) }, { fromBlock: 2, programVK: "0x" + "ee".repeat(32), rootC: "0x" + "ee".repeat(32) }],
+      keys: [{ fromBlock: 0, programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32), zisk: "1.3.1" }, { fromBlock: 2, programVK: "0x" + "ee".repeat(32), rootC: "0x" + "ee".repeat(32), zisk: "1.3.1" }],
     });
     const one = (await (await boot(chain())).get("/api/status")).body as { pins: { keys: unknown } };
-    expect(one.pins.keys).toEqual([{ fromBlock: 0, programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) }]);
+    expect(one.pins.keys).toEqual([{ fromBlock: 0, programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32), zisk: "1.3.1" }]);
     expect(one.pins).toMatchObject({ programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) });
+  });
+
+  it("gives each key's ZisK release in /api/status, 1.3.1 when the pins name none", async () => {
+    const { get } = await boot(chain(), { pinsText: OLD + NEW + "zisk@2=1.3.2\n" });
+    const body = (await get("/api/status")).body as { pins: { keys: { fromBlock: number; zisk: string }[] } };
+    expect(body.pins.keys.map((k) => [k.fromBlock, k.zisk])).toEqual([[0, "1.3.1"], [2, "1.3.2"]]);
   });
 });
 
