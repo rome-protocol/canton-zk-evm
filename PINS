@@ -15,8 +15,8 @@ BUSYBOX_IMAGE_ID=sha256:30ecbe1509090b38ef3260f3609d64d8261230464eaa4d235901db49
 # The image the verifier's compiles run in: it has glibc's shared libraries, which the official linux-amd64 solc builds need (libdl.so.2 and the others; busybox has none). Debian bookworm-slim, by its index digest.
 SOLC_SANDBOX_IMAGE=public.ecr.aws/docker/library/debian@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2078bea43f78efe3f8
 SOLC_SANDBOX_IMAGE_ID=sha256:8da84df25d28176be84164040cd45e128c6b4c6a80b7d7cbe17fe2b9f198efc2
-ZISK_VERSION=1.3.1-alpha
-ZISK_COMMIT=306a9c934ba4947b1d586d69b67120f8b4c41466
+ZISK_VERSION=1.3.2-alpha
+ZISK_COMMIT=1e22630bb7e143c30705a1603ed87cfd3da8c6ec
 ZISK_ETH_CLIENT_VERSION=0.13.1
 ZISK_ETH_CLIENT_COMMIT=edf8adcda75c015f4225abe3aabb3bed03e21beb
 ZISKUP_SHA256=a2d1781f64f31719ef251f55a48c664ab35cdb7431d42167894f94b5fbec64e1

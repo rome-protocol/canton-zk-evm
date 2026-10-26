@@ -17,8 +17,8 @@ edition = "2021"
 guest-common = { path = "crates/common/guest-common" }
 
 # crates.io dependencies
-zisk-zkvm-interface = "1.3.1-alpha"
-ziskos = "1.3.1-alpha"
+zisk-zkvm-interface = "1.3.2-alpha"
+ziskos = "1.3.2-alpha"
 
 revm = { version = "38.0.0", default-features = false }
 

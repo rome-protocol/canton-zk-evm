@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Rome Protocol
-//! The verifying key of ZisK's final PLONK wrapping circuit for release 1.3.1, and the curve and
-//! circuit constants every release shares. The key is read from ZisK's own generated
+//! The verifying key of ZisK's final PLONK wrapping circuit for releases 1.3.1 and 1.3.2, and the
+//! curve and circuit constants every release shares. The key is read from ZisK's own generated
 //! `PlonkVerifier.sol`. The 1.2.0 key is here too, but only for the tests; the shared constants are
-//! identical in both releases' files.
+//! identical in all the releases' files.
 
 /// Parses a hex string (no prefix) into bytes, at compile time.
 const fn hex<const N: usize>(s: &str) -> [u8; N] {
@@ -153,9 +153,15 @@ pub const ZISK_1_2_0: VerifyingKey = VerifyingKey::new(
     ),
 );
 
-/// ZisK 1.3.1-alpha. Read from `zisk-contracts/PlonkVerifier.sol` at tag `v1.3.1-alpha` (commit
-/// 306a9c934ba4947b1d586d69b67120f8b4c41466) of github.com/0xPolygonHermez/zisk (constants `Qm`..`Qc`
-/// and `S1`..`S3`, as x then y).
+/// ZisK 1.3.1-alpha and ZisK 1.3.2-alpha: one key for both. Read from `zisk-contracts/PlonkVerifier.sol`
+/// at tag `v1.3.1-alpha` (commit 306a9c934ba4947b1d586d69b67120f8b4c41466) of
+/// github.com/0xPolygonHermez/zisk (constants `Qm`..`Qc` and `S1`..`S3`, as x then y). The key of
+/// release 1.3.2-alpha (commit 1e22630bb7e143c30705a1603ed87cfd3da8c6ec) was read again from the
+/// `PlonkVerifier.sol` that its own SNARK setup installs (`provingKeySnark/final/`, SHA-256
+/// 07001fef0200f422a0287fcef40b8fb040157e92b6cee9891b26f8a80c9c47b9) and its sixteen numbers are
+/// these. The wrapping circuit did not change between the two releases; what did change is the
+/// root of the final circuit (`rootC`) and every program key, which the caller pins per release.
+/// The pins, not this key, tell a 1.3.1 proof from a 1.3.2 proof (see `tests/proofs.rs`).
 pub const ZISK_1_3_1: VerifyingKey = VerifyingKey::new(
     point(
         "2fb9d4c02a015e4d7c14abe7c1faa60ac0ef45b14b2cb8edb053d0826e2c677f",
