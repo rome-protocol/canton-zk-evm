@@ -1,6 +1,7 @@
 name: demo
 
 on:
+  workflow_dispatch:
   pull_request:
     paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
   push:
@@ -77,3 +78,21 @@ jobs:
           distribution: temurin
           java-version: "21"
       - run: tests/demo_package_upgrade.sh
+
+  # A chain that runs is switched to another program key and ZisK release, with the next fork set for a later time, on the real network: it starts under Prague
+  # only (reth on a genesis copy without osakaTime) and key A, the producer stops after a block, the genesis copy gets osakaTime = T and reth restarts on its
+  # data (head and genesis hash unchanged), both sidecars restart with key B and --zisk-release 1.3.2, the operator proposes and the confirmer accepts the
+  # program (a dry run of each first), blocks commit under key B before T, and a block proven under key A is refused. Real reth (launch.sh, discovery
+  # off), Canton, builder and sidecar for the legs; the proof is a stand-in (tests/demo_program_switch.sh).
+  program-switch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_program_switch.sh
