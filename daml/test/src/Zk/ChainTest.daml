@@ -902,7 +902,7 @@ testProgramValuesMustBeHex = do
         operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
       all3 = actAs [f.operator, f.confirmer, f.gateway]
       both = actAs [f.operator, f.gateway]
-  forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb", T.replicate 64 "B", T.replicate 64 "g"] $ \bad -> do
+  forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb", mconcat (replicate 64 "B"), mconcat (replicate 64 "g")] $ \bad -> do
     submitMustFail both $ createCmd proposal with newProgramVK = bad
     submitMustFail both $ createCmd proposal with newRootC = bad
     submitMustFail both $ createCmd proposal with newRulesHash = bad
