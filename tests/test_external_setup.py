@@ -1422,5 +1422,23 @@ class Setup(unittest.TestCase):
         self.assertTrue(self.node.vetting)
 
 
+class Timing(unittest.TestCase):
+    def test_the_proposal_time_and_the_accept_time_print_in_one_form(self):
+        # the ledger drops trailing zeros of the fraction ("24.1737Z"); both times must print the same way, so a reader can compare them as text
+        for raw in ("2026-10-26T17:51:24.1737Z", "2026-10-26T17:51:24Z", "2026-10-26T17:51:24.123456Z"):
+            out = setup.timing({"proposedAt": raw}, {"changeDelay": None})
+            self.assertEqual(out["proposedAt"], out["acceptableAt"], raw)
+            self.assertEqual(setup.parse_time(out["proposedAt"]), setup.parse_time(raw), raw)
+        out = setup.timing({"proposedAt": "2026-10-26T17:51:24.1737Z"}, {"changeDelay": {"microseconds": "8000000"}})
+        self.assertEqual((out["proposedAt"], out["acceptableAt"]), ("2026-10-26T17:51:24.173700Z", "2026-10-26T17:51:32.173700Z"))
+
+    def test_the_pause_times_print_in_the_same_form(self):
+        now = setup.parse_time("2026-10-26T17:00:00Z")
+        out = setup.pause_state({"pausedUntil": "2026-10-26T17:51:24Z", "pauseCooldownUntil": "2026-10-26T18:51:24.5Z"}, now)
+        self.assertEqual((out["pausedUntil"], out["pauseCooldownUntil"]), ("2026-10-26T17:51:24.000000Z", "2026-10-26T18:51:24.500000Z"))
+        self.assertTrue(out["paused"])
+        self.assertEqual(setup.pause_state({}, now)["pausedUntil"], None)
+
+
 if __name__ == "__main__":
     unittest.main()
