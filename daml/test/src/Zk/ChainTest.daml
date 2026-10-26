@@ -919,7 +919,10 @@ testProgramSwitchKeepsTheHead = do
   c2 <- switchProgram f c1 stubRoot stubRoot stubVK
   [(_, c)] <- query @ZkChain f.operator
   (c.headNumber, c.headHash, c.programVK) === (1, stubHash1, stubRoot)
-  refused "another program" f $ advanceWith c2 "11" "aa" ["aa"] [] []
+  r <- trySubmit (asBuilder f) $ advanceWith c2 "11" "aa" ["aa"] [] []
+  case r of
+    Left e -> assertMsg ("refused, but not for the program: " <> show e) ("another program" `T.isInfixOf` show e)
+    Right _ -> abort "the chain committed a block proven under the old program"
 
 -- The line verify2 takes, and the stand-in for the sidecar's reading of it.
 testLengthField : Script ()
