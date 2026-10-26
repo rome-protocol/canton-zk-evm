@@ -897,7 +897,7 @@ class NotAProverFault(Depth):
             def run_prover(*a, **kw):
                 if state["armed"]:
                     state["armed"] = False
-                    raise OSError(11, "Resource temporarily unavailable")
+                    raise OSError(5, "Input/output error")
                 return real(*a, **kw)
             patch = mock.patch.object(b, "run_prover", run_prover)
         patch.start()
