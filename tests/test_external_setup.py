@@ -116,6 +116,11 @@ class FakeParticipant:
         if path == "/v2/commands/submit-and-wait":
             command = body["commands"][0]
             self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
+            if "ExerciseCommand" in command and command["ExerciseCommand"]["choice"] == "Withdraw":
+                exercise = command["ExerciseCommand"]
+                name = exercise["templateId"].split(":")[-1]
+                self.contracts[name] = [c for c in self.contracts[name] if c["contractId"] != exercise["contractId"]]
+                return {}
             if "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].split(":")[-1] in ("GasCapProposal", "ProgramProposal", "ChangeDelayProposal"):
                 # an accept: the chain refuses it until the wait that its changeDelay names has passed since the proposal's ledger time (the Daml's waitedOut)
                 exercise = command["ExerciseCommand"]
@@ -510,13 +515,54 @@ class Setup(unittest.TestCase):
         self.assertIn("CONTRACT_NOT_FOUND", str(ctx.exception))
         self.assertIn("run the accept again", str(ctx.exception))
 
-    def test_the_message_for_another_proposal_points_to_the_archive(self):
+    def test_the_message_for_another_proposal_points_to_the_withdraw(self):
         self.run_setup()
         self.raise_step("propose", 50_000_000)
         with self.assertRaises(SystemExit) as ctx:
             self.raise_step("propose", 45_000_000)
-        self.assertIn("Archive", str(ctx.exception))
+        self.assertIn("Withdraw", str(ctx.exception))
         self.assertNotIn("leave it", str(ctx.exception))
+
+    def test_the_wait_check_can_be_skipped_so_the_ledger_refuses_the_early_accept_itself(self):
+        self.run_setup()
+        self.set_chain_delay(3600)
+        self.raise_step("propose", 50_000_000)
+        base = len(self.sent())
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("may be accepted from", str(ctx.exception))
+        self.assertEqual(len(self.sent()), base)   # the clock check stopped it: only the propose was sent
+        with mock.patch.dict(os.environ, {"CZE_SKIP_WAIT_CHECK": "1"}), self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("the accept was refused: HTTP 400", str(ctx.exception))
+        self.assertIn("may be accepted from", str(ctx.exception))
+        self.assertEqual(len(self.sent()), base + 1)   # sent, and the ledger (here the fake) refused it
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "30000000")
+
+    def withdraw(self, kind, *extra):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--withdraw-proposal", kind, *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def test_the_operator_withdraws_a_pending_proposal_of_each_kind_and_can_propose_again(self):
+        self.run_setup()
+        self.raise_step("propose", 50_000_000)
+        self.program_step("propose")
+        self.delay_step("propose", 20)
+        for kind, name in (("gas-cap", "GasCapProposal"), ("program", "ProgramProposal"), ("change-delay", "ChangeDelayProposal")):
+            dry = self.withdraw(kind, "--dry-run")
+            self.assertEqual((dry["pending"], dry["withdrawn"], dry["dryRun"]), (1, 0, True))
+            self.assertEqual(len(self.node.contracts[name]), 1)
+            done = self.withdraw(kind)
+            self.assertEqual((done["pending"], done["withdrawn"]), (1, 1))
+            self.assertEqual(self.node.contracts[name], [])
+            self.assertEqual(self.withdraw(kind)["pending"], 0)
+        command, acting = self.sent()[-1]
+        self.assertEqual(command["ExerciseCommand"]["choice"], "Withdraw")
+        self.raise_step("propose", 45_000_000)
+        self.assertEqual(len(self.node.contracts["GasCapProposal"]), 1)
 
     def test_each_gas_cap_step_needs_only_its_own_token_and_sends_no_other(self):
         self.run_setup()
@@ -610,7 +656,7 @@ class Setup(unittest.TestCase):
         self.program_step("propose")
         with self.assertRaises(SystemExit) as ctx:
             self.program_step("propose", ("11" * 32, "cd" * 32, "ef" * 32))   # another proposal is there
-        self.assertIn("Archive", str(ctx.exception))
+        self.assertIn("Withdraw", str(ctx.exception))
         with self.assertRaises(SystemExit) as ctx:
             self.program_step("accept", ("11" * 32, "cd" * 32, "ef" * 32))   # accept takes exactly the values given
         self.assertIn("no proposal", str(ctx.exception))
@@ -774,7 +820,7 @@ class Setup(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             self.delay_step("propose", 20)
         self.assertIn("another change delay", str(ctx.exception))
-        self.assertIn("Archive", str(ctx.exception))
+        self.assertIn("Withdraw", str(ctx.exception))
         with self.assertRaises(SystemExit) as ctx:
             self.delay_step("accept", 20)   # nobody proposed 20
         self.assertIn("no proposal", str(ctx.exception))

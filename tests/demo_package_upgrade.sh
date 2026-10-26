@@ -281,6 +281,11 @@ if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url h
   fail "the gas cap was accepted before the delay had passed"
 fi
 grep -q "may be accepted from" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal before the delay does not say when it may be accepted"; }
+# The same acceptance sent past setup.py's own clock check: the ledger itself refuses it, with the Daml's message, and the cap stays.
+if CZE_SKIP_WAIT_CHECK=1 CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --gas-cap-step accept --new-gas-cap 60000000 > /dev/null 2> "$WORK/setup.err"; then
+  fail "the ledger accepted the gas cap before the delay had passed"
+fi
+grep -q "was refused: HTTP" "$WORK/setup.err" && grep -q "may be accepted from" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the ledger's own refusal of the early gas cap acceptance does not carry the Daml message"; }
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 30000000 "the gas cap after the dry runs"
 r=$(accept_when_ready --gas-cap-step accept --new-gas-cap 60000000); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance: $r"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 60000000 "the gas cap after the acceptance"
@@ -318,6 +323,10 @@ if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url h
   fail "the program was accepted before the delay had passed"
 fi
 grep -q "may be accepted from" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal of the program before the delay does not say when it may be accepted"; }
+if CZE_SKIP_WAIT_CHECK=1 CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --program-step accept --program-vk "$NEW_VK" --root-c "$NEW_RC" --rules-hash "$NEW_RULES" > /dev/null 2> "$WORK/setup.err"; then
+  fail "the ledger accepted the program before the delay had passed"
+fi
+grep -q "was refused: HTTP" "$WORK/setup.err" && grep -q "may be accepted from" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the ledger's own refusal of the early program acceptance does not carry the Daml message"; }
 is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys after the refused acceptance"
 r=$(accept_when_ready --program-step accept --program-vk "$NEW_VK" --root-c "$NEW_RC" --rules-hash "$NEW_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the program acceptance: $r"
 is "$(probe ZkChain | jq -r '.programs | join(",")')" "$NEW_PROGRAM" "the program keys after the acceptance"

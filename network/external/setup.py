@@ -39,7 +39,7 @@
     300,000,000. With --dry-run nothing is submitted: the step prints what it would do ("dryRun": true). Stop the block producer before the
     accept and start it again after (a block replaces the chain contract, and an accept given a replaced contract is refused: nothing changes,
     and the accept is safe to run again). A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for a value
-    that is not wanted is archived by the operator (the Archive choice, with the operator's token) before another is proposed.
+    that is not wanted is taken back by the operator (--withdraw-proposal gas-cap, the Withdraw choice, with the operator's token; the confirmer can also reject it) before another is proposed.
 
   setup.py --ledger-url <URL> --program-step propose|accept --program-vk <hex> --root-c <hex> --rules-hash <hex> [--dry-run]
 
@@ -51,7 +51,7 @@
       accept   the confirmer's token: exercises AcceptProgram on the proposal for exactly these three values, given the chain's current contract.
     propose refuses a chain that holds these values already; accept on such a chain prints "alreadyAccepted": true. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
     again after, as for the gas cap. A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for other values is
-    archived by the operator (the Archive choice, with the operator's token) before another is proposed. The chain check of a later plain setup run
+    taken back by the operator (--withdraw-proposal program, the Withdraw choice, with the operator's token; the confirmer can also reject it) before another is proposed. The chain check of a later plain setup run
     compares the chain with the values it is given, so give it the values the chain holds now.
 
   setup.py --ledger-url <URL> --change-delay-step propose|accept --delay-seconds <N> [--dry-run]
@@ -374,8 +374,8 @@ def submit_step(ledger, command: dict, step: str) -> None:
     try:
         ledger.submit(command)
     except urllib.error.HTTPError as err:
-        hint = ": the chain may have advanced since it was read, run the accept again" if step == "accept" else ""
-        reason = err.read().decode(errors="replace")[:300]
+        hint = f": the chain may have advanced since it was read, run the {step} again" if step in ("propose", "accept") else ""
+        reason = err.read().decode(errors="replace")[:1500]
         err.close()
         raise SystemExit(f"the {step} was refused: HTTP {err.code} {reason}{hint}") from None
     except urllib.error.URLError as err:
@@ -403,6 +403,20 @@ def step_chain(url: str, step: str, with_gateway: bool = False) -> tuple:
     if chain.get("operator") != parties["OPERATOR_PARTY"] or chain.get("confirmer") != parties["CONFIRMER_PARTY"]:
         raise SystemExit("the chain on this participant is not between these operator and confirmer parties")
     return ledger, chain
+
+
+PROPOSAL_KINDS = {"gas-cap": "GasCapProposal", "program": "ProgramProposal", "change-delay": "ChangeDelayProposal"}
+
+
+def withdraw_step(url: str, kind: str, dry_run: bool) -> dict:
+    """The operator takes back its pending proposals of one kind for this chain (the Withdraw choice; the operator alone controls it, and the confirmer can reject instead)."""
+    ledger, chain = step_chain(url, "propose")
+    template = PROPOSAL_KINDS[kind]
+    found = [p for p in ledger.active(template) if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"] and p.get("confirmer") == chain["confirmer"]]
+    if not dry_run:
+        for p in found:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + template, "contractId": p["contractId"], "choice": "Withdraw", "choiceArgument": {}}}, "withdraw")
+    return {"step": "withdraw", "kind": kind, "chainId": chain["chainId"], "pending": len(found), "withdrawn": 0 if dry_run else len(found), "dryRun": dry_run}
 
 
 MAX_CHANGE_DELAY = 30 * 24 * 3600   # the Daml's maxChangeDelay (30 days), in seconds
@@ -441,6 +455,8 @@ def timing(proposal, chain: dict) -> dict:
 def check_waited(result: dict, what: str) -> None:
     """Before an accept is sent: the proposal's wait is not over by this machine's clock. The ledger decides (it uses its own time), so this only saves a refused command."""
     ready = result.get("acceptableAt")
+    if os.environ.get("CZE_SKIP_WAIT_CHECK"):   # for the package-upgrade scenario: send the accept anyway, so the ledger's own refusal is seen
+        return
     if ready and datetime.now(timezone.utc) < parse_time(ready):
         raise SystemExit(f"the change of {what} may be accepted from {ready} (proposed at {result['proposedAt']}, change delay {result['changeDelaySeconds']} s): run the accept again then")
 
@@ -458,7 +474,7 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
         other = [p for p in proposals if p.get("newCap") != str(new_cap)]
         if other:
             raise SystemExit(f"a proposal for the gas cap {other[0].get('newCap')} is on this participant already. Accept it only if that value is wanted (a raise cannot be undone); "
-                             "otherwise the operator archives it (the Archive choice of the GasCapProposal, with the operator's token) and proposes again")
+                             "otherwise the operator takes it back (--withdraw-proposal gas-cap: the Withdraw choice of the GasCapProposal, with the operator's token) and proposes again")
         done = bool(proposals)
         if not done and not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeGasCap",
@@ -507,7 +523,7 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
             raise SystemExit("the chain holds these values already")
         if proposals and not mine:
             raise SystemExit("a proposal for other values is on this participant already. Accept it only if those values are wanted; "
-                             "otherwise the operator archives it (the Archive choice of the ProgramProposal, with the operator's token) and proposes again")
+                             "otherwise the operator takes it back (--withdraw-proposal program: the Withdraw choice of the ProgramProposal, with the operator's token) and proposes again")
         if not mine and not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeProgram",
                                                         "choiceArgument": {"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}, "propose")
@@ -551,7 +567,7 @@ def change_delay_step(url: str, step: str, seconds: int, dry_run: bool) -> dict:
             raise SystemExit("the chain has this change delay already")
         if proposals and not mine:
             raise SystemExit("a proposal for another change delay is on this participant already. Accept it only if that value is wanted; "
-                             "otherwise the operator archives it (the Archive choice of the ChangeDelayProposal, with the operator's token) and proposes again")
+                             "otherwise the operator takes it back (--withdraw-proposal change-delay: the Withdraw choice of the ChangeDelayProposal, with the operator's token) and proposes again")
         was_there = bool(mine)
         if not mine and not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeChangeDelay",
@@ -610,8 +626,17 @@ def main(argv: list) -> int:
     ap.add_argument("--rules-hash", help="with --program-step: the new rules hash (64 lowercase hex digits)")
     ap.add_argument("--change-delay-step", choices=("propose", "accept"), help="change the wait that a gas-cap or program change sits out: the operator and the gateway propose, the confirmer accepts (see the top of this file)")
     ap.add_argument("--delay-seconds", type=int, help="with --change-delay-step: the new wait in seconds (0 takes it away; at most 30 days)")
+    ap.add_argument("--withdraw-proposal", choices=tuple(PROPOSAL_KINDS), help="the operator takes back its pending proposals of this kind (the Withdraw choice); use it for a proposal that is not wanted")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
+    if own.withdraw_proposal:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step:
+            ap.error("--withdraw-proposal does only the withdrawal: no other step and no chain arguments")
+        check_settings(own.ledger_url, ("operator",))
+        print(json.dumps(withdraw_step(own.ledger_url, own.withdraw_proposal, own.dry_run)))
+        return 0
     if own.gas_cap_step:
         if not own.ledger_url:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
@@ -656,7 +681,7 @@ def main(argv: list) -> int:
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step or --change-delay-step")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step or --withdraw-proposal")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)

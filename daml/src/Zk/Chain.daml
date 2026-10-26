@@ -166,7 +166,7 @@ template ZkChain
       controller operator
       do
         now <- getTime
-        create GasCapProposal with operator; confirmer; chainId; newCap; proposedAt = now
+        create GasCapProposal with operator; confirmer; reader; chainId; newCap; proposedAt = now
 
     nonconsuming choice ProposeProgram : ContractId ProgramProposal
       with
@@ -176,14 +176,14 @@ template ZkChain
       controller operator, gateway
       do
         now <- getTime
-        create ProgramProposal with operator; confirmer; gateway; chainId; newProgramVK; newRootC; newRulesHash; proposedAt = now
+        create ProgramProposal with operator; confirmer; gateway; reader; chainId; newProgramVK; newRootC; newRulesHash; proposedAt = now
 
     nonconsuming choice ProposeChangeDelay : ContractId ChangeDelayProposal
       with newDelay : Optional RelTime
       controller operator, gateway
       do
         now <- getTime
-        create ChangeDelayProposal with operator; confirmer; gateway; chainId; newDelay; proposedAt = now
+        create ChangeDelayProposal with operator; confirmer; gateway; reader; chainId; newDelay; proposedAt = now
 
     choice Advance : (ContractId ZkChain, ContractId BlockRecord)
       with
@@ -227,6 +227,7 @@ template GasCapProposal
   with
     operator : Party
     confirmer : Party
+    reader : Party
     chainId : Int
     newCap : Int
     proposedAt : Time
@@ -234,6 +235,17 @@ template GasCapProposal
     -- The confirmer signs as well, so the proposal can only be made by `ZkChain.ProposeGasCap`, which stamps it with the ledger time.
     signatory operator, confirmer
     ensure chainId > 0 && newCap > 0
+    observer reader
+
+    -- The operator takes its proposal back, or the confirmer turns it down; either one alone, so a pending proposal never gets stuck
+    -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
+    choice Withdraw : ()
+      controller operator
+      do pure ()
+
+    choice Reject : ()
+      controller confirmer
+      do pure ()
 
     choice AcceptGasCap : ContractId ZkChain
       with chain : ContractId ZkChain
@@ -253,6 +265,7 @@ template ProgramProposal
     operator : Party
     confirmer : Party
     gateway : Party
+    reader : Party
     chainId : Int
     newProgramVK : Text
     newRootC : Text
@@ -262,6 +275,17 @@ template ProgramProposal
     -- Made by `ZkChain.ProposeProgram` only (the confirmer signs as well), which stamps it with the ledger time.
     signatory operator, gateway, confirmer
     ensure chainId > 0 && all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash]
+    observer reader
+
+    -- The operator takes its proposal back, or the confirmer turns it down; either one alone, so a pending proposal never gets stuck
+    -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
+    choice Withdraw : ()
+      controller operator
+      do pure ()
+
+    choice Reject : ()
+      controller confirmer
+      do pure ()
 
     choice AcceptProgram : ContractId ZkChain
       with chain : ContractId ZkChain
@@ -280,6 +304,7 @@ template ChangeDelayProposal
     operator : Party
     confirmer : Party
     gateway : Party
+    reader : Party
     chainId : Int
     newDelay : Optional RelTime
     proposedAt : Time
@@ -287,6 +312,17 @@ template ChangeDelayProposal
     -- Made by `ZkChain.ProposeChangeDelay` only (the confirmer signs as well), which stamps it with the ledger time.
     signatory operator, gateway, confirmer
     ensure chainId > 0 && delayInRange newDelay
+    observer reader
+
+    -- The operator takes its proposal back, or the confirmer turns it down; either one alone, so a pending proposal never gets stuck
+    -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
+    choice Withdraw : ()
+      controller operator
+      do pure ()
+
+    choice Reject : ()
+      controller confirmer
+      do pure ()
 
     choice AcceptChangeDelay : ContractId ZkChain
       with chain : ContractId ZkChain
