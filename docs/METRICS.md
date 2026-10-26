@@ -33,7 +33,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 
 | What | Version | Source |
 |---|---|---|
-| ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` | `PINS` |
+| ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` (the release these measurements used; `PINS` now pins 1.3.2-alpha, commit `1e22630bb7e143c30705a1603ed87cfd3da8c6ec`, and the numbers were not measured again on it) | `PINS` at the time |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
 | Canton | 3.6.3, the open-source release of 2026-10-20 (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f) | `PINS` |

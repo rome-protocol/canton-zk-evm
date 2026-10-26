@@ -162,7 +162,10 @@ Then, where the sidecar runs, one of two ways:
 CZE_PERSIST=1 CZE_SIDECAR_LISTEN=<sidecar address>:8085 network/up.sh
 
 # (b) The sidecar runs on another machine: start it there first (it is reached from the participant and from nobody else) ...
-CZE_SIDECAR_LISTEN=<sidecar address>:8085 network/external/sidecar.sh start     # on that machine
+CZE_SIDECAR_LISTEN=<sidecar address>:8085 network/external/sidecar.sh start     # on that machine, for a NEW chain
+# For a chain that already runs, give it that chain's record (a copy of its state/net/guest.txt): without it the sidecar takes a new
+# chain's keys and release from prover/fixtures/session.txt and refuses every block of the older chain.
+#   CZE_SESSION_FILE=<copy of the chain's guest.txt> CZE_SIDECAR_LISTEN=<sidecar address>:8085 network/external/sidecar.sh start
 #     ... and run up.sh here without CZE_SIDECAR_LISTEN: it starts no sidecar.
 CZE_PERSIST=1 network/up.sh
 ```
@@ -217,7 +220,7 @@ Nothing changes until the accept, which waits out the chain's change delay since
 
 Both sidecars take one `--program-vk` and one `--root-c` when they start and refuse a proof made under any other, so the sidecars must change with the contract: during the pause, restart the operator's sidecar and the confirmer's sidecar with the new program key and ZisK root, before the block producer starts again, and with the old ones for the way back. Without that, every block fails at verify after the switch.
 
-The explorer's indexer pins one program key and ZisK root too (its pins file) and stops at check C7 on the first block proven under other keys, so restart it with the new pins file during the same pause. With a single pair of pins, a re-index from before the switch would then stop at the older blocks; keys per block range in the explorer are follow-up work.
+The explorer's indexer pins one program key and ZisK root too (its pins file) and stops at check C7 on the first block proven under other keys, so restart it with the new pins file during the same pause. Give the explorer the new keys as a range from the switch block (`programVK@<block>=`, `rootC@<block>=`, and `zisk@<block>=` when the release changes; explorer/README.md, Key ranges), so a re-index from before the switch still checks the older blocks under their own keys. When the new keys come from another ZisK release, also restart the sidecars with `--zisk-release <release>` and write `zisk=<release>` next to the new keys in the chain's `state/net/guest.txt`, so that `network/restart.sh` keeps the release.
 
 **The wait before a change.** From package 0.3.0 a chain contract can hold a `changeDelay`: a gas-cap or program proposal is accepted only that long after it was proposed. The proposal records the ledger time it was made at (the chain contract stamps it, so the proposer cannot backdate it beyond Canton's ledger-time tolerance, a synchronizer setting that is 60 seconds by default; the proposal's time and the accept's time can each be off by that much, so keep delays far above it), and the accept is refused before that time plus the delay, with a message that says when it may be accepted. A chain made before 0.3.0, or one whose delay is none, has no wait, which is how the chain behaved until now. The delay is set in two steps, like the other changes, by the operator (acting for the gateway party too) and the confirmer:
 
