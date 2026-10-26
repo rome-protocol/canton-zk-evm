@@ -166,10 +166,10 @@ def unwind_depth(atts: dict) -> int:
 
 
 def inflight_keys(lines: list) -> list:
-    """The attempts of the newest run that are still going: built, and not final, cancelled, resolved, refused or failed."""
+    """The attempts of the newest run that are still going: built, and not final, cancelled, resolved, or answered refused, failed or not taken."""
     run = lines[-1]["run"] if lines else None
     atts = attempts_of(lines)
-    return sorted(k for k, a in atts.items() if k[0] == run and "hash" in a and not ({"final", "cancelled", "resolved"} & a.keys()) and a.get("outcome") not in ("refused", "failed"))
+    return sorted(k for k, a in atts.items() if k[0] == run and "hash" in a and not ({"final", "cancelled", "resolved"} & a.keys()) and a.get("outcome") not in ("refused", "failed", "not_taken"))
 
 
 def unclosed(lines: list, keys: list) -> list:

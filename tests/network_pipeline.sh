@@ -11,9 +11,10 @@
 #      block after it, already proven, is dropped, its transactions go back to the pool, and the chain goes on from N. Put down again until the journal
 #      shows a dropped block that had its proof.
 #   3. A lost reply while the command commits: tests/ledger_drop_proxy.py, in front of the JSON Ledger API, sends one Advance on, lets Canton commit it
-#      and closes the connection without an answer. The builder has no answer, settles the command as committed (from Canton's head, as a rule at once) and
-#      only then submits the next block. After the drop the proxy also refuses the reads of completions for PIPELINE_BLIND_SECONDS (8), which matters only
-#      when the head does not yet show the block: then the command stays in doubt for that time.
+#      and closes the connection without an answer. After a lost reply the builder's first move is to read the command's completion, which would settle
+#      it as committed at once. So after the drop the proxy refuses the reads of completions for PIPELINE_BLIND_SECONDS (8): that read fails, the attempt is
+#      answered `unknown`, and the in-doubt path runs. The next step settles the command from Canton's head (resolved via `head`), and only then is the next
+#      block submitted.
 #   4. (depth 3) The refusal must be of the oldest of three blocks, so that reth goes back three blocks on the persistent node: it is put down again
 #      until the journal shows a refusal that took two more blocks with it.
 #   5. (depth 3) kill -9 of the builder with three blocks in flight (the builder is stopped, the journal read, and only then killed), then a restart: the blocks
@@ -230,7 +231,10 @@ echo "== the checks"
 check journal "$JOURNAL" --proved "$PIPELINE_PROVED_LOG" --sent "$OUT/sent.txt" --blocks $(( FLOOD_BLOCKS * 9 / 10 )) || fail "the journal broke a rule (above)"
 check chain "$JOURNAL" --sent "$OUT/sent.txt" || fail "reth and the journal disagree (above)"
 check settled || fail "Canton's head is not reth's finalized block (above)"
-grep -v '^samples' "$OUT/watch.txt" | head -n 5 | grep . && fail "the two chains disagreed during the run (above)"
+if grep -qv '^samples' "$OUT/watch.txt"; then
+  grep -v '^samples' "$OUT/watch.txt" | head -n 5 || true
+  fail "the two chains disagreed during the run (above)"
+fi
 samples=$(sed -n 's/^samples \([0-9]*\) errors.*/\1/p' "$OUT/watch.txt")
 [ "${samples:-0}" -ge 20 ] || fail "the watch of the two chains made ${samples:-0} comparisons"
 stats=$(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG"); echo "$stats" | tee "$OUT/stats.json"

@@ -71,6 +71,14 @@ class Rules(unittest.TestCase):
         late = attempt(3, 1, 6.5, ["0xb"], run="new")
         self.assertEqual([b for b in pc.check_journal(killed + closed + late) if "in doubt" in b], [])
 
+    def test_an_attempt_that_was_not_taken_is_not_in_flight(self):
+        for outcome in ("not_taken", "refused", "failed"):
+            ended = attempt(2, 1, 0, ["0xa"], outcome=outcome, final=False)
+            out = attempt(3, 2, 10, ["0xb"], outcome=None, final=False)
+            self.assertEqual(pc.inflight_keys(ended + out), [("r", 2)], outcome)
+        unknown = attempt(2, 1, 0, ["0xa"], outcome="unknown", final=False)
+        self.assertEqual(pc.inflight_keys(unknown), [("r", 1)])
+
     def test_a_failed_attempt_is_not_in_flight_and_a_restart_closes_what_was(self):
         failed = attempt(2, 1, 0, ["0xa"], outcome="failed", final=False)
         out = attempt(3, 2, 10, ["0xb"], outcome=None, final=False) + attempt(4, 3, 11, ["0xc"], outcome=None, final=False)
