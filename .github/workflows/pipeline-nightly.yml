@@ -1,0 +1,74 @@
+name: pipeline-nightly
+
+# The builder with several blocks in flight, on the real local network (tests/network_pipeline.sh says what is real and what is checked). It runs on a
+# schedule and by hand, never on every pull request: a flood of hundreds of blocks takes most of an hour. The one exception is a pull request that
+# changes this test's own files (the paths below): it runs a short flood, so that a change to the test is seen to run before it is merged. A workflow can
+# be dispatched by name only once it is on the default branch, so the first run of a new nightly is that.
+on:
+  pull_request:
+    paths: [".github/workflows/pipeline-nightly.yml", ".github/actions/pinned-images/**", "tests/network_pipeline.sh", "tests/pipeline_*", "tests/test_pipeline_*", "tests/ledger_drop_proxy.py", "tests/test_ledger_drop_proxy.py", "PINS"]
+  schedule:
+    - cron: "43 3 * * *"
+  workflow_dispatch:
+    inputs:
+      flood_blocks: { description: "Blocks in each flood", default: "300" }
+      runs: { description: "Runs in a row, each on a new chain (the test is green when all of them are)", default: "2" }
+
+permissions:
+  contents: read
+
+# One at a time: two on one repository would fight for the runners' disk and the registry's pull limit.
+concurrency:
+  group: pipeline-nightly-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # No Docker, Canton or GPU: the scenario's own tests (ci.yml's shellcheck reads its scripts).
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - run: python3 -W error::ResourceWarning -m unittest discover -s tests -p 'test_ledger_drop_proxy.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_pipeline_check.py' -v
+
+  # Depth 2: `builder.py run --max-in-flight 2` on a flood, with a refusal at N while N+1 is proven and a reply lost while the command commits.
+  network:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    env:
+      FLOOD_BLOCKS: ${{ inputs.flood_blocks || (github.event_name == 'pull_request' && '30' || '300') }}
+      RUNS: ${{ inputs.runs || (github.event_name == 'pull_request' && '1' || '2') }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: The scenario, each run on a new chain
+        run: |
+          case "$FLOOD_BLOCKS" in ''|*[!0-9]*) echo "flood_blocks must be a whole number"; exit 1;; esac
+          case "$RUNS" in ''|*[!0-9]*|0) echo "runs must be a whole number above 0"; exit 1;; esac
+          for run in $(seq 1 "$RUNS"); do
+            echo "::group::run $run of $RUNS"
+            PIPELINE_OUT="$RUNNER_TEMP/pipeline/run-$run" tests/network_pipeline.sh
+            echo "::endgroup::"
+          done
+      - name: Summary
+        if: always()
+        run: |
+          printf '### The pipeline scenario at depth 2\n\n' >> "$GITHUB_STEP_SUMMARY"
+          for f in "$RUNNER_TEMP"/pipeline/run-*/stats.json; do
+            [ -s "$f" ] && printf -- '- %s: `%s`\n' "$(basename "$(dirname "$f")")" "$(cat "$f")" >> "$GITHUB_STEP_SUMMARY"
+          done
+          true
+      - name: Keep the journals and logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pipeline-results
+          path: ${{ runner.temp }}/pipeline
+          if-no-files-found: warn
