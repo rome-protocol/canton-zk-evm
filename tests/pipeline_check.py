@@ -74,7 +74,7 @@ def committed(a: dict) -> bool:
 
 def ended_at(a: dict):
     """When the attempt's command stopped being in doubt (the later of its answer and its settling), or None while it still is."""
-    if a.get("outcome") == "unknown":
+    if a.get("outcome") in ("unknown", None):   # no answer at all: a run killed while the command was out, closed by the next run
         return a.get("resolved")
     return a.get("answered")
 
@@ -146,19 +146,42 @@ def read_proved(path) -> dict:
     return out
 
 
+def unwind_depth(atts: dict) -> int:
+    """The most blocks one refusal took with it: the refused block and every attempt cancelled behind it, one after another (`depends_on`)."""
+    best = 0
+    for (run, att), a in atts.items():
+        if a.get("outcome") != "refused":
+            continue
+        gone, grew = {att}, True
+        while grew:
+            grew = False
+            for (r2, a2), b in atts.items():
+                if r2 == run and a2 not in gone and "cancelled" in b and b.get("depends_on") in gone:
+                    gone.add(a2)
+                    grew = True
+        best = max(best, len(gone))
+    return best
+
+
 def stats(lines: list, proved=None) -> dict:
     """What the faults left. The journal writes a block's `proof_ended` when the producer next looks at it, which, while a submit runs, is after the
     submit: so whether a dropped block had its proof is read from the prover's own log, `proved`."""
     proved = proved or {}
     atts = attempts_of(lines)
     cancelled = [a for a in atts.values() if "cancelled" in a]
+    run = lines[-1]["run"] if lines else None
     return {
         "committed": sum(1 for a in atts.values() if committed(a)),
         "refused": sum(1 for a in atts.values() if a.get("outcome") == "refused"),
         "cancelled": len(cancelled),
+        "unwind": unwind_depth(atts),   # blocks of the longest move back of reth: the refused one and the ones behind it
+        "restarted": sum(1 for a in atts.values() if a.get("resolution") == "restarted"),   # blocks a restart found in flight and gave up
+        "inFlight": sum(1 for k, a in atts.items() if k[0] == run and "hash" in a and not ({"final", "cancelled", "resolved"} & a.keys()) and a.get("outcome") != "refused"),   # of the newest run
         "cancelledProven": sum(1 for a in cancelled if proved.get(a.get("hash", "0x")[2:18], "~") <= a["cancelled"]),   # the block behind the faulted one had its proof when it was dropped
         "unknown": sum(1 for a in atts.values() if a.get("outcome") == "unknown"),
         "unknownCommitted": sum(1 for a in atts.values() if a.get("outcome") == "unknown" and a.get("resolution") == "committed"),
+        "submitted": sum(1 for ln in lines if ln.get("event") == "submitted"),
+        "provers": len({ln.get("prover") for ln in lines if ln.get("event") == "proof_started"}),
         "lost": sum(len(ln.get("transactions") or []) for ln in lines if ln.get("event") == "lost"),
     }
 

@@ -32,11 +32,18 @@ jobs:
       - run: python3 -m unittest discover -s tests -p 'test_pipeline_check.py' -v
 
   # Depth 2: `builder.py run --max-in-flight 2` on a flood, with a refusal at N while N+1 is proven and a reply lost while the command commits.
+  # Depth 3, with two stand-in provers: the same, a refusal that takes reth back three blocks, and a kill -9 with three blocks in flight, then a restart.
   network:
     needs: checks
+    name: network (depth ${{ matrix.depth }})
     runs-on: ubuntu-latest
     timeout-minutes: 170
+    strategy:
+      fail-fast: false
+      matrix:
+        depth: [2, 3]
     env:
+      PIPELINE_DEPTH: ${{ matrix.depth }}
       FLOOD_BLOCKS: ${{ inputs.flood_blocks || (github.event_name == 'pull_request' && '30' || '300') }}
       RUNS: ${{ inputs.runs || (github.event_name == 'pull_request' && '1' || '2') }}
     steps:
@@ -60,7 +67,7 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          printf '### The pipeline scenario at depth 2\n\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '### The pipeline scenario at depth ${{ matrix.depth }}\n\n' >> "$GITHUB_STEP_SUMMARY"
           for f in "$RUNNER_TEMP"/pipeline/run-*/stats.json; do
             [ -s "$f" ] && printf -- '- %s: `%s`\n' "$(basename "$(dirname "$f")")" "$(cat "$f")" >> "$GITHUB_STEP_SUMMARY"
           done
@@ -69,6 +76,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: pipeline-results
+          name: pipeline-results-depth-${{ matrix.depth }}
           path: ${{ runner.temp }}/pipeline
           if-no-files-found: warn

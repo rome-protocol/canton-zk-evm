@@ -69,7 +69,7 @@ gateway/tests/run.sh             # the gateway on a real reth, started with peer
 tests/guest-repro.sh             # the guest build runs in one fixed folder, so the source folder does not change the ELF (stand-ins for the ZisK tools; the same check on real ZisK passed on 2026-10-04, see guest/README.md)
 tests/demo_static.sh             # the demo's pins, tamper switch and genesis override, and its recorded results (no GPU)
 tests/demo_rehearsal.sh          # the demo and explorer with a stand-in proof (Linux x86-64, Docker, Java 21, Rust, Python 3.12+; no GPU)
-tests/network_pipeline.sh        # the builder with two blocks in flight on the local network: a flood, a refusal, a lost reply (nightly in CI, pipeline-nightly.yml; same needs as the rehearsal)
+tests/network_pipeline.sh        # the builder with two blocks in flight (and, with PIPELINE_DEPTH=3, three with two stand-in provers) on the local network: a flood, a refusal, a lost reply, and at depth 3 a kill -9 and a three-block move back (nightly in CI, pipeline-nightly.yml; same needs as the rehearsal)
 tests/demo_explorer_static.sh    # the explorer's images are pinned, and what its container is given (no Docker)
 (cd explorer && npm ci && npm test)  # the explorer's tests, against fakes (Node 22.18+; CI uses EXPLORER_NODE_IMAGE in PINS)
 (cd guest/rules && cargo test)   # the chain rules and their hash (needs Rust)

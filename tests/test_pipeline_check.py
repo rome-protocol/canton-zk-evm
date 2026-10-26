@@ -70,6 +70,17 @@ class Rules(unittest.TestCase):
         self.assertEqual(pc.stats(lines, {"0x0302"[2:]: "2026-01-01T00:00:14.000Z"})["cancelledProven"], 0)   # after the drop: not proven then
         self.assertEqual(pc.stats(lines)["cancelledProven"], 0)
 
+    def test_the_depth_of_an_unwind_and_what_is_in_flight(self):
+        gone = lambda att, n, dep: [{"v": 1, "run": "r", "seq": 0, "time": "2026-01-01T00:00:13.000Z", "event": "cancelled", "attempt": att, "number": n, "depends_on": dep}]
+        lines = (attempt(2, 1, 0, ["0xa"], outcome="refused", final=False) + attempt(3, 2, 1, ["0xb"], outcome=None, final=False) + gone(2, 3, 1)
+                 + attempt(4, 3, 2, ["0xc"], outcome=None, final=False) + gone(3, 4, 2) + attempt(5, 4, 20, ["0xd"], outcome=None, final=False))
+        s = pc.stats(lines)
+        self.assertEqual((s["unwind"], s["cancelled"], s["refused"]), (3, 2, 1))
+        self.assertEqual(s["inFlight"], 1)   # only the block made last is neither final, nor cancelled, nor refused
+        self.assertEqual(pc.stats(attempt(2, 1, 0, ["0xa"]))["unwind"], 0)
+        again = attempt(2, 1, 0, ["0xa"], outcome=None, final=False, run="old") + [{"v": 1, "run": "new", "seq": 0, "time": "2026-01-01T00:01:00.000Z", "event": "resolved", "attempt": 1, "attempt_run": "old", "outcome": "restarted"}]
+        self.assertEqual((pc.stats(again)["restarted"], pc.stats(again)["inFlight"]), (1, 0))
+
     def test_reads_a_folder_and_skips_a_cut_line(self):
         with tempfile.TemporaryDirectory() as d:
             lines = attempt(2, 1, 0, ["0xa"])
