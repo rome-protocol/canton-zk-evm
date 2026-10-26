@@ -1,6 +1,6 @@
 """Blocks in flight when the producer keeps more than one at a time: what each one is, and when another may be cut. See README.md,
 "Provers". Nothing here touches reth, Canton or the journal: `Pipeline` in builder.py does, and asks this module the questions."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # The states of a block in flight, from the cut to the end.
 BUILT = "built"          # reth built it and made it its head; the transactions are on disk
@@ -21,7 +21,6 @@ class InFlight:
     proving: object = None           # the prove stage's handle while it runs
     proven: object = None
     error: Exception | None = None   # why it is FAILED
-    exclude: set = field(default_factory=set)
     on_tip: bool = False             # it was built on a block in flight, so the chain contract it names is read again when it is submitted
 
     @property
