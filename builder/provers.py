@@ -7,7 +7,7 @@ nor the journal: they report state changes through `Pool.events()`, and the prod
 With one prover (or none configured: the local prover the prove command names) the pool is a plain synchronous runner: one try, no health,
 no retry, no events. With two or more, a failed job is tried once more on another prover, and a prover's health is tracked.
 """
-import os, re, shutil, signal, subprocess, threading, time
+import math, os, re, shutil, signal, subprocess, threading, time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -100,7 +100,7 @@ class Job:
     out_dir: Path                  # the first try's output folder; a retry writes to out_dir with "-retry" added
     check: object = None
     # Whether `cargo-zisk remote prove -i` sends the input file over the connection or names a path on the coordinator's machine could not be
-    # settled from what is installed on a build machine (no ZisK package there). Both are supported: by default the path of the local input is
+    # settled from the help of cargo-zisk 1.3.1 (it takes a file path, file://path or inline:// data). Both are supported: by default the path of the local input is
     # passed (the file is uploaded, if the client does that); with input_dir set the input is copied into that folder first (a folder the
     # coordinator's machine can see) and that copy's path is passed, and removed after the try. Neither has run against a second machine.
     input_dir: Path | None = None
@@ -119,7 +119,8 @@ class Ticket:
     """A job handed to the pool. `result()` blocks until the proof or the error; `cancel()` discards the result (a job already on a prover
     runs to the end, with no effect on health, and is not retried)."""
 
-    def __init__(self):
+    def __init__(self, cond: threading.Condition | None = None):
+        self.cond = cond                 # the pool's: a cancel wakes the jobs waiting for a prover
         self.done = threading.Event()
         self.proved: Proved | None = None
         self.error: Exception | None = None
@@ -127,7 +128,12 @@ class Ticket:
         self.prover: str | None = None   # the prover the job is on now
 
     def cancel(self) -> None:
-        self.cancelled = True
+        if self.cond is None:
+            self.cancelled = True
+            return
+        with self.cond:
+            self.cancelled = True
+            self.cond.notify_all()
 
     def result(self) -> Proved:
         self.done.wait()
@@ -176,7 +182,7 @@ class Pool:
         return self.submit(job).result()
 
     def submit(self, job: Job) -> Ticket:
-        ticket = Ticket()
+        ticket = Ticket(self.cond)
         threading.Thread(target=self._work, args=(ticket, job), daemon=True, name="prove-job").start()
         return ticket
 
@@ -205,7 +211,7 @@ class Pool:
             try:
                 proof = self._try(prover, job, out)
             except JobError as e:
-                self._release(prover, e if e.connection else None, failed=True)
+                self._release(prover, e if e.connection and not ticket.cancelled else None, failed=True)   # a cancelled job has no effect on health
                 tried.append((prover, e))
                 if ticket.cancelled or not self.managed or len(tried) > 1 or not self._another(prover):
                     err = self._failed(e, tried)
@@ -235,7 +241,7 @@ class Pool:
             return any(p is not prover and (p.state == "up" or now >= p.down_until) for p in self.provers)
 
     def _try(self, prover: Prover, job: Job, out: Path) -> str:
-        env = {"CZE_PROVE_TIMEOUT": str(int(self.timeout))}
+        env = {"CZE_PROVE_TIMEOUT": str(math.ceil(self.timeout))}
         if prover.url:
             env["ZISK_COORDINATOR_URL"] = prover.url
         shutil.rmtree(out, ignore_errors=True)
@@ -275,6 +281,7 @@ class Pool:
                         now = self.clock()
                         free = [p for p in self.provers if not p.busy and (p.state == "up" or now >= p.down_until)]
                         pick = [p for p in free if p not in avoid] or ([] if self.managed and avoid else free)
+                        pick.sort(key=lambda p: (p.state == "down") if avoid else (p.state != "down"))   # a new block tries a prover whose cool-down is over first; a retry goes to one that is up
                         if pick:
                             prover = pick[0]
                             if prover.state == "down":   # its cool-down is over: this job tries it
