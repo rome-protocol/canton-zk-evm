@@ -128,10 +128,15 @@ class FakeParticipant:
                 self.contracts["ProgramProposal"].remove(proposal)
                 for field in ("programVK", "rootC", "rulesHash"):
                     chain["args"][field] = proposal["args"]["new" + field[0].upper() + field[1:]]
-            elif "CreateCommand" in command and command["CreateCommand"]["templateId"].endswith("ProgramProposal"):
-                self.contracts["ProgramProposal"].append({"contractId": "q1", "args": command["CreateCommand"]["createArguments"]})
-            elif "CreateCommand" in command and command["CreateCommand"]["templateId"].endswith("GasCapProposal"):
-                self.contracts["GasCapProposal"].append({"contractId": "g1", "args": command["CreateCommand"]["createArguments"]})
+            elif "ExerciseCommand" in command and command["ExerciseCommand"]["choice"] in ("ProposeGasCap", "ProposeProgram"):
+                # ZkChain.ProposeGasCap / ProposeProgram make the proposal, from the chain's fields and the choice's arguments
+                exercise = command["ExerciseCommand"]
+                [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["contractId"]]
+                keys = ("operator", "confirmer", "chainId") if exercise["choice"] == "ProposeGasCap" else ("operator", "confirmer", "gateway", "chainId")
+                name = exercise["choice"][len("Propose"):] + "Proposal"
+                name = "GasCapProposal" if name == "GasCapProposal" else "ProgramProposal"
+                self.contracts[name].append({"contractId": "g1" if name == "GasCapProposal" else "q1",
+                                             "args": {**{k: chain["args"][k] for k in keys}, **exercise["choiceArgument"]}})
             elif "CreateCommand" in command:
                 self.contracts["ChainProposal"].append({"contractId": "p1", "args": command["CreateCommand"]["createArguments"]})
             else:
@@ -360,7 +365,8 @@ class Setup(unittest.TestCase):
         self.assertEqual((proposed["submitted"], proposed["currentGasCap"], proposed["newGasCap"]), (True, "30000000", "50000000"))
         [(command, acts)] = self.sent()[before:]
         self.assertEqual(acts, ["ostia-operator::1220fp"])
-        self.assertEqual(command["CreateCommand"]["createArguments"]["newCap"], "50000000")
+        self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"]), ("ProposeGasCap", {"newCap": "50000000"}))
+        self.assertEqual(self.node.contracts["GasCapProposal"][0]["args"]["newCap"], "50000000")
         self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "30000000")   # the proposal alone changes nothing
         accepted = self.raise_step("accept", 50_000_000)
         self.assertTrue(accepted["submitted"])
@@ -547,8 +553,9 @@ class Setup(unittest.TestCase):
         self.assertEqual((proposed["submitted"], proposed["alreadyProposed"]), (True, False))
         [(command, acts)] = self.sent()[before:]
         self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])   # the operator's user acts for the operator and the gateway
-        self.assertEqual(command["CreateCommand"]["createArguments"]["gateway"], "ostia-gateway::1220fp")
-        self.assertEqual({k: v for k, v in command["CreateCommand"]["createArguments"].items() if k.startswith("new")},
+        self.assertEqual(command["ExerciseCommand"]["choice"], "ProposeProgram")
+        self.assertEqual(self.node.contracts["ProgramProposal"][0]["args"]["gateway"], "ostia-gateway::1220fp")
+        self.assertEqual({k: v for k, v in command["ExerciseCommand"]["choiceArgument"].items() if k.startswith("new")},
                          {"newProgramVK": "ab" * 32, "newRootC": "cd" * 32, "newRulesHash": "ef" * 32})
         self.assertEqual(self.chain_program(), old)   # the proposal alone changes nothing
         self.assertFalse(self.program_step("propose")["submitted"])   # the same proposal again: nothing is sent

@@ -6,7 +6,8 @@
 module Zk.Chain where
 
 import DA.Foldable (forA_)
-import DA.Time (addRelTime, days)
+import DA.Optional (fromOptional)
+import DA.Time (addRelTime, days, seconds, convertRelTimeToMicroseconds)
 import qualified DA.Text as T
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV1 (Holding, InstrumentId)
@@ -96,7 +97,7 @@ template ChainProposal
     -- On the one-machine network, up.sh starts the sidecars with the same values it proposes, and propose.py accepts at once.
     choice Accept : ContractId ZkChain
       controller confirmer
-      do create ZkChain with headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; ..
+      do create ZkChain with headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; changeDelay = None; ..
 
 -- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
 -- The gateway is the party that holds the Canton tokens locked for the EVM tokens that stand for them.
@@ -116,6 +117,9 @@ template ZkChain
     headNumber : Int
     headHash : Text
     headStateRoot : Text
+    -- How long a gas-cap or program change waits after it is proposed before the confirmer may accept it. `None` is no wait.
+    -- Last in the record, so a chain made under an earlier version of this package still upgrades; see `ChangeDelayProposal`.
+    changeDelay : Optional RelTime
   where
     signatory operator, confirmer, gateway
     observer builder
@@ -144,6 +148,42 @@ template ZkChain
       do
         assertMsg "the new program key, ZisK root and rules hash must each be 64 lowercase hex digits" (all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash])
         create this with programVK = newProgramVK; rootC = newRootC; rulesHash = newRulesHash
+
+    -- The wait that gas-cap and program changes sit out is replaced like the program is, and by a proposal that itself waited
+    -- out the current wait; see `ChangeDelayProposal`.
+    choice SetChangeDelay : ContractId ZkChain
+      with newDelay : Optional RelTime
+      controller operator, confirmer, gateway
+      do
+        assertMsg "the change delay must be between zero and maxChangeDelay" (delayInRange newDelay)
+        create this with changeDelay = newDelay
+
+    -- The three proposals are made here, not by creating them directly: the proposal records the ledger time it was made at, and
+    -- the confirmer's and (for the program and the delay) the gateway's signature on it is given by this contract, so a proposer
+    -- cannot create one with an earlier time. Nonconsuming, so a block can still be advanced meanwhile.
+    nonconsuming choice ProposeGasCap : ContractId GasCapProposal
+      with newCap : Int
+      controller operator
+      do
+        now <- getTime
+        create GasCapProposal with operator; confirmer; chainId; newCap; proposedAt = now
+
+    nonconsuming choice ProposeProgram : ContractId ProgramProposal
+      with
+        newProgramVK : Text
+        newRootC : Text
+        newRulesHash : Text
+      controller operator, gateway
+      do
+        now <- getTime
+        create ProgramProposal with operator; confirmer; gateway; chainId; newProgramVK; newRootC; newRulesHash; proposedAt = now
+
+    nonconsuming choice ProposeChangeDelay : ContractId ChangeDelayProposal
+      with newDelay : Optional RelTime
+      controller operator, gateway
+      do
+        now <- getTime
+        create ChangeDelayProposal with operator; confirmer; gateway; chainId; newDelay; proposedAt = now
 
     choice Advance : (ContractId ZkChain, ContractId BlockRecord)
       with
@@ -189,9 +229,10 @@ template GasCapProposal
     confirmer : Party
     chainId : Int
     newCap : Int
+    proposedAt : Time
   where
-    signatory operator
-    observer confirmer
+    -- The confirmer signs as well, so the proposal can only be made by `ZkChain.ProposeGasCap`, which stamps it with the ledger time.
+    signatory operator, confirmer
     ensure chainId > 0 && newCap > 0
 
     choice AcceptGasCap : ContractId ZkChain
@@ -200,6 +241,7 @@ template GasCapProposal
       do
         c <- fetch chain
         assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer)
+        waitedOut "the gas cap" proposedAt c.changeDelay
         exercise chain SetGasCap with newCap
 
 -- The operator proposes a new program key, ZisK root and rules hash, and the gateway consents to it, as it does to the chain itself;
@@ -215,9 +257,10 @@ template ProgramProposal
     newProgramVK : Text
     newRootC : Text
     newRulesHash : Text
+    proposedAt : Time
   where
-    signatory operator, gateway
-    observer confirmer
+    -- Made by `ZkChain.ProposeProgram` only (the confirmer signs as well), which stamps it with the ledger time.
+    signatory operator, gateway, confirmer
     ensure chainId > 0 && all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash]
 
     choice AcceptProgram : ContractId ZkChain
@@ -226,7 +269,49 @@ template ProgramProposal
       do
         c <- fetch chain
         assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer && c.gateway == gateway)
+        waitedOut "the program" proposedAt c.changeDelay
         exercise chain SetProgram with newProgramVK; newRootC; newRulesHash
+
+-- The operator proposes a new change delay, and the gateway consents to it; the confirmer accepts it on the chain's current contract.
+-- The proposal waits out the delay that is in force when it is accepted, like any other change, so a delay cannot be cut short
+-- by one step. `None` takes the wait away, and any value is at most `maxChangeDelay`.
+template ChangeDelayProposal
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    chainId : Int
+    newDelay : Optional RelTime
+    proposedAt : Time
+  where
+    -- Made by `ZkChain.ProposeChangeDelay` only (the confirmer signs as well), which stamps it with the ledger time.
+    signatory operator, gateway, confirmer
+    ensure chainId > 0 && delayInRange newDelay
+
+    choice AcceptChangeDelay : ContractId ZkChain
+      with chain : ContractId ZkChain
+      controller confirmer
+      do
+        c <- fetch chain
+        assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer && c.gateway == gateway)
+        waitedOut "the change delay" proposedAt c.changeDelay
+        exercise chain SetChangeDelay with newDelay
+
+-- The longest change delay a chain may be given.
+maxChangeDelay : RelTime
+maxChangeDelay = days 30
+
+delayInRange : Optional RelTime -> Bool
+delayInRange d = let us = convertRelTimeToMicroseconds (fromOptional (seconds 0) d) in us >= 0 && us <= convertRelTimeToMicroseconds maxChangeDelay
+
+-- A change may be accepted once the chain's delay has passed since it was proposed. The proposal's time is the ledger time of its
+-- creation (see `ZkChain.ProposeGasCap`); it can not be in the future.
+waitedOut : Text -> Time -> Optional RelTime -> Update ()
+waitedOut what proposedAt delay = do
+  now <- getTime
+  let readyAt = addRelTime proposedAt (fromOptional (seconds 0) delay)
+  assertMsg ("the proposal is dated in the future") (proposedAt <= now)
+  assertMsg ("the change of " <> what <> " may be accepted from " <> show readyAt <> " (proposed at " <> show proposedAt <> ", change delay " <> show (convertRelTimeToMicroseconds (fromOptional (seconds 0) delay) / 1000000) <> " s)") (now >= readyAt)
 
 -- A contract of a leg must name this chain's id, operator and confirmer. Authority would not always refuse others: the
 -- builder is a controller of `Advance`, so a contract that names the builder in one of those roles would otherwise pass.

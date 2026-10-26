@@ -33,7 +33,7 @@
 
     Raises the gas cap of a chain that runs (the cap is a field of the chain contract), in two steps, each by one user and each printing one JSON line.
     No DAR, parties or users are touched: the parties are read from $CZE_STATE_DIR/canton/parties.env, as propose.py reads them.
-      propose  the operator's token: creates a GasCapProposal for the chain's one contract. Nothing is done if the same proposal is there already.
+      propose  the operator's token: exercises ProposeGasCap on the chain's one contract (which makes the GasCapProposal). Nothing is done if the same proposal is there already.
       accept   the confirmer's token: exercises AcceptGasCap on the proposal for exactly --new-gas-cap, given the chain's current contract.
     Both refuse, before anything is sent, a value that the Daml would refuse: not above the chain's current cap, more than double it, or over
     300,000,000. With --dry-run nothing is submitted: the step prints what it would do ("dryRun": true). Stop the block producer before the
@@ -47,7 +47,7 @@
     one user and each printing one JSON line. Nothing else is touched. The chain's Advance accepts only a block proven under the pair of keys the
     chain contract holds, so the change takes effect at the first block after the accept; the same two steps with the old values put them back.
     Each value is lowercase hex of 64 digits, without 0x.
-      propose  the operator's token (which acts for the operator and the gateway party): creates a ProgramProposal for the chain's one contract. Nothing is done if the same proposal is there already.
+      propose  the operator's token (which acts for the operator and the gateway party): exercises ProposeProgram on the chain's one contract. Nothing is done if the same proposal is there already.
       accept   the confirmer's token: exercises AcceptProgram on the proposal for exactly these three values, given the chain's current contract.
     propose refuses a chain that holds these values already; accept on such a chain prints "alreadyAccepted": true. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
     again after, as for the gas cap. A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for other values is
@@ -406,8 +406,8 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
                              "otherwise the operator archives it (the Archive choice of the GasCapProposal, with the operator's token) and proposes again")
         done = bool(proposals)
         if not done and not dry_run:
-            submit_step(ledger, {"CreateCommand": {"templateId": propose.PKG + "GasCapProposal", "createArguments": {
-                "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"], "newCap": str(new_cap)}}}, "propose")
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeGasCap",
+                                                        "choiceArgument": {"newCap": str(new_cap)}}}, "propose")
         return {**result, "submitted": not done and not dry_run, "alreadyProposed": done}
     mine = [p for p in proposals if p.get("newCap") == str(new_cap)]
     if not mine:
@@ -448,9 +448,8 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
             raise SystemExit("a proposal for other values is on this participant already. Accept it only if those values are wanted; "
                              "otherwise the operator archives it (the Archive choice of the ProgramProposal, with the operator's token) and proposes again")
         if not mine and not dry_run:
-            submit_step(ledger, {"CreateCommand": {"templateId": propose.PKG + "ProgramProposal", "createArguments": {
-                "operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "chainId": chain["chainId"],
-                **{"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}}, "propose")
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeProgram",
+                                                        "choiceArgument": {"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}, "propose")
         return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
     if not mine:
         if current == new:   # a re-run after the accept went through (or committed after a timeout): done

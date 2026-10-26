@@ -9,7 +9,7 @@ module Zk.ChainTest where
 import DA.Assert ((===))
 import DA.Foldable (forA_)
 import DA.List ((!!), sort)
-import DA.Time (addRelTime, days)
+import DA.Time (addRelTime, days, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
 import qualified DA.Text as T
 import Daml.Script
 
@@ -713,7 +713,7 @@ testADepositRequestInTheWrongFormIsRefused = do
 -- The operator proposes `cap` and the confirmer accepts it on `chain`.
 raiseCap : F -> ContractId ZkChain -> Int -> Script (ContractId ZkChain)
 raiseCap f chain cap = do
-  p <- submit f.operator $ createCmd GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = cap
+  p <- submit f.operator $ exerciseCmd chain ProposeGasCap with newCap = cap
   submit f.confirmer $ exerciseCmd p AcceptGasCap with chain
 
 testGasCapProposalSetsTheCap : Script ()
@@ -738,28 +738,29 @@ testSetGasCapNeedsTheOperatorAndTheConfirmer = do
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.gasCap) === (chain, 60000000)
 
--- Only the operator proposes, and only the confirmer accepts; a proposal is for one chain, its operator and its confirmer.
+-- Only the operator proposes, and only the confirmer accepts. A proposal is made on the chain's contract and cannot be created by itself.
 testGasCapProposalAuthorizationAndChain : Script ()
 testGasCapProposalAuthorizationAndChain = do
   f <- fixture
-  let proposal = GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = 60000000
-  submitMustFail f.confirmer $ createCmd proposal
-  submitMustFail f.builder $ createCmd proposal
-  p <- submit f.operator $ createCmd proposal
+  now <- getTime
+  let direct = GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = 60000000; proposedAt = now
+  forA_ [actAs f.operator, actAs f.confirmer, actAs f.builder, actAs [f.operator, f.gateway]] $ \who ->
+    submitMustFail who $ createCmd direct
+  submitMustFail f.confirmer $ exerciseCmd f.chain ProposeGasCap with newCap = 60000000
+  submitMustFail f.builder $ exerciseCmd f.chain ProposeGasCap with newCap = 60000000
+  submitMustFail f.operator $ exerciseCmd f.chain ProposeGasCap with newCap = 0
+  p <- submit f.operator $ exerciseCmd f.chain ProposeGasCap with newCap = 60000000
   submitMustFail f.operator $ exerciseCmd p AcceptGasCap with chain = f.chain
   submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptGasCap with chain = f.chain
-  submitMustFail f.operator $ createCmd proposal with newCap = 0
-  other <- submit f.operator $ createCmd proposal with chainId = 770102
-  submitMustFail f.confirmer $ exerciseCmd other AcceptGasCap with chain = f.chain
-  -- the proposal of another operator, or for another confirmer, is not for this chain either
-  other2 <- submit f.confirmer $ createCmd proposal with operator = f.confirmer
-  submitMustFail f.confirmer $ exerciseCmd other2 AcceptGasCap with chain = f.chain
+  -- the chain's contract stays: proposing does not consume it
+  [(cid, _)] <- query @ZkChain f.operator
+  cid === f.chain
 
 testGasCapBounds : Script ()
 testGasCapBounds = do
   f <- fixture
   let bad why cap = do
-        p <- submit f.operator $ createCmd GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = cap
+        p <- submit f.operator $ exerciseCmd f.chain ProposeGasCap with newCap = cap
         r <- trySubmit f.confirmer $ exerciseCmd p AcceptGasCap with chain = f.chain
         case r of
           Left e -> assertMsg ("refused, but not for \"" <> why <> "\": " <> show e) (why `T.isInfixOf` show e)
@@ -778,7 +779,7 @@ testGasCapBounds = do
   c.gasCap === 240000000
   -- 2x of 240M is 480M: over the ceiling. The ceiling itself is accepted, and nothing goes past it
   let tooHigh cap = do
-        p <- submit f.operator $ createCmd GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = cap
+        p <- submit f.operator $ exerciseCmd c3 ProposeGasCap with newCap = cap
         submitMustFail f.confirmer $ exerciseCmd p AcceptGasCap with chain = c3
   tooHigh 300000001
   tooHigh 480000000
@@ -791,10 +792,11 @@ testGasCapBounds = do
 testGasCapRaiseNeedsTheCurrentContract : Script ()
 testGasCapRaiseNeedsTheCurrentContract = do
   f <- fixture
+  p <- submit f.operator $ exerciseCmd f.chain ProposeGasCap with newCap = 60000000
   _ <- raiseCap f f.chain 60000000
-  -- the old contract is archived: a second acceptance on it finds nothing
-  p <- submit f.operator $ createCmd GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = 60000000
+  -- the old contract is archived: an acceptance on it finds nothing, and no proposal can be made on it
   submitMustFail f.confirmer $ exerciseCmd p AcceptGasCap with chain = f.chain
+  submitMustFail f.operator $ exerciseCmd f.chain ProposeGasCap with newCap = 60000000
 
 -- Advance holds a block to the cap in the contract, the old one and the new one.
 testAdvanceFollowsTheGasCap : Script ()
@@ -823,8 +825,7 @@ testALimitOverTheOldCapCommitsAfterTheRaise = do
 -- The operator and the gateway propose the three values and the confirmer accepts them on `chain`.
 switchProgram : F -> ContractId ZkChain -> Text -> Text -> Text -> Script (ContractId ZkChain)
 switchProgram f chain vk root rules = do
-  p <- submit (actAs [f.operator, f.gateway]) $ createCmd ProgramProposal with
-    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = vk; newRootC = root; newRulesHash = rules
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeProgram with newProgramVK = vk; newRootC = root; newRulesHash = rules
   submit f.confirmer $ exerciseCmd p AcceptProgram with chain
 
 -- Three distinct values: each lands in its own field, and nothing else changes.
@@ -868,28 +869,25 @@ testSetProgramNeedsTheOperatorTheConfirmerAndTheGateway = do
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.programVK) === (chain, stubRoot)
 
--- The operator and the gateway propose, and only the confirmer accepts; a proposal is for one chain, its operator, its confirmer and its gateway.
+-- The operator and the gateway propose, and only the confirmer accepts. A proposal is made on the chain's contract and cannot be created by itself.
 testProgramProposalAuthorizationAndChain : Script ()
 testProgramProposalAuthorizationAndChain = do
   f <- fixture
-  let proposal = ProgramProposal with
-        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+  now <- getTime
+  let direct = ProgramProposal with
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot; proposedAt = now
+      propose = exerciseCmd f.chain ProposeProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
       both = actAs [f.operator, f.gateway]
-  submitMustFail f.confirmer $ createCmd proposal
-  submitMustFail f.builder $ createCmd proposal
-  submitMustFail f.operator $ createCmd proposal   -- the gateway has not consented
-  submitMustFail f.gateway $ createCmd proposal   -- nor the operator
-  p <- submit both $ createCmd proposal
+  forA_ [actAs f.operator, actAs f.confirmer, actAs f.gateway, actAs f.builder, both, actAs [f.operator, f.confirmer]] $ \who ->
+    submitMustFail who $ createCmd direct
+  submitMustFail f.confirmer propose
+  submitMustFail f.builder propose
+  submitMustFail f.operator propose   -- the gateway has not consented
+  submitMustFail f.gateway propose   -- nor the operator
+  p <- submit both propose
   submitMustFail f.operator $ exerciseCmd p AcceptProgram with chain = f.chain
   submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptProgram with chain = f.chain
   submitMustFail (actAs f.gateway <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptProgram with chain = f.chain
-  other <- submit both $ createCmd proposal with chainId = 770102
-  submitMustFail f.confirmer $ exerciseCmd other AcceptProgram with chain = f.chain
-  other2 <- submit (actAs [f.confirmer, f.gateway]) $ createCmd proposal with operator = f.confirmer
-  submitMustFail f.confirmer $ exerciseCmd other2 AcceptProgram with chain = f.chain
-  -- a proposal that names another gateway (which signs it; the chain's gateway does not) is refused on the chain's contract
-  other3 <- submit (actAs [f.operator, f.builder]) $ createCmd proposal with gateway = f.builder
-  submitMustFail f.confirmer $ exerciseCmd other3 AcceptProgram with chain = f.chain
   -- a proposal is not accepted on a contract that is no longer the chain's current one
   _ <- raiseCap f f.chain 60000000
   submitMustFail f.confirmer $ exerciseCmd p AcceptProgram with chain = f.chain
@@ -898,14 +896,13 @@ testProgramProposalAuthorizationAndChain = do
 testProgramValuesMustBeHex : Script ()
 testProgramValuesMustBeHex = do
   f <- fixture
-  let proposal = ProgramProposal with
-        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
-      all3 = actAs [f.operator, f.confirmer, f.gateway]
+  let all3 = actAs [f.operator, f.confirmer, f.gateway]
       both = actAs [f.operator, f.gateway]
+      propose vk root rules = exerciseCmd f.chain ProposeProgram with newProgramVK = vk; newRootC = root; newRulesHash = rules
   forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb", mconcat (replicate 64 "B"), mconcat (replicate 64 "g")] $ \bad -> do
-    submitMustFail both $ createCmd proposal with newProgramVK = bad
-    submitMustFail both $ createCmd proposal with newRootC = bad
-    submitMustFail both $ createCmd proposal with newRulesHash = bad
+    submitMustFail both $ propose bad stubRoot stubRoot
+    submitMustFail both $ propose stubRoot bad stubRoot
+    submitMustFail both $ propose stubRoot stubRoot bad
     submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = bad; newRootC = stubRoot; newRulesHash = stubRoot
     submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = bad; newRulesHash = stubRoot
     submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = bad
@@ -1015,3 +1012,130 @@ testVerify2RefusesACapitalLetterTheRuntimeLowercases = do
   refused "the sidecar refused the block: no malformed input" f $ advanceWith f.chain "01" "AA" ["aa"] [] []
   refused "the sidecar refused the block: no malformed input" f $ advanceWith f.chain "0A" "aa" ["aa"] [] []
   refused "the sidecar refused the block: no malformed input" f $ advanceWithTxs f.chain "01" "CC" "aa" ["aa"] [] []
+
+-- The announced delay. A change of the gas cap, of the program or of the delay itself is accepted only once the chain's delay has passed
+-- since it was proposed. `None` is no delay.
+
+-- The confirmer's acceptance is refused, and says when it may be accepted.
+mustWait : Party -> Commands a -> Script ()
+mustWait confirmer cmd = do
+  r <- trySubmit confirmer cmd
+  case r of
+    Left e -> assertMsg ("refused, but not for the wait: " <> show e) ("may be accepted from" `T.isInfixOf` show e)
+    Right _ -> abort "the change was accepted before its delay had passed"
+
+-- The operator and the gateway propose the delay and the confirmer accepts it on `chain`; the chain's current delay must have passed.
+setDelay : F -> ContractId ZkChain -> Optional RelTime -> Script (ContractId ZkChain)
+setDelay f chain d = do
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeChangeDelay with newDelay = d
+  submit f.confirmer $ exerciseCmd p AcceptChangeDelay with chain
+
+testWithNoDelayAChangeIsAcceptedAtOnce : Script ()
+testWithNoDelayAChangeIsAcceptedAtOnce = do
+  f <- fixture
+  [(_, c)] <- query @ZkChain f.operator
+  c.changeDelay === None
+  chain <- raiseCap f f.chain 60000000
+  chain2 <- switchProgram f chain stubRoot stubRoot stubVK
+  chain3 <- setDelay f chain2 (Some (seconds 100))
+  Some c3 <- queryContractId f.operator chain3
+  c3.changeDelay === Some (seconds 100)
+  (c3.gasCap, c3.programVK) === (60000000, stubRoot)
+
+testAGasCapWaitsOutTheDelay : Script ()
+testAGasCapWaitsOutTheDelay = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (seconds 100))
+  p <- submit f.operator $ exerciseCmd chain ProposeGasCap with newCap = 60000000
+  mustWait f.confirmer $ exerciseCmd p AcceptGasCap with chain
+  passTime (seconds 99)
+  mustWait f.confirmer $ exerciseCmd p AcceptGasCap with chain
+  passTime (seconds 1)
+  next <- submit f.confirmer $ exerciseCmd p AcceptGasCap with chain
+  Some c <- queryContractId f.operator next
+  (c.gasCap, c.changeDelay) === (60000000, Some (seconds 100))
+
+testAProgramWaitsOutTheDelay : Script ()
+testAProgramWaitsOutTheDelay = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (seconds 100))
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubVK
+  mustWait f.confirmer $ exerciseCmd p AcceptProgram with chain
+  passTime (seconds 99)
+  mustWait f.confirmer $ exerciseCmd p AcceptProgram with chain
+  passTime (seconds 1)
+  next <- submit f.confirmer $ exerciseCmd p AcceptProgram with chain
+  Some c <- queryContractId f.operator next
+  (c.programVK, c.rootC, c.rulesHash) === (stubRoot, stubRoot, stubVK)
+
+-- The delay cannot be cut short: a proposal to lower it waits out the delay that is in force.
+testTheDelayWaitsOutItself : Script ()
+testTheDelayWaitsOutItself = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (seconds 100))
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeChangeDelay with newDelay = Some (seconds 10)
+  passTime (seconds 99)
+  mustWait f.confirmer $ exerciseCmd p AcceptChangeDelay with chain
+  passTime (seconds 1)
+  chain2 <- submit f.confirmer $ exerciseCmd p AcceptChangeDelay with chain
+  Some c <- queryContractId f.operator chain2
+  c.changeDelay === Some (seconds 10)
+  -- and the lower delay is the one that applies from then on
+  q <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain2 ProposeChangeDelay with newDelay = None
+  mustWait f.confirmer $ exerciseCmd q AcceptChangeDelay with chain = chain2
+  passTime (seconds 10)
+  chain3 <- submit f.confirmer $ exerciseCmd q AcceptChangeDelay with chain = chain2
+  Some c3 <- queryContractId f.operator chain3
+  c3.changeDelay === None
+  _ <- raiseCap f chain3 60000000
+  pure ()
+
+-- A proposal carries the ledger time it was made at; it cannot be created by the proposer with another time.
+testAProposalCannotBeBackdated : Script ()
+testAProposalCannotBeBackdated = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (seconds 100))
+  passTime (seconds 1000)
+  now <- getTime
+  p <- submit f.operator $ exerciseCmd chain ProposeGasCap with newCap = 60000000
+  Some proposal <- queryContractId f.operator p
+  proposal.proposedAt === now
+  let earlier = addRelTime now (seconds (-1000))
+  forA_ [actAs f.operator, actAs [f.operator, f.gateway], actAs [f.operator, f.gateway, f.builder]] $ \who -> do
+    submitMustFail who $ createCmd GasCapProposal with operator = f.operator; confirmer = f.confirmer; chainId = 770101; newCap = 60000000; proposedAt = earlier
+    submitMustFail who $ createCmd ProgramProposal with
+      operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot; proposedAt = earlier
+    submitMustFail who $ createCmd ChangeDelayProposal with operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newDelay = None; proposedAt = earlier
+  mustWait f.confirmer $ exerciseCmd p AcceptGasCap with chain
+
+-- The delay is between zero and thirty days; only the operator and the gateway propose it, and only the confirmer accepts.
+testTheDelayIsBounded : Script ()
+testTheDelayIsBounded = do
+  f <- fixture
+  let both = actAs [f.operator, f.gateway]
+  submitMustFail both $ exerciseCmd f.chain ProposeChangeDelay with newDelay = Some (seconds (-1))
+  submitMustFail both $ exerciseCmd f.chain ProposeChangeDelay with newDelay = Some ((days 30 `plusRel` seconds 1))
+  submitMustFail f.operator $ exerciseCmd f.chain ProposeChangeDelay with newDelay = Some (seconds 5)
+  submitMustFail f.confirmer $ exerciseCmd f.chain ProposeChangeDelay with newDelay = Some (seconds 5)
+  p <- submit both $ exerciseCmd f.chain ProposeChangeDelay with newDelay = Some (days 30)
+  submitMustFail f.operator $ exerciseCmd p AcceptChangeDelay with chain = f.chain
+  submitMustFail both $ exerciseCmd p AcceptChangeDelay with chain = f.chain
+  chain <- submit f.confirmer $ exerciseCmd p AcceptChangeDelay with chain = f.chain
+  Some c <- queryContractId f.operator chain
+  c.changeDelay === Some (days 30)
+  -- SetChangeDelay needs all three parties, and refuses a delay out of bounds
+  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd chain SetChangeDelay with newDelay = None
+  submitMustFail (actAs [f.operator, f.confirmer, f.gateway]) $ exerciseCmd chain SetChangeDelay with newDelay = Some (seconds (-5))
+
+-- The proposals of a chain with a delay are for the chain's current contract, as before.
+testADelayedProposalNeedsTheCurrentContract : Script ()
+testADelayedProposalNeedsTheCurrentContract = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (seconds 10))
+  p <- submit f.operator $ exerciseCmd chain ProposeGasCap with newCap = 60000000
+  passTime (seconds 10)
+  _ <- submit f.confirmer $ exerciseCmd p AcceptGasCap with chain
+  submitMustFail f.confirmer $ exerciseCmd p AcceptGasCap with chain
+
+plusRel : RelTime -> RelTime -> RelTime
+plusRel a b = convertMicrosecondsToRelTime (convertRelTimeToMicroseconds a + convertRelTimeToMicroseconds b)
