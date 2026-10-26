@@ -44,8 +44,8 @@ jobs:
         depth: [2, 3]
     env:
       PIPELINE_DEPTH: ${{ matrix.depth }}
-      FLOOD_BLOCKS: ${{ inputs.flood_blocks || (github.event_name == 'pull_request' && '30' || '300') }}
-      RUNS: ${{ inputs.runs || (github.event_name == 'pull_request' && '1' || '2') }}
+      FLOOD_BLOCKS: ${{ inputs.flood_blocks || (github.event_name == 'pull_request' && '300' || '300') }}
+      RUNS: ${{ inputs.runs || (github.event_name == 'pull_request' && '2' || '2') }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: ./.github/actions/pinned-images
