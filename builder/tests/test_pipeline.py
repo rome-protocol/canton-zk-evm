@@ -1,4 +1,4 @@
-"""The producer that keeps several blocks in flight, built directly at two and three blocks (`run` still refuses more than one), against the
+"""The producer that keeps several blocks in flight, built directly at two and three blocks (`run` takes a depth up to one more than the provers), against the
 same fakes as the others. The stand-in prover's answers are set per job (fake-prove.sh, FAKE_PROVER_PLAN), so a block's proof can come
 back before an earlier block's. Covers proofs out of order, failures, Canton's head not the parent at submit, and the gateway's proofs read while a block is the tip."""
 import json, os, re, sys, tempfile, threading, time, unittest

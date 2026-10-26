@@ -48,7 +48,11 @@ class BuilderError(Exception):
 
 
 class HeadMismatch(BuilderError):
-    """Canton's head is not the parent of the block that is next to be submitted: nothing is submitted and reth does not move."""
+    """Canton's head is not the parent of the block that is next to be submitted: nothing is submitted and reth does not move. `got`: the head's hash."""
+
+    def __init__(self, message: str, got: str | None = None):
+        super().__init__(message)
+        self.got = got
 
 
 class ForeignHead(HeadMismatch):
@@ -698,6 +702,14 @@ class NoCantonSide(Exception):
     """A leg that has no Canton side now; the message says why."""
 
 
+LEG_WAITS = "its leg waits until the blocks before it are final"   # the reason of a leg that has its Canton side but the block is built on a block in flight
+
+
+def waiting_legs(left_out: list) -> bool:
+    """Whether a block left a leg out because it waits for the blocks in flight."""
+    return any(x["reason"] == LEG_WAITS for x in left_out)
+
+
 def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str) -> str | None:
     """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock."""
     if spec is None:
@@ -1059,10 +1071,12 @@ class Proven:
 
 
 def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True,
-          lost: list | None = None, attempt: "Attempt | None" = None, settled=None) -> "Built | dict":
+          lost: list | None = None, attempt: "Attempt | None" = None, settled=None, defer_legs: bool = False) -> "Built | dict":
     """Stage one. Cuts the block: chooses its transactions, has reth build it on `head` (Canton's head; `chain` says its number) (again without any transaction whose leg has no
     Canton side), reads the gateway's proofs while the block is reth's tip, and writes the prover's input files. Returns a Built, or, for a
-    block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block."""
+    block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block. `defer_legs`: the block is built on
+    a block in flight, so a leg is not recorded in it: one that has its Canton side (matched on Canton's state, as ever) is left out with the reason
+    `LEG_WAITS`, and one with none is left out with its own reason, as ever."""
     attempt = attempt or Attempt(None, 1)
     n = int(chain["headNumber"]) + 1
     if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
@@ -1080,12 +1094,15 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
         legs, missing = match_legs(Canton(Ledger(cfg), chain, utcnow()), events) if events else ([], [])
+        if defer_legs and events:   # a leg with a Canton side waits; one with none is left out with its own reason
+            bad = {event.tx for event, _ in missing}
+            missing = [*missing, *((event, LEG_WAITS) for event in events if event.tx not in bad)]
         if not missing:
             break
         for event, reason in missing:
             if event.tx not in exclude:
                 exclude.add(event.tx)
-                left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
+                left_out.append({"transaction": event.tx, "reason": LEG_WAITS if reason == LEG_WAITS else f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         rebuilds += 1
         final = settled() if settled else head
         reth.forkchoice(head, final, final)   # back to the block this one is built on, never below the last one Canton committed
@@ -1429,7 +1446,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
     Several blocks can be kept at once. Committed: reth's head stays at `u["tip"]` when there is one (else the block), the block is
     final, and only its entries go from the kept file; the blocks above it are for `recover_saved` to send again. Not committed: the
     whole kept file is sent in block order after `pairs`, the attempts of the other blocks are given to `close` (their records are
-    closed), and then the file is cleared."""
+    closed), and then the file is cleared. With `u["parent"]` (the block this one was built on, which the caller saw committed), a head that is
+    not that block moves nothing and raises `HeadMismatch`: reth never goes below a block that committed."""
     bound = u["since"] + cfg.resolve_seconds
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
@@ -1443,7 +1461,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         if found is not None and found["committed"]:
             committed, how = True, "completion"
         else:
-            head = "0x" + Ledger(cfg).head()["headHash"]
+            chain = Ledger(cfg).head()
+            head = "0x" + chain["headHash"]
             committed = head == u["hash"]
             how = "completion" if found else "head" if committed else "window"
             if found is None and not committed and (reached is None or reached < bound):
@@ -1458,6 +1477,9 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
             clear_saved(cfg, u["number"] if isinstance(u.get("number"), int) else None)
             clear_unresolved(cfg)
             return True, [], how, {"updateId": found and found["updateId"], "completionOffset": found and found["completionOffset"]}
+        if u.get("parent") and head.lower() != u["parent"].lower():
+            back = u["number"] - 1 if isinstance(u.get("number"), int) else "?"
+            raise HeadMismatch(f"Canton's head is block {chain['headNumber']} ({head[2:]}), not block {back} ({u['parent'][2:]}), the block reth goes back to", head[2:])
         kept = read_saved_or_none(cfg)   # before reth moves: a file that cannot be read stays, and the loop backs off
         number = u["number"] if isinstance(u.get("number"), int) else 0
         kept = in_block_order(kept, number)
@@ -1472,14 +1494,15 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         return False, lost, how, {}
 
 
-def recover_saved(cfg: Config, wait=None, close=None) -> dict | None:
+def recover_saved(cfg: Config, wait=None, close=None, canton_head: dict | None = None) -> dict | None:
     """After a crash or a restart in the middle of a block: reth goes to Canton's head, and the transactions that block was made from
     (saved before the block was) are sent to reth's pool again. Whether Canton took the block does not matter: a transaction of a
     committed block has a used nonce, and reth says so. An Advance with no answer comes first: it is settled by its command id (and
     raises `Unresolved` while it cannot be), because Canton's head says nothing until the command can no longer commit. Returns
     None when nothing was saved and nothing settled, else {"recovered": how many, "lostTransactions": [{transaction, error}]} for the
     ones reth refused for another reason, and "settled": {"number", "blockHash", "commandId", "committed", "resolved", ...} when an earlier
-    block's command was settled here."""
+    block's command was settled here. `canton_head`: the head the caller has read and checked already (what `Ledger.head()` answers); it is used
+    instead of a new read, unless a command was settled here, which may have moved the head."""
     u = load_unresolved(cfg)
     settled = None
     while u:   # with `wait` (the `once` command) this waits for the command; without it (the loop) it raises and the loop tries again
@@ -1501,7 +1524,7 @@ def recover_saved(cfg: Config, wait=None, close=None) -> dict | None:
     pairs = [(e["hash"], e["raw"]) for e in entries]
     with connect(cfg.ws_url, max_size=None) as ws:
         reth = Reth(cfg, ws)
-        head = "0x" + Ledger(cfg).head()["headHash"]
+        head = "0x" + (canton_head if canton_head is not None and not settled else Ledger(cfg).head())["headHash"]
         reth.forkchoice(head, head, head)
         lost = resend(reth, pairs)
     refs = attempt_refs(entries)
@@ -1704,6 +1727,7 @@ class Producer:
                     self.step()
                 except Exception as e:   # a fault of the loop's own: the chain goes on
                     self.fail(failure_report(e))
+            self.abandon()
             state = "crashed" if self.fatal else "stopped"   # a signal stops it; a fatal fault ends it as any other crash
         finally:
             ticker_stop.set()
@@ -1711,6 +1735,9 @@ class Producer:
                 ticker.join(timeout=10)
             self.journal.event("run_stopped", state=state)
             self.write_status(state, final=True)
+
+    def abandon(self) -> None:
+        """What the run leaves behind when it ends: nothing at one block at a time (the block in progress finished)."""
 
     def load_unresolved(self) -> None:
         """An Advance with no answer from before a restart is settled by its command id first, as in the run that submitted it."""
@@ -1777,7 +1804,7 @@ class Producer:
 
     def step(self) -> None:
         now = self.clock()
-        attempt = fault = None   # `fault`: (error, attempt) of a cut that failed while blocks were in flight
+        attempt = None
         for h in [h for h, until in self.excluded.items() if until <= now]:
             del self.excluded[h]
             self.excluded_why.pop(h, None)
@@ -1882,11 +1909,11 @@ class Producer:
         for run, attempt in refs:
             self.journal.event("resolved", attempt=attempt, attempt_run=run, outcome="restarted")
 
-    def restore(self, close: bool = True) -> None:
+    def restore(self, close: bool = True, canton_head: dict | None = None) -> None:
         """Sends the transactions a cut-short block was made from back to reth (see `recover_saved`). Raises while reth or Canton cannot be
         reached: the file stays and the loop backs off. The attempts the file names are closed as restarted, unless `close` is false (their
-        blocks were answered or cancelled in this run, and have their last line)."""
-        found = self.recover(self.cfg, close=self.close_attempts if close else None)
+        blocks were answered or cancelled in this run, and have their last line). `canton_head`: a head read and checked by the caller."""
+        found = self.recover(self.cfg, close=self.close_attempts if close else None, **({"canton_head": canton_head} if canton_head is not None else {}))
         if found:
             found.pop("attempts", None)   # closed by `recover`, each before the kept file that names it was cleared
             self.emit(found)
@@ -1973,7 +2000,7 @@ class Producer:
         window the command can still commit in is not over), nothing is built, reth is not moved and the status says the block is waiting."""
         u = self.unresolved
         try:
-            committed, lost, how, info = self.resolve(self.cfg, u, u["pairs"], close=lambda refs: self.close_attempts([r for r in refs if r != (self.journal.run_id, u.get("attempt"))]))   # raises while it cannot be read: backoff
+            committed, lost, how, info = self.resolve_in_doubt(u)   # raises while it cannot be read: backoff
         except Unresolved as why:
             u["why"] = str(why)   # the status says what it waits for (no completion yet, a clock skew, ...)
             self.write_status()
@@ -1999,6 +2026,10 @@ class Producer:
         self.held = None
         self.emit(report)
         self.write_status()
+
+    def resolve_in_doubt(self, u: dict) -> tuple:
+        """`resolve_unknown` for the command in doubt: (committed, the transactions reth refused, how it was settled, update id and offset)."""
+        return self.resolve(self.cfg, u, u["pairs"], close=lambda refs: self.close_attempts([r for r in refs if r != (self.journal.run_id, u.get("attempt"))]))
 
     def record(self, result: dict, pairs: list) -> None:
         now = self.clock()
@@ -2126,9 +2157,12 @@ def each_once(lost: list) -> list:
 
 class Pipeline(Producer):
     """The producer that keeps up to `max_in_flight` blocks in flight: a block is cut while earlier ones prove, built on the newest of them, and
-    only the oldest is submitted. At `max_in_flight` 1 it makes the same calls and the same bytes as `Producer` on the golden scenarios (tests/test_golden_pipeline.py). The one
-    difference is after a move back that failed: the next step finishes it (after a read of Canton's head, with no `resolved restarted` line) and
-    the block is cut a step later (tests/test_pipeline.py pins it). See README.md, "Provers".
+    only the oldest is submitted. At `max_in_flight` 1 it makes the same calls and the same bytes as `Producer` on the golden scenarios (tests/test_golden_pipeline.py). It differs
+    only on fault paths and on a stop: after a move back that failed, the next step finishes it (after a read of Canton's head, with no `resolved restarted`
+    line) and the block is cut a step later; a head that lags the last block it saw committed is never gone below (a restore, the parent check
+    of a settle that found the command not committed, and `finish_unwind`, the step that finishes a move back, each read the head first and move nothing on a head that
+    does not fit); and a stop (SIGTERM) at depth 1 gives up the block in flight (its transactions stay kept for the next start) where `Producer` finishes it.
+    tests/test_pipeline_edges.py pins the fault-path differences. See README.md, "Provers".
 
     `self.last` is the last block this process saw Canton commit, as (number, hash): reth's head never goes below it, and its safe and
     finalized blocks are never any other."""
@@ -2140,6 +2174,7 @@ class Pipeline(Producer):
         self.last = None
         self.head_fault: str | None = None   # why the last head check failed: nothing is cut or submitted until one passes
         self.unwind_pending = False   # reth could not be taken back to `last`, or its transactions could not be sent again: the next step does both first
+        self.leg_wait = False   # a block built on a block in flight left a leg out for it: nothing is cut until nothing is in flight, and then the leg goes in on Canton's head
         self.back_pending: "tuple | None" = None   # a block built on the tip failed and reth could not be taken back to the tip, or its transactions not be sent again: (tip hash, number)
 
     def provers(self) -> int:
@@ -2149,10 +2184,66 @@ class Pipeline(Producer):
         pool = self.cfg.pool
         if self.head_fault:
             return "Canton's head is not the parent of the next block to submit"
-        return why_not_cut(self.k, self.flight, self.provers(), any_up=not (pool and pool.managed) or pool.any_up(), in_doubt=self.unresolved is not None)
+        return why_not_cut(self.k, self.flight, self.provers(), any_up=not (pool and pool.managed) or pool.any_up(), in_doubt=self.unresolved is not None,
+                           one_at_a_time=self.one_at_a_time())
+
+    def one_at_a_time(self) -> str | None:
+        """Why the producer cuts only with nothing in flight now, or None. Each of these reasons about "the last block", and at depth 1 that logic
+        is today's: a control block or a hunt for a transaction that cannot be proven, a probe or a suspect after refusals, the retries after a
+        refusal or a failure until the next commit, and a leg that waits."""
+        if self.control or self.hunt:
+            return "a transaction that cannot be proven is being looked for"
+        if self.probe is not None or self.suspects:
+            return "a transaction that was in refused blocks is being tried alone"
+        if self.failures or self.refusals_in_row:
+            return "the block after a failure or a refusal is made alone"
+        if self.leg_wait:
+            return "a leg waits until the blocks before it are final"
+        return None
 
     def settled(self) -> str:
         return self.last[1]
+
+    def skipped(self, result: dict, now: float) -> None:
+        """`Producer.skipped`; a block that held only a leg that waits is not looked at again after a pause: the leg goes in when nothing is in flight."""
+        super().skipped(result, now)
+        if waiting_legs(result["leftOut"]):
+            self.held = None
+
+    def resolve_in_doubt(self, u: dict) -> tuple:
+        """The command in doubt is the oldest block, and the blocks in flight were built on it. Committed: it is the last block this process saw
+        committed, reth's head stays on the newest block in flight and only this block becomes final, and the next block in flight is submitted
+        next. Not committed: Canton's head must be this block's parent (anything else moves nothing), reth goes back to it, the transactions of
+        every block in flight are sent again with this one's, and each of those blocks is cancelled (a last line of its own, not a restart)."""
+        flight = list(self.flight)
+        me = (self.journal.run_id, u.get("attempt"))
+        own = {(self.journal.run_id, e.attempt.seq) for e in flight}
+        def close(refs: list) -> None:   # before the kept file that names them is cleared
+            for entry in flight:
+                self.cancel(entry, u.get("attempt"))
+            self.close_attempts([r for r in refs if r != me and r not in own])
+        asked = {**u, "tip": flight[-1].hash if flight else None, **({"parent": self.last[1]} if self.last else {})}
+        try:
+            committed, lost, how, info = self.resolve(self.cfg, asked, [*u["pairs"], *(x for entry in flight for x in entry.pairs)], close=close)
+        except HeadMismatch as e:
+            if e.got:
+                self.refuse_foreign(e.got)
+            self.head_fault = str(e)
+            raise
+        self.head_fault = None
+        if committed:
+            self.last = (u["number"], u["hash"])
+        else:
+            lost = each_once([*lost, *(x for entry in flight for x in entry.built.lost)])
+            self.flight = []
+        return committed, lost, how, info
+
+    def abandon(self) -> None:
+        """A stop (SIGTERM) cuts nothing more, and the step in progress, a submit included, has finished. The blocks still in flight are given up: their
+        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted)."""
+        for entry in self.flight:
+            if entry.proving is not None:
+                entry.proving.ticket.cancel()
 
     def status(self, state: str = "running") -> dict:
         found = super().status(state)
@@ -2186,9 +2277,13 @@ class Pipeline(Producer):
                 self.restore()
             self.collect()
             blocked, cut, trigger = self.cut_blocked(), False, None
+            if self.stop.is_set():   # a signal: nothing more is cut
+                blocked = "stopping"
             if blocked is None:
                 self.pause = 0.0
                 trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
+                if trigger == "heartbeat" and self.flight:   # an empty block above blocks in flight shows nothing new: the heartbeat waits for nothing in flight
+                    trigger = None
                 if trigger is not None:
                     cut = True
                     attempt = self.new_attempt(trigger, now)
@@ -2210,6 +2305,10 @@ class Pipeline(Producer):
                 self.wait(min(self.idle, 1.0) if blocked == "no prover is up" and self.idle > 0 else 1.0 if blocked == "no prover is up"
                           else min(self.idle, self.pause) if self.pause > 0 else self.idle)
                 return
+            if self.stop.is_set():   # a signal, in this step or before it: no proof is waited for and no submit begins; the blocks in flight are given up (`abandon`)
+                if fault:
+                    self.tell_cut_failed(fault)
+                return
             oldest = self.flight[0]
             full = len(self.flight) >= self.k
             if oldest.state == PROVING:
@@ -2222,8 +2321,16 @@ class Pipeline(Producer):
                         self.write_status()
                     self.wait(self.idle)
                     return
-                oldest.proving.ticket.done.wait()   # nothing more can be cut: the oldest is what everything waits for
+                while not oldest.proving.ticket.done.wait(0.2):   # nothing more can be cut: the oldest is what everything waits for, and a signal ends the wait
+                    if self.stop.is_set():
+                        if fault:
+                            self.tell_cut_failed(fault)
+                        return
                 self.collect()
+                if self.stop.is_set():   # the signal came as the proof did: the proof is not sent
+                    if fault:
+                        self.tell_cut_failed(fault)
+                    return
             if oldest.state == FAILED:
                 attempt = self.attempt = oldest.attempt
                 self.unwind(oldest.error, oldest)
@@ -2233,8 +2340,8 @@ class Pipeline(Producer):
                 attempt = oldest.attempt
                 result, pairs = self.submit_oldest(oldest)
                 self.settle_result(result, pairs, now)
-                if fault:   # the back-off after a failed answer has been taken already
-                    self.cut_failed(fault, wait=not (not result.get("skipped") and result["committed"] is False and not result.get("rejected")))
+                if fault:   # a refusal and a failure that Canton did not refuse have each taken their back-off already
+                    self.cut_failed(fault, wait=not (not result.get("skipped") and result["committed"] is False))
                 return
             if fault:
                 return self.cut_failed(fault)
@@ -2307,6 +2414,7 @@ class Pipeline(Producer):
                 chain = {**tip.built.chain, "headNumber": tip.number, "headHash": tip.hash[2:]}   # the contract it names is the one Canton had before the tip
                 base = tip.hash
             else:
+                self.leg_wait = False   # on Canton's head the leg that waited goes in, with today's checks
                 chain = Ledger(self.cfg).head()
                 if self.last and int(chain["headNumber"]) < self.last[0]:   # a read that lags this process's own last commit: reth never goes below it
                     raise HeadMismatch(f"Canton's head is block {chain['headNumber']}, below block {self.last[0]}, the last block this producer saw committed")
@@ -2319,13 +2427,16 @@ class Pipeline(Producer):
                 reth.forkchoice(base, base, base)
             lost_so_far: list = []
             try:
-                built = build(self.cfg, reth, chain, base, exclude, prove_empty=trigger == "heartbeat", lost=lost_so_far, attempt=attempt, settled=self.settled)
+                built = build(self.cfg, reth, chain, base, exclude, prove_empty=trigger == "heartbeat", lost=lost_so_far, attempt=attempt, settled=self.settled,
+                              defer_legs=bool(self.flight))
             except BaseException as e:
                 if unresolved_path(self.cfg).exists():   # an Advance was sent and is not settled: reth does not move
                     raise
                 self.back_to(reth, e, base, n, lost_so_far)
                 raise
             pairs = list(reth.imported)
+        if waiting_legs(built["leftOut"] if isinstance(built, dict) else built.left_out):
+            self.leg_wait = True
         if isinstance(built, dict):   # skipped: nothing to prove or submit
             return built
         entry = InFlight(attempt, built, pairs, on_tip=bool(self.flight))
@@ -2437,7 +2548,7 @@ class Pipeline(Producer):
         go back to the pool, in block order. After a failed move back reth is still on the tip, so nothing is sent and the copies stay."""
         later, self.flight = self.flight, []
         for entry in later:
-            self.cancel(entry, culprit)
+            self.cancel(entry, culprit.attempt.seq)
         lost: list = [x for entry in later for x in entry.built.lost]   # what these blocks' own builds could not put back is reported too
         if result.get("rewindError"):   # reth is still on the tip: the next step moves it back and sends the copies
             self.unwind_pending = True
@@ -2458,24 +2569,35 @@ class Pipeline(Producer):
         if lost:
             result["lostTransactions"] = each_once([*result.get("lostTransactions", []), *lost])
 
+    def restore(self, close: bool = True, canton_head: dict | None = None) -> None:
+        """`Producer.restore`, after a check that Canton's head is not below the last block this process saw committed: reth never goes below it.
+        A head below it is a read that lags, and nothing moves. The head that was read is the one `recover_saved` moves reth to."""
+        chain = canton_head if canton_head is not None else Ledger(self.cfg).head()
+        if self.last and int(chain["headNumber"]) < self.last[0]:
+            raise HeadMismatch(f"Canton's head is block {chain['headNumber']}, below block {self.last[0]}, the last block this producer saw committed")
+        super().restore(close, canton_head=chain)
+
     def finish_unwind(self) -> None:
         """The step after an unwind that did not finish. Canton's head must still be `last` (a head that is not is the fault of `check_head`, and
         nothing moves); then reth goes to it and the kept transactions are sent again, and only then is the file cleared."""
-        got = Ledger(self.cfg).head()["headHash"].lower().removeprefix("0x")
+        chain = Ledger(self.cfg).head()
+        got = chain["headHash"].lower().removeprefix("0x")
         want = self.last[1].lower().removeprefix("0x")
         if got != want:
             self.refuse_foreign(got)   # a head reth does not have is not waited out
-            self.head_fault = f"Canton's head is block {got}, not block {self.last[0]} ({want}), the block reth goes back to"
+            self.head_fault = f"Canton's head is block {chain['headNumber']} ({got}), not block {self.last[0]} ({want}), the block reth goes back to"
             raise HeadMismatch(self.head_fault)
         self.head_fault = None
-        self.restore(close=False)
+        self.restore(close=False, canton_head=chain)
         self.unwind_pending = False
 
-    def cancel(self, entry: "InFlight", culprit: "InFlight") -> None:
+    def cancel(self, entry: "InFlight", depends_on: int | None) -> None:
+        """A block in flight that an earlier block's failure takes down: its proof is dropped and its attempt gets its last line (`depends_on`: the
+        earlier block's attempt)."""
         if entry.proving is not None:
             entry.proving.ticket.cancel()
         entry.attempt.closed = True
-        self.journal.event("cancelled", attempt=entry.attempt.seq, number=entry.number, depends_on=culprit.attempt.seq,
+        self.journal.event("cancelled", attempt=entry.attempt.seq, number=entry.number, depends_on=depends_on,
                            reason="an earlier block did not commit")
 
     def unwind(self, e: BaseException, culprit: "InFlight") -> None:
@@ -2487,7 +2609,7 @@ class Pipeline(Producer):
         blocks, self.flight = self.flight, []
         for entry in blocks:
             if entry is not culprit:
-                self.cancel(entry, culprit)
+                self.cancel(entry, culprit.attempt.seq)
         last = self.settled()
         e.lost_transactions = [*culprit.built.lost, *(x for entry in blocks if entry is not culprit for x in entry.built.lost), *getattr(e, "lost_transactions", [])]
         self.unwind_pending = True   # until reth is on `last` and every transaction is sent again
