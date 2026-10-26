@@ -206,6 +206,9 @@ class HeadCheck(Depth):
         self.assertTrue(p.stop.is_set())   # the producer ends
         self.assertIn("does not have", p.fatal)
         self.assertEqual(self.status()["blocksRefused"], 0)
+        p.run()   # the loop does not start again; the run ends as a crash, not as a stop that a signal asked for
+        self.assertEqual(self.status()["state"], "crashed")
+        self.assertIn("not a block reth has", self.status()["headFault"])
 
     def test_a_head_reth_does_not_have_stops_the_producer_at_two(self):
         self.check_foreign(2)

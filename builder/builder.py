@@ -1631,6 +1631,8 @@ class Producer:
     """Makes a block whenever the pool has transactions that can go in (and, if asked, every so often when it has none), one block at a
     time, each by `build_block`, the code `once` runs. See README.md, "Running it all the time"."""
 
+    fatal: str | None = None   # why the producer ended on its own (only `Pipeline` has such a fault)
+
     def __init__(self, cfg: Config, stop: threading.Event, idle: float = 0.5, empty_every: float = 0, status_file: str | None = None,
                  cooldown: float = 600, emit=None, clock=time.time, build=build_block, pending=pool_pending,
                  resolve=resolve_unknown, recover=recover_saved, wait=None, gather_ms: float = 0, journal: Journal | None = None, test: bool = False,
@@ -1702,7 +1704,7 @@ class Producer:
                     self.step()
                 except Exception as e:   # a fault of the loop's own: the chain goes on
                     self.fail(failure_report(e))
-            state = "stopped"
+            state = "crashed" if self.fatal else "stopped"   # a signal stops it; a fatal fault ends it as any other crash
         finally:
             ticker_stop.set()
             if ticker.is_alive():
@@ -2137,7 +2139,6 @@ class Pipeline(Producer):
         self.head_fault: str | None = None   # why the last head check failed: nothing is cut or submitted until one passes
         self.unwind_pending = False   # reth could not be taken back to `last`, or its transactions could not be sent again: the next step does both first
         self.back_pending: "tuple | None" = None   # a block built on the tip failed and reth could not be taken back to the tip, or its transactions not be sent again: (tip hash, number)
-        self.fatal: str | None = None
 
     def provers(self) -> int:
         return len(self.cfg.pool.provers) if self.cfg.pool else 1

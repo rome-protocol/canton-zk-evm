@@ -132,7 +132,7 @@ Three things are confirmed on the first remote GPU machine before more than one 
 ## Running it all the time
 
 ```sh
-python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>] [--prover <name>=<url>]... [--prove-timeout 1800] [--prover-input-dir <folder>]
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>] [--prover <name>=<url>]... [--prove-timeout 1800] [--prover-input-dir <folder>] [--max-in-flight 1]
 ```
 
 `run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as`, `--disclosed` and `--package-id` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
@@ -164,7 +164,8 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 
 | Field | What it holds |
 |---|---|
-| `state` | `running`, `stopped` (a signal) or `crashed` (anything else ended it) |
+| `state` | `running`, `stopped` (a signal) or `crashed` (anything else ended it, a head that is a block reth does not have too: the exit code is 1) |
+| `headFault` | only while set: why the last check of Canton's head failed (it is not the parent of the next block to submit, or not the block reth goes back to), so nothing is cut or sent until a read matches; with `--max-in-flight` above 1 |
 | `runId`, `journalError` | the run's id in the journal, and `{time, error}` of the last journal write that failed (`null` if none) |
 | `startedAt`, `updatedAt` | UTC times |
 | `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |
