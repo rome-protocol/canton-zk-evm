@@ -778,16 +778,16 @@ testGasCapBounds = do
   Some c <- queryContractId f.operator c3
   c.gasCap === 240000000
   -- 2x of 240M is 480M: over the ceiling. The ceiling itself is accepted, and nothing goes past it
-  let tooHigh cap = do
-        p <- submit f.operator $ exerciseCmd c3 ProposeGasCap with newCap = cap
-        submitMustFail f.confirmer $ exerciseCmd p AcceptGasCap with chain = c3
-  tooHigh 300000001
-  tooHigh 480000000
+  let tooHigh at cap = do
+        p <- submit f.operator $ exerciseCmd at ProposeGasCap with newCap = cap
+        submitMustFail f.confirmer $ exerciseCmd p AcceptGasCap with chain = at
+  tooHigh c3 300000001
+  tooHigh c3 480000000
   c4 <- raiseCap f c3 300000000
   Some top <- queryContractId f.operator c4
   top.gasCap === 300000000
-  tooHigh 300000000
-  tooHigh 600000000
+  tooHigh c4 300000000
+  tooHigh c4 600000000
 
 testGasCapRaiseNeedsTheCurrentContract : Script ()
 testGasCapRaiseNeedsTheCurrentContract = do
