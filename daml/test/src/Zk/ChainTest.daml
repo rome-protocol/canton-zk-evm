@@ -818,6 +818,108 @@ testALimitOverTheOldCapCommitsAfterTheRaise = do
   Some r <- queryContractId f.reader record
   r.number === 1
 
+-- The program: the operator proposes, the confirmer accepts, and the chain's other fields stay as they were.
+
+-- The operator proposes the three values and the confirmer accepts them on `chain`.
+switchProgram : F -> ContractId ZkChain -> Text -> Text -> Text -> Script (ContractId ZkChain)
+switchProgram f chain vk root rules = do
+  p <- submit f.operator $ createCmd ProgramProposal with
+    operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = vk; newRootC = root; newRulesHash = rules
+  submit f.confirmer $ exerciseCmd p AcceptProgram with chain
+
+-- The stub answers header "01" under (stubVK, stubRoot) and header "05" under (stubRoot, stubRoot).
+testProgramProposalSetsTheKeys : Script ()
+testProgramProposalSetsTheKeys = do
+  f <- fixture
+  [(_, before)] <- query @ZkChain f.operator
+  chain <- switchProgram f f.chain stubRoot stubRoot stubVK
+  [(cid, after)] <- query @ZkChain f.operator
+  cid === chain
+  after === before with programVK = stubRoot; rootC = stubRoot; rulesHash = stubVK
+
+testSetProgramNeedsTheOperatorAndTheConfirmer : Script ()
+testSetProgramNeedsTheOperatorAndTheConfirmer = do
+  f <- fixture
+  let set = exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+  submitMustFail f.operator set
+  submitMustFail f.confirmer set
+  submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) set
+  submitMustFail (actAs f.gateway) set
+  submitMustFail (actAs [f.operator, f.gateway]) set
+  chain <- submit (actAs [f.operator, f.confirmer]) set
+  [(cid, c)] <- query @ZkChain f.operator
+  (cid, c.programVK) === (chain, stubRoot)
+
+-- Only the operator proposes, and only the confirmer accepts; a proposal is for one chain, its operator and its confirmer.
+testProgramProposalAuthorizationAndChain : Script ()
+testProgramProposalAuthorizationAndChain = do
+  f <- fixture
+  let proposal = ProgramProposal with
+        operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+  submitMustFail f.confirmer $ createCmd proposal
+  submitMustFail f.builder $ createCmd proposal
+  p <- submit f.operator $ createCmd proposal
+  submitMustFail f.operator $ exerciseCmd p AcceptProgram with chain = f.chain
+  submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptProgram with chain = f.chain
+  submitMustFail (actAs f.gateway <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptProgram with chain = f.chain
+  other <- submit f.operator $ createCmd proposal with chainId = 770102
+  submitMustFail f.confirmer $ exerciseCmd other AcceptProgram with chain = f.chain
+  other2 <- submit f.confirmer $ createCmd proposal with operator = f.confirmer
+  submitMustFail f.confirmer $ exerciseCmd other2 AcceptProgram with chain = f.chain
+  -- a proposal is not accepted on a contract that is no longer the chain's current one
+  _ <- raiseCap f f.chain 60000000
+  submitMustFail f.confirmer $ exerciseCmd p AcceptProgram with chain = f.chain
+
+-- Each of the three values must be non-empty lowercase hex.
+testProgramValuesMustBeHex : Script ()
+testProgramValuesMustBeHex = do
+  f <- fixture
+  let proposal = ProgramProposal with
+        operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+  forA_ ["", "zz", "AB", "0x" <> stubRoot] $ \bad -> do
+    submitMustFail f.operator $ createCmd proposal with newProgramVK = bad
+    submitMustFail f.operator $ createCmd proposal with newRootC = bad
+    submitMustFail f.operator $ createCmd proposal with newRulesHash = bad
+    submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd f.chain SetProgram with
+      newProgramVK = bad; newRootC = stubRoot; newRulesHash = stubRoot
+
+-- Advance holds a block to the keys in the contract: the old pair before the switch, the new pair after, and the old pair again after
+-- the switch back. This is the rollback before a fork time.
+testAdvanceFollowsTheProgram : Script ()
+testAdvanceFollowsTheProgram = do
+  f <- fixture
+  refused "another program" f $ advanceWith f.chain "05" "aa" ["aa"] [] []
+  switched <- switchProgram f f.chain stubRoot stubRoot stubVK
+  refused "another program" f $ advanceWith switched "01" "aa" ["aa"] [] []
+  refused "another program" f $ advanceWith switched "06" "aa" ["aa"] [] []
+  (next, _) <- submit (asBuilder f) $ advanceWith switched "05" "aa" ["aa"] [] []
+  [(cid, c)] <- query @ZkChain f.operator
+  (cid, c.programVK, c.rootC, c.rulesHash, c.headNumber, c.headHash) === (next, stubRoot, stubRoot, stubVK, 1, stubHash1)
+  -- the contract before the switch is spent: the old key does not come back by a stale handle
+  submitMustFail (asBuilder f) $ advanceWith f.chain "01" "aa" ["aa"] [] []
+
+testSwitchingBackRestoresTheOldProgram : Script ()
+testSwitchingBackRestoresTheOldProgram = do
+  f <- fixture
+  [(_, before)] <- query @ZkChain f.operator
+  switched <- switchProgram f f.chain stubRoot stubRoot stubVK
+  back <- switchProgram f switched before.programVK before.rootC before.rulesHash
+  [(cid, after)] <- query @ZkChain f.operator
+  (cid, after) === (back, before)
+  refused "another program" f $ advanceWith back "05" "aa" ["aa"] [] []
+  (_, _) <- submit (asBuilder f) $ advanceWith back "01" "aa" ["aa"] [] []
+  pure ()
+
+-- A switch after blocks were committed keeps the head, and the next block continues from it.
+testProgramSwitchKeepsTheHead : Script ()
+testProgramSwitchKeepsTheHead = do
+  f <- fixture
+  (c1, _) <- submit (asBuilder f) $ advanceWith f.chain "01" "aa" ["aa"] [] []
+  c2 <- switchProgram f c1 stubRoot stubRoot stubVK
+  [(_, c)] <- query @ZkChain f.operator
+  (c.headNumber, c.headHash, c.programVK) === (1, stubHash1, stubRoot)
+  refused "another program" f $ advanceWith c2 "11" "aa" ["aa"] [] []
+
 -- The line verify2 takes, and the stand-in for the sidecar's reading of it.
 testLengthField : Script ()
 testLengthField = do
