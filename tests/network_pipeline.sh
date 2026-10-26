@@ -35,7 +35,9 @@ case $DEPTH in 2|3) ;; *) echo "FAIL: this scenario runs at depth 2, or at depth
 FLOOD_BLOCKS=${FLOOD_BLOCKS:-300}
 TXS_PER_BLOCK=3
 case $FLOOD_BLOCKS in ''|*[!0-9]*) echo "FAIL: FLOOD_BLOCKS must be a whole number" >&2; exit 1;; esac
-[ "$FLOOD_BLOCKS" -ge 20 ] || { echo "FAIL: FLOOD_BLOCKS must be at least 20, so that the faults fall inside the flood" >&2; exit 1; }
+# The faults must fall inside the flood: at depth 3 the kill waits for max(FLOOD_BLOCKS / 2, 20) committed blocks and then needs three more in flight.
+MIN_BLOCKS=$(( DEPTH == 3 ? 30 : 20 ))
+[ "$FLOOD_BLOCKS" -ge "$MIN_BLOCKS" ] || { echo "FAIL: FLOOD_BLOCKS must be at least $MIN_BLOCKS at depth $DEPTH, so that the faults fall inside the flood" >&2; exit 1; }
 WORK=$(mktemp -d)
 OUT=${PIPELINE_OUT:-$WORK/out}
 export CZE_STATE_DIR=$WORK/state FAKE_LOG=$WORK/calls
