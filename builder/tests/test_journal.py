@@ -551,8 +551,9 @@ class TheSetting(Lines):
                           (["--gather-ms", "-1"], "cannot be negative"),
                           (["--gather-ms", "60000"], "would wait longer"),
                           (["--strategy", "fixed_rhythm"], "not available"),
-                          (["--max-in-flight", "2"], "not built yet"),
-                          (["--max-in-flight", "2", "--prover", "a=http://127.0.0.1:1", "--prover", "b=http://127.0.0.1:2"], "not built yet"),
+                          (["--max-in-flight", "3"], "is over 2"),
+                          (["--max-in-flight", "-1"], "at least 1"),
+                          (["--max-in-flight", "2", "--heartbeat-seconds", "2"], "empty block takes 6.3 s"),
                           (["--max-in-flight", "0"], "at least 1"),
                           (["--max-in-flight", "4", "--prover", "a=http://127.0.0.1:1", "--prover", "b=http://127.0.0.1:2"], "is over 3"),
                           (["--max-in-flight", "3", "--prover", "a=http://127.0.0.1:1"], "is over 2")):
@@ -562,7 +563,7 @@ class TheSetting(Lines):
                 self.assertIn(why, json.loads(out)["error"])
 
     def test_the_setting_from_the_environment_is_refused_the_same_way(self):
-        for value, why in (("2", "not built yet"), ("0", "at least 1"), ("5", "is over 2")):
+        for value, why in (("0", "at least 1"), ("3", "is over 2"), ("5", "is over 2")):
             with self.subTest(value), mock.patch.dict(os.environ, {"CZE_MAX_IN_FLIGHT": value}):
                 code, out = self.run_main("run")
                 self.assertEqual(code, 1)
@@ -572,6 +573,16 @@ class TheSetting(Lines):
         b.check_strategy("on_demand", 0, 0)
         b.check_strategy("on_demand", 250, 600)
         b.check_strategy("on_demand", 0, 6.3)
+
+    def test_depth_up_to_one_more_than_the_provers_is_accepted(self):
+        for k, provers in ((1, 1), (2, 1), (2, 2), (3, 2), (4, 3)):
+            with self.subTest(k=k, provers=provers):
+                b.check_strategy("on_demand", 0, 0, max_in_flight=k, provers=provers)
+        b.check_strategy("on_demand", 250, 600, max_in_flight=2, provers=1)
+        with self.assertRaises(b.BuilderError):
+            b.check_strategy("on_demand", 0, 0, max_in_flight=3, provers=1)
+        with self.assertRaises(b.BuilderError):
+            b.check_strategy("on_demand", 0, 6.2, max_in_flight=2, provers=2)
 
     def test_a_block_is_not_cut_until_gather_ms_after_the_first_transaction(self):
         t = tx(ALICE, 0)
