@@ -11,7 +11,7 @@
 #      block after it, already proven, is dropped, its transactions go back to the pool, and the chain goes on from N. Put down again until the journal
 #      shows a dropped block that had its proof.
 #   3. A lost reply while the command commits: tests/ledger_drop_proxy.py, in front of the JSON Ledger API, sends one Advance on, lets Canton commit it
-#      and closes the connection without an answer. The next block must wait until the command is settled as committed.
+#      and closes the connection without an answer, and then refuses the reads of completions for PIPELINE_BLIND_SECONDS (8), so that the command is in doubt. The next block must wait until the command is settled as committed.
 #   4. (depth 3) The refusal must be of the oldest of three blocks, so that reth goes back three blocks on the persistent node: it is put down again
 #      until the journal shows a refusal that took two more blocks with it.
 #   5. (depth 3) kill -9 of the builder with three blocks in flight (the builder is stopped, the journal read, and only then killed), then a restart: the blocks
@@ -21,7 +21,7 @@
 # its command was in doubt, every committed block seen final; every transaction sent is in a committed block and final; nothing named lost; the proxy saw
 # as many submits as the journal's `submitted` lines.
 #
-# Settings: FLOOD_BLOCKS (300), PIPELINE_PROVE_DELAY (1, seconds a proof takes), PIPELINE_HOLD_SECONDS (4), FLOOD_TIMEOUT (3000, seconds), PIPELINE_OUT (a folder for the journal, the logs
+# Settings: FLOOD_BLOCKS (300), PIPELINE_PROVE_DELAY (1, seconds a proof takes), PIPELINE_HOLD_SECONDS (4), PIPELINE_BLIND_SECONDS (8), FLOOD_TIMEOUT (3000, seconds), PIPELINE_OUT (a folder for the journal, the logs
 # and the results; it is kept). Needs Docker, Java 21, Rust, Python 3.12, jq, curl and network access. No GPU.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -133,7 +133,7 @@ echo "$total transfers of $raw_bytes bytes sent; blocks hold $CAP bytes at most"
 echo "== the lost-reply proxy, the watch of the two chains, and the builder at depth $DEPTH"
 JOURNAL=$CZE_STATE_DIR/builder/journal
 : > "$WORK/proxy.log"
-background proxy python3 "$ROOT/tests/ledger_drop_proxy.py" "$PROXY_PORT" http://127.0.0.1:7575 "$WORK/drop.flag" "$WORK/proxy.log" "$WORK/hold.file" "${PIPELINE_HOLD_SECONDS:-4}"
+background proxy python3 "$ROOT/tests/ledger_drop_proxy.py" "$PROXY_PORT" http://127.0.0.1:7575 "$WORK/drop.flag" "$WORK/proxy.log" "$WORK/hold.file" "${PIPELINE_HOLD_SECONDS:-4}" "${PIPELINE_BLIND_SECONDS:-8}"
 for _ in $(seq 1 20); do curl -s -o /dev/null "http://127.0.0.1:$PROXY_PORT/v2/version" && break; sleep 0.5; done
 background watch "$PY" "$ROOT/tests/pipeline_check.py" watch "$OUT/watch.txt" "$OUT/stop-watch"
 provers=()

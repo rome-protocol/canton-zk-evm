@@ -10,12 +10,17 @@ It can also hold one reply back. With a hold file and a number of seconds, the f
 file is answered that many seconds late (the file is deleted as it is used). The scenario puts the first 16 hex digits of a block's hash there when
 it gives that block a bad proof: Canton refuses it at once, and the builder hears of it only after the blocks behind it have had time to be proven.
 
-Usage: ledger_drop_proxy.py <listen port> <service url> <control file> <log file> [<hold file> <seconds>]      (listens on 127.0.0.1 only)
-The log has one line for every submit-and-wait: "forwarded <command id> <status>", "held <command id> <seconds>" or "dropped <command id>"."""
+After a dropped reply it can also go blind for a number of seconds: the reads of completions (/v2/commands/completions) are answered with 503 and not
+sent on, so that the caller cannot find out at once that its command committed, and the command stays in doubt, as when a reply is lost on a slow link.
+
+Usage: ledger_drop_proxy.py <listen port> <service url> <control file> <log file> [<hold file> <seconds> [<blind seconds>]]      (listens on 127.0.0.1 only)
+The log has one line for every submit-and-wait: "forwarded <command id> <status>", "held <command id> <seconds>" or "dropped <command id>",
+and one "blind" line for every completions read it refused."""
 import http.server, json, os, sys, threading, time, urllib.error, urllib.request
 
 SKIPPED = {"connection", "transfer-encoding", "keep-alive", "content-length", "host", "accept-encoding"}
 SUBMIT = "/v2/commands/submit-and-wait"
+COMPLETIONS = "/v2/commands/completions"
 
 
 def command_id(body: bytes) -> str:
@@ -25,8 +30,9 @@ def command_id(body: bytes) -> str:
         return "?"
 
 
-def make_server(port: int, upstream: str, control: str, log_file: str, hold_file: str = "", hold_seconds: float = 0) -> http.server.ThreadingHTTPServer:
+def make_server(port: int, upstream: str, control: str, log_file: str, hold_file: str = "", hold_seconds: float = 0, blind_seconds: float = 0) -> http.server.ThreadingHTTPServer:
     lock = threading.Lock()
+    blind_until = [0.0]
 
     def note(line: str) -> None:
         with lock, open(log_file, "a") as f:
@@ -63,6 +69,12 @@ def make_server(port: int, upstream: str, control: str, log_file: str, hold_file
 
         def handle_any(self):
             body = self.rfile.read(int(self.headers.get("content-length") or 0))
+            if time.time() < blind_until[0] and self.path.split("?")[0] == COMPLETIONS:
+                note("blind")
+                self.send_response(503)
+                self.send_header("content-length", "0")
+                self.end_headers()
+                return
             headers = {k: v for k, v in self.headers.items() if k.lower() not in SKIPPED}
             req = urllib.request.Request(upstream + self.path, body or None, headers, method=self.command)
             try:
@@ -75,6 +87,7 @@ def make_server(port: int, upstream: str, control: str, log_file: str, hold_file
                 status, answer, kind = 502, b"the service did not answer", "text/plain"
             if self.command == "POST" and self.path.split("?")[0] == SUBMIT:
                 if status == 200 and os.path.exists(control) and take_control():
+                    blind_until[0] = time.time() + blind_seconds
                     note(f"dropped {command_id(body)}")
                     self.close_connection = True
                     self.connection.shutdown(2)   # the command is committed; the caller hears nothing
@@ -99,7 +112,7 @@ def make_server(port: int, upstream: str, control: str, log_file: str, hold_file
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (5, 7):
+    if len(sys.argv) not in (5, 7, 8):
         sys.exit(__doc__)
-    extra = (sys.argv[5], float(sys.argv[6])) if len(sys.argv) == 7 else ("", 0)
+    extra = (sys.argv[5], float(sys.argv[6]), float(sys.argv[7]) if len(sys.argv) == 8 else 0) if len(sys.argv) >= 7 else ("", 0, 0)
     make_server(int(sys.argv[1]), sys.argv[2].rstrip("/"), sys.argv[3], sys.argv[4], *extra).serve_forever()
