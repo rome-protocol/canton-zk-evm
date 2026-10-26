@@ -299,6 +299,16 @@ grep -q "must be above" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "
 is "$(probe GasCapProposal | jq '.contracts | length')" 0 "the proposals after the refused proposal (nothing was sent)"
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the acceptance (SetGasCap is 0.3.0's)"
 
+# The pause and leg-limits steps, as dry runs only (a pause or a quota would be on the chain when the scenario goes back to 0.2.0, which cannot read them): they read
+# the chain contract that the real ledger gives, whose 0.3.0 fields are null, and print what they would do.
+r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7575 --leg-limits-step propose --quota 1000 --quota-window-seconds 86400 --dry-run 2> "$WORK/setup.err") \
+  || { cat "$WORK/setup.err" >&2; fail "the dry run of the leg limits proposal failed"; }
+jq -e '.dryRun == true and .submitted == false and .current.quota == null and .new.quota == "1000" and .new.quotaWindowSeconds == 86400' <<<"$r" >/dev/null || fail "the dry run of the leg limits proposal: $r"
+r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --pause-step pause --dry-run 2> "$WORK/setup.err") \
+  || { cat "$WORK/setup.err" >&2; fail "the dry run of the pause failed"; }
+jq -e '.dryRun == true and .submitted == false and .paused == false and .pauseLimitSeconds == 259200' <<<"$r" >/dev/null || fail "the dry run of the pause: $r"
+is "$(probe LegLimitsProposal | jq '.contracts | length')" 0 "the leg limits proposals after the dry run"
+
 step "stage 4b: the program keys change and change back (setup.py --program-step)"
 program_step() {   # <participant port> <propose|accept> <vk> <root> <rules> [--dry-run]
   local port=$1 step=$2 vk=$3 root=$4 rules=$5; shift 5

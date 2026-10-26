@@ -102,6 +102,30 @@ ok stateRoot number gateway count
 
 `count` is the number of legs, which Daml compares with the number it sent. Otherwise `no` and one of `malformed input`, `the account proof does not verify`, `the storage proof does not verify` or `the legs are not the ones the block recorded`. Daml requires the answer to be exactly the `ok` line it expects: another root, number, gateway or count is refused.
 
+### The pause of the legs
+
+While a pause is in force, `Advance` refuses a block that carries a leg (a deposit, a withdrawal or a payment); a block with no leg is still committed. The gateway contract on the EVM side has no pause or admin key of its own, so the pause is on the Canton side alone: a block in which the gateway recorded a leg has to carry that leg, so Canton's head stays at the block before it until the pause ends. Nothing is lost and nothing moves meanwhile.
+
+| Choice | Who | What it does |
+|---|---|---|
+| `PauseLegs` | the confirmer alone, the emergency brake | Pauses the legs for the longest a pause may run (`pauseMax`, 3 days when the chain has none). Refused while the legs are paused and before `pauseCooldownUntil`. |
+| `UnpauseLegs` | the confirmer alone | Lifts the pause early. Legs work again at once; the cooldown then runs from now. |
+| `RenewPause` (through `ProposeRenewPause` and `AcceptRenewPause`) | the operator and the confirmer together | Pauses the legs, or renews a pause that runs, for a chosen time from the moment of the accept, up to `pauseMax`. Not held to the cooldown. There is no wait before it: a pause protects. |
+
+A pause always ends by itself at `pausedUntil`: legs work again from that ledger time with nothing done. After it ends or is lifted, the confirmer alone may start the next pause only once `pauseMax` more has passed (`pauseCooldownUntil`), so a lone confirmer cannot keep the legs paused. The only way to keep them paused longer is for the operator and the confirmer to renew it together, and every renewal is itself at most `pauseMax` from its own accept. `pauseMax` is a setting of the chain (1 second up to 14 days) that changes with the quota, through `ProposeLegLimits` and the change delay.
+
+### The withdrawal quota
+
+A chain can limit what leaves custody: at most `withdrawalQuota` units of each token (by its EVM address) in any `quotaWindow` (1 second up to 30 days). Both are optional; with neither set a chain has no quota, as before. `Advance` adds up the withdrawals of the block it commits, per token, to those still counted from earlier blocks, and is refused if a token is over the quota, with a message naming the token, the amount the block would add, what it would make in the window and the quota. A block that reaches the quota exactly is accepted.
+
+The window rolls. The chain keeps the withdrawals in `withdrawn`, in buckets of a 24th of the window (at least a second): a withdrawal counts from its block until the end of its bucket plus one window, so no more than the quota leaves in any window, and a withdrawal may count a little longer than the window. An entry keeps the expiry it was made with, so changing the window never frees or holds earlier withdrawals. About 25 entries per token are live at most, so the contract stays small.
+
+The quota, its window and `pauseMax` are replaced together by `LegLimitsProposal` (the operator proposes through `ProposeLegLimits`, the confirmer accepts with `AcceptLegLimits`), and the accept waits out the chain's change delay, as a gas-cap change does. A change may loosen the quota or tighten it, and the quota and its window are set together or neither is.
+
+### Custody and the wrapped supply
+
+`Advance` does not compare the custody with the wrapped supply, because Daml sees only one side of it. A block's legs carry the amounts of the deposits and withdrawals in it, and the sidecar's hash binds those amounts to what the gateway contract recorded, so the change that a block makes to custody and to supply is the same by construction; a check of that change would hold whatever the contracts were. What matters is the absolute figures: what the gateway holds in total, which `Advance` never reads (it sees only the contracts of the legs it settles), and the EVM `totalSupply()` of each wrapped token, which is EVM state that no leg carries. The custody read of the explorer's indexer makes that comparison at every block, with both numbers read at the same block (see its README), and the withdrawal quota above bounds how much can leave in a window while a difference is looked at.
+
 ## Left out on purpose
 
 This version has these limits:
@@ -147,6 +171,8 @@ Both versions have the same package name, the same templates and types; only the
 ### Package 0.3.0 is an upgrade of 0.2.0 and of 0.1.0
 
 0.3.0 adds choices (`SetGasCap`, `SetProgram`, `SetChangeDelay`, `ProposeGasCap`, `ProposeProgram`, `ProposeChangeDelay`) to `ZkChain`, adds three templates (`GasCapProposal`, `ProgramProposal`, `ChangeDelayProposal`), adds the optional field `changeDelay` at the end of `ZkChain`, and changes the body of `Advance` and the helper modules. No choice signature changes and the new field is optional and last, so a `ZkChain` made by 0.3.0 with no delay has the fields of 0.2.0's and 0.2.0 can consume it (one that holds a delay cannot be consumed by 0.2.0 code: take the delay away before a downgrade); after a downgrade a raised cap stays, and so does a replaced program (the old program can be put back only under 0.3.0). The `upgrade` job rebuilds 0.1.0 and 0.2.0 from the tags `v0.1.0` and `v0.2.0` and requires their package ids to be `ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08` and `a07a2e4d5fc10ba0ef486164dfadce6af066cb92879425ff1e0ec7629c43da7e`, builds the current source, and runs `dpm upgrade-check --both` for 0.2.0 to 0.3.0 and for 0.1.0 to 0.3.0.
+
+0.3.0 also adds the pause of the legs and the withdrawal quota (below). They add the choices `PauseLegs`, `UnpauseLegs`, `RenewPause`, `SetLegLimits`, `ProposeLegLimits` and `ProposeRenewPause` to `ZkChain`, the templates `LegLimitsProposal` and `RenewPauseProposal`, and the optional fields `pauseMax`, `pausedUntil`, `pauseCooldownUntil`, `withdrawalQuota`, `quotaWindow` and `withdrawn` after `changeDelay`. A chain made before them has none of these set, which is no pause, no quota and a longest pause of 3 days, so it behaves as it did. Once a pause has been made or a quota set, the chain holds values that 0.2.0 code cannot read (`pauseCooldownUntil` stays set after a pause, `withdrawn` after a quota), so such a chain cannot go back to 0.2.0.
 
 ### The gas cap
 
