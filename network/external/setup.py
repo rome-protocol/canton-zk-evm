@@ -484,7 +484,7 @@ def timing(proposal, chain: dict) -> dict:
     delay = delay_us(chain.get("changeDelay"))
     out = {"changeDelaySeconds": seconds_of(delay)}
     if proposal and proposal.get("proposedAt"):
-        out["proposedAt"] = proposal["proposedAt"]
+        out["proposedAt"] = show_time(parse_time(proposal["proposedAt"]))   # the ledger trims the fraction; print both times in one form
         out["acceptableAt"] = show_time(parse_time(proposal["proposedAt"]) + timedelta(microseconds=delay))
     return out
 
@@ -758,7 +758,7 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
                                  "otherwise the operator takes it back (--withdraw-proposal renew-pause: the Withdraw choice of the RenewPauseProposal, with the operator's token) and proposes again")
             if mine and mine[0].get("proposedAt"):
                 made = parse_time(mine[0]["proposedAt"])
-                result["proposedAt"], result["acceptableUntil"] = mine[0]["proposedAt"], show_time(made + RENEW_PROPOSAL_LIFE)
+                result["proposedAt"], result["acceptableUntil"] = show_time(made), show_time(made + RENEW_PROPOSAL_LIFE)
                 if now > made + RENEW_PROPOSAL_LIFE:
                     raise SystemExit(f"a proposal past its hour is there (made at {mine[0]['proposedAt']}, acceptable until {result['acceptableUntil']}): "
                                      "--withdraw-proposal renew-pause first (the operator's token), then propose again")
@@ -776,7 +776,7 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
             raise SystemExit(f"no proposal to pause for {seconds} s is on this participant")
         if mine[0].get("proposedAt"):
             made = parse_time(mine[0]["proposedAt"])
-            result["proposedAt"], result["acceptableUntil"] = mine[0]["proposedAt"], show_time(made + RENEW_PROPOSAL_LIFE)
+            result["proposedAt"], result["acceptableUntil"] = show_time(made), show_time(made + RENEW_PROPOSAL_LIFE)
             if now > made + RENEW_PROPOSAL_LIFE:
                 raise SystemExit(f"the proposal was made at {mine[0]['proposedAt']} and could be accepted until {result['acceptableUntil']}: the chain refuses it now. "
                                  "The operator takes it back (--withdraw-proposal renew-pause) and proposes it again for the incident at hand")
