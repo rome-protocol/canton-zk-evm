@@ -24,6 +24,7 @@ from websockets.sync.client import connect
 from provers import DEFAULT_TIMEOUT, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
+import dataclasses
 from pipeline import FAILED, PROVEN, PROVING, SUBMITTING, InFlight, why_not_cut
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -44,6 +45,14 @@ HOLDING = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding"
 
 class BuilderError(Exception):
     pass
+
+
+class HeadMismatch(BuilderError):
+    """Canton's head is not the parent of the block that is next to be submitted: nothing is submitted and reth does not move."""
+
+
+class ForeignHead(HeadMismatch):
+    """Canton's head is a block reth does not have: nobody here can say what to build on, so the producer stops."""
 
 
 class ProvingError(BuilderError):
@@ -1190,8 +1199,10 @@ def write_prover_lines(pool: Pool, attempt: "Attempt") -> None:
             attempt.journal.event("prover", attempt=attempt.seq, prover=change["name"], state=change["state"], reason=change["reason"])
 
 
-def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None) -> dict:
-    """Stage three. Sends the Advance with the proof and the gateway's proofs, and settles the answer: commit (reth's safe and finalized move to the block), refusal or
+def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None,
+           tip: str | None = None) -> dict:
+    """Stage three. Sends the Advance with the proof and the gateway's proofs, and settles the answer: commit (reth's safe and finalized move to the block,
+    its head to `tip`, the newest block in flight, which is the block itself when it is alone), refusal or
     not taken (reth goes back to Canton's head and the transactions return to the pool), or unknown (nothing moves)."""
     attempt = attempt or Attempt(None, 1)
     n, chain, head, block_hash, header, txs, legs = built.n, built.chain, built.head, built.block_hash, built.header, built.txs, built.legs
@@ -1283,7 +1294,7 @@ def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs:
         report["trafficBytes"] = traffic
     answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
     reth.imported = []   # Canton committed them: never send them to the pool again
-    reth.forkchoice(block_hash, block_hash, block_hash)
+    reth.forkchoice(tip or block_hash, block_hash, block_hash)
     attempt.event("final_seen", number=n)
     clear_saved(cfg, n)
     clear_unresolved(cfg)   # last: should reth's move above fail, the record stays and the next start settles the block as committed
@@ -2117,16 +2128,26 @@ class Pipeline(Producer):
         self.k = self.settings["max_in_flight"]
         self.flight: list = []   # the blocks built and not final, oldest first
         self.last = None
+        self.head_fault: str | None = None   # why the last head check failed: nothing is cut or submitted until one passes
+        self.fatal: str | None = None
 
     def provers(self) -> int:
         return len(self.cfg.pool.provers) if self.cfg.pool else 1
 
     def cut_blocked(self) -> str | None:
         pool = self.cfg.pool
+        if self.head_fault:
+            return "Canton's head is not the parent of the next block to submit"
         return why_not_cut(self.k, self.flight, self.provers(), any_up=not (pool and pool.managed) or pool.any_up(), in_doubt=self.unresolved is not None)
 
     def settled(self) -> str:
         return self.last[1]
+
+    def status(self, state: str = "running") -> dict:
+        found = super().status(state)
+        if self.head_fault:
+            found["headFault"] = self.head_fault
+        return found
 
     # -- the loop
     def step(self) -> None:
@@ -2159,6 +2180,7 @@ class Pipeline(Producer):
                     result = self.cut(attempt, trigger)
                     if result is not None:   # nothing to settle
                         return self.settle_result(result, [], now)
+                    attempt = None   # the block is in flight: a later fault in this step is not its own
             if not self.flight:
                 if now - self.last_written >= 5:   # tells a monitor the loop is alive
                     self.write_status()
@@ -2181,11 +2203,12 @@ class Pipeline(Producer):
                 attempt = self.attempt = oldest.attempt
                 self.unwind(oldest.error, oldest)
                 raise oldest.error
-            if oldest.state == PROVEN and len(self.flight) == 1:
+            if oldest.state == PROVEN:   # only the oldest is ever submitted; a later block that is proven waits here for its turn
+                self.check_head(oldest)   # fails closed: nothing is submitted, and the step ends in the failure back-off
                 attempt = oldest.attempt
                 result, pairs = self.submit_oldest(oldest)
                 return self.settle_result(result, pairs, now)
-            self.wait(self.idle)   # the oldest is proven and later blocks are in flight, or its proof is not the one finishing
+            self.wait(self.idle)   # the oldest is not finished with its proof
         except Exception as e:   # not a block Canton answered: reth, the ledger, the prover or the pending check failed
             if attempt:
                 attempt.failed(failure_report(e)["error"])
@@ -2194,6 +2217,9 @@ class Pipeline(Producer):
                     self.control, self.hunt, self.proof_kept = None, None, set()
                 else:
                     self.proving_failed(e, now)
+            if isinstance(e, ForeignHead):   # nothing here knows what to build on: the producer ends, with its status naming why
+                self.fatal = str(e)
+                self.stop.set()
             self.fail(failure_report(e))
 
     def settle_result(self, result: dict, pairs: list, now: float) -> None:
@@ -2252,7 +2278,7 @@ class Pipeline(Producer):
             pairs = list(reth.imported)
         if isinstance(built, dict):   # skipped: nothing to prove or submit
             return built
-        entry = InFlight(attempt, built, pairs)
+        entry = InFlight(attempt, built, pairs, on_tip=bool(self.flight))
         self.flight.append(entry)
         try:
             entry.proving, entry.state = start_proof(self.cfg, built, attempt), PROVING
@@ -2290,6 +2316,27 @@ class Pipeline(Producer):
                     entry.error, entry.state = e, FAILED
 
     # -- the end of a block
+    def check_head(self, entry: "InFlight") -> None:
+        """Before the Advance of a block that was built on another block in flight: Canton's head must be this block's parent. The block was cut on
+        a contract that Canton has since replaced, so the Advance names the contract the head read now shows. A head that is not the parent is a
+        read that lags the commit before it, or another writer on the chain. Nothing moves in either case, for going below a block that
+        committed would build a different block at its height: the head is read again after the failure back-off, and nothing is cut meanwhile.
+        A head that is a block reth does not have ends the producer."""
+        if not entry.on_tip:   # cut with nothing in flight: its head was read at its cut
+            return
+        chain = Ledger(self.cfg).head()
+        got, want = chain["headHash"].lower().removeprefix("0x"), entry.built.head.lower().removeprefix("0x")
+        if got != want:
+            with connect(self.cfg.ws_url, max_size=None) as ws:
+                known = Reth(self.cfg, ws).call("eth_getBlockByHash", ["0x" + got, False])
+            if not known:
+                self.head_fault = f"Canton's head {got} is not a block reth has"
+                raise ForeignHead(f"Canton's head is {got}, a block reth does not have: nothing can be built or submitted on it")
+            self.head_fault = f"Canton's head is block {chain['headNumber']} ({got}), not block {entry.number - 1} ({want}), the parent of the block next to be submitted"
+            raise HeadMismatch(self.head_fault)
+        self.head_fault = None
+        entry.built = dataclasses.replace(entry.built, chain=chain)
+
     def submit_oldest(self, entry: "InFlight") -> tuple:
         """Sends the Advance of the oldest block and settles the answer. Returns (the answer, the pairs of an unknown one)."""
         entry.state = SUBMITTING
@@ -2300,14 +2347,43 @@ class Pipeline(Producer):
             with connect(self.cfg.ws_url, max_size=None) as ws:
                 reth = Reth(self.cfg, ws)
                 reth.imported = list(entry.pairs)
-                result = submit(self.cfg, reth, entry.built, entry.proven, pairs, attempt)
+                result = submit(self.cfg, reth, entry.built, entry.proven, pairs, attempt, tip=self.flight[-1].hash)
         except BaseException as e:
             self.unwind(e, entry)
             raise
         self.flight.remove(entry)
         if result["committed"]:
             self.last = (entry.number, entry.hash)
+        elif result["committed"] is False:   # refused or not taken: reth is back at the block's parent, and the blocks above it are cancelled
+            self.cancel_later(entry, result)
         return result, pairs
+
+    def cancel_later(self, culprit: "InFlight", result: dict) -> None:
+        """The oldest block was not committed and `submit` has moved reth back to its parent: every later block is cancelled, and its transactions
+        go back to the pool, in block order. After a failed move back reth is still on the tip, so nothing is sent and the copies stay."""
+        later, self.flight = self.flight, []
+        for entry in later:
+            self.cancel(entry, culprit)
+        if not later or result.get("rewindError"):
+            return
+        lost: list = []
+        with connect(self.cfg.ws_url, max_size=None) as ws:
+            reth = Reth(self.cfg, ws)
+            try:
+                for entry in later:
+                    reth.imported = list(entry.pairs)
+                    lost += put_back(reth, entry.number)
+            except Exception as e:   # the copies stay for the next start
+                result["rewindError"] = str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"
+        if lost:
+            result["lostTransactions"] = [*result.get("lostTransactions", []), *lost]
+
+    def cancel(self, entry: "InFlight", culprit: "InFlight") -> None:
+        if entry.proving is not None:
+            entry.proving.ticket.cancel()
+        entry.attempt.closed = True
+        self.journal.event("cancelled", attempt=entry.attempt.seq, number=entry.number, depends_on=culprit.attempt.seq,
+                           reason="an earlier block did not commit")
 
     def unwind(self, e: BaseException, culprit: "InFlight") -> None:
         """The oldest block failed: reth goes back to the last block Canton committed, every transaction of the blocks in flight goes back to
@@ -2318,11 +2394,7 @@ class Pipeline(Producer):
         blocks, self.flight = self.flight, []
         for entry in blocks:
             if entry is not culprit:
-                if entry.proving is not None:
-                    entry.proving.ticket.cancel()
-                entry.attempt.closed = True
-                self.journal.event("cancelled", attempt=entry.attempt.seq, number=entry.number, depends_on=culprit.attempt.seq,
-                                   reason="an earlier block did not commit")
+                self.cancel(entry, culprit)
         last = self.settled()
         with connect(self.cfg.ws_url, max_size=None) as ws:
             reth = Reth(self.cfg, ws)
@@ -2376,9 +2448,10 @@ def produce(cfg: Config, args) -> int:
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
     engine = Pipeline if args.max_in_flight > 1 else Producer   # one block at a time keeps the code path it has always had
-    engine(cfg, stop, args.idle_ms / 1000, args.heartbeat_seconds, args.status_file, args.exclude_cooldown_seconds,
-           gather_ms=args.gather_ms, test=args.test, source_commit=source_commit(), max_in_flight=args.max_in_flight).run()
-    return 0
+    producer = engine(cfg, stop, args.idle_ms / 1000, args.heartbeat_seconds, args.status_file, args.exclude_cooldown_seconds,
+           gather_ms=args.gather_ms, test=args.test, source_commit=source_commit(), max_in_flight=args.max_in_flight)
+    producer.run()
+    return 1 if getattr(producer, "fatal", None) else 0
 
 
 def source_commit() -> str:

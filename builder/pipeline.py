@@ -22,6 +22,7 @@ class InFlight:
     proven: object = None
     error: Exception | None = None   # why it is FAILED
     exclude: set = field(default_factory=set)
+    on_tip: bool = False             # it was built on a block in flight, so the chain contract it names is read again when it is submitted
 
     @property
     def number(self) -> int:
