@@ -175,10 +175,15 @@ export function parsePins(text: string, file: string): Pins {
     return v;
   };
   for (const line of text.split("\n")) {
-    const at = /^(programVK|rootC)@([^=\s]*)\s*=(.*)$/.exec(line.trim());
+    const t = line.trim();
+    const at = /^(programVK|rootC)@([^=\s]*)\s*=(.*)$/.exec(t);
+    // A line that looks like a key line but is not in the exact form is refused, not skipped: a range dropped without a word would be a wrong key.
+    if (!at && !t.startsWith("#") && !/^(programVK|rootC)=/.test(t) && /^(programvk|rootc)|^[^=]*@/i.test(t)) {
+      throw new ConfigError(`${file}: "${t.split("=")[0]!.trim()}" is not a key line: write programVK=, rootC=, programVK@<fromBlock>= or rootC@<fromBlock>= (no space between the name and the @)`);
+    }
     if (at) {
       const name = at[1] as "programVK" | "rootC", label = `${name}@${at[2]}`;
-      if (!/^[1-9][0-9]{0,15}$/.test(at[2]!)) throw new ConfigError(`${file}: ${label}= needs a block number above 0 after the @`);
+      if (!/^[1-9][0-9]{0,14}$/.test(at[2]!) || !Number.isSafeInteger(Number(at[2]))) throw new ConfigError(`${file}: ${label}= needs a block number above 0 after the @`);
       const from = Number(at[2]);
       const range = later.get(from) ?? {};
       if (range[name] !== undefined) throw new ConfigError(`${file}: ${label}= is given twice`);
@@ -191,7 +196,10 @@ export function parsePins(text: string, file: string): Pins {
       continue;
     }
     const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
-    if (m) kv.set(m[1]!, m[2]!.trim());
+    if (m) {
+      if ((m[1] === "programVK" || m[1] === "rootC") && kv.has(m[1])) throw new ConfigError(`${file}: ${m[1]}= is given twice`);
+      kv.set(m[1]!, m[2]!.trim());
+    }
   }
   const keys: KeyRange[] = [{ fromBlock: 0, programVK: hex("programVK", kv.get("programVK")), rootC: hex("rootC", kv.get("rootC")) }];
   for (const [fromBlock, r] of later) {

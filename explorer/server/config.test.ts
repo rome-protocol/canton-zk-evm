@@ -179,6 +179,14 @@ describe("pin key ranges", () => {
     bad(`programVK@abc=${VK2}\nrootC@abc=${ROOT2}\n`, /block number above 0/);
     bad(`programVK@-5=${VK2}\nrootC@-5=${ROOT2}\n`, /block number above 0/);
     bad(`programVK@007=${VK2}\nrootC@007=${ROOT2}\n`, /block number above 0/);
+    bad(`programVK @100=${VK2}\nrootC@100=${ROOT2}\n`, /not a key line/);
+    bad(`programvk@100=${VK2}\nrootc@100=${ROOT2}\n`, /not a key line/);
+    bad(`programVK@ 100=${VK2}\nrootC@100=${ROOT2}\n`, /not a key line/);
+    bad(`programVK@100 =${VK2}\nrootC@100=${ROOT2}\nfoo@1=2\n`, /not a key line/);
+    bad(`programVK=${VK2}\n`, /programVK= is given twice/);
+    bad(`rootC=${ROOT2}\n`, /rootC= is given twice/);
+    bad(`programVK@9007199254740992=${VK2}\nrootC@9007199254740993=${ROOT2}\n`, /block number above 0/);
+    bad(`programVK@1234567890123456=${VK2}\nrootC@1234567890123456=${ROOT2}\n`, /block number above 0/);
     bad(`programVK@200=${VK2}\nrootC@200=${ROOT2}\nprogramVK@100=${VK3}\nrootC@100=${ROOT3}\n`, /increasing order/);
   });
 

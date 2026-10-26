@@ -388,6 +388,8 @@ describe("a chain with more than one program key", () => {
     const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
     expect(row(facts, "Checked under")).toHaveTextContent("0xcdcd…cdcd");
     expect(row(facts, "Checked under").nextElementSibling).toHaveTextContent("key from block 2");
+    expect(row(facts, "ZisK release").nextElementSibling).toHaveTextContent("pinned for this height");
+    expect(row(facts, "ZisK release").nextElementSibling).not.toHaveTextContent("1.3.1");
     const panel = (await screen.findByRole("heading", { name: "Verify this block in your browser" })).closest("section")!;
     expect(within(panel).getAllByText("0xcdcd…cdcd")).toHaveLength(2);
   });
@@ -397,6 +399,7 @@ describe("a chain with more than one program key", () => {
     const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
     expect(row(facts, "Checked under")).toHaveTextContent("0xaaaa…aaaa");
     expect(row(facts, "Checked under").nextElementSibling).toHaveTextContent("key from block 0");
+    expect(row(facts, "ZisK release").nextElementSibling).toHaveTextContent("ZisK 1.3.1");
     const panel = (await screen.findByRole("heading", { name: "Verify this block in your browser" })).closest("section")!;
     expect(within(panel).getAllByText("0xaaaa…aaaa")).toHaveLength(2);
     expect(row(facts, "Program key").nextElementSibling).toHaveTextContent("does not match this explorer's pin 0xaaaa…aaaa");

@@ -23,6 +23,9 @@ function FactRows({ label, fact, match, mismatch }: { label: string; fact: Fact;
   );
 }
 
+/** The release is named only for the key from block 0; a later key is for a later guest or release, so it reads "pinned for this height". */
+const release = (pins: { fromBlock: number } | undefined) => (pins && pins.fromBlock > 0 ? "pinned for this height" : "ZisK 1.3.1");
+
 /** The compact form of a transaction's page: the three facts as rows of the card, value and verdict on one line, with nothing around them. */
 function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ReturnType<typeof pinsAt> | undefined; block: number }) {
   if (!c.proof) return <div className="alert bad-alert flat facts-gap"><Icon name="cross" size={15} /><div>{PROOF_LENGTH}</div></div>;
@@ -36,7 +39,7 @@ function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ReturnType<t
     <>
       <Kv wide label="Facts read from the proof">
         {row("Program key", programVK, "ours", pin(pins?.programVK))}
-        {row("ZisK release", rootC, "ZisK 1.3.1", pin(pins?.rootC))}
+        {row("ZisK release", rootC, release(pins), pin(pins?.rootC))}
         {row("Block hash", blockHash, `block ${block}`, "not this block's hash")}
       </Kv>
       {red && <div className="facts-note small muted">The status word stays Final: Canton's confirmers checked the proof against their own pins when the block committed. A red fact means the proof differs from the pins this explorer was given.</div>}
@@ -53,7 +56,7 @@ function ProofFacts({ c, pins }: { c: CantonSummary; pins: ReturnType<typeof pin
     <>
       <dl className={`facts${red ? " facts-bad" : ""}`} role="group" aria-label="Facts read from the proof">
         <FactRows label="Program key" fact={programVK} match="ours" mismatch={pin(pins?.programVK)} />
-        <FactRows label="ZisK release" fact={rootC} match="ZisK 1.3.1" mismatch={pin(pins?.rootC)} />
+        <FactRows label="ZisK release" fact={rootC} match={release(pins)} mismatch={pin(pins?.rootC)} />
         <FactRows label="Block hash committed" fact={blockHash} match="this block" mismatch="not this block's hash" />
         {pins && (
           <>

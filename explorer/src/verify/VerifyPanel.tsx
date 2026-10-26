@@ -145,7 +145,7 @@ export function VerifyPanel({ block, blockHash, pins, proving, moduleUrl, module
         <div className="v-res ok-res" role="status"><Tick size={16} /><b>Passed.</b>{timing(state)}</div>
         <p>Canton's confirmers ran this check before the commit. It just ran again here, in your browser, on the same proof, header and transactions:</p>
         <ul className="v-list">
-          <li><Tick size={13} />the proof verifies under ZisK 1.3.1's key;</li>
+          <li><Tick size={13} />the proof verifies under the program key below;</li>
           <li><Tick size={13} />program <span className="mono">{short(pins.programVK)}</span> and ZisK release <span className="mono">{short(pins.rootC)}</span> made it (this explorer's pins, from <span className="mono">{pins.file}</span>);</li>
           <li><Tick size={13} />it commits to block hash <span className="mono">{short(state.blockHash)}</span>, which is this block;</li>
           <li><Tick size={13} />{transactions(state.txCount)}</li>

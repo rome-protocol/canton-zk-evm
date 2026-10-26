@@ -74,7 +74,7 @@ describe("passed", () => {
     expect(await screen.findByText("Passed.")).toBeInTheDocument();
     expect(screen.getByText(/Ran in your browser in 12 ms/)).toBeInTheDocument();
     expect(screen.queryByText(/downloaded/)).not.toBeInTheDocument();
-    expect(screen.getByText(/the proof verifies under ZisK 1\.3\.1's key/)).toBeInTheDocument();
+    expect(screen.getByText(/the proof verifies under the program key below/)).toBeInTheDocument();
     expect(screen.getByText(/made it \(this explorer's pins, from/)).toBeInTheDocument();
     expect(screen.getByText(/it commits to block hash/)).toHaveTextContent("it commits to block hash 0x35f4…bbb7, which is this block;");
     expect(screen.getByText(/the header and the 1 transaction are that block's/)).toBeInTheDocument();
