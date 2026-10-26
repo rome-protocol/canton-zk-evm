@@ -6,9 +6,13 @@ next POST to /v2/commands/submit-and-wait is sent on, Canton takes the command a
 the line "dropped <command id>" to the log and closes the connection without a word. The caller sees a command with no answer that Canton
 has committed: a lost reply, made to happen at an exact command instead of by a timeout.
 
-Usage: ledger_drop_proxy.py <listen port> <service url> <control file> <log file>      (listens on 127.0.0.1 only)
-The log has one line for every submit-and-wait: "forwarded <command id> <status>" or "dropped <command id>"."""
-import http.server, json, os, sys, threading, urllib.error, urllib.request
+It can also hold one reply back. With a hold file and a number of seconds, the first submit-and-wait whose command id contains the text in the hold
+file is answered that many seconds late (the file is deleted as it is used). The scenario puts the first 16 hex digits of a block's hash there when
+it gives that block a bad proof: Canton refuses it at once, and the builder hears of it only after the blocks behind it have had time to be proven.
+
+Usage: ledger_drop_proxy.py <listen port> <service url> <control file> <log file> [<hold file> <seconds>]      (listens on 127.0.0.1 only)
+The log has one line for every submit-and-wait: "forwarded <command id> <status>", "held <command id> <seconds>" or "dropped <command id>"."""
+import http.server, json, os, sys, threading, time, urllib.error, urllib.request
 
 SKIPPED = {"connection", "transfer-encoding", "keep-alive", "content-length", "host", "accept-encoding"}
 SUBMIT = "/v2/commands/submit-and-wait"
@@ -21,7 +25,7 @@ def command_id(body: bytes) -> str:
         return "?"
 
 
-def make_server(port: int, upstream: str, control: str, log_file: str) -> http.server.ThreadingHTTPServer:
+def make_server(port: int, upstream: str, control: str, log_file: str, hold_file: str = "", hold_seconds: float = 0) -> http.server.ThreadingHTTPServer:
     lock = threading.Lock()
 
     def note(line: str) -> None:
@@ -35,6 +39,21 @@ def make_server(port: int, upstream: str, control: str, log_file: str) -> http.s
             return True
         except FileNotFoundError:
             return False
+
+    def take_hold(cid: str) -> bool:
+        """True when the hold file names this command's block; the file is used up."""
+        if not hold_file:
+            return False
+        with lock:
+            try:
+                with open(hold_file) as f:
+                    wanted = f.read().strip()
+                if wanted and wanted in cid:
+                    os.unlink(hold_file)
+                    return True
+            except OSError:
+                pass
+        return False
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -60,6 +79,9 @@ def make_server(port: int, upstream: str, control: str, log_file: str) -> http.s
                     self.close_connection = True
                     self.connection.shutdown(2)   # the command is committed; the caller hears nothing
                     return
+                if take_hold(command_id(body)):
+                    note(f"held {command_id(body)} {hold_seconds:g}")
+                    time.sleep(hold_seconds)
                 note(f"forwarded {command_id(body)} {status}")
             self.send_response(status)
             if kind:
@@ -77,6 +99,7 @@ def make_server(port: int, upstream: str, control: str, log_file: str) -> http.s
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 7):
         sys.exit(__doc__)
-    make_server(int(sys.argv[1]), sys.argv[2].rstrip("/"), sys.argv[3], sys.argv[4]).serve_forever()
+    extra = (sys.argv[5], float(sys.argv[6])) if len(sys.argv) == 7 else ("", 0)
+    make_server(int(sys.argv[1]), sys.argv[2].rstrip("/"), sys.argv[3], sys.argv[4], *extra).serve_forever()

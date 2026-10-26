@@ -1,6 +1,6 @@
 """tests/ledger_drop_proxy.py: everything passes through, and while the control file exists the next submit-and-wait is committed upstream
 and its reply is lost, once."""
-import http.server, json, os, sys, tempfile, threading, unittest, urllib.error, urllib.request
+import http.server, json, os, sys, tempfile, threading, time, unittest, urllib.error, urllib.request
 sys.path.insert(0, os.path.dirname(__file__))
 import ledger_drop_proxy
 
@@ -62,6 +62,22 @@ class DropProxy(unittest.TestCase):
         self.assertFalse(os.path.exists(self.control))
         self.assertEqual(self.submit("c")["updateId"], "u")   # the next one is answered
         self.assertEqual(self.logged(), "dropped b\nforwarded c 200\n")
+
+    def test_holds_the_reply_of_the_named_block_once(self):
+        hold = os.path.join(self.dir.name, "hold")
+        proxy = serve(ledger_drop_proxy.make_server(0, f"http://127.0.0.1:{self.up.server_port}", self.control, self.log, hold, 0.3))
+        self.addCleanup(lambda: (proxy.shutdown(), proxy.server_close()))
+        self.url = f"http://127.0.0.1:{proxy.server_port}"
+        with open(hold, "w") as f:
+            f.write("abc123")
+        started = time.time()
+        self.submit("ostia-1-5-ffff-1")
+        self.assertLess(time.time() - started, 0.25)   # another block: not held, and the hold stays
+        self.assertTrue(os.path.exists(hold))
+        self.submit("ostia-1-6-abc123-2")
+        self.assertGreaterEqual(time.time() - started, 0.3)
+        self.assertFalse(os.path.exists(hold))
+        self.assertEqual(self.logged(), "forwarded ostia-1-5-ffff-1 200\nheld ostia-1-6-abc123-2 0.3\nforwarded ostia-1-6-abc123-2 200\n")
 
     def test_other_calls_are_never_dropped(self):
         open(self.control, "w").close()

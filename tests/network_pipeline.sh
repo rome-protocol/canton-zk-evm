@@ -5,7 +5,8 @@
 #
 # The run, at depth 2 (`builder.py run --max-in-flight 2`):
 #   1. A flood: FLOOD_BLOCKS blocks of 3 plain transfers each, all in reth's pool before the builder starts, cut and committed one after another.
-#   2. A refusal at N with N+1 proven: tests/pipeline_prove.sh gives one proof with a byte flipped (demo/prove-tampered.sh); the sidecar says no; the
+#   2. A refusal at N with N+1 proven: tests/pipeline_prove.sh gives one proof with a byte flipped (demo/prove-tampered.sh); the sidecar says no (at once:
+#      the proxy holds the answer back PIPELINE_HOLD_SECONDS, so that the block behind it is proven first); the
 #      block after it, already proven, is dropped, its transactions go back to the pool, and the chain goes on from N. Put down again until the journal
 #      shows a dropped block that had its proof.
 #   3. A lost reply while the command commits: tests/ledger_drop_proxy.py, in front of the JSON Ledger API, sends one Advance on, lets Canton commit it
@@ -15,7 +16,7 @@
 # its command was in doubt, every committed block seen final; every transaction sent is in a committed block and final; nothing named lost; the proxy saw
 # as many submits as the journal's `submitted` lines.
 #
-# Settings: FLOOD_BLOCKS (300), PIPELINE_PROVE_DELAY (1, seconds a proof takes), FLOOD_TIMEOUT (3000, seconds), PIPELINE_OUT (a folder for the journal, the logs
+# Settings: FLOOD_BLOCKS (300), PIPELINE_PROVE_DELAY (1, seconds a proof takes), PIPELINE_HOLD_SECONDS (4), FLOOD_TIMEOUT (3000, seconds), PIPELINE_OUT (a folder for the journal, the logs
 # and the results; it is kept). Needs Docker, Java 21, Rust, Python 3.12, jq, curl and network access. No GPU.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -102,7 +103,7 @@ export DEMO_PROOF_PROGRAM_VK=$VK DEMO_PROOF_ROOT_C=$RC
 export CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee
 export CZE_MAKE_INPUT_CMD=$ROOT/builder/tests/fake-make-input.sh CZE_PROVE_CMD=$ROOT/tests/pipeline_prove.sh
 export CZE_READ_AS="$OPERATOR_PARTY $GATEWAY_PARTY"
-export PIPELINE_PROVE_DELAY=${PIPELINE_PROVE_DELAY:-1} PIPELINE_TAMPER_FLAG=$WORK/tamper.flag
+export PIPELINE_PROVE_DELAY=${PIPELINE_PROVE_DELAY:-1} PIPELINE_TAMPER_FLAG=$WORK/tamper.flag PIPELINE_HOLD_FILE=$WORK/hold.file
 check() { "$PY" "$ROOT/tests/pipeline_check.py" "$@"; }
 export CZE_SOURCE_COMMIT=${CZE_SOURCE_COMMIT:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf 'a%.0s' $(seq 40))}
 
@@ -127,7 +128,7 @@ echo "$total transfers of $raw_bytes bytes sent; blocks hold $CAP bytes at most"
 echo "== the lost-reply proxy, the watch of the two chains, and the builder at depth $DEPTH"
 JOURNAL=$CZE_STATE_DIR/builder/journal
 : > "$WORK/proxy.log"
-background proxy python3 "$ROOT/tests/ledger_drop_proxy.py" "$PROXY_PORT" http://127.0.0.1:7575 "$WORK/drop.flag" "$WORK/proxy.log"
+background proxy python3 "$ROOT/tests/ledger_drop_proxy.py" "$PROXY_PORT" http://127.0.0.1:7575 "$WORK/drop.flag" "$WORK/proxy.log" "$WORK/hold.file" "${PIPELINE_HOLD_SECONDS:-4}"
 for _ in $(seq 1 20); do curl -s -o /dev/null "http://127.0.0.1:$PROXY_PORT/v2/version" && break; sleep 0.5; done
 background watch "$PY" "$ROOT/tests/pipeline_check.py" watch "$OUT/watch.txt" "$OUT/stop-watch"
 background builder env CZE_LEDGER_URL="http://127.0.0.1:$PROXY_PORT" "$PY" "$ROOT/builder/builder.py" run \
