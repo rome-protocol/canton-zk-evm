@@ -2409,7 +2409,7 @@ class Producer:
             # pause or the quota a second time in a row is refused for something else, whatever the words say: normal handling, against the block before.
             self.previous_kept = self.limit_kept
         elif why:
-            # The pause began, the quota was taken up, or the chain contract changed after the chain was read: nothing in the block is at fault.
+            # The chain contract changed after it was read (a pause, a quota or another choice archives it), or this clock ran ahead of Canton's: nothing in the block is at fault.
             # The next block is cut on the chain contract as Canton shows it now, and leaves the legs out if it says so.
             self.previous_kept = set()
             self.limit_kept, self.limit_legs = (kept, legs) if why == "limit" else (set(), set())
