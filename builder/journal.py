@@ -196,8 +196,6 @@ def check_settings(strategy: str, gather_ms: float, heartbeat_seconds: float, ma
     if max_in_flight > provers + 1:   # one block committing and one on each prover: a further slot would never be used
         raise ValueError(f"bad arguments: max_in_flight {max_in_flight} is over {provers + 1}: with {provers} prover{'s' if provers != 1 else ''} at most "
                          f"{provers + 1} blocks are in flight (one committing, one on each prover)")
-    if max_in_flight != 1:
-        raise ValueError("bad arguments: one block at a time is in flight; more needs overlapped proving, which is not built yet")
     # A heartbeat block is made on its own, with nothing else in flight, so more provers do not shorten it: the floor is one proof.
     shortest = MEASURED_PROOF_SECONDS
     if 0 < heartbeat_seconds < shortest:
