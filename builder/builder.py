@@ -1412,7 +1412,7 @@ def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attemp
 
 def send_advance(cfg: Config, sub: Submission) -> Reply:
     """The middle of the third stage: sends the Advance and, when it got no usable answer, looks for the command's own completion. HTTP calls alone:
-    this touches neither reth, nor the journal, nor a file, so it runs in a thread of its own."""
+    this touches neither reth nor the journal and writes no file (it reads only the ledger token file), so it runs in a thread of its own."""
     reply = Reply()
     advancing = time.monotonic()
     try:
@@ -1443,7 +1443,8 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
     finalized move to the block, its head to `tip`, the newest block in flight, which is the block itself when it is alone), refusal or
     not taken (reth goes back to Canton's head and the transactions return to the pool), or unknown (nothing moves).
     `after_commit(reth)` runs once a commit is booked and its record is gone, before the paid traffic is read (a read of about a second): the
-    next block's Advance can go first. The `answered` line of such a block is written after that read."""
+    next block's Advance can go first. The `answered` line is written before that, so the attempt is closed before the next block's record
+    replaces its record; the paid traffic of such a block follows on a `paid_traffic` line of its attempt."""
     attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs
     report, command_id, answer, reason, rejected, not_taken = sub.report, sub.command_id, reply.answer, reply.reason, reply.rejected, reply.not_taken
     report["advanceSeconds"] = reply.advance_seconds
@@ -1495,8 +1496,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
         traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
     if traffic is not None:
         report["trafficBytes"] = traffic
-    if not late:
-        answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
+    answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])   # the attempt's last line, before the next block's record can replace this one's
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(tip or block_hash, block_hash, block_hash)
     attempt.event("final_seen", number=n)
@@ -1508,7 +1508,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
         traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
         if traffic is not None:
             report["trafficBytes"] = traffic
-        answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
+            attempt.event("paid_traffic", traffic_bytes=traffic)
     return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
 
 
@@ -2369,7 +2369,7 @@ def each_once(lost: list) -> list:
 
 class Sending:
     """The oldest block's Advance on its way: its own thread sends it and reads the answer (HTTP only), and hands the answer back through `reply` and
-    `done`. The thread never touches reth, the journal or a file: the producer's thread does, when it has seen `done`."""
+    `done`. The thread never touches reth or the journal and writes no file (it reads only the ledger token file): the producer's thread does, when it has seen `done`."""
 
     def __init__(self, cfg: Config, entry: "InFlight", sub: Submission):
         self.cfg, self.entry, self.sub = cfg, entry, sub
@@ -2815,6 +2815,8 @@ class Pipeline(Producer):
         try:
             if sending.error is not None:
                 raise sending.error
+            if not self.stop.is_set():
+                self.collect()   # a proof that finished during the commit is not seen otherwise: the block would go a step late
             with connect(self.cfg.ws_url, max_size=None) as ws:
                 reth = Reth(self.cfg, ws)
                 reth.imported = list(entry.pairs)

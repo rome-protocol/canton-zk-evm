@@ -1,7 +1,7 @@
 """The Advance of the oldest block in a thread of its own. While Canton works on it the producer goes on: it cuts, builds and proves the next blocks,
 and it does not take the record on disk for a command in doubt. The thread makes HTTP calls and nothing else, and the producer's thread settles the
 answer. The fake participant holds an Advance until the test lets it go (`FakeLedger.hold`)."""
-import json, sys, threading, time, unittest
+import json, os, sys, threading, time, unittest
 from pathlib import Path
 from unittest import mock
 
@@ -72,10 +72,13 @@ class Case16(Held):
         self.until_sending(s, p)
         tip = p.flight[0].hash
         finals = list(self.finals(s))
-        def broken(*a, **kw):
-            raise b.BuilderError("reth cannot build")
+        real_call = b.Reth.call
+        def broken(reth, method, params):
+            if method == "debug_getRawBlock":   # the block is reth's head by now: the failure comes after the import
+                raise b.BuilderError("reth cannot build")
+            return real_call(reth, method, params)
         s.reth.pool[BOB] = [tx(BOB, 0)]
-        with mock.patch.object(b, "build", broken):
+        with mock.patch.object(b.Reth, "call", broken):
             self.step(p)   # the second cut fails while the first block's Advance is out
         self.assertEqual(s.reth.head, tip, "reth went back to the block the failed one was built on, not below it")
         self.assertIn(tx(BOB, 0)["hash"], self.in_pool(s), "the failed block's own transaction is back in the pool")
@@ -131,6 +134,64 @@ class Ordering(Held):
             self.release(s)
             self.drive(p, lambda: len(self.committed()) == 2)
         self.assertEqual(order, [("send", FIRST), ("send", FIRST + 1), ("paid", None), ("paid", None)], "the next Advance goes before the first paid read")
+
+    def test_a_proof_that_finishes_during_the_commit_goes_before_the_paid_traffic(self):
+        for k in (2, 3):
+            with self.subTest(k=k):
+                s = self.setup({})
+                s.ledger.paid = 1234
+                p = self.pipeline(s, k, provers=1)
+                order = []
+                real_send, real_paid = b.send_advance, b.Ledger.paid_traffic
+                def send(cfg, sub):
+                    order.append(("send", sub.n))
+                    return real_send(cfg, sub)
+                def paid(ledger, *a, **kw):
+                    order.append(("paid", None))
+                    return real_paid(ledger, *a, **kw)
+                self.hold(s)
+                with mock.patch.object(b, "send_advance", send), mock.patch.object(b.Ledger, "paid_traffic", paid):
+                    self.cut_one(s, p, ALICE, 1)
+                    self.until_sending(s, p)
+                    os.environ["FAKE_PROVER_SLEEP"] = "1.5"   # the next block's proof takes a while, and no step looks at it meanwhile
+                    self.addCleanup(os.environ.pop, "FAKE_PROVER_SLEEP", None)
+                    def release_when_proved():
+                        end = time.monotonic() + 20
+                        while time.monotonic() < end and not (len(p.flight) > 1 and p.flight[1].proving is not None):
+                            time.sleep(0.01)
+                        p.flight[1].proving.ticket.done.wait(20)   # no step has collected it: the block is still `proving` when the commit is let go
+                        self.release(s)
+                    releaser = threading.Thread(target=release_when_proved, daemon=True)
+                    releaser.start()
+                    s.reth.pool[BOB] = [tx(BOB, 0)]
+                    self.drive(p, lambda: len(self.committed()) == 2)
+                    releaser.join(5)
+                self.assertEqual(order[:3], [("send", FIRST), ("send", FIRST + 1), ("paid", None)], f"the next Advance goes before the paid read: {order}")
+
+    def test_a_kill_during_the_late_paid_traffic_read_leaves_the_commit_closed(self):
+        s = self.setup({})
+        s.ledger.paid = 1234
+        p = self.pipeline(s, 3)
+        def killed(ledger, *a, **kw):
+            raise KeyboardInterrupt   # the process dies in the read, after the next block's record has replaced the first one's
+        self.hold(s)
+        with mock.patch.object(b.Ledger, "paid_traffic", killed):
+            self.cut_one(s, p, ALICE, 1)
+            self.until_sending(s, p)
+            self.cut_one(s, p, BOB, 2)
+            self.proven(p, 1)
+            self.release(s)
+            with self.assertRaises(KeyboardInterrupt):
+                self.drive(p, lambda: False)
+        self.assertEqual(self.numbers(s), [FIRST, FIRST + 1], "the next Advance went out before the read")
+        mine = [x["event"] for x in self.lines_in_order(s) if x.get("attempt") == 1]
+        self.assertEqual(mine[-2:], ["answered", "final_seen"], f"the first attempt has its last line: {mine}")
+        self.assertEqual([x["outcome"] for x in self.lines(s, "answered") if x["attempt"] == 1], ["committed"])
+        again = self.pipeline(s, 3)   # a restart: the record on disk is the second block's, and only that one is settled
+        self.drive(again, lambda: not b.unresolved_path(s.cfg).exists())
+        mine = [x["event"] for x in self.lines_in_order(s) if x.get("attempt") == 1]
+        self.assertEqual(mine.count("answered"), 1)
+        self.assertNotIn("resolved", mine)
 
     def test_a_refusal_at_the_oldest_with_the_next_proven_sends_nothing_more(self):
         s = self.setup({})
