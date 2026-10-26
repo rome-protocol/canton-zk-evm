@@ -9,6 +9,7 @@ module Zk.ChainTest where
 import DA.Assert ((===))
 import DA.Foldable (forA_)
 import DA.List ((!!), sort)
+import DA.Optional (isSome)
 import DA.Time (RelTime, addRelTime, days, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
 import qualified DA.Text as T
 import Daml.Script
@@ -1235,3 +1236,335 @@ testAPendingProposalCanBeWithdrawnOrRejected = do
 
 plusRel : RelTime -> RelTime -> RelTime
 plusRel a b = convertMicrosecondsToRelTime (convertRelTimeToMicroseconds a + convertRelTimeToMicroseconds b)
+
+-- The limits on the legs: the pause, and the withdrawal quota.
+
+-- An Advance that must be refused for a reason that contains `why`, in a chain that has moved on already.
+mustRefuse : Text -> F -> Commands a -> Script ()
+mustRefuse why f cmds = do
+  r <- trySubmit (asBuilder f) cmds
+  case r of
+    Left e -> assertMsg ("refused, but not for \"" <> why <> "\": " <> show e) (why `T.isInfixOf` show e)
+    Right _ -> abort ("the chain committed a block that it should have refused (" <> why <> ")")
+
+paused : Text
+paused = "the legs are paused until"
+
+-- The operator proposes new limits and the confirmer accepts them on `chain`; the chain's delay must have passed.
+setLimits : F -> ContractId ZkChain -> Optional Decimal -> Optional RelTime -> Optional RelTime -> Script (ContractId ZkChain)
+setLimits f chain q w m = do
+  p <- submit f.operator $ exerciseCmd chain ProposeLegLimits with newQuota = q; newWindow = w; newPauseMax = m
+  submit f.confirmer $ exerciseCmd p AcceptLegLimits with chain
+
+-- The operator proposes to pause for `d` and the confirmer accepts.
+renew : F -> ContractId ZkChain -> RelTime -> Script (ContractId ZkChain)
+renew f chain d = do
+  p <- submit f.operator $ exerciseCmd chain ProposeRenewPause with forHowLong = d
+  submit f.confirmer $ exerciseCmd p AcceptRenewPause with chain
+
+secs : Int -> RelTime
+secs = seconds
+
+testAPausedChainRefusesEveryLegButCarriesOn : Script ()
+testAPausedChainRefusesEveryLegButCarriesOn = do
+  f <- fixture
+  holding <- custody f
+  now <- getTime
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  Some c <- queryContractId f.operator chain
+  c.pausedUntil === Some (addRelTime now (days 3))
+  refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  refused paused f $ advance chain "01" [paymentLine f.dvp1] [paymentLeg f]
+  refused paused f $ advance chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [withdrawalLeg f holding]
+  -- a block of no legs is still committed
+  (c1, _) <- submit (asBuilder f) $ advance chain "01" [] []
+  Some c1' <- queryContractId f.operator c1
+  (c1'.headNumber, c1'.pausedUntil) === (1, c.pausedUntil)
+  mustRefuse paused f $ advance c1 "11" [depositLine deposit1] [depositLeg f]
+
+testAPauseEndsOnItsOwn : Script ()
+testAPauseEndsOnItsOwn = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  passTime (secs (3 * 24 * 3600 - 1))
+  refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  passTime (secs 1)
+  (_, _) <- submit (asBuilder f) $ advance chain "01" [depositLine deposit1] [depositLeg f]
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+
+testAPauseCanBeLiftedEarlyByTheConfirmer : Script ()
+testAPauseCanBeLiftedEarlyByTheConfirmer = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  submitMustFail f.operator $ exerciseCmd chain UnpauseLegs
+  submitMustFail f.builder $ exerciseCmd chain UnpauseLegs
+  open <- submit f.confirmer $ exerciseCmd chain UnpauseLegs
+  Some c <- queryContractId f.operator open
+  c.pausedUntil === None
+  -- nothing to lift when nothing is paused
+  submitMustFail f.confirmer $ exerciseCmd open UnpauseLegs
+  (_, _) <- submit (asBuilder f) $ advance open "01" [depositLine deposit1] [depositLeg f]
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+
+testOnlyTheConfirmerPausesAlone : Script ()
+testOnlyTheConfirmerPausesAlone = do
+  f <- fixture
+  submitMustFail f.operator $ exerciseCmd f.chain PauseLegs
+  submitMustFail f.builder $ exerciseCmd f.chain PauseLegs
+  submitMustFail f.gateway $ exerciseCmd f.chain PauseLegs
+  submitMustFail f.operator $ exerciseCmd f.chain RenewPause with forHowLong = days 1
+  submitMustFail f.confirmer $ exerciseCmd f.chain RenewPause with forHowLong = days 1
+  -- the two together may, from the chain's contract directly
+  _ <- submit (actAs [f.operator, f.confirmer]) $ exerciseCmd f.chain RenewPause with forHowLong = days 1
+  pure ()
+
+testALoneConfirmerCannotKeepTheLegsPaused : Script ()
+testALoneConfirmerCannotKeepTheLegsPaused = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  -- not again while it runs
+  submitMustFail f.confirmer $ exerciseCmd chain PauseLegs
+  passTime (secs (3 * 24 * 3600))
+  -- the pause has ended, and the confirmer alone must wait one more pause length
+  trySubmit f.confirmer (exerciseCmd chain PauseLegs) >>= \r -> case r of
+    Left e -> assertMsg ("refused, but not for the cooldown: " <> show e) ("may start a new pause from" `T.isInfixOf` show e)
+    Right _ -> abort "the confirmer paused again at once"
+  passTime (secs (3 * 24 * 3600 - 1))
+  submitMustFail f.confirmer $ exerciseCmd chain PauseLegs
+  passTime (secs 1)
+  again <- submit f.confirmer $ exerciseCmd chain PauseLegs
+  Some c <- queryContractId f.operator again
+  isSome c.pausedUntil === True
+
+testALiftedPauseHasTheSameCooldown : Script ()
+testALiftedPauseHasTheSameCooldown = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  open <- submit f.confirmer $ exerciseCmd chain UnpauseLegs
+  submitMustFail f.confirmer $ exerciseCmd open PauseLegs
+  passTime (secs (3 * 24 * 3600))
+  _ <- submit f.confirmer $ exerciseCmd open PauseLegs
+  pure ()
+
+testRenewingAPauseNeedsBothAndNeverMoreThanTheMaximum : Script ()
+testRenewingAPauseNeedsBothAndNeverMoreThanTheMaximum = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  passTime (secs (2 * 24 * 3600))
+  -- one day left; the renewal makes it three days from now
+  renewed <- renew f chain (days 3)
+  passTime (secs (2 * 24 * 3600))
+  -- the first pause would have ended a day ago
+  refused paused f $ advance renewed "01" [depositLine deposit1] [depositLeg f]
+  passTime (secs (24 * 3600))
+  (_, _) <- submit (asBuilder f) $ advance renewed "01" [depositLine deposit1] [depositLeg f]
+  pure ()
+
+testARenewalOverTheMaximumIsRefused : Script ()
+testARenewalOverTheMaximumIsRefused = do
+  f <- fixture
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  p <- submit f.operator $ exerciseCmd chain ProposeRenewPause with forHowLong = days 3 `plusRel` secs 1
+  submitMustFail f.confirmer $ exerciseCmd p AcceptRenewPause with chain
+  -- a pause of no length is no pause
+  submitMustFail f.operator $ exerciseCmd chain ProposeRenewPause with forHowLong = secs 0
+  submitMustFail f.operator $ exerciseCmd chain ProposeRenewPause with forHowLong = secs (-5)
+  -- only the operator proposes and only the confirmer accepts
+  submitMustFail f.confirmer $ exerciseCmd chain ProposeRenewPause with forHowLong = days 1
+  q <- submit f.operator $ exerciseCmd chain ProposeRenewPause with forHowLong = days 1
+  submitMustFail f.operator $ exerciseCmd q AcceptRenewPause with chain
+  submitMustFail f.operator $ exerciseCmd q RejectRenewPause
+  submitMustFail f.confirmer $ exerciseCmd q WithdrawRenewPause
+  submit f.confirmer $ exerciseCmd q RejectRenewPause
+  r <- submit f.operator $ exerciseCmd chain ProposeRenewPause with forHowLong = days 1
+  submit f.operator $ exerciseCmd r WithdrawRenewPause
+
+testTheTwoMayPauseAChainThatIsNotPaused : Script ()
+testTheTwoMayPauseAChainThatIsNotPaused = do
+  f <- fixture
+  now <- getTime
+  chain <- renew f f.chain (days 1)
+  Some c <- queryContractId f.operator chain
+  c.pausedUntil === Some (addRelTime now (days 1))
+  refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
+
+testAPauseRenewalNeedsTheCurrentContract : Script ()
+testAPauseRenewalNeedsTheCurrentContract = do
+  f <- fixture
+  p <- submit f.operator $ exerciseCmd f.chain ProposeRenewPause with forHowLong = days 1
+  _ <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  submitMustFail f.confirmer $ exerciseCmd p AcceptRenewPause with chain = f.chain
+
+testThePauseMaximumIsAChainSetting : Script ()
+testThePauseMaximumIsAChainSetting = do
+  f <- fixture
+  chain <- setLimits f f.chain None None (Some (secs 100))
+  Some c <- queryContractId f.operator chain
+  c.pauseMax === Some (secs 100)
+  paused1 <- submit f.confirmer $ exerciseCmd chain PauseLegs
+  passTime (secs 99)
+  refused paused f $ advance paused1 "01" [depositLine deposit1] [depositLeg f]
+  passTime (secs 1)
+  (next, _) <- submit (asBuilder f) $ advance paused1 "01" [depositLine deposit1] [depositLeg f]
+  -- and a renewal over the setting is refused
+  p <- submit f.operator $ exerciseCmd next ProposeRenewPause with forHowLong = secs 101
+  submitMustFail f.confirmer $ exerciseCmd p AcceptRenewPause with chain = next
+
+-- The quota.
+
+-- A withdrawal of `a` of the token at `tok`, funded from `h`.
+withdrawalOf : F -> ContractId GatewayToken -> ContractId H.Holding -> Decimal -> Leg
+withdrawalOf f tok h a = WithdrawalLeg with
+  id = withdrawalId; token = tok; from = burnerAddr; amount = a; acceptance = f.acceptance; inputs = [h]
+
+wLine : Text -> Decimal -> Party -> Text
+wLine evmToken a p = line "withdrawal" withdrawalId evmToken burnerAddr (show a) (toHex (partyToText p))
+
+quota5 : F -> Script (ContractId ZkChain)
+quota5 f = setLimits f f.chain (Some 5.0) (Some (secs 100)) None
+
+testABlockOverTheQuotaIsRefused : Script ()
+testABlockOverTheQuotaIsRefused = do
+  f <- fixture
+  h <- custody f
+  chain <- quota5 f
+  Some c <- queryContractId f.operator chain
+  (c.withdrawalQuota, c.quotaWindow) === (Some 5.0, Some (secs 100))
+  refused "over the withdrawal quota" f $ advance chain "01" [wLine wTkb 6.0 f.u] [withdrawalOf f f.token h 6.0]
+  holds f.u "TKB" >>= \xs -> xs === []
+
+testABlockAtTheQuotaIsAccepted : Script ()
+testABlockAtTheQuotaIsAccepted = do
+  f <- fixture
+  h <- custody f
+  chain <- quota5 f
+  (c1, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 5.0 f.u] [withdrawalOf f f.token h 5.0]
+  holds f.u "TKB" >>= \xs -> xs === [5.0]
+  Some c <- queryContractId f.operator c1
+  Some [t] <- pure c.withdrawn
+  (t.tallyToken, t.tallyAmount) === (wTkb, 5.0)
+
+testTheWithdrawalsOfOneBlockAreAddedUp : Script ()
+testTheWithdrawalsOfOneBlockAreAddedUp = do
+  f <- fixture
+  h1 <- custody f
+  h2 <- custody f
+  chain <- quota5 f
+  refused "over the withdrawal quota" f $ advance chain "01" [wLine wTkb 3.0 f.u, wLine wTkb 3.0 f.u] [withdrawalOf f f.token h1 3.0, withdrawalOf f f.token h2 3.0]
+  (_, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 3.0 f.u, wLine wTkb 2.0 f.u] [withdrawalOf f f.token h1 3.0, withdrawalOf f f.token h2 2.0]
+  holds f.u "TKB" >>= \xs -> sum xs === 5.0
+
+testTheQuotaRollsWithTheWindow : Script ()
+testTheQuotaRollsWithTheWindow = do
+  f <- fixture
+  h1 <- custody f
+  h2 <- custody f
+  chain <- quota5 f
+  (c1, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h1 3.0]
+  -- 3 more would make 6 in the window
+  mustRefuse "over the withdrawal quota" f $ advance c1 "11" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h2 3.0]
+  passTime (secs 99)
+  mustRefuse "over the withdrawal quota" f $ advance c1 "11" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h2 3.0]
+  -- a window and a bucket (a 24th of the window) after the first withdrawal, it no longer counts
+  passTime (secs 6)
+  (c2, _) <- submit (asBuilder f) $ advance c1 "11" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h2 3.0]
+  Some c <- queryContractId f.operator c2
+  Some [t] <- pure c.withdrawn
+  t.tallyAmount === 3.0
+
+testTwoBlocksOfOneBucketAreOneTally : Script ()
+testTwoBlocksOfOneBucketAreOneTally = do
+  f <- fixture
+  h1 <- custody f
+  h2 <- custody f
+  chain <- quota5 f
+  (c1, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 3.0 f.u] [withdrawalOf f f.token h1 3.0]
+  (c2, _) <- submit (asBuilder f) $ advance c1 "11" [wLine wTkb 2.0 f.u] [withdrawalOf f f.token h2 2.0]
+  Some c <- queryContractId f.operator c2
+  Some [t] <- pure c.withdrawn
+  t.tallyAmount === 5.0
+
+testTheQuotaIsPerToken : Script ()
+testTheQuotaIsPerToken = do
+  f <- fixture
+  h1 <- custody f
+  h2 <- custody f
+  other <- makeToken f.operator f.confirmer f.gateway f.builder 770101 f.reg tokenAddr
+  chain <- quota5 f
+  (c1, _) <- submit (asBuilder f) $ advance chain "01" [wLine wTkb 5.0 f.u, wLine tokenAddr 5.0 f.u] [withdrawalOf f f.token h1 5.0, withdrawalOf f other h2 5.0]
+  Some c <- queryContractId f.operator c1
+  Some ts <- pure c.withdrawn
+  length ts === 2
+
+testWithNoQuotaNothingIsCounted : Script ()
+testWithNoQuotaNothingIsCounted = do
+  f <- fixture
+  h <- custody f
+  (c1, _) <- submit (asBuilder f) $ advance f.chain "01" [wLine wTkb 9.0 f.u] [withdrawalOf f f.token h 9.0]
+  Some c <- queryContractId f.operator c1
+  c.withdrawn === None
+
+testAQuotaOfNoneIsLiftedAgain : Script ()
+testAQuotaOfNoneIsLiftedAgain = do
+  f <- fixture
+  h <- custody f
+  chain <- quota5 f
+  open <- setLimits f chain None None None
+  (_, _) <- submit (asBuilder f) $ advance open "01" [wLine wTkb 9.0 f.u] [withdrawalOf f f.token h 9.0]
+  holds f.u "TKB" >>= \xs -> xs === [9.0]
+
+testAQuotaWaitsOutTheChangeDelay : Script ()
+testAQuotaWaitsOutTheChangeDelay = do
+  f <- fixture
+  chain <- setDelay f f.chain (Some (secs 100))
+  p <- submit f.operator $ exerciseCmd chain ProposeLegLimits with newQuota = Some 5.0; newWindow = Some (secs 100); newPauseMax = Some (days 1)
+  mustWait f.confirmer $ exerciseCmd p AcceptLegLimits with chain
+  passTime (secs 99)
+  mustWait f.confirmer $ exerciseCmd p AcceptLegLimits with chain
+  passTime (secs 1)
+  next <- submit f.confirmer $ exerciseCmd p AcceptLegLimits with chain
+  Some c <- queryContractId f.operator next
+  (c.withdrawalQuota, c.quotaWindow, c.pauseMax, c.changeDelay) === (Some 5.0, Some (secs 100), Some (days 1), Some (secs 100))
+  -- the same wait lifts it again
+  q <- submit f.operator $ exerciseCmd next ProposeLegLimits with newQuota = None; newWindow = None; newPauseMax = None
+  mustWait f.confirmer $ exerciseCmd q AcceptLegLimits with chain = next
+  passTime (secs 100)
+  open <- submit f.confirmer $ exerciseCmd q AcceptLegLimits with chain = next
+  Some c2 <- queryContractId f.operator open
+  (c2.withdrawalQuota, c2.quotaWindow, c2.pauseMax) === (None, None, None)
+
+testTheLimitsAreBoundedAndHaveTheirParties : Script ()
+testTheLimitsAreBoundedAndHaveTheirParties = do
+  f <- fixture
+  let propose q w m = submitMustFail f.operator $ exerciseCmd f.chain ProposeLegLimits with newQuota = q; newWindow = w; newPauseMax = m
+  propose (Some 0.0) (Some (secs 100)) None
+  propose (Some (-1.0)) (Some (secs 100)) None
+  propose (Some 5.0) None None
+  propose None (Some (secs 100)) None
+  propose (Some 5.0) (Some (secs 0)) None
+  propose (Some 5.0) (Some (days 30 `plusRel` secs 1)) None
+  propose None None (Some (secs 0))
+  propose None None (Some (days 14 `plusRel` secs 1))
+  submitMustFail f.confirmer $ exerciseCmd f.chain ProposeLegLimits with newQuota = None; newWindow = None; newPauseMax = None
+  submitMustFail f.builder $ exerciseCmd f.chain ProposeLegLimits with newQuota = None; newWindow = None; newPauseMax = None
+  -- the limits' own choice needs the operator and the confirmer, and the same bounds
+  submitMustFail f.operator $ exerciseCmd f.chain SetLegLimits with newQuota = None; newWindow = None; newPauseMax = None
+  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd f.chain SetLegLimits with newQuota = Some 5.0; newWindow = None; newPauseMax = None
+  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd f.chain SetLegLimits with newQuota = None; newWindow = None; newPauseMax = Some (days 15)
+  chain2 <- submit (actAs [f.operator, f.confirmer]) $ exerciseCmd f.chain SetLegLimits with newQuota = Some 5.0; newWindow = Some (days 30); newPauseMax = Some (days 14)
+  p <- submit f.operator $ exerciseCmd chain2 ProposeLegLimits with newQuota = None; newWindow = None; newPauseMax = None
+  submitMustFail f.operator $ exerciseCmd p AcceptLegLimits with chain = chain2
+  submitMustFail f.operator $ exerciseCmd p RejectLegLimits
+  submitMustFail f.confirmer $ exerciseCmd p WithdrawLegLimits
+  submit f.operator $ exerciseCmd p WithdrawLegLimits
+  q <- submit f.operator $ exerciseCmd chain2 ProposeLegLimits with newQuota = None; newWindow = None; newPauseMax = None
+  submit f.confirmer $ exerciseCmd q RejectLegLimits
+
+testALimitsProposalNeedsTheCurrentContractAndItsChain : Script ()
+testALimitsProposalNeedsTheCurrentContractAndItsChain = do
+  f <- fixture
+  p <- submit f.operator $ exerciseCmd f.chain ProposeLegLimits with newQuota = Some 5.0; newWindow = Some (secs 100); newPauseMax = None
+  other <- secondChain f
+  submitMustFail f.confirmer $ exerciseCmd p AcceptLegLimits with chain = other
+  _ <- submit f.confirmer $ exerciseCmd p AcceptLegLimits with chain = f.chain
+  submitMustFail f.confirmer $ exerciseCmd p AcceptLegLimits with chain = f.chain
