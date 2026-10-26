@@ -1149,7 +1149,7 @@ def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, 
         except ExactBuildRefused as e:   # reth cannot build exactly these (a transaction needed one that is not in the set): not a block, over budget
             state["imported"] = True   # the failed build may have moved reth: the next move goes back first
             state["tip"] = None
-            v = pc.Verdict(pc.INPUT_TOOL, detail=f"reth cannot build this set of transactions: {str(e)[:150]}")
+            v = pc.Verdict(pc.UNBUILDABLE, detail=str(e)[:150])
         else:   # any other error (reth's engine, the parent block, the pool) is the service's, not the transactions': it propagates
             block = state["payload"]["blockHash"]
             v = pc.check_block(setup.emu, setup.budgets, make_input)

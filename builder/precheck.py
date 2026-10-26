@@ -26,13 +26,15 @@ DEFAULT_MAX_INPUT_BYTES = 64 * MIB       # the prover's inline limit is 134 MB
 DEFAULT_MAX_CODES = 1000                 # the proof still passes at about 1,350 loads of 24 KB codes
 DEFAULT_MAX_CODE_BYTES = 24 * MIB
 EMULATOR_INPUT_MEMORY = 512 * MIB        # the emulator's own default (128 MiB) is below the guest's real input limit
-STEPS_LINE = re.compile(r"STEPS:\s*([\d,]+)")
-COST_LINE = re.compile(r"cost_total\s*[:=]?\s*([\d,_]+)", re.IGNORECASE)
+# The emulator's -X report (ZisK 1.3.1): a line `STEPS   6,752,005`, and under COST DISTRIBUTION a line `TOTAL   1,157,634,907 100.00%`.
+STEPS_LINE = re.compile(r"^STEPS:?[ \t]+([\d,]+)[ \t]*$", re.MULTILINE)
+COST_LINE = re.compile(r"^TOTAL[ \t]+([\d,]+)[ \t]+100\.00%", re.MULTILINE)
+STEP_CAP_MARKER = "EmulationNoCompleted"   # what the emulator says when it stops at the step cap (-n); its report is printed before this
 GUEST_MARKERS = ("OOM limit of heap", "Block validation failed", "panicked at")   # what the guest's own failure looks like in the output
 
 # The verdicts. "ok" is the only one that lets a block go to the prover.
-OK, COST, STEPS, TIME, INPUT_BYTES, CODES, CODE_BYTES, GUEST, INPUT_TOOL = (
-    "ok", "cost", "steps", "time", "input_bytes", "codes", "code_bytes", "guest", "input_tool")
+OK, COST, STEPS, TIME, INPUT_BYTES, CODES, CODE_BYTES, GUEST, INPUT_TOOL, UNBUILDABLE = (
+    "ok", "cost", "steps", "time", "input_bytes", "codes", "code_bytes", "guest", "input_tool", "unbuildable")
 WHY = {
     COST: "the predicted proof time is over the proving budget",
     STEPS: "the emulator needs more steps than the proving budget",
@@ -42,6 +44,7 @@ WHY = {
     CODE_BYTES: "the block loads more contract code bytes than the proving budget",
     GUEST: "the guest program fails on this block",
     INPUT_TOOL: "the input tool cannot make an input of this block",
+    UNBUILDABLE: "reth cannot build a block of just these transactions",
 }
 
 
@@ -140,10 +143,10 @@ def _kill_group(proc) -> None:
         pass
 
 
-def run_emulator(emu: Emulator, input_path: str | Path, timeout: float) -> Emulated:
-    """Runs the emulator (with -X, which prints the cost figure) in its own session; at the timeout, or when anything interrupts the wait,
+def run_emulator(emu: Emulator, input_path: str | Path, timeout: float, max_steps: int) -> Emulated:
+    """Runs the emulator (with -X, which prints the steps and the cost; and -n, which stops it one step past `max_steps`) in its own session; at the timeout, or when anything interrupts the wait,
     the whole process group is killed."""
-    args = [*emu.cmd.split(), "-e", emu.elf, "-i", str(input_path), "--max-input-mem", str(emu.input_memory), "--steps", "-X"]
+    args = [*emu.cmd.split(), "-e", emu.elf, "-i", str(input_path), "--max-input-mem", str(emu.input_memory), "-n", str(max_steps + 1), "-X"]
     started = time.monotonic()
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:
@@ -210,7 +213,7 @@ def evaluate(emu: Emulator, budgets: Budgets, input_path: str | Path, witness_pa
         v.verdict, v.detail = CODE_BYTES, f"{n_bytes} > {budgets.max_code_bytes} bytes"
     if not v.ok:
         return v
-    run = run_emulator(emu, input_path, budgets.timeout)
+    run = run_emulator(emu, input_path, budgets.timeout, budgets.max_steps)
     v.seconds = run.seconds
     if run.timed_out:
         v.verdict, v.detail = TIME, f"over {budgets.timeout:g} s, the emulator was killed"
@@ -219,6 +222,12 @@ def evaluate(emu: Emulator, budgets: Budgets, input_path: str | Path, witness_pa
     if run.returncode is not None and run.returncode > 0 and any(m in run.output for m in GUEST_MARKERS):   # the guest's own failure
         v.verdict, v.detail = GUEST, last
         return v
+    if run.returncode is not None and run.returncode > 0 and STEP_CAP_MARKER in run.output:   # stopped at the step cap: the report is printed all the same
+        v.steps = parse_steps(run.output)
+        if v.steps is not None and v.steps > budgets.max_steps:
+            v.cost = parse_cost(run.output)
+            v.verdict, v.detail = STEPS, f"more than {budgets.max_steps} steps"
+            return v
     if run.returncode != 0:   # killed by a signal (the host's out-of-memory killer, say), or the emulator itself failed: not the block's fault
         how = f"killed by signal {-run.returncode}" if run.returncode < 0 else f"exit {run.returncode}"
         raise PrecheckFailed(f"the emulator failed ({how}): {last}")
@@ -278,8 +287,8 @@ def longest_prefix(n: int, check) -> tuple[int, Verdict | None]:
 def select(txs: list, check, max_checks: int = 64, dependents=None, max_seconds: float | None = None, clock=time.monotonic) -> Selection:
     """Cuts a block back to what fits. `check(list of transactions)` returns a Verdict for a block of exactly those transactions.
     The whole list is checked first; over budget, the longest prefix that fits is found by halves, and the transaction right after it is
-    checked alone: over budget on its own, it is convicted (wherever it stands in the block), otherwise the trouble is the combination and
-    it waits with the rest. When not even the first transaction fits on its own it is convicted, and the search starts again on the
+    checked alone, unless a kept transaction of the same sender comes before it: over budget on its own, it is convicted (wherever it stands
+    in the block); otherwise, or when reth cannot build it alone (verdict UNBUILDABLE), the trouble is the combination and it waits with the rest. When not even the first transaction fits on its own it is convicted, and the search starts again on the
     transactions after it. A pair that is bad only together is cut between them. The search is bounded: at most 2 * log2(n) + 4 checks (and
     `max_checks`), and `max_seconds` for all of it; then the longest prefix known to fit is kept.
     `dependents(convicted transaction, the transactions after it)`, when given, says which of those cannot run without it (the same
@@ -309,15 +318,22 @@ def select(txs: list, check, max_checks: int = 64, dependents=None, max_seconds:
         while rest:
             fit = 0
             k, bad = longest_prefix(len(rest), lambda m: counted(rest[:m]))
+            if k == 0 and bad.verdict == UNBUILDABLE and rest[0] is not txs[0]:   # not the block's first: it may need one that is gone, so it waits
+                stuck.append(rest[0])
+                rest = rest[1:]
+                continue
             if k == 0:
                 gone = convict(rest[0], bad)
                 stuck += gone
                 rest = [t for t in rest[1:] if not any(t is g for g in gone)]
                 continue
             kept, later = rest[:k], rest[k:]
-            if later:
+            # The transaction after the cut can be tried alone only when it can run on the parent: not when a kept transaction of the same
+            # sender comes before it (its nonce is too high alone), and not when reth cannot build it without an earlier one. Then it waits;
+            # it is convicted in a later block, if it is the offender, once the earlier ones are mined.
+            if later and not (dependents and any(dependents(t, later[:1]) for t in kept)):
                 alone = counted([later[0]], prefix=False)
-                if not alone.ok:   # over budget by itself, though it is not the first: it is the offender, not the block
+                if not alone.ok and alone.verdict != UNBUILDABLE:   # over budget by itself, though it is not the first: it is the offender, not the block
                     gone = convict(later[0], alone)
                     stuck += gone
                     later = [t for t in later[1:] if not any(t is g for g in gone)]

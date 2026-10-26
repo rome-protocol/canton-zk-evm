@@ -96,10 +96,37 @@ class TestVerdicts(Case):
         self.assertAlmostEqual(v.predicted, 121, delta=0.01)
         self.assertIn("predicted proof time", v.reason())
 
-    def test_the_cost_line_is_read_with_commas_and_a_space_or_equals(self):
-        self.assertEqual(pc.parse_cost("cost_total: 1,234,567"), 1234567)
-        self.assertEqual(pc.parse_cost("COST_TOTAL = 99"), 99)
+    def test_the_real_report_is_read(self):   # a shortened copy of the output of `ziskemu -X` (ZisK 1.3.1) on an honest block
+        out = (HERE / "fixtures" / "ziskemu-x-report.out").read_text()
+        self.assertEqual(pc.parse_steps(out), 6752005)
+        self.assertEqual(pc.parse_cost(out), 1157634907)
+
+    def test_the_report_at_the_step_cap_is_read(self):   # `-X -n 1000`: the report, then the error line
+        out = (HERE / "fixtures" / "ziskemu-step-cap.out").read_text()
+        self.assertEqual(pc.parse_steps(out), 1000)
+        self.assertEqual(pc.parse_cost(out), 287687250)
+        self.assertIn(pc.STEP_CAP_MARKER, out)
+
+    def test_figures_are_read_from_line_starts_only(self):
+        self.assertEqual(pc.parse_steps("STEPS: 1,234"), 1234)   # a colon is tolerated
+        self.assertIsNone(pc.parse_steps("no figure here"))
+        self.assertIsNone(pc.parse_steps("MAX STEPS 12"))
         self.assertIsNone(pc.parse_cost("no figure here"))
+        self.assertIsNone(pc.parse_cost("TOTAL 5 99.00%"))   # only the TOTAL line that is 100 %
+        self.assertIsNone(pc.parse_cost("cost_total: 1,234,567"))   # the invented layout is not the real one
+
+    def test_the_emulator_is_stopped_one_step_past_the_budget(self):
+        b = pc.Budgets(max_steps=500, timeout=5, max_input_bytes=1000, max_codes=3, max_code_bytes=100, budget_seconds=120)
+        self.assertTrue(self.verdict("steps=500", budgets=b).ok)
+        v = self.verdict("steps=501", budgets=b)   # the cap is 501: the emulator stops, prints its report and the cap error: a verdict, not a failure
+        self.assertEqual((v.verdict, v.steps), (pc.STEPS, 501))
+        self.assertIn("steps", v.reason())
+        v = self.verdict("steps=900000", budgets=b)
+        self.assertEqual((v.verdict, v.steps), (pc.STEPS, 501))
+
+    def test_another_exit_one_is_still_a_service_failure(self):
+        with self.assertRaisesRegex(pc.PrecheckFailed, "exit 1"):
+            self.verdict("abort=rc1")
 
     def test_the_emulator_is_started_with_the_cost_flag(self):
         self.assertTrue(self.verdict().ok)   # the stand-in prints the cost figure only for -X, and a run without it would be a service failure
@@ -134,7 +161,7 @@ class TestVerdicts(Case):
         pc.subprocess.Popen.communicate = boom
         try:
             with self.assertRaises(KeyboardInterrupt):
-                pc.run_emulator(self.emu, i, 30)
+                pc.run_emulator(self.emu, i, 30, 10**9)
         finally:
             pc.subprocess.Popen.communicate = real
         pid = int(child.read_text())
