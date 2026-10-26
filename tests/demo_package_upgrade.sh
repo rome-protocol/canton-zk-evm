@@ -16,6 +16,9 @@
 #      proposed), the operator's proposal, a dry run of the acceptance on the confirmer's participant (the cap is unchanged), the confirmer's
 #      acceptance. A second proposal and a second acceptance change nothing, and a cap that is not higher is refused (its message is checked and no
 #      proposal exists afterwards).
+#      Then the chain's program key, ZisK root and rules hash are replaced with network/external/setup.py --program-step (a dry run of the proposal,
+#      the proposal, a dry run of the acceptance, the acceptance; a proposal of the values the chain holds is refused) and put back with the same two
+#      steps, so the chain goes on with the program it had. No block is made in between.
 #   5. The builder asks reth for a block gas limit of 31,000,000 (--target-gas-limit). First an Advance whose header hex has a capital letter in it
 #      is refused by Canton at `verify2` (the runtime lowercases what it sends, so the hash in the line differs: the stand-in says it refused at the
 #      hash, and the refusal is the sidecar's, with the reason "no malformed input"), and the chain stays where it was. Then block 4 is built again
@@ -259,6 +262,46 @@ fi
 grep -q "must be above" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal of a cap that is not higher does not say so"; }
 is "$(probe GasCapProposal | jq '.contracts | length')" 0 "the proposals after the refused proposal (nothing was sent)"
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the acceptance (SetGasCap is 0.3.0's)"
+
+step "stage 4b: the program keys change and change back (setup.py --program-step)"
+program_step() {   # <participant port> <propose|accept> <vk> <root> <rules> [--dry-run]
+  local port=$1 step=$2 vk=$3 root=$4 rules=$5; shift 5
+  CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url "http://127.0.0.1:$port" --program-step "$step" --program-vk "$vk" --root-c "$root" --rules-hash "$rules" "$@" 2> "$WORK/setup.err" \
+    || { cat "$WORK/setup.err" >&2; fail "setup.py --program-step $step on $port failed"; }
+}
+OLD_RULES=$(printf '12%.0s' $(seq 32)); NEW_VK=$(printf 'ab%.0s' $(seq 32)); NEW_RC=$(printf 'cd%.0s' $(seq 32)); NEW_RULES=$(printf 'ef%.0s' $(seq 32))
+OLD_PROGRAM="$VK/$RC/$OLD_RULES"; NEW_PROGRAM="$NEW_VK/$NEW_RC/$NEW_RULES"
+is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys before the change"
+r=$(program_step 7575 propose "$NEW_VK" "$NEW_RC" "$NEW_RULES" --dry-run); jq -e '.dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program proposal: $r"
+is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the dry run"
+r=$(program_step 7575 propose "$NEW_VK" "$NEW_RC" "$NEW_RULES"); jq -e '.submitted == true and .alreadyProposed == false' <<<"$r" >/dev/null || fail "the program proposal: $r"
+is "$(probe ProgramProposal | jq '.contracts | length')" 1 "the program proposals after the proposal"
+r=""
+for _ in $(seq 1 30); do
+  r=$(program_step 7576 accept "$NEW_VK" "$NEW_RC" "$NEW_RULES" --dry-run 2>/dev/null) && break
+  r=""; sleep 1
+done
+jq -e '.step == "accept" and .dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program acceptance: $r"
+is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys after the dry runs"
+r=$(program_step 7576 accept "$NEW_VK" "$NEW_RC" "$NEW_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the program acceptance: $r"
+is "$(probe ZkChain | jq -r '.programs | join(",")')" "$NEW_PROGRAM" "the program keys after the acceptance"
+is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the acceptance (it is used up)"
+if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7575 --program-step propose --program-vk "$NEW_VK" --root-c "$NEW_RC" --rules-hash "$NEW_RULES" > /dev/null 2> "$WORK/setup.err"; then
+  fail "a proposal for the values the chain holds was sent"
+fi
+grep -q "holds these values already" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal of the values the chain holds does not say so"; }
+# The way back: the same two steps with the old values.
+r=$(program_step 7575 propose "$VK" "$RC" "$OLD_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the proposal of the old program: $r"
+r=""
+for _ in $(seq 1 30); do
+  r=$(program_step 7576 accept "$VK" "$RC" "$OLD_RULES" --dry-run 2>/dev/null) && break
+  r=""; sleep 1
+done
+[ -n "$r" ] || fail "the proposal of the old program did not reach the confirmer's participant"
+r=$(program_step 7576 accept "$VK" "$RC" "$OLD_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance of the old program: $r"
+is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys after the way back"
+is "$(chain_package)" "$NEW" "the package the chain contract is under after the program changes"
+is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the program changes (no block was made)"
 
 step "stage 5: a capital letter in the header is refused; then the builder asks for a gas limit of 31,000,000 and the blocks commit over the old cap of 30,000,000"
 BUILDER_EXTRA=(--target-gas-limit 31000000)
