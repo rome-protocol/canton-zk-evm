@@ -1,7 +1,7 @@
 name: pipeline-nightly
 
 # The builder with several blocks in flight, on the real local network (tests/network_pipeline.sh says what is real and what is checked). It runs on a
-# schedule and by hand, never on every pull request: a flood of hundreds of blocks takes most of an hour. The one exception is a pull request that
+# schedule and by hand, never on every pull request: a flood of 300 blocks takes about 10 minutes a run. The one exception is a pull request that
 # changes this test's own files (the paths below): it runs a short flood, so that a change to the test is seen to run before it is merged. A workflow can
 # be dispatched by name only once it is on the default branch, so the first run of a new nightly is that.
 on:

@@ -11,18 +11,20 @@
 #      block after it, already proven, is dropped, its transactions go back to the pool, and the chain goes on from N. Put down again until the journal
 #      shows a dropped block that had its proof.
 #   3. A lost reply while the command commits: tests/ledger_drop_proxy.py, in front of the JSON Ledger API, sends one Advance on, lets Canton commit it
-#      and closes the connection without an answer, and then refuses the reads of completions for PIPELINE_BLIND_SECONDS (8), so that the command is in doubt. The next block must wait until the command is settled as committed.
+#      and closes the connection without an answer. The builder has no answer, settles the command as committed (from Canton's head, as a rule at once) and
+#      only then submits the next block. After the drop the proxy also refuses the reads of completions for PIPELINE_BLIND_SECONDS (8), which matters only
+#      when the head does not yet show the block: then the command stays in doubt for that time.
 #   4. (depth 3) The refusal must be of the oldest of three blocks, so that reth goes back three blocks on the persistent node: it is put down again
 #      until the journal shows a refusal that took two more blocks with it.
 #   5. (depth 3) kill -9 of the builder with three blocks in flight (the builder is stopped, the journal read, and only then killed), then a restart: the blocks
 #      it finds in flight are given up, their transactions are back in reth's pool, and the chain goes on.
 # Checks (tests/pipeline_check.py): Canton's head is reth's block, and reth's finalized block never above it, once a second for the whole run;
 # at the end they are the same block; the journal's committed blocks are the blocks of reth, one commit a height, no gap, no height submitted again while
-# its command was in doubt, every committed block seen final; every transaction sent is in a committed block and final; nothing named lost; the proxy saw
+# its command was in doubt, no block submitted while the one below was unanswered, every committed block seen final; every transaction sent is in a committed block and final; nothing named lost; the proxy saw
 # as many submits as the journal's `submitted` lines.
 #
 # Settings: FLOOD_BLOCKS (300), PIPELINE_PROVE_DELAY (1, seconds a proof takes), PIPELINE_HOLD_SECONDS (4), PIPELINE_BLIND_SECONDS (8), FLOOD_TIMEOUT (3000, seconds), PIPELINE_OUT (a folder for the journal, the logs
-# and the results; it is kept). Needs Docker, Java 21, Rust, Python 3.12, jq, curl and network access. No GPU.
+# and the results; kept only when it is set, otherwise everything is deleted at the end). Needs Docker, Java 21, Rust, Python 3.12, jq, curl and network access. No GPU.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck disable=SC1091
@@ -54,9 +56,10 @@ cleanup() {
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
   [ ! -d "$CZE_STATE_DIR/builder/journal" ] || cp -r "$CZE_STATE_DIR/builder/journal" "$OUT/journal" 2>/dev/null || true
   cp "$NET/logs"/*.log "$OUT/" 2>/dev/null || true
+  cp "$WORK/proxy.log" "$OUT/proxy-submits.log" 2>/dev/null || true   # what the proxy forwarded or dropped (proxy.log is the proxy's own output)
+  cp "$WORK/proved.log" "$OUT/proved.log" 2>/dev/null || true
   "$ROOT/network/reth/stop.sh" --wipe-persistent || true
-  rm -rf "$WORK/state" "$WORK/out"
-  rmdir "$WORK" 2>/dev/null || true
+  rm -rf "$WORK"   # with PIPELINE_OUT unset, the results go too
 }
 trap cleanup EXIT
 background() { local name=$1; shift; nohup "$@" > "$NET/logs/$name.log" 2>&1 < /dev/null & pids+=($!); }
@@ -199,6 +202,8 @@ if [ "$DEPTH" = 3 ]; then
   done
   [ "$(jstat inFlight)" -ge 3 ] || fail "three blocks were never in flight together: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
   echo "in flight: $(jstat inFlight), committed: $(jstat committed)"
+  check inflight "$JOURNAL" > "$WORK/inflight.txt"   # the attempts the kill leaves open
+  [ "$(wc -l < "$WORK/inflight.txt")" -ge 3 ] || fail "three blocks were not in flight: $(cat "$WORK/inflight.txt")"
   kill -KILL "$builder_pid"
   for _ in $(seq 1 20); do kill -0 "$builder_pid" 2>/dev/null || break; sleep 0.2; done
   ! kill -0 "$builder_pid" 2>/dev/null || fail "the builder did not die"
@@ -206,6 +211,8 @@ if [ "$DEPTH" = 3 ]; then
   start_builder builder-2
   for _ in $(seq 1 180); do [ "$(jstat restarted)" -ge 1 ] && break; alive; sleep 1; done
   [ "$(jstat restarted)" -ge 1 ] || fail "the restarted builder did not give up the blocks it found in flight: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
+  for _ in $(seq 1 180); do check closed "$JOURNAL" "$WORK/inflight.txt" > /dev/null && break; alive; sleep 1; done
+  check closed "$JOURNAL" "$WORK/inflight.txt" || fail "the restart left blocks that were in flight open (above)"
   for _ in $(seq 1 180); do [ "$(jstat committed)" -gt "$killed_at" ] && break; alive; sleep 1; done
   [ "$(jstat committed)" -gt "$killed_at" ] || fail "the restarted builder committed nothing"
   echo "restarted: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
@@ -220,7 +227,7 @@ for _ in $(seq 1 60); do kill -0 "$builder_pid" 2>/dev/null || break; sleep 1; d
 touch "$OUT/stop-watch"; sleep 3
 
 echo "== the checks"
-check journal "$JOURNAL" --sent "$OUT/sent.txt" --blocks $(( FLOOD_BLOCKS * 9 / 10 )) || fail "the journal broke a rule (above)"
+check journal "$JOURNAL" --proved "$PIPELINE_PROVED_LOG" --sent "$OUT/sent.txt" --blocks $(( FLOOD_BLOCKS * 9 / 10 )) || fail "the journal broke a rule (above)"
 check chain "$JOURNAL" --sent "$OUT/sent.txt" || fail "reth and the journal disagree (above)"
 check settled || fail "Canton's head is not reth's finalized block (above)"
 grep -v '^samples' "$OUT/watch.txt" | head -n 5 | grep . && fail "the two chains disagreed during the run (above)"
@@ -239,5 +246,4 @@ submits=$(jq .submitted <<<"$stats")
 seen=$(grep -cE '^(forwarded|dropped) ' "$WORK/proxy.log")
 # a run killed between writing "submitted" and sending the command leaves one line more, and none else can
 if [ "$seen" -gt "$submits" ] || [ "$submits" -gt "$(( seen + kills ))" ]; then fail "the proxy saw $seen submits, the journal has $submits"; fi
-cp "$WORK/proxy.log" "$WORK/proved.log" "$OUT/"
 echo "== the pipeline scenario passed at depth $DEPTH: $stats"

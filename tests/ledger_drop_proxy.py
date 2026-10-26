@@ -11,7 +11,8 @@ file is answered that many seconds late (the file is deleted as it is used). The
 it gives that block a bad proof: Canton refuses it at once, and the builder hears of it only after the blocks behind it have had time to be proven.
 
 After a dropped reply it can also go blind for a number of seconds: the reads of completions (/v2/commands/completions) are answered with 503 and not
-sent on, so that the caller cannot find out at once that its command committed, and the command stays in doubt, as when a reply is lost on a slow link.
+sent on. This matters only when the caller cannot settle its command another way: the builder asks Canton's head first and settles a committed command
+at once from it, and reads completions only when the head does not yet show the block.
 
 Usage: ledger_drop_proxy.py <listen port> <service url> <control file> <log file> [<hold file> <seconds> [<blind seconds>]]      (listens on 127.0.0.1 only)
 The log has one line for every submit-and-wait: "forwarded <command id> <status>", "held <command id> <seconds>" or "dropped <command id>",

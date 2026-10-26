@@ -4,6 +4,8 @@
   pipeline_check.py journal <journal folder> [--sent FILE] [--blocks N]   the journal alone (and the sent transactions, one hash a line, when
                                                                             given): prints the violations and exits 1 if there is one
   pipeline_check.py stats <journal folder> [--proved FILE]                  one JSON line: what the faults left in the journal (FILE: the prover's log)
+  pipeline_check.py inflight <journal folder>                               the attempts of the newest run that are still going, "<run> <attempt>" a line
+  pipeline_check.py closed <journal folder> <file from inflight>            exits 1 while one of them has no final, cancelled or resolved line and is not committed
   pipeline_check.py chain <journal folder> [--sent FILE]                    reth against the journal, block by block: the block at each committed
                                                                             height is the one the journal says Canton took, and each sent
                                                                             transaction is in it, at or below reth's finalized block
@@ -109,7 +111,7 @@ def check_journal(lines: list, sent=None, blocks: int = 0) -> list:
     open_cmds = sorted(((a["submitted"], ended_at(a), n, k) for n, subs in by_height.items() for k, a in subs), key=lambda x: x[0])
     for t, _, n, k in open_cmds:
         for t0, end0, n0, k0 in open_cmds:
-            if n0 < n and t0 < t and (end0 is None or end0 > t) and atts[k0].get("outcome") == "unknown":
+            if n0 < n and t0 < t and (end0 is None or end0 > t):
                 bad.append(f"height {n} ({k}) was submitted while height {n0} ({k0}) was in doubt")
     # 4. final, and nothing lost
     for key, a in atts.items():
@@ -163,6 +165,19 @@ def unwind_depth(atts: dict) -> int:
     return best
 
 
+def inflight_keys(lines: list) -> list:
+    """The attempts of the newest run that are still going: built, and not final, cancelled, resolved, refused or failed."""
+    run = lines[-1]["run"] if lines else None
+    atts = attempts_of(lines)
+    return sorted(k for k, a in atts.items() if k[0] == run and "hash" in a and not ({"final", "cancelled", "resolved"} & a.keys()) and a.get("outcome") not in ("refused", "failed"))
+
+
+def unclosed(lines: list, keys: list) -> list:
+    """Of these attempts (run, attempt), those that nothing has closed yet: no final, cancelled or resolved line, and not committed."""
+    atts = attempts_of(lines)
+    return [k for k in keys if not ({"final", "cancelled", "resolved"} & atts.get(tuple(k), {}).keys() or committed(atts.get(tuple(k), {})))]
+
+
 def stats(lines: list, proved=None) -> dict:
     """What the faults left. The journal writes a block's `proof_ended` when the producer next looks at it, which, while a submit runs, is after the
     submit: so whether a dropped block had its proof is read from the prover's own log, `proved`."""
@@ -176,7 +191,7 @@ def stats(lines: list, proved=None) -> dict:
         "cancelled": len(cancelled),
         "unwind": unwind_depth(atts),   # blocks of the longest move back of reth: the refused one and the ones behind it
         "restarted": sum(1 for a in atts.values() if a.get("resolution") == "restarted"),   # blocks a restart found in flight and gave up
-        "inFlight": sum(1 for k, a in atts.items() if k[0] == run and "hash" in a and not ({"final", "cancelled", "resolved"} & a.keys()) and a.get("outcome") != "refused"),   # of the newest run
+        "inFlight": len(inflight_keys(lines)),   # of the newest run
         "cancelledProven": sum(1 for a in cancelled if proved.get(a.get("hash", "0x")[2:18], "~") <= a["cancelled"]),   # the block behind the faulted one had its proof when it was dropped
         "unknown": sum(1 for a in atts.values() if a.get("outcome") == "unknown"),
         "unknownCommitted": sum(1 for a in atts.values() if a.get("outcome") == "unknown" and a.get("resolution") == "committed"),
@@ -305,6 +320,15 @@ def main(argv: list) -> int:
         bad = check_chain(read_journal(argv[2]), sent)
         print("\n".join(bad[:20]) if bad else "chain ok: every committed block is reth's, every sent transaction is in it and final")
         return 1 if bad else 0
+    if len(argv) == 3 and argv[1] == "inflight":   # the attempts in flight now, one "<run> <attempt>" a line
+        print("\n".join(f"{r} {a}" for r, a in inflight_keys(read_journal(argv[2]))))
+        return 0
+    if len(argv) == 4 and argv[1] == "closed":   # exits 1 while an attempt of the file (from `inflight`) is still open
+        keys = [tuple(x.split(" ", 1)) for x in Path(argv[3]).read_text().splitlines() if x.strip()]
+        keys = [(r, int(a)) for r, a in keys]
+        left = unclosed(read_journal(argv[2]), keys)
+        print("\n".join(f"{r} {a}" for r, a in left) if left else "closed: every attempt that was in flight is closed")
+        return 1 if left else 0
     if len(argv) >= 3 and argv[1] == "stats":
         print(json.dumps(stats(read_journal(argv[2]), read_proved(options(argv[3:]).get("proved")))))
         return 0
