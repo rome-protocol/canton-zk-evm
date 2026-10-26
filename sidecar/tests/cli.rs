@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Rome Protocol
-//! The program's command line: the release option.
+//! The program's command line: the release option and the key list.
 
 use std::process::Command;
 

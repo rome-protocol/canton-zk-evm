@@ -47,8 +47,8 @@ A function id that is not `verify`, `verify2` or `legs`, a missing id, for `veri
 
 It checks, in this order:
 
-1. the proof is 1,344 bytes and verifies under the key of the chain's ZisK release (the `verifier/` crate);
-2. its program key and root are the pinned ones;
+1. the proof is 1,344 bytes and verifies under the key of the chain's ZisK release (the `verifier/` crate); with a key list, under one entry's release;
+2. its program key and root are the pinned ones; with a key list, that same entry's program key and root (see A short list of keys);
 3. its public values have the one valid layout: 64 slots of 8 bytes, each holding a 4-byte word and four zero bytes. Put together, the words are `0x20`, the 32-byte block hash, and zeros;
 4. the header's Keccak-256 is that block hash, and the header is written in canonical RLP;
 5. the header has no ommers, and no withdrawals if it has a withdrawals root;
@@ -101,7 +101,7 @@ cd sidecar
 cargo test
 ```
 
-Most tests use real data. Four kinds of test data are built by hand, as listed below.
+Most tests use real data. Four kinds of test data are built by hand, as listed below. `tests/keys.rs` covers the key list: a proof is accepted under each listed entry in either order, crossed pins (one entry's program key with another's root) and an unlisted key are refused, the entry's own release chooses the PLONK key, and `tests/cli.rs` covers the list's start refusals.
 
 Real data:
 
