@@ -41,6 +41,19 @@
     and the accept is safe to run again). A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for a value
     that is not wanted is archived by the operator (the Archive choice, with the operator's token) before another is proposed.
 
+  setup.py --ledger-url <URL> --program-step propose|accept --program-vk <hex> --root-c <hex> --rules-hash <hex> [--dry-run]
+
+    Replaces the program key, the ZisK root and the rules hash of a chain that runs (they are fields of the chain contract), in two steps, each by
+    one user and each printing one JSON line. Nothing else is touched. The chain's Advance accepts only a block proven under the pair of keys the
+    chain contract holds, so the change takes effect at the first block after the accept; the same two steps with the old values put them back.
+    Each value is lowercase hex of 64 digits, without 0x.
+      propose  the operator's token: creates a ProgramProposal for the chain's one contract. Nothing is done if the same proposal is there already.
+      accept   the confirmer's token: exercises AcceptProgram on the proposal for exactly these three values, given the chain's current contract.
+    Both refuse a chain that holds these values already. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
+    again after, as for the gas cap. A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for other values is
+    archived by the operator (the Archive choice, with the operator's token) before another is proposed. The chain check of a later plain setup run
+    compares the chain with the values it is given, so give it the values the chain holds now.
+
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
@@ -356,7 +369,8 @@ def submit_gas_cap(ledger, command: dict, step: str) -> None:
         raise SystemExit(f"the {step} could not be sent: {err.reason}") from None
 
 
-def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
+def step_chain(url: str, step: str) -> tuple:
+    """The ledger of the step's user (the operator for a proposal, the confirmer for an acceptance), the chain's one contract and the parties."""
     parties = propose.read_env_file(Path(os.environ.get("CZE_STATE_DIR", ROOT / "state")) / "canton" / "parties.env")
     missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") if not parties.get(k)]
     if missing:
@@ -370,6 +384,11 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
     [chain] = chains
     if chain.get("operator") != parties["OPERATOR_PARTY"] or chain.get("confirmer") != parties["CONFIRMER_PARTY"]:
         raise SystemExit("the chain on this participant is not between these operator and confirmer parties")
+    return ledger, chain
+
+
+def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
+    ledger, chain = step_chain(url, step)
     current = int(chain["gasCap"])
     proposals = [p for p in ledger.active("GasCapProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
                  and p.get("confirmer") == chain["confirmer"]]
@@ -393,6 +412,47 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
     check_gas_cap(current, new_cap)
     if not dry_run:
         submit_gas_cap(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
+                                                    "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
+    return {**result, "submitted": not dry_run}
+
+
+HEX64 = re.compile(r"[0-9a-f]{64}")
+PROGRAM_FIELDS = (("programVK", "--program-vk"), ("rootC", "--root-c"), ("rulesHash", "--rules-hash"))
+
+
+def check_program(values: dict) -> None:
+    """Each key is lowercase hex of 64 digits, as the chain stores it (propose.py takes them the same way)."""
+    for field, flag in PROGRAM_FIELDS:
+        if not HEX64.fullmatch(values[field]):
+            raise SystemExit(f"{flag} must be 64 lowercase hex digits without 0x")
+
+
+def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
+    """ProgramProposal by the operator, AcceptProgram by the confirmer: the chain's program key, ZisK root and rules hash become `new`."""
+    check_program(new)
+    ledger, chain = step_chain(url, step)
+    current = {field: chain[field] for field, _ in PROGRAM_FIELDS}
+    proposals = [p for p in ledger.active("ProgramProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+                 and p.get("confirmer") == chain["confirmer"]]
+    mine = [p for p in proposals if all(p.get("new" + f[0].upper() + f[1:]) == new[f] for f, _ in PROGRAM_FIELDS)]
+    result = {"step": step, "chainId": chain["chainId"], "current": current, "new": new, "dryRun": dry_run}
+    if step == "propose":
+        if current == new:
+            raise SystemExit("the chain holds these values already")
+        if proposals and not mine:
+            raise SystemExit("a proposal for other values is on this participant already. Accept it only if those values are wanted; "
+                             "otherwise the operator archives it (the Archive choice of the ProgramProposal, with the operator's token) and proposes again")
+        if not mine and not dry_run:
+            submit_gas_cap(ledger, {"CreateCommand": {"templateId": propose.PKG + "ProgramProposal", "createArguments": {
+                "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"],
+                **{"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}}, "propose")
+        return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
+    if not mine:
+        if current == new:   # a re-run after the accept went through (or committed after a timeout): done
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        raise SystemExit("no proposal for these values is on this participant")
+    if not dry_run:
+        submit_gas_cap(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ProgramProposal", "contractId": mine[0]["contractId"], "choice": "AcceptProgram",
                                                     "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
 
@@ -428,9 +488,13 @@ def main(argv: list) -> int:
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step: nothing is submitted")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step or --program-step: nothing is submitted")
     ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
+    ap.add_argument("--program-step", choices=("propose", "accept"), help="replace the chain's program key, ZisK root and rules hash: the operator proposes, the confirmer accepts (see the top of this file)")
+    ap.add_argument("--program-vk", help="with --program-step: the new program key (64 lowercase hex digits)")
+    ap.add_argument("--root-c", help="with --program-step: the new ZisK root (64 lowercase hex digits)")
+    ap.add_argument("--rules-hash", help="with --program-step: the new rules hash (64 lowercase hex digits)")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
     if own.gas_cap_step:
@@ -438,18 +502,33 @@ def main(argv: list) -> int:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
         if own.new_gas_cap is None:
             ap.error("--gas-cap-step needs --new-gas-cap")
-        if rest or own.demo or own.package_step:
+        if rest or own.demo or own.package_step or own.program_step or own.program_vk or own.root_c or own.rules_hash:
             ap.error("--gas-cap-step does only the gas cap: no --demo, no --package-step and no chain arguments")
         check_settings(own.ledger_url, ("operator",) if own.gas_cap_step == "propose" else ("confirmer",))
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
         print(json.dumps(gas_cap_step(own.ledger_url, own.gas_cap_step, own.new_gas_cap, own.dry_run)))
         return 0
+    if own.program_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if None in (own.program_vk, own.root_c, own.rules_hash):
+            ap.error("--program-step needs --program-vk, --root-c and --rules-hash")
+        if rest or own.demo or own.package_step or own.gas_cap_step or own.new_gas_cap is not None:
+            ap.error("--program-step does only the program: no --demo, no --package-step, no --gas-cap-step and no chain arguments")
+        new = {"programVK": own.program_vk, "rootC": own.root_c, "rulesHash": own.rules_hash}
+        check_program(new)
+        check_settings(own.ledger_url, ("operator",) if own.program_step == "propose" else ("confirmer",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(program_step(own.ledger_url, own.program_step, new, own.dry_run)))
+        return 0
     if own.new_gas_cap is not None:
         ap.error("--new-gas-cap goes with --gas-cap-step")
+    if own.program_vk or own.root_c or own.rules_hash:
+        ap.error("--program-vk, --root-c and --rules-hash go with --program-step")
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet or --gas-cap-step")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step or --program-step")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)
