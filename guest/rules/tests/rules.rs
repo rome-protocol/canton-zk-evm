@@ -19,6 +19,7 @@ fn the_built_in_config_is_this_chain() {
     assert_eq!(ours.chain_id, CHAIN_ID);
     assert_eq!(CHAIN_ID, 770101);
     assert_eq!(ours.prague_time, Some(0));
+    assert_eq!(ours.osaka_time, Some(0));
 }
 
 #[test]
@@ -47,9 +48,10 @@ fn it_refuses_another_chain_id() {
 
 #[test]
 fn it_refuses_another_fork_schedule() {
-    let changes: [fn(&mut ChainConfig); 4] = [
+    let changes: [fn(&mut ChainConfig); 5] = [
         |c| c.prague_time = None,
-        |c| c.osaka_time = Some(0),
+        |c| c.osaka_time = None,
+        |c| c.osaka_time = Some(1),
         |c| c.cancun_time = Some(1),
         |c| c.london_block = Some(1),
     ];

@@ -144,4 +144,18 @@ for leak in "built in $FIXED/left" "built in $WORK/a/home/leftover" "built in $W
   grep -q 'build path' <<<"$out" || fail "an ELF with a build path was accepted ($leak): $out"
   ! grep -q '^programVK=' <<<"$out" || fail "a programVK was printed for an ELF with a build path ($leak)"
 done
+# 6. a genesis path: the build uses that file in place of network/genesis.json, so another genesis gives another ELF and key;
+#    naming the repository's own file gives the default build; a missing file or one without a chain config is refused.
+echo '{"config":{"osakaTime":1800000000}}' > "$WORK/later.json"
+run_with() { local d=$1; shift; env -i PATH="$PATH" HOME="$d/home" ZISK_DIR="$d/zisk" CZE_PROVER_STATE="$d/state" STUB_LOG="$d/stub.log" "$d/prover/build-guest.sh" "$@" 2>&1; }
+out_l=$(run_with "$WORK/a" "$WORK/later.json") || fail "build with a genesis path failed: $out_l"
+[ "$(vk "$out_l")" != "$(vk "$out_a")" ] || fail "another genesis gave the same programVK"
+out_d=$(run_with "$WORK/a" "$WORK/a/network/genesis.json") || fail "build with the repository's genesis path failed: $out_d"
+[ "$(vk "$out_d")" = "$(vk "$out_a")" ] || fail "naming the default genesis changed the programVK"
+out=$(run_with "$WORK/a" "$WORK/missing.json" || true)
+grep -q 'does not exist' <<<"$out" || fail "a missing genesis file was accepted: $out"
+echo '{"alloc":{}}' > "$WORK/noconfig.json"
+out=$(run_with "$WORK/a" "$WORK/noconfig.json" || true)
+grep -q 'no chain config' <<<"$out" || fail "a genesis without a config was accepted: $out"
+! grep -q '^programVK=' <<<"$out" || fail "a programVK was printed for a bad genesis"
 echo "guest reproducibility checks passed"

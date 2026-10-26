@@ -15,6 +15,7 @@
     "shanghaiTime": 0,
     "cancunTime": 0,
     "pragueTime": 0,
+    "osakaTime": 0,
     "terminalTotalDifficulty": 0,
     "terminalTotalDifficultyPassed": true,
     "blobSchedule": {
@@ -24,6 +25,11 @@
         "target": 3
       },
       "prague": {
+        "baseFeeUpdateFraction": 5007716,
+        "max": 9,
+        "target": 6
+      },
+      "osaka": {
         "baseFeeUpdateFraction": 5007716,
         "max": 9,
         "target": 6

@@ -24,7 +24,7 @@ The chain-rules check has two marked changes, each labelled `canton-zk-evm chang
 
 The lockfile `bin/guests/stateless-validator-reth/Cargo.lock` is changed too: it has two entries that upstream's does not, the `cze-rules` package and the `cze-rules` line in the reth guest's dependencies. The file carries no marking of its own; this README and [NOTICE](../NOTICE) record the change.
 
-Upstream's guest accepts the chain config supplied in the input. This guest accepts only chain id 770101 with every fork from genesis up to Prague, the `config` of `network/genesis.json`. The check is part of the program, so the programVK identifies a program that rejects blocks under any other rules.
+Upstream's guest accepts the chain config supplied in the input. This guest accepts only chain id 770101 with every fork from genesis up to Osaka, the `config` of `network/genesis.json`. The check is part of the program, so the programVK identifies a program that rejects blocks under any other rules.
 
 The copy leaves out upstream's `.cargo/config.toml`, and with it the `rustflags` that file sets. So the ELF is built with only the flags `cargo-zisk build` adds itself, plus the path mappings described under "Building". Building it with upstream's flags would give a different ELF and a different programVK.
 
@@ -32,7 +32,9 @@ The copy leaves out upstream's `.cargo/config.toml`, and with it the `rustflags`
 
 `rules/` is the small crate that holds the chain config and the check. It builds and tests on its own (`cd rules && cargo test`), with none of the guest's dependencies.
 
-Any edit to `network/genesis.json` changes the programVK. Once a programVK is published, treat that file as fixed.
+Any edit to `network/genesis.json` changes the programVK. The genesis starts Osaka at time 0 (`osakaTime`, with an `osaka` entry in `blobSchedule` that has Prague's values), so a new chain runs Osaka from its first block; Osaka adds no field to the genesis header, so the genesis block hash is the one the Prague-only file gave.
+
+A chain that starts Osaka at a later time T builds its own guest: `prover/build-guest.sh path/to/genesis.json` copies that file in place of `network/genesis.json`, builds from it and prints that guest's programVK and rulesHash. With no argument it uses `network/genesis.json`. Once a programVK is published, treat that file as fixed.
 
 **rulesHash** is the SHA-256 of the canonical encoding of the chain config: the config as JSON written by `alloy-genesis`, with the keys of every object in byte order and no spaces. `guest/fixtures/rules-hash.txt` records it. `prover/build-guest.sh` prints it next to the ELF's SHA-256, programVK and rootC.
 
@@ -46,7 +48,7 @@ The programVK identifies the ELF. Reproducing the key requires an identical ELF.
 
 `prover/build-guest.sh` builds in a fixed folder with these steps:
 
-- empties `/tmp/cze-guest-build` and copies `guest/` (without any `target` folder) and `network/genesis.json` into it, keeping their layout, because the rules crate includes the genesis file by a relative path;
+- empties `/tmp/cze-guest-build` and copies `guest/` (without any `target` folder) and the genesis file into it, keeping their layout, because the rules crate includes the genesis file by a relative path (as `network/genesis.json`; the file is the repository's, or the one named on the command line, see below);
 - builds there, with `CARGO_HOME` and `CARGO_TARGET_DIR` set to folders inside it;
 - drops the compiler settings of the caller (`RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_TARGET_*_RUSTFLAGS`, `CARGO_PROFILE_*`, `CARGO_TARGET_DIR`), which would change the ELF;
 - passes `--remap-path-prefix` for the build folders, `RUSTUP_HOME`, the ZisK folder and the home folder, so rustc writes fixed names (`/build/src`, `/build/cargo` and so on) in their place;

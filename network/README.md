@@ -65,6 +65,8 @@ network/down.sh
 
 For a source export without `.git`, set `CZE_SOURCE_COMMIT` to the full hash of the commit it was built from. State, logs and pid files go to `state/` (or `$CZE_STATE_DIR`), which git ignores. The Engine secret and the party ids are made per run.
 
+The genesis starts every fork through Osaka at time 0, so a local chain runs Osaka from its first block: modexp inputs are capped at 1,024 bytes, a transaction may use at most 16,777,216 gas, and the P256VERIFY precompile (0x100) and the CLZ opcode exist. A chain that starts Osaka later builds its guest from its own genesis file (`prover/build-guest.sh <genesis.json>`).
+
 `up.sh` also builds the guest. ZisK's root key, the chain rules' hash and the program key (`programVK`) must all be the ones recorded in `prover/fixtures/session.txt`, or it stops before it starts anything, and says which key it built and which is recorded. The sidecars and the chain are pinned to that key. The program key is that of the ELF. The guest build does not depend on the folder it is run from (`prover/build-guest.sh`; two fresh checkouts gave the same key on real ZisK on 2026-10-04, see `guest/README.md`), but that was shown for one machine and one user, so a build that gives another key is refused rather than run. The chain is proposed with genesis = reth's block 0: its hash and its state root, which is the parent state of the first block.
 
 ## Keeping the chain across restarts
