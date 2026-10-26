@@ -440,5 +440,48 @@ class Failures(Depth):
         self.check_refused_and_stuck(3)
 
 
+class InputToolFails(Depth):
+    """A block whose input tool fails once is a failure of the service: one report, no transaction held back, and the retry commits it."""
+
+    def run_case(self, engine, k):
+        self.engine = engine
+        s = self.setup({})
+        p = self.pipeline(s, k)
+        t = tx(ALICE, 0)
+        s.reth.pool[ALICE] = [t]
+        os.environ["FAKE_INPUT_FAILS_FOR"] = t["hash"][2:]
+        self.addCleanup(os.environ.pop, "FAKE_INPUT_FAILS_FOR", None)
+        self.step(p)
+        failed, self.failures_after = list(self.reports), p.failures
+        del os.environ["FAKE_INPUT_FAILS_FOR"]
+        self.drive(p, lambda: self.committed())
+        events = [x["event"] for x in self.lines_in_order(s) if "event" in x]
+        return s, p, failed, events, t
+
+    def check(self, k):
+        s, p, failed, events, t = self.run_case(b.Pipeline, k)
+        self.assertEqual([r["committed"] for r in failed], [False], "one failure report")
+        self.assertEqual(events.count("excluded"), 0)
+        self.assertEqual(p.excluded, {})
+        self.assertFalse(p.hunt)
+        self.assertEqual(self.failures_after, 1)
+        self.assertEqual(self.committed(), [HEAD_NUMBER + 1])
+        self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (self.reports[-1]["blockHash"],) * 2)
+        return events
+
+    def test_at_one_it_is_what_the_single_block_producer_does(self):
+        mine = self.check(1)
+        _, _, failed, events, _ = self.run_case(b.Producer, 1)
+        self.assertEqual([r["committed"] for r in failed], [False])
+        self.assertEqual([e for e in mine if e not in ("cancelled",)], events)
+
+    def test_at_two(self):
+        self.check(2)
+
+    def test_at_three(self):
+        self.check(3)
+
+
 if __name__ == "__main__":
     unittest.main()
