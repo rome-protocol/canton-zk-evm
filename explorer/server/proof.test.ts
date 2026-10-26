@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { parsePins } from "./config.ts";
+import { keyFor, parsePins } from "./config.ts";
 import { checkProofFacts, PROOF_BYTES, readProofFacts } from "./proof.ts";
 
 const repo = (p: string) => new URL(`../../${p}`, import.meta.url);
@@ -50,5 +50,18 @@ describe("the facts a proof carries", () => {
     expect(readProofFacts("")).toBeNull();
     expect(readProofFacts(recorded.toUpperCase())).toBeNull();
     expect(readProofFacts("zz" + recorded.slice(2))).toBeNull();
+  });
+});
+
+describe("a proof against the key for its block's height", () => {
+  const key2 = { fromBlock: 100, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32) };
+  const ranged = { ...pins, programVK: key2.programVK, rootC: key2.rootC, keys: [{ fromBlock: 0, programVK: pins.programVK, rootC: pins.rootC }, key2] };
+
+  it("is ok under the key of its own range, and not ok under the key of the other", () => {
+    const facts = readProofFacts(recorded)!; // proven under key 1
+    expect(checkProofFacts(facts, keyFor(ranged, 99), BLOCK_HASH)).toMatchObject({ programVK: { ok: true }, rootC: { ok: true } });
+    const late = checkProofFacts(facts, keyFor(ranged, 100), BLOCK_HASH);
+    expect(late).toMatchObject({ programVK: { value: pins.programVK, ok: false }, rootC: { value: pins.rootC, ok: false } });
+    expect(checkProofFacts(facts, keyFor(ranged, 5000), BLOCK_HASH).programVK.ok).toBe(false);
   });
 });

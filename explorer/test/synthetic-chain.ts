@@ -11,7 +11,8 @@ import { RethError } from "../server/reth.ts";
 import { answerOfCall, type FinalBlock, type FinalReads, type FinalReceipt, type FinalTx, type TraceFrame, type TxTrace } from "../server/indexer/reads.ts";
 
 export const GATEWAY = "0x" + "9a".repeat(20);
-export const PINS: Pins = { programVK: "0x" + "a1".repeat(32), rootC: "0x" + "b2".repeat(32), file: "test-pins.txt" };
+const PIN_VK = "0x" + "a1".repeat(32), PIN_ROOT = "0x" + "b2".repeat(32);
+export const PINS: Pins = { programVK: PIN_VK, rootC: PIN_ROOT, file: "test-pins.txt", keys: [{ fromBlock: 0, programVK: PIN_VK, rootC: PIN_ROOT }] };
 export const GENESIS_HASH = "0x" + "00".repeat(31) + "01";
 export const PARTICIPANT = "PAR::participant::1220" + "aa".repeat(32);
 export const OPERATOR = "operator::1220" + "cd".repeat(32);

@@ -9,12 +9,30 @@ import { MAX_HEAVY_PLACES } from "./rpc-heavy.ts";
 /** The settings are plain environment variables. A wrong one stops the server at start with a message that names it. */
 export class ConfigError extends Error {}
 
-/** The two facts the confirmers pin: which program may prove blocks, and which ZisK release made the proof. */
+/** One program key: the two facts the confirmers pin (which program may prove blocks, and which ZisK release made the proof), from this block on. */
+export interface KeyRange {
+  fromBlock: number;
+  programVK: string;
+  rootC: string;
+}
+
+/**
+ * The keys of a chain over its life. A chain that switches program has several: `keys` is sorted by `fromBlock`, strictly increasing, and the
+ * first starts at block 0. `programVK` and `rootC` are the current key, the last range, kept as they were before there were ranges.
+ */
 export interface Pins {
   programVK: string;
   rootC: string;
   /** The name of the file they came from, which the block page shows next to them. */
   file: string;
+  keys: KeyRange[];
+}
+
+/** The key a block is checked under: the last range that starts at or before it. */
+export function keyFor(pins: Pick<Pins, "keys">, blockNumber: number): KeyRange {
+  let key = pins.keys[0]!;
+  for (const k of pins.keys) if (k.fromBlock <= blockNumber) key = k;
+  return key;
 }
 
 export interface Config {
@@ -142,19 +160,56 @@ function captcha(env: Env): Config["captcha"] {
   };
 }
 
-/** Reads `key=value` lines, ignoring blank lines and lines that start with #, and returns the two pins. */
+/**
+ * Reads `key=value` lines, ignoring blank lines and lines that start with #, and returns the pins. `programVK=` and `rootC=` are the key from
+ * block 0. A later key is a pair of lines, `programVK@<fromBlock>=` and `rootC@<fromBlock>=`, from that block on; the pairs come in
+ * increasing order of fromBlock, and the last one is the current key.
+ */
 export function parsePins(text: string, file: string): Pins {
   const kv = new Map<string, string>();
-  for (const line of text.split("\n")) {
-    const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
-    if (m) kv.set(m[1]!, m[2]!.trim());
-  }
-  const pick = (key: string): string => {
-    const v = kv.get(key)?.toLowerCase();
+  const later = new Map<number, { programVK?: string; rootC?: string }>();
+  let last = 0;
+  const hex = (key: string, value: string | undefined): string => {
+    const v = value?.toLowerCase();
     if (!v || !HEX32.test(v)) throw new ConfigError(`${file} has no ${key}= line of 0x and 64 hex digits`);
     return v;
   };
-  return { programVK: pick("programVK"), rootC: pick("rootC"), file };
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    const at = /^(programVK|rootC)@([^=\s]*)\s*=(.*)$/.exec(t);
+    // A line that looks like a key line but is not in the exact form is refused, not skipped: a range dropped without a word would be a wrong key.
+    if (!at && !t.startsWith("#") && !/^(programVK|rootC)=/.test(t) && /^(programvk|rootc)|^[^=]*@/i.test(t)) {
+      throw new ConfigError(`${file}: "${t.split("=")[0]!.trim()}" is not a key line: write programVK=, rootC=, programVK@<fromBlock>= or rootC@<fromBlock>= (no space between the name and the @)`);
+    }
+    if (at) {
+      const name = at[1] as "programVK" | "rootC", label = `${name}@${at[2]}`;
+      if (!/^[1-9][0-9]{0,14}$/.test(at[2]!) || !Number.isSafeInteger(Number(at[2]))) throw new ConfigError(`${file}: ${label}= needs a block number above 0 after the @`);
+      const from = Number(at[2]);
+      const range = later.get(from) ?? {};
+      if (range[name] !== undefined) throw new ConfigError(`${file}: ${label}= is given twice`);
+      if (!later.has(from)) {
+        if (from <= last) throw new ConfigError(`${file}: ${label}= does not come after the range before it: the ranges go in increasing order of block`);
+        last = from;
+      }
+      range[name] = hex(label, at[3]!.trim());
+      later.set(from, range);
+      continue;
+    }
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
+    if (m) {
+      if ((m[1] === "programVK" || m[1] === "rootC") && kv.has(m[1])) throw new ConfigError(`${file}: ${m[1]}= is given twice`);
+      kv.set(m[1]!, m[2]!.trim());
+    }
+  }
+  const keys: KeyRange[] = [{ fromBlock: 0, programVK: hex("programVK", kv.get("programVK")), rootC: hex("rootC", kv.get("rootC")) }];
+  for (const [fromBlock, r] of later) {
+    if (r.programVK === undefined || r.rootC === undefined) {
+      throw new ConfigError(`${file}: the key from block ${fromBlock} needs both programVK@${fromBlock}= and rootC@${fromBlock}=`);
+    }
+    keys.push({ fromBlock, programVK: r.programVK, rootC: r.rootC });
+  }
+  const now = keys[keys.length - 1]!;
+  return { programVK: now.programVK, rootC: now.rootC, file, keys };
 }
 
 /** The database is on when it is named: EXPLORER_DATABASE_URL, or the password file of the one network/explorer-db.sh starts. */

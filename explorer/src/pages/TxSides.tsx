@@ -69,7 +69,7 @@ export function ProofSide({ t, block, st, read }: { t: ApiTx; block: BlockSummar
     );
   }
   return (
-    <ProofCard c={c} pins={st?.pins} compactFor={n}>
+    <ProofCard c={c} pins={st?.pins} block={n} compactFor={n}>
       {st && <TxVerify number={n} blockHash={block.hash} pins={st.pins} final proofBytes={c.proofBytes} />}
     </ProofCard>
   );

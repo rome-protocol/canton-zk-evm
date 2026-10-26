@@ -154,8 +154,9 @@ export function createIndexer(o: IndexerOptions) {
     const genesis = await o.reads.block(GENESIS_BLOCK);
     if (!genesis) throw new Error("reth has no block 0");
     genesisHash = genesis.hash;
+    // The first key, the one from block 0: a later key added to the pins file for a program switch does not make this database another chain's.
     const pinned: [string, string][] = [
-      ["chain_id", String(o.chainId)], ["genesis_hash", genesis.hash], ["program_vk", o.pins.programVK], ["root_c", o.pins.rootC], ["gateway_address", o.gateway],
+      ["chain_id", String(o.chainId)], ["genesis_hash", genesis.hash], ["program_vk", o.pins.keys[0]!.programVK], ["root_c", o.pins.keys[0]!.rootC], ["gateway_address", o.gateway],
     ];
     for (const [key, value] of pinned) {
       await o.pool.query("insert into meta (key, value) values ($1, $2) on conflict do nothing", [key, value]);

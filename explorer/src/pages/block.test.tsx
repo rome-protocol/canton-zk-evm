@@ -379,6 +379,33 @@ describe("the block page, for a final block: the record", () => {
   });
 });
 
+describe("a chain with more than one program key", () => {
+  const AA = "0x" + "aa".repeat(32), CD = "0x" + "cd".repeat(32);
+  const keyed = (from: number) => status({ pins: { programVK: CD, rootC: CD, file: "session.txt", keys: [{ fromBlock: 0, programVK: AA, rootC: AA }, { fromBlock: from, programVK: CD, rootC: CD }] } });
+
+  it("shows the key the block was checked under, with the block it starts at, and hands the check that key", async () => {
+    await open(block(), keyed(2));
+    const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
+    expect(row(facts, "Checked under")).toHaveTextContent("0xcdcd…cdcd");
+    expect(row(facts, "Checked under").nextElementSibling).toHaveTextContent("key from block 2");
+    expect(row(facts, "ZisK release").nextElementSibling).toHaveTextContent("pinned for this height");
+    expect(row(facts, "ZisK release").nextElementSibling).not.toHaveTextContent("1.3.1");
+    const panel = (await screen.findByRole("heading", { name: "Verify this block in your browser" })).closest("section")!;
+    expect(within(panel).getAllByText("0xcdcd…cdcd")).toHaveLength(2);
+  });
+
+  it("checks a block from before the switch under the earlier key, so a proof under the later key is red", async () => {
+    await open(withProof({ proof: { programVK: { value: CD, ok: false }, rootC: { value: AA, ok: true }, blockHash: { value: hash(3), ok: true } } }), keyed(5));
+    const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
+    expect(row(facts, "Checked under")).toHaveTextContent("0xaaaa…aaaa");
+    expect(row(facts, "Checked under").nextElementSibling).toHaveTextContent("key from block 0");
+    expect(row(facts, "ZisK release").nextElementSibling).toHaveTextContent("ZisK 1.3.1");
+    const panel = (await screen.findByRole("heading", { name: "Verify this block in your browser" })).closest("section")!;
+    expect(within(panel).getAllByText("0xaaaa…aaaa")).toHaveLength(2);
+    expect(row(facts, "Program key").nextElementSibling).toHaveTextContent("does not match this explorer's pin 0xaaaa…aaaa");
+  });
+});
+
 describe("when something does not match", () => {
   it("shows a key that is not the explorer's pin in red, with the value that was read and the pin", async () => {
     await open(withProof({ proof: { programVK: { value: EE, ok: false }, rootC: { value: EE, ok: false }, blockHash: { value: null, ok: false } } }));

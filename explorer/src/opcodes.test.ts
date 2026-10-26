@@ -16,6 +16,9 @@ describe("disassemble", () => {
   it("names PUSH0, DUP, SWAP and LOG, and an unknown byte as INVALID", () => {
     expect(disassemble("0x5f8f9fa4ef", 10).ops.map((o) => o.name)).toEqual(["PUSH0", "DUP16", "SWAP16", "LOG4", "INVALID"]);
   });
+  it("names CLZ (0x1e, Osaka) between SAR and KECCAK256", () => {
+    expect(disassemble("0x1d1e20", 10).ops.map((o) => o.name)).toEqual(["SAR", "CLZ", "KECCAK256"]);
+  });
   it("stops at the limit and says there is more", () => {
     const r = disassemble("0x0000000000", 2);
     expect(r.ops).toHaveLength(2);
