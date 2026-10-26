@@ -19,6 +19,20 @@ Replace the placeholders with the two recorded values. The default listen addres
 
 `--zisk-release` is the ZisK release the chain's proofs are made with, `1.3.1` or `1.3.2` (ZisK's own `-alpha` tag suffix is allowed), and it picks the verifying key the proof is checked under. Without it the release is 1.3.1, so a sidecar that is started as it always was keeps checking as it always did. A new chain is set up on 1.3.2 (`network/up.sh` and `network/external/sidecar.sh` pass it; the second reads it from `zisk=` in the record it is given: CZE_SESSION_FILE, else the recorded session in prover/fixtures/session.txt). Any other value stops the sidecar before it listens. The two releases share one PLONK key today, so the pins are what tell their proofs apart; the option is there so that the release stays a choice of the chain and not of the code, if a later release changes the key. See [SECURITY.md](../SECURITY.md) for why 1.3.1 is for existing chains only.
 
+### A short list of keys
+
+Instead of the three single-key options, the sidecar can be started with up to four keys, each given as `--key <programVK>:<rootC>[:<release>]` (64 lowercase hex digits each, an optional `0x` in front of them, and a release as for `--zisk-release`; without one the release is 1.3.1):
+
+```sh
+cargo run --release -- \
+  --key <old programVK>:<old rootC>:1.3.1 \
+  --key <new programVK>:<new rootC>:1.3.2
+```
+
+A proof is accepted when it verifies under the PLONK key of an entry's release and carries that entry's own `programVK` and `rootC`. The pins are never matched across entries: a proof with one entry's program key and another entry's root is refused. The `ok` answer carries the program key and root of the entry the proof was accepted under, so the caller sees which one verified. The sidecar stops before it listens when more than four keys are given, when two entries have the same `programVK`, when a key is not in that form or its release is not one this sidecar knows, and when `--key` is mixed with `--program-vk`, `--root-c` or `--zisk-release`. A sidecar started with the single-key options behaves exactly as before.
+
+Listing a key does not make the chain take it. The chain contract (Daml's `Advance`) holds one program key and refuses a block under any other, whatever the sidecars accept, so a sidecar that lists the old and the new key during a program switch is safe: a block under the key the chain does not hold is refused at the commit. This lets the sidecars be restarted before a switch and not at a moment inside it (see "Switching a running chain" in [`network/README.md`](../network/README.md)).
+
 ## What Canton calls
 
 | Request | Answer |
