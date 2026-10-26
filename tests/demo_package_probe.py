@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Part of tests/demo_package_upgrade.sh, on the local Canton network (no login).
-Usage: demo_package_probe.py <state dir> ZkChain|BlockRecord|DepositRequest|GasCapProposal|ProgramProposal
+Usage: demo_package_probe.py <state dir> ZkChain|BlockRecord|DepositRequest|GasCapProposal|ProgramProposal|ChangeDelayProposal
        Prints one JSON line: "contracts" maps the ledger id of each active contract of that template (the operator's view) to the package id
        it was made under, which is the part before the first ':' of its template id; "numbers" lists the block numbers of BlockRecords and "records" maps
        each block number to the package id its BlockRecord was made under, "gasCaps" lists the gas cap of each contract that has one (a ZkChain), and "programs" lists
-       programVK/rootC/rulesHash of each contract that has them (a ZkChain)."""
+       programVK/rootC/rulesHash of each contract that has them (a ZkChain), "changeDelays" lists the change delay of each ZkChain
+       in microseconds, or "none" for a chain that has none (one made under 0.2.0, or whose delay was taken away)."""
 import json, sys
 from pathlib import Path
 
@@ -23,4 +24,5 @@ print(json.dumps({"contracts": {e["contractId"]: e["templateId"].split(":")[0] f
                   "numbers": sorted(e["createArgument"].get("number", "") for e in events),
                   "gasCaps": [e["createArgument"]["gasCap"] for e in events if "gasCap" in e["createArgument"]],
                   "programs": ["/".join(e["createArgument"][k] for k in ("programVK", "rootC", "rulesHash")) for e in events if "programVK" in e["createArgument"]],
+                  "changeDelays": [(e["createArgument"].get("changeDelay") or {"microseconds": "none"})["microseconds"] for e in events if "gasCap" in e["createArgument"]],
                   "records": {e["createArgument"]["number"]: e["templateId"].split(":")[0] for e in events if "number" in e["createArgument"]}}))
