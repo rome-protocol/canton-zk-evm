@@ -97,7 +97,7 @@ fn a_list_of_one_is_the_single_key_config() {
     let s = session();
     let one = Config::with_keys(vec![Key::new(s.program_vk, s.root_c, Release::V1_3_1)]).unwrap();
     let old = Config::new(s.program_vk, s.root_c);
-    assert_eq!(one.keys, old.keys);
+    assert_eq!(one.keys(), old.keys());
     assert_eq!(
         proven_block_hash(&one, &s.abi),
         proven_block_hash(&old, &s.abi)
@@ -158,4 +158,43 @@ fn the_ok_answer_carries_the_pins_of_the_key_that_accepted_the_proof() {
         answer.starts_with(&format!("ok {} {} ", "aa".repeat(32), "bb".repeat(32))),
         "{answer}"
     );
+}
+
+/// A proof check that accepts only a proof under the 1.3.2 PLONK key.
+fn accept_only_1_3_2(release: Release, _: &[u8]) -> Result<bool, zk_verifier::Error> {
+    Ok(release == Release::V1_3_2)
+}
+
+#[test]
+fn the_plonk_key_is_the_one_of_the_entrys_own_release() {
+    let b = reth_block();
+    let (k1, r1) = ([0x11; 32], [0x22; 32]);
+    let (k2, r2) = ([0xaa; 32], [0xbb; 32]);
+    let abi_with = |vk: [u8; 32], rc: [u8; 32]| {
+        let mut abi = abi_for(&b.hash);
+        abi[768..800].copy_from_slice(&vk);
+        abi[800..832].copy_from_slice(&rc);
+        abi
+    };
+    for keys in [
+        vec![
+            Key::new(k1, r1, Release::V1_3_1),
+            Key::new(k2, r2, Release::V1_3_2),
+        ],
+        vec![
+            Key::new(k2, r2, Release::V1_3_2),
+            Key::new(k1, r1, Release::V1_3_1),
+        ],
+    ] {
+        let cfg = Config::with_keys(keys)
+            .unwrap()
+            .with_proof_check(accept_only_1_3_2);
+        // The 1.3.1 entry's pins: the proof does not verify under its release.
+        assert_eq!(
+            proven_block_hash(&cfg, &abi_with(k1, r1)),
+            Err(OTHER_PROGRAM)
+        );
+        // The 1.3.2 entry's pins: accepted.
+        assert_eq!(proven_block_hash(&cfg, &abi_with(k2, r2)), Ok(b.hash));
+    }
 }

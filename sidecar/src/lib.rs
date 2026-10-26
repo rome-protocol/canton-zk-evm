@@ -84,8 +84,8 @@ impl Release {
     }
 }
 
-/// A proof check: whether the 1,344 bytes verify.
-type ProofCheck = fn(&[u8]) -> Result<bool, zk_verifier::Error>;
+/// A proof check: whether the 1,344 bytes verify under the PLONK key of the release.
+type ProofCheck = fn(Release, &[u8]) -> Result<bool, zk_verifier::Error>;
 
 /// The most keys one sidecar lists.
 pub const MAX_KEYS: usize = 4;
@@ -140,7 +140,7 @@ impl Key {
 #[derive(Clone)]
 pub struct Config {
     /// The keys whose proofs are accepted, at most `MAX_KEYS`, no program key twice.
-    pub keys: Vec<Key>,
+    keys: Vec<Key>,
     /// A replacement for the release's proof check, for this crate's own tests (see
     /// `with_proof_check`). It is private so that no caller can replace it.
     check_override: Option<ProofCheck>,
@@ -183,9 +183,14 @@ impl Config {
         })
     }
 
+    /// The listed keys. They can be set only through `for_release` and `with_keys`, which check them.
+    pub fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
     fn check(&self, release: Release, abi: &[u8]) -> Result<bool, zk_verifier::Error> {
         match self.check_override {
-            Some(f) => f(abi),
+            Some(f) => f(release, abi),
             None => zk_verifier::verify(release.key(), abi),
         }
     }
@@ -225,11 +230,19 @@ pub fn proven_block(cfg: &Config, abi: &[u8]) -> Result<(Key, [u8; 32]), &'stati
     if abi.len() != zk_verifier::ABI_LEN {
         return Err("the proof is not 1,344 bytes");
     }
-    let mut verified = [None; 2];
+    // The result of the proof check per release, so each release is checked once.
+    let mut verified: Vec<(Release, bool)> = Vec::with_capacity(MAX_KEYS);
     let mut other_pins = false;
     for key in &cfg.keys {
-        let slot = &mut verified[key.release as usize];
-        if !*slot.get_or_insert_with(|| matches!(cfg.check(key.release, abi), Ok(true))) {
+        let ok = match verified.iter().find(|(r, _)| *r == key.release) {
+            Some(&(_, ok)) => ok,
+            None => {
+                let ok = matches!(cfg.check(key.release, abi), Ok(true));
+                verified.push((key.release, ok));
+                ok
+            }
+        };
+        if !ok {
             continue;
         }
         if abi[768..800] == key.program_vk && abi[800..832] == key.root_c {

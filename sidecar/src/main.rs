@@ -53,11 +53,11 @@ fn run() -> Result<(), String> {
     };
     let server =
         tiny_http::Server::http(&listen).map_err(|e| format!("cannot listen on {listen}: {e}"))?;
-    match cfg.keys[..] {
+    match cfg.keys()[..] {
         [one] => eprintln!("listening on {listen}, ZisK {}", one.release.name()),
         _ => {
             let listed: Vec<String> = cfg
-                .keys
+                .keys()
                 .iter()
                 .map(|k| {
                     format!(

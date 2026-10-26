@@ -9,7 +9,7 @@
 
 use serde_json::Value;
 use sha3::{Digest, Keccak256};
-use zk_sidecar::{rlp, Config};
+use zk_sidecar::{rlp, Config, Release};
 
 pub fn keccak(b: &[u8]) -> [u8; 32] {
     Keccak256::digest(b).into()
@@ -322,7 +322,7 @@ pub fn committed_hash(abi: &[u8]) -> [u8; 32] {
 
 /// A proof check that accepts everything, so the rest of `verify` can be tested with a block that
 /// has no proof of its own.
-pub fn accept_any(_: &[u8]) -> Result<bool, zk_verifier::Error> {
+pub fn accept_any(_: Release, _: &[u8]) -> Result<bool, zk_verifier::Error> {
     Ok(true)
 }
 

@@ -105,6 +105,7 @@ fn a_list_that_is_wrong_stops_it_before_it_listens() {
         ),
         (vec!["--key", "zz:zz"], "not 64 lowercase hex"),
         (vec!["--key", &one, "--key", "1234"], "is not <programVK>"),
+        // `--key` takes the next flag, `--listen`, as its value.
         (vec!["--key"], "is not <programVK>"),
     ];
     let bad_release = format!("{}:{KEY}:1.2.0", "00".repeat(32));
@@ -130,4 +131,14 @@ fn the_list_cannot_be_mixed_with_the_single_key_options() {
         assert!(err.contains("cannot be mixed"), "{extra:?}: {err}");
         assert!(!err.contains("cannot listen"), "{extra:?}: {err}");
     }
+}
+
+#[test]
+fn a_key_option_with_no_value_is_the_usage_message() {
+    let out = Command::new(env!("CARGO_BIN_EXE_zk-sidecar"))
+        .arg("--key")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage"));
 }

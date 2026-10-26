@@ -171,7 +171,7 @@ fn each_releases_proofs_are_accepted_under_its_own_release_and_refused_under_the
 fn a_chain_without_a_named_release_is_on_1_3_1() {
     let p = verifier_proof("1.3.1", 14);
     assert_eq!(
-        Config::new(p.program_vk, p.root_c).keys[0].release,
+        Config::new(p.program_vk, p.root_c).keys()[0].release,
         Release::V1_3_1
     );
     assert_eq!(Release::default(), Release::V1_3_1);
