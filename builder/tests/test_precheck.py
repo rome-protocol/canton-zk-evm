@@ -39,7 +39,7 @@ class Case(unittest.TestCase):
 
 class TestVerdicts(Case):
     def test_pass(self):
-        v = self.verdict("steps=1,000".replace(",", ""))
+        v = self.verdict("steps=1000")
         self.assertTrue(v.ok)
         self.assertEqual((v.steps, v.codes, v.code_bytes), (1000, 1, 1))
         self.assertGreater(v.input_bytes, 0)
@@ -73,7 +73,7 @@ class TestVerdicts(Case):
         self.assertEqual(self.emulated(), 0)
 
     def test_the_same_code_twice_counts_once(self):
-        self.assertTrue(self.verdict(codes=("60", "0x60".removeprefix("0x"), "61", "62")).ok)
+        self.assertTrue(self.verdict(codes=("60", "60", "61", "62")).ok)
 
     def test_over_code_bytes(self):
         v = self.verdict(codes=("ab" * 60, "cd" * 60))
