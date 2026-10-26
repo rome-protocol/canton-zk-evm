@@ -47,7 +47,7 @@
     one user and each printing one JSON line. Nothing else is touched. The chain's Advance accepts only a block proven under the pair of keys the
     chain contract holds, so the change takes effect at the first block after the accept; the same two steps with the old values put them back.
     Each value is lowercase hex of 64 digits, without 0x.
-      propose  the operator's token: creates a ProgramProposal for the chain's one contract. Nothing is done if the same proposal is there already.
+      propose  the operator's token (which acts for the operator and the gateway party): creates a ProgramProposal for the chain's one contract. Nothing is done if the same proposal is there already.
       accept   the confirmer's token: exercises AcceptProgram on the proposal for exactly these three values, given the chain's current contract.
     propose refuses a chain that holds these values already; accept on such a chain prints "alreadyAccepted": true. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
     again after, as for the gas cap. A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for other values is
@@ -369,15 +369,20 @@ def submit_step(ledger, command: dict, step: str) -> None:
         raise SystemExit(f"the {step} could not be sent: {err.reason}") from None
 
 
-def step_chain(url: str, step: str) -> tuple:
-    """The ledger of the step's user (the operator for a proposal, the confirmer for an acceptance), the chain's one contract and the parties."""
+def step_chain(url: str, step: str, with_gateway: bool = False) -> tuple:
+    """The ledger of the step's user (the operator for a proposal, the confirmer for an acceptance), the chain's one contract and the parties.
+    With `with_gateway` the proposal is made as the operator's user acts in the chain's own proposal: for the operator and the gateway party."""
     parties = propose.read_env_file(Path(os.environ.get("CZE_STATE_DIR", ROOT / "state")) / "canton" / "parties.env")
-    missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") if not parties.get(k)]
+    missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") + (("GATEWAY_PARTY",) if with_gateway and step == "propose" else ()) if not parties.get(k)]
     if missing:
         raise SystemExit(f"parties.env in the state directory does not name {missing}: run setup.py first")
-    # The proposal is the operator's alone, so this acts for the operator only (not for the gateway party that the chain's own user also acts for).
-    ledger = (propose.Ledger(url, propose.user_id("operator"), parties["OPERATOR_PARTY"], token=propose.role_token("operator")) if step == "propose"
-              else propose.confirmer_ledger(url, parties))
+    if step == "propose" and with_gateway:
+        ledger = propose.operator_ledger(url, parties)
+    elif step == "propose":
+        # A gas cap proposal is the operator's alone, so this acts for the operator only (not for the gateway party that the chain's own user also acts for).
+        ledger = propose.Ledger(url, propose.user_id("operator"), parties["OPERATOR_PARTY"], token=propose.role_token("operator"))
+    else:
+        ledger = propose.confirmer_ledger(url, parties)
     chains = ledger.active("ZkChain")
     if len(chains) != 1:
         raise SystemExit(f"expected one chain on this participant, found {len(chains)}")
@@ -428,12 +433,12 @@ def check_program(values: dict) -> None:
 
 
 def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
-    """ProgramProposal by the operator, AcceptProgram by the confirmer: the chain's program key, ZisK root and rules hash become `new`."""
+    """ProgramProposal by the operator and the gateway (the operator's user acts for both), AcceptProgram by the confirmer: the chain's program key, ZisK root and rules hash become `new`."""
     check_program(new)
-    ledger, chain = step_chain(url, step)
+    ledger, chain = step_chain(url, step, with_gateway=True)
     current = {field: chain[field] for field, _ in PROGRAM_FIELDS}
     proposals = [p for p in ledger.active("ProgramProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
-                 and p.get("confirmer") == chain["confirmer"]]
+                 and p.get("confirmer") == chain["confirmer"] and p.get("gateway") == chain["gateway"]]
     mine = [p for p in proposals if all(p.get("new" + f[0].upper() + f[1:]) == new[f] for f, _ in PROGRAM_FIELDS)]
     result = {"step": step, "chainId": chain["chainId"], "current": current, "new": new, "dryRun": dry_run}
     if step == "propose":
@@ -444,7 +449,7 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
                              "otherwise the operator archives it (the Archive choice of the ProgramProposal, with the operator's token) and proposes again")
         if not mine and not dry_run:
             submit_step(ledger, {"CreateCommand": {"templateId": propose.PKG + "ProgramProposal", "createArguments": {
-                "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"],
+                "operator": chain["operator"], "confirmer": chain["confirmer"], "gateway": chain["gateway"], "chainId": chain["chainId"],
                 **{"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}}, "propose")
         return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
     if not mine:

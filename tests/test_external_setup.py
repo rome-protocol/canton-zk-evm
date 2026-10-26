@@ -546,7 +546,8 @@ class Setup(unittest.TestCase):
         proposed = self.program_step("propose")
         self.assertEqual((proposed["submitted"], proposed["alreadyProposed"]), (True, False))
         [(command, acts)] = self.sent()[before:]
-        self.assertEqual(acts, ["ostia-operator::1220fp"])
+        self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])   # the operator's user acts for the operator and the gateway
+        self.assertEqual(command["CreateCommand"]["createArguments"]["gateway"], "ostia-gateway::1220fp")
         self.assertEqual({k: v for k, v in command["CreateCommand"]["createArguments"].items() if k.startswith("new")},
                          {"newProgramVK": "ab" * 32, "newRootC": "cd" * 32, "newRulesHash": "ef" * 32})
         self.assertEqual(self.chain_program(), old)   # the proposal alone changes nothing

@@ -734,7 +734,9 @@ testSetGasCapNeedsTheOperatorAndTheConfirmer = do
   submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) set
   submitMustFail (actAs f.gateway) set
   submitMustFail (actAs [f.operator, f.gateway]) set
-  chain <- submit (actAs [f.operator, f.confirmer]) set
+  submitMustFail (actAs [f.operator, f.confirmer]) set   -- without the gateway
+  submitMustFail (actAs [f.confirmer, f.gateway]) set
+  chain <- submit (actAs [f.operator, f.confirmer, f.gateway]) set
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.gasCap) === (chain, 60000000)
 
@@ -823,8 +825,8 @@ testALimitOverTheOldCapCommitsAfterTheRaise = do
 -- The operator proposes the three values and the confirmer accepts them on `chain`.
 switchProgram : F -> ContractId ZkChain -> Text -> Text -> Text -> Script (ContractId ZkChain)
 switchProgram f chain vk root rules = do
-  p <- submit f.operator $ createCmd ProgramProposal with
-    operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = vk; newRootC = root; newRulesHash = rules
+  p <- submit (actAs [f.operator, f.gateway]) $ createCmd ProgramProposal with
+    operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = vk; newRootC = root; newRulesHash = rules
   submit f.confirmer $ exerciseCmd p AcceptProgram with chain
 
 -- Three distinct values: each lands in its own field, and nothing else changes.
@@ -862,7 +864,9 @@ testSetProgramNeedsTheOperatorAndTheConfirmer = do
   submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) set
   submitMustFail (actAs f.gateway) set
   submitMustFail (actAs [f.operator, f.gateway]) set
-  chain <- submit (actAs [f.operator, f.confirmer]) set
+  submitMustFail (actAs [f.operator, f.confirmer]) set   -- without the gateway
+  submitMustFail (actAs [f.confirmer, f.gateway]) set
+  chain <- submit (actAs [f.operator, f.confirmer, f.gateway]) set
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.programVK) === (chain, stubRoot)
 
@@ -871,17 +875,23 @@ testProgramProposalAuthorizationAndChain : Script ()
 testProgramProposalAuthorizationAndChain = do
   f <- fixture
   let proposal = ProgramProposal with
-        operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+      both = actAs [f.operator, f.gateway]
   submitMustFail f.confirmer $ createCmd proposal
   submitMustFail f.builder $ createCmd proposal
-  p <- submit f.operator $ createCmd proposal
+  submitMustFail f.operator $ createCmd proposal   -- the gateway has not consented
+  submitMustFail f.gateway $ createCmd proposal   -- nor the operator
+  p <- submit both $ createCmd proposal
   submitMustFail f.operator $ exerciseCmd p AcceptProgram with chain = f.chain
   submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptProgram with chain = f.chain
   submitMustFail (actAs f.gateway <> readAs [f.operator, f.confirmer]) $ exerciseCmd p AcceptProgram with chain = f.chain
-  other <- submit f.operator $ createCmd proposal with chainId = 770102
+  other <- submit both $ createCmd proposal with chainId = 770102
   submitMustFail f.confirmer $ exerciseCmd other AcceptProgram with chain = f.chain
-  other2 <- submit f.confirmer $ createCmd proposal with operator = f.confirmer
+  other2 <- submit (actAs [f.confirmer, f.gateway]) $ createCmd proposal with operator = f.confirmer
   submitMustFail f.confirmer $ exerciseCmd other2 AcceptProgram with chain = f.chain
+  -- a proposal that names another gateway (which signs it; the chain's gateway does not) is refused on the chain's contract
+  other3 <- submit (actAs [f.operator, f.builder]) $ createCmd proposal with gateway = f.builder
+  submitMustFail f.confirmer $ exerciseCmd other3 AcceptProgram with chain = f.chain
   -- a proposal is not accepted on a contract that is no longer the chain's current one
   _ <- raiseCap f f.chain 60000000
   submitMustFail f.confirmer $ exerciseCmd p AcceptProgram with chain = f.chain
@@ -891,13 +901,16 @@ testProgramValuesMustBeHex : Script ()
 testProgramValuesMustBeHex = do
   f <- fixture
   let proposal = ProgramProposal with
-        operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+        operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
+      all3 = actAs [f.operator, f.confirmer, f.gateway]
+      both = actAs [f.operator, f.gateway]
   forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb"] $ \bad -> do
-    submitMustFail f.operator $ createCmd proposal with newProgramVK = bad
-    submitMustFail f.operator $ createCmd proposal with newRootC = bad
-    submitMustFail f.operator $ createCmd proposal with newRulesHash = bad
-    submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd f.chain SetProgram with
-      newProgramVK = bad; newRootC = stubRoot; newRulesHash = stubRoot
+    submitMustFail both $ createCmd proposal with newProgramVK = bad
+    submitMustFail both $ createCmd proposal with newRootC = bad
+    submitMustFail both $ createCmd proposal with newRulesHash = bad
+    submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = bad; newRootC = stubRoot; newRulesHash = stubRoot
+    submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = bad; newRulesHash = stubRoot
+    submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = bad
 
 -- Advance holds a block to the keys in the contract: the old pair before the switch, the new pair after, and the old pair again after
 -- the switch back. This is the rollback before a fork time.

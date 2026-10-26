@@ -132,15 +132,15 @@ template ZkChain
         assertMsg "the gas cap may not be over maxGasCap" (newCap <= maxGasCap)
         create this with gasCap = newCap
 
-    -- The program, the ZisK release and the rules the chain accepts blocks under are replaced together, by the operator and the
-    -- confirmer together; see `ProgramProposal`. Advance refuses a block proven under any other pair of keys, and the same choice
+    -- The program, the ZisK release and the rules the chain accepts blocks under are replaced together, by the operator, the
+    -- confirmer and the gateway together; see `ProgramProposal`. Advance refuses a block proven under any other pair of keys, and the same choice
     -- sets the old values back, so a change can be undone.
     choice SetProgram : ContractId ZkChain
       with
         newProgramVK : Text
         newRootC : Text
         newRulesHash : Text
-      controller operator, confirmer
+      controller operator, confirmer, gateway
       do
         assertMsg "the new program key, ZisK root and rules hash must each be 64 lowercase hex digits" (all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash])
         create this with programVK = newProgramVK; rootC = newRootC; rulesHash = newRulesHash
@@ -202,18 +202,21 @@ template GasCapProposal
         assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer)
         exercise chain SetGasCap with newCap
 
--- The operator proposes a new program key, ZisK root and rules hash; the confirmer accepts them on the chain's current contract,
--- the same way as `GasCapProposal`. The confirmer is expected to compare the three values with its own sidecar and build first.
+-- The operator proposes a new program key, ZisK root and rules hash, and the gateway consents to it, as it does to the chain itself;
+-- the confirmer accepts them on the chain's current contract, the same way as `GasCapProposal`. The operator's
+-- Ledger API user acts for the operator and the gateway party, so the proposal needs no further step. The confirmer is expected to
+-- compare the three values with its own sidecar and build first.
 template ProgramProposal
   with
     operator : Party
     confirmer : Party
+    gateway : Party
     chainId : Int
     newProgramVK : Text
     newRootC : Text
     newRulesHash : Text
   where
-    signatory operator
+    signatory operator, gateway
     observer confirmer
     ensure chainId > 0 && all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash]
 
@@ -222,7 +225,7 @@ template ProgramProposal
       controller confirmer
       do
         c <- fetch chain
-        assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer)
+        assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer && c.gateway == gateway)
         exercise chain SetProgram with newProgramVK; newRootC; newRulesHash
 
 -- A contract of a leg must name this chain's id, operator and confirmer. Authority would not always refuse others: the
