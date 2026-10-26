@@ -392,6 +392,7 @@ class FakeLedger:
         self.garbage_reply = False   # Advance is answered with bytes that are not an HTTP reply (http.client.BadStatusLine)
         self.head_fails_after_submit = False   # once Advance has been submitted, reading the ZkChain contract fails (HTTP 500)
         self.head = {"headNumber": str(HEAD_NUMBER), "headHash": HEAD_HASH[2:]}
+        self.chain_extra: dict = {}   # more fields of the ZkChain contract, e.g. pausedUntil, withdrawalQuota, quotaWindow, withdrawn (a 0.2.0 contract has none)
         # The ZkChain contracts of the builder: the ids that can be exercised now. Each commit archives the contract it exercised and
         # creates a new one with a new id (as Canton does), and a command on an archived or an unknown id is refused.
         self.cids = ["chain-cid"] if chains == 1 else [f"chain-cid-{i}" for i in range(chains)]
@@ -457,7 +458,7 @@ class FakeLedger:
 
     def chain_args(self):
         return {"operator": "op", "confirmer": "co", "gateway": "gw", "builder": BUILDER, "reader": "rd", "chainId": "770101", "gatewayAddress": GATEWAY,
-                "programVK": "11" * 32, "rootC": "22" * 32, "rulesHash": "33" * 32, "gasCap": str(self.gas_cap), **self.head}
+                "programVK": "11" * 32, "rootC": "22" * 32, "rulesHash": "33" * 32, "gasCap": str(self.gas_cap), **self.head, **self.chain_extra}
 
     def _allocation_of(self, allocation):
         """Who the allocation is between and what it holds, by default: what the terms or the deposit request that point at it say."""

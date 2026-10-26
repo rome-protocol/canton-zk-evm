@@ -16,7 +16,7 @@ back too, where it had moved). One JSON line on stdout says which, whatever the 
 """
 import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from websockets.sync.client import connect
@@ -712,6 +712,82 @@ def waiting_legs(left_out: list) -> bool:
     return any(x["reason"] == LEG_WAITS for x in left_out)
 
 
+# ---- the pause and the withdrawal quota of the chain contract (Daml 0.3.0) -----------------------------------------------------
+# While the legs are paused, or when a block's withdrawals would take an instrument over the quota, Canton refuses the Advance of a block
+# that carries a leg. The builder reads both from the chain contract it cuts the block on and leaves those legs out, so such a block is never
+# proven. A chain contract of an earlier version has none of the fields, and nothing here applies to it.
+LEDGER_MARGIN = timedelta(seconds=5)   # the builder's clock is not Canton's: a pause is treated as in force a few seconds past its end, a tally as counted a few seconds longer
+LIMIT_REFUSALS = ("the legs are paused until", "are over the withdrawal quota")   # what Canton says when it refuses a block for them
+
+
+class Said(str):
+    """A reason for leaving a transaction out that is already a whole sentence."""
+
+
+def stamp(t: datetime) -> str:
+    return t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def ledger_time(text, what: str) -> datetime:
+    try:
+        return datetime.fromisoformat(text)
+    except (TypeError, ValueError) as e:
+        raise BuilderError(f"the chain record's {what} is not a time: {text!r}") from e
+
+
+def pause_in_force(chain: dict, now: datetime) -> datetime | None:
+    """The end of the pause that keeps the legs out of a block now, or None."""
+    if not chain.get("pausedUntil"):
+        return None
+    until = ledger_time(chain["pausedUntil"], "pausedUntil")
+    return until if now < until + LEDGER_MARGIN else None
+
+
+def instrument_name(token: dict) -> str:
+    return f"{token['instrumentId']['admin']}/{token['instrumentId']['id']}"
+
+
+def quota_blocked(chain: dict, canton: "Canton", events: list, now: datetime) -> list:
+    """The withdrawals of the block that Canton would refuse for the withdrawal quota, each with its reason (the events that are left out). A
+    quota needs the window too; the withdrawals that still count are the chain's `withdrawn` entries not yet past `countedUntil`."""
+    if chain.get("withdrawalQuota") is None or chain.get("quotaWindow") is None:
+        return []
+    limit = base_units(chain["withdrawalQuota"])
+    if limit is None:
+        raise BuilderError(f"the chain record's withdrawalQuota is not an amount: {chain['withdrawalQuota']!r}")
+    live: dict = {}   # instrument -> [(counted until, base units)], the earliest first
+    for t in chain.get("withdrawn") or []:
+        amount = base_units(t.get("tallyAmount"))
+        if amount is None:
+            raise BuilderError(f"the chain record's withdrawn amount is not an amount: {t.get('tallyAmount')!r}")
+        until = ledger_time(t.get("countedUntil"), "countedUntil")
+        if until + LEDGER_MARGIN > now:
+            live.setdefault(t.get("tallyToken"), []).append((until, amount))
+    taking: dict = {}   # instrument -> what the legs of this block that stay in take
+    blocked = []
+    for event in events:
+        if event.kind != WITHDRAWAL:
+            continue
+        name = instrument_name(canton.token(event))
+        counted = sorted(live.get(name, []))
+        if sum(a for _, a in counted) + taking.get(name, 0) + event.amount <= limit:
+            taking[name] = taking.get(name, 0) + event.amount
+            continue
+        over = sum(a for _, a in counted) + taking.get(name, 0) + event.amount - limit   # what must stop counting before it fits
+        free_at = None
+        for until, amount in counted:
+            over -= amount
+            if over <= 0:
+                free_at = until
+                break
+        if free_at is None:
+            blocked.append((event, Said(f"the withdrawal is over the whole withdrawal quota of {name}" if event.amount > limit
+                                        else f"the withdrawal quota of {name} is used up by earlier withdrawals of this block")))
+        else:
+            blocked.append((event, Said(f"the withdrawal quota of {name} is used up until {stamp(free_at + LEDGER_MARGIN)}")))
+    return blocked
+
+
 def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str) -> str | None:
     """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock."""
     if spec is None:
@@ -1209,7 +1285,15 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         packing = reth.packed   # how this build chose its transactions: the last one is the block's
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
-        legs, missing = match_legs(Canton(Ledger(cfg), chain, utcnow()), events) if events else ([], [])
+        now = utcnow()
+        paused = pause_in_force(chain, now) if events else None
+        canton = Canton(Ledger(cfg), chain, now)
+        if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
+            legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
+        else:
+            legs, missing = match_legs(canton, events) if events else ([], [])
+            if events and not missing:   # every leg is fine on its own: the withdrawals are held to the quota
+                missing = quota_blocked(chain, canton, events, now)
         if defer_legs and events:   # a leg with a Canton side waits; one with none is left out with its own reason
             bad = {event.tx for event, _ in missing}
             missing = [*missing, *((event, LEG_WAITS) for event in events if event.tx not in bad)]
@@ -1230,7 +1314,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         for event, reason in missing:
             if event.tx not in exclude:
                 exclude.add(event.tx)
-                left_out.append({"transaction": event.tx, "reason": LEG_WAITS if reason == LEG_WAITS else f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
+                left_out.append({"transaction": event.tx, "reason": reason if isinstance(reason, Said) or reason == LEG_WAITS else f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         rebuilds += 1
         final = settled() if settled else head
         reth.forkchoice(head, final, final)   # back to the block this one is built on, never below the last one Canton committed
@@ -2285,6 +2369,11 @@ class Producer:
         """Canton refused the block. A transaction in two refused blocks in a row is suspected. A lone suspect is held back for the
         cool-down. Several are tried one block each (the others kept out of it) before any is held back, so an honest transaction that
         was only next to a bad one is not held back with it."""
+        if any(m in (result.get("reason") or "") for m in LIMIT_REFUSALS):
+            # The pause began, or the quota was taken up, after the chain was read: nothing in the block is at fault. The next block is cut
+            # on the new chain contract and leaves the legs out.
+            self.previous_kept = set()
+            return
         kept = {h.lower() for h in result.get("keptTransactions", [])}
         if self.probe is not None:   # the block held this suspect and no other: it is the one
             if self.probe in kept:
