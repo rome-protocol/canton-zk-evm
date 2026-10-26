@@ -79,6 +79,22 @@ class Legs(Modes):
     def test_a_leg_waits_for_the_block_in_flight_at_three(self):
         self.check_waits_then_goes_in_on_the_head(3)
 
+    def test_a_leg_left_out_goes_in_on_the_next_cut_when_the_block_in_flight_is_refused(self):
+        """The wait for the blocks in flight ends with no commit: the leg is not held for the pause of a pool that holds nothing includable."""
+        s, p, leg = self.waiting_leg(2)
+        self.drive(p, lambda: any(x.get("skipped") for x in self.reports))
+        self.assertTrue(p.leg_wait)
+        self.assertIsNone(p.held, "a block that held only a leg that waits is not looked at again after a pause")
+        s.ledger.refuse = "the sidecar refused the proof"
+        self.drive(p, lambda: p.refusals_in_row == 1 and not p.flight)
+        s.ledger.refuse = None
+        self.assertEqual(self.committed(), [])
+        at = self.now[0]
+        self.drive(p, lambda: any(x.get("legTransactions") == [leg["hash"]] and x.get("committed") for x in self.reports), limit=20)
+        self.assertEqual(self.now[0], at, "the fake clock never passed RECHECK_BASE: the leg went in on the next cut, not after the pause")
+        self.assertEqual(self.in_pool(s), set())
+        self.assertFalse(p.leg_wait)
+
     def test_a_restart_right_after_recovers_the_block_in_flights_transactions(self):
         s, p, leg = self.waiting_leg(2)
         self.drive(p, lambda: any(x.get("skipped") for x in self.reports))
