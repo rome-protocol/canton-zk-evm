@@ -113,9 +113,13 @@ class OutOfOrder(Depth):
         self.assertEqual(self.committed(), [n0 + i for i in range(k)])
         took = {r["number"]: r["proveSeconds"] for r in self.reports if r.get("committed")}
         self.assertTrue(all(took[n0 + i] < took[n0] for i in range(1, k)), f"the first block's proof was the slowest: {took}")
-        # the next block's Advance is sent only after the answer to the one before
+        # each block is submitted, then answered, in block order. The next block's Advance may be written down before the line of the answer to the
+        # one before when that answer's paid traffic is read after it (the answer line is stamped with the time Canton answered); `sends_in_order`
+        # in test_submit_thread.py pins that the Canton call itself waits for the answer.
         events = [(x["event"], x["attempt"]) for x in self.lines_in_order(s) if x["event"] in ("submitted", "answered")]
-        self.assertEqual(events, [(e, i + 1) for i in range(k) for e in ("submitted", "answered")])
+        self.assertEqual([a for e, a in events if e == "submitted"], list(range(1, k + 1)))
+        self.assertEqual([a for e, a in events if e == "answered"], list(range(1, k + 1)))
+        self.assertTrue(all(events.index(("submitted", i)) < events.index(("answered", i)) for i in range(1, k + 1)))
         self.assertEqual(self.refused(s), 0)
         self.assert_final_never_back(s)
         self.assertEqual((s.reth.head, self.finals(s)[-1]), (self.reports[-1]["blockHash"],) * 2)   # final is the newest, and so is the head
@@ -545,12 +549,12 @@ class Failures(Depth):
             self.drive(p, lambda: len(self.lines(s, "cut")) == i + 1)
         s.reth.pool[self.SENDERS[k - 1]] = [tx(self.SENDERS[k - 1], 0)]
         if refused:   # reth is down from the answer of Canton on
-            real_submit = b.submit
+            real_submit = b.settle_reply
             def submit(*a, **kw):
                 result = real_submit(*a, **kw)
                 down["on"] = True
                 return result
-            patch = mock.patch.object(b, "submit", submit)
+            patch = mock.patch.object(b, "settle_reply", submit)
         else:
             real_finish = b.finish_proof
             def finish(cfg, built, running, attempt=None):

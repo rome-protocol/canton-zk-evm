@@ -1355,27 +1355,48 @@ def write_prover_lines(pool: Pool, attempt: "Attempt") -> None:
             attempt.journal.event("prover", attempt=attempt.seq, prover=change["name"], state=change["state"], reason=change["reason"])
 
 
-def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None,
-           tip: str | None = None) -> dict:
-    """Stage three. Sends the Advance with the proof and the gateway's proofs, and settles the answer: commit (reth's safe and finalized move to the block,
-    its head to `tip`, the newest block in flight, which is the block itself when it is alone), refusal or
-    not taken (reth goes back to Canton's head and the transactions return to the pool), or unknown (nothing moves)."""
-    attempt = attempt or Attempt(None, 1)
-    n, chain, head, block_hash, header, txs, legs = built.n, built.chain, built.head, built.block_hash, built.header, built.txs, built.legs
-    chosen, left_out, leg_txs, lost, work = built.chosen, built.left_out, built.leg_txs, built.lost, built.work
-    account_nodes, storage_nodes = built.account_nodes, built.storage_nodes
-    proof, prove_seconds = proven.proof, proven.seconds
-    argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proof,
-                "gatewayAccountNodes": account_nodes, "gatewayStorageNodes": storage_nodes, "legs": legs}
-    argument_text = json.dumps(argument)
-    (work / "advance.json").write_text(argument_text)   # kept: the argument of the Advance, as it was sent
-    command_id = f"ostia-{int(chain['chainId'])}-{n}-{block_hash[2:18]}-{attempt.seq}"   # the same block hash and attempt give the same id
-    report = {"number": n, "blockHash": block_hash, "legTransactions": leg_txs, "leftOut": left_out, "proveSeconds": prove_seconds,
-              "commandId": command_id}
-    if lost:
-        report["lostTransactions"] = lost
+@dataclass
+class Submission:
+    """An Advance that is ready to send: the argument, the command that carries it, and what was read and written down before it goes."""
+    n: int
+    built: Built
+    proven: Proven
+    attempt: "Attempt"
+    argument: dict
+    command_id: str
+    report: dict
+    resolve: dict       # the record that is on disk while the command is in doubt
+    begin: int          # the ledger end before the command: its own completion is after it
+    watch: bool         # the participant's traffic is read around the Advance
+    traffic_before: "dict | None"
 
-    reason, rejected, not_taken, answer = None, False, False, {}
+
+@dataclass
+class Reply:
+    """What the Advance got back. `send_advance` fills it from HTTP calls alone, so it can run in a thread."""
+    answer: dict = field(default_factory=dict)
+    reason: "str | None" = None
+    rejected: bool = False
+    not_taken: bool = False
+    found: "dict | None" = None          # the command's own completion, read when the Advance got no usable answer
+    advance_seconds: float = 0.0
+    answered_at: float = 0.0
+    traffic_after: "dict | None" = None
+
+
+def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attempt: "Attempt") -> Submission:
+    """The first half of the third stage, for the thread that owns reth, the journal and the files: writes the argument and the command to disk and
+    the `submitted` line, and reads the traffic before. Nothing has been sent to Canton yet."""
+    n, chain, block_hash, header, txs, legs = built.n, built.chain, built.block_hash, built.header, built.txs, built.legs
+    argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proven.proof,
+                "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs}
+    argument_text = json.dumps(argument)
+    (built.work / "advance.json").write_text(argument_text)   # kept: the argument of the Advance, as it was sent
+    command_id = f"ostia-{int(chain['chainId'])}-{n}-{block_hash[2:18]}-{attempt.seq}"   # the same block hash and attempt give the same id
+    report = {"number": n, "blockHash": block_hash, "legTransactions": built.leg_txs, "leftOut": built.left_out, "proveSeconds": proven.seconds,
+              "commandId": command_id}
+    if built.lost:
+        report["lostTransactions"] = built.lost
     # The ledger end before the submit: the command's own completion, whenever it comes, is after it.
     begin = Ledger(cfg).end()
     # The command is on disk before it is sent: a process killed during the submit, an interrupt or a failing disk then leave the record
@@ -1386,37 +1407,59 @@ def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs:
     attempt.event("submitted", command_id=command_id, argument_bytes=len(argument_text.encode()), **pinned(cfg))
     # The participant's traffic is read around the Advance only for a block that is alone in flight: with another one, whose bytes are whose is not known.
     watch = attempt.journal is not None and attempt.in_flight == 0
-    traffic_before = read_traffic(cfg) if watch else None
+    return Submission(n, built, proven, attempt, argument, command_id, report, resolve, begin, watch, read_traffic(cfg) if watch else None)
+
+
+def send_advance(cfg: Config, sub: Submission) -> Reply:
+    """The middle of the third stage: sends the Advance and, when it got no usable answer, looks for the command's own completion. HTTP calls alone:
+    this touches neither reth, nor the journal, nor a file, so it runs in a thread of its own."""
+    reply = Reply()
     advancing = time.monotonic()
     try:
-        answer = Ledger(cfg).advance(chain, argument, command_id)
+        reply.answer = Ledger(cfg).advance(sub.built.chain, sub.argument, sub.command_id)
     except urllib.error.HTTPError as e:
         with e:
             text = e.read().decode(errors="replace")
-        reason, rejected, not_taken = text[:600], definite_rejection(e.code, text), e.code in NEVER_TAKEN_CODES
+        reply.reason, reply.rejected, reply.not_taken = text[:600], definite_rejection(e.code, text), e.code in NEVER_TAKEN_CODES
     except (OSError, ValueError, http.client.HTTPException) as e:   # a dropped connection, a timeout, a reply that is not HTTP or not JSON: the reply is lost
-        reason = f"no usable reply from Canton: {e}"
-        not_taken = isinstance(e, ConnectionRefusedError) or isinstance(getattr(e, "reason", None), ConnectionRefusedError)
-    report["advanceSeconds"] = round(time.monotonic() - advancing, 3)
-    answered_at = attempt.now()   # when Canton answered: the reads below take time that is not part of the answer
-    traffic_after = read_traffic(cfg) if watch else None
-    traffic = traffic_used(traffic_before, traffic_after)
-
-    def answered(outcome: str, **more) -> None:
-        attempt.event("answered", at=answered_at, outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, traffic_before=traffic_before, traffic_after=traffic_after, **more)
-
-    if reason is not None and not rejected and not not_taken:
+        reply.reason = f"no usable reply from Canton: {e}"
+        reply.not_taken = isinstance(e, ConnectionRefusedError) or isinstance(getattr(e, "reason", None), ConnectionRefusedError)
+    reply.advance_seconds = round(time.monotonic() - advancing, 3)
+    reply.answered_at = sub.attempt.now()   # when Canton answered: the reads below take time that is not part of the answer
+    reply.traffic_after = read_traffic(cfg) if sub.watch else None
+    if reply.reason is not None and not reply.rejected and not reply.not_taken:
         # No answer: the command may still commit, so neither Canton's head nor reth's own head says anything yet. Its own completion
         # does, and until that shows (or the window it can commit in has passed) nothing is built and reth stays where it is.
         try:
-            found = Ledger(cfg).completion(command_id, begin)
+            reply.found = Ledger(cfg).completion(sub.command_id, sub.begin)
         except (OSError, ValueError, http.client.HTTPException) as e:
-            found, reason = None, f"{reason}; and the completion of the command could not be read ({e})"
+            reply.found, reply.reason = None, f"{reply.reason}; and the completion of the command could not be read ({e})"
+    return reply
+
+
+def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown_pairs: list | None = None, tip: str | None = None,
+                 after_commit=None) -> dict:
+    """The last half of the third stage, for the thread that owns reth, the journal and the files. Settles the answer: commit (reth's safe and
+    finalized move to the block, its head to `tip`, the newest block in flight, which is the block itself when it is alone), refusal or
+    not taken (reth goes back to Canton's head and the transactions return to the pool), or unknown (nothing moves).
+    `after_commit(reth)` runs once a commit is booked and its record is gone, before the paid traffic is read (a read of about a second): the
+    next block's Advance can go first. The `answered` line of such a block is written after that read."""
+    attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs
+    report, command_id, answer, reason, rejected, not_taken = sub.report, sub.command_id, reply.answer, reply.reason, reply.rejected, reply.not_taken
+    report["advanceSeconds"] = reply.advance_seconds
+    traffic_before, traffic_after = sub.traffic_before, reply.traffic_after
+    traffic = traffic_used(traffic_before, traffic_after)
+
+    def answered(outcome: str, **more) -> None:
+        attempt.event("answered", at=reply.answered_at, outcome=outcome, seconds=report["advanceSeconds"], traffic_bytes=traffic, traffic_before=traffic_before, traffic_after=traffic_after, **more)
+
+    if reason is not None and not rejected and not not_taken:
+        found = reply.found
         if found is None:
             if unknown_pairs is not None:
                 unknown_pairs.extend(reth.imported)
             answered("unknown", reason=reason[:600])
-            return {"committed": None, **report, "resolve": resolve,
+            return {"committed": None, **report, "resolve": sub.resolve,
                     "reason": f"{reason}; the command has no completion yet, so it is not known whether the block committed",
                     "keptTransactions": [t["hash"] for t in chosen]}
         if found["committed"]:
@@ -1444,17 +1487,36 @@ def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs:
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen]}
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))
-    if traffic is None and not cfg.traffic_url and command_id and type(report["completionOffset"]) is int:   # no traffic state is configured to measure from (a participant on the Canton Network has none): what the completion says it paid. With a state configured and this block's delta unknown, traffic stays null: one run does not mix two measures
+    # No traffic state is configured to measure from (a participant on the Canton Network has none): what the completion says it paid. With a state
+    # configured and this block's delta unknown, traffic stays null: one run does not mix two measures.
+    paid = traffic is None and not cfg.traffic_url and command_id and type(report["completionOffset"]) is int
+    late = bool(paid and after_commit is not None)   # the read waits for the next block's Advance to start
+    if paid and not late:
         traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
     if traffic is not None:
         report["trafficBytes"] = traffic
-    answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
+    if not late:
+        answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
     reth.imported = []   # Canton committed them: never send them to the pool again
     reth.forkchoice(tip or block_hash, block_hash, block_hash)
     attempt.event("final_seen", number=n)
     clear_saved(cfg, n)
     clear_unresolved(cfg)   # last: should reth's move above fail, the record stays and the next start settles the block as committed
+    if after_commit is not None:
+        after_commit(reth)
+    if late:
+        traffic = Ledger(cfg).paid_traffic(command_id, report["completionOffset"])
+        if traffic is not None:
+            report["trafficBytes"] = traffic
+        answered("committed", update_id=report["updateId"], completion_offset=report["completionOffset"])
     return {"committed": True, **report, "transactions": [t["hash"] for t in chosen], "legs": len(legs)}
+
+
+def submit(cfg: Config, reth: Reth, built: Built, proven: Proven, unknown_pairs: list | None = None, attempt: "Attempt | None" = None,
+           tip: str | None = None) -> dict:
+    """Stage three, in one thread: prepare, send, settle (see those)."""
+    sub = prepare_submit(cfg, reth, built, proven, attempt or Attempt(None, 1))
+    return settle_reply(cfg, reth, sub, send_advance(cfg, sub), unknown_pairs, tip)
 
 
 def _build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True, unknown_pairs: list | None = None,
@@ -2305,6 +2367,26 @@ def each_once(lost: list) -> list:
     return list({x["transaction"]: x for x in reversed(lost)}.values())[::-1]
 
 
+class Sending:
+    """The oldest block's Advance on its way: its own thread sends it and reads the answer (HTTP only), and hands the answer back through `reply` and
+    `done`. The thread never touches reth, the journal or a file: the producer's thread does, when it has seen `done`."""
+
+    def __init__(self, cfg: Config, entry: "InFlight", sub: Submission):
+        self.cfg, self.entry, self.sub = cfg, entry, sub
+        self.reply: "Reply | None" = None
+        self.error: "BaseException | None" = None
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.run, name=f"advance-{sub.n}", daemon=True)
+
+    def run(self) -> None:
+        try:
+            self.reply = send_advance(self.cfg, self.sub)
+        except BaseException as e:   # not an HTTP failure: the producer's thread raises it where it settles the answer
+            self.error = e
+        finally:
+            self.done.set()
+
+
 class Pipeline(Producer):
     """The producer that keeps up to `max_in_flight` blocks in flight: a block is cut while earlier ones prove, built on the newest of them, and
     only the oldest is submitted. At `max_in_flight` 1 it makes the same calls and the same bytes as `Producer` on the golden scenarios (tests/test_golden_pipeline.py). It differs
@@ -2326,6 +2408,8 @@ class Pipeline(Producer):
         self.unwind_pending = False   # reth could not be taken back to `last`, or its transactions could not be sent again: the next step does both first
         self.leg_wait = False   # a block built on a block in flight left a leg out for it: nothing is cut until nothing is in flight, and then the leg goes in on Canton's head
         self.back_pending: "tuple | None" = None   # a block built on the tip failed and reth could not be taken back to the tip, or its transactions not be sent again: (tip hash, number)
+        self.send_fault: "Exception | None" = None   # the next block's Advance could not be written down after a commit
+        self.sending: "Sending | None" = None   # the oldest block's Advance, in its thread, until the producer's own thread has settled the answer
 
     def provers(self) -> int:
         return len(self.cfg.pool.provers) if self.cfg.pool else 1
@@ -2390,7 +2474,15 @@ class Pipeline(Producer):
 
     def abandon(self) -> None:
         """A stop (SIGTERM) cuts nothing more, and the step in progress, a submit included, has finished. The blocks still in flight are given up: their
-        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted)."""
+        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted).
+        An Advance in its thread is never given up mid-call: it is waited for and its answer booked, and what cannot be booked stays in the record for
+        the next start. No further block is submitted."""
+        if self.sending is not None:
+            self.sending.thread.join()
+            try:
+                self.finish_send(self.clock())
+            except Exception as e:   # the record stays: the next start settles the command by its id
+                print(f"the answer of the last Advance could not be booked, the next start will settle it: {e}", file=sys.stderr)
         for entry in self.flight:
             if entry.proving is not None:
                 entry.proving.ticket.cancel()
@@ -2399,6 +2491,8 @@ class Pipeline(Producer):
         found = super().status(state)
         if self.head_fault:
             found["headFault"] = self.head_fault
+        if self.sending is not None:
+            found["submitting"] = self.sending.entry.number
         return found
 
     # -- the loop
@@ -2411,7 +2505,10 @@ class Pipeline(Producer):
             if self.held:
                 self.held["next"] = 0   # a transaction that was held back may go in now
         try:
-            if self.unresolved is None and unresolved_path(self.cfg).exists():   # a command in doubt that this process does not know yet
+            # While an Advance is in its thread the record is on disk and says nothing about doubt: "in progress" and "in doubt" are held in memory
+            # (`self.sending`, `self.unresolved`). A record is read only when none of this process's own is in progress: at the start, or after
+            # a settle that failed before it cleared it.
+            if self.unresolved is None and self.sending is None and unresolved_path(self.cfg).exists():   # a command in doubt that this process does not know yet
                 self.load_unresolved()
                 if self.unresolved is None:   # not readable: nothing is built while it exists
                     self.write_status()
@@ -2425,6 +2522,9 @@ class Pipeline(Producer):
                 return self.finish_unwind()   # that is all this step does
             elif not self.flight and saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
                 self.restore()
+            if self.sending is not None and self.sending.done.is_set():   # Canton has answered: booked before anything is cut
+                attempt = self.sending.entry.attempt
+                return self.finish_send(now)
             self.collect()
             blocked, cut, trigger = self.cut_blocked(), False, None
             if self.stop.is_set():   # a signal: nothing more is cut
@@ -2440,7 +2540,7 @@ class Pipeline(Producer):
                     try:
                         result = self.cut(attempt, trigger)
                     except Exception as e:
-                        if not self.flight or self.unresolved is not None or unresolved_path(self.cfg).exists() or self.back_pending or self.unwind_pending:
+                        if not self.flight or self.unresolved is not None or self.back_pending or self.unwind_pending:
                             raise
                         # A block that fails while it is cut affects that block only: the failure is reported after the oldest block has had its turn
                         fault, attempt, cut = (e, attempt), None, False
@@ -2461,6 +2561,13 @@ class Pipeline(Producer):
                 return
             oldest = self.flight[0]
             full = len(self.flight) >= self.k
+            if oldest.state == SUBMITTING:   # its Advance is in its thread
+                attempt = oldest.attempt
+                if cut and not full:   # the next step may cut another
+                    return
+                if fault and not full:
+                    return self.cut_failed(fault)
+                return self.wait_send(now, full)
             if oldest.state == PROVING:
                 if cut and not full:   # the next step may cut another
                     return
@@ -2488,11 +2595,10 @@ class Pipeline(Producer):
             if oldest.state == PROVEN:   # only the oldest is ever submitted; a later block that is proven waits here for its turn
                 self.check_head(oldest)   # fails closed: nothing is submitted, and the step ends in the failure back-off
                 attempt = oldest.attempt
-                result, pairs = self.submit_oldest(oldest)
-                self.settle_result(result, pairs, now)
-                if fault:   # a refusal and a failure that Canton did not refuse have each taken their back-off already
-                    self.cut_failed(fault, wait=not (not result.get("skipped") and result["committed"] is False))
-                return
+                self.start_send(oldest)
+                if fault:   # the failed cut ends the step in the failure back-off, while the Advance is on its way
+                    return self.cut_failed(fault)
+                return self.wait_send(now, full)
             if fault:
                 return self.cut_failed(fault)
             self.wait(self.idle)   # the oldest is not finished with its proof
@@ -2580,8 +2686,6 @@ class Pipeline(Producer):
                 built = build(self.cfg, reth, chain, base, exclude, prove_empty=trigger == "heartbeat", lost=lost_so_far, attempt=attempt, settled=self.settled,
                               defer_legs=bool(self.flight))
             except BaseException as e:
-                if unresolved_path(self.cfg).exists():   # an Advance was sent and is not settled: reth does not move
-                    raise
                 self.back_to(reth, e, base, n, lost_so_far)
                 raise
             pairs = list(reth.imported)
@@ -2673,26 +2777,84 @@ class Pipeline(Producer):
         self.head_fault = None
         entry.built = dataclasses.replace(entry.built, chain=chain)
 
-    def submit_oldest(self, entry: "InFlight") -> tuple:
-        """Sends the Advance of the oldest block and settles the answer. Returns (the answer, the pairs of an unknown one)."""
+    def wait_send(self, now: float, full: bool) -> None:
+        """The Advance of the oldest block is in its thread. With every slot taken nothing else can be done, so the step waits for the answer (a
+        signal ends the wait: `abandon` settles it); with a free slot it waits a moment for it, and the next step cuts if it can."""
+        if full:
+            while not self.sending.done.wait(0.2):
+                if self.stop.is_set():
+                    return
+        else:
+            self.sending.done.wait(min(self.idle, 0.2) if self.idle > 0 else 0.0)
+        if self.sending.done.is_set():
+            return self.finish_send(now)
+
+    def start_send(self, entry: "InFlight") -> None:
+        """Writes the oldest block's Advance down (the record, the `submitted` line) and sends it from a thread of its own. The thread makes HTTP
+        calls and nothing else: reth, the journal and the files stay with this thread, which settles the answer in `finish_send`."""
         entry.state = SUBMITTING
         self.attempt = attempt = entry.attempt
         attempt.in_flight = len(self.flight) - 1
-        pairs: list = []
         try:
+            with connect(self.cfg.ws_url, max_size=None) as ws:
+                sub = prepare_submit(self.cfg, Reth(self.cfg, ws), entry.built, entry.proven, attempt)
+        except BaseException as e:
+            self.unwind(e, entry, sent=unresolved_path(self.cfg).exists())   # the record is written before anything else can fail: it says whether the command may be out
+            raise
+        self.sending = Sending(self.cfg, entry, sub)
+        self.sending.thread.start()
+
+    def finish_send(self, now: float) -> None:
+        """Settles the answer of the Advance in its thread, in this thread, and books it. Then the next block is submitted if it is proven, and
+        only then is the paid traffic of a commit read."""
+        sending, self.sending = self.sending, None   # a settle that fails leaves the record on disk, and the next step reads it
+        entry = sending.entry
+        sending.thread.join()
+        pairs: list = []
+        self.attempt = entry.attempt
+        try:
+            if sending.error is not None:
+                raise sending.error
             with connect(self.cfg.ws_url, max_size=None) as ws:
                 reth = Reth(self.cfg, ws)
                 reth.imported = list(entry.pairs)
-                result = submit(self.cfg, reth, entry.built, entry.proven, pairs, attempt, tip=self.flight[-1].hash)
+                # Only a block that is proven and next in line gives a commit something to start before the paid traffic is read.
+                follows = len(self.flight) > 1 and self.flight[1].state == PROVEN and not self.stop.is_set()
+                result = settle_reply(self.cfg, reth, sending.sub, sending.reply, pairs, tip=self.flight[-1].hash,
+                                      after_commit=(lambda reth: self.after_commit(entry, reth)) if follows else None)
         except BaseException as e:
-            self.unwind(e, entry)
+            self.unwind(e, entry, sent=True)
             raise
-        self.flight.remove(entry)
-        if result["committed"]:
-            self.last = (entry.number, entry.hash)
-        elif result["committed"] is False:   # refused or not taken: reth is back at the block's parent, and the blocks above it are cancelled
+        if entry in self.flight:   # a commit has taken it out already (`after_commit`)
+            self.flight.remove(entry)
+            if result["committed"]:
+                self.last = (entry.number, entry.hash)
+        if result["committed"] is False:   # refused or not taken: reth is back at the block's parent, and the blocks above it are cancelled
             self.cancel_later(entry, result)
-        return result, pairs
+        self.settle_result(result, pairs, now)
+        if self.send_fault is not None:   # the next block could not be submitted: the step ends in the failure back-off
+            fault, self.send_fault = self.send_fault, None
+            raise fault
+
+    def after_commit(self, entry: "InFlight", reth: Reth) -> None:
+        """A commit is booked in reth and its record is gone: the block leaves the flight, and the next one is submitted if it is proven and Canton's
+        head is its parent. Nothing here may fail the commit: a block that cannot go now goes at the next step, which says why."""
+        self.flight.remove(entry)
+        self.last = (entry.number, entry.hash)
+        if self.stop.is_set() or self.unresolved is not None or self.back_pending or self.unwind_pending or not self.flight:
+            return
+        nxt = self.flight[0]
+        if nxt.state != PROVEN:
+            return
+        try:
+            self.check_head(nxt)   # a head that does not fit (or lags) is checked again, and said, by the next step
+        except Exception:
+            return
+        try:
+            self.start_send(nxt)   # a failure here has unwound the flight already: it is reported once the commit is booked
+        except Exception as e:
+            nxt.attempt.failed(failure_report(e)["error"])
+            self.send_fault = e
 
     def cancel_later(self, culprit: "InFlight", result: dict) -> None:
         """The oldest block was not committed and `submit` has moved reth back to its parent: every later block is cancelled, and its transactions
@@ -2751,11 +2913,13 @@ class Pipeline(Producer):
         self.journal.event("cancelled", attempt=entry.attempt.seq, number=entry.number, depends_on=depends_on,
                            reason="an earlier block did not commit")
 
-    def unwind(self, e: BaseException, culprit: "InFlight") -> None:
+    def unwind(self, e: BaseException, culprit: "InFlight", sent: bool = False) -> None:
         """The oldest block failed: reth goes back to the last block Canton committed, every transaction of the blocks in flight goes back to
-        the pool in block order, and the blocks above the failed one are cancelled."""
-        if unresolved_path(self.cfg).exists():   # an Advance was sent and is not settled: the record makes the next step settle it, and reth does not move
-            self.flight.remove(culprit)
+        the pool in block order, and the blocks above the failed one are cancelled. `sent`: its Advance went out (or may have), and the record that
+        is on disk makes the next step settle it, so reth does not move."""
+        if sent:
+            if culprit in self.flight:
+                self.flight.remove(culprit)
             return
         blocks, self.flight = self.flight, []
         for entry in blocks:
