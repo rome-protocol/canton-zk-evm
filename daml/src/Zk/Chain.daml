@@ -99,8 +99,10 @@ template ChainProposal
     -- On the one-machine network, up.sh starts the sidecars with the same values it proposes, and propose.py accepts at once.
     choice Accept : ContractId ZkChain
       controller confirmer
-      do create ZkChain with headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; changeDelay = None
-        pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None; ..
+      do
+        create ZkChain with
+          headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; changeDelay = None
+          pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None; ..
 
 -- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
 -- The gateway is the party that holds the Canton tokens locked for the EVM tokens that stand for them.
