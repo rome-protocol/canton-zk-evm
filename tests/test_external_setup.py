@@ -555,6 +555,12 @@ class Setup(unittest.TestCase):
         self.assertEqual(self.withdraw("gas-cap")["withdrawn"], 1)
         self.assertEqual(self.node.submitted_users[-1], "ostia-operator")
 
+    def test_the_withdraw_refuses_a_value_flag(self):
+        for extra in (["--new-gas-cap", "50000000"], ["--delay-seconds", "5"], ["--program-vk", "ab" * 32]):
+            with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--withdraw-proposal", "gas-cap", *extra])
+            self.assertEqual(e.exception.code, 2, extra)
+
     def test_the_operator_withdraws_a_pending_proposal_of_each_kind_and_can_propose_again(self):
         self.run_setup()
         self.raise_step("propose", 50_000_000)

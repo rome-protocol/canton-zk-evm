@@ -238,7 +238,7 @@ template GasCapProposal
     observer reader
 
     -- The operator takes its proposal back (Withdraw...), or the confirmer turns it down (Reject...); either one alone, so a pending proposal never gets stuck
-    -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
+    -- (the built-in Archive needs every signatory). The reader sees a pending change and when it was proposed (proposedAt); the wait is the chain's changeDelay, which only the chain's signatories and the builder see.
     choice WithdrawGasCap : ()
       controller operator
       do pure ()
@@ -278,7 +278,7 @@ template ProgramProposal
     observer reader
 
     -- The operator takes its proposal back (Withdraw...), or the confirmer turns it down (Reject...); either one alone, so a pending proposal never gets stuck
-    -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
+    -- (the built-in Archive needs every signatory). The reader sees a pending change and when it was proposed (proposedAt); the wait is the chain's changeDelay, which only the chain's signatories and the builder see.
     choice WithdrawProgram : ()
       controller operator
       do pure ()
@@ -315,7 +315,7 @@ template ChangeDelayProposal
     observer reader
 
     -- The operator takes its proposal back (Withdraw...), or the confirmer turns it down (Reject...); either one alone, so a pending proposal never gets stuck
-    -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
+    -- (the built-in Archive needs every signatory). The reader sees a pending change and when it was proposed (proposedAt); the wait is the chain's changeDelay, which only the chain's signatories and the builder see.
     choice WithdrawChangeDelay : ()
       controller operator
       do pure ()

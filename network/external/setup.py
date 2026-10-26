@@ -66,6 +66,11 @@
     and "acceptableAt" (proposedAt plus the wait). An accept before that time is refused, by this script first and by the chain in any case.
     A dry run of the accept prints the times and sends nothing, so it is the way to ask when a proposal can be accepted.
 
+  setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay [--dry-run]
+
+    The operator's token: withdraws every pending proposal of that kind for the chain (the Withdraw choice). The confirmer rejects one with
+    the Reject choice instead. It takes no values: naming a gas cap, keys or a delay with it is refused.
+
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
@@ -633,8 +638,9 @@ def main(argv: list) -> int:
     if own.withdraw_proposal:
         if not own.ledger_url:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
-        if rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step:
-            ap.error("--withdraw-proposal does only the withdrawal: no other step and no chain arguments")
+        if (rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step
+                or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash or own.delay_seconds is not None):
+            ap.error("--withdraw-proposal does only the withdrawal: no other step, no values and no chain arguments (it withdraws every pending proposal of that kind)")
         check_settings(own.ledger_url, ("operator",))
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
         print(json.dumps(withdraw_step(own.ledger_url, own.withdraw_proposal, own.dry_run)))
