@@ -1001,7 +1001,7 @@ class Setup(unittest.TestCase):
         self.assertTrue(self.pause("renew-propose", "--pause-seconds", "7200")["alreadyProposed"])
         self.assertEqual(len(self.node.contracts["RenewPauseProposal"]), 1)
         self.assertIn("another time", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "60")))
-        self.assertIn("no proposal to pause for 60 s", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "60")))
+        self.assertIn("another time is on this participant (7200 s), not 60 s", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "60")))
         self.assertEqual(self.pause("renew-accept", "--pause-seconds", "7200", "--dry-run")["submitted"], False)
         self.assertIsNone(self.chain_args().get("pausedUntil"))
         renewed = self.pause("renew-accept", "--pause-seconds", "7200")
@@ -1061,6 +1061,16 @@ class Setup(unittest.TestCase):
         self.assertEqual((fresh["submitted"], fresh["alreadyProposed"]), (True, False))
         self.assertTrue(self.pause("renew-propose", "--pause-seconds", "7200")["alreadyProposed"])
         self.assertIn("acceptableUntil", self.pause("renew-propose", "--pause-seconds", "7200"))
+
+    def test_renew_accept_refuses_while_a_proposal_for_another_time_is_pending(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.pause("pause")                                       # the confirmer's own pause is in force
+        self.pause("renew-propose", "--pause-seconds", "7200")    # the operator proposes 7200 s
+        sent = len(self.sent())
+        self.assertIn("another time", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "3600")))   # a mistyped value is not a success
+        self.assertEqual(len(self.sent()), sent)
+        self.assertTrue(self.pause("renew-accept", "--pause-seconds", "7200")["submitted"])
 
     def test_a_renewal_is_held_to_the_longest_pause_the_chain_has(self):
         self.run_setup()

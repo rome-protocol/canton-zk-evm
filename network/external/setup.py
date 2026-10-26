@@ -446,7 +446,7 @@ PROPOSAL_KINDS = {"gas-cap": "GasCapProposal", "program": "ProgramProposal", "ch
 
 
 def withdraw_step(url: str, kind: str, dry_run: bool) -> dict:
-    """The operator takes back its pending proposals of one kind for this chain (the WithdrawGasCap, WithdrawProgram or WithdrawChangeDelay choice; the operator alone controls it, and the confirmer can reject instead)."""
+    """The operator takes back its pending proposals of one kind for this chain (the WithdrawGasCap, WithdrawProgram, WithdrawChangeDelay, WithdrawLegLimits or WithdrawRenewPause choice; the operator alone controls it, and the confirmer can reject instead)."""
     ledger, chain = step_chain(url, "propose")
     template = PROPOSAL_KINDS[kind]
     found = [p for p in ledger.active(template) if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"] and p.get("confirmer") == chain["confirmer"]]
@@ -725,7 +725,7 @@ def chain_after(ledger, before: dict) -> dict:
     The step has already been accepted by the ledger; if the chain cannot be read again, the stale state is not printed as if it were new."""
     found = [c for c in ledger.active("ZkChain") if c.get("chainId") == before["chainId"]]
     if len(found) != 1:
-        return {"note": "the step went through, but the chain could not be read again; read it with --pause-step pause --dry-run"}
+        return {"note": "the step went through, but the chain could not be read again; read it with --pause-step unpause --dry-run, which prints the state in every case"}
     return pause_state(found[0], datetime.now(timezone.utc))
 
 
@@ -767,6 +767,10 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
                                                             "choiceArgument": {"forHowLong": rel_value(seconds)}}}, "propose")
             return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
         if not mine:
+            if proposals:   # a proposal for another time is pending: never report success for a value nobody proposed
+                others = sorted({opt_us(p.get("forHowLong")) // 1_000_000 for p in proposals})
+                raise SystemExit(f"a proposal to pause for another time is on this participant ({', '.join(str(o) for o in others)} s), not {seconds} s: "
+                                 "accept that value with --pause-seconds, or the operator takes it back (--withdraw-proposal renew-pause) and proposes again")
             if state["paused"]:   # an accept that went through consumed the proposal: say what is in force, as a re-run of pause does
                 return {**result, "submitted": False, "noProposal": True}
             raise SystemExit(f"no proposal to pause for {seconds} s is on this participant")
