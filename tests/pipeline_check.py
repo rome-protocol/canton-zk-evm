@@ -181,7 +181,7 @@ def stats(lines: list, proved=None) -> dict:
         "unknown": sum(1 for a in atts.values() if a.get("outcome") == "unknown"),
         "unknownCommitted": sum(1 for a in atts.values() if a.get("outcome") == "unknown" and a.get("resolution") == "committed"),
         "submitted": sum(1 for ln in lines if ln.get("event") == "submitted"),
-        "provers": len({ln.get("prover") for ln in lines if ln.get("event") == "proof_started"}),
+        "provers": len({ln.get("prover") for ln in lines if ln.get("event") == "proof_ended"}),
         "lost": sum(len(ln.get("transactions") or []) for ln in lines if ln.get("event") == "lost"),
     }
 
