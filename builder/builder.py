@@ -1361,27 +1361,27 @@ class Submission:
     n: int
     built: Built
     proven: Proven
-    attempt: "Attempt"
+    attempt: Attempt
     argument: dict
     command_id: str
     report: dict
     resolve: dict       # the record that is on disk while the command is in doubt
     begin: int          # the ledger end before the command: its own completion is after it
     watch: bool         # the participant's traffic is read around the Advance
-    traffic_before: "dict | None"
+    traffic_before: dict | None
 
 
 @dataclass
 class Reply:
     """What the Advance got back. `send_advance` fills it from HTTP calls alone, so it can run in a thread."""
     answer: dict = field(default_factory=dict)
-    reason: "str | None" = None
+    reason: str | None = None
     rejected: bool = False
     not_taken: bool = False
-    found: "dict | None" = None          # the command's own completion, read when the Advance got no usable answer
+    found: dict | None = None          # the command's own completion, read when the Advance got no usable answer
     advance_seconds: float = 0.0
     answered_at: float = 0.0
-    traffic_after: "dict | None" = None
+    traffic_after: dict | None = None
 
 
 def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attempt: "Attempt") -> Submission:
