@@ -702,6 +702,14 @@ class NoCantonSide(Exception):
     """A leg that has no Canton side now; the message says why."""
 
 
+LEG_WAITS = "its leg waits until the blocks before it are final"   # the reason of a leg that has its Canton side but the block is built on a block in flight
+
+
+def waiting_legs(left_out: list) -> bool:
+    """Whether a block left a leg out because it waits for the blocks in flight."""
+    return any(x["reason"] == LEG_WAITS for x in left_out)
+
+
 def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str) -> str | None:
     """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock."""
     if spec is None:
@@ -1063,10 +1071,12 @@ class Proven:
 
 
 def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True,
-          lost: list | None = None, attempt: "Attempt | None" = None, settled=None) -> "Built | dict":
+          lost: list | None = None, attempt: "Attempt | None" = None, settled=None, defer_legs: bool = False) -> "Built | dict":
     """Stage one. Cuts the block: chooses its transactions, has reth build it on `head` (Canton's head; `chain` says its number) (again without any transaction whose leg has no
     Canton side), reads the gateway's proofs while the block is reth's tip, and writes the prover's input files. Returns a Built, or, for a
-    block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block."""
+    block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block. `defer_legs`: the block is built on
+    a block in flight, so a leg is not recorded in it: one that has its Canton side (matched on Canton's state, as ever) is left out with the reason
+    `LEG_WAITS`, and one with none is left out with its own reason, as ever."""
     attempt = attempt or Attempt(None, 1)
     n = int(chain["headNumber"]) + 1
     if not re.fullmatch(r"[0-9a-f]{40}", str(chain.get("gatewayAddress"))):
@@ -1084,12 +1094,15 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
         legs, missing = match_legs(Canton(Ledger(cfg), chain, utcnow()), events) if events else ([], [])
+        if defer_legs and events:   # a leg with a Canton side waits; one with none is left out with its own reason
+            bad = {event.tx for event, _ in missing}
+            missing = [*missing, *((event, LEG_WAITS) for event in events if event.tx not in bad)]
         if not missing:
             break
         for event, reason in missing:
             if event.tx not in exclude:
                 exclude.add(event.tx)
-                left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
+                left_out.append({"transaction": event.tx, "reason": LEG_WAITS if reason == LEG_WAITS else f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         rebuilds += 1
         final = settled() if settled else head
         reth.forkchoice(head, final, final)   # back to the block this one is built on, never below the last one Canton committed
@@ -1712,6 +1725,7 @@ class Producer:
                     self.step()
                 except Exception as e:   # a fault of the loop's own: the chain goes on
                     self.fail(failure_report(e))
+            self.abandon()
             state = "crashed" if self.fatal else "stopped"   # a signal stops it; a fatal fault ends it as any other crash
         finally:
             ticker_stop.set()
@@ -1719,6 +1733,9 @@ class Producer:
                 ticker.join(timeout=10)
             self.journal.event("run_stopped", state=state)
             self.write_status(state, final=True)
+
+    def abandon(self) -> None:
+        """What the run leaves behind when it ends: nothing at one block at a time (the block in progress finished)."""
 
     def load_unresolved(self) -> None:
         """An Advance with no answer from before a restart is settled by its command id first, as in the run that submitted it."""
@@ -2152,6 +2169,7 @@ class Pipeline(Producer):
         self.last = None
         self.head_fault: str | None = None   # why the last head check failed: nothing is cut or submitted until one passes
         self.unwind_pending = False   # reth could not be taken back to `last`, or its transactions could not be sent again: the next step does both first
+        self.leg_wait = False   # a block built on a block in flight left a leg out for it: nothing is cut until nothing is in flight, and then the leg goes in on Canton's head
         self.back_pending: "tuple | None" = None   # a block built on the tip failed and reth could not be taken back to the tip, or its transactions not be sent again: (tip hash, number)
 
     def provers(self) -> int:
@@ -2161,10 +2179,31 @@ class Pipeline(Producer):
         pool = self.cfg.pool
         if self.head_fault:
             return "Canton's head is not the parent of the next block to submit"
-        return why_not_cut(self.k, self.flight, self.provers(), any_up=not (pool and pool.managed) or pool.any_up(), in_doubt=self.unresolved is not None)
+        return why_not_cut(self.k, self.flight, self.provers(), any_up=not (pool and pool.managed) or pool.any_up(), in_doubt=self.unresolved is not None,
+                           one_at_a_time=self.one_at_a_time())
+
+    def one_at_a_time(self) -> str | None:
+        """Why the producer cuts only with nothing in flight now, or None. Each of these reasons about "the last block", and at depth 1 that logic
+        is today's: a control block or a hunt for a transaction that cannot be proven, a probe or a suspect after refusals, the retries after a
+        refusal or a failure until the next commit, and a leg that waits."""
+        if self.control or self.hunt:
+            return "a transaction that cannot be proven is being looked for"
+        if self.probe is not None or self.suspects:
+            return "a transaction that was in refused blocks is being tried alone"
+        if self.failures or self.refusals_in_row:
+            return "the block after a failure or a refusal is made alone"
+        if self.leg_wait:
+            return "a leg waits until the blocks before it are final"
+        return None
 
     def settled(self) -> str:
         return self.last[1]
+
+    def skipped(self, result: dict, now: float) -> None:
+        """`Producer.skipped`; a block that held only a leg that waits is not looked at again after a pause: the leg goes in when nothing is in flight."""
+        super().skipped(result, now)
+        if waiting_legs(result["leftOut"]):
+            self.held = None
 
     def resolve_in_doubt(self, u: dict) -> tuple:
         """The command in doubt is the oldest block, and the blocks in flight were built on it. Committed: it is the last block this process saw
@@ -2193,6 +2232,13 @@ class Pipeline(Producer):
             lost = each_once([*lost, *(x for entry in flight for x in entry.built.lost)])
             self.flight = []
         return committed, lost, how, info
+
+    def abandon(self) -> None:
+        """A stop (SIGTERM) cuts nothing more, and the step in progress, a submit included, has finished. The blocks still in flight are given up: their
+        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted)."""
+        for entry in self.flight:
+            if entry.proving is not None:
+                entry.proving.ticket.cancel()
 
     def status(self, state: str = "running") -> dict:
         found = super().status(state)
@@ -2229,6 +2275,8 @@ class Pipeline(Producer):
             if blocked is None:
                 self.pause = 0.0
                 trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
+                if trigger == "heartbeat" and self.flight:   # an empty block above blocks in flight shows nothing new: the heartbeat waits for nothing in flight
+                    trigger = None
                 if trigger is not None:
                     cut = True
                     attempt = self.new_attempt(trigger, now)
@@ -2347,6 +2395,7 @@ class Pipeline(Producer):
                 chain = {**tip.built.chain, "headNumber": tip.number, "headHash": tip.hash[2:]}   # the contract it names is the one Canton had before the tip
                 base = tip.hash
             else:
+                self.leg_wait = False   # on Canton's head the leg that waited goes in, with today's checks
                 chain = Ledger(self.cfg).head()
                 if self.last and int(chain["headNumber"]) < self.last[0]:   # a read that lags this process's own last commit: reth never goes below it
                     raise HeadMismatch(f"Canton's head is block {chain['headNumber']}, below block {self.last[0]}, the last block this producer saw committed")
@@ -2359,13 +2408,16 @@ class Pipeline(Producer):
                 reth.forkchoice(base, base, base)
             lost_so_far: list = []
             try:
-                built = build(self.cfg, reth, chain, base, exclude, prove_empty=trigger == "heartbeat", lost=lost_so_far, attempt=attempt, settled=self.settled)
+                built = build(self.cfg, reth, chain, base, exclude, prove_empty=trigger == "heartbeat", lost=lost_so_far, attempt=attempt, settled=self.settled,
+                              defer_legs=bool(self.flight))
             except BaseException as e:
                 if unresolved_path(self.cfg).exists():   # an Advance was sent and is not settled: reth does not move
                     raise
                 self.back_to(reth, e, base, n, lost_so_far)
                 raise
             pairs = list(reth.imported)
+        if waiting_legs(built["leftOut"] if isinstance(built, dict) else built.left_out):
+            self.leg_wait = True
         if isinstance(built, dict):   # skipped: nothing to prove or submit
             return built
         entry = InFlight(attempt, built, pairs, on_tip=bool(self.flight))

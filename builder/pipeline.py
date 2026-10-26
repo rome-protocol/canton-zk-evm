@@ -37,14 +37,16 @@ def free_provers(in_flight: list, provers: int) -> int:
     return max(0, provers - sum(1 for b in in_flight if b.state in (BUILT, PROVING)))
 
 
-def why_not_cut(max_in_flight: int, in_flight: list, provers: int, any_up: bool = True, in_doubt: bool = False) -> str | None:
+def why_not_cut(max_in_flight: int, in_flight: list, provers: int, any_up: bool = True, in_doubt: bool = False, one_at_a_time: str | None = None) -> str | None:
     """Why no block is cut now, or None when one may be. A block is cut only when fewer than `max_in_flight` are in flight, a prover is up and
     free, no command is in doubt and no block in flight has failed: the block goes straight to a prover, and the EVM is never more than
-    `max_in_flight` blocks ahead of Canton."""
+    `max_in_flight` blocks ahead of Canton. `one_at_a_time` (a reason) says the producer is in a mode that cuts only with nothing in flight."""
     if len(in_flight) >= max_in_flight:
         return "the most blocks are in flight"
     if in_doubt:
         return "a command is in doubt"
+    if one_at_a_time and in_flight:
+        return one_at_a_time
     if any(b.state == FAILED for b in in_flight):
         return "a block in flight has failed"
     if not any_up:
