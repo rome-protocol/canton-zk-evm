@@ -277,6 +277,35 @@ class Failures(Depth):
         found = self.lines(s, "cancelled")
         self.assertEqual([(x["attempt"], x["depends_on"]) for x in found], [(i, culprit) for i in range(culprit + 1, k + 1)])
 
+    # nothing is cut
+    def test_nothing_is_cut_while_a_block_in_flight_has_failed(self):
+        s = self.setup({})
+        self.script(A, "sleep 3")   # the oldest block is still proving when the one after it fails
+        self.failing({HEAD_NUMBER + 2})
+        p = self.pipeline(s, 3)
+        self.fill(s, p, 2)
+        self.drive(p, lambda: p.flight[1].state == b.FAILED)
+        s.reth.pool[CAROL] = [tx(CAROL, 0)]
+        for _ in range(10):
+            self.step(p)
+        self.assertEqual(len(self.lines(s, "cut")), 2, "no block is cut above one that failed")
+        self.assertEqual([e.state for e in p.flight], [b.PROVING, b.FAILED])
+        self.drive(p, lambda: p.last[0] == HEAD_NUMBER + 1 and not p.flight)   # the oldest commits, the failed one is unwound
+        self.assertEqual(len(self.lines(s, "cut")), 2)
+        self.assertIn(tx(BOB, 0)["hash"], self.in_pool(s))
+
+    def test_nothing_is_cut_while_every_prover_is_busy(self):
+        s = self.setup({})
+        self.script(A, "sleep 3")
+        self.script(B_, "sleep 3")
+        p = self.pipeline(s, 3)
+        self.fill(s, p, 2)
+        s.reth.pool[CAROL] = [tx(CAROL, 0)]
+        for _ in range(10):
+            self.step(p)
+        self.assertEqual((len(self.lines(s, "cut")), len(p.flight)), (2, 2), "a third block would wait for a prover")
+        self.assertIn(tx(CAROL, 0)["hash"], self.in_pool(s))
+
     # a refused block
     def check_refused(self, k):
         s = self.setup({}, refuse="the sidecar refused the proof")
@@ -291,6 +320,7 @@ class Failures(Depth):
         self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
         self.assertEqual(self.in_pool(s), self.hashes(k))   # every transaction is back in the pool
         self.assertEqual(p.suspects, [])
+        self.assertEqual(p.previous_kept, {tx(ALICE, 0)["hash"]}, "only the refused block's transactions are named, not the cancelled blocks'")
         self.assertFalse(p.unwind_pending)
         self.assertEqual(self.lines(s, "cancelled")[0]["reason"], "an earlier block did not commit")
         s.ledger.refuse = None

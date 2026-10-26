@@ -1,5 +1,5 @@
 """Blocks in flight when the producer keeps more than one at a time: what each one is, and when another may be cut. See README.md,
-"Several blocks in flight". Nothing here touches reth, Canton or the journal: `Pipeline` in builder.py does, and asks this module the questions."""
+"Provers". Nothing here touches reth, Canton or the journal: `Pipeline` in builder.py does, and asks this module the questions."""
 from dataclasses import dataclass, field
 
 # The states of a block in flight, from the cut to the end.
