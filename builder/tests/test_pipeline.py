@@ -620,7 +620,7 @@ class OnTheTip(Depth):
         self.assertEqual(len(p.flight), k - 1)
 
     def check_left_out(self, k, rebuilt):
-        """Case 10: the next block is left-out rebuilt (it still holds a transaction) or skipped (it holds none) on the tip."""
+        """The next block is left-out rebuilt (it still holds a transaction) or skipped (it holds none) on the tip."""
         s = self.setup({})
         p = self.pipeline(s, k)
         senders = (ALICE, CAROL)
