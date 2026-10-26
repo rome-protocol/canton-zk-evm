@@ -113,6 +113,7 @@ With no `--prover`, or one, the builder runs the prove command once for each blo
 `--prover name=URL` (repeatable; `CZE_PROVERS` takes the same as a comma-separated list) names a ZisK coordinator. With two or more:
 
 - Each prover takes one block at a time. A block goes to a free prover that is up, the oldest waiting block first. The builder still makes one block at a time, so a second prover is a spare; blocks only overlap once the builder keeps more than one in flight, which it does not yet.
+- `--max-in-flight K` (also `CZE_MAX_IN_FLIGHT`, default 1) is how many blocks may be made and not yet final at once, at most one more than the number of provers. Above 1 a block is cut while earlier ones prove and is built on the newest of them, and only the oldest is sent to Canton: after Canton's head is read and is its parent (a head that is not the parent sends nothing and moves nothing until the next read matches; a head that is a block reth does not have stops the producer), and its commit makes reth final at that block without moving its head. When the oldest block is refused or fails, every block built on it is cancelled (a `cancelled` line with `depends_on` naming it), reth goes back once to the last block Canton committed, and every transaction is sent to its pool again; a block that fails while an earlier one is in flight waits until it is the oldest. If reth cannot be moved back or the transactions cannot be sent again, the next step does both before anything is cut or sent, and the same holds for a block that failed while it was being built on the newest block. Values above 1 are not accepted by `run` yet.
 - A block that fails on a prover (it fails, runs past `--prove-timeout`, or comes back as a proof of another block) is tried once more on another prover. The proof is checked the same way, whichever prover made it.
 - A prover is marked down when it cannot be reached (the prove command's error is a refused or lost connection), or when a block that failed on it then proved on another one. A block that fails on every prover it is tried on is a block failure, as with one prover, and marks no prover down. A prover that is down gets no block for a while (30 seconds, doubling after each new fault up to 300, reset by a proof), then the next block tries it. Each change is a `prover` line in the journal and shows in the status file's `provers`.
 - The input tool runs once for the block, on no prover. Each try runs the prove command with `ZISK_COORDINATOR_URL` set to the prover's URL and `CZE_PROVE_TIMEOUT` to `--prove-timeout`; a retry writes to a folder of its own next to the first try's.
@@ -131,7 +132,7 @@ Three things are confirmed on the first remote GPU machine before more than one 
 ## Running it all the time
 
 ```sh
-python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>] [--prover <name>=<url>]... [--prove-timeout 1800] [--prover-input-dir <folder>]
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>] [--prover <name>=<url>]... [--prove-timeout 1800] [--prover-input-dir <folder>] [--max-in-flight 1]
 ```
 
 `run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as`, `--disclosed` and `--package-id` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
@@ -163,7 +164,8 @@ One JSON line goes to stdout for every block, the same report `once` prints (a f
 
 | Field | What it holds |
 |---|---|
-| `state` | `running`, `stopped` (a signal) or `crashed` (anything else ended it) |
+| `state` | `running`, `stopped` (a signal) or `crashed` (anything else ended it, a head that is a block reth does not have too: the exit code is 1) |
+| `headFault` | only while set: why the last check of Canton's head failed (it is not the parent of the next block to submit, or not the block reth goes back to), so nothing is cut or sent until a read matches; with `--max-in-flight` above 1 |
 | `runId`, `journalError` | the run's id in the journal, and `{time, error}` of the last journal write that failed (`null` if none) |
 | `startedAt`, `updatedAt` | UTC times |
 | `lastCommitted` | `{number, hash, time}` of the last committed block, or `null` |

@@ -17,6 +17,8 @@ ALICE, BOB = tb.ALICE, tb.BOB
 
 
 class Loop(tb.Case):
+    engine = None   # the producer class; the pipeline tests set it
+
     def producer(self, s, **k):
         """A producer on a fake clock; `waits` records every pause it asks for, `reports` every line it prints."""
         self.now, self.waits, self.reports = [1_000_000.0], [], []
@@ -26,7 +28,7 @@ class Loop(tb.Case):
             self.waits.append(seconds)
             return False
         opts = dict(idle=0.5, status_file=self.status_file, emit=self.reports.append, clock=lambda: self.now[0], wait=wait)
-        return b.Producer(s.cfg, self.stop, **{**opts, **k})
+        return (self.engine or b.Producer)(s.cfg, self.stop, **{**opts, **k})
 
     def env(self, s):
         state = Path(s.dir) / "state"

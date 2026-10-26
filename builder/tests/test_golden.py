@@ -121,6 +121,8 @@ class Golden(Loop):
                 self.fail(f"{name}: the {part} differ from golden/{path.name} at entry {i} (got {len(g)} entries, want {len(w)})\n"
                           f"want: {json.dumps(w[i], sort_keys=True) if i < len(w) else '(none)'}\n"
                           f"got:  {json.dumps(g[i], sort_keys=True) if i < len(g) else '(none)'}")
+        # then the whole record as the fixture is written: the same bytes, not only the same values
+        self.assertEqual((json.dumps(got, indent=1, sort_keys=True) + "\n").encode(), path.read_bytes(), f"{name}: the record is not the fixture's bytes")
 
     def run_steps(self, p, *between):
         """The producer's own run(), as a process starts it: run_started, load_unresolved, write_status, then steps. It does len(between) + 1 steps;
