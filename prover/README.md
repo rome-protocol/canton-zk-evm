@@ -13,9 +13,9 @@ The supplied installer targets Linux x86-64 with `apt`, `sudo`, an installed NVI
 | `make-block.py` | Makes one block with one transfer on a temporary copy of the chain, through reth's testing and Engine APIs, and saves the block and its execution witness. |
 | `make-input.sh` | Turns that block, its witness and the genesis into the prover input, using zisk-eth-client's own input code. |
 
-## Known problem: the toolchain download
+## The Rust toolchain
 
-`install.sh` runs the ZisK installer, which installs ZisK's Rust toolchain with `cargo-zisk toolchain install`. For the pinned ZisK release that command asks for the release `zisk-4.1.0` of 0xPolygonHermez/rust, which currently answers 404, so the installer stops there on a fresh machine. The workaround used so far is to install the `zisk-4.0.0` toolchain from the same repository by hand and carry on; it builds the same guest ELF and gives the same programVK as the toolchain of the earlier build. The fix is to pin the toolchain release and its checksum in `PINS` and have `install.sh` install it; that is not done yet.
+ZisK's installer installs the Rust toolchain with `cargo-zisk toolchain install`, which takes the highest `zisk-4.x.y` release of 0xPolygonHermez/rust that exists, so the toolchain it installs changes when a release is published there (it asked for `zisk-4.1.0` before that release had any files, and the install stopped on a 404). `install.sh` therefore downloads the release named by `ZISK_TOOLCHAIN` in `PINS` (`zisk-4.0.0`), checks the archive against `ZISK_TOOLCHAIN_SHA256`, and gives it to the installer through `ZISK_TOOLCHAIN_SOURCE_DIR`. That toolchain builds the same guest ELF and gives the same programVK as the earlier builds. Moving to another toolchain release is a change to those two lines of `PINS`, and the guest is rebuilt and its programVK checked afterwards.
 
 ## The wrapped proof
 

@@ -21,6 +21,11 @@
 #   3. Blocks commit under key B, still before T (the Osaka rules are not yet in force: the block times are checked against T).
 #   4. The old key is refused: the stand-ins and the stand-in prover are put back on key A, a block is built, and Canton refuses it with "the block
 #      was proven by another program": the chain stays where it was and reth goes back. With key B again the same block commits.
+#   5. The rollback before T: the same steps back to key A, ZisK 1.3.1 and a genesis copy without osakaTime; the chain holds key A and commits a block.
+#   6. The switch to key B once more, with a new time T2 a few minutes ahead. Before T2 a transaction over the per-transaction gas cap is accepted and
+#      mined, and the calls answer as on a chain without Osaka. A block at or after T2 commits, and then on reth: a modexp with an input over 1,024
+#      bytes fails (EIP-7823), a transaction over 2^24 gas is refused by the pool (EIP-7825), P256VERIFY (0x100) and CLZ (0x1e) work, and a block
+#      with a transaction at the cap and a contract that uses CLZ and P256VERIFY commits.
 # Needs Docker, Java 21, Rust, Python 3.12, jq, curl, git and network access. No GPU.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -73,7 +78,8 @@ block_time() { printf '%d' "$(rpc eth_getBlockByNumber "\"$1\",false" | jq -r .t
 VK_A=$(printf 'cd%.0s' $(seq 32)); RC_A=$(printf 'ef%.0s' $(seq 32)); RULES_A=$(printf '12%.0s' $(seq 32))
 VK_B=$(printf 'ab%.0s' $(seq 32)); RC_B=$(printf '34%.0s' $(seq 32)); RULES_B=$(printf '56%.0s' $(seq 32))
 PROGRAM_A="$VK_A/$RC_A/$RULES_A"; PROGRAM_B="$VK_B/$RC_B/$RULES_B"
-SWITCH_T_SECONDS=${CZE_SWITCH_T_SECONDS:-480}   # how far ahead of the switch T is
+SWITCH_T_SECONDS=${CZE_SWITCH_T_SECONDS:-900}   # how far ahead of the first switch T is: the stages up to the rollback happen before it
+SWITCH_T2_SECONDS=${CZE_SWITCH_T2_SECONDS:-300}   # and of the second switch T2 is: the chain commits a block before it and then waits for it
 
 step "the demo's keys and funded genesis"
 "$ROOT/demo/prepare.sh"
@@ -198,58 +204,78 @@ block 3 1 "the second deposit's block under key A"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"20.0","supply":"20.0"}' "U's wTKB under key A"
 is "$(clz)" null "the answer of CLZ before the switch"
 
-step "stage 2: the switch to key B and ZisK 1.3.2, osakaTime = T in the chain's genesis copy"
-echo "a. the new program on the prover: the prover is a stand-in, there is nothing to register"
-echo "b. the producer is stopped: no builder runs from here until step f"
-! pgrep -f "builder/builder.py" >/dev/null || fail "a builder is running"
-HEAD_BEFORE=$(rpc eth_getBlockByNumber '"latest",false' | jq -r .hash)
-is "$(head_number)" 3 "Canton's head at the switch"
-is "$(printf '%d' "$(rpc eth_blockNumber | jq -r .)")" 3 "reth's head at the switch"
-T=$(( $(date +%s) + SWITCH_T_SECONDS ))
-echo "c. osakaTime = $T ($SWITCH_T_SECONDS s from now) in the genesis copy, and reth restarts on its data"
-jq --argjson t "$T" --slurpfile base "$ROOT/network/genesis.json" '.config.osakaTime = $t | .config.blobSchedule.osaka = $base[0].config.blobSchedule.osaka' "$CZE_STATE_DIR/genesis.json" > "$CZE_STATE_DIR/genesis.json.new"
-mv "$CZE_STATE_DIR/genesis.json.new" "$CZE_STATE_DIR/genesis.json"; chmod 644 "$CZE_STATE_DIR/genesis.json"
-# The only change to the chain settings is the Osaka entries: with osakaTime = 0 they are the base genesis's settings.
-jq -e --argjson t "$T" --slurpfile base "$ROOT/network/genesis.json" '.config.osakaTime == $t and (.config | .osakaTime = 0) == $base[0].config' "$CZE_STATE_DIR/genesis.json" >/dev/null \
-  || fail "the new genesis copy differs from the base genesis in more than osakaTime"
-docker stop -t 60 "${RETH_CONTAINER:-cze-reth}" >/dev/null
-docker rm -f "${RETH_CONTAINER:-cze-reth}" >/dev/null
-CZE_RESUME=1 "$ROOT/network/reth/launch.sh"
-wait_reth
-is "$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .hash)" "$GENESIS_HASH" "the hash of reth's genesis after the restart"
-is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .hash)" "$HEAD_BEFORE" "reth's head after the restart"
-is "$(printf '%d' "$(rpc eth_blockNumber | jq -r .)")" 3 "reth's head number after the restart"
-# reth's own view of the fork schedule, where its eth_config answers: the next fork is Osaka at T.
-next=$(rpc eth_config 2>/dev/null | jq -r '.next.activationTime // empty' || true)
-if [ -n "$next" ]; then is "$next" "$T" "the activation time of the next fork, as reth says it"; else echo "   (reth's eth_config says no next fork: not checked here)"; fi
-echo "d. both sidecars restart with key B and --zisk-release 1.3.2, and the chain's guest.txt records zisk=1.3.2"
-stop_background real-sidecar stand-in-8085 stand-in-8086
-sleep 1
-start_sidecars "$VK_B" "$RC_B" 1.3.2
-write_guest "$VK_B" "$RC_B" "$RULES_B" 1.3.2
-is "$(sed -n 's/^zisk=//p' "$NET/guest.txt")" 1.3.2 "the ZisK release recorded in guest.txt"
-ps -p "$(cat "$NET/real-sidecar.pid")" -o args= | grep -q -- "--zisk-release 1.3.2" || fail "the real sidecar does not run with --zisk-release 1.3.2"
-echo "e. the operator proposes the program and the confirmer accepts it, a dry run of each first"
+# The switch of a running chain, in the order the README gives: <label> <vk> <root> <rules> <ZisK release> <osakaTime, or "none" to take it away> <Canton's head>.
+# The producer is stopped throughout (the builder is run by hand, one block at a time, so none runs between the steps).
+switch_program() {
+  local label=$1 vk=$2 rc=$3 rules=$4 release=$5 osaka=$6 head=$7 head_hash next r
+  P_VK=$vk; P_RC=$rc; P_RULES=$rules
+  echo "a. the new program on the prover: the prover is a stand-in, there is nothing to register"
+  echo "b. the producer is stopped: no builder runs from here until step f"
+  ! pgrep -f "builder/builder.py" >/dev/null || fail "a builder is running"
+  head_hash=$(rpc eth_getBlockByNumber '"latest",false' | jq -r .hash)
+  is "$(head_number)" "$head" "Canton's head at the switch to $label"
+  is "$(printf '%d' "$(rpc eth_blockNumber | jq -r .)")" "$head" "reth's head at the switch to $label"
+  echo "c. osakaTime = $osaka in the genesis copy, and reth restarts on its data"
+  if [ "$osaka" = none ]; then
+    jq 'del(.config.osakaTime) | del(.config.blobSchedule.osaka)' "$CZE_STATE_DIR/genesis.json" > "$CZE_STATE_DIR/genesis.json.new"
+  else
+    jq --argjson t "$osaka" --slurpfile base "$ROOT/network/genesis.json" '.config.osakaTime = $t | .config.blobSchedule.osaka = $base[0].config.blobSchedule.osaka' "$CZE_STATE_DIR/genesis.json" > "$CZE_STATE_DIR/genesis.json.new"
+  fi
+  mv "$CZE_STATE_DIR/genesis.json.new" "$CZE_STATE_DIR/genesis.json"; chmod 644 "$CZE_STATE_DIR/genesis.json"
+  # The only change to the chain settings is the Osaka entries: with osakaTime = 0 they are the base genesis's settings.
+  if [ "$osaka" = none ]; then
+    jq -e --slurpfile base "$ROOT/network/genesis.json" '(.config | has("osakaTime") | not) and ((.config | .osakaTime = 0 | .blobSchedule.osaka = $base[0].config.blobSchedule.osaka) == $base[0].config)' "$CZE_STATE_DIR/genesis.json" >/dev/null \
+      || fail "the genesis copy for $label differs from the base genesis in more than the Osaka entries"
+  else
+    jq -e --argjson t "$osaka" --slurpfile base "$ROOT/network/genesis.json" '.config.osakaTime == $t and (.config | .osakaTime = 0) == $base[0].config' "$CZE_STATE_DIR/genesis.json" >/dev/null \
+      || fail "the new genesis copy differs from the base genesis in more than osakaTime"
+  fi
+  docker stop -t 60 "${RETH_CONTAINER:-cze-reth}" >/dev/null
+  docker rm -f "${RETH_CONTAINER:-cze-reth}" >/dev/null
+  CZE_RESUME=1 "$ROOT/network/reth/launch.sh"
+  wait_reth
+  is "$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .hash)" "$GENESIS_HASH" "the hash of reth's genesis after the restart for $label"
+  is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .hash)" "$head_hash" "reth's head after the restart for $label"
+  is "$(printf '%d' "$(rpc eth_blockNumber | jq -r .)")" "$head" "reth's head number after the restart for $label"
+  # reth's own view of the fork schedule, where its eth_config answers: the next fork is Osaka at T (and none when it is taken away).
+  next=$(rpc eth_config 2>/dev/null | jq -r '.next.activationTime // empty' || true)
+  if [ "$osaka" != none ] && [ -n "$next" ]; then is "$next" "$osaka" "the activation time of the next fork, as reth says it"
+  elif [ "$osaka" = none ] && [ -n "$next" ]; then fail "reth names a next fork ($next) after Osaka was taken away"
+  else echo "   (reth's eth_config says no next fork, or does not answer: not checked here)"; fi
+  echo "d. both sidecars restart with the key of $label and --zisk-release $release, and the chain's guest.txt records zisk=$release"
+  stop_background real-sidecar stand-in-8085 stand-in-8086
+  sleep 1
+  start_sidecars "$vk" "$rc" "$release"
+  write_guest "$vk" "$rc" "$rules" "$release"
+  is "$(sed -n 's/^zisk=//p' "$NET/guest.txt")" "$release" "the ZisK release recorded in guest.txt"
+  ps -p "$(cat "$NET/real-sidecar.pid")" -o args= | grep -q -- "--zisk-release $release" || fail "the real sidecar does not run with --zisk-release $release"
+  echo "e. the operator proposes the program and the confirmer accepts it, a dry run of each first"
+  r=$(program_step 7575 propose --dry-run); jq -e '.dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program proposal: $r"
+  is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the dry run"
+  r=$(program_step 7575 propose); jq -e '.submitted == true and .alreadyProposed == false' <<<"$r" >/dev/null || fail "the program proposal: $r"
+  r=""
+  for _ in $(seq 1 30); do   # the proposal reaches the confirmer's participant a moment after the operator's commit
+    r=$(program_step 7576 accept --dry-run 2>/dev/null) && break
+    r=""; sleep 1
+  done
+  jq -e '.step == "accept" and .dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program acceptance: $r"
+  r=$(chain_programs); [ "$r" != "$vk/$rc/$rules" ] || fail "the chain holds the program of $label before the acceptance"
+  r=$(program_step 7576 accept); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the program acceptance: $r"
+  is "$(chain_programs)" "$vk/$rc/$rules" "the program the chain holds after the acceptance"
+  is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the acceptance (it is used up)"
+  is "$(head_number)" "$head" "Canton's head after the switch (no block was made in between)"
+  echo "f. the producer starts again"
+}
+# The program of the switch that is running is P_VK, P_RC and P_RULES (set by switch_program).
 program_step() {   # <participant port> <propose|accept> [--dry-run]: network/external/setup.py --program-step on one participant, which has no login here
   local port=$1 step=$2; shift 2
-  CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url "http://127.0.0.1:$port" --program-step "$step" --program-vk "$VK_B" --root-c "$RC_B" --rules-hash "$RULES_B" "$@" 2> "$WORK/setup.err" \
+  CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url "http://127.0.0.1:$port" --program-step "$step" --program-vk "$P_VK" --root-c "$P_RC" --rules-hash "$P_RULES" "$@" 2> "$WORK/setup.err" \
     || { cat "$WORK/setup.err" >&2; fail "setup.py --program-step $step on $port failed"; }
 }
-r=$(program_step 7575 propose --dry-run); jq -e '.dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program proposal: $r"
-is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the dry run"
-r=$(program_step 7575 propose); jq -e '.submitted == true and .alreadyProposed == false' <<<"$r" >/dev/null || fail "the program proposal: $r"
-r=""
-for _ in $(seq 1 30); do   # the proposal reaches the confirmer's participant a moment after the operator's commit
-  r=$(program_step 7576 accept --dry-run 2>/dev/null) && break
-  r=""; sleep 1
-done
-jq -e '.step == "accept" and .dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program acceptance: $r"
-is "$(chain_programs)" "$PROGRAM_A" "the program the chain holds after the dry runs"
-r=$(program_step 7576 accept); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the program acceptance: $r"
-is "$(chain_programs)" "$PROGRAM_B" "the program the chain holds after the acceptance"
-is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the acceptance (it is used up)"
-is "$(head_number)" 3 "Canton's head after the switch (no block was made in between)"
-echo "f. the producer starts again"
+
+step "stage 2: the switch to key B and ZisK 1.3.2, osakaTime = T in the chain's genesis copy"
+T=$(( $(date +%s) + SWITCH_T_SECONDS ))
+switch_program B "$VK_B" "$RC_B" "$RULES_B" 1.3.2 "$T" 3
 
 step "stage 3: blocks under key B, before T"
 deposit dep-3
@@ -278,4 +304,63 @@ sleep 1
 start_sidecars "$VK_B" "$RC_B" 1.3.2
 block 6 1 "the block of the deposit refused under key A, now under key B"
 [ "$(block_time latest)" -lt "$T" ] || fail "block 6 is at $(block_time latest), not before T = $T: raise CZE_SWITCH_T_SECONDS (it is $SWITCH_T_SECONDS)"
-echo "PASS: the chain was switched from key A to key B at block 3, committed blocks 4 to 6 under B before T = $T, and refused a block under A"
+
+step "stage 5: the rollback before T: the chain goes back to key A, ZisK 1.3.1 and Prague only, and commits under A"
+[ "$(date +%s)" -lt "$T" ] || fail "T = $T has passed before the rollback: raise CZE_SWITCH_T_SECONDS (it is $SWITCH_T_SECONDS)"
+switch_program A "$VK_A" "$RC_A" "$RULES_A" 1.3.1 none 6
+deposit dep-6
+block 7 1 "the block under key A after the rollback"
+is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"60.0","supply":"60.0"}' "U's wTKB after the rollback"
+is "$(clz)" null "the answer of CLZ after the rollback"
+
+# The Osaka rules, as reth applies them at its newest block. <before|after>: the answers when the newest block is before the activation time, or at or after it.
+# eth_call has no result when the call fails, as in the check of CLZ above.
+ZERO31=$(printf '00%.0s' $(seq 31)); ONE_WORD="\"0x${ZERO31}01\""
+call_data() { rpc eth_call "{\"to\":\"$1\",\"data\":\"$2\"},\"latest\"" || true; }
+osaka_calls() {
+  local when=$1 r modexp=0x0000000000000000000000000000000000000005 p256=0x0000000000000000000000000000000000000100
+  [ "$(call_data "$modexp" "$("$PY" "$ROOT/tests/demo_osaka.py" modexp 1024)")" != null ] || fail "modexp with a 1,024-byte base fails ($when)"
+  r=$(rpc eth_call "{\"data\":\"$("$PY" "$ROOT/tests/demo_osaka.py" initcode)\"},\"latest\"" || true)
+  if [ "$when" = before ]; then
+    [ "$(call_data "$modexp" "$("$PY" "$ROOT/tests/demo_osaka.py" modexp 1025)")" != null ] || fail "modexp with a 1,025-byte base fails before the activation time"
+    is "$(call_data "$p256" "$("$PY" "$ROOT/tests/demo_osaka.py" p256 valid)")" '"0x"' "the answer of address 0x100 before the activation time (nothing is there)"
+    is "$(clz)" null "the answer of CLZ before the activation time"
+    is "$r" null "the contract that needs CLZ and P256VERIFY, run as a call, before the activation time"
+  else
+    is "$(call_data "$modexp" "$("$PY" "$ROOT/tests/demo_osaka.py" modexp 1025)")" null "modexp with a 1,025-byte base after the activation time (EIP-7823)"
+    is "$(call_data "$p256" "$("$PY" "$ROOT/tests/demo_osaka.py" p256 valid)")" "$ONE_WORD" "P256VERIFY on a valid signature (EIP-7951)"
+    is "$(call_data "$p256" "$("$PY" "$ROOT/tests/demo_osaka.py" p256 invalid)")" '"0x"' "P256VERIFY on a signature with a changed hash"
+    is "$(clz)" "\"0x${ZERO31}ff\"" "CLZ of 1 (EIP-7939)"
+    is "$r" '"0x"' "the contract that needs CLZ and P256VERIFY, run as a call, after the activation time"
+  fi
+}
+send_tx() { "$PY" "$ROOT/tests/demo_osaka.py" send "$DEMO" "$@"; }   # prints {"sent": hash} or {"refused": reason}
+receipt_status() { rpc eth_getTransactionReceipt "\"$1\"" | jq -r '.status + " " + .blockNumber'; }
+CAP=16777216   # 2^24, the most gas one transaction may have once Osaka rules (EIP-7825)
+
+step "stage 6: the switch to key B and ZisK 1.3.2 again, osakaTime = T2, and the chain past T2"
+T2=$(( $(date +%s) + SWITCH_T2_SECONDS ))
+switch_program B "$VK_B" "$RC_B" "$RULES_B" 1.3.2 "$T2" 7
+# Before T2 the old rules are in force: a transaction over the cap is accepted by the pool and mined, and the calls answer as on a chain without Osaka.
+before_tx=$(send_tx cap $((CAP + 1))); jq -e 'has("sent")' <<<"$before_tx" >/dev/null || fail "the pool refused a transaction over the cap before T2: $before_tx"
+deposit dep-7
+block 8 1 "the block under key B before T2, with a transaction over the gas cap"
+[ "$(block_time latest)" -lt "$T2" ] || fail "block 8 is at $(block_time latest), not before T2 = $T2: raise CZE_SWITCH_T2_SECONDS (it is $SWITCH_T2_SECONDS)"
+is "$(receipt_status "$(jq -r .sent <<<"$before_tx")")" "0x1 0x8" "the receipt of the transaction over the cap, mined before T2"
+osaka_calls before
+echo "waiting for T2 = $T2"
+while [ "$(date +%s)" -le "$T2" ]; do sleep 2; done
+deposit dep-8
+block 9 1 "the first block at or after T2, under key B"
+[ "$(block_time latest)" -ge "$T2" ] || fail "block 9 is at $(block_time latest), before T2 = $T2"
+osaka_calls after
+refused=$(send_tx cap $((CAP + 1)))
+jq -e 'has("refused")' <<<"$refused" >/dev/null || fail "the pool took a transaction over the gas cap after T2 (EIP-7825): $refused"
+echo "the pool's answer: $(jq -r .refused <<<"$refused" | cut -c1-200)"
+at_cap=$(send_tx cap "$CAP"); jq -e 'has("sent")' <<<"$at_cap" >/dev/null || fail "the pool refused a transaction at the gas cap after T2: $at_cap"
+uses=$(send_tx create); jq -e 'has("sent")' <<<"$uses" >/dev/null || fail "the pool refused the contract that uses CLZ and P256VERIFY: $uses"
+block 10 0 "the block with a transaction at the gas cap and the contract that uses CLZ and P256VERIFY"
+is "$(receipt_status "$(jq -r .sent <<<"$at_cap")")" "0x1 0xa" "the receipt of the transaction at the gas cap"
+is "$(receipt_status "$(jq -r .sent <<<"$uses")")" "0x1 0xa" "the receipt of the contract that uses CLZ and P256VERIFY (it reverts unless both work)"
+is "$(chain_programs)" "$PROGRAM_B" "the program the chain holds at the end"
+echo "PASS: the chain was switched from key A to key B at block 3, committed blocks 4 to 6 under B before T = $T and refused a block under A, went back to A and committed block 7 before T, then was switched to B again with T2 = $T2 at block 7 and committed blocks 8 to 10 under B: before T2 the Prague rules, after it the Osaka rules (modexp over 1,024 bytes refused, a transaction over 2^24 gas refused by the pool, P256VERIFY and CLZ working and in a committed block)"
