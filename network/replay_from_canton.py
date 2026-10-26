@@ -8,11 +8,15 @@ Canton's BlockRecord holds (the Advance carried them), so reth must end on the b
             blocks that were proven under an older prover. The scratch reth is started like the rebuild's (launch.sh, discovery off, no peers) on its own
             data, at block N-1 or earlier: blocks before N are applied first without being reported. A reth already at or past N is refused, since
             reth does not execute a block it already has (this also keeps the check off the chain's own reth). It stops at the first block that does
-            not match, with the same FAIL line; the report is written either way.
+            not match, with the same FAIL line; the report is written for every stop except a range that is not one (the failure is in the report).
   rebuild   reth must be running as network/reth/launch.sh starts it (discovery off, no peers), empty or behind Canton. Blocks reth has already are
             skipped, so a run that stopped can be started again and goes on from reth's head. It stops at the first block that does not match, with
             a report: the block's header does not hash to the hash its record names, Canton has no record of the next block, the block is not on
-            reth's head, reth refuses the block, or reth's block hash differs from the recorded one. It ends when reth's head is Canton's head.
+            reth's head, reth refuses the block, or reth's block hash differs from the recorded one. It ends when reth's head is Canton's head. Before it changes reth it reads the records once to see which chain Canton holds: only records of reth's chain id (and,
+            where the party sees the ZkChain contract, of its operator, confirmer and builder) count, a block number that appears twice stops it, every block above
+            reth's head must have a record, and the newest record must be the ZkChain contract's head. --after-offset N reads only the records created after the ledger
+            offset N (the current chain's start, or the first offset a pruned participant holds). It takes the builder's work-folder lock (a running builder refuses it).
+            A block whose header names execution requests (EIP-7002/7251) is refused: the record does not hold them.
 
 This only reads Canton (a read token for the reader or the builder party) and never submits anything to it. It does not start reth.
 Check prints: mode, from, to, checked, ok, report, reth_head.
@@ -21,7 +25,7 @@ Prints key=value lines (rebuild): mode, canton_head, canton_hash, reth_before, a
 on a stop it prints FAIL lines (block, recorded, reth, why) to stderr and exits 1. Reads the environment the builder reads: CZE_STATE_DIR (the Engine
 secret, jwt.hex), RETH_HTTP_PORT, RETH_ENGINE_PORT, CZE_LEDGER_URL, CZE_LEDGER_TOKEN or CZE_LEDGER_TOKEN_FILE, and the party to read as: --party, or
 CZE_READER_PARTY, or CZE_BUILDER_PARTY."""
-import argparse, base64, hashlib, hmac, json, os, sys, time, urllib.error, urllib.request
+import argparse, base64, contextlib, hashlib, hmac, json, os, sys, time, urllib.error, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +35,8 @@ from keccak import keccak256
 RECORD_SUFFIX = ":Zk.Chain:BlockRecord"
 PAGE = 200            # updates asked of Canton at a time
 ZERO32 = "0x" + "00" * 32
+CHAIN = "#canton-zk-evm:Zk.Chain:ZkChain"
+NO_REQUESTS = "0x" + hashlib.sha256(b"").hexdigest()   # the header's requests hash of a block with no execution requests
 
 
 class ReplayError(Exception):
@@ -114,7 +120,7 @@ def q(b: bytes) -> str:
 
 
 def payload_of(header: bytes, txs_hex: str) -> tuple:
-    """(the Engine API payload for this header and these transactions, the parent beacon block root). The header is the Osaka form: 21 fields, up to
+    """(the Engine API payload for this header and these transactions, the parent beacon block root). The header is the Prague form: 21 fields, up to
     the parent beacon block root and the requests hash."""
     fields, end = rlp_decode(header)
     if not isinstance(fields, list) or end != len(header) or len(fields) != 21 or any(not isinstance(f, bytes) for f in fields):
@@ -137,7 +143,8 @@ def post(url: str, body: dict | None, headers: dict, timeout: float = 120):
 
 
 class Canton:
-    """The block records, read from the Ledger API as the reader (or builder) party: GET the ledger end, then POST /v2/updates in pages, each filtered to the BlockRecord template."""
+    """The block records, read from the Ledger API as the reader (or builder) party: GET the ledger end, then POST /v2/updates in pages, each filtered to the BlockRecord template.
+    The ZkChain contract (the chain's one state contract) is read from the active contracts when the party can see it, which the builder party can."""
     def __init__(self, url: str, party: str, token: str = "", token_file: str = "", page: int = PAGE):
         self.url, self.party, self.token, self.token_file, self.page = url.rstrip("/"), party, token, token_file, page
 
@@ -146,30 +153,64 @@ class Canton:
         token = Path(self.token_file).read_text().strip() if self.token_file else self.token
         return {"authorization": "Bearer " + token} if token else {}
 
-    def records(self):
-        """Every block record, in the order Canton committed them: dicts with number, hash, parent, header (bytes), txs (hex). Pages are yielded as they are read."""
-        end = int(post(self.url + "/v2/state/ledger-end", None, self.auth)["offset"])
+    def _post(self, path: str, body: dict | None):
+        """One call to the Ledger API. A refusal or a failure is a stop that says what Canton answered, never a crash."""
+        try:
+            return post(self.url + path, body, self.auth)
+        except urllib.error.HTTPError as e:
+            try:
+                detail = e.read().decode("utf-8", "replace")[:300]
+            except OSError:
+                detail = ""
+            finally:
+                e.close()
+            raise ReplayError(f"Canton answered HTTP {e.code} to {path.split('?')[0]}" + (f": {detail}" if detail else "")) from e
+        except (OSError, ValueError) as e:
+            raise ReplayError(f"Canton does not answer {path.split('?')[0]} as expected ({type(e).__name__}: {e})") from e
+
+    def _end(self) -> int:
+        try:
+            return int(self._post("/v2/state/ledger-end", None)["offset"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise ReplayError(f"Canton's ledger end cannot be read ({type(e).__name__}: {e})") from e
+
+    def chains(self) -> list:
+        """The create arguments of the active ZkChain contracts this party can see that it builds (the builder party sees its own; the reader party sees none)."""
+        flt = {"identifierFilter": {"TemplateFilter": {"value": {"templateId": CHAIN, "includeCreatedEventBlob": False}}}}
+        body = {"eventFormat": {"filtersByParty": {self.party: {"cumulative": [flt]}}, "verbose": False}, "activeAtOffset": self._end()}
+        found = self._post("/v2/state/active-contracts", body)
+        try:
+            args = [e["contractEntry"]["JsActiveContract"]["createdEvent"]["createArgument"] for e in found if "JsActiveContract" in e["contractEntry"]]
+            return [self.parse_chain(a) for a in args if a.get("builder") == self.party]
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            raise ReplayError(f"a ZkChain contract cannot be read ({type(e).__name__}: {e})") from e
+
+    def records(self, after_offset: int = 0):
+        """Every block record after the ledger offset (default: from the start), in the order Canton committed them: dicts with chain id, parties, number, hash, parent,
+        header (bytes), txs (hex). Pages are yielded as they are read."""
+        end = self._end()
         flt = {"identifierFilter": {"TemplateFilter": {"value": {"templateId": "#canton-zk-evm:Zk.Chain:BlockRecord", "includeCreatedEventBlob": False}}}}
-        begin = 0
+        begin = after_offset
         while begin < end:
             body = {"beginExclusive": begin, "endInclusive": end, "updateFormat": {"includeTransactions": {
                 "eventFormat": {"filtersByParty": {self.party: {"cumulative": [flt]}}, "verbose": False}, "transactionShape": "TRANSACTION_SHAPE_ACS_DELTA"}}}
-            items = post(f"{self.url}/v2/updates?limit={self.page}", body, self.auth)
+            items = self._post(f"/v2/updates?limit={self.page}", body)
             if not isinstance(items, list):
                 raise ReplayError("Canton's answer to the updates read is not a list")
             if not items:
                 break
             last = begin
             for item in items:
-                kind, wrapped = next(iter(item["update"].items()))
-                value = wrapped["value"]
-                last = max(last, int(value["offset"]))
-                if kind != "Transaction":
-                    continue
-                for event in value.get("events", []):
-                    created = event.get("CreatedEvent")
-                    if created and created["templateId"].endswith(RECORD_SUFFIX):
-                        yield self.parse(created["createArgument"])
+                try:
+                    kind, wrapped = next(iter(item["update"].items()))
+                    value = wrapped["value"]
+                    last = max(last, int(value["offset"]))
+                    events = value.get("events", []) if kind == "Transaction" else []
+                    created = [e["CreatedEvent"] for e in events if "CreatedEvent" in e and e["CreatedEvent"]["templateId"].endswith(RECORD_SUFFIX)]
+                except (KeyError, TypeError, ValueError, AttributeError, StopIteration) as e:
+                    raise ReplayError(f"an update from Canton is not in the shape this tool reads ({type(e).__name__}: {e})") from e
+                for c in created:
+                    yield self.parse(c["createArgument"])
             if last <= begin:
                 raise ReplayError("Canton's updates did not move forward")
             begin = last
@@ -178,10 +219,16 @@ class Canton:
     def parse(a: dict) -> dict:
         try:
             h = lambda s: "0x" + s.removeprefix("0x").lower()
-            return {"number": int(a["number"]), "hash": h(a["blockHash"]), "parent": h(a["parentHash"]),
+            return {"chain_id": int(a["chainId"]), "operator": a["operator"], "confirmer": a["confirmer"], "builder": a["builder"],
+                    "number": int(a["number"]), "hash": h(a["blockHash"]), "parent": h(a["parentHash"]),
                     "header": bytes.fromhex(a["headerHex"]), "txs": a["txsHex"]}
         except (KeyError, ValueError, TypeError, AttributeError) as e:
             raise ReplayError(f"a block record cannot be read ({type(e).__name__}: {e})") from e
+
+    @staticmethod
+    def parse_chain(a: dict) -> dict:
+        return {"chain_id": int(a["chainId"]), "operator": a["operator"], "confirmer": a["confirmer"], "builder": a["builder"],
+                "number": int(a["headNumber"]), "hash": "0x" + a["headHash"].removeprefix("0x").lower()}
 
 
 # ---- reth -------------------------------------------------------------------------------------------------------
@@ -213,6 +260,9 @@ class Reth:
     def head(self) -> dict:
         return self.block("latest")
 
+    def chain_id(self) -> int:
+        return int(self._call(self.http_url, "eth_chainId", [], {}), 16)
+
     def block_roots(self, number: int) -> dict:
         """What reth itself computed for a block: hash, state root, receipts root, gas used, and how many transactions it holds."""
         b = self._call(self.http_url, "eth_getBlockByNumber", [hex(number), False], {})
@@ -232,6 +282,56 @@ class Reth:
         return self.engine("engine_forkchoiceUpdatedV3", [state, None])["payloadStatus"]
 
 
+# ---- one chain, checked before reth is touched -------------------------------------------------------------------
+
+def scope_of(canton, chain_id: int) -> tuple:
+    """(the fields every record of this chain carries, the head the ZkChain contract names or None). The records are those with reth's chain id; when the party sees the
+    ZkChain contract (the builder party does), its operator, confirmer and builder narrow them to the one chain instance, and its head is what the replay must end on."""
+    scope, head = {}, None
+    chains = canton.chains()
+    if len(chains) > 1:
+        raise ReplayError(f"this party sees {len(chains)} ZkChain contracts it builds: it cannot tell which chain to rebuild")
+    if chains:
+        c = chains[0]
+        if c["chain_id"] != chain_id:
+            raise ReplayError(f"reth's chain id is {chain_id}, the ZkChain contract's is {c['chain_id']}: reth was started for another chain")
+        scope = {k: c[k] for k in ("operator", "confirmer", "builder")}
+        head = {"number": c["number"], "hash": c["hash"]}
+    return scope, head
+
+
+def survey(records, chain_id: int, scope: dict) -> dict:
+    """number -> hash of the records of this chain, from one read of the whole stream. A number that appears twice stops it: the party sees more than one chain of this id
+    (a network that was reset starts a new chain from the same genesis, chain id and pins), and the blocks of the older one must not reach reth."""
+    found = {}
+    for rec in records:
+        if rec["chain_id"] != chain_id or any(rec[k] != v for k, v in scope.items()):
+            continue
+        n = rec["number"]
+        if n in found:
+            raise ReplayError(f"Canton holds two records for block {n}: more than one chain is visible to this party. Read from the current chain's first block with "
+                              f"--after-offset (the ledger offset before its first block), or read as the builder party", n, found[n])
+        found[n] = rec["hash"]
+    return found
+
+
+def require_run(known: dict, first: int, last: int) -> None:
+    """Every block first..last has a record."""
+    for k in range(first, last + 1):
+        if k not in known:
+            raise ReplayError(f"Canton has no record of block {k}" + (f": it holds blocks up to {max(known)}" if known and k > max(known) else ""), k)
+
+
+def replayable(records, chain_id: int, scope: dict, first: int, last: int):
+    """The records first..last of this chain, in order, as the second read of the stream gives them."""
+    for rec in records:
+        if rec["chain_id"] != chain_id or any(rec[k] != v for k, v in scope.items()) or rec["number"] < first:
+            continue
+        if rec["number"] > last:
+            break
+        yield rec
+
+
 # ---- rebuild ---------------------------------------------------------------------------------------------------
 
 def apply_block(reth, rec: dict, head: dict) -> None:
@@ -243,11 +343,13 @@ def apply_block(reth, rec: dict, head: dict) -> None:
         payload, beacon_root = payload_of(rec["header"], rec["txs"])
     except ValueError as e:
         raise ReplayError(f"the record cannot be turned into a payload: {e}", n, want) from e
+    if "0x" + rlp_decode(rec["header"])[0][20].hex() != NO_REQUESTS:
+        raise ReplayError("the block carries execution requests (its header's requests hash is not the empty one), which the record does not hold: this tool cannot replay it", n, want)
     if int(payload["blockNumber"], 16) != n or payload["parentHash"] != rec["parent"]:
         raise ReplayError("the record's number or parent hash is not the header's", n, want)
     if rec["parent"] != head["hash"] or n != head["number"] + 1:
-        raise ReplayError(f"the block does not follow reth's head (reth's head is block {head['number']} {head['hash']}, the block's parent is {rec['parent']})",
-                          n, want, head["hash"])
+        raise ReplayError(f"the block does not follow reth's head (reth's head is block {head['number']} {head['hash']}, the block's parent is {rec['parent']}). "
+                          "If this is block 1, reth's genesis is not the chain's: start reth with the genesis the chain was started with", n, want, head["hash"])
     status = reth.new_payload(payload, beacon_root)
     if status.get("status") != "VALID":
         raise ReplayError(f"reth did not accept the block: newPayload answered {status.get('status')}"
@@ -263,32 +365,35 @@ def apply_block(reth, rec: dict, head: dict) -> None:
         raise ReplayError("reth's head is not the block after the update", n, want, now["hash"])
 
 
-def rebuild(canton, reth, log=lambda s: None) -> dict:
-    """Makes reth's head Canton's head by replaying the records after reth's head. Resumable: it starts from reth's own head, and reth's head
-    must be on Canton's chain (the first record after it names it as its parent)."""
+def rebuild(canton, reth, log=lambda s: None, after_offset: int = 0) -> dict:
+    """Makes reth's head Canton's head by replaying the records after reth's head. Resumable: it starts from reth's own head, and reth's head must be on
+    Canton's chain (the first record after it names it as its parent). The whole stream is read once before reth is touched, to see which chain it holds: records of
+    another chain id are left out, a block number that appears twice stops the run, there must be a record for every block above reth's head, and where the party
+    sees the ZkChain contract its head must be the newest record."""
+    chain_id = reth.chain_id()
+    scope, zk_head = scope_of(canton, chain_id)
     before = reth.head()
-    head, applied, last = dict(before), 0, None
-    for rec in canton.records():
-        last = rec if last is None or rec["number"] > last["number"] else last
-        if rec["number"] <= head["number"]:
-            if rec["number"] == head["number"] and rec["hash"] != head["hash"]:
-                raise ReplayError("reth's head is not the block Canton recorded at its number", rec["number"], rec["hash"], head["hash"])
-            continue
-        if rec["number"] != head["number"] + 1:
-            raise ReplayError(f"Canton has no record of block {head['number'] + 1} (the next record is block {rec['number']})", head["number"] + 1)
+    known = survey(canton.records(after_offset), chain_id, scope)
+    top = max(known, default=0)
+    if not known and before["number"] != 0:
+        raise ReplayError(f"Canton has no block records, and reth is at block {before['number']}", before["number"])
+    if known and zk_head and (top, known[top]) != (zk_head["number"], zk_head["hash"]):
+        raise ReplayError(f"the newest block record (block {top}) is not the head of the ZkChain contract (block {zk_head['number']})", top, known[top], zk_head["hash"])
+    if not known and zk_head and zk_head["number"] != 0:
+        raise ReplayError(f"Canton shows no block records, and the ZkChain contract's head is block {zk_head['number']}: the read starts too late (--after-offset)", zk_head["number"])
+    if before["number"] > top:
+        raise ReplayError(f"reth is ahead of Canton (reth's head is block {before['number']}, Canton's is {top}): use sync_reth.py", before["number"])
+    if before["number"] in known and known[before["number"]] != before["hash"]:
+        raise ReplayError("reth's head is not the block Canton recorded at its number", before["number"], known[before["number"]], before["hash"])
+    require_run(known, before["number"] + 1, top)
+    head, applied = dict(before), 0
+    for rec in replayable(canton.records(after_offset), chain_id, scope, before["number"] + 1, top):
         apply_block(reth, rec, head)
         head, applied = {"number": rec["number"], "hash": rec["hash"]}, applied + 1
         log(f"block {rec['number']} {rec['hash']} applied")
-    if last is None:
-        if head["number"] != 0:
-            raise ReplayError(f"Canton has no block records, and reth is at block {head['number']}", head["number"])
-        return {"mode": "rebuild", "canton_head": 0, "canton_hash": head["hash"], "reth_before": before["number"], "applied": 0,
-                "reth_head": head["number"], "reth_hash": head["hash"]}
-    if head["number"] > last["number"]:
-        raise ReplayError(f"reth is ahead of Canton (reth's head is block {head['number']}, Canton's is {last['number']}): use sync_reth.py", head["number"])
-    if head != {"number": last["number"], "hash": last["hash"]}:
-        raise ReplayError("reth's head is not Canton's head after the replay", last["number"], last["hash"], head["hash"])
-    return {"mode": "rebuild", "canton_head": last["number"], "canton_hash": last["hash"], "reth_before": before["number"], "applied": applied,
+    if head["number"] != top or (top and head["hash"] != known[top]):
+        raise ReplayError(f"Canton's records changed between the two reads: reth ended on block {head['number']}, the first read saw blocks up to {top}", head["number"], known.get(head["number"]), head["hash"])
+    return {"mode": "rebuild", "canton_head": top, "canton_hash": head["hash"], "reth_before": before["number"], "applied": applied,
             "reth_head": head["number"], "reth_hash": head["hash"]}
 
 
@@ -300,53 +405,54 @@ def header_roots(header: bytes, txs_hex: str) -> dict:
     return {"state_root": "0x" + fields[3].hex(), "receipts_root": "0x" + fields[5].hex(), "gas_used": int.from_bytes(fields[10], "big"), "tx_count": len(tx_list(txs_hex))}
 
 
-def check(canton, reth, start: int, end: int, log=lambda s: None) -> dict:
-    """Re-executes blocks start..end on reth (a scratch reth at block start-1 or earlier) and compares what reth got with the recorded header. Returns the
-    report; report["ok"] is True only when every block in the range matched. Stops at the first block that does not match: report["failure"] holds it
-    (and `ReplayError` is not raised for a mismatch, so the caller can write the report). Raises ReplayError when the check cannot run at all."""
+def check(canton, reth, start: int, end: int, log=lambda s: None, after_offset: int = 0) -> dict:
+    """Re-executes blocks start..end on reth (a scratch reth at block start-1 or earlier) and compares what reth got with the recorded header. Returns the report;
+    report["ok"] is True only when every block in the range matched. Any stop after the range is accepted (a block that does not match, a missing block, a refusal
+    before the range, reth that cannot be used) is in report["failure"] with its block number, so the caller can always write the report. Raises ReplayError only for a
+    range that is not one."""
     if start < 1 or end < start:
         raise ReplayError(f"the range is {start}..{end}: it must be block 1 or later, and --to not before --from")
-    before = reth.head()
-    if before["number"] > start - 1:
-        raise ReplayError(f"reth is at block {before['number']}, past block {start - 1}: reth does not execute a block it already has. Start a scratch reth on its own data "
-                          f"(network/reth/launch.sh) at block {start - 1} or earlier", start)
-    head = dict(before)
     report = {"mode": "check", "from": start, "to": end, "ok": False, "checked": 0, "blocks": [], "failure": None}
-    for rec in canton.records():
-        n = rec["number"]
-        if n <= head["number"]:
-            if n == head["number"] and rec["hash"] != head["hash"]:
-                raise ReplayError("the scratch reth's head is not the block Canton recorded at its number", n, rec["hash"], head["hash"])
-            continue
-        if n > end:
-            break
-        if n != head["number"] + 1:
-            raise ReplayError(f"Canton has no record of block {head['number'] + 1} (the next record is block {n})", head["number"] + 1)
-        try:
-            apply_block(reth, rec, head)
-            entry = {"number": n, "recorded_hash": rec["hash"], "reth_hash": rec["hash"], "tx_count": None}
-            if n >= start:
-                want, got = header_roots(rec["header"], rec["txs"]), reth.block_roots(n)
-                entry.update({"state_root": want["state_root"], "receipts_root": want["receipts_root"], "gas_used": want["gas_used"], "tx_count": want["tx_count"]})
-                for k in ("state_root", "receipts_root", "gas_used", "tx_count"):
-                    if got.get(k) is not None and got[k] != want[k]:
-                        raise ReplayError(f"reth's {k.replace('_', ' ')} is not the recorded one (recorded {want[k]}, reth {got[k]})", n, rec["hash"], got.get("hash"))
-        except ReplayError as err:
-            if n < start:
+    try:
+        chain_id = reth.chain_id()
+        scope, _ = scope_of(canton, chain_id)
+        before = reth.head()
+        if before["number"] > start - 1:
+            raise ReplayError(f"reth is at block {before['number']}, past block {start - 1}: reth does not execute a block it already has. Start a scratch reth on its own data "
+                              f"(network/reth/launch.sh) at block {start - 1} or earlier", start)
+        known = survey(canton.records(after_offset), chain_id, scope)
+        if before["number"] in known and known[before["number"]] != before["hash"]:
+            raise ReplayError("the scratch reth's head is not the block Canton recorded at its number", before["number"], known[before["number"]], before["hash"])
+        require_run(known, before["number"] + 1, end)
+        head = dict(before)
+        for rec in replayable(canton.records(after_offset), chain_id, scope, before["number"] + 1, end):
+            n = rec["number"]
+            try:
+                apply_block(reth, rec, head)
+                entry = {"number": n, "recorded_hash": rec["hash"], "reth_hash": rec["hash"], "tx_count": None}
+                if n >= start:
+                    want, got = header_roots(rec["header"], rec["txs"]), reth.block_roots(n)
+                    entry.update({"state_root": want["state_root"], "receipts_root": want["receipts_root"], "gas_used": want["gas_used"], "tx_count": want["tx_count"]})
+                    for k in ("state_root", "receipts_root", "gas_used", "tx_count"):
+                        if got.get(k) is not None and got[k] != want[k]:
+                            raise ReplayError(f"reth's {k.replace('_', ' ')} is not the recorded one (recorded {want[k]}, reth {got[k]})", n, rec["hash"], got.get("hash"))
+            except ReplayError as err:
+                if n >= start:
+                    report["blocks"].append({"number": n, "recorded_hash": rec["hash"], "reth_hash": err.found, "ok": False})
                 raise
-            report["failure"] = {"number": n, "recorded": err.recorded, "reth": err.found, "why": err.why}
-            report["blocks"].append({"number": n, "recorded_hash": rec["hash"], "reth_hash": err.found, "ok": False})
-            return report
-        head = {"number": n, "hash": rec["hash"]}
-        if n >= start:
-            entry["ok"] = True
-            report["blocks"].append(entry)
-            report["checked"] += 1
-            log(f"block {n} {rec['hash']} matches")
-    if head["number"] < end:
-        raise ReplayError(f"Canton has no record of block {head['number'] + 1}: it holds blocks up to {head['number']}, and the range ends at {end}", head["number"] + 1)
+            head = {"number": n, "hash": rec["hash"]}
+            if n >= start:
+                entry["ok"] = True
+                report["blocks"].append(entry)
+                report["checked"] += 1
+                log(f"block {n} {rec['hash']} matches")
+        if head["number"] != end:
+            raise ReplayError(f"Canton's records changed between the two reads: reth ended on block {head['number']}, the range ends at {end}", head["number"] + 1)
+    except ReplayError as err:
+        report["failure"] = {"number": err.number, "recorded": err.recorded, "reth": err.found, "why": err.why}
+        return report
     report["ok"] = True
-    report["reth_head"] = head["number"]
+    report["reth_head"] = end
     return report
 
 
@@ -356,33 +462,42 @@ def main(argv=None) -> int:
     ap.add_argument("--from", dest="start", type=int, help="check: the first block to re-execute")
     ap.add_argument("--to", dest="end", type=int, help="check: the last block to re-execute")
     ap.add_argument("--report", help="check: where to write the report (JSON); default check-report-<from>-<to>.json in the current folder")
+    ap.add_argument("--after-offset", type=int, default=0, help="read the block records created after this ledger offset (default 0, the start): the offset before the "
+                    "current chain's first block, when the party sees records of an older chain too, or the first offset the participant still holds")
     ap.add_argument("--party", default=os.environ.get("CZE_READER_PARTY") or os.environ.get("CZE_BUILDER_PARTY", ""), help="the party to read Canton as (a read token)")
     args = ap.parse_args(argv)
     e = os.environ
     try:
-        if args.mode == "check" and (args.start is None or args.end is None):
-            raise ReplayError("check needs --from N and --to M")
-        if not args.party:
-            raise ReplayError("set --party, CZE_READER_PARTY or CZE_BUILDER_PARTY")
-        state = Path(e.get("CZE_STATE_DIR", ROOT / "state"))
-        try:
-            secret = bytes.fromhex((state / "jwt.hex").read_text().strip())
-        except (OSError, ValueError) as err:
-            raise ReplayError(f"cannot read the Engine secret {state / 'jwt.hex'}: {err}") from err
-        canton = Canton(e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"), args.party, e.get("CZE_LEDGER_TOKEN", ""), e.get("CZE_LEDGER_TOKEN_FILE", ""))
-        reth = Reth(f"http://127.0.0.1:{e.get('RETH_HTTP_PORT', 8545)}", f"http://127.0.0.1:{e.get('RETH_ENGINE_PORT', 8551)}", secret)
-        log = lambda s: print(s, file=sys.stderr, flush=True)
-        if args.mode == "check":
-            rep = check(canton, reth, args.start, args.end, log)
-            path = Path(args.report or f"check-report-{args.start}-{args.end}.json")
-            path.write_text(json.dumps(rep, indent=2) + "\n")
-            if not rep["ok"]:
-                f = rep["failure"]
-                print(ReplayError(f["why"], f["number"], f["recorded"], f["reth"]).report() + f" report={path}", file=sys.stderr)
-                return 1
-            result = {"mode": "check", "from": args.start, "to": args.end, "checked": rep["checked"], "ok": "true", "report": path, "reth_head": rep["reth_head"]}
-        else:
-            result = rebuild(canton, reth, log)
+        with contextlib.ExitStack() as stack:
+            if args.mode == "check" and (args.start is None or args.end is None):
+                raise ReplayError("check needs --from N and --to M")
+            if not args.party:
+                raise ReplayError("set --party, CZE_READER_PARTY or CZE_BUILDER_PARTY")
+            state = Path(e.get("CZE_STATE_DIR", ROOT / "state"))
+            try:
+                secret = bytes.fromhex((state / "jwt.hex").read_text().strip())
+            except (OSError, ValueError) as err:
+                raise ReplayError(f"cannot read the Engine secret {state / 'jwt.hex'}: {err}") from err
+            if args.mode == "rebuild":   # the builder's work folder lock, as sync_reth.py takes it: a running builder must not have its reth moved under it
+                import builder
+                try:
+                    stack.enter_context(builder.work_lock(e.get("CZE_WORK_DIR", str(state / "builder"))))
+                except builder.BuilderError as err:
+                    raise ReplayError(f"the builder is running, or another rebuild or sync_reth: stop it first, reth must not be moved under it ({err})") from err
+            canton = Canton(e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"), args.party, e.get("CZE_LEDGER_TOKEN", ""), e.get("CZE_LEDGER_TOKEN_FILE", ""))
+            reth = Reth(f"http://127.0.0.1:{e.get('RETH_HTTP_PORT', 8545)}", f"http://127.0.0.1:{e.get('RETH_ENGINE_PORT', 8551)}", secret)
+            log = lambda s: print(s, file=sys.stderr, flush=True)
+            if args.mode == "check":
+                rep = check(canton, reth, args.start, args.end, log, args.after_offset)
+                path = Path(args.report or f"check-report-{args.start}-{args.end}.json")
+                path.write_text(json.dumps(rep, indent=2) + "\n")
+                if not rep["ok"]:
+                    f = rep["failure"]
+                    print(ReplayError(f["why"], f["number"], f["recorded"], f["reth"]).report() + f" report={path}", file=sys.stderr)
+                    return 1
+                result = {"mode": "check", "from": args.start, "to": args.end, "checked": rep["checked"], "ok": "true", "report": path, "reth_head": rep["reth_head"]}
+            else:
+                result = rebuild(canton, reth, log, args.after_offset)
     except ReplayError as err:
         print(err.report(), file=sys.stderr)
         return 1

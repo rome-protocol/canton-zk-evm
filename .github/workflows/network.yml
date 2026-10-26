@@ -2,10 +2,10 @@ name: network
 
 on:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", "builder/keccak.py", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", ".github/workflows/network.yml"]
+    paths: [".github/actions/pinned-images/**", "network/**", "daml/**", "tests/**", "PINS", "demo/canton.py", "demo/results/**", "prover/fixtures/**", "builder/keccak.py", "sidecar/tests/fixtures/block.json", ".github/workflows/network.yml"]
 
 permissions:
   contents: read
