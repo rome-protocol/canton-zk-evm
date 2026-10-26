@@ -84,26 +84,66 @@ impl Release {
     }
 }
 
-fn check_1_3_1(abi: &[u8]) -> Result<bool, zk_verifier::Error> {
-    zk_verifier::verify(Release::V1_3_1.key(), abi)
-}
+/// A proof check: whether the 1,344 bytes verify under the PLONK key of the release.
+type ProofCheck = fn(Release, &[u8]) -> Result<bool, zk_verifier::Error>;
 
-fn check_1_3_2(abi: &[u8]) -> Result<bool, zk_verifier::Error> {
-    zk_verifier::verify(Release::V1_3_2.key(), abi)
-}
+/// The most keys one sidecar lists.
+pub const MAX_KEYS: usize = 4;
 
-/// What `verify` pins, and how it checks a proof.
-#[derive(Clone)]
-pub struct Config {
+/// One program the sidecar accepts proofs of: its key, the root of the ZisK release's final
+/// circuit, and the release. The release picks the PLONK key the proof is checked under; the other
+/// two are the pins the proof must carry.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Key {
     /// The key of the program whose proofs are accepted.
     pub program_vk: [u8; 32],
     /// The root of the ZisK release's final circuit.
     pub root_c: [u8; 32],
     /// The ZisK release the proofs are made with.
     pub release: Release,
-    /// The proof check: always the release's, except in this crate's own tests (see
+}
+
+impl Key {
+    pub fn new(program_vk: [u8; 32], root_c: [u8; 32], release: Release) -> Key {
+        Key {
+            program_vk,
+            root_c,
+            release,
+        }
+    }
+
+    /// A key from `<programVK>:<rootC>[:<release>]`: 64 lowercase hex digits each (with or without
+    /// a `0x`), and a release number; without one the release is 1.3.1.
+    pub fn parse(s: &str) -> Result<Key, String> {
+        let parts: Vec<&str> = s.split(':').collect();
+        if !(2..=3).contains(&parts.len()) {
+            return Err(format!("{s:?} is not <programVK>:<rootC>[:<release>]"));
+        }
+        let hex32 = |v: &str| -> Result<[u8; 32], String> {
+            unhex(v.strip_prefix("0x").unwrap_or(v))
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| format!("{v:?} is not 64 lowercase hex digits"))
+        };
+        let release = match parts.get(2) {
+            None => Release::default(),
+            Some(r) => Release::parse(r).ok_or_else(|| {
+                format!("{r} is not a ZisK release this sidecar knows (1.3.1 or 1.3.2)")
+            })?,
+        };
+        Ok(Key::new(hex32(parts[0])?, hex32(parts[1])?, release))
+    }
+}
+
+/// What `verify` pins, and how it checks a proof: a short list of keys. A proof is accepted when
+/// it verifies under the PLONK key of one entry's release and carries that entry's own program key
+/// and root.
+#[derive(Clone)]
+pub struct Config {
+    /// The keys whose proofs are accepted, at most `MAX_KEYS`, no program key twice.
+    keys: Vec<Key>,
+    /// A replacement for the release's proof check, for this crate's own tests (see
     /// `with_proof_check`). It is private so that no caller can replace it.
-    check_proof: fn(&[u8]) -> Result<bool, zk_verifier::Error>,
+    check_override: Option<ProofCheck>,
 }
 
 impl Config {
@@ -115,13 +155,43 @@ impl Config {
     /// The pins of a chain whose proofs are made with `release`.
     pub fn for_release(program_vk: [u8; 32], root_c: [u8; 32], release: Release) -> Config {
         Config {
-            program_vk,
-            root_c,
-            release,
-            check_proof: match release {
-                Release::V1_3_1 => check_1_3_1,
-                Release::V1_3_2 => check_1_3_2,
-            },
+            keys: vec![Key::new(program_vk, root_c, release)],
+            check_override: None,
+        }
+    }
+
+    /// A list of keys. It is refused when empty, longer than `MAX_KEYS`, or when two entries have
+    /// the same program key.
+    pub fn with_keys(keys: Vec<Key>) -> Result<Config, String> {
+        if keys.is_empty() {
+            return Err("no key given".to_string());
+        }
+        if keys.len() > MAX_KEYS {
+            return Err(format!("{} keys given, at most {MAX_KEYS}", keys.len()));
+        }
+        for (i, k) in keys.iter().enumerate() {
+            if keys[..i].iter().any(|o| o.program_vk == k.program_vk) {
+                return Err(format!(
+                    "program key {} is listed twice",
+                    hex(&k.program_vk)
+                ));
+            }
+        }
+        Ok(Config {
+            keys,
+            check_override: None,
+        })
+    }
+
+    /// The listed keys. They can be set only through `for_release` and `with_keys`, which check them.
+    pub fn keys(&self) -> &[Key] {
+        &self.keys
+    }
+
+    fn check(&self, release: Release, abi: &[u8]) -> Result<bool, zk_verifier::Error> {
+        match self.check_override {
+            Some(f) => f(release, abi),
+            None => zk_verifier::verify(release.key(), abi),
         }
     }
 
@@ -130,9 +200,9 @@ impl Config {
     /// switched on by this crate's own dev-dependency, so the program and any crate that depends
     /// on this one get no way to turn the proof check off unless they enable the feature by name.
     #[cfg(feature = "test-proof-check")]
-    pub fn with_proof_check(self, check: fn(&[u8]) -> Result<bool, zk_verifier::Error>) -> Config {
+    pub fn with_proof_check(self, check: ProofCheck) -> Config {
         Config {
-            check_proof: check,
+            check_override: Some(check),
             ..self
         }
     }
@@ -151,18 +221,47 @@ fn committed_hash(public_values: &[u8]) -> Option<[u8; 32]> {
         .then(|| words[1..33].try_into().unwrap())
 }
 
-/// Checks the 1,344-byte proof under the pins and returns the block hash it commits to.
-pub fn proven_block_hash(cfg: &Config, abi: &[u8]) -> Result<[u8; 32], &'static str> {
+/// Checks the 1,344-byte proof and returns the key it was accepted under and the block hash it
+/// commits to. The proof is checked once per release among the keys, and is accepted under the
+/// key of a release it verifies under whose program key and root it carries. A proof that
+/// verifies but carries no listed key's pins is refused, even if its pins are one entry's program
+/// key and another's root.
+pub fn proven_block(cfg: &Config, abi: &[u8]) -> Result<(Key, [u8; 32]), &'static str> {
     if abi.len() != zk_verifier::ABI_LEN {
         return Err("the proof is not 1,344 bytes");
     }
-    if !matches!((cfg.check_proof)(abi), Ok(true)) {
-        return Err("the proof does not verify");
+    // The result of the proof check per release, so each release is checked once.
+    let mut verified: Vec<(Release, bool)> = Vec::with_capacity(MAX_KEYS);
+    let mut other_pins = false;
+    for key in &cfg.keys {
+        let ok = match verified.iter().find(|(r, _)| *r == key.release) {
+            Some(&(_, ok)) => ok,
+            None => {
+                let ok = matches!(cfg.check(key.release, abi), Ok(true));
+                verified.push((key.release, ok));
+                ok
+            }
+        };
+        if !ok {
+            continue;
+        }
+        if abi[768..800] == key.program_vk && abi[800..832] == key.root_c {
+            let hash =
+                committed_hash(&abi[832..]).ok_or("the proof does not commit to one block hash")?;
+            return Ok((*key, hash));
+        }
+        other_pins = true;
     }
-    if abi[768..800] != cfg.program_vk || abi[800..832] != cfg.root_c {
-        return Err("the proof was made by another program or ZisK release");
-    }
-    committed_hash(&abi[832..]).ok_or("the proof does not commit to one block hash")
+    Err(if other_pins {
+        "the proof was made by another program or ZisK release"
+    } else {
+        "the proof does not verify"
+    })
+}
+
+/// Checks the 1,344-byte proof under the pins and returns the block hash it commits to.
+pub fn proven_block_hash(cfg: &Config, abi: &[u8]) -> Result<[u8; 32], &'static str> {
+    proven_block(cfg, abi).map(|(_, hash)| hash)
 }
 
 const MALFORMED: &str = "malformed input";
@@ -186,12 +285,12 @@ fn check_fields(
     header: Vec<u8>,
     txs: Vec<u8>,
 ) -> Result<String, &'static str> {
-    let hash = proven_block_hash(cfg, &proof)?;
+    let (key, hash) = proven_block(cfg, &proof)?;
     let b = block::check(&hash, &header, &txs)?;
     Ok(format!(
         "ok {} {} {} {} {} {} {} {} {} {}",
-        hex(&cfg.program_vk),
-        hex(&cfg.root_c),
+        hex(&key.program_vk),
+        hex(&key.root_c),
         hex(&hash),
         hex(&b.parent),
         b.number,
