@@ -456,6 +456,19 @@ def check(canton, reth, start: int, end: int, log=lambda s: None, after_offset: 
     return report
 
 
+@contextlib.contextmanager
+def work_lock(work_dir: str):
+    """The same lock the builder holds on its work folder (builder/builder.py work_lock, without importing the builder and its dependencies)."""
+    import fcntl
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    with open(Path(work_dir) / "builder.lock", "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as err:
+            raise ReplayError(f"the builder is running, or another rebuild or sync_reth (it holds {Path(work_dir) / 'builder.lock'}): stop it first, reth must not be moved under it") from err
+        yield
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Rebuild reth from the blocks Canton recorded.")
     ap.add_argument("mode", choices=["rebuild", "check"])
@@ -478,12 +491,8 @@ def main(argv=None) -> int:
                 secret = bytes.fromhex((state / "jwt.hex").read_text().strip())
             except (OSError, ValueError) as err:
                 raise ReplayError(f"cannot read the Engine secret {state / 'jwt.hex'}: {err}") from err
-            if args.mode == "rebuild":   # the builder's work folder lock, as sync_reth.py takes it: a running builder must not have its reth moved under it
-                import builder
-                try:
-                    stack.enter_context(builder.work_lock(e.get("CZE_WORK_DIR", str(state / "builder"))))
-                except builder.BuilderError as err:
-                    raise ReplayError(f"the builder is running, or another rebuild or sync_reth: stop it first, reth must not be moved under it ({err})") from err
+            if args.mode == "rebuild":   # the builder's work-folder lock (builder.lock, as builder.work_lock and sync_reth.py take it): a running builder must not have its reth moved under it
+                stack.enter_context(work_lock(e.get("CZE_WORK_DIR", str(state / "builder"))))
             canton = Canton(e.get("CZE_LEDGER_URL", "http://127.0.0.1:7575"), args.party, e.get("CZE_LEDGER_TOKEN", ""), e.get("CZE_LEDGER_TOKEN_FILE", ""))
             reth = Reth(f"http://127.0.0.1:{e.get('RETH_HTTP_PORT', 8545)}", f"http://127.0.0.1:{e.get('RETH_ENGINE_PORT', 8551)}", secret)
             log = lambda s: print(s, file=sys.stderr, flush=True)

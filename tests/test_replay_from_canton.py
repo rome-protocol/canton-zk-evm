@@ -519,8 +519,10 @@ class Main(Case):
             os.environ.pop("CZE_WORK_DIR", None)
             with contextlib.ExitStack() as stack:
                 if hold_lock:
-                    import builder
-                    stack.enter_context(builder.work_lock(str(Path(state, "builder"))))
+                    import fcntl   # what builder.work_lock does: an exclusive flock on builder.lock in the work folder
+                    Path(state, "builder").mkdir()
+                    held = stack.enter_context(open(Path(state, "builder", "builder.lock"), "w"))
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 stack.enter_context(contextlib.redirect_stdout(out))
                 stack.enter_context(contextlib.redirect_stderr(err))
                 code = rc.main(list(argv))
