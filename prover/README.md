@@ -13,6 +13,10 @@ The supplied installer targets Linux x86-64 with `apt`, `sudo`, an installed NVI
 | `make-block.py` | Makes one block with one transfer on a temporary copy of the chain, through reth's testing and Engine APIs, and saves the block and its execution witness. |
 | `make-input.sh` | Turns that block, its witness and the genesis into the prover input, using zisk-eth-client's own input code. |
 
+## Known problem: the toolchain download
+
+`install.sh` runs the ZisK installer, which installs ZisK's Rust toolchain with `cargo-zisk toolchain install`. For the pinned ZisK release that command asks for the release `zisk-4.1.0` of 0xPolygonHermez/rust, which currently answers 404, so the installer stops there on a fresh machine. The workaround used so far is to install the `zisk-4.0.0` toolchain from the same repository by hand and carry on; it builds the same guest ELF and gives the same programVK as the toolchain of the earlier build. The fix is to pin the toolchain release and its checksum in `PINS` and have `install.sh` install it; that is not done yet.
+
 ## The wrapped proof
 
 1,344 bytes: the PLONK proof (768), the programVK (32), rootC (32) and the public values (512), one after the other. `prove-one.sh` writes them as `wrapped-proof.hex` and as the JSON that `cargo-zisk-dev export-solidity-calldata` makes.

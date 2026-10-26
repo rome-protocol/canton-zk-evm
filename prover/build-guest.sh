@@ -14,7 +14,7 @@
 # the prover state folder, where prove-one.sh looks for it.
 #
 # The build runs in one fixed folder, /tmp/cze-guest-build, not in the source folder. The script
-# empties that folder, copies the guest sources into it (guest/ and network/genesis.json, in the
+# empties that folder, copies the guest sources into it (guest/ and the genesis file, default network/genesis.json, in the
 # same layout), and builds there with CARGO_HOME and CARGO_TARGET_DIR inside it. The aim is that the
 # folder the sources came from does not change the ELF, and so not the programVK: cargo hashes the
 # absolute path of each path dependency into the crate's metadata, and --remap-path-prefix does not

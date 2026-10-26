@@ -15,6 +15,8 @@
   demo_w1.py plain <count> [nonce]         <count> plain transfers of 1 wei from V, each to a new address (21,000 gas each, so 1,428 fit in a block under the cap); print the hashes
                                            (the nightly load test's flood, tests/demo_nightly_l3.py). The nonces start at [nonce], or at V's pending nonce when none is given
   demo_w1.py nonce                         print V's pending nonce
+  demo_w1.py osaka                         check that the chain runs Osaka: the pool refuses a transaction of 16,777,217 gas (2^24 + 1), and the CLZ opcode answers 255 for 1
+                                           (an eth_call with its own code); print "osaka ok", and send nothing that reth would take
 
 The transactions wait in reth's pool until the builder cuts a block. The failed calls carry a gas limit of their own, so that reth takes them.
 """
@@ -36,10 +38,11 @@ LAB_GAS = 4_000_000
 LAB_FUNCTIONS = ("build()", "undone()", "kill()")
 DEPTH, LOGS, CREATES = 14, 10, 1
 # Per call: the count in the call and its gas limit. With STRESS_GAS, a Transfer log costs about 2.4k gas with the holder worked out, and a token made with
-# its mint about 120k. A batch of 4,096 ids that shares one array for ids and values is a 131,168-byte log, 1.07M gas each (measured on anvil, Prague), so 9 of
-# them use 9.63M, in one call of 9.8M. One transaction may use at most 2^24 (16,777,216) gas under Osaka, so the 18 batches of the W1 block go in two calls (19.6M
-# of gas limit together): that is what is left of the 30 Mgas cap beside the other calls of the W1 block (the calls' gas limits add up to 27.6M).
-FLOOD = {"transfers": ("transfers(uint256,uint256)", 700, STRESS_GAS), "batches": ("batches(uint256,uint256)", 9, 9_800_000), "spawn": ("spawn(uint256)", 10, STRESS_GAS),
+# its mint about 120k. A batch of 4,096 ids that shares one array for ids and values is a 131,168-byte log, about 1.07M gas each, and every call also pays a fixed
+# 0.2M for the 4,096-id array loop, the memory expansion and the intrinsic gas: 9 batches need 9,861,047 gas (measured on anvil, Osaka, solc 0.8.28), so the call
+# gets 10M. One transaction may use at most 2^24 (16,777,216) gas under Osaka, so the 18 batches of the W1 block go in two calls (20M of gas limit together): the
+# calls' gas limits of the W1 block add up to 28M of the 30 Mgas cap, and the builder packs by gas used.
+FLOOD = {"transfers": ("transfers(uint256,uint256)", 700, STRESS_GAS), "batches": ("batches(uint256,uint256)", 9, 10_000_000), "spawn": ("spawn(uint256)", 10, STRESS_GAS),
          "mint": ("mint()", None, 10_000_000)}
 
 
@@ -71,6 +74,26 @@ def plain(folder: Path, count: int, first_nonce: int | None = None) -> list:
     return hashes
 
 
+OSAKA_GAS_CAP = 1 << 24
+# PUSH1 1, CLZ, PUSH1 0, MSTORE, PUSH1 32, PUSH1 0, RETURN: the number of leading zero bits of 1 in 256 bits is 255
+CLZ_CODE = "0x6001" + "1e" + "600052" + "60206000f3"
+
+
+def osaka_checks(folder: Path) -> None:
+    """The Osaka rules are in force on the chain reth runs: the pool refuses one transaction above 2^24 gas, and CLZ is an opcode."""
+    try:
+        evm.send(folder, "v", "0x" + "00" * 19 + "0f", "", OSAKA_GAS_CAP + 1)
+    except SystemExit as refusal:
+        if "gas limit" not in str(refusal).lower():
+            raise SystemExit(f"the pool refused a transaction of {OSAKA_GAS_CAP + 1} gas, but not for its gas limit: {refusal}")
+    else:
+        raise SystemExit(f"the pool took a transaction of {OSAKA_GAS_CAP + 1} gas: the chain does not run Osaka")
+    probe = "0x" + "00" * 19 + "c1"
+    answer = int(evm.rpc("eth_call", [{"to": probe}, "latest", {probe: {"code": CLZ_CODE}}]), 16)
+    if answer != 255:
+        raise SystemExit(f"CLZ of 1 answered {answer}, not 255: the chain does not run Osaka")
+
+
 def main(argv: list) -> int:
     folder = evm.state_dir()
     cmd = argv[:1]
@@ -99,6 +122,10 @@ def main(argv: list) -> int:
         return 0
     if cmd == ["plain"] and len(argv) in (2, 3) and all(a.isdigit() for a in argv[1:]):
         print("\n".join(plain(folder, int(argv[1]), int(argv[2]) if len(argv) == 3 else None)))
+        return 0
+    if cmd == ["osaka"] and len(argv) == 1:
+        osaka_checks(folder)
+        print("osaka ok")
         return 0
     if cmd == ["nonce"] and len(argv) == 1:
         print(pending_nonce(folder))

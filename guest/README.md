@@ -24,7 +24,7 @@ The chain-rules check has two marked changes, each labelled `canton-zk-evm chang
 
 The lockfile `bin/guests/stateless-validator-reth/Cargo.lock` is changed too: it has two entries that upstream's does not, the `cze-rules` package and the `cze-rules` line in the reth guest's dependencies. The file carries no marking of its own; this README and [NOTICE](../NOTICE) record the change.
 
-Upstream's guest accepts the chain config supplied in the input. This guest accepts only chain id 770101 with every fork from genesis up to Osaka, the `config` of `network/genesis.json`. The check is part of the program, so the programVK identifies a program that rejects blocks under any other rules.
+Upstream's guest accepts the chain config supplied in the input. This guest accepts only chain id 770101 with every fork from genesis up to Osaka, the `config` of the genesis file it was built from (default `network/genesis.json`). The check is part of the program, so the programVK identifies a program that rejects blocks under any other rules.
 
 The copy leaves out upstream's `.cargo/config.toml`, and with it the `rustflags` that file sets. So the ELF is built with only the flags `cargo-zisk build` adds itself, plus the path mappings described under "Building". Building it with upstream's flags would give a different ELF and a different programVK.
 
