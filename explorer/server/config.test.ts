@@ -123,7 +123,7 @@ describe("pins", () => {
   it("reads the real published file when nothing else is given", () => {
     const c = loadConfig({ READER_PARTY: "reader::1220ab" });
     expect(c.pins).toEqual({
-      programVK: "0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f",
+      programVK: "0xdbe132ed93824452dc2466618977d8825653b829576a384f1b6e4367bca00688",
       rootC: "0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4",
       file: "session.txt",
     });

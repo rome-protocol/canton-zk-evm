@@ -36,7 +36,7 @@ export RPC=https://ostia.devnet.romeprotocol.xyz/rpc
 forge create src/Counter.sol:Counter --rpc-url $RPC --private-key $PRIVATE_KEY --evm-version london --broadcast
 ```
 
-What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; their deposit and transfer transactions go through and the on-chain verifier accepts the proofs, but no MPC network runs, so nothing settles privately). Ostia's rules include every fork up to Prague (`network/genesis.json`), so any EVM target up to `prague` is accepted; `london` is a safe choice. An opcode that only a later fork adds will not run.
+What has run on Ostia so far: the kit in `load/mixed/` (solc 0.8.17, built for `london`), Uniswap V2 (solc 0.5.16 and 0.6.6, `istanbul`) and TACEO's Merces contracts (solc 0.8.37, `osaka`; their deposit and transfer transactions go through and the on-chain verifier accepts the proofs, but no MPC network runs, so nothing settles privately). DevNet's rules include every fork up to Prague until it moves to Osaka (a new local chain started from `network/genesis.json` runs Osaka from its first block), so any EVM target up to `prague` is accepted; `london` is a safe choice. An opcode that only a later fork adds will not run.
 
 Verify the source on the explorer. It speaks the Etherscan API, so `forge verify-contract` works with the Etherscan verifier and any API key text:
 

@@ -1,6 +1,6 @@
 """Blocks in flight when the producer keeps more than one at a time: what each one is, and when another may be cut. See README.md,
 "Provers". Nothing here touches reth, Canton or the journal: `Pipeline` in builder.py does, and asks this module the questions."""
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # The states of a block in flight, from the cut to the end.
 BUILT = "built"          # reth built it and made it its head; the transactions are on disk
@@ -21,7 +21,6 @@ class InFlight:
     proving: object = None           # the prove stage's handle while it runs
     proven: object = None
     error: Exception | None = None   # why it is FAILED
-    exclude: set = field(default_factory=set)
     on_tip: bool = False             # it was built on a block in flight, so the chain contract it names is read again when it is submitted
 
     @property
@@ -38,14 +37,16 @@ def free_provers(in_flight: list, provers: int) -> int:
     return max(0, provers - sum(1 for b in in_flight if b.state in (BUILT, PROVING)))
 
 
-def why_not_cut(max_in_flight: int, in_flight: list, provers: int, any_up: bool = True, in_doubt: bool = False) -> str | None:
+def why_not_cut(max_in_flight: int, in_flight: list, provers: int, any_up: bool = True, in_doubt: bool = False, one_at_a_time: str | None = None) -> str | None:
     """Why no block is cut now, or None when one may be. A block is cut only when fewer than `max_in_flight` are in flight, a prover is up and
     free, no command is in doubt and no block in flight has failed: the block goes straight to a prover, and the EVM is never more than
-    `max_in_flight` blocks ahead of Canton."""
+    `max_in_flight` blocks ahead of Canton. `one_at_a_time` (a reason) says the producer is in a mode that cuts only with nothing in flight."""
     if len(in_flight) >= max_in_flight:
         return "the most blocks are in flight"
     if in_doubt:
         return "a command is in doubt"
+    if one_at_a_time and in_flight:
+        return one_at_a_time
     if any(b.state == FAILED for b in in_flight):
         return "a block in flight has failed"
     if not any_up:

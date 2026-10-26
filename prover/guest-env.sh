@@ -12,15 +12,20 @@
 # The one folder every guest build runs in. It is emptied at the start of each build.
 GUEST_BUILD_DIR=/tmp/cze-guest-build
 
-# guest_prepare_build: empties GUEST_BUILD_DIR and copies the sources the guest build reads into it,
-# keeping their layout: guest/ (without any target folder) and network/genesis.json, which the rules
-# crate includes by a relative path. Sets GUEST_BUILD_PKG, the guest package inside the copy.
+# guest_prepare_build [GENESIS]: empties GUEST_BUILD_DIR and copies the sources the guest build reads
+# into it, keeping their layout: guest/ (without any target folder) and the genesis file, which the
+# rules crate includes by a relative path as network/genesis.json. GENESIS is the file to copy; the
+# default is the repository's network/genesis.json. A chain whose Osaka fork starts at a later time
+# builds its own guest from its own genesis. Sets GUEST_BUILD_PKG, the guest package inside the copy.
 guest_prepare_build() {
+  local genesis=${1:-$ROOT/network/genesis.json}
+  [ -f "$genesis" ] || fail "the genesis file $genesis does not exist"
+  jq -e '.config' "$genesis" >/dev/null || fail "$genesis holds no chain config"
   case $GUEST_BUILD_DIR in /tmp/?*) ;; *) fail "refusing to empty $GUEST_BUILD_DIR" ;; esac
   rm -rf "$GUEST_BUILD_DIR"
   mkdir -p "$GUEST_BUILD_DIR/src/network" "$GUEST_BUILD_DIR/cargo-home" "$GUEST_BUILD_DIR/target"
   ( cd "$ROOT" && tar -cf - --exclude=target guest ) | tar -xf - -C "$GUEST_BUILD_DIR/src"
-  cp "$ROOT/network/genesis.json" "$GUEST_BUILD_DIR/src/network/genesis.json"
+  cp "$genesis" "$GUEST_BUILD_DIR/src/network/genesis.json"
   # shellcheck disable=SC2034  # used by build-guest.sh
   GUEST_BUILD_PKG=$GUEST_BUILD_DIR/src/guest/bin/guests/stateless-validator-reth
 }

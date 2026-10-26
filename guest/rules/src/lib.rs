@@ -1,7 +1,7 @@
 //! The chain settings the guest is built for, and the rules hash that stands for them.
 //!
 //! The settings are the `config` part of `network/genesis.json`: chain id 770101, every fork
-//! from genesis up to Prague. They are compiled into the guest, which refuses any input whose
+//! from genesis up to Osaka. They are compiled into the guest, which refuses any input whose
 //! chain config is not exactly this one.
 //!
 //! The rules hash is the SHA-256 of the canonical encoding of the chain config. The canonical
