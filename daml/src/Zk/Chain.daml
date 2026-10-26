@@ -134,10 +134,11 @@ template ZkChain
     pausedUntil : Optional Time
     -- The confirmer alone may start a pause only from this time on; the operator and the confirmer together are not held to it.
     pauseCooldownUntil : Optional Time
-    -- When the pause that is running (or ran last) began. A lifted or ended pause leaves a cooldown as long as it ran, at most `pauseMax` of
-    -- it from the moment it ends, so a false alarm lifted after five minutes does not lock the confirmer's brake out for days.
+    -- When the pause that is running (or ran last) began. A lifted or ended pause leaves a cooldown as long as the whole pause ran, renewals
+    -- included, counted from the moment it ends (at most `pauseMax` for a pause that the confirmer made alone), so a false alarm lifted after
+    -- five minutes does not lock the confirmer's brake out for days.
     pauseStartedAt : Optional Time
-    -- At most this many units of each token may be withdrawn in any `quotaWindow`; `None` is no quota.
+    -- At most this many units of each Canton instrument (admin and id) may be withdrawn in any `quotaWindow`; `None` is no quota.
     withdrawalQuota : Optional Decimal
     quotaWindow : Optional RelTime
     -- The withdrawals that still count against the quota; see `Tally`.
@@ -387,11 +388,11 @@ template RenewPauseProposal
 coolingAfter : Time -> Time -> Time
 coolingAfter began ended = addRelTime ended (subTime ended began)
 
--- The longest pause that a chain without a `pauseMax` allows, the longest `pauseMax` it may be given, and the longest quota window.
 -- How long a proposal to pause or renew a pause may wait for the confirmer.
 renewProposalLife : RelTime
 renewProposalLife = hours 1
 
+-- The longest pause that a chain without a `pauseMax` allows, the longest `pauseMax` it may be given, and the longest quota window.
 defaultPauseMax, maxPauseMax, maxQuotaWindow : RelTime
 defaultPauseMax = days 3
 maxPauseMax = days 14
@@ -413,7 +414,7 @@ pausedAt c now = case c.pausedUntil of
   Some u -> now < u
   None -> False
 
--- Withdrawals of one token that still count against the quota, up to `countedUntil`. The quota is a rolling window, kept in
+-- Withdrawals of one Canton instrument (admin and id) that still count against the quota, up to `countedUntil`. The quota is a rolling window, kept in
 -- buckets so the contract stays small: a withdrawal counts from its block until the end of its bucket (a 24th of the window, at least a
 -- second) plus a whole window. So at no moment do more than the quota's units leave in any window, and a withdrawal may count a
 -- little longer than the window. An entry keeps the expiry it was made with, so a change of the window never frees or holds earlier ones.
@@ -448,7 +449,7 @@ withdrawalsOf legs = fmap concat (mapA one legs)
       pure [(partyToText t.instrumentId.admin <> "/" <> t.instrumentId.id, amount)]
     one _ = pure []
 
--- Refuse a block whose withdrawals would take a token over the quota, and give the tallies that the chain keeps after it. Without a quota
+-- Refuse a block whose withdrawals would take a Canton instrument over the quota, and give the tallies that the chain keeps after it. Without a quota
 -- nothing is counted and the tallies stay as they are.
 takeAgainstQuota : ZkChain -> Time -> [Leg] -> Update (Optional [Tally])
 takeAgainstQuota chain now legs = case (chain.withdrawalQuota, chain.quotaWindow) of
