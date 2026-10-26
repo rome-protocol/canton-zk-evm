@@ -64,8 +64,11 @@ class Rules(unittest.TestCase):
 
     def test_a_cancelled_attempt_counts_when_it_was_proven(self):
         cancelled = attempt(3, 2, 10, ["0xb"], outcome=None, final=False) + [{"v": 1, "run": "r", "seq": 0, "time": "2026-01-01T00:00:13.000Z", "event": "cancelled", "attempt": 2, "number": 3, "depends_on": 1}]
-        s = pc.stats(attempt(2, 1, 0, ["0xa"], outcome="refused", final=False) + cancelled)
+        lines = attempt(2, 1, 0, ["0xa"], outcome="refused", final=False) + cancelled
+        s = pc.stats(lines, {"0x0302"[2:]: "2026-01-01T00:00:12.000Z"})   # the prover finished block 3's proof a second before it was dropped
         self.assertEqual((s["cancelled"], s["cancelledProven"], s["refused"]), (1, 1, 1))
+        self.assertEqual(pc.stats(lines, {"0x0302"[2:]: "2026-01-01T00:00:14.000Z"})["cancelledProven"], 0)   # after the drop: not proven then
+        self.assertEqual(pc.stats(lines)["cancelledProven"], 0)
 
     def test_reads_a_folder_and_skips_a_cut_line(self):
         with tempfile.TemporaryDirectory() as d:

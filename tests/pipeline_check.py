@@ -3,7 +3,7 @@
 
   pipeline_check.py journal <journal folder> [--sent FILE] [--blocks N]   the journal alone (and the sent transactions, one hash a line, when
                                                                             given): prints the violations and exits 1 if there is one
-  pipeline_check.py stats <journal folder>                                  one JSON line: what the faults left in the journal
+  pipeline_check.py stats <journal folder> [--proved FILE]                  one JSON line: what the faults left in the journal (FILE: the prover's log)
   pipeline_check.py chain <journal folder> [--sent FILE]                    reth against the journal, block by block: the block at each committed
                                                                             height is the one the journal says Canton took, and each sent
                                                                             transaction is in it, at or below reth's finalized block
@@ -135,14 +135,28 @@ def check_journal(lines: list, sent=None, blocks: int = 0) -> list:
     return bad
 
 
-def stats(lines: list) -> dict:
+def read_proved(path) -> dict:
+    """The prover's own log (tests/pipeline_prove.sh): first 16 hex digits of a block's hash -> when its proof was finished."""
+    out: dict = {}
+    if path and Path(path).exists():
+        for raw in Path(path).read_text().splitlines():
+            parts = raw.split()
+            if len(parts) == 3:
+                out[parts[1]] = parts[0]
+    return out
+
+
+def stats(lines: list, proved=None) -> dict:
+    """What the faults left. The journal writes a block's `proof_ended` when the producer next looks at it, which, while a submit runs, is after the
+    submit: so whether a dropped block had its proof is read from the prover's own log, `proved`."""
+    proved = proved or {}
     atts = attempts_of(lines)
     cancelled = [a for a in atts.values() if "cancelled" in a]
     return {
         "committed": sum(1 for a in atts.values() if committed(a)),
         "refused": sum(1 for a in atts.values() if a.get("outcome") == "refused"),
         "cancelled": len(cancelled),
-        "cancelledProven": sum(1 for a in cancelled if "ok" in a["proofs"]),   # the faulted block's successor had its proof when it was dropped
+        "cancelledProven": sum(1 for a in cancelled if proved.get(a.get("hash", "0x")[2:18], "~") <= a["cancelled"]),   # the block behind the faulted one had its proof when it was dropped
         "unknown": sum(1 for a in atts.values() if a.get("outcome") == "unknown"),
         "unknownCommitted": sum(1 for a in atts.values() if a.get("outcome") == "unknown" and a.get("resolution") == "committed"),
         "lost": sum(len(ln.get("transactions") or []) for ln in lines if ln.get("event") == "lost"),
@@ -244,29 +258,32 @@ def watch(out: str, stop: str) -> int:
     return 0
 
 
+def options(rest: list) -> dict:
+    out: dict = {}
+    while rest:
+        if rest[0] in ("--sent", "--blocks", "--proved") and len(rest) > 1:
+            out[rest[0][2:]] = rest[1]
+        else:
+            sys.exit(__doc__)
+        rest = rest[2:]
+    return out
+
+
 def main(argv: list) -> int:
     if len(argv) >= 3 and argv[1] == "journal":
-        sent = None
-        blocks = 0
-        rest = argv[3:]
-        while rest:
-            if rest[0] == "--sent" and len(rest) > 1:
-                sent = [x for x in Path(rest[1]).read_text().split() if x]
-            elif rest[0] == "--blocks" and len(rest) > 1:
-                blocks = int(rest[1])
-            else:
-                sys.exit(__doc__)
-            rest = rest[2:]
-        bad = check_journal(read_journal(argv[2]), sent, blocks)
-        print("\n".join(bad) if bad else f"journal ok: {json.dumps(stats(read_journal(argv[2])))}")
+        o = options(argv[3:])
+        sent = [x for x in Path(o["sent"]).read_text().split() if x] if "sent" in o else None
+        bad = check_journal(read_journal(argv[2]), sent, int(o.get("blocks", 0)))
+        print("\n".join(bad) if bad else f"journal ok: {json.dumps(stats(read_journal(argv[2]), read_proved(o.get('proved'))))}")
         return 1 if bad else 0
-    if len(argv) in (3, 5) and argv[1] == "chain":
-        sent = [x for x in Path(argv[4]).read_text().split() if x] if len(argv) == 5 and argv[3] == "--sent" else None
+    if len(argv) >= 3 and argv[1] == "chain":
+        o = options(argv[3:])
+        sent = [x for x in Path(o["sent"]).read_text().split() if x] if "sent" in o else None
         bad = check_chain(read_journal(argv[2]), sent)
         print("\n".join(bad[:20]) if bad else "chain ok: every committed block is reth's, every sent transaction is in it and final")
         return 1 if bad else 0
-    if len(argv) == 3 and argv[1] == "stats":
-        print(json.dumps(stats(read_journal(argv[2]))))
+    if len(argv) >= 3 and argv[1] == "stats":
+        print(json.dumps(stats(read_journal(argv[2]), read_proved(options(argv[3:]).get("proved")))))
         return 0
     if len(argv) == 4 and argv[1] == "watch":
         return watch(argv[2], argv[3])

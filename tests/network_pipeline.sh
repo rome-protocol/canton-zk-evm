@@ -103,7 +103,7 @@ export DEMO_PROOF_PROGRAM_VK=$VK DEMO_PROOF_ROOT_C=$RC
 export CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee
 export CZE_MAKE_INPUT_CMD=$ROOT/builder/tests/fake-make-input.sh CZE_PROVE_CMD=$ROOT/tests/pipeline_prove.sh
 export CZE_READ_AS="$OPERATOR_PARTY $GATEWAY_PARTY"
-export PIPELINE_PROVE_DELAY=${PIPELINE_PROVE_DELAY:-1} PIPELINE_TAMPER_FLAG=$WORK/tamper.flag PIPELINE_HOLD_FILE=$WORK/hold.file
+export PIPELINE_PROVE_DELAY=${PIPELINE_PROVE_DELAY:-1} PIPELINE_TAMPER_FLAG=$WORK/tamper.flag PIPELINE_HOLD_FILE=$WORK/hold.file PIPELINE_PROVED_LOG=$WORK/proved.log
 check() { "$PY" "$ROOT/tests/pipeline_check.py" "$@"; }
 export CZE_SOURCE_COMMIT=${CZE_SOURCE_COMMIT:-$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf 'a%.0s' $(seq 40))}
 
@@ -135,13 +135,13 @@ background builder env CZE_LEDGER_URL="http://127.0.0.1:$PROXY_PORT" "$PY" "$ROO
   --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --max-in-flight "$DEPTH" --max-block-tx-bytes "$CAP" --idle-ms 500 --test
 builder_pid=${pids[-1]}
 
-jstat() { check stats "$JOURNAL" 2>/dev/null | jq -r ".$1" 2>/dev/null || echo 0; }
+jstat() { check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG" 2>/dev/null | jq -r ".$1" 2>/dev/null || echo 0; }
 last=$(tail -n 1 "$OUT/sent.txt")
 mined() { [ "$(rpc eth_getTransactionReceipt "\"$last\"" | jq -r '.result.blockNumber // empty')" != "" ]; }
 final_number() { rpc eth_getBlockByNumber '"finalized",false' | jq -r '.result.number'; }
 alive() { kill -0 "$builder_pid" 2>/dev/null || fail "the builder stopped"; }
 deadline=$(( $(date +%s) + ${FLOOD_TIMEOUT:-3000} ))
-overdue() { [ "$(date +%s)" -lt "$deadline" ] || fail "the flood did not finish in ${FLOOD_TIMEOUT:-3000} s: $(check stats "$JOURNAL")"; }
+overdue() { [ "$(date +%s)" -lt "$deadline" ] || fail "the flood did not finish in ${FLOOD_TIMEOUT:-3000} s: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"; }
 
 # ---- the refusal, at a tenth of the flood: put the flag down until a dropped block that had its proof shows
 at=$(( FLOOD_BLOCKS / 10 > 5 ? FLOOD_BLOCKS / 10 : 5 ))
@@ -151,14 +151,14 @@ proven=$(jstat cancelledProven); tries=0
 while [ "$(jstat cancelledProven)" -le "$proven" ]; do
   alive; overdue
   tries=$(( tries + 1 ))
-  [ "$tries" -le 8 ] || fail "after $((tries - 1)) refusals no dropped block had its proof: $(check stats "$JOURNAL")"
+  [ "$tries" -le 8 ] || fail "after $((tries - 1)) refusals no dropped block had its proof: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
   : > "$PIPELINE_TAMPER_FLAG"
   for _ in $(seq 1 90); do
     [ ! -e "$PIPELINE_TAMPER_FLAG" ] && [ "$(jstat refused)" -ge "$tries" ] && break
     sleep 1
   done
   sleep 5   # the dropped block is written when the refusal is
-  echo "refusal $tries: $(check stats "$JOURNAL")"
+  echo "refusal $tries: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
 done
 
 # ---- the lost reply, at a third of the flood
@@ -169,8 +169,8 @@ echo "== a lost reply while the command commits (after $(jstat committed) blocks
 for _ in $(seq 1 120); do grep -q '^dropped ' "$WORK/proxy.log" && break; alive; sleep 1; done
 grep -q '^dropped ' "$WORK/proxy.log" || fail "no Advance was sent while the drop flag was down"
 for _ in $(seq 1 180); do [ "$(jstat unknownCommitted)" -ge 1 ] && break; alive; sleep 1; done
-[ "$(jstat unknownCommitted)" -ge 1 ] || fail "the command whose reply was lost was not settled as committed: $(check stats "$JOURNAL")"
-echo "settled: $(check stats "$JOURNAL")"
+[ "$(jstat unknownCommitted)" -ge 1 ] || fail "the command whose reply was lost was not settled as committed: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
+echo "settled: $(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG")"
 
 # ---- the rest of the flood
 until mined && [ "$(( $(final_number) ))" -ge "$(( $(rpc eth_getTransactionReceipt "\"$last\"" | jq -r '.result.blockNumber') ))" ]; do alive; overdue; sleep 2; done
@@ -187,9 +187,9 @@ check settled || fail "Canton's head is not reth's finalized block (above)"
 grep -v '^samples' "$OUT/watch.txt" | head -n 5 | grep . && fail "the two chains disagreed during the run (above)"
 samples=$(sed -n 's/^samples \([0-9]*\) errors.*/\1/p' "$OUT/watch.txt")
 [ "${samples:-0}" -ge 20 ] || fail "the watch of the two chains made ${samples:-0} comparisons"
-stats=$(check stats "$JOURNAL"); echo "$stats" | tee "$OUT/stats.json"
+stats=$(check stats "$JOURNAL" --proved "$PIPELINE_PROVED_LOG"); echo "$stats" | tee "$OUT/stats.json"
 jq -e '.refused >= 1 and .cancelledProven >= 1 and .unknown >= 1 and .unknownCommitted >= 1 and .lost == 0' <<<"$stats" >/dev/null || fail "a fault did not show in the journal: $stats"
 submits=$(cat "$JOURNAL"/*.jsonl | jq -s '[.[] | select(.event == "submitted")] | length')
 [ "$(grep -cE '^(forwarded|dropped) ' "$WORK/proxy.log")" = "$submits" ] || fail "the proxy saw $(grep -cE '^(forwarded|dropped) ' "$WORK/proxy.log") submits, the journal has $submits"
-cp "$WORK/proxy.log" "$OUT/proxy.log"
+cp "$WORK/proxy.log" "$WORK/proved.log" "$OUT/"
 echo "== the pipeline scenario passed at depth $DEPTH: $stats"

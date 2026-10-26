@@ -8,6 +8,11 @@ set -euo pipefail
 [ $# -eq 2 ] || { echo "usage: $0 input out" >&2; exit 2; }
 here=$(cd "$(dirname "$0")" && pwd)
 sleep "${PIPELINE_PROVE_DELAY:-1}"
+# The prover's own log, for tests/pipeline_check.py: when each block's proof was finished (the journal writes that later, while a submit runs).
+if [ -n "${PIPELINE_PROVED_LOG:-}" ]; then
+  h=$(tr -d '\n' < "$1")
+  printf '%s %s done\n' "$(python3 -c 'import datetime as d; print(d.datetime.now(d.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")')" "${h:2:16}" >> "$PIPELINE_PROVED_LOG"
+fi
 if [ -n "${PIPELINE_TAMPER_FLAG:-}" ] && mv "$PIPELINE_TAMPER_FLAG" "$PIPELINE_TAMPER_FLAG.used" 2>/dev/null; then
   if [ -n "${PIPELINE_HOLD_FILE:-}" ]; then h=$(tr -d '\n' < "$1"); printf '%s' "${h:2:16}" > "$PIPELINE_HOLD_FILE"; fi
   CZE_TAMPER_REAL_PROVE_CMD="$here/demo_fake_prove.sh" exec "$here/../demo/prove-tampered.sh" "$@"
