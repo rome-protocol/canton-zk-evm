@@ -226,6 +226,43 @@ class OneAtATime(Modes):
         self.assertEqual(self.in_pool(s), set())
 
 
+class OneProver(Modes):
+    """The default `run --max-in-flight 2` with no --prover: two blocks, one prover."""
+
+    def test_a_chain_of_commits_goes_in_order_at_two(self):
+        s = self.setup({})
+        p = self.pipeline(s, 2, provers=1)
+        self.assertIsNone(s.cfg.pool)
+        for i, sender in enumerate((ALICE, BOB, CAROL)):
+            s.reth.pool[sender] = [tx(sender, 0)]
+            self.drive(p, lambda: len(self.committed()) == i + 1)
+        self.drive(p, lambda: not p.flight)
+        self.assertEqual(self.numbers(s), [FIRST, FIRST + 1, FIRST + 2])
+        self.assertEqual(self.committed(), [FIRST, FIRST + 1, FIRST + 2])
+        self.assert_final_never_back(s)
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (self.canton_head(s),) * 2)
+        self.assertEqual(self.in_pool(s), set())
+
+    def test_run_builds_the_engine_the_depth_names(self):
+        s = self.setup({})
+        built = []
+        def fake(name):
+            class Engine:
+                def __init__(self, *a, **kw):
+                    built.append((name, kw["max_in_flight"]))
+                fatal = None
+                def run(self):
+                    pass
+            return Engine
+        for k, name in ((1, "Producer"), (2, "Pipeline"), (3, "Pipeline")):
+            with mock.patch.object(b, "Producer", fake("Producer")), mock.patch.object(b, "Pipeline", fake("Pipeline")), \
+                    mock.patch.object(b.Config, "from_env", classmethod(lambda cls: s.cfg)), \
+                    mock.patch.object(b.signal, "signal"), \
+                    mock.patch.object(sys, "argv", ["builder", "run", "--max-in-flight", str(k), *(["--prover", f"a={tp.A}", "--prover", f"b={tp.B_}"] if k == 3 else [])]):
+                self.assertEqual(b.main(), 0)
+            self.assertEqual(built[-1], (name, k))
+
+
 class Stop(Modes):
     """A stop (SIGTERM) with two blocks in flight: the submit that is running finishes, nothing is cut, and the next start sends the rest again."""
 

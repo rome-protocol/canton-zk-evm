@@ -237,13 +237,40 @@ class InDoubtFlight(Edges):
         self.assertEqual(self.lines(s, "lost"), [], "none is named lost")
         self.assertEqual([(x["attempt"], x["depends_on"]) for x in self.lines(s, "cancelled")], [(2, 1)])
 
+    def test_a_move_that_fails_in_the_answer_of_a_commit_is_settled_by_the_next_step_at_two(self):
+        s = self.setup({})
+        self.script(tp.A, "sleep 1")
+        p = self.pipeline(s, 2)
+        real = b.Reth.forkchoice
+        failed = []
+        def forkchoice(reth, head, safe, finalized):
+            if not failed and finalized != HEAD_HASH and head != finalized:   # the move that makes the answered block final and keeps the tip
+                failed.append(finalized)
+                raise b.BuilderError("reth is down")
+            return real(reth, head, safe, finalized)
+        with mock.patch.object(b.Reth, "forkchoice", forkchoice):
+            self.fill(s, p, 2)
+            self.drive(p, lambda: not p.flight and p.unresolved is None and int(s.ledger.head["headNumber"]) >= FIRST + 1)
+        self.assertTrue(failed)
+        self.assertEqual(self.numbers(s), [FIRST, FIRST + 1], "each block is sent once")
+        self.assertEqual([(x["resolved"], x["number"]) for x in self.reports if x.get("resolved")], [("committed", FIRST)], "the next step settled it")
+        self.assertEqual(p.last[0], FIRST + 1)
+        order = [HEAD_HASH] + [r["blockHash"] for r in sorted((r for r in self.reports if r.get("committed") or r.get("resolved") == "committed"), key=lambda r: r["number"])]
+        at = [order.index(h) for h in self.finals(s)]
+        self.assertEqual(at, sorted(at), "reth's finalized block only moves up")
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (self.canton_head(s),) * 2)
+        self.assertEqual(self.in_pool(s), set())
+
     # a reply that is lost, and no completion yet
-    def check_lost_reply(self, k, commits):
+    def check_lost_reply(self, k, commits, provers=2):
         s = self.setup({}, drop_but_commit=True)
         s.ledger.no_completion, s.ledger.commit = True, commits
-        self.script(tp.A, "sleep 1")
-        self.script(tp.B_, "sleep 2")   # the block above it is still on its prover when the reply is lost
-        p = self.pipeline(s, k)
+        if provers == 1:
+            self.script("none", "sleep 1", "sleep 2")   # one prover: the block above it is proven after the first one's reply is lost
+        else:
+            self.script(tp.A, "sleep 1")
+            self.script(tp.B_, "sleep 2")   # the block above it is still on its prover when the reply is lost
+        p = self.pipeline(s, k, provers=provers)
         self.fill(s, p, k)
         self.assertIsNone(self.reports[0]["committed"])
         self.assertEqual(len(p.flight), k - 1)
@@ -278,6 +305,12 @@ class InDoubtFlight(Edges):
 
     def test_a_lost_reply_that_did_not_commit_at_two(self):
         self.check_lost_reply(2, False)
+
+    def test_a_lost_reply_that_committed_at_two_on_one_prover(self):
+        self.check_lost_reply(2, True, provers=1)
+
+    def test_a_lost_reply_that_did_not_commit_at_two_on_one_prover(self):
+        self.check_lost_reply(2, False, provers=1)
 
     def test_a_lost_reply_that_did_not_commit_at_three(self):
         self.check_lost_reply(3, False)
