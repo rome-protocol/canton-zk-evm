@@ -1,0 +1,28 @@
+Executing block validation for Unknown Block #6850 (126 txs)
+Block validation succeeded!
+Execution summary:
+  - Chain: Unknown (ID: 770101)
+  - Block Number: 6850
+  - Block Hash: 0x8b919f101e37160e747740bdd206ff08eecfa6977e67f58efcb5eab5439f3b23
+  - Transaction Count: 126
+  - Gas Consumed: 2646000
+
+REPORT                                  
+----------------------------------------
+STEPS                          6,752,005
+
+COST DISTRIBUTION                   COST       %
+------------------------------------------------
+MAIN                         459,136,340  39.66%
+OPCODES                       94,643,075   8.18%
+PRECOMPILES                  199,637,988  17.25%
+MEMORY                       116,907,680  10.10%
+                        ------------------------
+VARIABLE                     870,325,083  75.18%
+BASE                         287,309,824  24.82%
+                        ------------------------
+TOTAL                      1,157,634,907 100.00%
+
+FROPS                         67,958,141   7.81%
+RAM USAGE                      2,641,140   0.50%
+ROM USAGE                        450,862  10.75%

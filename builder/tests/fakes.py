@@ -130,6 +130,7 @@ class FakeReth:
         self.refuse_resend = False   # eth_sendRawTransaction answers an error for every transaction
         self.crash_on_send = False   # the first eth_sendRawTransaction breaks the WebSocket handler (close code 1011), as a dropped connection would
         self.no_state_for_genesis = False   # a persistent reth cannot move back to the genesis block once a block is built: the forkchoice to it is an error
+        self.enforce_nonces = False   # a transaction whose nonce is not its sender's next one (counting every block back from the parent) is left out with its sender's later ones, as reth's skip-invalid does
         self.sync_on_final = False   # the forkchoice that makes a new block head, safe and finalized at once answers SYNCING (once)
         self.ws = serve(self._ws, "127.0.0.1", 0, max_size=None)
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._engine_handler())
@@ -249,16 +250,29 @@ class FakeReth:
                     "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb01"]}]}
         raise KeyError(method)
 
-    def _run(self, raws):
+    def _run(self, raws, parent=None):
         """What reth 2.5.2's testing_buildBlockV1 does with a list of transactions: each one runs if its gas limit is no more than the gas the
         block has left (the Ethereum rule: the gas used so far plus the limit is at most the block's gas limit). One that does not fit fails the build, or,
         with skip_invalid, is left out together with its sender's later ones. Returns (the raw transactions that ran, the gas they used)."""
         by_raw = {raw_of(t): t for ts in [*self.pool.values(), *([t] for t in self.mined.values())] for t in ts}
         ran, used, stopped = [], 0, set()
+        nonces: dict = {}   # the next nonce of each sender, from the blocks before this one
+        if self.enforce_nonces:
+            known = {t["hash"]: t for t in self.mined.values()} | {t["hash"]: t for ts in self.pool.values() for t in ts}
+            h = parent
+            while h in self.blocks:
+                for x in self.block_txs.get(h, []):
+                    nonces[known[x]["from"]] = nonces.get(known[x]["from"], 0) + 1
+                h = self.blocks[h].get("parent")
         for raw in raws:
             t = by_raw[raw]
             if t["from"] in stopped:
                 continue
+            if self.enforce_nonces:
+                if int(t["nonce"], 16) != nonces.get(t["from"], 0):
+                    stopped.add(t["from"])
+                    continue
+                nonces[t["from"]] = nonces.get(t["from"], 0) + 1
             limit = int(t["gas"], 16)
             if limit > self.gas_limit - used:
                 if not self.skip_invalid:
@@ -271,7 +285,7 @@ class FakeReth:
 
     def _build(self, parent, attributes, raws, extra):
         p = self.blocks[parent]
-        raws, gas_used = self._run(raws)
+        raws, gas_used = self._run(raws, parent)
         how = self.tamper.pop(0) if self.tamper else self.tamper_always
         reported = gas_used
         if how == "extra":
