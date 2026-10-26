@@ -6,8 +6,8 @@ args=("$@")
 for i in "${!args[@]}"; do
   if [ "${args[$i]}" = "-i" ]; then
     tmp=$(mktemp); trap 'rm -f "$tmp"' EXIT
-    cp "$FAKE_STEPS_DIR/$(tr -d '\n' < "${args[$((i + 1))]}")" "$tmp"
-    args[$((i + 1))]=$tmp
+    cp "$FAKE_STEPS_DIR/$(tr -d '\n' < "${args[i + 1]}")" "$tmp"
+    args[i + 1]=$tmp
   fi
 done
 "$(dirname "$0")/fake-ziskemu.sh" "${args[@]}"
