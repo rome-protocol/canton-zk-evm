@@ -142,7 +142,7 @@ template ZkChain
         newRulesHash : Text
       controller operator, confirmer
       do
-        assertMsg "the new program key, ZisK root and rules hash must be hex" (all hexField [newProgramVK, newRootC, newRulesHash])
+        assertMsg "the new program key, ZisK root and rules hash must each be 64 lowercase hex digits" (all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash])
         create this with programVK = newProgramVK; rootC = newRootC; rulesHash = newRulesHash
 
     choice Advance : (ContractId ZkChain, ContractId BlockRecord)
@@ -215,7 +215,7 @@ template ProgramProposal
   where
     signatory operator
     observer confirmer
-    ensure chainId > 0 && all hexField [newProgramVK, newRootC, newRulesHash]
+    ensure chainId > 0 && all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash]
 
     choice AcceptProgram : ContractId ZkChain
       with chain : ContractId ZkChain

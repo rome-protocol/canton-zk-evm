@@ -827,15 +827,31 @@ switchProgram f chain vk root rules = do
     operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = vk; newRootC = root; newRulesHash = rules
   submit f.confirmer $ exerciseCmd p AcceptProgram with chain
 
--- The stub answers header "01" under (stubVK, stubRoot) and header "05" under (stubRoot, stubRoot).
+-- Three distinct values: each lands in its own field, and nothing else changes.
 testProgramProposalSetsTheKeys : Script ()
 testProgramProposalSetsTheKeys = do
   f <- fixture
   [(_, before)] <- query @ZkChain f.operator
-  chain <- switchProgram f f.chain stubRoot stubRoot stubVK
+  let vk = mconcat (replicate 64 "c")
+      root = mconcat (replicate 64 "d")
+      rules = mconcat (replicate 64 "e")
+  chain <- switchProgram f f.chain vk root rules
   [(cid, after)] <- query @ZkChain f.operator
   cid === chain
-  after === before with programVK = stubRoot; rootC = stubRoot; rulesHash = stubVK
+  after === before with programVK = vk; rootC = root; rulesHash = rules
+  -- the same three the other way round land the other way round
+  _ <- switchProgram f chain rules vk root
+  [(_, after2)] <- query @ZkChain f.operator
+  (after2.programVK, after2.rootC, after2.rulesHash) === (rules, vk, root)
+
+-- The ZisK root alone decides a block: under (stubVK, stubVK) the stub's header "06" commits and "01" is another ZisK release.
+testAdvanceFollowsTheRootAlone : Script ()
+testAdvanceFollowsTheRootAlone = do
+  f <- fixture
+  switched <- switchProgram f f.chain stubVK stubVK stubRoot
+  refused "another ZisK release" f $ advanceWith switched "01" "aa" ["aa"] [] []
+  (_, _) <- submit (asBuilder f) $ advanceWith switched "06" "aa" ["aa"] [] []
+  pure ()
 
 testSetProgramNeedsTheOperatorAndTheConfirmer : Script ()
 testSetProgramNeedsTheOperatorAndTheConfirmer = do
@@ -870,13 +886,13 @@ testProgramProposalAuthorizationAndChain = do
   _ <- raiseCap f f.chain 60000000
   submitMustFail f.confirmer $ exerciseCmd p AcceptProgram with chain = f.chain
 
--- Each of the three values must be non-empty lowercase hex.
+-- Each of the three values must be 64 lowercase hex digits.
 testProgramValuesMustBeHex : Script ()
 testProgramValuesMustBeHex = do
   f <- fixture
   let proposal = ProgramProposal with
         operator = f.operator; confirmer = f.confirmer; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
-  forA_ ["", "zz", "AB", "0x" <> stubRoot] $ \bad -> do
+  forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb"] $ \bad -> do
     submitMustFail f.operator $ createCmd proposal with newProgramVK = bad
     submitMustFail f.operator $ createCmd proposal with newRootC = bad
     submitMustFail f.operator $ createCmd proposal with newRulesHash = bad

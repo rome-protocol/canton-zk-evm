@@ -49,7 +49,7 @@
     Each value is lowercase hex of 64 digits, without 0x.
       propose  the operator's token: creates a ProgramProposal for the chain's one contract. Nothing is done if the same proposal is there already.
       accept   the confirmer's token: exercises AcceptProgram on the proposal for exactly these three values, given the chain's current contract.
-    Both refuse a chain that holds these values already. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
+    propose refuses a chain that holds these values already; accept on such a chain prints "alreadyAccepted": true. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
     again after, as for the gas cap. A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for other values is
     archived by the operator (the Archive choice, with the operator's token) before another is proposed. The chain check of a later plain setup run
     compares the chain with the values it is given, so give it the values the chain holds now.
@@ -356,7 +356,7 @@ def check_gas_cap(current: int, new: int) -> None:
         raise SystemExit(f"the new gas cap {new} is over the highest a chain may have ({MAX_GAS_CAP})")
 
 
-def submit_gas_cap(ledger, command: dict, step: str) -> None:
+def submit_step(ledger, command: dict, step: str) -> None:
     """Submits one command; a refusal stops with the participant's message (an accept is refused when a block replaced the chain contract since it was read)."""
     try:
         ledger.submit(command)
@@ -401,7 +401,7 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
                              "otherwise the operator archives it (the Archive choice of the GasCapProposal, with the operator's token) and proposes again")
         done = bool(proposals)
         if not done and not dry_run:
-            submit_gas_cap(ledger, {"CreateCommand": {"templateId": propose.PKG + "GasCapProposal", "createArguments": {
+            submit_step(ledger, {"CreateCommand": {"templateId": propose.PKG + "GasCapProposal", "createArguments": {
                 "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"], "newCap": str(new_cap)}}}, "propose")
         return {**result, "submitted": not done and not dry_run, "alreadyProposed": done}
     mine = [p for p in proposals if p.get("newCap") == str(new_cap)]
@@ -411,7 +411,7 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
         raise SystemExit(f"no proposal for the gas cap {new_cap} is on this participant")
     check_gas_cap(current, new_cap)
     if not dry_run:
-        submit_gas_cap(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
                                                     "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
 
@@ -421,7 +421,7 @@ PROGRAM_FIELDS = (("programVK", "--program-vk"), ("rootC", "--root-c"), ("rulesH
 
 
 def check_program(values: dict) -> None:
-    """Each key is lowercase hex of 64 digits, as the chain stores it (propose.py takes them the same way)."""
+    """Each key is lowercase hex of 64 digits, as the chain stores it (setup.py checks the length; propose.py takes hex of any length)."""
     for field, flag in PROGRAM_FIELDS:
         if not HEX64.fullmatch(values[field]):
             raise SystemExit(f"{flag} must be 64 lowercase hex digits without 0x")
@@ -443,7 +443,7 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
             raise SystemExit("a proposal for other values is on this participant already. Accept it only if those values are wanted; "
                              "otherwise the operator archives it (the Archive choice of the ProgramProposal, with the operator's token) and proposes again")
         if not mine and not dry_run:
-            submit_gas_cap(ledger, {"CreateCommand": {"templateId": propose.PKG + "ProgramProposal", "createArguments": {
+            submit_step(ledger, {"CreateCommand": {"templateId": propose.PKG + "ProgramProposal", "createArguments": {
                 "operator": chain["operator"], "confirmer": chain["confirmer"], "chainId": chain["chainId"],
                 **{"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}}, "propose")
         return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
@@ -452,7 +452,7 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
             return {**result, "submitted": False, "alreadyAccepted": True}
         raise SystemExit("no proposal for these values is on this participant")
     if not dry_run:
-        submit_gas_cap(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ProgramProposal", "contractId": mine[0]["contractId"], "choice": "AcceptProgram",
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ProgramProposal", "contractId": mine[0]["contractId"], "choice": "AcceptProgram",
                                                     "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
 
