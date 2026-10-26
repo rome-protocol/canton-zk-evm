@@ -2350,6 +2350,14 @@ class Pipeline(Producer):
                     entry.error, entry.state = e, FAILED
 
     # -- the end of a block
+    def refuse_foreign(self, got: str) -> None:
+        """A head that is a block reth does not have ends the producer: nothing can be built or submitted on it."""
+        with connect(self.cfg.ws_url, max_size=None) as ws:
+            known = Reth(self.cfg, ws).call("eth_getBlockByHash", ["0x" + got, False])
+        if not known:
+            self.head_fault = f"Canton's head {got} is not a block reth has"
+            raise ForeignHead(f"Canton's head is {got}, a block reth does not have: nothing can be built or submitted on it")
+
     def check_head(self, entry: "InFlight") -> None:
         """Before the Advance of a block that was built on another block in flight: Canton's head must be this block's parent. The block was cut on
         a contract that Canton has since replaced, so the Advance names the contract the head read now shows. A head that is not the parent is a
@@ -2361,11 +2369,7 @@ class Pipeline(Producer):
         chain = Ledger(self.cfg).head()
         got, want = chain["headHash"].lower().removeprefix("0x"), entry.built.head.lower().removeprefix("0x")
         if got != want:
-            with connect(self.cfg.ws_url, max_size=None) as ws:
-                known = Reth(self.cfg, ws).call("eth_getBlockByHash", ["0x" + got, False])
-            if not known:
-                self.head_fault = f"Canton's head {got} is not a block reth has"
-                raise ForeignHead(f"Canton's head is {got}, a block reth does not have: nothing can be built or submitted on it")
+            self.refuse_foreign(got)
             self.head_fault = f"Canton's head is block {chain['headNumber']} ({got}), not block {entry.number - 1} ({want}), the parent of the block next to be submitted"
             raise HeadMismatch(self.head_fault)
         self.head_fault = None
@@ -2424,6 +2428,7 @@ class Pipeline(Producer):
         got = Ledger(self.cfg).head()["headHash"].lower().removeprefix("0x")
         want = self.last[1].lower().removeprefix("0x")
         if got != want:
+            self.refuse_foreign(got)   # a head reth does not have is not waited out
             self.head_fault = f"Canton's head is block {got}, not block {self.last[0]} ({want}), the block reth goes back to"
             raise HeadMismatch(self.head_fault)
         self.head_fault = None

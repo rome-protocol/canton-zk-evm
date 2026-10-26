@@ -439,13 +439,32 @@ class Failures(Depth):
         self.fill(s, p, 2)
         self.assertTrue(p.unwind_pending)
         real = b.Ledger.head
-        with mock.patch.object(b.Ledger, "head", lambda l: {**real(l), "headHash": "cd" * 32, "headNumber": HEAD_NUMBER + 1}):
+        known = next(h for h in s.reth.blocks if h != HEAD_HASH)   # a block reth has, that is not the one it goes back to
+        with mock.patch.object(b.Ledger, "head", lambda l: {**real(l), "headHash": known[2:], "headNumber": HEAD_NUMBER + 1}):
             s.reth.no_state_for_genesis = False
             fcs = len(s.reth.engine_calls)
             self.step(p)
         self.assertTrue(p.unwind_pending)
         self.assertEqual(len(s.reth.engine_calls), fcs, "reth does not move")
         self.assertIn("not block", self.status()["headFault"])
+        self.assertFalse(p.stop.is_set())
+
+    def test_a_head_reth_does_not_have_stops_the_producer_in_the_unwind(self):
+        s = self.setup({})
+        self.script(A, "sleep 1")
+        self.failing({HEAD_NUMBER + 1})
+        s.reth.no_state_for_genesis = True
+        p = self.pipeline(s, 2)
+        self.fill(s, p, 2)
+        self.assertTrue(p.unwind_pending)
+        real = b.Ledger.head
+        with mock.patch.object(b.Ledger, "head", lambda l: {**real(l), "headHash": "cd" * 32, "headNumber": HEAD_NUMBER + 1}):
+            s.reth.no_state_for_genesis = False
+            fcs = len(s.reth.engine_calls)
+            self.step(p)
+        self.assertEqual(len(s.reth.engine_calls), fcs, "reth does not move")
+        self.assertTrue(p.stop.is_set())   # the producer ends
+        self.assertIn("does not have", p.fatal)
 
     def check_refused_and_stuck(self, k):
         s = self.setup({}, refuse="the sidecar refused the proof")
