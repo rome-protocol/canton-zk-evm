@@ -717,7 +717,8 @@ def pause_state(chain: dict, now: datetime) -> dict:
     until, cooldown = chain.get("pausedUntil"), chain.get("pauseCooldownUntil")
     longest = opt_us(chain.get("pauseMax"))
     limit = DEFAULT_PAUSE_MAX if longest is None else seconds_of(longest)
-    return {"paused": bool(until) and now < parse_time(until), "pausedUntil": until, "pauseCooldownUntil": cooldown, "pauseLimitSeconds": limit}
+    shown = lambda t: show_time(parse_time(t)) if t else None   # one form for every printed time (the ledger trims the fraction)
+    return {"paused": bool(until) and now < parse_time(until), "pausedUntil": shown(until), "pauseCooldownUntil": shown(cooldown), "pauseLimitSeconds": limit}
 
 
 def chain_after(ledger, before: dict) -> dict:
@@ -760,7 +761,7 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
                 made = parse_time(mine[0]["proposedAt"])
                 result["proposedAt"], result["acceptableUntil"] = show_time(made), show_time(made + RENEW_PROPOSAL_LIFE)
                 if now > made + RENEW_PROPOSAL_LIFE:
-                    raise SystemExit(f"a proposal past its hour is there (made at {mine[0]['proposedAt']}, acceptable until {result['acceptableUntil']}): "
+                    raise SystemExit(f"a proposal past its hour is there (made at {result['proposedAt']}, acceptable until {result['acceptableUntil']}): "
                                      "--withdraw-proposal renew-pause first (the operator's token), then propose again")
             if not mine and not dry_run:
                 submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeRenewPause",
@@ -778,7 +779,7 @@ def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
             made = parse_time(mine[0]["proposedAt"])
             result["proposedAt"], result["acceptableUntil"] = show_time(made), show_time(made + RENEW_PROPOSAL_LIFE)
             if now > made + RENEW_PROPOSAL_LIFE:
-                raise SystemExit(f"the proposal was made at {mine[0]['proposedAt']} and could be accepted until {result['acceptableUntil']}: the chain refuses it now. "
+                raise SystemExit(f"the proposal was made at {result['proposedAt']} and could be accepted until {result['acceptableUntil']}: the chain refuses it now. "
                                  "The operator takes it back (--withdraw-proposal renew-pause) and proposes it again for the incident at hand")
         if not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "RenewPauseProposal", "contractId": mine[0]["contractId"], "choice": "AcceptRenewPause",
