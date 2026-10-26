@@ -1,6 +1,6 @@
 """The producer that keeps several blocks in flight, built directly at two and three blocks (`run` still refuses more than one), against the
 same fakes as the others. The stand-in prover's answers are set per job (fake-prove.sh, FAKE_PROVER_PLAN), so a block's proof can come
-back before an earlier block's. Cases: proofs out of order, Canton's head not the parent at submit, and the gateway's proofs read while a block is the tip."""
+back before an earlier block's. Covers proofs out of order, failures, Canton's head not the parent at submit, and the gateway's proofs read while a block is the tip."""
 import json, os, re, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest import mock
@@ -99,7 +99,7 @@ class Depth(Loop):
 
 
 class OutOfOrder(Depth):
-    """Case 7: a proof that comes back before an earlier block's is held until its block is the oldest."""
+    """a proof that comes back before an earlier block's is held until its block is the oldest."""
 
     def run_case(self, k):
         s = self.setup({})
@@ -143,7 +143,7 @@ class OutOfOrder(Depth):
 
 
 class HeadCheck(Depth):
-    """Case 11: Canton's head is not the parent of the block to submit."""
+    """Canton's head is not the parent of the block to submit."""
 
     def two_blocks(self, k):
         """k blocks in flight: the first is slow, so the others are proven and wait. Returns the setup, the producer and the head as the first block's cut read it."""
@@ -214,7 +214,7 @@ class HeadCheck(Depth):
 
 
 class GatewayProofs(Depth):
-    """Case 13: the gateway's proofs are read while the block is the tip. The fake reth, like the real one, answers eth_getProof only for the
+    """the gateway's proofs are read while the block is the tip. The fake reth, like the real one, answers eth_getProof only for the
     newest block and its parent, so a block read after another was built on it would fail."""
 
     def check(self, k):
@@ -244,7 +244,7 @@ class GatewayProofs(Depth):
 
 
 class Failures(Depth):
-    """Cases 2, 3 and 14: an oldest block that is refused or fails cancels the blocks built on it, one unwind takes reth back to the last block
+    """An oldest block that is refused or fails cancels the blocks built on it, one unwind takes reth back to the last block
     Canton committed, and an unwind that cannot finish is finished by the next step before anything else is done."""
 
     SENDERS = (ALICE, BOB, CAROL)
@@ -276,7 +276,7 @@ class Failures(Depth):
         found = self.lines(s, "cancelled")
         self.assertEqual([(x["attempt"], x["depends_on"]) for x in found], [(i, culprit) for i in range(culprit + 1, k + 1)])
 
-    # -- case 2
+    # a refused block
     def check_refused(self, k):
         s = self.setup({}, refuse="the sidecar refused the proof")
         self.script(A, "sleep 1")   # the first block is slow: the others are proven when it is answered
@@ -302,7 +302,7 @@ class Failures(Depth):
     def test_a_refused_block_cancels_the_ones_built_on_it_at_three(self):
         self.check_refused(3)
 
-    # -- case 3
+    # a block whose proof fails
     def check_oldest_fails(self, k):
         s = self.setup({})
         self.script(A, "sleep 1")
@@ -354,7 +354,7 @@ class Failures(Depth):
     def test_the_newest_block_failing_at_three(self):
         self.check_newest_fails(3)
 
-    # -- case 14
+    # an unwind that cannot finish
     def unwind_that_cannot_finish(self, k, how):
         s = self.setup({})
         self.script(A, "sleep 1")
