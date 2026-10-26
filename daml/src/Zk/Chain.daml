@@ -403,9 +403,9 @@ pausedAt c now = case c.pausedUntil of
 -- second) plus a whole window. So at no moment do more than the quota's units leave in any window, and a withdrawal may count a
 -- little longer than the window. An entry keeps the expiry it was made with, so a change of the window never frees or holds earlier ones.
 data Tally = Tally with
-  tallyToken : Text
-  countedUntil : Time
-  tallyAmount : Decimal
+    tallyToken : Text
+    countedUntil : Time
+    tallyAmount : Decimal
   deriving (Eq, Show)
 
 tallyExpiry : Time -> RelTime -> Time
