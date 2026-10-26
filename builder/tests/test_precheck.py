@@ -281,9 +281,9 @@ class TestSelect(unittest.TestCase):
             return pc.Verdict(pc.UNBUILDABLE, detail="x") if items[0] == "b" else pc.Verdict()
         s = pc.select(list("abc"), check2)
         self.assertEqual(([t for t, _ in s.convicted], s.kept, s.waiting), (["a"], list("c"), list("b")))
-        # the first of the block is still convicted when reth cannot build it: nothing earlier explains it
-        s = pc.select(list("ab"), lambda items: pc.Verdict(pc.UNBUILDABLE, detail="x"))
-        self.assertEqual([t for t, _ in s.convicted][:1], ["a"])
+        # the block's first: reth just built it first on this parent, so a refusal is reth's fault, not the transaction's; nobody is blamed
+        with self.assertRaises(pc.PrecheckFailed):
+            pc.select(list("ab"), lambda items: pc.Verdict(pc.UNBUILDABLE, detail="x"))
 
     def test_a_pair_bad_only_together_is_not_convicted_by_the_extra_check(self):
         s, _ = self.run_select(list("abcde"), lambda items: not ("b" in items and "c" in items))

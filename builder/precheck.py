@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MIB = 1024 * 1024
-DEFAULT_MAX_STEPS = 1_000_000_000        # a ceiling, well above an honest block (about 100M steps at 30M gas, 200M at 60M)
+DEFAULT_MAX_STEPS = 1_000_000_000        # a ceiling: honest blocks measured up to ~380M steps at 30M gas and ~760M at 60M; the cost line binds first
 DEFAULT_TIMEOUT = 40.0                   # seconds, for the emulator run
 DEFAULT_BUDGET_SECONDS = 120.0           # the proof time a block may be predicted to need
 DEFAULT_COST_PER_SECOND = 274_725_275    # cost units of proof work per second: proof_s = cost_total / this + intercept (3.64e-9 s per unit)
@@ -288,7 +288,7 @@ def select(txs: list, check, max_checks: int = 64, dependents=None, max_seconds:
     """Cuts a block back to what fits. `check(list of transactions)` returns a Verdict for a block of exactly those transactions.
     The whole list is checked first; over budget, the longest prefix that fits is found by halves, and the transaction right after it is
     checked alone, unless a kept transaction of the same sender comes before it: over budget on its own, it is convicted (wherever it stands
-    in the block); otherwise, or when reth cannot build it alone (verdict UNBUILDABLE), the trouble is the combination and it waits with the rest. When not even the first transaction fits on its own it is convicted, and the search starts again on the
+    in the block); otherwise, or when reth cannot build it alone (verdict UNBUILDABLE), the trouble is the combination and it waits with the rest. When not even the first transaction fits on its own it is convicted (but if reth cannot build the block's first transaction alone, that is reth's fault: PrecheckFailed, nobody blamed), and the search starts again on the
     transactions after it. A pair that is bad only together is cut between them. The search is bounded: at most 2 * log2(n) + 4 checks (and
     `max_checks`), and `max_seconds` for all of it; then the longest prefix known to fit is kept.
     `dependents(convicted transaction, the transactions after it)`, when given, says which of those cannot run without it (the same
@@ -322,6 +322,8 @@ def select(txs: list, check, max_checks: int = 64, dependents=None, max_seconds:
                 stuck.append(rest[0])
                 rest = rest[1:]
                 continue
+            if k == 0 and bad.verdict == UNBUILDABLE:   # the block's first: reth just built it first on this parent, so the refusal is reth's
+                raise PrecheckFailed(f"reth refused to build the block's first transaction on its own: {bad.detail}")
             if k == 0:
                 gone = convict(rest[0], bad)
                 stuck += gone
