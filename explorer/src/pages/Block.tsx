@@ -13,6 +13,7 @@ import { useFollowing, useStatus } from "../useStatus.ts";
 import { VERIFY_MODULE_URL, useModuleSize } from "../verify/module-size.ts";
 import { VerifyPanel } from "../verify/VerifyPanel.tsx";
 import { HowFinal, Tiles, timesOf } from "./BlockFinal.tsx";
+import { pinsAt } from "../pins.ts";
 import { ProofCard } from "./BlockProof.tsx";
 import { Bad, CantonPanel, EvmSide, Good } from "./BlockSides.tsx";
 
@@ -83,7 +84,7 @@ function Verify({ b, st }: { b: ApiBlock; st: ApiStatus | undefined }) {
   const moduleSize = useModuleSize(VERIFY_MODULE_URL);
   if (!st) return null;
   const record = b.canton && { proofHex: b.canton.proofHex, headerHex: b.canton.headerHex, txsHex: b.canton.txsHex };
-  return <VerifyPanel block={record} blockHash={b.hash} pins={st.pins} proving={b.status === "proving"} moduleUrl={VERIFY_MODULE_URL} moduleSize={moduleSize} />;
+  return <VerifyPanel block={record} blockHash={b.hash} pins={pinsAt(st.pins, b.number)} proving={b.status === "proving"} moduleUrl={VERIFY_MODULE_URL} moduleSize={moduleSize} />;
 }
 
 export function Block() {
@@ -121,7 +122,7 @@ export function Block() {
       {b.status !== "genesis" && (
         <>
           <HowFinal times={times} final={b.canton !== null} unindexed={b.status === "unindexed"} />
-          {b.canton && <ProofCard c={b.canton} pins={st?.pins}><Verify b={b} st={st} /></ProofCard>}
+          {b.canton && <ProofCard c={b.canton} pins={st?.pins} block={b.number}><Verify b={b} st={st} /></ProofCard>}
           {!b.canton && <Verify b={b} st={st} />}
           <div className="legs"><Icon name="lock" size={14} /><span>{LEGS_THIS_BLOCK}</span></div>
           {final ? (st && <PagedTransactions id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}

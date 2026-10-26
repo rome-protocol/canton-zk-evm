@@ -84,7 +84,7 @@ The server takes its settings from environment variables. A wrong value stops it
 | `LEDGER_URL` | `http://127.0.0.1:7577` | The JSON Ledger API of the participant that holds the reader party |
 | `LEDGER_TOKEN_FILE` | none | A file with the bearer token (a JWT) for a participant whose Ledger API needs a login, such as an existing participant on the Canton Network's DevNet. Mode 0600 or the server refuses it (and sends nothing); it is read again on every Ledger API call, so a refreshed file is picked up with no restart; its value is never logged or put in an error. The indexer reads the same setting. With no file, no `Authorization` header is sent, as before. `run.sh` mounts the file read-only, and takes `CZE_TOKEN_FILE_READER` (the `ostia-reader` user's file, see `network/README.md`) when `LEDGER_TOKEN_FILE` is not set |
 | `READER_PARTY` | none, required | Canton's id for the reader party. The server stops at start, naming it, when it is not set |
-| `PINS_FILE` | `prover/fixtures/session.txt` | A file of `key=value` lines with `programVK` and `rootC`: the proving program and ZisK release this explorer expects. A run's `state/net/guest.txt` has the same form |
+| `PINS_FILE` | `prover/fixtures/session.txt` | A file of `key=value` lines with `programVK` and `rootC`: the proving program and ZisK release this explorer expects. A run's `state/net/guest.txt` has the same form. A chain that has switched program adds a key for each switch, see [Key ranges](#key-ranges) |
 | `CHAIN_ID`, `CHAIN_NAME`, `COIN_SYMBOL` | `770101`, `Ostia`, `tROME` | How the chain and its native coin are named on every page |
 | `NETWORK_NAME` | not set | The Canton network the chain runs on, as the header's pill names it (`DevNet`). When it is not set, no network is named and the "test coin" line is not shown |
 | `RPC_TIMEOUT_MS`, `POLL_MS` | `5000`, `2000` | How long one call to reth may take, and how often the transaction tracker looks at the transactions it holds |
@@ -150,6 +150,25 @@ The custody and the wrapped supply are read at the same block. Each read takes t
 ## What a proof says
 
 `server/proof.ts` reads three facts from the bytes of a block's proof: the program key, the ZisK release and the block hash its public values commit to. It compares the program key and the ZisK release with this explorer's pins, and the block hash with the hash of the block the record is for. Reading a value is not verifying the proof. Canton's confirmers verified it when the block committed, and the Verify button runs that check again, in the visitor's browser (see below).
+
+### Key ranges
+
+A chain that switches program (a Daml `SetProgram`, or a protocol upgrade such as Osaka at a block) has several program keys over its life. A key is the pair `programVK` and `rootC`, and both change with a new guest. The pins file lists the keys with the block each one starts at, and the explorer checks every block's proof under the key for that block's height: a block uses the last key that starts at or before its number. A proof made under another key's pair is not ok, even though that pair is valid for other blocks.
+
+The pins file keeps its form. The `programVK=` and `rootC=` lines are the key from block 0, so a chain that never switched needs no change. Each later key is a pair of lines with the block it starts at after an `@`:
+
+```
+programVK=0x<64 hex digits>
+rootC=0x<64 hex digits>
+programVK@1500=0x<64 hex digits>
+rootC@1500=0x<64 hex digits>
+programVK@4200=0x<64 hex digits>
+rootC@4200=0x<64 hex digits>
+```
+
+This chain used the first key for blocks 0 to 1499, the second for blocks 1500 to 4199 and the third from block 4200 on. The ranges come in increasing order of block, and the last one is the current key. The explorer refuses to start (a `ConfigError` that names the line) when a later key has only one of the two lines, a block number is not a whole number above 0, a block number is repeated or does not come after the one before it, a line is given twice, or a value is not `0x` and 64 hex digits.
+
+`/api/status` keeps `pins.programVK`, `pins.rootC` and `pins.file` as the current key, the last range, and adds `pins.keys`, a list of `{ fromBlock, programVK, rootC }` in order, the first with `fromBlock` 0. The server's check (C7, `/api/block`, the transaction pages) uses the key for the block's height. The block page shows the key the block was checked under in the proof's card (short, with the whole value on hover and a copy button) and the block it starts at. The Verify check in the browser is handed the pins for the block's height by the page, so the WebAssembly module itself takes one pair and needs no change.
 
 ## Final blocks, from the database
 

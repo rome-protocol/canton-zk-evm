@@ -5,6 +5,7 @@ import { Icon } from "../components/Icon.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { count, short } from "../format.ts";
 import { Bad, Good } from "./BlockSides.tsx";
+import { pinsAt } from "../pins.ts";
 import "./block.css";
 
 const PROOF_LENGTH = "This proof is not 1,344 bytes, so its facts cannot be read.";
@@ -23,7 +24,7 @@ function FactRows({ label, fact, match, mismatch }: { label: string; fact: Fact;
 }
 
 /** The compact form of a transaction's page: the three facts as rows of the card, value and verdict on one line, with nothing around them. */
-function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; block: number }) {
+function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ReturnType<typeof pinsAt> | undefined; block: number }) {
   if (!c.proof) return <div className="alert bad-alert flat facts-gap"><Icon name="cross" size={15} /><div>{PROOF_LENGTH}</div></div>;
   const { programVK, rootC, blockHash } = c.proof;
   const pin = (v: string | undefined) => <>does not match this explorer's pin{v && <> <span className="mono">{short(v)}</span></>}</>;
@@ -43,7 +44,7 @@ function CompactFacts({ c, pins, block }: { c: CantonSummary; pins: ApiStatus["p
   );
 }
 
-function ProofFacts({ c, pins }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined }) {
+function ProofFacts({ c, pins }: { c: CantonSummary; pins: ReturnType<typeof pinsAt> | undefined }) {
   if (!c.proof) return <div className="alert bad-alert flat facts-gap"><Icon name="cross" size={15} /><div>{PROOF_LENGTH}</div></div>;
   const { programVK, rootC, blockHash } = c.proof;
   const pin = (v: string | undefined) => <>does not match this explorer's pin{v && <> <span className="mono">{short(v)}</span></>}</>;
@@ -54,6 +55,13 @@ function ProofFacts({ c, pins }: { c: CantonSummary; pins: ApiStatus["pins"] | u
         <FactRows label="Program key" fact={programVK} match="ours" mismatch={pin(pins?.programVK)} />
         <FactRows label="ZisK release" fact={rootC} match="ZisK 1.3.1" mismatch={pin(pins?.rootC)} />
         <FactRows label="Block hash committed" fact={blockHash} match="this block" mismatch="not this block's hash" />
+        {pins && (
+          <>
+            <dt className="f-k">Checked under</dt>
+            <dd className="f-v"><HashLink value={pins.programVK} /></dd>
+            <dd className="f-s muted">key from block {pins.fromBlock}</dd>
+          </>
+        )}
         <dt className="f-k">Proof</dt>
         <dd className="f-v wide2"><span className="num">{count(c.proofBytes)} bytes</span>{c.proofBytes === 1344 && <span className="muted"> · {PARTS}</span>}</dd>
       </dl>
@@ -63,8 +71,9 @@ function ProofFacts({ c, pins }: { c: CantonSummary; pins: ApiStatus["pins"] | u
 }
 
 /** "The proof": what the proof's own bytes say, next to this explorer's pins, with the in-browser check under it. */
-export function ProofCard({ c, pins, children, compactFor }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; children: ReactNode; /** A transaction's page passes its block's number and gets the compact form. */ compactFor?: number }) {
+export function ProofCard({ c, pins: all, block, children, compactFor }: { c: CantonSummary; pins: ApiStatus["pins"] | undefined; /** The block's number: the key it is checked under is the one for this height. */ block: number; children: ReactNode; /** A transaction's page passes its block's number and gets the compact form. */ compactFor?: number }) {
   const compact = compactFor !== undefined;
+  const pins = all && pinsAt(all, block);
   return (
     <section className={`card side canton proof${compact ? " compact" : ""}`} aria-labelledby="proof-h">
       <div className="side-h"><span className="side-l" id="proof-h">The proof</span><span className="muted small">{compact ? `of block ${compactFor}` : <>read from the proof's own bytes, compared with this explorer's pins{pins?.file && <>, from <span className="mono">{pins.file}</span></>}</>}</span></div>

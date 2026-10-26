@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { getBlockRecord, type ApiStatus } from "../api.ts";
 import { Icon } from "../components/Icon.tsx";
 import { short } from "../format.ts";
+import { pinsAt } from "../pins.ts";
 import { fetchVerifier, parseAnswer, type LoadedVerifier } from "../verify/verifier.ts";
 import { formatTime } from "../verify/VerifyPanel.tsx";
 import { VERIFY_MODULE_URL } from "../verify/module-size.ts";
@@ -37,8 +38,9 @@ export function TxVerify({ number, blockHash, pins, final, unindexed = false, pr
       setState({ kind: "running", step: "check" });
       const { verify } = await (load ?? (() => fetchVerifier(VERIFY_MODULE_URL)))();
       if (run.current !== mine) return;
+      const key = pinsAt(pins, number);
       const t0 = performance.now();
-      const answer = parseAnswer(verify({ proofHex: record.proof, headerHex: record.header, txsHex: record.txs }, { programVK: pins.programVK, rootC: pins.rootC }));
+      const answer = parseAnswer(verify({ proofHex: record.proof, headerHex: record.header, txsHex: record.txs }, { programVK: key.programVK, rootC: key.rootC }));
       const ms = performance.now() - t0;
       if (run.current !== mine) return;
       if (!answer.ok) setState({ kind: "failed", reason: answer.reason });
