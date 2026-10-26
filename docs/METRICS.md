@@ -48,7 +48,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 | solc (the demo's test token) | 0.8.28 | `PINS` |
 | Chain id | 770101 | `PINS` |
 
-The guest has this ELF SHA-256: `44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf`. Its programVK is `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`, and its rootC is `0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4`. They are the same as in the one-transfer proof of 2026-10-04: adding the gateway did not change the proven program. The results files were written on 2026-10-05 from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507). The DAR hash in them is `870324fdc31122b5a14340bbc3e92be934bf29fd0814f83b0d3aa8a56e2280c7` and the package id `ccd743bc3d2c8e0f59dc418d1180fa73e6c942314e6bc4245ab5e5b13ae42a10`; they identify the Daml package built from that commit. `network/up.sh` checks each guest build against the recorded programVK, rootC and rules hash before starting the network.
+The guest has this ELF SHA-256: `44f76af2c17311b41fab46f6c6af4af0af6c767a8da81f7a9554aa7bb848bfbf`. Its programVK is `0xdb79251d9e962ee45fbc28cc6431a7fb894106f06d6664e623189f28c24f6d3f`, and its rootC is `0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4`. They are the same as in the one-transfer proof of 2026-10-04: adding the gateway did not change the proven program. That is the guest that stopped at Prague; the guest that runs Osaka from genesis has another ELF and programVK, recorded in `prover/fixtures/session.txt`. The results files were written on 2026-10-05 from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507). The DAR hash in them is `870324fdc31122b5a14340bbc3e92be934bf29fd0814f83b0d3aa8a56e2280c7` and the package id `ccd743bc3d2c8e0f59dc418d1180fa73e6c942314e6bc4245ab5e5b13ae42a10`; they identify the Daml package built from that commit. `network/up.sh` checks each guest build against the recorded programVK, rootC and rules hash before starting the network.
 
 ## The prover benchmark
 
@@ -175,14 +175,14 @@ The six proof times that the runs recorded are 6.71 to 6.75 s, for blocks of one
 
 After the runs, the explorer was opened in a browser on block 3. Its Verify button answered "Passed.". The check ran in the browser in 13 ms, and about 0.35 s passed from the click to the answer. It is not a benchmark and is not recorded in `demo/results/`.
 
-**The first proof of a transfer** ([`session.txt`](../prover/fixtures/session.txt), recorded 2026-10-04): one plain transfer of 21,000 gas as block 1 on a temporary copy of the genesis, 385,277 steps. The proof times were 6.33, 6.75 and 6.69 s. It was checked with ZisK's own verifier (`cargo-zisk`) and with the verifier crate in this repository. The same input with the chain id changed to 1 was refused by the guest with "Chain config is not this chain's", and the prover returned no proof.
+**The first proof of a transfer** ([`session.txt`](../prover/fixtures/session.txt), recorded 2026-10-26, for the guest that runs Osaka from genesis): one plain transfer of 21,000 gas as block 1 on a temporary copy of the genesis, 418,430 steps. The proof times were 6.81, 6.79 and 6.74 s. The first proof of 2026-10-04, for the guest that stopped at Prague, took 385,277 steps and 6.33, 6.75 and 6.69 s. It was checked with ZisK's own verifier (`cargo-zisk`) and with the verifier crate in this repository. The same input with the chain id changed to 1 was refused by the guest with "Chain config is not this chain's", and the prover returned no proof.
 
 **Setup times:**
 
-- Building the guest with `prover/build-guest.sh` from an empty build folder, dependency download included: 125 s (`session.txt`). Two fresh checkouts gave 133 s and 126 s ([`guest/README.md`](../guest/README.md)). Both gave the same ELF and the same programVK.
-- The prover's first setup of the program: 43 s (`session.txt`). This is a one-time cost on a prover.
+- Building the guest with `prover/build-guest.sh` from an empty build folder, dependency download included: 136 s (`session.txt`). For the Prague guest, two fresh checkouts gave 133 s and 126 s ([`guest/README.md`](../guest/README.md)), with the same ELF and the same programVK.
+- The prover's first setup of the program: 41 s (`session.txt`). This is a one-time cost on a prover.
 
-The step count of 385,277 here is for this repository's guest and its own temporary genesis. It should not be compared with the benchmark's step counts, which are for the upstream guest and different blocks.
+The step count of 418,430 here is for this repository's guest and its own temporary genesis. It should not be compared with the benchmark's step counts, which are for the upstream guest and different blocks.
 
 ## The indexer on a real chain (W1)
 
