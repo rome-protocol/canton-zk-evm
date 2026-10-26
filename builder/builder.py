@@ -24,6 +24,7 @@ from websockets.sync.client import connect
 from provers import DEFAULT_TIMEOUT, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
+from pipeline import FAILED, PROVEN, PROVING, SUBMITTING, InFlight, why_not_cut
 
 ROOT = Path(__file__).resolve().parent.parent
 ZERO32 = "0x" + "00" * 32
@@ -922,8 +923,10 @@ def build_exactly(reth: Reth, head: str, attributes: dict, raws: list, cap: int)
     return built
 
 
-def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, attempt: "Attempt | None" = None, known: list | None = None) -> tuple:
-    """Builds a block on Canton's head and makes it reth's head. The transactions are chosen from reth's pending pool, best price first, less
+def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, attempt: "Attempt | None" = None, known: list | None = None,
+                     settled=None) -> tuple:
+    """Builds a block on `head` (Canton's head, or with several blocks in flight the newest of them) and makes it reth's head. `settled` says
+    which block reth's safe and finalized are: the last one Canton committed, read when the block is imported (default: `head`). The transactions are chosen from reth's pending pool, best price first, less
     the excluded ones (and each such sender's later ones), every time: after a transaction was left out for its leg, put_back has sent the
     block's transactions to the pool again, so the choice is made again with the larger exclude set and the gas and bytes the left-out ones
     held go to others. `known` is the (transaction, raw) pairs of the block just unwound: one of them that the pool did not take back
@@ -1012,7 +1015,8 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     status = reth.engine("engine_newPayloadV4", [payload, [], ZERO32, built["executionRequests"]])["status"]
     if status != "VALID":
         raise BuilderError(f"engine_newPayloadV4 answered {status}")
-    reth.forkchoice(payload["blockHash"], head, head)
+    final = settled() if settled else head
+    reth.forkchoice(payload["blockHash"], final, final)
     return payload, pairs
 
 
@@ -1046,8 +1050,8 @@ class Proven:
 
 
 def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True,
-          lost: list | None = None, attempt: "Attempt | None" = None) -> "Built | dict":
-    """Stage one. Cuts the block: chooses its transactions, has reth build it on Canton's head (again without any transaction whose leg has no
+          lost: list | None = None, attempt: "Attempt | None" = None, settled=None) -> "Built | dict":
+    """Stage one. Cuts the block: chooses its transactions, has reth build it on `head` (Canton's head; `chain` says its number) (again without any transaction whose leg has no
     Canton side), reads the gateway's proofs while the block is reth's tip, and writes the prover's input files. Returns a Built, or, for a
     block with nothing to settle when prove_empty is False, the answer {"skipped": true, ...} that ends the block."""
     attempt = attempt or Attempt(None, 1)
@@ -1062,7 +1066,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
         # every leg of the block has its Canton side, and a block with no transaction left out is the one that goes on.
-        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs)
+        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs, settled=settled)
         packing = reth.packed   # how this build chose its transactions: the last one is the block's
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
@@ -1074,11 +1078,13 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
                 exclude.add(event.tx)
                 left_out.append({"transaction": event.tx, "reason": f"its {KINDS[event.kind]} leg has no Canton side: {reason}"})
         rebuilds += 1
-        reth.forkchoice(head, head, head)
+        final = settled() if settled else head
+        reth.forkchoice(head, final, final)   # back to the block this one is built on, never below the last one Canton committed
         lost.extend(put_back(reth, n))   # the block's transactions are in the pool again: the next build chooses from it with the larger exclude set (each round adds an exclusion, so it ends)
     if not chosen and not prove_empty:   # nothing to settle: no proof and no commit is spent on it
         attempt.event("skipped", left_out=left_out, rebuilds=rebuilds)
-        reth.forkchoice(head, head, head)
+        final = settled() if settled else head
+        reth.forkchoice(head, final, final)
         return {"skipped": True, "number": n, "leftOut": left_out, **({"lostTransactions": lost} if lost else {})}
     block_hash = payload["blockHash"]
     leg_txs = list(dict.fromkeys(e.tx for e in events))
@@ -1107,17 +1113,32 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
                  account_nodes=account_nodes, storage_nodes=storage_nodes)
 
 
+@dataclass
+class Proving:
+    """The prove stage while it runs: the job on the pool, and what the end of it needs."""
+    ticket: object
+    pool: Pool
+    prover: str
+    began: float
+    kept: list
+    out: Path
+
+
 def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven:
     """Stage two. Runs the prover on the block's input and checks that the proof commits to this block. A failure is a ProvingError that
     names the transactions to keep. With two or more provers (cfg.pool) the block goes to a free prover, and a failure is tried once more on
     another; with one, or none configured, the prove command runs once, as it always did."""
+    return finish_proof(cfg, built, start_proof(cfg, built, attempt), attempt)
+
+
+def start_proof(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proving:
+    """The first half of the prove stage: the input tool runs, and the job goes to the pool, which runs it in a thread of its own."""
     attempt = attempt or Attempt(None, 1)
     work, attempt_dir, block_hash = built.work, built.attempt_dir, built.block_hash
     prover = Path(cfg.prove_cmd).name
     pool = cfg.pool or new_pool([Prover(prover)])
     attempt.event("proof_queued", prover=prover)
     proving = time.monotonic()
-    outcome, tried_on = "failed", []
     kept = [t["hash"] for t in built.chosen]
     # Each attempt has its own folder, output included: a prover left behind by a killed builder writes into the old one, never into this one.
     out = attempt_dir / "out"
@@ -1129,8 +1150,22 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     try:
         attempt.event("proof_started", prover=prover)
         run(cfg.make_input_cmd, str(attempt_dir / "block.json"), str(attempt_dir / "witness.json"), cfg.genesis, str(attempt_dir / "input.bin"))
+        ticket = pool.submit(Job(None, cfg.prove_cmd, attempt_dir / "input.bin", out, check, cfg.prover_input_dir))
+    except BuilderError as e:
+        attempt.event("proof_ended", prover=prover, outcome="failed", seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300])
+        raise ProvingError(str(e), kept) from e
+    return Proving(ticket, pool, prover, proving, kept, out)
+
+
+def finish_proof(cfg: Config, built: Built, running: Proving, attempt: "Attempt | None" = None) -> Proven:
+    """The second half: waits for the job, and checks that the proof is this block's."""
+    attempt = attempt or Attempt(None, 1)
+    work = built.work
+    pool, prover, proving = running.pool, running.prover, running.began
+    outcome, tried_on = "failed", []
+    try:
         try:
-            proved = pool.prove(Job(None, cfg.prove_cmd, attempt_dir / "input.bin", out, check, cfg.prover_input_dir))
+            proved = running.ticket.result()
         except JobError as e:
             outcome, tried_on = e.outcome, e.tried
             raise BuilderError(str(e)) from e
@@ -1139,7 +1174,7 @@ def prove(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> Proven
     except BuilderError as e:
         attempt.event("proof_ended", prover=prover, outcome=outcome, seconds=round(time.monotonic() - proving, 3), reason=str(e)[:300],
                       **({"tried": tried_on} if pool.managed and tried_on else {}))
-        raise ProvingError(str(e), kept) from e
+        raise ProvingError(str(e), running.kept) from e
     os.replace(proved.out_dir, work / "out")   # the accepted attempt's folder is the block's `out`, where the demo and the operator look
     prove_seconds = round(time.monotonic() - proving, 3)
     # With two or more provers the end says which one proved it, and which a first try failed on; with one it says what it always did.
@@ -1589,12 +1624,12 @@ class Producer:
                  cooldown: float = 600, emit=None, clock=time.time, build=build_block, pending=pool_pending,
                  resolve=resolve_unknown, recover=recover_saved, wait=None, gather_ms: float = 0, journal: Journal | None = None, test: bool = False,
                  source_commit: str = "unknown", status_tick: float = STATUS_TICK_SECONDS,
-                 status_stall: float = STATUS_STALL_SECONDS):
+                 status_stall: float = STATUS_STALL_SECONDS, max_in_flight: int = 1):
         self.cfg, self.stop, self.idle, self.empty_every, self.cooldown = cfg, stop, idle, empty_every, cooldown
         self.gather_ms = gather_ms
         self.journal = journal or Journal(Path(cfg.work_dir) / "journal", clock=clock)
         self.source_commit = source_commit
-        self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": 1,
+        self.settings = {"strategy": "on_demand", "gather_ms": gather_ms, "heartbeat_seconds": empty_every, "max_in_flight": max_in_flight,
                          "idle_ms": round(idle * 1000), "exclude_cooldown_seconds": cooldown, "test": test, "traffic_read": bool(cfg.traffic_url),
                          **({"target_gas_limit": cfg.target_gas_limit} if cfg.target_gas_limit else {}),
                          **({"provers": [p.name for p in cfg.pool.provers], "prove_timeout_seconds": cfg.pool.timeout} if cfg.pool and cfg.pool.managed else {})}
@@ -2070,6 +2105,244 @@ class Producer:
                 pass
 
 
+class Pipeline(Producer):
+    """The producer that keeps up to `max_in_flight` blocks in flight: a block is cut while earlier ones prove, built on the newest of them, and
+    only the oldest is submitted. At `max_in_flight` 1 it does what `Producer` does, call for call. See README.md, "Several blocks in flight".
+
+    `self.last` is the last block this process saw Canton commit, as (number, hash): reth's head never goes below it, and its safe and
+    finalized blocks are never any other."""
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.k = self.settings["max_in_flight"]
+        self.flight: list = []   # the blocks built and not final, oldest first
+        self.last = None
+
+    def provers(self) -> int:
+        return len(self.cfg.pool.provers) if self.cfg.pool else 1
+
+    def cut_blocked(self) -> str | None:
+        pool = self.cfg.pool
+        return why_not_cut(self.k, self.flight, self.provers(), any_up=not (pool and pool.managed) or pool.any_up(), in_doubt=self.unresolved is not None)
+
+    def settled(self) -> str:
+        return self.last[1]
+
+    # -- the loop
+    def step(self) -> None:
+        now = self.clock()
+        attempt = None
+        for h in [h for h, until in self.excluded.items() if until <= now]:
+            del self.excluded[h]
+            self.excluded_why.pop(h, None)
+            if self.held:
+                self.held["next"] = 0   # a transaction that was held back may go in now
+        try:
+            if self.unresolved is None and unresolved_path(self.cfg).exists():   # a command in doubt that this process does not know yet
+                self.load_unresolved()
+                if self.unresolved is None:   # not readable: nothing is built while it exists
+                    self.write_status()
+                    self.wait(max(self.idle, 1.0))
+                    return
+            if self.unresolved:
+                return self.settle_unknown()
+            if not self.flight and saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
+                self.restore()
+            self.collect()
+            blocked, cut, trigger = self.cut_blocked(), False, None
+            if blocked is None:
+                self.pause = 0.0
+                trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
+                if trigger is not None:
+                    cut = True
+                    attempt = self.new_attempt(trigger, now)
+                    result = self.cut(attempt, trigger)
+                    if result is not None:   # nothing to settle
+                        return self.settle_result(result, [], now)
+            if not self.flight:
+                if now - self.last_written >= 5:   # tells a monitor the loop is alive
+                    self.write_status()
+                self.wait(min(self.idle, 1.0) if blocked == "no prover is up" and self.idle > 0 else 1.0 if blocked == "no prover is up"
+                          else min(self.idle, self.pause) if self.pause > 0 else self.idle)
+                return
+            oldest = self.flight[0]
+            full = len(self.flight) >= self.k
+            if oldest.state == PROVING:
+                if cut and not full:   # the next step may cut another
+                    return
+                if not full:
+                    if now - self.last_written >= 5:
+                        self.write_status()
+                    self.wait(self.idle)
+                    return
+                oldest.proving.ticket.done.wait()   # nothing more can be cut: the oldest is what everything waits for
+                self.collect()
+            if oldest.state == FAILED:
+                attempt = self.attempt = oldest.attempt
+                self.unwind(oldest.error, oldest)
+                raise oldest.error
+            if oldest.state == PROVEN and len(self.flight) == 1:
+                attempt = oldest.attempt
+                result, pairs = self.submit_oldest(oldest)
+                return self.settle_result(result, pairs, now)
+            self.wait(self.idle)   # the oldest is proven and later blocks are in flight, or its proof is not the one finishing
+        except Exception as e:   # not a block Canton answered: reth, the ledger, the prover or the pending check failed
+            if attempt:
+                attempt.failed(failure_report(e)["error"])
+            if isinstance(e, ProvingError):
+                if self.control:   # the prover failed without the candidates too: the service is not shown to work, so nobody is blamed
+                    self.control, self.hunt, self.proof_kept = None, None, set()
+                else:
+                    self.proving_failed(e, now)
+            self.fail(failure_report(e))
+
+    def settle_result(self, result: dict, pairs: list, now: float) -> None:
+        """What `Producer.step` does with the answer of a block."""
+        failing = not result.get("skipped") and result["committed"] is False and not result.get("rejected")
+        if not failing:
+            self.note_lost(result.get("lostTransactions"), now)   # `fail` notes its own
+        if "proveSeconds" in result:
+            self.proof_passed([h.lower() for h in result.get("transactions", result.get("keptTransactions", []))], now)
+        if result.get("skipped"):
+            self.skipped(result, now)
+        elif failing:
+            self.fail(result)   # Canton did not take it, but did not refuse it either: the service failed, the block may be fine
+        else:
+            self.record(result, pairs)
+
+    def new_attempt(self, trigger: str, now: float) -> "Attempt":
+        exclude_reason, idle_ms = self.cut_reason(trigger, now)
+        self.attempt_seq += 1
+        attempt = self.attempt = Attempt(self.journal, self.attempt_seq, {
+            "strategy": "on_demand", "cut_reason": exclude_reason, "pool_waiting": self.snapshot, "idle_before_cut_ms": idle_ms,
+            "in_flight_at_cut": len(self.flight)}, in_flight=len(self.flight))
+        self.waiting_since = None
+        return attempt
+
+    # -- cutting
+    def cut(self, attempt: "Attempt", trigger: str) -> "dict | None":
+        """Cuts a block, builds it on the newest block in flight (on Canton's head with none) and sends it to a prover. Returns the answer
+        {"skipped": true, ...} for a block with nothing to settle, and None for a block that is now in flight."""
+        exclude = set(self.excluded) | {h for h in self.suspects if h != self.probe} | self.hunt_out()
+        if self.control:   # the control block: without the candidates, and made even when it holds nothing, to see the prover work
+            exclude |= {self.control["tx"]}
+        with connect(self.cfg.ws_url, max_size=None) as ws:
+            reth = Reth(self.cfg, ws)
+            if self.flight:
+                tip = self.flight[-1]
+                chain = {**tip.built.chain, "headNumber": tip.number, "headHash": tip.hash[2:]}   # the contract it names is the one Canton had before the tip
+                base = tip.hash
+            else:
+                chain = Ledger(self.cfg).head()
+                base = "0x" + chain["headHash"]
+                self.last = (int(chain["headNumber"]), base)
+            n = int(chain["headNumber"]) + 1
+            attempt.cut(n)
+            if not self.flight:
+                # reth's head, safe and finalized are Canton's head before anything is built (also after a crash).
+                reth.forkchoice(base, base, base)
+            lost_so_far: list = []
+            try:
+                built = build(self.cfg, reth, chain, base, exclude, prove_empty=trigger == "heartbeat", lost=lost_so_far, attempt=attempt, settled=self.settled)
+            except BaseException as e:
+                if unresolved_path(self.cfg).exists():   # an Advance was sent and is not settled: reth does not move
+                    raise
+                self.back_to(reth, e, base, n, lost_so_far)
+                raise
+            pairs = list(reth.imported)
+        if isinstance(built, dict):   # skipped: nothing to prove or submit
+            return built
+        entry = InFlight(attempt, built, pairs)
+        self.flight.append(entry)
+        try:
+            entry.proving, entry.state = start_proof(self.cfg, built, attempt), PROVING
+        except ProvingError as e:   # handled when it is the oldest
+            entry.error, entry.state = e, FAILED
+            if len(self.flight) == 1:
+                raise
+        return None
+
+    def back_to(self, reth: Reth, e: BaseException, base: str, n: int, lost_so_far: list) -> None:
+        """A block that was being built failed: reth goes back to the block it was built on, and only its own transactions go back to the pool."""
+        try:
+            reth.forkchoice(base, self.settled(), self.settled())
+        except Exception as rewind:   # the error that brought us here is the one to report; the failed move back rides along as rewindError
+            e.rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
+        e.lost_transactions = [*lost_so_far, *getattr(e, "lost_transactions", [])]
+        # After a failed move back reth's head is still the failed block and says "nonce too low" for its transactions: they stay in the saved copy.
+        if not getattr(e, "rewind_error", None):
+            try:
+                e.lost_transactions += put_back(reth, n)
+                e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
+            except Exception:   # the saved copy stays for the next start
+                pass
+        if not e.lost_transactions:
+            del e.lost_transactions
+
+    # -- the proofs
+    def collect(self) -> None:
+        """A block whose proof has come back is proven, or failed."""
+        for entry in self.flight:
+            if entry.state == PROVING and entry.proving.ticket.done.is_set():
+                try:
+                    entry.proven, entry.state = finish_proof(self.cfg, entry.built, entry.proving, entry.attempt), PROVEN
+                except ProvingError as e:
+                    entry.error, entry.state = e, FAILED
+
+    # -- the end of a block
+    def submit_oldest(self, entry: "InFlight") -> tuple:
+        """Sends the Advance of the oldest block and settles the answer. Returns (the answer, the pairs of an unknown one)."""
+        entry.state = SUBMITTING
+        self.attempt = attempt = entry.attempt
+        attempt.in_flight = len(self.flight) - 1
+        pairs: list = []
+        try:
+            with connect(self.cfg.ws_url, max_size=None) as ws:
+                reth = Reth(self.cfg, ws)
+                reth.imported = list(entry.pairs)
+                result = submit(self.cfg, reth, entry.built, entry.proven, pairs, attempt)
+        except BaseException as e:
+            self.unwind(e, entry)
+            raise
+        self.flight.remove(entry)
+        if result["committed"]:
+            self.last = (entry.number, entry.hash)
+        return result, pairs
+
+    def unwind(self, e: BaseException, culprit: "InFlight") -> None:
+        """The oldest block failed: reth goes back to the last block Canton committed, every transaction of the blocks in flight goes back to
+        the pool in block order, and the blocks above the failed one are cancelled."""
+        if unresolved_path(self.cfg).exists():   # an Advance was sent and is not settled: the record makes the next step settle it, and reth does not move
+            self.flight.remove(culprit)
+            return
+        blocks, self.flight = self.flight, []
+        for entry in blocks:
+            if entry is not culprit:
+                if entry.proving is not None:
+                    entry.proving.ticket.cancel()
+                entry.attempt.closed = True
+                self.journal.event("cancelled", attempt=entry.attempt.seq, number=entry.number, depends_on=culprit.attempt.seq,
+                                   reason="an earlier block did not commit")
+        last = self.settled()
+        with connect(self.cfg.ws_url, max_size=None) as ws:
+            reth = Reth(self.cfg, ws)
+            try:
+                reth.forkchoice(last, last, last)
+            except Exception as rewind:   # the error that brought us here is the one to report; the failed move back rides along as rewindError
+                e.rewind_error = str(rewind) if isinstance(rewind, BuilderError) else f"{type(rewind).__name__}: {rewind}"
+            e.lost_transactions = [*culprit.built.lost, *getattr(e, "lost_transactions", [])]
+            if not getattr(e, "rewind_error", None):
+                try:
+                    for entry in blocks:
+                        reth.imported = list(entry.pairs)
+                        e.lost_transactions += put_back(reth, entry.number)
+                    e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
+                except Exception:   # the saved copy stays for the next start
+                    pass
+        if not e.lost_transactions:
+            del e.lost_transactions
+
+
 def settle_once(cfg: Config, result: dict, sleep=time.sleep) -> dict:
     """`once` after a block whose Advance had no answer: waits, in this process, for the command's own outcome (its completion, or the end of
     the window it can commit in, then Canton's head) and returns the result as if Canton had answered: committed, or not committed
@@ -2102,8 +2375,9 @@ def produce(cfg: Config, args) -> int:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
-    Producer(cfg, stop, args.idle_ms / 1000, args.heartbeat_seconds, args.status_file, args.exclude_cooldown_seconds,
-             gather_ms=args.gather_ms, test=args.test, source_commit=source_commit()).run()
+    engine = Pipeline if args.max_in_flight > 1 else Producer   # one block at a time keeps the code path it has always had
+    engine(cfg, stop, args.idle_ms / 1000, args.heartbeat_seconds, args.status_file, args.exclude_cooldown_seconds,
+           gather_ms=args.gather_ms, test=args.test, source_commit=source_commit(), max_in_flight=args.max_in_flight).run()
     return 0
 
 
@@ -2134,6 +2408,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--prover", action="append", default=[], metavar="NAME=URL", help="a prover: the URL of one ZisK coordinator (repeatable; also CZE_PROVERS, comma-separated). Each takes one block at a time. With two or more, a block that fails goes once to another prover and a prover that cannot be reached is left alone for a while. None, or one: the prove command alone, as ever")
     ap.add_argument("--prove-timeout", type=float, default=float(os.environ.get("CZE_PROVE_TIMEOUT", DEFAULT_TIMEOUT)), metavar="SECONDS", help=f"how long one proof may take before it is given up (default {DEFAULT_TIMEOUT:g}; also CZE_PROVE_TIMEOUT)")
     ap.add_argument("--prover-input-dir", metavar="DIR", help="a folder the provers' machines also see: the input is copied there for each proof and its path is given to the prover (default: the input's own path is given)")
+    ap.add_argument("--max-in-flight", type=int, default=int(os.environ.get("CZE_MAX_IN_FLIGHT", 1)), metavar="K", help="run: the most blocks made and not yet final at once (default 1; also CZE_MAX_IN_FLIGHT). At most one more than the number of provers")
     ap.add_argument("--idle-ms", type=int, default=500, help=f"run: how long to wait between looks at an empty pool (at least {MIN_IDLE_MS})")
     ap.add_argument("--strategy", default=os.environ.get("CZE_BLOCK_STRATEGY", "on_demand"), help=f"run: when a block is cut: {', '.join(STRATEGIES)} (default; also CZE_BLOCK_STRATEGY)")
     ap.add_argument("--gather-ms", type=float, default=0, help="run: after a transaction reaches an idle pool, wait this long for more before cutting (0: cut at once)")
@@ -2155,7 +2430,8 @@ def main() -> int:
         if args.exclude_cooldown_seconds < 0:
             raise BuilderError("bad arguments: --exclude-cooldown-seconds cannot be negative")
         if args.command == "run":
-            check_strategy(args.strategy, args.gather_ms, args.heartbeat_seconds)
+            named = args.prover or [x for x in os.environ.get("CZE_PROVERS", "").split(",") if x.strip()]
+            check_strategy(args.strategy, args.gather_ms, args.heartbeat_seconds, max_in_flight=args.max_in_flight, provers=max(1, len(named)))
         if args.idle_ms < MIN_IDLE_MS:
             raise BuilderError(f"bad arguments: --idle-ms must be at least {MIN_IDLE_MS}: a shorter wait would only keep reth busy")
         if args.max_block_tx_bytes < 1:
