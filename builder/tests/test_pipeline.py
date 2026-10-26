@@ -243,5 +243,202 @@ class GatewayProofs(Depth):
         self.check(3)
 
 
+class Failures(Depth):
+    """Cases 2, 3 and 14: an oldest block that is refused or fails cancels the blocks built on it, one unwind takes reth back to the last block
+    Canton committed, and an unwind that cannot finish is finished by the next step before anything else is done."""
+
+    SENDERS = (ALICE, BOB, CAROL)
+
+    def hashes(self, k, first=0):
+        return {tx(x, 0)["hash"] for x in self.SENDERS[first:k]}
+
+    def in_pool(self, s):
+        return {t["hash"] for ts in s.reth.pool.values() for t in ts}
+
+    def failing(self, numbers):
+        """The proof of each block with one of these numbers fails, after the prover returned it."""
+        real = b.finish_proof
+        def finish(cfg, built, running, attempt=None):
+            proven = real(cfg, built, running, attempt)
+            if built.n in numbers:
+                raise b.ProvingError("the prover is down", running.kept)
+            return proven
+        patch = mock.patch.object(b, "finish_proof", finish)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def lone(self, s):
+        """How many times reth's head, safe and finalized block were set to one and the same block that is not Canton's head at the start."""
+        return [p[0]["headBlockHash"] for m, p in s.reth.engine_calls
+                if m == "engine_forkchoiceUpdated" + "V3" and p[0]["headBlockHash"] == p[0]["safeBlockHash"] == p[0]["finalizedBlockHash"]]
+
+    def cancelled(self, s, k, culprit=1):
+        found = self.lines(s, "cancelled")
+        self.assertEqual([(x["attempt"], x["depends_on"]) for x in found], [(i, culprit) for i in range(culprit + 1, k + 1)])
+
+    # -- case 2
+    def check_refused(self, k):
+        s = self.setup({}, refuse="the sidecar refused the proof")
+        self.script(A, "sleep 1")   # the first block is slow: the others are proven when it is answered
+        p = self.pipeline(s, k)
+        self.fill(s, p, k)
+        n0 = HEAD_NUMBER + 1
+        self.assertEqual(self.numbers(s), [n0], "only the oldest block is ever sent")
+        self.assertEqual(self.committed(), [])
+        self.cancelled(s, k)
+        self.assertEqual(p.flight, [])
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
+        self.assertEqual(self.in_pool(s), self.hashes(k))   # every transaction is back in the pool
+        self.assertEqual(p.suspects, [])
+        self.assertFalse(p.unwind_pending)
+        self.assertEqual(self.lines(s, "cancelled")[0]["reason"], "an earlier block did not commit")
+        s.ledger.refuse = None
+        self.drive(p, lambda: self.committed())
+        self.assertEqual(self.committed()[0], n0)   # the next block is at the height of the refused one
+
+    def test_a_refused_block_cancels_the_ones_built_on_it_at_two(self):
+        self.check_refused(2)
+
+    def test_a_refused_block_cancels_the_ones_built_on_it_at_three(self):
+        self.check_refused(3)
+
+    # -- case 3
+    def check_oldest_fails(self, k):
+        s = self.setup({})
+        self.script(A, "sleep 1")
+        self.failing({HEAD_NUMBER + 1})
+        p = self.pipeline(s, k)
+        self.fill(s, p, k)
+        self.assertEqual(self.numbers(s), [], "nothing is sent for a block whose proof failed")
+        self.cancelled(s, k)
+        self.assertEqual(p.flight, [])
+        self.assertEqual(self.lone(s), [HEAD_HASH, HEAD_HASH], "one move to the start, one unwind")
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
+        self.assertEqual(self.in_pool(s), self.hashes(k))
+        self.assertEqual(p.suspects, [])
+        self.assertFalse(p.unwind_pending)
+
+    def test_the_oldest_block_failing_at_two(self):
+        self.check_oldest_fails(2)
+
+    def test_the_oldest_block_failing_at_three(self):
+        self.check_oldest_fails(3)
+
+    def check_newest_fails(self, k):
+        """The newest block fails first: the ones before it commit, and it is unwound when it is the oldest."""
+        s = self.setup({})
+        self.script(A, "sleep 1")
+        self.failing({HEAD_NUMBER + k})
+        p = self.pipeline(s, k)
+        self.fill(s, p, k)
+        n0 = HEAD_NUMBER + 1
+        if k == 2:   # filling the loop waited for the first block, which committed; the failed one is next
+            self.assertEqual(self.committed(), [n0])
+        self.assertEqual(self.lone(s), [HEAD_HASH], "nothing is unwound while a block before the failed one is in flight")
+        self.drive(p, lambda: p.last[0] == HEAD_NUMBER + k - 1 and not p.flight)
+        self.assertEqual(self.committed(), [n0 + i for i in range(k - 1)])
+        self.assertEqual(self.numbers(s), [n0 + i for i in range(k - 1)])
+        last = self.reports and [r["blockHash"] for r in self.reports if r.get("committed")][-1]
+        self.assertEqual(self.lone(s), [HEAD_HASH, last], "one unwind, to the last block that committed")
+        self.assertEqual(self.cancelled_blocks(s), [])   # the failed block was the newest: it cancels none
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (last, last))
+        self.assertEqual(self.in_pool(s), self.hashes(k, k - 1))   # only the failed block's transaction is back
+        self.assert_final_never_back(s)
+
+    def cancelled_blocks(self, s):
+        return self.lines(s, "cancelled")
+
+    def test_the_newest_block_failing_at_two(self):
+        self.check_newest_fails(2)
+
+    def test_the_newest_block_failing_at_three(self):
+        self.check_newest_fails(3)
+
+    # -- case 14
+    def unwind_that_cannot_finish(self, k, how):
+        s = self.setup({})
+        self.script(A, "sleep 1")
+        self.failing({HEAD_NUMBER + 1})
+        if how == "forkchoice":
+            s.reth.no_state_for_genesis = True   # reth cannot move back to the start
+        else:
+            s.reth.crash_on_send = True   # the first transaction sent again breaks the connection
+        p = self.pipeline(s, k)
+        self.fill(s, p, k)
+        self.assertTrue(p.unwind_pending)
+        self.assertEqual(self.in_pool(s), set(), "nothing was sent again")
+        self.assertTrue(b.saved_path(s.cfg).exists(), "the kept copy is not cleared")
+        cuts, sends, held = len(self.lines(s, "cut")), len(s.ledger.submitted), s.reth.head
+        if how == "forkchoice":   # the next step tries again and fails again: nothing else happens
+            s.reth.pool[CAROL] = [tx(CAROL, 5)]
+            self.step(p)
+            self.assertTrue(p.unwind_pending)
+            self.assertEqual((len(self.lines(s, "cut")), len(s.ledger.submitted), s.reth.head), (cuts, sends, held))
+            self.assertTrue(b.saved_path(s.cfg).exists())
+            s.reth.pool.clear()
+            s.reth.no_state_for_genesis = False
+        self.step(p)   # reth goes to the last block that committed, and the transactions are sent again
+        self.assertFalse(p.unwind_pending)
+        self.assertEqual((len(self.lines(s, "cut")), len(s.ledger.submitted)), (cuts, sends), "that step cut and sent nothing")
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
+        self.assertEqual(self.in_pool(s), self.hashes(k))
+        self.assertFalse(b.saved_path(s.cfg).exists())
+        self.assertEqual([r for r in self.reports if r.get("lostTransactions")], [])
+        self.assertEqual(self.status()["blocksRefused"], 0)
+
+    def test_a_forkchoice_that_fails_in_the_unwind_at_two(self):
+        self.unwind_that_cannot_finish(2, "forkchoice")
+
+    def test_a_forkchoice_that_fails_in_the_unwind_at_three(self):
+        self.unwind_that_cannot_finish(3, "forkchoice")
+
+    def test_a_resend_that_raises_in_the_unwind_at_two(self):
+        self.unwind_that_cannot_finish(2, "resend")
+
+    def test_a_resend_that_raises_in_the_unwind_at_three(self):
+        self.unwind_that_cannot_finish(3, "resend")
+
+    def test_a_head_that_is_not_the_last_block_stops_the_unwind(self):
+        s = self.setup({})
+        self.script(A, "sleep 1")
+        self.failing({HEAD_NUMBER + 1})
+        s.reth.no_state_for_genesis = True
+        p = self.pipeline(s, 2)
+        self.fill(s, p, 2)
+        self.assertTrue(p.unwind_pending)
+        real = b.Ledger.head
+        with mock.patch.object(b.Ledger, "head", lambda l: {**real(l), "headHash": "cd" * 32, "headNumber": HEAD_NUMBER + 1}):
+            s.reth.no_state_for_genesis = False
+            fcs = len(s.reth.engine_calls)
+            self.step(p)
+        self.assertTrue(p.unwind_pending)
+        self.assertEqual(len(s.reth.engine_calls), fcs, "reth does not move")
+        self.assertIn("not block", self.status()["headFault"])
+
+    def check_refused_and_stuck(self, k):
+        s = self.setup({}, refuse="the sidecar refused the proof")
+        self.script(A, "sleep 1")
+        s.reth.no_state_for_genesis = True
+        p = self.pipeline(s, k)
+        self.fill(s, p, k)
+        self.assertTrue(p.unwind_pending)
+        self.assertEqual(self.numbers(s), [HEAD_NUMBER + 1])
+        self.cancelled(s, k)
+        self.assertTrue(b.saved_path(s.cfg).exists())
+        self.assertIn("no state found", self.reports[-1]["rewindError"])
+        s.reth.no_state_for_genesis = False
+        self.step(p)
+        self.assertFalse(p.unwind_pending)
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (HEAD_HASH, HEAD_HASH))
+        self.assertEqual(self.in_pool(s), self.hashes(k))
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_a_refusal_whose_move_back_fails_is_finished_by_the_next_step_at_two(self):
+        self.check_refused_and_stuck(2)
+
+    def test_a_refusal_whose_move_back_fails_is_finished_by_the_next_step_at_three(self):
+        self.check_refused_and_stuck(3)
+
+
 if __name__ == "__main__":
     unittest.main()

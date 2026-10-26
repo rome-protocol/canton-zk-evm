@@ -2129,6 +2129,7 @@ class Pipeline(Producer):
         self.flight: list = []   # the blocks built and not final, oldest first
         self.last = None
         self.head_fault: str | None = None   # why the last head check failed: nothing is cut or submitted until one passes
+        self.unwind_pending = False   # reth could not be taken back to `last`, or its transactions could not be sent again: the next step does both first
         self.fatal: str | None = None
 
     def provers(self) -> int:
@@ -2167,7 +2168,9 @@ class Pipeline(Producer):
                     return
             if self.unresolved:
                 return self.settle_unknown()
-            if not self.flight and saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
+            if self.unwind_pending:   # nothing is cut, submitted, sent again or cleared until reth is on `last` and its transactions are back in the pool
+                return self.finish_unwind()   # that is all this step does
+            elif not self.flight and saved_path(self.cfg).exists():   # a block cut short by a restart or a fault: its transactions go back to reth first
                 self.restore()
             self.collect()
             blocked, cut, trigger = self.cut_blocked(), False, None
@@ -2364,6 +2367,8 @@ class Pipeline(Producer):
         later, self.flight = self.flight, []
         for entry in later:
             self.cancel(entry, culprit)
+        if result.get("rewindError"):   # reth is still on the tip: the next step moves it back and sends the copies
+            self.unwind_pending = True
         if not later or result.get("rewindError"):
             return
         lost: list = []
@@ -2373,10 +2378,23 @@ class Pipeline(Producer):
                 for entry in later:
                     reth.imported = list(entry.pairs)
                     lost += put_back(reth, entry.number)
-            except Exception as e:   # the copies stay for the next start
+            except Exception as e:   # the copies stay for the next step
                 result["rewindError"] = str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"
+                self.unwind_pending = True
         if lost:
             result["lostTransactions"] = [*result.get("lostTransactions", []), *lost]
+
+    def finish_unwind(self) -> None:
+        """The step after an unwind that did not finish. Canton's head must still be `last` (a head that is not is the fault of `check_head`, and
+        nothing moves); then reth goes to it and the kept transactions are sent again, and only then is the file cleared."""
+        got = Ledger(self.cfg).head()["headHash"].lower().removeprefix("0x")
+        want = self.last[1].lower().removeprefix("0x")
+        if got != want:
+            self.head_fault = f"Canton's head is block {got}, not block {self.last[0]} ({want}), the block reth goes back to"
+            raise HeadMismatch(self.head_fault)
+        self.head_fault = None
+        self.restore()
+        self.unwind_pending = False
 
     def cancel(self, entry: "InFlight", culprit: "InFlight") -> None:
         if entry.proving is not None:
@@ -2409,8 +2427,10 @@ class Pipeline(Producer):
                         reth.imported = list(entry.pairs)
                         e.lost_transactions += put_back(reth, entry.number)
                     e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
-                except Exception:   # the saved copy stays for the next start
-                    pass
+                except Exception:   # the saved copy stays for the next step
+                    self.unwind_pending = True
+            else:
+                self.unwind_pending = True
         if not e.lost_transactions:
             del e.lost_transactions
 
