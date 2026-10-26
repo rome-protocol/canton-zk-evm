@@ -741,5 +741,69 @@ class OnTheTip(Depth):
         self.check_back_cannot_finish(3)
 
 
+class NotAProverFault(Depth):
+    """An error of the input tool or of the prove command that is not a BuilderError or a JobError (a command that cannot be launched, a proof file
+    that cannot be read) ends the block as any failure does: one report, the transactions back in the pool, and the retry commits. Nothing stays in
+    flight."""
+
+    def run_case(self, engine, k, where):
+        self.engine = engine
+        s = self.setup({})
+        p = self.pipeline(s, k)
+        t = tx(ALICE, 0)
+        s.reth.pool[ALICE] = [t]
+        if where == "input":
+            real, state = b.run, {"armed": True}
+            def run(cmd, *args):
+                if state["armed"] and "make-input" in cmd:
+                    state["armed"] = False
+                    raise OSError(24, "Too many open files")
+                return real(cmd, *args)
+            patch = mock.patch.object(b, "run", run)
+        else:
+            real, state = b.run_prover, {"armed": True}
+            def run_prover(*a, **kw):
+                if state["armed"]:
+                    state["armed"] = False
+                    raise OSError(11, "Resource temporarily unavailable")
+                return real(*a, **kw)
+            patch = mock.patch.object(b, "run_prover", run_prover)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.drive(p, lambda: self.reports)   # the step that meets the failure
+        failed = [dict(r) for r in self.reports]
+        self.drive(p, lambda: self.committed())
+        return s, p, failed, t
+
+    def check(self, engine, k, where):
+        s, p, failed, t = self.run_case(engine, k, where)
+        self.assertEqual([r["committed"] for r in failed], [False], "one failure report")
+        self.assertIn("OSError", failed[0]["error"])
+        self.assertEqual(self.committed(), [HEAD_NUMBER + 1])
+        self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
+        self.assertEqual(getattr(p, "flight", []), [], "no block stays in flight")
+        self.assertEqual(p.failures, 0)
+        self.assertEqual((s.reth.head, self.finals(s)[-1]), (self.reports[-1]["blockHash"],) * 2)
+        return failed
+
+    def test_the_input_tool_at_one_is_what_the_single_block_producer_does(self):
+        mine = self.check(b.Pipeline, 1, "input")
+        self.reports.clear()
+        theirs = self.check(b.Producer, 1, "input")
+        self.assertEqual(mine[0]["error"], theirs[0]["error"])
+
+    def test_the_prove_command_at_one_is_what_the_single_block_producer_does(self):
+        mine = self.check(b.Pipeline, 1, "prove")
+        self.reports.clear()
+        theirs = self.check(b.Producer, 1, "prove")
+        self.assertEqual(mine[0]["error"], theirs[0]["error"])
+
+    def test_the_input_tool_at_two(self):
+        self.check(b.Pipeline, 2, "input")
+
+    def test_the_prove_command_at_two(self):
+        self.check(b.Pipeline, 2, "prove")
+
+
 if __name__ == "__main__":
     unittest.main()

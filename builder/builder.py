@@ -2291,7 +2291,7 @@ class Pipeline(Producer):
         self.flight.append(entry)
         try:
             entry.proving, entry.state = start_proof(self.cfg, built, attempt), PROVING
-        except ProvingError as e:   # handled when it is the oldest
+        except Exception as e:   # a ProvingError, or the input or prove command that could not be run at all: handled when it is the oldest
             entry.error, entry.state = e, FAILED   # the step goes on to the oldest block: if this is it, it is unwound there, once
         return None
 
@@ -2339,7 +2339,7 @@ class Pipeline(Producer):
             if entry.state == PROVING and entry.proving.ticket.done.is_set():
                 try:
                     entry.proven, entry.state = finish_proof(self.cfg, entry.built, entry.proving, entry.attempt), PROVEN
-                except ProvingError as e:
+                except Exception as e:   # a ProvingError, or a fault that is not the prover's (a proof file that cannot be read)
                     entry.error, entry.state = e, FAILED
 
     # -- the end of a block
