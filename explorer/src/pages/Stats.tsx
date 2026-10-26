@@ -108,7 +108,7 @@ function Rule({ s }: { s: StatsSummary }) {
         <dd className="kv-v">{r && r.worstHourP95 !== null ? <><b>{sec(r.worstHourP95)}</b> <span className="muted small">by the hour (the worst){r.worstHourAt ? `, ${pointTime(r.worstHourAt, false)}` : ""} · {plural(r.hoursAbove ?? 0, "hour")} of {count(r.hoursMeasured)} above {r.slowAboveSeconds} s{r.hoursMeasured < r.hoursCounted ? ` · ${plural(r.hoursCounted - r.hoursMeasured, "hour")} with no final transaction` : ""}{s.timeToFinal ? ` · ${sec(s.timeToFinal.p95)} over the whole window` : ""}</span></> : s.timeToFinal ? <><b>{sec(s.timeToFinal.p95)}</b> <span className="muted small">over this window{r ? " · no whole hour with a final transaction yet" : ""}</span></> : DASH}</dd>
         <dt className="kv-k">Busiest ten minutes</dt>
         <dd className="kv-v">{p.maxBusyRatio10m !== null ? <><b>{pct(p.maxBusyRatio10m)}</b> <span className="muted small">of what one prover can carry · {count(p.windowsOver)} of {count(p.windowsCounted)} ten-minute windows above {pct(p.loadedAbove)}{days.length > 0 ? ` · ${count(daysOver)} of ${plural(days.length, "day")} with more than one` : ""}</span></> : DASH}</dd>
-        {p.byProver.length > 0 && <>
+        {p.byProver && p.byProver.length > 0 && <>
           <dt className="kv-k">Each prover busy</dt>
           <dd className="kv-v">{p.byProver.map((x, i) => <span key={x.prover || i}>{i > 0 && " · "}<code>{x.prover || "prover"}</code> <b>{pct(x.busyShare)}</b> <span className="muted small">{plural(x.proofs, "proof")}</span></span>)}</dd>
         </>}

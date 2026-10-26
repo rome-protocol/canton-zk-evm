@@ -364,6 +364,7 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       const ix = await start(pool, chain, { journalDir: dir });
       await ix.runOnce();
       await ix.loadJournal();
+      expect((await health(pool, "journal")).value).toMatchObject({ orphans: 1 }); // the line of attempt 99
       const a = async (n: number) => one(pool, "select traffic_bytes from block_attempts where run_id = $1 and attempt_seq = $2", [RUN1, n]);
       expect(await a(1)).toMatchObject({ traffic_bytes: 4_001 });
       expect(await a(2)).toMatchObject({ traffic_bytes: null });
@@ -378,6 +379,40 @@ describe.skipIf(!TEST_URL)("the journal loaded into the lifecycle tables", () =>
       appendLines(dir, "2026-10-21.jsonl", r2.lines);
       await ix.loadJournal();
       expect(await one(pool, "select traffic_bytes from canton_updates where update_id = $1", [id(1)])).toMatchObject({ traffic_bytes: 4_001 });
+    });
+  });
+
+  it("the late path across loads, as in production: the commits are indexed and joined with no traffic, and the paid_traffic lines of a later load fill the updates", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain([{ txs: 1 }, { txs: 1 }, { txs: 1 }]);
+      const dir = makeFolder();
+      const id = (n: number) => chain.blocks[n - 1]!.record.updateId;
+      const recordMs = Date.parse(chain.blocks[0]!.record.recordTime);
+      const r = new Run(RUN1);
+      r.start(recordMs - 1_000);
+      // as the builder writes them at depth 3: answered N, submitted N+1, paid_traffic N
+      for (let n = 1; n <= 3; n++) attemptLines(r, chain, n, n, recordMs - 500 + n);
+      for (let n = 1; n <= 3; n++) r.add(recordMs + 30 * n, "answered", { attempt: n, outcome: "committed", reason: null, update_id: id(n), completion_offset: n * 10, traffic_bytes: null, traffic_before: null, traffic_after: null });
+      putFile(dir, "2026-10-21.jsonl", r.lines);
+      const ix = await start(pool, chain, { journalDir: dir });
+      await ix.runOnce();
+      await ix.loadJournal();
+      for (const n of [1, 2, 3]) {
+        expect(await one(pool, "select command_id, traffic_bytes from canton_updates where update_id = $1", [id(n)])).toMatchObject({
+          command_id: expect.stringMatching(/^ostia-770101-/), traffic_bytes: null });
+      }
+      // a later load brings the paid-traffic lines, about a second after the answers
+      const r2 = new Run(RUN1);
+      r2.seq = r.seq;
+      for (let n = 1; n <= 3; n++) r2.add(recordMs + 1_000 + n, "paid_traffic", { attempt: n, traffic_bytes: 1_000 * n });
+      appendLines(dir, "2026-10-21.jsonl", r2.lines);
+      await ix.loadJournal();
+      for (const n of [1, 2, 3]) {
+        expect(await one(pool, "select traffic_bytes from block_attempts where run_id = $1 and attempt_seq = $2", [RUN1, n])).toMatchObject({ traffic_bytes: 1_000 * n });
+        expect(await one(pool, "select command_id, traffic_bytes from canton_updates where update_id = $1", [id(n)])).toMatchObject({
+          command_id: expect.stringMatching(/^ostia-770101-/), traffic_bytes: 1_000 * n });
+      }
+      expect((await health(pool, "journal")).value).toMatchObject({ orphans: 0 });
     });
   });
 

@@ -139,6 +139,29 @@ class InFlightStatus(Modes):
         self.assertEqual([x["number"] for x in p.status()["inFlight"]], [FIRST, FIRST + 1], "the oldest first")
         self.assertEqual(json.loads(json.dumps(p.status()))["inFlight"], p.status()["inFlight"], "it is plain JSON")
 
+    def test_the_status_names_each_block_hash_and_the_prover_it_is_on_at_three(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 3)
+        listed = p.status()["inFlight"][0]
+        self.assertEqual(listed["hash"], p.flight[0].hash)
+        self.assertEqual(listed["prover"], p.flight[0].proving.ticket.prover)
+        self.assertEqual(set(listed), {"number", "hash", "attempt", "state", "prover"})
+
+    def test_the_written_status_lists_a_new_block_at_once_at_three(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 3)
+        self.assertEqual([x["number"] for x in p.status_last["inFlight"]], [FIRST], "the file was written when the block was cut")
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        self.drive(p, lambda: len(p.flight) == 2)
+        self.assertEqual([x["number"] for x in p.status_last["inFlight"]], [FIRST, FIRST + 1])
+
+    def test_the_final_status_of_a_stop_lists_no_block_in_flight_at_two(self):
+        s = self.setup({})
+        p = self.first_in_flight(s, 2)
+        p.abandon()
+        p.write_status("stopped", final=True)
+        self.assertEqual(p.status_last["inFlight"], [], "the blocks given up are not in flight")
+
     def test_the_status_lists_nothing_once_every_block_is_final_at_two(self):
         s = self.setup({})
         p = self.first_in_flight(s, 2)

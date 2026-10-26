@@ -711,19 +711,20 @@ describe.skipIf(!TEST_URL)("the stats routes: each prover's busy share", () => {
       attempt(db.pool, r, { cut_at: at(t(from[0]!, from[1]!, 0) - 1000), proof_started_at: at(t(from[0]!, from[1]!, from[2])), proof_ended_at: at(t(to[0]!, to[1]!, to[2])), proof_outcome: outcome, prover });
     await proof(live, "prover-a", [12, 0, 0], [12, 0, 30]);
     await proof(live, "prover-a", [12, 10, 0], [12, 10, 10]);
-    await proof(live, "prover-b", [12, 5, 0], [12, 5, 20], "failed");   // a failed proof used the prover as well
+    await proof(live, "prove-one.sh", [12, 5, 0], [12, 5, 20], "failed"); // as the builder journals it with two or more provers: a failed proof names the prove command, not the pool's prover
     await proof(live, "prover-b", [11, 30, 50], [11, 31, 10]);          // begins before the window: only the 10 s inside count
     await proof(live, null, [12, 15, 0], [12, 15, 2]);                  // the journal named no prover
     await proof(test, "prover-a", [12, 20, 0], [12, 20, 5]);            // a test run is left out
   });
   afterAll(async () => { await db?.drop(); });
 
-  it("adds the proofs of each prover in the part of the window that has happened, clipped to it, test runs left out, the busiest first", async () => {
+  it("adds the proofs of each prover in the part of the window that has happened, clipped to it, test runs left out, the busiest first, each under the name its proof lines carry", async () => {
     const s = body(await get("/api/stats/summary?window=1h"));
     const elapsed = 3560000; // 59 min 20 s of the hour have happened
     expect(s.prover.byProver).toEqual([
       { prover: "prover-a", busyMs: 40000, proofs: 2, busyShare: 40000 / elapsed },
-      { prover: "prover-b", busyMs: 30000, proofs: 2, busyShare: 30000 / elapsed },
+      { prover: "prove-one.sh", busyMs: 20000, proofs: 1, busyShare: 20000 / elapsed },
+      { prover: "prover-b", busyMs: 10000, proofs: 1, busyShare: 10000 / elapsed },
       { prover: "", busyMs: 2000, proofs: 1, busyShare: 2000 / elapsed },
     ]);
     for (const x of s.prover.byProver) same(x, F.statsProverShare);

@@ -234,7 +234,7 @@ export interface StatsSummary {
   attempts: { total: number; committed: number; unknown: number; decided: number; refused: number; failed: number; notTaken: number; refusedShare: number | null; failedShare: number | null; notTakenShare: number | null };
   fullness: number | null;
   canton: { argumentBytesPerBlock: number | null; argumentBytesPerTx: number | null; trafficBytesPerBlock: number | null; trafficReported: number };
-  prover: { maxBusyRatio10m: number | null; windowsOver: number; windowsCounted: number; windowSeconds: number; loadedAbove: number; meanBusyRatio: number; busyMs: number; byProver: { prover: string; busyMs: number; proofs: number; busyShare: number }[] };
+  prover: { maxBusyRatio10m: number | null; windowsOver: number; windowsCounted: number; windowSeconds: number; loadedAbove: number; meanBusyRatio: number; busyMs: number; /** Absent from a server older than this page: the row is then left out. */ byProver?: { prover: string; busyMs: number; proofs: number; busyShare: number }[] };
   quality: { withoutAcceptanceTime: number; clockSkew: number };
   /** Absent from a server older than this page: the page then shows the rule's p95 as unknown. */
   rule?: { slowAboveSeconds: number; hoursCounted: number; hoursMeasured: number; hoursAbove: number | null; worstHourP95: number | null; worstHourAt: string | null; windowsOverByDay: { day: string; windowsOver: number; windowsCounted: number }[] };

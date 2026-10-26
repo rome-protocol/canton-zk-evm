@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { StatsMetric, StatsWindow } from "../api.ts";
@@ -197,7 +197,20 @@ describe("the stats page", () => {
     expect(card).toHaveTextContent("a block when transactions wait");
   });
 
-  it("gives each prover's busy share, and leaves the row out when no proof was timed", async () => {
+  it("leaves the each-prover row out when no proof was timed, and when an older server sends no list", async () => {
+    for (const byProver of [[], undefined]) {
+      const base = summary();
+      const prover = { ...base.prover, byProver } as unknown as typeof base.prover;
+      if (byProver === undefined) delete (prover as { byProver?: unknown }).byProver;
+      await open("/stats?window=7d", { summary: () => reply(summary({ prover })) });
+      const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
+      expect(card).toHaveTextContent("Busiest ten minutes");
+      expect(card).not.toHaveTextContent("Each prover busy");
+      cleanup();
+    }
+  });
+
+  it("gives each prover's busy share when proofs were timed", async () => {
     await open();
     const card = (await screen.findByRole("heading", { name: "The two numbers the block-cutting rule watches" })).closest("div")!;
     expect(card).toHaveTextContent("Each prover busy");

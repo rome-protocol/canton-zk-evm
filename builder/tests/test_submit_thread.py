@@ -56,6 +56,7 @@ class Case16(Held):
         self.assertEqual(p.status()["submitting"], FIRST)
         self.assertEqual([(x["number"], x["state"]) for x in p.status()["inFlight"]][0], (FIRST, "submitting"), "the status lists the block whose Advance is out")
         self.assertEqual(len(p.flight), 2)
+        self.assertEqual([(x["number"], x["state"]) for x in p.status_last["inFlight"]][0], (FIRST, "submitting"), "the written file shows it too, not only status()")
         self.release(s)
         self.drive(p, lambda: len(self.committed()) == 2)
         self.assertEqual(self.committed(), [FIRST, FIRST + 1], "each commit is booked once")
