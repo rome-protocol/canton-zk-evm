@@ -118,15 +118,15 @@ class Ordering(Held):
         s.ledger.paid = 1234
         p = self.pipeline(s, 3)
         order = []
-        real_send, real_paid = b.send_advance, b.Ledger.paid_traffic
-        def send(cfg, sub):
-            order.append(("send", sub.n))
-            return real_send(cfg, sub)
+        real_start, real_paid = b.Pipeline.start_send, b.Ledger.paid_traffic
+        def start(pipeline, entry):
+            real_start(pipeline, entry)   # recorded in the producer's own thread, after the send thread is started: the order is the code's, not the scheduler's
+            order.append(("send", entry.number))
         def paid(ledger, *a, **kw):
             order.append(("paid", None))
             return real_paid(ledger, *a, **kw)
         self.hold(s)
-        with mock.patch.object(b, "send_advance", send), mock.patch.object(b.Ledger, "paid_traffic", paid):
+        with mock.patch.object(b.Pipeline, "start_send", start), mock.patch.object(b.Ledger, "paid_traffic", paid):
             self.cut_one(s, p, ALICE, 1)
             self.until_sending(s, p)
             self.cut_one(s, p, BOB, 2)
@@ -142,15 +142,15 @@ class Ordering(Held):
                 s.ledger.paid = 1234
                 p = self.pipeline(s, k, provers=1)
                 order = []
-                real_send, real_paid = b.send_advance, b.Ledger.paid_traffic
-                def send(cfg, sub):
-                    order.append(("send", sub.n))
-                    return real_send(cfg, sub)
+                real_start, real_paid = b.Pipeline.start_send, b.Ledger.paid_traffic
+                def start(pipeline, entry):
+                    real_start(pipeline, entry)   # recorded in the producer's own thread, after the send thread is started
+                    order.append(("send", entry.number))
                 def paid(ledger, *a, **kw):
                     order.append(("paid", None))
                     return real_paid(ledger, *a, **kw)
                 self.hold(s)
-                with mock.patch.object(b, "send_advance", send), mock.patch.object(b.Ledger, "paid_traffic", paid):
+                with mock.patch.object(b.Pipeline, "start_send", start), mock.patch.object(b.Ledger, "paid_traffic", paid):
                     self.cut_one(s, p, ALICE, 1)
                     self.until_sending(s, p)
                     os.environ["FAKE_PROVER_SLEEP"] = "1.5"   # the next block's proof takes a while, and no step looks at it meanwhile
@@ -183,6 +183,8 @@ class Ordering(Held):
             self.release(s)
             with self.assertRaises(KeyboardInterrupt):
                 self.drive(p, lambda: False)
+        if p.sending is not None:
+            p.sending.thread.join(10)   # the next block's Advance was started before the read raised: let it reach the participant before looking, and before the restart
         self.assertEqual(self.numbers(s), [FIRST, FIRST + 1], "the next Advance went out before the read")
         mine = [x["event"] for x in self.lines_in_order(s) if x.get("attempt") == 1]
         self.assertEqual(mine[-2:], ["answered", "final_seen"], f"the first attempt has its last line: {mine}")
