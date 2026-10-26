@@ -17,6 +17,7 @@ Runs Ostia, a Canton zkEVM (chain id 770101), on one machine: reth, two sidecars
 | `check-program-vk.sh` | Stops `up.sh` when the guest it built has a programVK other than the recorded one |
 | `up.sh`, `down.sh`, `persist-settings.sh` | Start and stop everything. `down.sh` keeps a persistent chain's data, and `down.sh --wipe` removes it, says "wiped" only when the database and reth's data are really gone, and otherwise says what is left and exits with an error (`persist.env` stays, so it can be run again) |
 | `restart.sh`, `sync_reth.py` | Bring a persistent chain back after a restart, and make reth's head Canton's head |
+| `replay_from_canton.py` | Rebuild reth from the block records on Canton, or re-execute and re-check a range of them on a scratch reth (see [Disaster recovery](#disaster-recovery-rebuild-reth-from-canton-and-re-check-a-range-of-blocks)) |
 | `smoke.sh`, `prove-timed.sh` | The smoke test, and the prover command it hands the builder (it keeps the prover's output so the proof time can be read) |
 
 ## The Canton network
@@ -236,6 +237,28 @@ U needs at least 20 TKB when `live.sh cycle` starts (each earlier `legs` run too
 
 `CZE_USER_PREFIX` goes before the user ids as for the rest (`canton.py` and `propose.py` use no prefix on an existing participant unless it is set, so without it they send the user `demo`, not `ostia-demo`, and Canton refuses). A token is read again from its file at every call, so a short-lived one can be rewritten in place. U's and V's EVM addresses (`python3 demo/evm.py keys`) need the chain's coin. The commands and settings are in `demo/README.md` and the header of `demo/live.sh`. `tests/canton_external.sh` runs `upload-dars`, `setup` and `register-token` against the pinned Canton with a login.
 
+## Disaster recovery: rebuild reth from Canton, and re-check a range of blocks
+
+Canton holds, for every committed block, its header and its transactions exactly as the Advance carried them (the `BlockRecord`). That is all reth needs to execute the chain again, so reth's data is not the only copy of the chain. `network/replay_from_canton.py` uses it. It reads Canton with a read token (it never submits anything to Canton) and talks to reth the way the builder does, through the Engine API (`newPayload`, then `forkchoiceUpdated`). It does not start reth: reth is started by `network/reth/launch.sh`, with peer discovery off and no peers. It reads the same settings as the builder: `CZE_STATE_DIR` (the Engine secret `jwt.hex`), `RETH_HTTP_PORT`, `RETH_ENGINE_PORT`, `CZE_LEDGER_URL`, `CZE_LEDGER_TOKEN` or `CZE_LEDGER_TOKEN_FILE`, and the party to read as (`--party`, or `CZE_READER_PARTY`, or `CZE_BUILDER_PARTY`).
+
+**Restore reth from Canton (`rebuild`).** reth's data is lost or damaged, or reth is behind Canton by more than a restart (for a short gap, `sync_reth.py` is enough). Stop the builder and the producers. Start an empty reth on the chain's genesis and Engine secret (`CZE_PERSIST=1 network/reth/launch.sh` on a new state folder, with the chain's `genesis.json` and `jwt.hex` in it), then run:
+
+```sh
+network/replay_from_canton.py rebuild
+```
+
+It reads every block record in order, feeds each block to reth, and checks that the block hash reth got is the one Canton recorded. Blocks reth has already are skipped, so a run that stopped can be started again and goes on from reth's head. It ends when reth's head is Canton's head and prints `canton_head`, `canton_hash`, `reth_before`, `applied`, `reth_head` and `reth_hash` (exit 0). It stops, with a line `FAIL block=N recorded=... reth=... why=...` and exit 1, at the first block that is wrong: a header that does not hash to the hash its record names, a block Canton has no record of, a block that does not follow reth's head, a block reth refuses, or a block hash that differs from the recorded one. Nothing after that block is applied. A reth that is ahead of Canton, or on another chain, is refused.
+
+**Re-check a range (`check`).** It re-executes blocks that were recorded earlier, for example to re-check the blocks that were proven under an older prover:
+
+```sh
+network/replay_from_canton.py check --from 1200 --to 1500 --report check-1200-1500.json
+```
+
+Run it against a scratch reth: its own container name, ports, state folder and data (set `RETH_CONTAINER`, `RETH_HTTP_PORT`, `RETH_ENGINE_PORT`, `RETH_WS_PORT` and `CZE_STATE_DIR` for both `launch.sh` and the check), started by `launch.sh` like the chain's own reth (discovery off, no peers), with the chain's `genesis.json`. The scratch reth must be at block `--from` minus one or earlier; the blocks before `--from` are applied first and are not part of the report. A reth that already has block `--from` is refused, because reth does not execute a block it already has, and this also keeps the check off the chain's own reth. For every block in the range the check compares what reth computed (block hash, state root, receipts root, gas used, transaction count) with what the recorded header says. The report is a JSON file (`--report`, default `check-report-<from>-<to>.json`): `ok`, `checked`, one entry per block, and `failure` (block number, recorded and reth hashes, why) at the first block that does not match, where the check stops. The report is written whether or not the check passed. The command prints `mode`, `from`, `to`, `checked`, `ok`, `report` and `reth_head` and exits 0 only when every block matched; otherwise it prints the same `FAIL` line as `rebuild` and exits 1. Stop and remove the scratch reth when it is done.
+
+Both modes are tested against a fake Ledger API with recorded blocks and a fake reth Engine API: `python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'`.
+
 ## The smoke test
 
 `smoke.sh` runs the builder once, with no transactions in the pool. It checks that
@@ -256,6 +279,7 @@ tests/network_static.sh      # reth only through launch.sh; the extension only o
 tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop on a programVK that is not the recorded one
 python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
 tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
+python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'   # rebuild reth from Canton's block records and re-check a range, against a fake Ledger API and a fake reth
 python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights
 tests/canton_external.sh     # the pinned Canton with a login on its Ledger API, started without Ostia's bootstrap: the setup twice, the rights and one Advance
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)

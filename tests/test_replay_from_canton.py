@@ -108,10 +108,11 @@ class FakeCanton:
 class FakeReth:
     """JSON-RPC and Engine API in one object, on two ports. newPayload rebuilds the header from the payload's fields and checks it hashes to the payload's block hash,
     the way reth does; `refuse` answers INVALID for a block number, `differ` makes reth's own hash for a block number another one."""
-    def __init__(self, blocks=None, refuse=(), differ=None):
+    def __init__(self, blocks=None, refuse=(), differ=None, differ_state=None):
         self.blocks = blocks or [GENESIS]   # canonical hashes by number, genesis first
         self.known = {h: i for i, h in enumerate(self.blocks)}
         self.pending, self.refuse, self.differ, self.calls, self.bad_jwt = {}, set(refuse), differ or {}, [], 0
+        self.differ_state, self.roots = differ_state or {}, {}   # roots: what reth holds for a block number besides its hash
         self.http = self._serve(False)
         self.engine = self._serve(True)
         self.http_url, self.engine_url = (f"http://127.0.0.1:{s.server_port}" for s in (self.http, self.engine))
@@ -143,7 +144,7 @@ class FakeReth:
     def answer(self, method, params):
         if method == "eth_getBlockByNumber":
             n = len(self.blocks) - 1 if params[0] == "latest" else int(params[0], 16)
-            return {"number": hex(n), "hash": "0x" + self.blocks[n].hex()} if n < len(self.blocks) else None
+            return {"number": hex(n), "hash": "0x" + self.blocks[n].hex(), **self.roots.get(n, {})} if n < len(self.blocks) else None
         if method == "engine_newPayloadV4":
             p = params[0]
             n = int(p["blockNumber"], 16)
@@ -160,6 +161,8 @@ class FakeReth:
             if "0x" + keccak256(hdr).hex() != p["blockHash"] or params[1] != [] or params[3] != [] or p["withdrawals"] != []:
                 return {"status": "INVALID", "latestValidHash": None, "validationError": "block hash mismatch"}
             self.pending[p["blockHash"]] = (n, self.differ.get(n, bytes.fromhex(p["blockHash"][2:])), p["transactions"])
+            self.roots[n] = {"stateRoot": self.differ_state.get(n, p["stateRoot"]), "receiptsRoot": p["receiptsRoot"], "gasUsed": p["gasUsed"],
+                             "transactions": [("0x%064x" % k) for k in range(len(p["transactions"]))]}
             return {"status": "VALID", "latestValidHash": p["blockHash"], "validationError": None}
         if method == "engine_forkchoiceUpdatedV3":
             state = params[0]
@@ -305,8 +308,82 @@ class Rebuild(Case):
         self.assertEqual(e.exception.number, 2)
 
 
+class Check(Case):
+    def test_a_range_is_re_executed_and_reported_block_by_block(self):
+        canton, client, _, reth = self.parts(chain(6))
+        r = rc.check(canton, client, 3, 5)
+        self.assertEqual((r["ok"], r["checked"], r["failure"], r["reth_head"]), (True, 3, None, 5))
+        self.assertEqual([b["number"] for b in r["blocks"]], [3, 4, 5])
+        self.assertTrue(all(b["ok"] and b["state_root"].startswith("0x") and b["gas_used"] == 21000 for b in r["blocks"]))
+        self.assertEqual(len(reth.blocks), 6, "blocks 1 and 2 were applied to reach block 3, block 6 was not asked for")
+
+    def test_blocks_before_the_range_are_not_in_the_report(self):
+        canton, client, *_ = self.parts(chain(4))
+        r = rc.check(canton, client, 4, 4)
+        self.assertEqual([b["number"] for b in r["blocks"]], [4])
+
+    def test_a_state_root_that_differs_stops_at_that_block(self):
+        canton, client, *_ = self.parts(chain(5), FakeReth(differ_state={3: "0x" + "ab" * 32}))
+        r = rc.check(canton, client, 2, 5)
+        self.assertFalse(r["ok"])
+        self.assertEqual((r["failure"]["number"], r["checked"]), (3, 1))
+        self.assertIn("state root", r["failure"]["why"])
+
+    def test_a_hash_that_differs_stops_at_that_block(self):
+        canton, client, *_ = self.parts(chain(5), FakeReth(differ={4: b"\x09" * 32}))
+        r = rc.check(canton, client, 1, 5)
+        self.assertEqual((r["ok"], r["failure"]["number"], r["checked"]), (False, 4, 3))
+        self.assertEqual(r["failure"]["reth"], "0x" + "09" * 32)
+
+    def test_a_block_reth_refuses_stops_at_that_block(self):
+        canton, client, *_ = self.parts(chain(5), FakeReth(refuse={2}))
+        r = rc.check(canton, client, 2, 4)
+        self.assertEqual((r["ok"], r["failure"]["number"]), (False, 2))
+
+    def test_a_refusal_before_the_range_is_an_error_not_a_report(self):
+        canton, client, *_ = self.parts(chain(5), FakeReth(refuse={1}))
+        with self.assertRaises(rc.ReplayError) as e:
+            rc.check(canton, client, 3, 4)
+        self.assertEqual(e.exception.number, 1)
+
+    def test_a_range_past_cantons_head_stops_at_the_first_missing_block(self):
+        canton, client, *_ = self.parts(chain(3))
+        with self.assertRaises(rc.ReplayError) as e:
+            rc.check(canton, client, 2, 6)
+        self.assertEqual(e.exception.number, 4)
+
+    def test_a_missing_block_inside_the_range_stops_with_its_number(self):
+        recs = chain(5)
+        del recs[2]
+        canton, client, *_ = self.parts(recs)
+        with self.assertRaises(rc.ReplayError) as e:
+            rc.check(canton, client, 1, 5)
+        self.assertEqual(e.exception.number, 3)
+
+    def test_a_reth_that_already_has_the_blocks_is_refused(self):
+        recs = chain(4)
+        canton, client, _, reth = self.parts(recs)
+        rc.rebuild(canton, client)
+        calls = len(reth.calls)
+        with self.assertRaises(rc.ReplayError) as e:
+            rc.check(canton, client, 2, 3)
+        self.assertIn("already has", str(e.exception))
+        self.assertEqual(len(reth.calls), calls + 1, "only reth's head was read")
+
+    def test_a_bad_range_is_refused(self):
+        canton, client, *_ = self.parts(chain(3))
+        for a, b in ((0, 2), (3, 2)):
+            with self.assertRaises(rc.ReplayError):
+                rc.check(canton, client, a, b)
+
+    def test_it_reads_canton_and_writes_nothing(self):
+        canton, client, fake_canton, _ = self.parts(chain(3))
+        rc.check(canton, client, 1, 3)
+        self.assertEqual(fake_canton.writes, 0)
+
+
 class Main(Case):
-    def run_main(self, records, reth=None, env=None):
+    def run_main(self, records, reth=None, env=None, argv=("rebuild",)):
         import os, tempfile
         canton, _, fake_canton, fake_reth = self.parts(records, reth)
         state = tempfile.mkdtemp()
@@ -316,7 +393,7 @@ class Main(Case):
                            "RETH_HTTP_PORT": port(fake_reth.http_url), "RETH_ENGINE_PORT": port(fake_reth.engine_url)})
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = rc.main(["rebuild"])
+            code = rc.main(list(argv))
         return code, out.getvalue(), err.getvalue()
 
     def test_exit_0_and_key_value_lines(self):
@@ -330,6 +407,31 @@ class Main(Case):
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
         self.assertIn("FAIL block=2", err)
+
+
+    def test_check_writes_the_report_file_and_prints_key_value_lines(self):
+        import tempfile
+        path = Path(tempfile.mkdtemp(), "r.json")
+        code, out, _ = self.run_main(chain(5), argv=("check", "--from", "2", "--to", "4", "--report", str(path)))
+        self.assertEqual(code, 0)
+        self.assertIn("checked=3", out.split())
+        self.assertIn("ok=true", out.split())
+        rep = json.loads(path.read_text())
+        self.assertEqual((rep["ok"], [b["number"] for b in rep["blocks"]]), (True, [2, 3, 4]))
+
+    def test_check_on_a_mismatch_exits_1_names_the_block_and_still_writes_the_report(self):
+        import tempfile
+        path = Path(tempfile.mkdtemp(), "r.json")
+        code, out, err = self.run_main(chain(5), FakeReth(differ_state={3: "0x" + "cd" * 32}), argv=("check", "--from", "1", "--to", "5", "--report", str(path)))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("FAIL block=3", err)
+        rep = json.loads(path.read_text())
+        self.assertEqual((rep["ok"], rep["failure"]["number"], rep["checked"]), (False, 3, 2))
+
+    def test_check_needs_a_range(self):
+        code, _, err = self.run_main(chain(2), argv=("check",))
+        self.assertEqual(code, 1)
+        self.assertIn("--from", err)
 
 
 class DiscoveryOff(unittest.TestCase):
