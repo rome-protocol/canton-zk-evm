@@ -1461,7 +1461,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
         if found is not None and found["committed"]:
             committed, how = True, "completion"
         else:
-            head = "0x" + Ledger(cfg).head()["headHash"]
+            chain = Ledger(cfg).head()
+            head = "0x" + chain["headHash"]
             committed = head == u["hash"]
             how = "completion" if found else "head" if committed else "window"
             if found is None and not committed and (reached is None or reached < bound):
@@ -1477,7 +1478,8 @@ def resolve_unknown(cfg: Config, u: dict, pairs: list, close=None) -> tuple:
             clear_unresolved(cfg)
             return True, [], how, {"updateId": found and found["updateId"], "completionOffset": found and found["completionOffset"]}
         if u.get("parent") and head.lower() != u["parent"].lower():
-            raise HeadMismatch(f"Canton's head is block {head[2:]}, not {u['parent'][2:]}, the block reth goes back to", head[2:])
+            back = u["number"] - 1 if isinstance(u.get("number"), int) else "?"
+            raise HeadMismatch(f"Canton's head is block {chain['headNumber']} ({head[2:]}), not block {back} ({u['parent'][2:]}), the block reth goes back to", head[2:])
         kept = read_saved_or_none(cfg)   # before reth moves: a file that cannot be read stays, and the loop backs off
         number = u["number"] if isinstance(u.get("number"), int) else 0
         kept = in_block_order(kept, number)
@@ -2219,7 +2221,7 @@ class Pipeline(Producer):
             self.close_attempts([r for r in refs if r != me and r not in own])
         asked = {**u, "tip": flight[-1].hash if flight else None, **({"parent": self.last[1]} if self.last else {})}
         try:
-            committed, lost, how, info = self.resolve(self.cfg, asked, u["pairs"], close=close)
+            committed, lost, how, info = self.resolve(self.cfg, asked, [*u["pairs"], *(x for entry in flight for x in entry.pairs)], close=close)
         except HeadMismatch as e:
             if e.got:
                 self.refuse_foreign(e.got)
@@ -2272,6 +2274,8 @@ class Pipeline(Producer):
                 self.restore()
             self.collect()
             blocked, cut, trigger = self.cut_blocked(), False, None
+            if self.stop.is_set():   # a signal: nothing more is cut
+                blocked = "stopping"
             if blocked is None:
                 self.pause = 0.0
                 trigger = "heartbeat" if self.control else self.due(now)   # a waiting conviction needs its control block whatever the pool holds
@@ -2297,6 +2301,10 @@ class Pipeline(Producer):
                     self.write_status()
                 self.wait(min(self.idle, 1.0) if blocked == "no prover is up" and self.idle > 0 else 1.0 if blocked == "no prover is up"
                           else min(self.idle, self.pause) if self.pause > 0 else self.idle)
+                return
+            if self.stop.is_set():   # a signal, in this step or before it: no proof is waited for and no submit begins; the blocks in flight are given up (`abandon`)
+                if fault:
+                    self.tell_cut_failed(fault)
                 return
             oldest = self.flight[0]
             full = len(self.flight) >= self.k

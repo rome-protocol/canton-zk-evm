@@ -223,6 +223,20 @@ class InDoubtFlight(Edges):
         self.assertEqual(self.numbers(s), [FIRST, FIRST + 1])
         self.assertEqual(self.in_pool(s), set())
 
+    def test_a_damaged_kept_file_loses_nothing_when_the_command_did_not_commit(self):
+        s, p = self.in_doubt(2)
+        b.saved_path(s.cfg).write_text("{not json")   # the file that names the blocks in flight cannot be read
+        s.ledger.land(ok=False)
+        s.ledger.late = False
+        self.step(p)
+        done = [x for x in self.reports if x.get("resolved")]
+        self.assertEqual([x["resolved"] for x in done], ["not committed"])
+        self.assertEqual(p.flight, [])
+        self.assertEqual(self.in_pool(s), self.hashes(2), "the transactions of both blocks are back in the pool, from memory")
+        self.assertEqual(done[0].get("lostTransactions"), None)
+        self.assertEqual(self.lines(s, "lost"), [], "none is named lost")
+        self.assertEqual([(x["attempt"], x["depends_on"]) for x in self.lines(s, "cancelled")], [(2, 1)])
+
     # a reply that is lost, and no completion yet
     def check_lost_reply(self, k, commits):
         s = self.setup({}, drop_but_commit=True)
@@ -280,7 +294,7 @@ class InDoubtFlight(Edges):
         self.assertEqual(len(s.reth.engine_calls), before, "reth does not move")
         self.assertIsNotNone(p.unresolved)
         self.assertEqual(len(p.flight), 1)
-        self.assertIn("not " + HEAD_HASH[2:], self.status()["headFault"])
+        self.assertIn(f"Canton's head is block {FIRST + 3} ({known[2:]}), not block {HEAD_NUMBER} ({HEAD_HASH[2:]})", self.status()["headFault"], "the fault names the numbers")
         self.step(p)   # the head is what it should be: it settles
         self.assertIsNone(p.unresolved)
         self.assertNotIn("headFault", self.status())

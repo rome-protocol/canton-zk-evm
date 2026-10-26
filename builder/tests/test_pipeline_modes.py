@@ -2,6 +2,7 @@
 (it has its Canton side, and the block is built on a block in flight), the heartbeat, the retries after a refusal, and a leg that has no Canton side
 at all (no drain). Built directly at two and three blocks."""
 import sys, threading, time, unittest
+from unittest import mock
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -147,6 +148,84 @@ class AfterARefusal(Modes):
         self.assertEqual(self.in_pool(s), set())
 
 
+class OneAtATime(Modes):
+    """Each reason to cut with nothing in flight stops a block on the tip by itself: the loop is filled above a block in flight only when none holds."""
+
+    NOBODY = {"failures": 0, "refusals_in_row": 0, "hunt": None, "control": None, "probe": None, "suspects": []}
+    UNKNOWN = "0x" + "11" * 32
+
+    def check_blocks_alone(self, k, **state):
+        s = self.setup({})
+        p = self.first_in_flight(s, k)
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        cuts = len(self.cuts(s))
+        for name, value in state.items():
+            setattr(p, name, value)
+        for _ in range(3):
+            self.step(p)
+        self.assertEqual(len(self.cuts(s)), cuts, f"nothing is cut on the tip while {sorted(state)} holds")
+        self.assertIsNotNone(p.cut_blocked())
+        for name in state:
+            setattr(p, name, self.NOBODY[name])
+        self.assertIsNone(p.cut_blocked(), "and nothing else stops it")
+        self.drive(p, lambda: len(self.cuts(s)) == cuts + 1)
+        self.assertEqual(self.cuts(s)[-1]["in_flight_at_cut"], 1, "it is cut on the tip of the block in flight, once nothing holds it")
+
+    def test_a_failure_stops_a_block_on_the_tip_at_two(self):
+        self.check_blocks_alone(2, failures=1)
+
+    def test_a_failure_stops_a_block_on_the_tip_at_three(self):
+        self.check_blocks_alone(3, failures=2)
+
+    def test_a_refusal_streak_stops_a_block_on_the_tip_at_three(self):
+        self.check_blocks_alone(3, refusals_in_row=1)
+
+    def test_a_hunt_for_a_transaction_that_cannot_be_proven_stops_a_block_on_the_tip_at_two(self):
+        self.check_blocks_alone(2, hunt={"live": [self.UNKNOWN, "0x" + "22" * 32], "probe": [self.UNKNOWN], "parked": []})
+
+    def test_a_hunt_for_a_transaction_that_cannot_be_proven_stops_a_block_on_the_tip_at_three(self):
+        self.check_blocks_alone(3, hunt={"live": [self.UNKNOWN, "0x" + "22" * 32], "probe": [self.UNKNOWN], "parked": []})
+
+    def test_a_control_block_stops_a_block_on_the_tip_at_two(self):
+        self.check_blocks_alone(2, control={"tx": self.UNKNOWN, "why": "the prover failed"})
+
+    def test_a_probe_stops_a_block_on_the_tip_at_two(self):
+        self.check_blocks_alone(2, probe=self.UNKNOWN, suspects=[self.UNKNOWN, "0x" + "22" * 32])
+
+    def test_suspects_still_to_be_tried_stop_a_block_on_the_tip_after_the_streak_is_cleared_at_two(self):
+        self.check_blocks_alone(2, suspects=[self.UNKNOWN])   # a commit cleared the refusal streak and no probe is set: the next suspect is tried alone
+
+    def test_suspects_still_to_be_tried_stop_a_block_on_the_tip_after_the_streak_is_cleared_at_three(self):
+        self.check_blocks_alone(3, suspects=[self.UNKNOWN, "0x" + "22" * 32], probe=self.UNKNOWN)
+
+    def test_a_block_that_failed_is_made_again_alone_until_it_commits_at_two(self):
+        s = self.setup({})
+        self.script(tp.A, "sleep 1", "sleep 4")
+        self.script(tp.B_, "sleep 4", "sleep 4")
+        real, calls = b.finish_proof, []
+        def finish(cfg, built, running, attempt=None):
+            proven = real(cfg, built, running, attempt)
+            if not calls:
+                calls.append(built.n)
+                raise b.ProvingError("the prover is down", running.kept)   # the first proof fails once
+            return proven
+        patch = mock.patch.object(b, "finish_proof", finish)
+        patch.start()
+        self.addCleanup(patch.stop)
+        p = self.pipeline(s, 2)
+        s.reth.pool[ALICE] = [tx(ALICE, 0)]
+        self.drive(p, lambda: p.failures == 1 and len(p.flight) == 1)   # the retry is in flight
+        self.assertEqual(self.cuts(s)[-1]["cut_reason"], "retry")
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        cuts = len(self.cuts(s))
+        for _ in range(3):
+            self.step(p)
+        self.assertEqual(len(self.cuts(s)), cuts, "nothing is cut above the retry")
+        self.drive(p, lambda: len(self.committed()) == 2 and not p.flight)
+        self.assertEqual(p.failures, 0)
+        self.assertEqual(self.in_pool(s), set())
+
+
 class Stop(Modes):
     """A stop (SIGTERM) with two blocks in flight: the submit that is running finishes, nothing is cut, and the next start sends the rest again."""
 
@@ -155,6 +234,40 @@ class Stop(Modes):
         while not until():
             self.assertLess(time.monotonic(), end, "the run did not get there in time")
             time.sleep(0.02)
+
+    def stopped_step(self, early):
+        """A signal that arrives before the step (early) or while it cuts the block that fills the loop: what the step does."""
+        s = self.setup({})
+        self.script(tp.A, "sleep 1")
+        p = self.pipeline(s, 2)
+        s.reth.pool[ALICE] = [tx(ALICE, 0)]
+        self.drive(p, lambda: len(p.flight) == 1)
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        cuts = len(self.cuts(s))
+        if early:
+            self.stop.set()
+        else:
+            real = p.cut
+            def cut(*a, **kw):
+                self.stop.set()   # the signal arrives while the block is being cut
+                return real(*a, **kw)
+            p.cut = cut
+        self.step(p)
+        return s, p, cuts
+
+    def test_a_signal_during_a_cut_starts_no_submit_at_two(self):
+        s, p, cuts = self.stopped_step(early=False)
+        self.assertEqual(self.numbers(s), [], "the oldest block is not submitted after the signal")
+        self.assertEqual(len(self.cuts(s)), cuts + 1, "the block that was being cut is in flight, and kept for the next start")
+        self.assertEqual(len(p.flight), 2)
+        p.abandon()
+        self.assertTrue(all(e.proving.ticket.cancelled for e in p.flight))
+        self.assertEqual(sorted(x["number"] for x in b.read_saved_entries(s.cfg)), [FIRST, FIRST + 1])
+
+    def test_a_signal_before_a_step_cuts_nothing_and_submits_nothing_at_two(self):
+        s, p, cuts = self.stopped_step(early=True)
+        self.assertEqual((len(self.cuts(s)), self.numbers(s)), (cuts, []))
+        self.assertEqual(len(p.flight), 1)
 
     def test_the_running_submit_finishes_and_the_next_start_recovers_the_rest(self):
         s = self.setup({})
