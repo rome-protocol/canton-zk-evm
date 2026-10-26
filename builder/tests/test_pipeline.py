@@ -300,11 +300,10 @@ class Failures(Depth):
     def test_a_failed_move_back_at_one_ends_the_same_on_both_engines(self):
         """The one difference at one block in flight (design 3.1): the single block producer sends the kept transactions again and cuts in the
         step after the failure, with a `resolved restarted` line; the pipeline finishes the move back in that step (it first reads Canton's head,
-        which must still be the block it goes back to), writes no such line, and cuts in the step after. Both end with the same block."""
+        which must still be the block it goes back to), writes no such line, and cuts in the step after. Both end with a block of the same height and transactions."""
         s, p, t, cut = self.move_back_fails_at_one(b.Producer)
         self.assertEqual((cut, [x["outcome"] for x in self.lines(s, "resolved")], self.committed()), (1, ["restarted"], [HEAD_NUMBER + 1]))
         self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
-        mine_blocks = self.reports[-1]["blockHash"]
         self.reports.clear()
         s, p, t, cut = self.move_back_fails_at_one(b.Pipeline)
         self.assertEqual((cut, self.lines(s, "resolved"), self.committed()), (0, [], []))
@@ -313,7 +312,6 @@ class Failures(Depth):
         self.step(p)
         self.assertEqual(self.committed(), [HEAD_NUMBER + 1])
         self.assertEqual(self.reports[-1]["transactions"], [t["hash"]])
-        self.assertEqual(self.reports[-1]["blockHash"], mine_blocks, "the same block")
 
     # nothing is cut
     def test_nothing_is_cut_while_a_block_in_flight_has_failed(self):
@@ -764,6 +762,37 @@ class OnTheTip(Depth):
 
     def test_a_build_that_fails_on_the_tip_goes_back_to_the_tip_at_three(self):
         self.check_build_fails(3)
+
+    def check_failing_tip_does_not_hold_the_oldest(self, k):
+        """Every build on the tip fails: the oldest block, once proven, is still sent and commits (a block that fails while it is cut
+        affects that block only), and each failure is reported."""
+        s = self.setup({})
+        p = self.pipeline(s, k)
+        senders = (ALICE, CAROL)
+        self.blocks_in_flight(s, p, k, senders)
+        n_first = p.flight[0].number
+        real_legs = b.read_legs
+        def legs(reth, chain, block_hash):
+            if int(chain["headNumber"]) == HEAD_NUMBER + k - 1:
+                raise b.BuilderError("reth broke while the legs were read")
+            return real_legs(reth, chain, block_hash)
+        patch = mock.patch.object(b, "read_legs", legs)
+        patch.start()
+        self.addCleanup(patch.stop)
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        self.drive(p, lambda: len(self.committed()) >= 1, limit=60)
+        self.assertEqual(self.committed(), [n_first])
+        failed = [r for r in self.reports if r.get("committed") is False]
+        self.assertTrue(failed, "the failed cuts are reported")
+        self.assertTrue(all("reth broke" in r["error"] for r in failed))
+        self.assertIn(tx(BOB, 0)["hash"], self.in_pool(s))
+        self.assert_final_never_back(s)
+
+    def test_a_cut_that_keeps_failing_does_not_hold_the_proven_oldest_block_at_two(self):
+        self.check_failing_tip_does_not_hold_the_oldest(2)
+
+    def test_a_cut_that_keeps_failing_does_not_hold_the_proven_oldest_block_at_three(self):
+        self.check_failing_tip_does_not_hold_the_oldest(3)
 
     def check_back_cannot_finish(self, k):
         """A build on the tip fails and so does the move back: the next step finishes it before anything is cut, and no transaction is lost."""

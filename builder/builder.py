@@ -1777,7 +1777,7 @@ class Producer:
 
     def step(self) -> None:
         now = self.clock()
-        attempt = None
+        attempt = fault = None   # `fault`: (error, attempt) of a cut that failed while blocks were in flight
         for h in [h for h, until in self.excluded.items() if until <= now]:
             del self.excluded[h]
             self.excluded_why.pop(h, None)
@@ -2163,7 +2163,7 @@ class Pipeline(Producer):
     # -- the loop
     def step(self) -> None:
         now = self.clock()
-        attempt = None
+        attempt = fault = None   # `fault`: (error, attempt) of a cut that failed while blocks were in flight
         for h in [h for h, until in self.excluded.items() if until <= now]:
             del self.excluded[h]
             self.excluded_why.pop(h, None)
@@ -2192,10 +2192,18 @@ class Pipeline(Producer):
                 if trigger is not None:
                     cut = True
                     attempt = self.new_attempt(trigger, now)
-                    result = self.cut(attempt, trigger)
-                    if result is not None:   # nothing to settle
-                        return self.settle_result(result, [], now)
-                    attempt = None   # the block is in flight: a later fault in this step is not its own
+                    try:
+                        result = self.cut(attempt, trigger)
+                    except Exception as e:
+                        if not self.flight or self.unresolved is not None or unresolved_path(self.cfg).exists() or self.back_pending or self.unwind_pending:
+                            raise
+                        # A block that fails while it is cut affects that block only: the failure is reported after the oldest block has had its turn
+                        fault, attempt, cut = (e, attempt), None, False
+                        result = None
+                    else:
+                        if result is not None:   # nothing to settle
+                            return self.settle_result(result, [], now)
+                        attempt = None   # the block is in flight: a later fault in this step is not its own
             if not self.flight:
                 if now - self.last_written >= 5:   # tells a monitor the loop is alive
                     self.write_status()
@@ -2208,6 +2216,8 @@ class Pipeline(Producer):
                 if cut and not full:   # the next step may cut another
                     return
                 if not full:
+                    if fault:   # the failed cut ends the step in the failure back-off
+                        return self.cut_failed(fault)
                     if now - self.last_written >= 5:
                         self.write_status()
                     self.wait(self.idle)
@@ -2222,9 +2232,16 @@ class Pipeline(Producer):
                 self.check_head(oldest)   # fails closed: nothing is submitted, and the step ends in the failure back-off
                 attempt = oldest.attempt
                 result, pairs = self.submit_oldest(oldest)
-                return self.settle_result(result, pairs, now)
+                self.settle_result(result, pairs, now)
+                if fault:   # the back-off after a failed answer has been taken already
+                    self.cut_failed(fault, wait=not (not result.get("skipped") and result["committed"] is False and not result.get("rejected")))
+                return
+            if fault:
+                return self.cut_failed(fault)
             self.wait(self.idle)   # the oldest is not finished with its proof
         except Exception as e:   # not a block Canton answered: reth, the ledger, the prover or the pending check failed
+            if fault:   # the failed cut is told first; this failure ends the step in the back-off
+                self.tell_cut_failed(fault)
             if attempt:
                 attempt.failed(failure_report(e)["error"])
             if isinstance(e, ProvingError):
@@ -2236,6 +2253,22 @@ class Pipeline(Producer):
                 self.fatal = str(e)
                 self.stop.set()
             self.fail(failure_report(e))
+
+    def cut_failed(self, fault: tuple, wait: bool = True) -> None:
+        """A block that failed while it was cut, with blocks in flight: reported, and the step ends in the failure back-off (`wait` False: one
+        was taken already for another failure of the step)."""
+        if wait:
+            fault[1].failed(failure_report(fault[0])["error"])
+            self.fail(failure_report(fault[0]))
+        else:
+            self.tell_cut_failed(fault)
+
+    def tell_cut_failed(self, fault: tuple) -> None:
+        """The report of a failed cut, with no back-off of its own."""
+        report = failure_report(fault[0])
+        fault[1].failed(report["error"])
+        self.note_lost(report.get("lostTransactions"), self.clock())
+        self.emit(report)
 
     def settle_result(self, result: dict, pairs: list, now: float) -> None:
         """What `Producer.step` does with the answer of a block."""
