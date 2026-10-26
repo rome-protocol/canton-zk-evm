@@ -299,19 +299,41 @@ class Pool2(Case):
             self.result(t)
 
     def test_a_cancelled_block_that_ends_with_a_connection_error_marks_no_prover_down(self):
-        gate = threading.Event()
+        gate, started = threading.Event(), threading.Event()
         def fake_run(cmd, args, env=None, timeout=None):
+            started.set()
             gate.wait(timeout=30)
             raise pv.JobError("cannot connect", outcome="failed", connection=True)
         pool = self.pool([A, B_], run=fake_run)
         t = pool.submit(self.job())
-        time.sleep(0.3)
+        self.assertTrue(started.wait(timeout=5), "the job did not start on a prover")   # the cancel must come while the job runs
         t.cancel()
         gate.set()
-        with self.assertRaises(pv.JobError):
+        with self.assertRaises(pv.JobError) as e:
             self.result(t)
+        self.assertTrue(e.exception.connection)   # the connection-error path ran
         self.assertEqual(pool.events(), [])
         self.assertEqual([p["state"] for p in pool.status()], ["up", "up"])
+
+    def test_a_retry_goes_to_a_prover_that_is_up_not_to_one_just_rested(self):
+        pool = self.pool([A, B_, C_])
+        clock = [1000.0]
+        pool.clock = lambda: clock[0]
+        pool._down(pool.provers[1], "test")   # gpu1 rests until 1000.4
+        pool.events()
+        self.script(A, "fail")
+        self.script(B_, "fail")   # gpu1 must not be tried at all
+        self.script(C_, "ok")
+        run = pool.run
+        def run_then_time_passes(*a, **k):
+            try:
+                return run(*a, **k)
+            finally:
+                clock[0] += 1000   # gpu1's cool-down ends while gpu0's try is over and the retry is chosen
+        pool.run = run_then_time_passes
+        done = self.prove(pool, self.job())
+        self.assertEqual((done.prover, done.tried), ("gpu2", ["gpu0"]))
+        self.assertEqual(self.calls(), [f"{tag(A)} fail", f"{tag(C_)} ok"])
 
     def test_a_prover_whose_cool_down_is_over_is_tried_by_the_next_block_even_when_one_before_it_is_free(self):
         pool = self.pool([A, B_])

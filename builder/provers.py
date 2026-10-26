@@ -100,7 +100,7 @@ class Job:
     out_dir: Path                  # the first try's output folder; a retry writes to out_dir with "-retry" added
     check: object = None
     # Whether `cargo-zisk remote prove -i` sends the input file over the connection or names a path on the coordinator's machine could not be
-    # settled from what is installed on a build machine (no ZisK package there). Both are supported: by default the path of the local input is
+    # settled from the help of cargo-zisk 1.3.1 (it takes a file path, file://path or inline:// data). Both are supported: by default the path of the local input is
     # passed (the file is uploaded, if the client does that); with input_dir set the input is copied into that folder first (a folder the
     # coordinator's machine can see) and that copy's path is passed, and removed after the try. Neither has run against a second machine.
     input_dir: Path | None = None
@@ -281,7 +281,7 @@ class Pool:
                         now = self.clock()
                         free = [p for p in self.provers if not p.busy and (p.state == "up" or now >= p.down_until)]
                         pick = [p for p in free if p not in avoid] or ([] if self.managed and avoid else free)
-                        pick.sort(key=lambda p: p.state != "down")   # a prover whose cool-down is over goes first, so the next block tries it
+                        pick.sort(key=lambda p: (p.state == "down") if avoid else (p.state != "down"))   # a new block tries a prover whose cool-down is over first; a retry goes to one that is up
                         if pick:
                             prover = pick[0]
                             if prover.state == "down":   # its cool-down is over: this job tries it

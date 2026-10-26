@@ -2162,7 +2162,7 @@ def main() -> int:
             raise BuilderError("bad arguments: --max-block-tx-bytes must be at least 1")
         if args.target_gas_limit is not None and args.target_gas_limit < 5000:   # the protocol's minimum gas limit: a lower target would walk the limit down until blocks are refused
             raise BuilderError("bad arguments: --target-gas-limit must be at least 5000")
-        if args.prove_timeout < 1:   # the prove command reads whole seconds, and 0 means no limit there
+        if not math.isfinite(args.prove_timeout) or args.prove_timeout < 1:   # the prove command reads whole seconds, and 0 means no limit there
             raise BuilderError("bad arguments: --prove-timeout must be at least 1")
         cfg = Config.from_env()
         try:
