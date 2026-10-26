@@ -33,6 +33,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/PINS"
 WORK=$(mktemp -d)
 export CZE_STATE_DIR=$WORK/state FAKE_LOG=$WORK/calls
+CUR_OSAKA=none   # the osakaTime of the chain's genesis copy at this stage
 export CZE_PERSIST=1   # reth's data stays in the state folder, so that reth can be restarted on it
 NET=$CZE_STATE_DIR/net
 DEMO=$CZE_STATE_DIR/demo
@@ -158,14 +159,29 @@ chain_programs() { local one; one=$(probe ZkChain | jq -c '.programs'); [ "$(jq 
 head_number() { canton status | jq -r '.chain[0].headNumber'; }
 # One builder run: prints the builder's JSON line; the exit status is the builder's.
 build() {
-  CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
+  CZE_GENESIS=$CZE_STATE_DIR/genesis.json CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
     "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$DEMO/disclosed.json"
+}
+# <lines of $FAKE_LOG before the builder ran>: every input the builder made since was made from the chain's own genesis copy (the file reth reads),
+# and that file has the osakaTime of the current stage (none: no osakaTime). The guest stops on any config but the one it was built from.
+check_inputs() {
+  local gen=$CZE_STATE_DIR/genesis.json n=0 line file
+  while read -r line; do
+    read -r _ _ _ file _ <<<"$line"
+    [ "$file" = "$gen" ] || fail "make-input got $file, not the chain's genesis copy $gen"
+    n=$((n + 1))
+  done < <(tail -n +$(( $1 + 1 )) "$FAKE_LOG" | grep '^make-input ')
+  [ "$n" -ge 1 ] || fail "the builder made no input"
+  if [ "$CUR_OSAKA" = none ]; then jq -e '.config | has("osakaTime") | not' "$gen" >/dev/null || fail "the genesis copy has an osakaTime, the stage has none"
+  else jq -e --argjson t "$CUR_OSAKA" '.config.osakaTime == $t' "$gen" >/dev/null || fail "the genesis copy's osakaTime is not $CUR_OSAKA"; fi
 }
 # <block number> <legs> <what>: one block commits, Canton's head is that block, and reth's finalized block is the builder's.
 block() {
-  local out status
+  local out status lines
+  lines=$(wc -l < "$FAKE_LOG")
   set +e; out=$(build); status=$?; set -e
   echo "$out" | jq -c .
+  check_inputs "$lines"
   is "$status" 0 "the builder's exit status for $3 ($out)"
   is "$(jq -r .committed <<<"$out")" true "$3 committed"
   is "$(jq -r .number <<<"$out")" "$1" "$3's block number"
@@ -210,6 +226,12 @@ switch_program() {
   local label=$1 vk=$2 rc=$3 rules=$4 release=$5 osaka=$6 head=$7 head_hash next r
   P_VK=$vk; P_RC=$rc; P_RULES=$rules
   echo "a. the new program on the prover: the prover is a stand-in, there is nothing to register"
+  echo "a2. the operator proposes the program while the producer still runs: the pause does not wait for a change delay (there is none on this chain)"
+  r=$(program_step 7575 propose --dry-run); jq -e '.dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program proposal: $r"
+  is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the dry run"
+  r=$(program_step 7575 propose); jq -e '.submitted == true and .alreadyProposed == false' <<<"$r" >/dev/null || fail "the program proposal: $r"
+  [ "$(chain_programs)" != "$vk/$rc/$rules" ] || fail "the chain holds the program of $label before the acceptance"
+  CUR_OSAKA=$osaka
   echo "b. the producer is stopped: no builder runs from here until step f"
   ! pgrep -f "builder/builder.py" >/dev/null || fail "a builder is running"
   head_hash=$(rpc eth_getBlockByNumber '"latest",false' | jq -r .hash)
@@ -232,7 +254,7 @@ switch_program() {
   fi
   docker stop -t 60 "${RETH_CONTAINER:-cze-reth}" >/dev/null
   docker rm -f "${RETH_CONTAINER:-cze-reth}" >/dev/null
-  CZE_RESUME=1 "$ROOT/network/reth/launch.sh"
+  CZE_PERSIST=1 CZE_RESUME=1 "$ROOT/network/reth/launch.sh"
   wait_reth
   is "$(rpc eth_getBlockByNumber '"0x0",false' | jq -r .hash)" "$GENESIS_HASH" "the hash of reth's genesis after the restart for $label"
   is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .hash)" "$head_hash" "reth's head after the restart for $label"
@@ -249,10 +271,7 @@ switch_program() {
   write_guest "$vk" "$rc" "$rules" "$release"
   is "$(sed -n 's/^zisk=//p' "$NET/guest.txt")" "$release" "the ZisK release recorded in guest.txt"
   ps -p "$(cat "$NET/real-sidecar.pid")" -o args= | grep -q -- "--zisk-release $release" || fail "the real sidecar does not run with --zisk-release $release"
-  echo "e. the operator proposes the program and the confirmer accepts it, a dry run of each first"
-  r=$(program_step 7575 propose --dry-run); jq -e '.dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program proposal: $r"
-  is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the dry run"
-  r=$(program_step 7575 propose); jq -e '.submitted == true and .alreadyProposed == false' <<<"$r" >/dev/null || fail "the program proposal: $r"
+  echo "e. the confirmer accepts the program the operator proposed before the pause, a dry run first"
   r=""
   for _ in $(seq 1 30); do   # the proposal reaches the confirmer's participant a moment after the operator's commit
     r=$(program_step 7576 accept --dry-run 2>/dev/null) && break
@@ -291,7 +310,9 @@ deposit dep-5
 stop_background real-sidecar stand-in-8085 stand-in-8086
 sleep 1
 start_sidecars "$VK_A" "$RC_A" 1.3.1
+lines=$(wc -l < "$FAKE_LOG")
 set +e; out=$(build); status=$?; set -e
+check_inputs "$lines"
 echo "$out" | jq -c '{committed, rejected, reason: (.reason // "" | .[0:300])}'
 is "$status" 2 "the builder's exit status for the block under the old key"
 is "$(jq -r .committed <<<"$out")" false "the block under the old key committed"
