@@ -208,7 +208,7 @@ template ZkChain
       do
         now <- getTime
         assertMsg "a pause must last longer than zero" (convertRelTimeToMicroseconds forHowLong > 0)
-        assertMsg ("a pause may last at most " <> show (convertRelTimeToMicroseconds (pauseLimit this) `div` 1000000) <> " s from now") (convertRelTimeToMicroseconds forHowLong <= convertRelTimeToMicroseconds (pauseLimit this))
+        assertMsg ("a pause may last at most " <> show (convertRelTimeToMicroseconds (pauseLimit this) / 1000000) <> " s from now") (convertRelTimeToMicroseconds forHowLong <= convertRelTimeToMicroseconds (pauseLimit this))
         let expiry = addRelTime now forHowLong
         create this with pausedUntil = Some expiry; pauseCooldownUntil = Some (addRelTime expiry (pauseLimit this))
 
@@ -413,8 +413,8 @@ tallyExpiry now w =
   let epoch = time (date 1970 Jan 1) 0 0 0
       nowUs = convertRelTimeToMicroseconds (subTime now epoch)
       windowUs = convertRelTimeToMicroseconds w
-      bucketUs = max 1000000 (windowUs `div` 24)
-      endUs = (nowUs `div` bucketUs + 1) * bucketUs
+      bucketUs = max 1000000 (windowUs / 24)
+      endUs = (nowUs / bucketUs + 1) * bucketUs
   in addRelTime epoch (convertMicrosecondsToRelTime (endUs + windowUs))
 
 addTally : Tally -> [Tally] -> [Tally]
@@ -443,7 +443,7 @@ takeAgainstQuota chain now legs = case (chain.withdrawalQuota, chain.quotaWindow
       let already = sum [t.tallyAmount | t <- live, t.tallyToken == tok]
       let adding = sum [a | (k, a) <- taken, k == tok]
       assertMsg ("the block's withdrawals of the token " <> tok <> " are over the withdrawal quota: " <> show adding <> " more would make "
-        <> show (already + adding) <> " in the last " <> show (convertRelTimeToMicroseconds w `div` 1000000) <> " s, and the quota is " <> show q)
+        <> show (already + adding) <> " in the last " <> show (convertRelTimeToMicroseconds w / 1000000) <> " s, and the quota is " <> show q)
         (already + adding <= q)
     let expiry = tallyExpiry now w
     pure (Some (foldl (\acc (tok, a) -> addTally (Tally with tallyToken = tok; countedUntil = expiry; tallyAmount = a) acc) live taken))
