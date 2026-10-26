@@ -1013,6 +1013,37 @@ class Setup(unittest.TestCase):
         self.assertEqual(self.node.contracts["RenewPauseProposal"], [])
         self.assertTrue(self.pause("unpause", "--dry-run")["paused"])   # paused now, so the pause may be lifted early
 
+    def test_renew_accept_prints_its_time_limit_and_can_be_run_twice(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.pause("renew-propose", "--pause-seconds", "7200")
+        dry = self.pause("renew-accept", "--pause-seconds", "7200", "--dry-run")
+        made = setup.parse_time(dry["proposedAt"])
+        self.assertEqual(setup.parse_time(dry["acceptableUntil"]), made + timedelta(hours=1))
+        done = self.pause("renew-accept", "--pause-seconds", "7200")
+        self.assertTrue(done["submitted"])
+        self.assertEqual(done["acceptableUntil"], dry["acceptableUntil"])
+        # a re-run after the accept went through: no proposal is left and the legs are paused, which is not an error
+        sent = len(self.sent())
+        again = self.pause("renew-accept", "--pause-seconds", "7200")
+        self.assertEqual((again["submitted"], again["noProposal"], again["paused"]), (False, True, True))
+        self.assertEqual(again["pausedUntil"], self.chain_args()["pausedUntil"])
+        self.assertEqual(len(self.sent()), sent)
+        # with no proposal and no pause it is still an error
+        self.chain_args()["pausedUntil"] = None
+        self.assertIn("no proposal to pause for 7200 s", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "7200")))
+
+    def test_renew_accept_refuses_a_proposal_that_is_past_its_hour(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.node.ledger_time = datetime.now(timezone.utc) - timedelta(hours=1, minutes=1)
+        self.addCleanup(setattr, self.node, "ledger_time", None)
+        self.pause("renew-propose", "--pause-seconds", "7200")
+        sent = len(self.sent())
+        for extra in ((), ("--dry-run",)):
+            self.assertIn("could be accepted until", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "7200", *extra)))
+        self.assertEqual(len(self.sent()), sent)
+
     def test_a_renewal_is_held_to_the_longest_pause_the_chain_has(self):
         self.run_setup()
         self.base = len(self.sent())
