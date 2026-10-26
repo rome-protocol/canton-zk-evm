@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Rome Protocol
 //! Inputs the verifier must refuse, and what each one must give. Every test changes block 14's
-//! ZisK 1.3.1 proof and checks the answer against the rule the change breaks:
+//! ZisK 1.3.1 proof (and a few on the 1.3.2 proof) and checks the answer against the rule the change breaks:
 //!
 //! 1. a coordinate not below p, an evaluation not below r, or a point off the curve is an
 //!    error (`Malformed`), whatever else is in the proof;
@@ -152,25 +152,45 @@ fn a_commitment_at_infinity_is_refused() {
 
 #[test]
 fn a_proof_with_another_blocks_data_is_refused() {
-    let blocks: Vec<Fixture> = BLOCKS.iter().map(|&b| load("1.3.1", b)).collect();
-    for (i, a) in blocks.iter().enumerate() {
-        for (j, b) in blocks.iter().enumerate() {
-            if i == j {
-                continue;
+    for release in ["1.3.1", "1.3.2"] {
+        let blocks: Vec<Fixture> = BLOCKS.iter().map(|&b| load(release, b)).collect();
+        for (i, a) in blocks.iter().enumerate() {
+            for (j, b) in blocks.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let abi: Vec<u8> = [&a.proof, &b.program_vk, &b.root_c, &b.public_values]
+                    .iter()
+                    .flat_map(|part| part.iter().copied())
+                    .collect();
+                assert_eq!(
+                    classify(verify(&vk::ZISK_1_3_1, &abi)),
+                    Out::Reject,
+                    "{release}: proof of block {} with the data of block {}",
+                    BLOCKS[i],
+                    BLOCKS[j]
+                );
             }
-            let abi: Vec<u8> = [&a.proof, &b.program_vk, &b.root_c, &b.public_values]
-                .iter()
-                .flat_map(|part| part.iter().copied())
-                .collect();
-            assert_eq!(
-                classify(verify(&vk::ZISK_1_3_1, &abi)),
-                Out::Reject,
-                "proof of block {} with the data of block {}",
-                BLOCKS[i],
-                BLOCKS[j]
-            );
         }
     }
+}
+
+#[test]
+fn the_1_3_2_proof_of_block_14_follows_the_same_rules() {
+    let f = load("1.3.2", 14);
+    assert_eq!(check(&f, &f.proof_array()), Out::Accept);
+    for k in 0..9 {
+        let mut proof = f.proof_array();
+        proof[64 * k..64 * k + 64].fill(0);
+        assert_eq!(check(&f, &proof), Out::Reject, "point {k} at infinity");
+    }
+    assert_eq!(check(&f, &[0u8; 768]), Out::Reject);
+    let mut proof = f.proof_array();
+    proof[40] ^= 1;
+    assert_eq!(check(&f, &proof), Out::Malformed);
+    let mut proof = f.proof_array();
+    proof[767] ^= 1;
+    assert_eq!(check(&f, &proof), Out::Reject);
 }
 
 #[test]

@@ -175,7 +175,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
   }, "C7"));
 
   // A chain that switches program at block 2: blocks before it are checked under the first key, blocks from it under the second.
-  const KEY2 = { fromBlock: 2, programVK: "0x" + "c3".repeat(32), rootC: "0x" + "d4".repeat(32) };
+  const KEY2 = { fromBlock: 2, programVK: "0x" + "c3".repeat(32), rootC: "0x" + "d4".repeat(32), zisk: "1.3.1" as const };
   const RANGED = { ...PINS, programVK: KEY2.programVK, rootC: KEY2.rootC, keys: [...PINS.keys, KEY2] };
   const proveUnder = (c: SyntheticChain, i: number, k: { programVK: string; rootC: string }) => {
     const r = c.blocks[i]!.record;

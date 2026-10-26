@@ -26,7 +26,7 @@ The module imports nothing. It exports its `memory` and four functions:
 |---|---|
 | `alloc(len)` | Returns the address of `len` bytes of room for the caller's input |
 | `dealloc(ptr, len)` | Gives that room back |
-| `verify_block(pins, line, line_len)` | `pins` is 64 bytes: the program key, then the ZisK release root. `line` is `proofHex,headerHex,txsHex` as text. Returns the length of the answer |
+| `verify_block(pins, line, line_len)` | `pins` is 65 bytes: the program key, then the ZisK release root, then one byte for the ZisK release (0 is 1.3.1, 1 is 1.3.2; any other byte is answered with `no unknown ZisK release`). The release picks the key the proof is checked under. `line` is `proofHex,headerHex,txsHex` as text. Returns the length of the answer |
 | `answer_ptr()` | The address of the answer's bytes. It stays until the next call |
 
 The answer is the sidecar's own: `ok` and ten facts, or `no` and the reason. The reasons are listed in [sidecar/README.md](../../sidecar/README.md). Bytes that are not text get `no malformed input`.

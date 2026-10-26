@@ -84,7 +84,7 @@ The server takes its settings from environment variables. A wrong value stops it
 | `LEDGER_URL` | `http://127.0.0.1:7577` | The JSON Ledger API of the participant that holds the reader party |
 | `LEDGER_TOKEN_FILE` | none | A file with the bearer token (a JWT) for a participant whose Ledger API needs a login, such as an existing participant on the Canton Network's DevNet. Mode 0600 or the server refuses it (and sends nothing); it is read again on every Ledger API call, so a refreshed file is picked up with no restart; its value is never logged or put in an error. The indexer reads the same setting. With no file, no `Authorization` header is sent, as before. `run.sh` mounts the file read-only, and takes `CZE_TOKEN_FILE_READER` (the `ostia-reader` user's file, see `network/README.md`) when `LEDGER_TOKEN_FILE` is not set |
 | `READER_PARTY` | none, required | Canton's id for the reader party. The server stops at start, naming it, when it is not set |
-| `PINS_FILE` | `prover/fixtures/session.txt` | A file of `key=value` lines with `programVK` and `rootC`: the proving program and ZisK release this explorer expects. A run's `state/net/guest.txt` has the same form. A chain that has switched program adds a key for each switch, see [Key ranges](#key-ranges) |
+| `PINS_FILE` | `prover/fixtures/session.txt` | A file of `key=value` lines with `programVK` and `rootC`: the proving program and ZisK release this explorer expects (`zisk` names the release itself, see [Key ranges](#key-ranges)). A run's `state/net/guest.txt` has the same form. A chain that has switched program adds a key for each switch, see [Key ranges](#key-ranges) |
 | `CHAIN_ID`, `CHAIN_NAME`, `COIN_SYMBOL` | `770101`, `Ostia`, `tROME` | How the chain and its native coin are named on every page |
 | `NETWORK_NAME` | not set | The Canton network the chain runs on, as the header's pill names it (`DevNet`). When it is not set, no network is named and the "test coin" line is not shown |
 | `RPC_TIMEOUT_MS`, `POLL_MS` | `5000`, `2000` | How long one call to reth may take, and how often the transaction tracker looks at the transactions it holds |
@@ -166,11 +166,24 @@ programVK@4200=0x<64 hex digits>
 rootC@4200=0x<64 hex digits>
 ```
 
+Each key also names its ZisK release, which picks the verifying key a proof is checked under: `zisk=1.3.1` for the key from block 0 and `zisk@<block>=1.3.2` for a later one (`1.3.1` or `1.3.2`; a trailing `-alpha`, as in ZisK's own tags, is allowed). A key that names none is on ZisK 1.3.1, so a file from before releases were named reads as it always did. For a chain that moves from 1.3.1 to 1.3.2 at block 1500:
+
+```
+zisk=1.3.1
+programVK=0x<64 hex digits>
+rootC=0x<64 hex digits>
+zisk@1500=1.3.2
+programVK@1500=0x<64 hex digits>
+rootC@1500=0x<64 hex digits>
+```
+
+The recorded session's file, `prover/fixtures/session.txt`, has `zisk=1.3.2-alpha`, so it is a chain on 1.3.2 from block 0. The explorer refuses to start for a `zisk` value that is not a release it knows, or a `zisk` line given twice.
+
 This chain used the first key for blocks 0 to 1499, the second for blocks 1500 to 4199 and the third from block 4200 on. The ranges come in increasing order of block, and the last one is the current key. The explorer refuses to start (a `ConfigError` that names the line) when a later key has only one of the two lines, a block number is not a whole number above 0, a block number is repeated or does not come after the one before it, a line is given twice, or a value is not `0x` and 64 hex digits.
 
 After a switch, point `PINS_FILE` at a key-range file of its own, whose base lines are the key from block 0. Do not use the run's `state/net/guest.txt` for it: `run.sh` mounts that file by default, but the network scripts (`up.sh`, `restart.sh`) read its `programVK=` line as the key of the guest the sidecars run now. Changing that line to the new key would make the explorer treat the new key as the key from block 0, and the indexer would stop on the pins check.
 
-`/api/status` keeps `pins.programVK`, `pins.rootC` and `pins.file` as the current key, the last range, and adds `pins.keys`, a list of `{ fromBlock, programVK, rootC }` in order, the first with `fromBlock` 0. The server's check (C7, `/api/block`, the transaction pages) uses the key for the block's height. The block page shows the key the block was checked under in the proof's card (short, with the whole value on hover and a copy button) and the block it starts at. The Verify check in the browser is handed the pins for the block's height by the page, so the WebAssembly module itself takes one pair and needs no change.
+`/api/status` keeps `pins.programVK`, `pins.rootC` and `pins.file` as the current key, the last range, and adds `pins.keys`, a list of `{ fromBlock, programVK, rootC, zisk }` in order, the first with `fromBlock` 0. The server's check (C7, `/api/block`, the transaction pages) uses the key for the block's height. The block page shows the key the block was checked under in the proof's card (short, with the whole value on hover and a copy button) and the block it starts at. The block page's "ZisK release" row names the release of the block's range (`ZisK 1.3.1` or `ZisK 1.3.2`). The Verify check in the browser is handed the pins and the release for the block's height by the page, and checks the proof under that release's key; the WebAssembly module takes the one pair of pins and a byte for the release.
 
 ## Final blocks, from the database
 

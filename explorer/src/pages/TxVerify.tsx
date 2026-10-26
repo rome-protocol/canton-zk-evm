@@ -40,7 +40,7 @@ export function TxVerify({ number, blockHash, pins, final, unindexed = false, pr
       if (run.current !== mine) return;
       const key = pinsAt(pins, number);
       const t0 = performance.now();
-      const answer = parseAnswer(verify({ proofHex: record.proof, headerHex: record.header, txsHex: record.txs }, { programVK: key.programVK, rootC: key.rootC }));
+      const answer = parseAnswer(verify({ proofHex: record.proof, headerHex: record.header, txsHex: record.txs }, { programVK: key.programVK, rootC: key.rootC, zisk: key.zisk }));
       const ms = performance.now() - t0;
       if (run.current !== mine) return;
       if (!answer.ok) setState({ kind: "failed", reason: answer.reason });

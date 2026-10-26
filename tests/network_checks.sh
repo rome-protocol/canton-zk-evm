@@ -222,6 +222,53 @@ for key in "0x$(tr a-f A-F <<<"${GATEWAY_ADDRESS#0x}")" "${GATEWAY_ADDRESS#0x}";
   CZE_STATE_DIR=$WORK/g4b CZE_GENESIS_FILE=$WORK/spelled.json "$ROOT/network/make-state.sh" >/dev/null 2>&1 && fail "make-state.sh accepted a genesis that holds the gateway's address spelled $key"
   [ ! -e "$WORK/g4b/genesis.json" ] || fail "make-state.sh wrote a genesis it had refused ($key)"
 done
+# --- network/external/sidecar.sh: the keys and the ZisK release come from the record it is given (restart.sh gives it the chain's own guest.txt)
+T=$WORK/sc; mkdir -p "$T/network/external" "$T/sidecar/target/release" "$T/fbin"
+cp "$ROOT/network/external/sidecar.sh" "$T/network/external/"
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\necho "$*" > "$FAKE_SC_ARGS"\nexec -a "zk-sidecar $*" sleep 30\n' > "$T/sidecar/target/release/zk-sidecar"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/fbin/cargo"; printf '#!/usr/bin/env bash\nexit 0\n' > "$T/fbin/curl"
+chmod +x "$T/sidecar/target/release/zk-sidecar" "$T/fbin/cargo" "$T/fbin/curl"
+K1=$(printf '0a%.0s' $(seq 32)); R1=$(printf '6b%.0s' $(seq 32)); K2=$(printf 'db%.0s' $(seq 32)); R2=$(printf 'c3%.0s' $(seq 32))
+export FAKE_SC_ARGS=$T/args CZE_STATE_DIR=$T/state
+side() { PATH="$T/fbin:$PATH" "$T/network/external/sidecar.sh" "$@"; }
+runs() { # record text, expected program key, expected release
+  printf '%s' "$1" > "$T/rec.txt"; rm -f "$FAKE_SC_ARGS"; mkdir -p "$CZE_STATE_DIR/net"
+  CZE_SESSION_FILE=$T/rec.txt side start 127.0.0.1:18085 >/dev/null || fail "sidecar.sh refused the record: $1"
+  for _ in $(seq 1 20); do [ -s "$FAKE_SC_ARGS" ] && break; sleep 0.1; done
+  grep -q -- "--program-vk $2 " "$FAKE_SC_ARGS" || fail "sidecar.sh did not pin the record's program key ($2): $(cat "$FAKE_SC_ARGS")"
+  grep -q -- "--zisk-release $3 --listen" "$FAKE_SC_ARGS" || fail "sidecar.sh did not start the sidecar for release $3: $(cat "$FAKE_SC_ARGS")"
+  side stop 127.0.0.1:18085 >/dev/null
+}
+trap 'side stop 127.0.0.1:18085 >/dev/null 2>&1; rm -rf "$WORK"' EXIT
+# A record with no release is ZisK 1.3.1's (a running chain's guest.txt); a release goes through with ZisK's -alpha removed.
+runs "programVK=0x$K2
+rootC=0x$R2
+" "$K2" 1.3.1
+runs "programVK=0x$K1
+rootC=0x$R1
+zisk=1.3.2-alpha
+" "$K1" 1.3.2
+# Any other release is passed on as it is, so that the sidecar refuses it; it is not turned into 1.3.1.
+runs "programVK=0x$K1
+rootC=0x$R1
+zisk=1.3.3-alpha
+" "$K1" 1.3.3
+runs "programVK=0x$K1
+rootC=0x$R1
+zisk=1.3.2x
+" "$K1" 1.3.2x
+# A sidecar that runs already without the flag is the 1.3.1 one for the same keys and address, not "another one".
+printf 'programVK=0x%s\nrootC=0x%s\n' "$K2" "$R2" > "$T/rec.txt"
+CZE_SESSION_FILE=$T/rec.txt side start 127.0.0.1:18085 >/dev/null
+side stop 127.0.0.1:18085 >/dev/null
+nohup "$T/sidecar/target/release/zk-sidecar" --program-vk "$K2" --root-c "$R2" --listen 127.0.0.1:18085 >/dev/null 2>&1 < /dev/null &
+echo $! > "$CZE_STATE_DIR/net/sidecar-18085.pid"
+CZE_SESSION_FILE=$T/rec.txt side start 127.0.0.1:18085 >/dev/null 2>&1 || fail "sidecar.sh calls a 1.3.1 sidecar started without --zisk-release 'not this one'"
+printf 'programVK=0x%s\nrootC=0x%s\nzisk=1.3.2-alpha\n' "$K2" "$R2" > "$T/rec.txt"
+CZE_SESSION_FILE=$T/rec.txt side start 127.0.0.1:18085 >/dev/null 2>&1 && fail "sidecar.sh took a sidecar without --zisk-release for a 1.3.2 one"
+side stop 127.0.0.1:18085 >/dev/null
+
 # Missing runtime code: refused, not skipped.
 mkdir -p "$WORK/norepo/network" "$WORK/norepo/gateway"
 cp "$ROOT/network/make-state.sh" "$ROOT/network/genesis.json" "$WORK/norepo/network/"; cp "$ROOT/PINS" "$WORK/norepo/"

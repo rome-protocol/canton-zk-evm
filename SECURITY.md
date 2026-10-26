@@ -12,12 +12,20 @@ We will acknowledge a report within a few working days and tell you what we plan
 
 Ostia is early code. Please read the Status section of the [README](README.md) first:
 
-- the code, and ZisK 1.3.1-alpha that it builds on, have not been audited;
+- the code, and ZisK 1.3.2-alpha that it builds on, have not been audited;
 - it runs on Canton Network DevNet, with a public RPC, explorer, API and faucet at `ostia.devnet.romeprotocol.xyz`, and tROME is a test coin with no value;
 - the gateway party, which holds the Canton tokens locked for their wrapped forms, is hosted on the operator's participant, so whoever runs that participant can move the locked tokens; on DevNet that one participant hosts every Ostia party, and its one sidecar is the only confirmer;
 - there is no bug bounty, and nothing here should be used for anything of value.
 
 Because of this, some weaknesses are known and written down in the READMEs and in `docs/DESIGN.md`. A report that repeats one of them is still welcome, but it is not a new finding.
+
+## ZisK releases and the advisory GHSA-3j5v-j2rm-9c5f
+
+ZisK 1.3.1-alpha has a critical soundness flaw, published as the advisory [GHSA-3j5v-j2rm-9c5f](https://github.com/0xPolygonHermez/zisk/security/advisories/GHSA-3j5v-j2rm-9c5f) (`circuitType = 0` disables execution checking in `vadcop_final`): a prover could make a proof of a statement that is false. ZisK 1.3.2-alpha fixes it: a prover could mark every child proof in the recursive aggregation as null, which switched off their checks, and supply the aggregated values by hand; 1.3.2 requires at least one real proof and fixes the values of null children. It also binds the airgroup values to the transcript. This repository builds on 1.3.2-alpha.
+
+Proofs that were made under 1.3.1-alpha are still accepted for the blocks of chains that ran on it, because those blocks are part of those chains. A proof made under 1.3.1 is only as trustworthy as the prover that made it: the check cannot tell an honest 1.3.1 proof from one made by a prover that used the flaw. The 1.3.1 key therefore stays in the code for a chain that already runs on it, and a new chain is set up on 1.3.2. The sidecar and the explorer choose the key by the ZisK release of the chain (the sidecar's `--zisk-release`, the pins file's `zisk=`), and a chain that names no release is on 1.3.1.
+
+The two releases have one PLONK wrapping circuit, so one verifying key (see [verifier/README.md](verifier/README.md)). What tells their proofs apart is the program key and the root of the final circuit, which every confirmer pins.
 
 ## What is in scope
 

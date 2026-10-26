@@ -11,12 +11,13 @@
 //! with `dealloc`. The answer stays where it is until the next call.
 
 use std::cell::RefCell;
-use zk_sidecar::{verify, Config};
+use zk_sidecar::{verify, Config, Release};
 
-/// The sidecar's answer to `line` (`proofHex,headerHex,txsHex`) under the two pins.
-pub fn answer(program_vk: [u8; 32], root_c: [u8; 32], line: &[u8]) -> String {
+/// The sidecar's answer to `line` (`proofHex,headerHex,txsHex`) under the two pins, with the proof
+/// checked as `release`'s.
+pub fn answer(program_vk: [u8; 32], root_c: [u8; 32], release: Release, line: &[u8]) -> String {
     match std::str::from_utf8(line) {
-        Ok(line) => verify(&Config::new(program_vk, root_c), line),
+        Ok(line) => verify(&Config::for_release(program_vk, root_c, release), line),
         Err(_) => "no malformed input".to_string(),
     }
 }
@@ -44,19 +45,24 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, len: usize) {
 }
 
 /// Runs the check and returns the length of the answer, which `answer_ptr` points to.
-/// `pins` is 64 bytes: the program key, then the ZisK release root. `line` is `line_len` bytes.
+/// `pins` is 65 bytes: the program key, then the ZisK release root, then the ZisK release (0 is
+/// 1.3.1, 1 is 1.3.2). `line` is `line_len` bytes.
 ///
 /// # Safety
-/// `pins` must point to 64 readable bytes and `line` to `line_len` readable bytes.
+/// `pins` must point to 65 readable bytes and `line` to `line_len` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn verify_block(pins: *const u8, line: *const u8, line_len: usize) -> usize {
-    let pins = std::slice::from_raw_parts(pins, 64);
+    let pins = std::slice::from_raw_parts(pins, 65);
     let line = std::slice::from_raw_parts(line, line_len);
-    let text = answer(
-        pins[..32].try_into().unwrap(),
-        pins[32..].try_into().unwrap(),
-        line,
-    );
+    let text = match Release::from_code(pins[64]) {
+        Some(release) => answer(
+            pins[..32].try_into().unwrap(),
+            pins[32..64].try_into().unwrap(),
+            release,
+            line,
+        ),
+        None => "no unknown ZisK release".to_string(),
+    };
     ANSWER.with(|a| {
         *a.borrow_mut() = text;
         a.borrow().len()

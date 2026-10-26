@@ -7,9 +7,10 @@ const repo = (p: string) => new URL(`../../${p}`, import.meta.url);
 const recorded = readFileSync(repo("demo/results/run1-proof.hex"), "utf8").trim();
 const run1 = readFileSync(repo("demo/results/run1.txt"), "utf8");
 const BLOCK_HASH = /^block_hash=(.*)$/m.exec(run1)![1]!;
-// The recorded proof is from the demo of 2026-10-05, which ran the guest that stopped at Prague: its pins are session.txt's previous_programVK.
+// The recorded proof is from the demo of 2026-10-05, which ran the guest that stopped at Prague, under ZisK 1.3.1: its pins are session.txt's previous_programVK and previous_rootC.
 const session = readFileSync(repo("prover/fixtures/session.txt"), "utf8");
-const pins = parsePins(session.replace(/^programVK=.*$/m, `programVK=${/^previous_programVK=(.*)$/m.exec(session)![1]!}`), "session.txt");
+const previous = (key: string) => new RegExp(`^previous_${key}=(.*)$`, "m").exec(session)![1]!;
+const pins = parsePins(session.replace(/^programVK=.*$/m, `programVK=${previous("programVK")}`).replace(/^rootC=.*$/m, `rootC=${previous("rootC")}`), "session.txt");
 
 describe("the facts a proof carries", () => {
   it("reads the program key, the ZisK release and the block hash from the recorded proof, and they are this chain's pins", () => {
@@ -22,7 +23,7 @@ describe("the facts a proof carries", () => {
   });
 
   it("shows the value it read and says no when the pins are other pins", () => {
-    const other = { ...pins, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32) };
+    const other = { ...pins, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32), zisk: "1.3.1" as const };
     const c = checkProofFacts(readProofFacts(recorded)!, other, BLOCK_HASH);
     expect(c.programVK).toEqual({ value: pins.programVK, ok: false });
     expect(c.rootC).toEqual({ value: pins.rootC, ok: false });
@@ -54,8 +55,8 @@ describe("the facts a proof carries", () => {
 });
 
 describe("a proof against the key for its block's height", () => {
-  const key2 = { fromBlock: 100, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32) };
-  const ranged = { ...pins, programVK: key2.programVK, rootC: key2.rootC, keys: [{ fromBlock: 0, programVK: pins.programVK, rootC: pins.rootC }, key2] };
+  const key2 = { fromBlock: 100, programVK: "0x" + "ab".repeat(32), rootC: "0x" + "cd".repeat(32), zisk: "1.3.1" as const };
+  const ranged = { ...pins, programVK: key2.programVK, rootC: key2.rootC, keys: [{ fromBlock: 0, programVK: pins.programVK, rootC: pins.rootC, zisk: "1.3.1" as const }, key2] };
 
   it("is ok under the key of its own range, and not ok under the key of the other", () => {
     const facts = readProofFacts(recorded)!; // proven under key 1

@@ -72,6 +72,10 @@ PROGRAM_VK=$(guest programVK); ROOT_C=$(guest rootC); RULES_HASH=$(guest rulesHa
 # ZisK's root key and the chain rules do not depend on where the guest is built, so they must be the recorded ones.
 [ "$ROOT_C" = "$(fixture rootC)" ] || fail "the installed ZisK's rootC is not the recorded one ($(fixture rootC))"
 [ "$RULES_HASH" = "$(fixture rulesHash)" ] || fail "the guest's rules hash is not the recorded one ($(fixture rulesHash))"
+# The chain records the ZisK release it runs under (the installed one is the pinned one, as the root key just showed): the sidecars,
+# restart.sh and the explorer take it from this file.
+echo "zisk=$ZISK_VERSION" >> "$NET/guest.txt"
+ZISK_RELEASE=${ZISK_VERSION%-alpha}
 # The program key is that of the ELF this build made. build-guest.sh builds in one fixed folder, so a key that is not the
 # recorded one usually means a different ZisK, toolchain or source. It is not the program the recorded proof is for, so stop
 # (the message says both keys).
@@ -108,12 +112,12 @@ GATEWAY_CODE=$(rpc eth_getCode "\"$GATEWAY_ADDRESS\",\"0x0\"" | jq -r .result)
 step "the sidecars"
 if [ "$CANTON_MODE" = external ]; then
   # One participant hosts every party, so one sidecar is the only confirmer. None here if it runs elsewhere (network/external/sidecar.sh).
-  if [ -n "${CZE_SIDECAR_LISTEN:-}" ]; then "$ROOT/network/external/sidecar.sh" start; else echo "no sidecar here: CZE_SIDECAR_LISTEN is not set"; fi
+  if [ -n "${CZE_SIDECAR_LISTEN:-}" ]; then CZE_SESSION_FILE="$NET/guest.txt" "$ROOT/network/external/sidecar.sh" start; else echo "no sidecar here: CZE_SIDECAR_LISTEN is not set"; fi
 else
   cargo build --release --locked --manifest-path "$ROOT/sidecar/Cargo.toml"
   SIDECAR=$ROOT/sidecar/target/release/zk-sidecar
   for port in 8085 8086; do
-    background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --listen "127.0.0.1:$port"
+    background "sidecar-$port" "$SIDECAR" --program-vk "$PROGRAM_VK" --root-c "$ROOT_C" --zisk-release "$ZISK_RELEASE" --listen "127.0.0.1:$port"
     for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null && break; sleep 0.5; done
     curl -sf "http://127.0.0.1:$port/api/v1/version" >/dev/null || fail "the sidecar on $port does not answer"
   done

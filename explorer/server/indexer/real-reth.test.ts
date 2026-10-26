@@ -87,7 +87,7 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE || !LAB)("the trace reading, on a 
       const facts = readProofFacts(first!.proofHex);
       expect(facts, "the first record's proof is not 1,344 bytes").not.toBeNull();
       const chainId = Number(process.env.CHAIN_ID);
-      const indexer = createIndexer({ pool, reads, ledger, pins: { programVK: facts!.programVK, rootC: facts!.rootC, file: "the first proof", keys: [{ fromBlock: 0, programVK: facts!.programVK, rootC: facts!.rootC }] }, chainId, gateway, derive: "inline" });
+      const indexer = createIndexer({ pool, reads, ledger, pins: { programVK: facts!.programVK, rootC: facts!.rootC, file: "the first proof", keys: [{ fromBlock: 0, programVK: facts!.programVK, rootC: facts!.rootC, zisk: "1.3.1" }] }, chainId, gateway, derive: "inline" });
       await indexer.open();
       try {
         const run = await indexer.runOnce();
@@ -191,7 +191,7 @@ describe.skipIf(!URL_ || !LEDGER || !DATABASE)("W1: the indexer over a real chai
         expect(Number.isInteger(chainId) && chainId > 0, "set CHAIN_ID to the chain's id").toBe(true);
         const timings: Timing[] = [];
         const indexer = createIndexer({
-          pool, reads, ledger, pins: { programVK: facts!.programVK, rootC: facts!.rootC, file: "the first proof", keys: [{ fromBlock: 0, programVK: facts!.programVK, rootC: facts!.rootC }] }, chainId, gateway, derive: shape,
+          pool, reads, ledger, pins: { programVK: facts!.programVK, rootC: facts!.rootC, file: "the first proof", keys: [{ fromBlock: 0, programVK: facts!.programVK, rootC: facts!.rootC, zisk: "1.3.1" }] }, chainId, gateway, derive: shape,
           onTiming: (t) => timings.push(t),
         });
         await indexer.open();

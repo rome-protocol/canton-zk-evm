@@ -4,7 +4,7 @@ The EVM program that gets proven: a stateless reth block validator for the ZisK 
 
 ## Where it comes from
 
-This is a copy of part of [zisk-eth-client](https://github.com/0xPolygonHermez/zisk-eth-client), tag `v0.13.1` (commit `edf8adcda75c015f4225abe3aabb3bed03e21beb`, the one in `PINS`). Upstream's code here is licensed under Apache-2.0 or MIT, at your option; the two licence files, `LICENSE-APACHE` and `LICENSE-MIT`, are upstream's and stay with the code. `rules/`, `fixtures/`, this README, the trimmed `Cargo.toml`, the two changes marked `canton-zk-evm change` and the two added lockfile entries are Rome Protocol's, under the repository's [LICENSE](../LICENSE); see [NOTICE](../NOTICE).
+This is a copy of part of [zisk-eth-client](https://github.com/0xPolygonHermez/zisk-eth-client), tag `v0.13.1` (commit `edf8adcda75c015f4225abe3aabb3bed03e21beb`, the one in `PINS`). The guest is built against ZisK 1.3.2-alpha: `ziskos` and `zisk-zkvm-interface` in `Cargo.toml` and `bin/guests/stateless-validator-reth/Cargo.toml` are at that release, and the lock file is rebuilt for it. This copy follows the release in `PINS`. Changing the release changes the guest's ELF and so its program key: a block proven by this guest under 1.3.1 and one under 1.3.2 have different program keys. Upstream's code here is licensed under Apache-2.0 or MIT, at your option; the two licence files, `LICENSE-APACHE` and `LICENSE-MIT`, are upstream's and stay with the code. `rules/`, `fixtures/`, this README, the trimmed `Cargo.toml`, the two changes marked `canton-zk-evm change` and the two added lockfile entries are Rome Protocol's, under the repository's [LICENSE](../LICENSE); see [NOTICE](../NOTICE).
 
 Only what is needed to build the reth guest is here:
 

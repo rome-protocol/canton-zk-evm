@@ -22,7 +22,7 @@ The proof fixes the chain's state at the end of the block, so it fixes what the 
 flowchart LR
   W["EVM wallets"] -->|transactions| R["reth<br/>(the EVM, with the gateway)"]
   B["Builder"] -->|"1 make a block"| R
-  B -->|"2 prove it"| P["Prover<br/>ZisK 1.3.1 + wrap"]
+  B -->|"2 prove it"| P["Prover<br/>ZisK 1.3.2 + wrap"]
   P -->|"proof, 1,344 bytes"| B
   B -->|"3 one Canton transaction:<br/>block + proof + legs"| C["Canton"]
   C --> X["Confirmers' sidecars<br/>verify the proof,<br/>check the legs"]
@@ -36,7 +36,7 @@ flowchart LR
 | **reth** | A stock Ethereum execution client with our own genesis, which also holds the gateway. It makes a block only when the builder asks. Peer discovery is always off. |
 | **Gateway** | The EVM contract that records each block's legs and makes the wrapped tokens. It has no owner, no admin key, no upgrade and no pause. See [gateway/README.md](../gateway/README.md). |
 | **Builder** | Picks the transactions, asks reth for the block, reads the block's legs and finds the Canton contracts they need, sends the block to the prover, and submits the proven block with its legs to Canton. It cannot finalize anything or change Canton's order. |
-| **Prover** | ZisK 1.3.1 running our copy of its EVM program, with our chain's rules built in. It outputs a small wrapped proof (1,344 bytes) that commits to the block's hash. |
+| **Prover** | ZisK 1.3.2 running our copy of its EVM program, with our chain's rules built in. It outputs a small wrapped proof (1,344 bytes) that commits to the block's hash. |
 | **Daml package** | The chain's one state contract (its current head), a record per block, and the contracts for deposits, withdrawals, payments and registered tokens. See [daml/README.md](../daml/README.md). |
 | **Sidecar** | A small Rust program beside each confirming participant. It does two things: `verify` checks a proof, and `legs` checks that the legs attached to a block hash to the value the proven block recorded in the gateway (an account proof and a storage proof, at the block's state root). |
 | **Canton network** | Where Ostia settles, with a party for the gateway. Ostia DevNet settles on Canton Network DevNet, on one participant that hosts every Ostia party and has one sidecar, so there is one confirmer. The local network of our own, which the demo ran on, has two confirming participants. |
@@ -63,6 +63,10 @@ flowchart LR
 **A payment tied to a Canton payment.** U allocates a Canton token to V. U and V sign terms that name a payment id, the EVM token, the payee and the amount; the id is derived from U, V and a label, so only terms both signed can carry it. V approves the gateway and sends `pay(id, token, to, amount)`, which moves the ERC-20 from V to the payee and records a payment leg. `Advance` executes the allocation, and V gets the Canton token. A plain transfer of the same token, even to the same person in the same block, is not a payment: it moves the token on the EVM, but it records no leg and settles nothing on Canton. This replaces an earlier rule that settled a leg when the holder's balance rose by the expected amount in the block. That rule could not tell the payment from any other transfer of the same size.
 
 **Why neither side can be final without the other.** A block cannot commit without every leg it recorded, and a leg cannot settle outside `Advance`. A payment made on the EVM does not become final until the Canton payment it names has been made, and the other way round.
+
+## ZisK releases
+
+A chain's proofs are made with one ZisK release, and a chain can move to a newer release as it can move to a new program (the same key ranges). ZisK 1.3.1 has a critical soundness advisory (GHSA-3j5v-j2rm-9c5f) that 1.3.2 fixes, so a new chain runs on 1.3.2 (see [SECURITY.md](../SECURITY.md)). The verifying key of ZisK's final PLONK circuit is the same in 1.3.1 and 1.3.2; the program key and the root of the final circuit are not, and they are what the confirmers pin. The sidecar and the explorer name the release of a chain, because the release picks the key a proof is checked under: the sidecar by `--zisk-release 1.3.1|1.3.2`, the explorer by `zisk=` and `zisk@<block>=` lines for each key range of its pins file. A chain that names no release is on 1.3.1, so a chain that is already running does not change when the code moves on. The blocks a chain proved under 1.3.1 stay on it, and they are only as trustworthy as the prover that made them.
 
 ## Why it holds
 

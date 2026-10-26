@@ -9,11 +9,16 @@ import { MAX_HEAVY_PLACES } from "./rpc-heavy.ts";
 /** The settings are plain environment variables. A wrong one stops the server at start with a message that names it. */
 export class ConfigError extends Error {}
 
-/** One program key: the two facts the confirmers pin (which program may prove blocks, and which ZisK release made the proof), from this block on. */
+/** The ZisK releases a key range can name. A chain that names none is on the first. */
+export const ZISK_RELEASES = ["1.3.1", "1.3.2"] as const;
+export type ZiskRelease = (typeof ZISK_RELEASES)[number];
+
+/** One program key: the two facts the confirmers pin (which program may prove blocks, and which ZisK release made the proof), from this block on, and the ZisK release it is under, which picks the verifying key. */
 export interface KeyRange {
   fromBlock: number;
   programVK: string;
   rootC: string;
+  zisk: ZiskRelease;
 }
 
 /**
@@ -163,26 +168,34 @@ function captcha(env: Env): Config["captcha"] {
 /**
  * Reads `key=value` lines, ignoring blank lines and lines that start with #, and returns the pins. `programVK=` and `rootC=` are the key from
  * block 0. A later key is a pair of lines, `programVK@<fromBlock>=` and `rootC@<fromBlock>=`, from that block on; the pairs come in
- * increasing order of fromBlock, and the last one is the current key.
+ * increasing order of fromBlock, and the last one is the current key. Each key also names its ZisK release: `zisk=` for the key from block 0
+ * and `zisk@<fromBlock>=` for a later one, as `1.3.1` or `1.3.2` (a trailing `-alpha`, as in ZisK's own tags, is allowed). A key that names
+ * none is on ZisK 1.3.1, so a file from before releases were named reads as it always did.
  */
 export function parsePins(text: string, file: string): Pins {
   const kv = new Map<string, string>();
-  const later = new Map<number, { programVK?: string; rootC?: string }>();
+  const later = new Map<number, { programVK?: string; rootC?: string; zisk?: ZiskRelease }>();
   let last = 0;
   const hex = (key: string, value: string | undefined): string => {
     const v = value?.toLowerCase();
     if (!v || !HEX32.test(v)) throw new ConfigError(`${file} has no ${key}= line of 0x and 64 hex digits`);
     return v;
   };
+  const release = (key: string, value: string | undefined): ZiskRelease => {
+    const v = value?.trim().replace(/-alpha$/, "");
+    const found = ZISK_RELEASES.find((r) => r === v);
+    if (!found) throw new ConfigError(`${file}: ${key}= is "${value?.trim() ?? ""}", which is not a ZisK release this explorer knows (${ZISK_RELEASES.join(" or ")})`);
+    return found;
+  };
   for (const line of text.split("\n")) {
     const t = line.trim();
-    const at = /^(programVK|rootC)@([^=\s]*)\s*=(.*)$/.exec(t);
+    const at = /^(programVK|rootC|zisk)@([^=\s]*)\s*=(.*)$/.exec(t);
     // A line that looks like a key line but is not in the exact form is refused, not skipped: a range dropped without a word would be a wrong key.
-    if (!at && !t.startsWith("#") && !/^(programVK|rootC)=/.test(t) && /^(programvk|rootc)|^[^=]*@/i.test(t)) {
-      throw new ConfigError(`${file}: "${t.split("=")[0]!.trim()}" is not a key line: write programVK=, rootC=, programVK@<fromBlock>= or rootC@<fromBlock>= (no space between the name and the @)`);
+    if (!at && !t.startsWith("#") && !/^(programVK|rootC|zisk)=/.test(t) && /^(programvk|rootc)|^zisk\s*=|^[^=]*@/i.test(t)) {
+      throw new ConfigError(`${file}: "${t.split("=")[0]!.trim()}" is not a key line: write programVK=, rootC=, zisk=, programVK@<fromBlock>=, rootC@<fromBlock>= or zisk@<fromBlock>= (no space between the name and the @)`);
     }
     if (at) {
-      const name = at[1] as "programVK" | "rootC", label = `${name}@${at[2]}`;
+      const name = at[1] as "programVK" | "rootC" | "zisk", label = `${name}@${at[2]}`;
       if (!/^[1-9][0-9]{0,14}$/.test(at[2]!) || !Number.isSafeInteger(Number(at[2]))) throw new ConfigError(`${file}: ${label}= needs a block number above 0 after the @`);
       const from = Number(at[2]);
       const range = later.get(from) ?? {};
@@ -191,22 +204,23 @@ export function parsePins(text: string, file: string): Pins {
         if (from <= last) throw new ConfigError(`${file}: ${label}= does not come after the range before it: the ranges go in increasing order of block`);
         last = from;
       }
-      range[name] = hex(label, at[3]!.trim());
+      if (name === "zisk") range.zisk = release(label, at[3]);
+      else range[name] = hex(label, at[3]!.trim());
       later.set(from, range);
       continue;
     }
     const m = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line.trim());
     if (m) {
-      if ((m[1] === "programVK" || m[1] === "rootC") && kv.has(m[1])) throw new ConfigError(`${file}: ${m[1]}= is given twice`);
+      if ((m[1] === "programVK" || m[1] === "rootC" || m[1] === "zisk") && kv.has(m[1])) throw new ConfigError(`${file}: ${m[1]}= is given twice`);
       kv.set(m[1]!, m[2]!.trim());
     }
   }
-  const keys: KeyRange[] = [{ fromBlock: 0, programVK: hex("programVK", kv.get("programVK")), rootC: hex("rootC", kv.get("rootC")) }];
+  const keys: KeyRange[] = [{ fromBlock: 0, programVK: hex("programVK", kv.get("programVK")), rootC: hex("rootC", kv.get("rootC")), zisk: kv.has("zisk") ? release("zisk", kv.get("zisk")) : "1.3.1" }];
   for (const [fromBlock, r] of later) {
     if (r.programVK === undefined || r.rootC === undefined) {
       throw new ConfigError(`${file}: the key from block ${fromBlock} needs both programVK@${fromBlock}= and rootC@${fromBlock}=`);
     }
-    keys.push({ fromBlock, programVK: r.programVK, rootC: r.rootC });
+    keys.push({ fromBlock, programVK: r.programVK, rootC: r.rootC, zisk: r.zisk ?? "1.3.1" });
   }
   const now = keys[keys.length - 1]!;
   return { programVK: now.programVK, rootC: now.rootC, file, keys };
