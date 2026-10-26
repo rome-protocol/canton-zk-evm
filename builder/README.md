@@ -120,7 +120,8 @@ With no `--prover`, or one, the builder runs the prove command once for each blo
 - With two or more provers the builder also kills a try (its whole process group) that has run `--prove-timeout` seconds, covering the prove command (each try; the input tool runs once per block with no builder-side limit, as before); the block then fails on that prover with outcome `timeout` and is tried on another. With one prover the builder kills nothing: the prove command's own limit is the only one (see Not here).
 - With two or more provers, when every prover is down the builder cuts no block until a cool-down ends, so a block is never built only to wait for a prover.
 - A prover whose cool-down has ended is tried by the next new block, even when a prover listed before it is free. Its state goes back to `up` (a `prover` line, reason `cool-down over`) when the block is sent to it, and to `down` again, with a doubled cool-down, if it cannot be reached or fails a block that then proves on another prover. A retry goes to a prover that is up before one just rested.
-- `--prove-timeout` is whole seconds and at least 1 (a fraction is rounded up when it reaches the prove command): the prove command reads 0 as no limit.
+
+`--prove-timeout` must be at least 1, whatever the number of provers. The prove command gets it rounded up to whole seconds, because it reads 0 as no limit; with two or more provers the builder's own kill uses the exact value.
 
 What the help of `cargo-zisk` 1.3.1 says for `remote prove`: `--timeout <TIMEOUT>` is the proof timeout in seconds, and 0 means no timeout; `--request-timeout` defaults to 3600 seconds and `--connect-timeout` to 10 seconds; `-i` takes a file path, `file://path` or `inline://` data.
 

@@ -405,14 +405,18 @@ class Pool2(Case):
         self.assertEqual(self.result(t2).prover, "gpu0")
 
 
-class Settings(unittest.TestCase):
+class Timeouts(Case):
     def test_a_fractional_timeout_is_passed_rounded_up_never_as_zero(self):
-        seen = []
-        pool = pv.Pool([pv.Prover("gpu0", A), pv.Prover("gpu1", B_)], timeout=1.2, run=lambda cmd, args, env=None, timeout=None: seen.append(env["CZE_PROVE_TIMEOUT"]) or (_ for _ in ()).throw(OSError("stop")))
-        with self.assertRaises(OSError):
-            pool.prove(pv.Job(make_input=None, prove_cmd="x", input_path=Path("i"), out_dir=Path("o"), check=None))
-        self.assertEqual(seen, ["2"])
+        for timeout, passed in ((1.2, "2"), (0.5, "1")):
+            seen = []
+            pool = pv.Pool([pv.Prover("gpu0", A), pv.Prover("gpu1", B_)], timeout=timeout,
+                           run=lambda cmd, args, env=None, timeout=None: seen.append(env["CZE_PROVE_TIMEOUT"]) or (_ for _ in ()).throw(OSError("stop")))
+            with self.assertRaises(OSError):
+                self.prove(pool, pv.Job(make_input=None, prove_cmd="x", input_path=self.input, out_dir=self.dir / f"o-{passed}", check=None))
+            self.assertEqual(seen, [passed])
 
+
+class Settings(unittest.TestCase):
     def test_the_heartbeat_floor_is_one_proof_whatever_the_number_of_provers(self):
         for provers in (1, 2, 3):
             with self.assertRaises(ValueError) as e:
