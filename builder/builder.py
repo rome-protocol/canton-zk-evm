@@ -2117,6 +2117,11 @@ class Producer:
                 pass
 
 
+def each_once(lost: list) -> list:
+    """The same transactions, each once, in the order of their last mention."""
+    return list({x["transaction"]: x for x in reversed(lost)}.values())[::-1]
+
+
 class Pipeline(Producer):
     """The producer that keeps up to `max_in_flight` blocks in flight: a block is cut while earlier ones prove, built on the newest of them, and
     only the oldest is submitted. At `max_in_flight` 1 it does what `Producer` does, call for call. See README.md, "Provers".
@@ -2314,7 +2319,9 @@ class Pipeline(Producer):
             moved = False
         if not moved and self.flight:   # with nothing in flight the next step restores from the saved copy
             self.back_pending = (base, n)
-        if not e.lost_transactions:
+        if e.lost_transactions:
+            e.lost_transactions = each_once(e.lost_transactions)
+        else:
             del e.lost_transactions
 
     def finish_back(self) -> None:
@@ -2391,12 +2398,14 @@ class Pipeline(Producer):
         later, self.flight = self.flight, []
         for entry in later:
             self.cancel(entry, culprit)
+        lost: list = [x for entry in later for x in entry.built.lost]   # what these blocks' own builds could not put back is reported too
         if result.get("rewindError"):   # reth is still on the tip: the next step moves it back and sends the copies
             self.unwind_pending = True
         if not later or result.get("rewindError"):
+            if lost:
+                result["lostTransactions"] = each_once([*result.get("lostTransactions", []), *lost])
             return
         self.unwind_pending = True   # until every transaction is sent again
-        lost: list = []
         try:
             with connect(self.cfg.ws_url, max_size=None) as ws:
                 reth = Reth(self.cfg, ws)
@@ -2407,7 +2416,7 @@ class Pipeline(Producer):
         except Exception as e:   # reth cannot be reached or the copies cannot be sent: they stay for the next step, and the answer is booked all the same
             result["rewindError"] = str(e) if isinstance(e, BuilderError) else f"{type(e).__name__}: {e}"
         if lost:
-            result["lostTransactions"] = [*result.get("lostTransactions", []), *lost]
+            result["lostTransactions"] = each_once([*result.get("lostTransactions", []), *lost])
 
     def finish_unwind(self) -> None:
         """The step after an unwind that did not finish. Canton's head must still be `last` (a head that is not is the fault of `check_head`, and
@@ -2439,7 +2448,7 @@ class Pipeline(Producer):
             if entry is not culprit:
                 self.cancel(entry, culprit)
         last = self.settled()
-        e.lost_transactions = [*culprit.built.lost, *getattr(e, "lost_transactions", [])]
+        e.lost_transactions = [*culprit.built.lost, *(x for entry in blocks if entry is not culprit for x in entry.built.lost), *getattr(e, "lost_transactions", [])]
         self.unwind_pending = True   # until reth is on `last` and every transaction is sent again
         try:
             with connect(self.cfg.ws_url, max_size=None) as ws:
@@ -2453,13 +2462,15 @@ class Pipeline(Producer):
                         for entry in blocks:
                             reth.imported = list(entry.pairs)
                             e.lost_transactions += put_back(reth, entry.number)
-                        e.lost_transactions = list({x["transaction"]: x for x in reversed(e.lost_transactions)}.values())[::-1]   # each once
+                        e.lost_transactions = each_once(e.lost_transactions)
                         self.unwind_pending = False
                     except Exception:   # the saved copy stays for the next step
                         pass
         except Exception as down:   # reth cannot be reached: the next step does it all
             e.rewind_error = str(down) if isinstance(down, BuilderError) else f"{type(down).__name__}: {down}"
-        if not e.lost_transactions:
+        if e.lost_transactions:
+            e.lost_transactions = each_once(e.lost_transactions)
+        else:
             del e.lost_transactions
 
 

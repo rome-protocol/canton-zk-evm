@@ -741,6 +741,52 @@ class OnTheTip(Depth):
         self.check_back_cannot_finish(3)
 
 
+class LostInCancelledBlocks(Depth):
+    """A transaction that a cancelled block's own build could not put back is reported with the failure that cancelled the block."""
+
+    GONE = {"transaction": "0x" + "ee" * 32, "error": "reth would not take it back"}
+    failing, cancelled = Failures.failing, Failures.cancelled
+
+    def lose_in_block(self, number):
+        """The build of this block comes back with GONE among its lost transactions (twice over, to see it reported once)."""
+        real = b.build
+        def build(cfg, reth, chain, *a, **kw):
+            built = real(cfg, reth, chain, *a, **kw)
+            if not isinstance(built, dict) and built.n == number:
+                built = __import__("dataclasses").replace(built, lost=[*built.lost, self.GONE, self.GONE])
+            return built
+        patch = mock.patch.object(b, "build", build)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def reported(self):
+        return [x["transaction"] for r in self.reports for x in r.get("lostTransactions", [])]
+
+    def check(self, k, refused):
+        s = self.setup({}, refuse="the sidecar refused the proof") if refused else self.setup({})
+        self.script(A, "sleep 1")
+        if not refused:
+            self.failing({HEAD_NUMBER + 1})
+        self.lose_in_block(HEAD_NUMBER + 2)
+        p = self.pipeline(s, k)
+        self.fill(s, p, k)
+        self.cancelled(s, k)
+        self.assertEqual(self.reported(), [self.GONE["transaction"]], "reported once")
+        self.assertEqual([x["transaction"] for x in p.lost], [self.GONE["transaction"]])
+
+    def test_a_failed_oldest_block_at_two(self):
+        self.check(2, refused=False)
+
+    def test_a_failed_oldest_block_at_three(self):
+        self.check(3, refused=False)
+
+    def test_a_refused_oldest_block_at_two(self):
+        self.check(2, refused=True)
+
+    def test_a_refused_oldest_block_at_three(self):
+        self.check(3, refused=True)
+
+
 class NotAProverFault(Depth):
     """An error of the input tool or of the prove command that is not a BuilderError or a JobError (a command that cannot be launched, a proof file
     that cannot be read) ends the block as any failure does: one report, the transactions back in the pool, and the retry commits. Nothing stays in
