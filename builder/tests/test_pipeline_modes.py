@@ -2,6 +2,7 @@
 (it has its Canton side, and the block is built on a block in flight), the heartbeat, the retries after a refusal, and a leg that has no Canton side
 at all (no drain). Built directly at two and three blocks."""
 import json, sys, threading, time, unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 from pathlib import Path
 
@@ -72,6 +73,21 @@ class Legs(Modes):
         self.assertEqual(self.numbers(s), [n, n + 1])
         self.assertFalse(p.leg_wait)
         self.assertEqual(self.in_pool(s), set())
+
+    def test_a_pause_that_ended_early_does_not_hide_the_wait_at_two(self):
+        """The block cut on a block in flight reads the chain contract of that block, which is as old as its submit. A pause that was lifted
+        since must not turn the wait into a reason on the explorer: the legs wait for the blocks in flight and are judged on a fresh head."""
+        s = self.setup({}, terms=[tb.TERMS])
+        s.ledger.chain_extra = {"pausedUntil": (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")}
+        p = self.first_in_flight(s, 2)
+        s.ledger.chain_extra = {}   # the confirmer lifted the pause while the first block is proven
+        leg = tx(BOB, 0)
+        s.reth.tx_legs[leg["hash"]] = [tb.PAY]
+        s.reth.pool[BOB] = [leg]
+        self.drive(p, lambda: any(x.get("skipped") for x in self.reports))
+        left = [x for x in self.reports if x.get("skipped")][0]["leftOut"]
+        self.assertEqual(left, [{"transaction": leg["hash"], "reason": b.LEG_WAITS}])
+        self.assertTrue(p.leg_wait)
 
     def test_a_leg_waits_for_the_block_in_flight_at_two(self):
         self.check_waits_then_goes_in_on_the_head(2)

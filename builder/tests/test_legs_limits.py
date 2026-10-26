@@ -13,6 +13,8 @@ import test_producer as tp
 from fakes import WITHDRAWAL, Leg, tx
 
 ALICE, BOB, CAROL, UNIT = tb.ALICE, tb.BOB, tb.CAROL, tb.UNIT
+WTKB2 = "44" * 20   # a second wrapped token of the instrument that WTKB wraps
+TOKEN_B2 = ("tok-b2", {**tb.TOKEN[1], "evmToken": WTKB2, "factory": "fac-b2"})
 PAUSED = "the legs are paused until 2020-01-01T00:00:00Z: a block that carries a leg is refused"
 
 
@@ -146,6 +148,45 @@ class Limits(tb.LegCase):
         self.assertEqual(list(self.left_out(result)), [a["hash"]])
         self.assertEqual(self.attached(s, "WithdrawalLeg")["token"], "tok-2")
 
+    def two_withdrawals(self, extra, big, small, second_token=False):
+        """Two withdrawals of one instrument: the large one has the higher tip, so it comes first in the pool's order."""
+        s = self.setup({ALICE: [], BOB: []})
+        wrapped = tb.WTKB if not second_token else WTKB2
+        s.ledger.tokens, s.ledger.acceptances, s.ledger.holdings = [tb.TOKEN, *([TOKEN_B2] if second_token else [])], [tb.ACCEPTANCE], [tb.holding("h-1", "60.0")]
+        s.ledger.chain_extra = extra
+        a = self.leg_tx(s, Leg(WITHDRAWAL, tb.WD_ID, tb.WTKB, tb.PAYEE, big, "r::1"), ALICE, price=9)
+        c = self.leg_tx(s, Leg(WITHDRAWAL, "cd" * 32, wrapped, tb.PAYEE, small, "r::1"), BOB, price=5)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [a], [c]
+        return s, a, c
+
+    def test_a_withdrawal_over_the_quota_does_not_take_the_place_of_a_smaller_one_of_the_same_instrument(self):
+        s, big, small = self.two_withdrawals(quota("5.0"), 6 * UNIT, UNIT)
+        for _ in range(2):   # the pool's order is the same in every block: the big one is left out each time, the small one goes in the first
+            result = self.build(s)
+            if result["legs"]:
+                break
+        self.assertEqual(result["legs"], 1)
+        self.assertEqual(result["transactions"], [small["hash"]])
+        self.assertEqual(self.left_out(result), {big["hash"]: "the withdrawal is over the whole withdrawal quota of adm/TKB"})
+
+    def test_a_withdrawal_over_what_is_left_of_the_quota_does_not_take_the_place_of_a_smaller_one(self):
+        s, big, small = self.two_withdrawals(quota("5.0", [("adm/TKB", at(600), "3.0")]), 4 * UNIT, UNIT)   # 2.0 left
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["transactions"]), (1, [small["hash"]]))
+        self.assertTrue(self.left_out(result)[big["hash"]].startswith("the withdrawal quota of adm/TKB is used up until 20"))
+
+    def test_two_wrapped_tokens_of_one_instrument_share_the_quota(self):
+        s, big, small = self.two_withdrawals(quota("5.0"), 6 * UNIT, UNIT, second_token=True)
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["transactions"]), (1, [small["hash"]]))
+        self.assertEqual(self.left_out(result), {big["hash"]: "the withdrawal is over the whole withdrawal quota of adm/TKB"})
+        self.assertEqual(self.attached(s, "WithdrawalLeg")["token"], "tok-b2")
+        # and when both fit on their own, only one goes in a block, for the other's reason as before
+        s, first, second = self.two_withdrawals(quota("5.0"), 3 * UNIT, 2 * UNIT, second_token=True)
+        result = self.build(s)
+        self.assertEqual(result["legs"], 1)
+        self.assertIn("another withdrawal of the same token is already in this block", self.left_out(result)[second["hash"]])
+
     def test_a_chain_with_a_quota_but_no_window_has_no_quota(self):
         s, wd, plain = self.mixed({"withdrawalQuota": "1.0", "quotaWindow": None, "withdrawn": None})
         self.assertEqual(self.build(s)["legs"], 1)
@@ -171,41 +212,87 @@ class Limits(tb.LegCase):
 
 
 class Refused(tp.Loop):
-    def test_a_pause_that_starts_after_the_read_is_refused_by_canton_and_nobody_is_held_back(self):
-        s = self.setup({ALICE: [], BOB: []})
+    def pool(self, s, pause_text=None):
         s.ledger.tokens, s.ledger.acceptances, s.ledger.holdings = [tb.TOKEN], [tb.ACCEPTANCE], [tb.holding("h-1", "60.0")]
         wd = tx(ALICE, 0, price=9)
         s.reth.tx_legs[wd["hash"]] = [Leg(WITHDRAWAL, tb.WD_ID, tb.WTKB, tb.PAYEE, 4 * UNIT, "r::1")]
         plain = tx(BOB, 0, price=5)
         s.reth.pool[ALICE], s.reth.pool[BOB] = [wd], [plain]
-        s.ledger.refuse = PAUSED   # the confirmer paused the legs between the builder's read and its submit
+        return wd, plain
+
+    def change_chain_at_submit(self, s, **extra):
+        """The confirmer's Pause (or any other choice on the chain contract) comes between the builder's read and its Advance: the contract the Advance
+        names is archived and a new one stands. The change is made once per call, at the next submit."""
+        ledger, original = s.ledger, s.ledger.refusal
+        def refusal(header, cid):
+            ledger.refusal = original
+            ledger.consumed.append(cid)
+            ledger.cids[ledger.cids.index(cid)] = f"{cid.split('@')[0]}#{len(ledger.consumed)}"
+            ledger.chain_extra = {**ledger.chain_extra, **extra}
+            return original(header, cid)
+        ledger.refusal = refusal
+
+    def test_a_pause_that_starts_after_the_read_archives_the_chain_contract_and_nobody_is_held_back(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
         p = self.producer(s, cooldown=600)
+        self.change_chain_at_submit(s, pausedUntil=at(3600))
         p.step()
-        p.step()   # the same transactions in a second refused block: for any other refusal they would now be held back
+        self.assertEqual([r["committed"] for r in self.reports], [False])
+        self.assertIn("CONTRACT_NOT_FOUND", self.reports[0]["reason"])
+        # the pause is renewed (a second change of the chain contract) while the next block is proven: its transactions were in the refused block too
+        self.change_chain_at_submit(s, pausedUntil=at(7200))
+        p.step()
         self.assertEqual([r["committed"] for r in self.reports], [False, False])
+        self.assertEqual(self.reports[1]["transactions" if "transactions" in self.reports[1] else "keptTransactions"], [plain["hash"]])
         self.assertEqual(self.status()["excluded"], [])
-        self.assertEqual((p.previous_kept, p.suspects), (set(), []))
-        # the next block is cut on the contract Canton shows now: the pause is in it, the leg is left out, the rest commits
-        s.ledger.refuse, s.ledger.chain_extra = None, {"pausedUntil": at(3600)}
-        p.step()
+        self.assertEqual((p.previous_kept, p.suspects, p.probe), (set(), [], None))
+        p.step()   # the chain contract is quiet now: the pause is read, the leg is left out, the rest commits
         self.assertEqual(self.reports[-1]["committed"], True)
         self.assertEqual(self.reports[-1]["transactions"], [plain["hash"]])
         self.assertEqual([x["transaction"] for x in self.reports[-1]["leftOut"]], [wd["hash"]])
         self.assertEqual(self.status()["excluded"], [])
 
-    def test_a_refusal_for_anything_else_still_counts_against_the_transactions(self):
+    def test_a_refusal_for_another_contract_not_found_still_counts_against_the_transactions(self):
         t = tx(ALICE, 0)
-        s = self.setup({ALICE: [t]}, refuse="the registry says no")
+        s = self.setup({ALICE: [t]}, refuse="CONTRACT_NOT_FOUND: Contract could not be found: the contract id is unknown: some-holding")
         p = self.producer(s, cooldown=600)
         p.step(); p.step()
         self.assertEqual([x["transaction"] for x in self.status()["excluded"]], [t["hash"]])
 
-    def test_a_quota_refusal_is_no_fault_of_the_transactions_either(self):
-        t = tx(ALICE, 0)
-        s = self.setup({ALICE: [t]}, refuse="the block's withdrawals of the instrument adm/TKB are over the withdrawal quota: 4.0 more would make 6.0")
+    def test_the_pause_text_of_canton_is_no_fault_of_a_block_with_a_leg_until_it_repeats_for_the_same_transactions(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
+        s.ledger.refuse = PAUSED   # the builder's clock was behind Canton's: the pause was in force already
         p = self.producer(s, cooldown=600)
-        p.step(); p.step()
-        self.assertEqual(self.status()["excluded"], [])
+        p.step()
+        self.assertEqual((self.status()["excluded"], p.previous_kept), ([], set()))
+        p.step()   # the same transactions in a second block refused for the same words: normal handling, so the pair is tried one by one
+        self.assertEqual(sorted(p.suspects), sorted([wd["hash"], plain["hash"]]))
+
+    def test_a_quota_refusal_of_a_block_with_a_leg_is_no_fault_of_the_transactions(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
+        s.ledger.refuse = "the block's withdrawals of the instrument adm/TKB are over the withdrawal quota: 4.0 more would make 6.0 (the quota is 5.0)"
+        p = self.producer(s, cooldown=600)
+        p.step()
+        self.assertEqual((self.status()["excluded"], p.previous_kept, p.suspects), ([], set(), []))
+
+    def test_the_same_words_in_a_block_with_no_leg_count_as_any_refusal(self):
+        for words in (PAUSED, "the block's withdrawals of the instrument adm/TKB are over the withdrawal quota: 4.0 more would make 6.0"):
+            t = tx(ALICE, 0)
+            s = self.setup({ALICE: [t]}, refuse=words)
+            p = self.producer(s, cooldown=600)
+            p.step(); p.step()
+            self.assertEqual([x["transaction"] for x in self.status()["excluded"]], [t["hash"]], words)
+
+    def test_the_words_inside_another_contracts_message_are_not_the_chain_contracts(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
+        s.ledger.refuse = "the registry's Allocation_ExecuteTransfer failed: the legs are paused until later, the instrument says"
+        p = self.producer(s, cooldown=600)
+        p.step()
+        self.assertEqual(p.previous_kept, {wd["hash"], plain["hash"]})   # kept as the first of two refusals in a row
 
 
 if __name__ == "__main__":
