@@ -1,5 +1,6 @@
 """network/external/setup.py against a fake participant (a stateful JSON Ledger API). Run: python3 -m unittest discover -s tests -p 'test_external_setup.py'"""
 import contextlib, io, json, os, re, sys, tempfile, threading, unittest, urllib.error, urllib.parse, zipfile
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
@@ -21,7 +22,7 @@ FAKE_TOKENS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer"
 class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
-        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": [], "ProgramProposal": []}, []
+        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": [], "ProgramProposal": [], "ChangeDelayProposal": []}, []
         self.dep, self.dep_vetted, self.ignores_query = None, True, False   # a dependency of the package, whether it is vetted; a participant that ignores vetAllPackages
         self.invalid_dar, self.updates = False, []   # a DAR that /v2/dars/validate refuses; the bodies of /v2/package-vetting/update
         self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
@@ -115,9 +116,19 @@ class FakeParticipant:
         if path == "/v2/commands/submit-and-wait":
             command = body["commands"][0]
             self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
-            if "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].endswith("GasCapProposal"):
+            if "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].split(":")[-1] in ("GasCapProposal", "ProgramProposal", "ChangeDelayProposal"):
+                # an accept: the chain refuses it until the wait that its changeDelay names has passed since the proposal's ledger time (the Daml's waitedOut)
                 exercise = command["ExerciseCommand"]
-                [proposal] = [c for c in self.contracts["GasCapProposal"] if c["contractId"] == exercise["contractId"]]
+                [proposal] = [c for c in self.contracts[exercise["templateId"].split(":")[-1]] if c["contractId"] == exercise["contractId"]]
+                [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["choiceArgument"]["chain"]]
+                delay = int((chain["args"].get("changeDelay") or {"microseconds": "0"})["microseconds"])
+                ready = datetime.fromisoformat(proposal["args"]["proposedAt"].replace("Z", "+00:00")) + timedelta(microseconds=delay)
+                if datetime.now(timezone.utc) < ready:
+                    return {"code": "INTERPRETATION_ERROR", "cause": f"the change may be accepted from {ready.isoformat()}"}, 400
+            if "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].endswith("ChangeDelayProposal"):
+                self.contracts["ChangeDelayProposal"].remove(proposal)
+                chain["args"]["changeDelay"] = proposal["args"]["newDelay"]
+            elif "ExerciseCommand" in command and command["ExerciseCommand"]["templateId"].endswith("GasCapProposal"):
                 [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["choiceArgument"]["chain"]]
                 self.contracts["GasCapProposal"].remove(proposal)
                 chain["args"]["gasCap"] = proposal["args"]["newCap"]
@@ -128,15 +139,16 @@ class FakeParticipant:
                 self.contracts["ProgramProposal"].remove(proposal)
                 for field in ("programVK", "rootC", "rulesHash"):
                     chain["args"][field] = proposal["args"]["new" + field[0].upper() + field[1:]]
-            elif "ExerciseCommand" in command and command["ExerciseCommand"]["choice"] in ("ProposeGasCap", "ProposeProgram"):
-                # ZkChain.ProposeGasCap / ProposeProgram make the proposal, from the chain's fields and the choice's arguments
+            elif "ExerciseCommand" in command and command["ExerciseCommand"]["choice"] in ("ProposeGasCap", "ProposeProgram", "ProposeChangeDelay"):
+                # ZkChain.ProposeGasCap / ProposeProgram / ProposeChangeDelay make the proposal, from the chain's fields and the choice's arguments,
+                # and stamp it with the ledger time (here the clock of this machine, or `ledger_time` when a test sets it)
                 exercise = command["ExerciseCommand"]
                 [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == exercise["contractId"]]
-                keys = ("operator", "confirmer", "chainId") if exercise["choice"] == "ProposeGasCap" else ("operator", "confirmer", "gateway", "chainId")
-                name = exercise["choice"][len("Propose"):] + "Proposal"
-                name = "GasCapProposal" if name == "GasCapProposal" else "ProgramProposal"
-                self.contracts[name].append({"contractId": "g1" if name == "GasCapProposal" else "q1",
-                                             "args": {**{k: chain["args"][k] for k in keys}, **exercise["choiceArgument"]}})
+                name = {"ProposeGasCap": "GasCapProposal", "ProposeProgram": "ProgramProposal", "ProposeChangeDelay": "ChangeDelayProposal"}[exercise["choice"]]
+                keys = ("operator", "confirmer", "chainId") if name == "GasCapProposal" else ("operator", "confirmer", "gateway", "chainId")
+                now = getattr(self, "ledger_time", None) or datetime.now(timezone.utc)
+                self.contracts[name].append({"contractId": {"GasCapProposal": "g1", "ProgramProposal": "q1", "ChangeDelayProposal": "d1"}[name],
+                                             "args": {**{k: chain["args"][k] for k in keys}, **exercise["choiceArgument"], "proposedAt": now.isoformat(timespec="microseconds").replace("+00:00", "Z")}})
             elif "CreateCommand" in command:
                 self.contracts["ChainProposal"].append({"contractId": "p1", "args": command["CreateCommand"]["createArguments"]})
             else:
@@ -637,6 +649,153 @@ class Setup(unittest.TestCase):
             setup.main(["--ledger-url", self.node.url, "--dar", str(self.dar), *keys])   # the keys go with --program-step
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             setup.main(["--ledger-url", self.node.url, "--gas-cap-step", "propose", "--new-gas-cap", "5", *keys])
+
+    def delay_step(self, step, seconds, *extra):
+        """setup.py --change-delay-step: only the operator's or the confirmer's token; returns the JSON line it printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--change-delay-step", step, "--delay-seconds", str(seconds), *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def set_chain_delay(self, seconds):
+        self.node.contracts["ZkChain"][0]["args"]["changeDelay"] = {"microseconds": str(seconds * 1_000_000)}
+
+    def age(self, template, seconds):
+        """Moves the proposal's ledger time back, as time passing would."""
+        args = self.node.contracts[template][0]["args"]
+        then = setup.parse_time(args["proposedAt"]) - timedelta(seconds=seconds)
+        args["proposedAt"] = setup.show_time(then)
+
+    def test_a_chain_without_a_delay_accepts_at_once_and_the_steps_print_the_wait(self):
+        self.run_setup()
+        proposed = self.raise_step("propose", 50_000_000)
+        self.assertEqual(proposed["changeDelaySeconds"], 0)
+        self.assertEqual(proposed["acceptableAt"], proposed["proposedAt"])   # no delay: it may be accepted from the moment it was made
+        # the proposal carries no time of the proposer's: the choice takes the cap alone, the ledger stamps the time
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choiceArgument"], {"newCap": "50000000"})
+        dry = self.raise_step("accept", 50_000_000, "--dry-run")
+        self.assertEqual((dry["changeDelaySeconds"], dry["acceptableAt"]), (0, proposed["proposedAt"]))
+        self.assertTrue(self.raise_step("accept", 50_000_000)["submitted"])
+        self.assertEqual(self.program_step("propose")["changeDelaySeconds"], 0)
+        self.assertTrue(self.program_step("accept")["submitted"])
+
+    def test_a_gas_cap_accept_waits_out_the_delay(self):
+        self.run_setup()
+        self.set_chain_delay(3600)
+        proposed = self.raise_step("propose", 50_000_000)
+        self.assertEqual(proposed["changeDelaySeconds"], 3600)
+        self.assertEqual(setup.parse_time(proposed["acceptableAt"]) - setup.parse_time(proposed["proposedAt"]), timedelta(hours=1))
+        before = len(self.sent())
+        dry = self.raise_step("accept", 50_000_000, "--dry-run")   # a dry run says when, and sends nothing
+        self.assertEqual((dry["submitted"], dry["acceptableAt"]), (False, proposed["acceptableAt"]))
+        with self.assertRaises(SystemExit) as ctx:
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("may be accepted from " + proposed["acceptableAt"], str(ctx.exception))
+        self.assertEqual(len(self.sent()), before)   # refused before anything was sent
+        with mock.patch.object(setup, "check_waited"), self.assertRaises(SystemExit) as ctx:   # and if it were sent, the chain refuses it
+            self.raise_step("accept", 50_000_000)
+        self.assertIn("the accept was refused: HTTP 400", str(ctx.exception))
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "30000000")
+        self.age("GasCapProposal", 3601)
+        self.assertTrue(self.raise_step("accept", 50_000_000)["submitted"])
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["gasCap"], "50000000")
+
+    def test_a_program_accept_waits_out_the_delay(self):
+        self.run_setup()
+        self.set_chain_delay(60)
+        old = self.chain_program()
+        proposed = self.program_step("propose")
+        self.assertEqual(proposed["changeDelaySeconds"], 60)
+        self.assertEqual(setup.parse_time(proposed["acceptableAt"]) - setup.parse_time(proposed["proposedAt"]), timedelta(seconds=60))
+        self.assertEqual(self.program_step("propose")["acceptableAt"], proposed["acceptableAt"])   # the same proposal again prints the same time
+        dry = self.program_step("accept", None, "--dry-run")
+        self.assertEqual((dry["submitted"], dry["acceptableAt"]), (False, proposed["acceptableAt"]))
+        with self.assertRaises(SystemExit) as ctx:
+            self.program_step("accept")
+        self.assertIn("may be accepted from " + proposed["acceptableAt"], str(ctx.exception))
+        with mock.patch.object(setup, "check_waited"), self.assertRaises(SystemExit) as ctx:
+            self.program_step("accept")
+        self.assertIn("the accept was refused: HTTP 400", str(ctx.exception))
+        self.assertEqual(self.chain_program(), old)
+        self.age("ProgramProposal", 61)
+        self.assertTrue(self.program_step("accept")["submitted"])
+        self.assertEqual(self.chain_program(), self.NEW_PROGRAM)
+
+    def test_the_delay_is_changed_by_a_proposal_that_waits_out_the_current_delay(self):
+        self.run_setup()
+        before = len(self.sent())
+        dry = self.delay_step("propose", 30, "--dry-run")
+        self.assertEqual((dry["dryRun"], dry["submitted"], dry["newChangeDelaySeconds"]), (True, False, 30))
+        self.assertEqual((self.node.contracts["ChangeDelayProposal"], len(self.sent())), ([], before))
+        proposed = self.delay_step("propose", 30)   # no delay yet: the first change is at once
+        self.assertEqual((proposed["submitted"], proposed["alreadyProposed"], proposed["changeDelaySeconds"]), (True, False, 0))
+        [(command, acts)] = self.sent()[before:]
+        self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])   # the operator's user acts for the operator and the gateway
+        self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"]), ("ProposeChangeDelay", {"newDelay": {"microseconds": "30000000"}}))
+        again = self.delay_step("propose", 30)
+        self.assertEqual((again["submitted"], again["alreadyProposed"]), (False, True))
+        self.assertEqual(len(self.node.contracts["ChangeDelayProposal"]), 1)
+        accepted = self.delay_step("accept", 30)
+        self.assertTrue(accepted["submitted"])
+        self.assertEqual(self.sent()[-1][1], ["ostia-confirmer::1220fp"])
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "AcceptChangeDelay")
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["changeDelay"], {"microseconds": "30000000"})
+        self.assertEqual(self.node.contracts["ChangeDelayProposal"], [])
+        done = self.delay_step("accept", 30)   # a re-run after it went through
+        self.assertEqual((done["submitted"], done["alreadyAccepted"], done["changeDelaySeconds"]), (False, True, 30))
+        with self.assertRaises(SystemExit) as ctx:
+            self.delay_step("propose", 30)
+        self.assertIn("already", str(ctx.exception))
+        # The delay is now 30 s: taking it away is itself subject to it, so it cannot be cut short.
+        proposed = self.delay_step("propose", 0)
+        self.assertEqual(proposed["changeDelaySeconds"], 30)
+        self.assertEqual(setup.parse_time(proposed["acceptableAt"]) - setup.parse_time(proposed["proposedAt"]), timedelta(seconds=30))
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choiceArgument"], {"newDelay": None})
+        with self.assertRaises(SystemExit) as ctx:
+            self.delay_step("accept", 0)
+        self.assertIn("may be accepted from " + proposed["acceptableAt"], str(ctx.exception))
+        with mock.patch.object(setup, "check_waited"), self.assertRaises(SystemExit) as ctx:
+            self.delay_step("accept", 0)
+        self.assertIn("the accept was refused: HTTP 400", str(ctx.exception))
+        self.assertEqual(self.node.contracts["ZkChain"][0]["args"]["changeDelay"], {"microseconds": "30000000"})
+        self.age("ChangeDelayProposal", 31)
+        self.assertTrue(self.delay_step("accept", 0)["submitted"])
+        self.assertIsNone(self.node.contracts["ZkChain"][0]["args"]["changeDelay"])   # None: no delay, as a chain starts
+
+    def test_a_change_delay_step_refuses_a_bad_value_another_proposal_and_missing_arguments(self):
+        self.run_setup()
+        before = len(self.sent())
+        for bad in (-1, setup.MAX_CHANGE_DELAY + 1):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit) as ctx:
+                self.delay_step("propose", bad)
+            self.assertIn("between 0 and", str(ctx.exception))
+        self.delay_step("propose", setup.MAX_CHANGE_DELAY)   # the highest is fine
+        with self.assertRaises(SystemExit) as ctx:
+            self.delay_step("propose", 20)
+        self.assertIn("another change delay", str(ctx.exception))
+        self.assertIn("Archive", str(ctx.exception))
+        with self.assertRaises(SystemExit) as ctx:
+            self.delay_step("accept", 20)   # nobody proposed 20
+        self.assertIn("no proposal", str(ctx.exception))
+        self.assertEqual(len(self.sent()), before + 1)
+        for extra in (["--demo"], ["--package-step", "check"], ["--new-gas-cap", "5"], ["--program-vk", "ab" * 32], ["--", *CHAIN_ARGS]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--change-delay-step", "propose", "--delay-seconds", "5", *extra])
+        for argv in (["--change-delay-step", "propose"], ["--delay-seconds", "5"], ["--change-delay-step", "propose", "--delay-seconds", "5", "--gas-cap-step", "propose", "--new-gas-cap", "9"]):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, *argv])
+
+    def test_each_change_delay_step_needs_only_its_own_token(self):
+        self.run_setup()
+        self.node.calls.clear()
+        os.environ.pop("CZE_TOKEN_FILE_ADMIN"); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        self.delay_step("propose", 30)
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-operator-2"})
+        os.environ["CZE_TOKEN_FILE_CONFIRMER"] = str(self.tokens["confirmer"]); os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
+        self.node.calls.clear()
+        self.delay_step("accept", 30)
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-confirmer-3"})
 
     def test_a_chain_whose_cap_is_below_the_pinned_one_is_refused_and_one_above_it_is_found(self):
         self.run_setup()

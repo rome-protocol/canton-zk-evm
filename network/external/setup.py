@@ -54,6 +54,18 @@
     archived by the operator (the Archive choice, with the operator's token) before another is proposed. The chain check of a later plain setup run
     compares the chain with the values it is given, so give it the values the chain holds now.
 
+  setup.py --ledger-url <URL> --change-delay-step propose|accept --delay-seconds <N> [--dry-run]
+
+    Sets the wait that a gas-cap or program change sits out between its proposal and its accept (the chain's changeDelay; a chain made without it
+    has no wait, and 0 takes it away again; at most 30 days), in two steps, each by one user and each printing one JSON line.
+      propose  the operator's token (which acts for the operator and the gateway party): exercises ProposeChangeDelay on the chain's one contract. Nothing is done if the same proposal is there already.
+      accept   the confirmer's token: exercises AcceptChangeDelay on the proposal for exactly --delay-seconds, given the chain's current contract.
+    The change of the delay waits out the delay the chain has when it is accepted, like any other change, so a wait cannot be cut short by one step.
+    There is no way round the wait (no emergency bypass in this version).
+    The gas-cap and program steps print the wait too: "changeDelaySeconds", and for a proposal that is there "proposedAt" (the ledger time it was made at)
+    and "acceptableAt" (proposedAt plus the wait). An accept before that time is refused, by this script first and by the chain in any case.
+    A dry run of the accept prints the times and sends nothing, so it is the way to ask when a proposal can be accepted.
+
 Names: the hints and the Ledger API user ids start with CZE_PARTY_PREFIX and CZE_USER_PREFIX (default "ostia-"; propose.py and the
 builder use the same prefix, CZE_LEDGER_USER for the builder). Tokens: CZE_TOKEN_FILE_<ROLE> names a file, mode 0600, with the bearer token of
 that role's user (ADMIN for the steps above that need the participant's admin right, then OPERATOR, CONFIRMER). Run on its own, setup.py
@@ -62,6 +74,7 @@ mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unles
 no token is sent). A token is never printed.
 """
 import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -392,11 +405,53 @@ def step_chain(url: str, step: str, with_gateway: bool = False) -> tuple:
     return ledger, chain
 
 
+MAX_CHANGE_DELAY = 30 * 24 * 3600   # the Daml's maxChangeDelay (30 days), in seconds
+
+
+def delay_us(value) -> int:
+    """A change delay as the ledger gives it (an Optional RelTime: null, or {"microseconds": "<n>"}), in microseconds; no delay is 0."""
+    if value is None:
+        return 0
+    return int(value["microseconds"] if isinstance(value, dict) else value)
+
+
+def seconds_of(us: int):
+    return us // 1_000_000 if us % 1_000_000 == 0 else us / 1_000_000
+
+
+def parse_time(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def show_time(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def timing(proposal, chain: dict) -> dict:
+    """What a step prints about the wait: the chain's change delay and, for a proposal that is there, when it was made and from when it may be accepted
+    (its ledger time plus the chain's delay now; the delay that counts is the one in force at the accept)."""
+    delay = delay_us(chain.get("changeDelay"))
+    out = {"changeDelaySeconds": seconds_of(delay)}
+    if proposal and proposal.get("proposedAt"):
+        out["proposedAt"] = proposal["proposedAt"]
+        out["acceptableAt"] = show_time(parse_time(proposal["proposedAt"]) + timedelta(microseconds=delay))
+    return out
+
+
+def check_waited(result: dict, what: str) -> None:
+    """Before an accept is sent: the proposal's wait is not over by this machine's clock. The ledger decides (it uses its own time), so this only saves a refused command."""
+    ready = result.get("acceptableAt")
+    if ready and datetime.now(timezone.utc) < parse_time(ready):
+        raise SystemExit(f"the change of {what} may be accepted from {ready} (proposed at {result['proposedAt']}, change delay {result['changeDelaySeconds']} s): run the accept again then")
+
+
 def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
     ledger, chain = step_chain(url, step)
     current = int(chain["gasCap"])
-    proposals = [p for p in ledger.active("GasCapProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
-                 and p.get("confirmer") == chain["confirmer"]]
+    def pending():
+        return [p for p in ledger.active("GasCapProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+                and p.get("confirmer") == chain["confirmer"]]
+    proposals = pending()
     result = {"step": step, "chainId": chain["chainId"], "currentGasCap": str(current), "newGasCap": str(new_cap), "dryRun": dry_run}
     if step == "propose":
         check_gas_cap(current, new_cap)
@@ -408,14 +463,18 @@ def gas_cap_step(url: str, step: str, new_cap: int, dry_run: bool) -> dict:
         if not done and not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeGasCap",
                                                         "choiceArgument": {"newCap": str(new_cap)}}}, "propose")
-        return {**result, "submitted": not done and not dry_run, "alreadyProposed": done}
+        if not done and not dry_run:
+            proposals = pending()   # read again, for the time the ledger gave it
+        return {**result, "submitted": not done and not dry_run, "alreadyProposed": done, **timing((proposals or [None])[0], chain)}
     mine = [p for p in proposals if p.get("newCap") == str(new_cap)]
     if not mine:
         if current == new_cap:   # a re-run after the accept went through (or committed after a timeout): done
             return {**result, "submitted": False, "alreadyAccepted": True}
         raise SystemExit(f"no proposal for the gas cap {new_cap} is on this participant")
     check_gas_cap(current, new_cap)
+    result.update(timing(mine[0], chain))
     if not dry_run:
+        check_waited(result, "the gas cap")
         submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "GasCapProposal", "contractId": mine[0]["contractId"], "choice": "AcceptGasCap",
                                                     "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
@@ -437,9 +496,11 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
     check_program(new)
     ledger, chain = step_chain(url, step, with_gateway=True)
     current = {field: chain[field] for field, _ in PROGRAM_FIELDS}
-    proposals = [p for p in ledger.active("ProgramProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+    def pending():
+        found = [p for p in ledger.active("ProgramProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
                  and p.get("confirmer") == chain["confirmer"] and p.get("gateway") == chain["gateway"]]
-    mine = [p for p in proposals if all(p.get("new" + f[0].upper() + f[1:]) == new[f] for f, _ in PROGRAM_FIELDS)]
+        return found, [p for p in found if all(p.get("new" + f[0].upper() + f[1:]) == new[f] for f, _ in PROGRAM_FIELDS)]
+    proposals, mine = pending()
     result = {"step": step, "chainId": chain["chainId"], "current": current, "new": new, "dryRun": dry_run}
     if step == "propose":
         if current == new:
@@ -450,13 +511,61 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
         if not mine and not dry_run:
             submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeProgram",
                                                         "choiceArgument": {"new" + f[0].upper() + f[1:]: new[f] for f, _ in PROGRAM_FIELDS}}}, "propose")
-        return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
+        was_there = bool(mine)
+        if not mine and not dry_run:
+            mine = pending()[1]   # read again, for the time the ledger gave it
+        return {**result, "submitted": not was_there and not dry_run, "alreadyProposed": was_there, **timing((mine or [None])[0], chain)}
     if not mine:
         if current == new:   # a re-run after the accept went through (or committed after a timeout): done
             return {**result, "submitted": False, "alreadyAccepted": True}
         raise SystemExit("no proposal for these values is on this participant")
+    result.update(timing(mine[0], chain))
     if not dry_run:
+        check_waited(result, "the program")
         submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ProgramProposal", "contractId": mine[0]["contractId"], "choice": "AcceptProgram",
+                                                    "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
+    return {**result, "submitted": not dry_run}
+
+
+def delay_value(seconds: int):
+    """The choice argument for a change delay in seconds: 0 is no delay (None), as the chain holds it."""
+    return {"microseconds": str(seconds * 1_000_000)} if seconds else None
+
+
+def change_delay_step(url: str, step: str, seconds: int, dry_run: bool) -> dict:
+    """ChangeDelayProposal by the operator and the gateway (the operator's user acts for both), AcceptChangeDelay by the confirmer: the chain's change delay becomes `seconds`.
+    The proposal itself waits out the delay the chain has when it is accepted, so a delay is not cut short by one step. There is no way round the wait."""
+    if not 0 <= seconds <= MAX_CHANGE_DELAY:
+        raise SystemExit(f"--delay-seconds must be between 0 and {MAX_CHANGE_DELAY} (30 days); 0 takes the delay away")
+    ledger, chain = step_chain(url, step, with_gateway=True)
+    current = delay_us(chain.get("changeDelay"))
+
+    def pending():
+        found = [p for p in ledger.active("ChangeDelayProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+                 and p.get("confirmer") == chain["confirmer"] and p.get("gateway") == chain["gateway"]]
+        return found, [p for p in found if delay_us(p.get("newDelay")) == seconds * 1_000_000]
+    proposals, mine = pending()
+    result = {"step": step, "chainId": chain["chainId"], "newChangeDelaySeconds": seconds, "dryRun": dry_run}
+    if step == "propose":
+        if current == seconds * 1_000_000:
+            raise SystemExit("the chain has this change delay already")
+        if proposals and not mine:
+            raise SystemExit("a proposal for another change delay is on this participant already. Accept it only if that value is wanted; "
+                             "otherwise the operator archives it (the Archive choice of the ChangeDelayProposal, with the operator's token) and proposes again")
+        was_there = bool(mine)
+        if not mine and not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeChangeDelay",
+                                                        "choiceArgument": {"newDelay": delay_value(seconds)}}}, "propose")
+            mine = pending()[1]   # read again, for the time the ledger gave it
+        return {**result, "submitted": not was_there and not dry_run, "alreadyProposed": was_there, **timing((mine or [None])[0], chain)}
+    if not mine:
+        if current == seconds * 1_000_000:   # a re-run after the accept went through (or committed after a timeout): done
+            return {**result, "submitted": False, "alreadyAccepted": True, **timing(None, chain)}
+        raise SystemExit("no proposal for this change delay is on this participant")
+    result.update(timing(mine[0], chain))
+    if not dry_run:
+        check_waited(result, "the change delay")
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ChangeDelayProposal", "contractId": mine[0]["contractId"], "choice": "AcceptChangeDelay",
                                                     "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
 
@@ -492,13 +601,15 @@ def main(argv: list) -> int:
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step or --program-step: nothing is submitted")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step or --change-delay-step: nothing is submitted")
     ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
     ap.add_argument("--program-step", choices=("propose", "accept"), help="replace the chain's program key, ZisK root and rules hash: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--program-vk", help="with --program-step: the new program key (64 lowercase hex digits)")
     ap.add_argument("--root-c", help="with --program-step: the new ZisK root (64 lowercase hex digits)")
     ap.add_argument("--rules-hash", help="with --program-step: the new rules hash (64 lowercase hex digits)")
+    ap.add_argument("--change-delay-step", choices=("propose", "accept"), help="change the wait that a gas-cap or program change sits out: the operator and the gateway propose, the confirmer accepts (see the top of this file)")
+    ap.add_argument("--delay-seconds", type=int, help="with --change-delay-step: the new wait in seconds (0 takes it away; at most 30 days)")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
     if own.gas_cap_step:
@@ -506,7 +617,7 @@ def main(argv: list) -> int:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
         if own.new_gas_cap is None:
             ap.error("--gas-cap-step needs --new-gas-cap")
-        if rest or own.demo or own.package_step or own.program_step or own.program_vk or own.root_c or own.rules_hash:
+        if rest or own.demo or own.package_step or own.program_step or own.program_vk or own.root_c or own.rules_hash or own.change_delay_step or own.delay_seconds is not None:
             ap.error("--gas-cap-step does only the gas cap: no --demo, no --package-step and no chain arguments")
         check_settings(own.ledger_url, ("operator",) if own.gas_cap_step == "propose" else ("confirmer",))
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
@@ -517,7 +628,7 @@ def main(argv: list) -> int:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
         if None in (own.program_vk, own.root_c, own.rules_hash):
             ap.error("--program-step needs --program-vk, --root-c and --rules-hash")
-        if rest or own.demo or own.package_step or own.gas_cap_step or own.new_gas_cap is not None:
+        if rest or own.demo or own.package_step or own.gas_cap_step or own.new_gas_cap is not None or own.change_delay_step or own.delay_seconds is not None:
             ap.error("--program-step does only the program: no --demo, no --package-step, no --gas-cap-step and no chain arguments")
         new = {"programVK": own.program_vk, "rootC": own.root_c, "rulesHash": own.rules_hash}
         check_program(new)
@@ -525,6 +636,19 @@ def main(argv: list) -> int:
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
         print(json.dumps(program_step(own.ledger_url, own.program_step, new, own.dry_run)))
         return 0
+    if own.change_delay_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if own.delay_seconds is None:
+            ap.error("--change-delay-step needs --delay-seconds")
+        if rest or own.demo or own.package_step or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash:
+            ap.error("--change-delay-step does only the change delay: no --demo, no --package-step and no chain arguments")
+        check_settings(own.ledger_url, ("operator",) if own.change_delay_step == "propose" else ("confirmer",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(change_delay_step(own.ledger_url, own.change_delay_step, own.delay_seconds, own.dry_run)))
+        return 0
+    if own.delay_seconds is not None:
+        ap.error("--delay-seconds goes with --change-delay-step")
     if own.new_gas_cap is not None:
         ap.error("--new-gas-cap goes with --gas-cap-step")
     if own.program_vk or own.root_c or own.rules_hash:
@@ -532,7 +656,7 @@ def main(argv: list) -> int:
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet, --gas-cap-step or --program-step")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step or --change-delay-step")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)

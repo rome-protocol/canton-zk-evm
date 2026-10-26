@@ -12,13 +12,17 @@
 #      a dry run first (the dry run changes nothing), vet. The chain does not switch by itself.
 #   3. The builder is pinned to 0.3.0: the block commits (the sidecar is asked `verify2` now), the chain contract and the block's record are made
 #      under 0.3.0, and the legs of the deposits that were made under 0.2.0 settle. The block gas limit is still 30,000,000.
-#   4. The gas cap is raised from 30,000,000 to 60,000,000 with network/external/setup.py --gas-cap-step: a dry run of the proposal (nothing is
+#   4. The chain gets a change delay of 8 s with network/external/setup.py --change-delay-step (a dry run, the proposal, the acceptance: the chain has
+#      no delay yet, so this one is at once). From here a change waits out the delay: an acceptance right after its proposal is refused with the time
+#      from which it may be accepted, and goes through once that time has passed.
+#      The gas cap is raised from 30,000,000 to 60,000,000 with network/external/setup.py --gas-cap-step: a dry run of the proposal (nothing is
 #      proposed), the operator's proposal, a dry run of the acceptance on the confirmer's participant (the cap is unchanged), the confirmer's
 #      acceptance. A second proposal and a second acceptance change nothing, and a cap that is not higher is refused (its message is checked and no
 #      proposal exists afterwards).
 #      Then the chain's program key, ZisK root and rules hash are replaced with network/external/setup.py --program-step (a dry run of the proposal,
 #      the proposal, a dry run of the acceptance, the acceptance; a proposal of the values the chain holds is refused) and put back with the same two
-#      steps, so the chain goes on with the program it had. No block is made in between.
+#      steps, so the chain goes on with the program it had. Then the delay is taken away again (a proposal of 0, which waits out the 8 s; the chain
+#      contract must not hold a delay when 0.2.0 code consumes it in stage 6). No block is made in between.
 #   5. The builder asks reth for a block gas limit of 31,000,000 (--target-gas-limit). First an Advance whose header hex has a capital letter in it
 #      is refused by Canton at `verify2` (the runtime lowercases what it sends, so the hash in the line differs: the stand-in says it refused at the
 #      hash, and the refusal is the sidecar's, with the reason "no malformed input"), and the chain stays where it was. Then block 4 is built again
@@ -237,6 +241,28 @@ cap_step() {   # <participant port> <propose|accept> <new cap> [--dry-run]: netw
   CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url "http://127.0.0.1:$port" --gas-cap-step "$step" --new-gas-cap "$cap" "$@" 2> "$WORK/setup.err" \
     || { cat "$WORK/setup.err" >&2; fail "setup.py --gas-cap-step $step $cap $* on $port failed"; }
 }
+accept_when_ready() {   # <setup.py arguments>: an accept on the confirmer's participant, tried again each second while the proposal has not reached it or its wait is not over (60 s at most)
+  local out
+  for _ in $(seq 1 60); do
+    if out=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 "$@" 2> "$WORK/setup.err"); then echo "$out"; return 0; fi
+    grep -q "may be accepted from\|is on this participant" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; return 1; }
+    sleep 1
+  done
+  cat "$WORK/setup.err" >&2; return 1
+}
+delay_step() {   # <participant port> <propose|accept> <seconds> [--dry-run]: network/external/setup.py --change-delay-step on one participant
+  local port=$1 step=$2 seconds=$3; shift 3
+  CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url "http://127.0.0.1:$port" --change-delay-step "$step" --delay-seconds "$seconds" "$@" 2> "$WORK/setup.err" \
+    || { cat "$WORK/setup.err" >&2; fail "setup.py --change-delay-step $step $seconds $* on $port failed"; }
+}
+is "$(probe ZkChain | jq -r '.changeDelays | join(",")')" none "the change delay before the change (0.2.0 had none)"
+r=$(delay_step 7575 propose 8 --dry-run); jq -e '.dryRun == true and .submitted == false and .changeDelaySeconds == 0' <<<"$r" >/dev/null || fail "the dry run of the delay proposal: $r"
+is "$(probe ChangeDelayProposal | jq '.contracts | length')" 0 "the delay proposals after the dry run"
+r=$(delay_step 7575 propose 8); jq -e '.submitted == true and .alreadyProposed == false and .acceptableAt == .proposedAt' <<<"$r" >/dev/null || fail "the delay proposal: $r"
+r=$(accept_when_ready --change-delay-step accept --delay-seconds 8); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the delay acceptance: $r"
+is "$(probe ZkChain | jq -r '.changeDelays | join(",")')" 8000000 "the change delay after the acceptance"
+is "$(probe ChangeDelayProposal | jq '.contracts | length')" 0 "the delay proposals after the acceptance (it is used up)"
+is "$(chain_package)" "$NEW" "the package the chain contract is under after the delay change (SetChangeDelay is 0.3.0's)"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 30000000 "the gas cap before the change"
 r=$(cap_step 7575 propose 60000000 --dry-run); jq -e '.step == "propose" and .dryRun == true and .submitted == false and .currentGasCap == "30000000"' <<<"$r" >/dev/null || fail "the dry run of the proposal: $r"
 is "$(probe GasCapProposal | jq '.contracts | length')" 0 "the proposals after the dry run"
@@ -249,9 +275,14 @@ for _ in $(seq 1 30); do
   r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --gas-cap-step accept --new-gas-cap 60000000 --dry-run 2> "$WORK/setup.err") && break
   r=""; sleep 1
 done
-jq -e '.step == "accept" and .dryRun == true and .submitted == false and .currentGasCap == "30000000"' <<<"$r" >/dev/null || fail "the dry run of the acceptance: $r $(tail -n 5 "$WORK/setup.err")"
+jq -e '.step == "accept" and .dryRun == true and .submitted == false and .currentGasCap == "30000000" and .changeDelaySeconds == 8 and .acceptableAt > .proposedAt' <<<"$r" >/dev/null || fail "the dry run of the acceptance: $r $(tail -n 5 "$WORK/setup.err")"
+# The acceptance right after the proposal is refused, with the time from which it may be accepted; nothing changes.
+if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --gas-cap-step accept --new-gas-cap 60000000 > /dev/null 2> "$WORK/setup.err"; then
+  fail "the gas cap was accepted before the delay had passed"
+fi
+grep -q "may be accepted from" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal before the delay does not say when it may be accepted"; }
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 30000000 "the gas cap after the dry runs"
-r=$(cap_step 7576 accept 60000000); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance: $r"
+r=$(accept_when_ready --gas-cap-step accept --new-gas-cap 60000000); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance: $r"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 60000000 "the gas cap after the acceptance"
 is "$(probe GasCapProposal | jq '.contracts | length')" 0 "the proposals after the acceptance (it is used up)"
 is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the gas cap change (no block was made)"
@@ -283,7 +314,12 @@ for _ in $(seq 1 30); do
 done
 jq -e '.step == "accept" and .dryRun == true and .submitted == false' <<<"$r" >/dev/null || fail "the dry run of the program acceptance: $r"
 is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys after the dry runs"
-r=$(program_step 7576 accept "$NEW_VK" "$NEW_RC" "$NEW_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the program acceptance: $r"
+if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --program-step accept --program-vk "$NEW_VK" --root-c "$NEW_RC" --rules-hash "$NEW_RULES" > /dev/null 2> "$WORK/setup.err"; then
+  fail "the program was accepted before the delay had passed"
+fi
+grep -q "may be accepted from" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "the refusal of the program before the delay does not say when it may be accepted"; }
+is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys after the refused acceptance"
+r=$(accept_when_ready --program-step accept --program-vk "$NEW_VK" --root-c "$NEW_RC" --rules-hash "$NEW_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the program acceptance: $r"
 is "$(probe ZkChain | jq -r '.programs | join(",")')" "$NEW_PROGRAM" "the program keys after the acceptance"
 is "$(probe ProgramProposal | jq '.contracts | length')" 0 "the program proposals after the acceptance (it is used up)"
 if CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7575 --program-step propose --program-vk "$NEW_VK" --root-c "$NEW_RC" --rules-hash "$NEW_RULES" > /dev/null 2> "$WORK/setup.err"; then
@@ -298,8 +334,12 @@ for _ in $(seq 1 30); do
   r=""; sleep 1
 done
 [ -n "$r" ] || fail "the proposal of the old program did not reach the confirmer's participant"
-r=$(program_step 7576 accept "$VK" "$RC" "$OLD_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance of the old program: $r"
+r=$(accept_when_ready --program-step accept --program-vk "$VK" --root-c "$RC" --rules-hash "$OLD_RULES"); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance of the old program: $r"
 is "$(probe ZkChain | jq -r '.programs | join(",")')" "$OLD_PROGRAM" "the program keys after the way back"
+# The delay is taken away again; the proposal waits out the 8 s that are in force. A chain that holds a delay cannot go back to 0.2.0 code.
+r=$(delay_step 7575 propose 0); jq -e '.submitted == true and .changeDelaySeconds == 8' <<<"$r" >/dev/null || fail "the proposal that takes the delay away: $r"
+r=$(accept_when_ready --change-delay-step accept --delay-seconds 0); jq -e '.submitted == true' <<<"$r" >/dev/null || fail "the acceptance that takes the delay away: $r"
+is "$(probe ZkChain | jq -r '.changeDelays | join(",")')" none "the change delay after it was taken away"
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the program changes"
 is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the program changes (no block was made)"
 
