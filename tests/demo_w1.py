@@ -36,9 +36,10 @@ LAB_GAS = 4_000_000
 LAB_FUNCTIONS = ("build()", "undone()", "kill()")
 DEPTH, LOGS, CREATES = 14, 10, 1
 # Per call: the count in the call and its gas limit. With STRESS_GAS, a Transfer log costs about 2.4k gas with the holder worked out, and a token made with
-# its mint about 120k. A batch of 4,096 ids that shares one array for ids and values is a 131,168-byte log, 1.07M gas each (measured on anvil, Prague), so 18 of
-# them use 19.26M, in one call of 19.6M: that is what is left of the 30 Mgas cap beside the other calls of the W1 block (the calls' gas limits add up to 27.6M).
-FLOOD = {"transfers": ("transfers(uint256,uint256)", 700, STRESS_GAS), "batches": ("batches(uint256,uint256)", 18, 19_600_000), "spawn": ("spawn(uint256)", 10, STRESS_GAS),
+# its mint about 120k. A batch of 4,096 ids that shares one array for ids and values is a 131,168-byte log, 1.07M gas each (measured on anvil, Prague), so 9 of
+# them use 9.63M, in one call of 9.8M. One transaction may use at most 2^24 (16,777,216) gas under Osaka, so the 18 batches of the W1 block go in two calls (19.6M
+# of gas limit together): that is what is left of the 30 Mgas cap beside the other calls of the W1 block (the calls' gas limits add up to 27.6M).
+FLOOD = {"transfers": ("transfers(uint256,uint256)", 700, STRESS_GAS), "batches": ("batches(uint256,uint256)", 9, 9_800_000), "spawn": ("spawn(uint256)", 10, STRESS_GAS),
          "mint": ("mint()", None, 10_000_000)}
 
 
