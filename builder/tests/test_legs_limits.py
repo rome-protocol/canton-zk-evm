@@ -15,6 +15,7 @@ from fakes import WITHDRAWAL, Leg, tx
 ALICE, BOB, CAROL, UNIT = tb.ALICE, tb.BOB, tb.CAROL, tb.UNIT
 WTKB2 = "44" * 20   # a second wrapped token of the instrument that WTKB wraps
 TOKEN_B2 = ("tok-b2", {**tb.TOKEN[1], "evmToken": WTKB2, "factory": "fac-b2"})
+QUOTA = "the block's withdrawals of the instrument adm/TKB are over the withdrawal quota: 4.0000000000 more would make 6.0000000000 in the last 86400 s, and the quota is 5.0000000000"
 PAUSED = "the legs are paused until 2020-01-01T00:00:00Z: a block that carries a leg is refused"
 
 
@@ -273,13 +274,13 @@ class Refused(tp.Loop):
     def test_a_quota_refusal_of_a_block_with_a_leg_is_no_fault_of_the_transactions(self):
         s = self.setup({ALICE: [], BOB: []})
         wd, plain = self.pool(s)
-        s.ledger.refuse = "the block's withdrawals of the instrument adm/TKB are over the withdrawal quota: 4.0 more would make 6.0 (the quota is 5.0)"
+        s.ledger.refuse = QUOTA
         p = self.producer(s, cooldown=600)
         p.step()
         self.assertEqual((self.status()["excluded"], p.previous_kept, p.suspects), ([], set(), []))
 
     def test_the_same_words_in_a_block_with_no_leg_count_as_any_refusal(self):
-        for words in (PAUSED, "the block's withdrawals of the instrument adm/TKB are over the withdrawal quota: 4.0 more would make 6.0"):
+        for words in (PAUSED, QUOTA):
             t = tx(ALICE, 0)
             s = self.setup({ALICE: [t]}, refuse=words)
             p = self.producer(s, cooldown=600)
@@ -293,6 +294,38 @@ class Refused(tp.Loop):
         p = self.producer(s, cooldown=600)
         p.step()
         self.assertEqual(p.previous_kept, {wd["hash"], plain["hash"]})   # kept as the first of two refusals in a row
+
+    def test_a_message_with_only_some_of_the_quota_words_is_not_the_chain_contracts(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
+        s.ledger.refuse = "the registry says the block's withdrawals of the instrument adm/TKB are over the withdrawal quota of the registry"
+        p = self.producer(s, cooldown=600)
+        p.step()
+        self.assertEqual(p.previous_kept, {wd["hash"], plain["hash"]})
+
+    def test_the_same_legs_refused_again_for_the_words_are_held_even_when_other_transactions_came_between(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
+        s.ledger.refuse = QUOTA   # a lasting mismatch: the words come from something that is not the chain contract's quota
+        p = self.producer(s, cooldown=600)
+        p.step()
+        self.assertEqual((p.suspects, p.limit_legs), ([], {wd["hash"]}))
+        s.reth.pool[BOB].append(tx(BOB, 1))   # a new transaction: the block is not the same set
+        p.step()
+        self.assertEqual(sorted(p.suspects), sorted([wd["hash"], plain["hash"]]))
+        self.assertEqual((p.limit_kept, p.limit_legs), (set(), set()))
+
+    def test_a_block_that_commits_forgets_the_refusal_for_the_words(self):
+        s = self.setup({ALICE: [], BOB: []})
+        wd, plain = self.pool(s)
+        s.ledger.refuse = PAUSED
+        p = self.producer(s, cooldown=600)
+        p.step()
+        self.assertEqual(p.limit_legs, {wd["hash"]})
+        s.ledger.refuse = None
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [wd], [plain]
+        p.step()
+        self.assertEqual((p.limit_kept, p.limit_legs), (set(), set()))
 
 
 if __name__ == "__main__":
