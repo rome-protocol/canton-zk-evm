@@ -66,7 +66,37 @@
     and "acceptableAt" (proposedAt plus the wait). An accept before that time is refused, by this script first and by the chain in any case.
     A dry run of the accept prints the times and sends nothing, so it is the way to ask when a proposal can be accepted.
 
-  setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay [--dry-run]
+  setup.py --ledger-url <URL> --pause-step pause|unpause|renew-propose|renew-accept [--pause-seconds <N>] [--dry-run]
+
+    The pause of the Canton legs (deposits, withdrawals and payments; the chain's Advance refuses a block that carries a leg while the pause is in force). Each step prints
+    one JSON line with "paused", "pausedUntil", "pauseCooldownUntil" and "pauseLimitSeconds" (the longest a pause may run from the moment it is made: the chain's
+    pauseMax, or 3 days). A pause always ends by itself at its "pausedUntil"; legs work again then, and nothing has to be done.
+      pause           the confirmer's token, alone, the emergency brake: exercises PauseLegs on the chain's one contract. The pause runs for the longest a pause may run.
+                      The confirmer alone may start a new one only from "pauseCooldownUntil" on (a pause that ended or was lifted early, then as long again as it ran); the
+                      step refuses before that (CZE_SKIP_WAIT_CHECK=1 sends it anyway, for the ledger to refuse). Does nothing, "alreadyPaused", if the legs are paused. The pause consumes the chain's
+                      contract, so a block committed at the same moment makes the ledger refuse it: the step is safe to run again. The printed state is read again after it.
+      unpause         the confirmer's token: exercises UnpauseLegs, which lifts the pause early. Does nothing, "alreadyUnpaused", if the legs are not paused.
+      renew-propose   the operator's token: exercises ProposeRenewPause for --pause-seconds (1 up to the longest a pause may run). Nothing is done if the same proposal is there already.
+      renew-accept    the confirmer's token: exercises AcceptRenewPause on the proposal for exactly --pause-seconds. The legs are then paused until that long from the
+                      moment of the accept, which also starts a pause from nothing and is not held to the cooldown. This is how a pause is renewed: only the operator and the
+                      confirmer together can keep it going, and each renewal ends within the longest a pause may run from its own accept. There is no wait before it, but the accept is refused
+                      for a proposal more than an hour old: the operator takes it back (--withdraw-proposal renew-pause) and proposes it again for the incident at hand (renew-propose refuses while the old one is there). The line prints the proposal's "proposedAt" and
+                      "acceptableUntil" (an hour later) and the step refuses, before sending, once that time has passed. A re-run after an accept that went through, when no
+                      proposal is there and the legs are paused, prints the pause state with "noProposal": true and succeeds.
+    A proposal that is not wanted is taken back by the operator (--withdraw-proposal renew-pause). With --dry-run nothing is submitted.
+
+  setup.py --ledger-url <URL> --leg-limits-step propose|accept (--quota <units> --quota-window-seconds <N> | --no-quota) [--pause-max-seconds <N>] [--dry-run]
+
+    Sets the withdrawal quota of the chain's legs and the longest a pause may run, in two steps, each by one user and each printing one JSON line.
+    The quota is at most --quota units of each Canton instrument withdrawn in any --quota-window-seconds (1 up to 30 days); --no-quota takes it away (no quota is the
+    behaviour of a chain made before it). Without --pause-max-seconds the longest pause is the default of 3 days; it may be set from 1 second to 14 days.
+    All three values are replaced together, so name all that are wanted: the line prints "current" and "new" for a check before the accept.
+      propose  the operator's token: exercises ProposeLegLimits on the chain's one contract. Nothing is done if the same proposal is there already.
+      accept   the confirmer's token: exercises AcceptLegLimits on the proposal for exactly these values, given the chain's current contract.
+    The accept waits out the chain's change delay like a gas cap (the line prints "proposedAt" and "acceptableAt"; a dry run of the accept sends nothing). The
+    change may loosen a limit or tighten it. A proposal not wanted is taken back by the operator (--withdraw-proposal leg-limits).
+
+  setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay|leg-limits|renew-pause [--dry-run]
 
     The operator's token: withdraws every pending proposal of that kind for the chain (the Withdraw choice). The confirmer rejects one with
     the Reject choice instead. It takes no values: naming a gas cap, keys or a delay with it is refused.
@@ -80,6 +110,7 @@ no token is sent). A token is never printed.
 """
 import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -410,12 +441,12 @@ def step_chain(url: str, step: str, with_gateway: bool = False) -> tuple:
     return ledger, chain
 
 
-CHOICE_SUFFIX = {"gas-cap": "GasCap", "program": "Program", "change-delay": "ChangeDelay"}
-PROPOSAL_KINDS = {"gas-cap": "GasCapProposal", "program": "ProgramProposal", "change-delay": "ChangeDelayProposal"}
+CHOICE_SUFFIX = {"gas-cap": "GasCap", "program": "Program", "change-delay": "ChangeDelay", "leg-limits": "LegLimits", "renew-pause": "RenewPause"}
+PROPOSAL_KINDS = {"gas-cap": "GasCapProposal", "program": "ProgramProposal", "change-delay": "ChangeDelayProposal", "leg-limits": "LegLimitsProposal", "renew-pause": "RenewPauseProposal"}
 
 
 def withdraw_step(url: str, kind: str, dry_run: bool) -> dict:
-    """The operator takes back its pending proposals of one kind for this chain (the WithdrawGasCap, WithdrawProgram or WithdrawChangeDelay choice; the operator alone controls it, and the confirmer can reject instead)."""
+    """The operator takes back its pending proposals of one kind for this chain (the WithdrawGasCap, WithdrawProgram, WithdrawChangeDelay, WithdrawLegLimits or WithdrawRenewPause choice; the operator alone controls it, and the confirmer can reject instead)."""
     ledger, chain = step_chain(url, "propose")
     template = PROPOSAL_KINDS[kind]
     found = [p for p in ledger.active(template) if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"] and p.get("confirmer") == chain["confirmer"]]
@@ -592,6 +623,186 @@ def change_delay_step(url: str, step: str, seconds: int, dry_run: bool) -> dict:
     return {**result, "submitted": not dry_run}
 
 
+MAX_QUOTA_WINDOW = 30 * 24 * 3600   # the Daml's maxQuotaWindow (30 days), in seconds
+MAX_PAUSE_MAX = 14 * 24 * 3600      # the Daml's maxPauseMax (14 days), in seconds
+DEFAULT_PAUSE_MAX = 3 * 24 * 3600   # the Daml's defaultPauseMax (3 days), in seconds, for a chain that has no pauseMax
+RENEW_PROPOSAL_LIFE = timedelta(hours=1)   # the Daml's renewProposalLife: a renewal proposal may be accepted for an hour only
+
+
+def opt_us(value):
+    """An Optional RelTime as the ledger gives it, in microseconds; None stays None (a quota window and a longest pause have a meaning for None)."""
+    return None if value is None else delay_us(value)
+
+
+def rel_value(seconds):
+    return None if seconds is None else {"microseconds": str(seconds * 1_000_000)}
+
+
+def parse_quota(text: str) -> Decimal:
+    """A quota as the Daml holds it: a Decimal above zero with at most 10 decimals."""
+    try:
+        value = Decimal(text)
+    except InvalidOperation:
+        raise SystemExit(f"--quota must be a decimal number, not {text!r}") from None
+    if not value.is_finite() or value <= 0:
+        raise SystemExit("--quota must be above zero")
+    if value.as_tuple().exponent < -10:
+        raise SystemExit("--quota may have at most 10 decimals")
+    return value
+
+
+def check_leg_limits(quota, window, pause_max) -> None:
+    """What SetLegLimits refuses, before anything is sent."""
+    if (quota is None) != (window is None):
+        raise SystemExit("the quota and its window are set together (--quota with --quota-window-seconds), or neither (--no-quota)")
+    if window is not None and not 1 <= window <= MAX_QUOTA_WINDOW:
+        raise SystemExit(f"--quota-window-seconds must be between 1 and {MAX_QUOTA_WINDOW} (30 days)")
+    if pause_max is not None and not 1 <= pause_max <= MAX_PAUSE_MAX:
+        raise SystemExit(f"--pause-max-seconds must be between 1 and {MAX_PAUSE_MAX} (14 days)")
+
+
+def limits_of(chain: dict) -> dict:
+    """The chain's leg limits in the form this script prints and compares: quota as a string (None for no quota), the window and the longest pause in seconds."""
+    quota = chain.get("withdrawalQuota")
+    window, longest = opt_us(chain.get("quotaWindow")), opt_us(chain.get("pauseMax"))
+    return {"quota": None if quota is None else str(Decimal(quota)), "quotaWindowSeconds": None if window is None else seconds_of(window),
+            "pauseMaxSeconds": None if longest is None else seconds_of(longest)}
+
+
+def leg_limits_step(url: str, step: str, quota, window, pause_max, dry_run: bool) -> dict:
+    """LegLimitsProposal by the operator, AcceptLegLimits by the confirmer: the chain's withdrawal quota, its window and its longest pause become these
+    (quota None with window None: no quota; pause_max None: the default, 3 days). The proposal waits out the chain's change delay like a gas cap."""
+    check_leg_limits(quota, window, pause_max)
+    ledger, chain = step_chain(url, step)
+    current = limits_of(chain)
+    new = {"quota": None if quota is None else str(quota), "quotaWindowSeconds": window, "pauseMaxSeconds": pause_max}
+
+    def same(values: dict) -> bool:
+        return (values["quota"] is None) == (new["quota"] is None) and (values["quota"] is None or Decimal(values["quota"]) == Decimal(new["quota"])) \
+            and values["quotaWindowSeconds"] == new["quotaWindowSeconds"] and values["pauseMaxSeconds"] == new["pauseMaxSeconds"]
+
+    def pending():
+        found = [p for p in ledger.active("LegLimitsProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+                 and p.get("confirmer") == chain["confirmer"]]
+        return found, [p for p in found if same(limits_of({"withdrawalQuota": p.get("newQuota"), "quotaWindow": p.get("newWindow"), "pauseMax": p.get("newPauseMax")}))]
+    proposals, mine = pending()
+    result = {"step": step, "chainId": chain["chainId"], "current": current, "new": new, "dryRun": dry_run}
+    if step == "propose":
+        if same(current):
+            raise SystemExit("the chain has these leg limits already")
+        if proposals and not mine:
+            raise SystemExit("a proposal for other leg limits is on this participant already. Accept it only if those values are wanted; "
+                             "otherwise the operator takes it back (--withdraw-proposal leg-limits: the Withdraw choice of the LegLimitsProposal, with the operator's token) and proposes again")
+        was_there = bool(mine)
+        if not mine and not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeLegLimits",
+                                                        "choiceArgument": {"newQuota": new["quota"], "newWindow": rel_value(window), "newPauseMax": rel_value(pause_max)}}}, "propose")
+            mine = pending()[1]   # read again, for the time the ledger gave it
+        return {**result, "submitted": not was_there and not dry_run, "alreadyProposed": was_there, **timing((mine or [None])[0], chain)}
+    if not mine:
+        if same(current):   # a re-run after the accept went through (or committed after a timeout): done
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        raise SystemExit("no proposal for these leg limits is on this participant")
+    result.update(timing(mine[0], chain))
+    if not dry_run:
+        check_waited(result, "the leg limits")
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "LegLimitsProposal", "contractId": mine[0]["contractId"], "choice": "AcceptLegLimits",
+                                                    "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
+    return {**result, "submitted": not dry_run}
+
+
+def pause_state(chain: dict, now: datetime) -> dict:
+    """What a pause step prints about the chain's pause: until when the legs are paused (None: not paused), from when the confirmer alone may start the next pause
+    and how long a pause may last. The paused flag is this machine's clock against pausedUntil; the ledger decides with its own time."""
+    until, cooldown = chain.get("pausedUntil"), chain.get("pauseCooldownUntil")
+    longest = opt_us(chain.get("pauseMax"))
+    limit = DEFAULT_PAUSE_MAX if longest is None else seconds_of(longest)
+    return {"paused": bool(until) and now < parse_time(until), "pausedUntil": until, "pauseCooldownUntil": cooldown, "pauseLimitSeconds": limit}
+
+
+def chain_after(ledger, before: dict) -> dict:
+    """The pause state of the chain as it is after a step, read again: a step that went through consumed the chain contract, so what was read before it is stale.
+    The step has already been accepted by the ledger; if the chain cannot be read again, the stale state is not printed as if it were new."""
+    found = [c for c in ledger.active("ZkChain") if c.get("chainId") == before["chainId"]]
+    if len(found) != 1:
+        return {"note": "the step went through, but the chain could not be read again; read it with --pause-step unpause --dry-run, which prints the state in every case"}
+    return pause_state(found[0], datetime.now(timezone.utc))
+
+
+def pause_step(url: str, step: str, seconds, dry_run: bool) -> dict:
+    """The pause of the legs. pause and unpause are the confirmer's alone (PauseLegs, UnpauseLegs: the emergency brake, which ends on its own and cannot be
+    started again before its cooldown); renew-propose (the operator, ProposeRenewPause) and renew-accept (the confirmer, AcceptRenewPause) are the two together
+    pausing for `seconds` from the moment of the accept, or renewing a pause that runs, for at most the chain's longest pause."""
+    renew = step.startswith("renew")
+    if renew and seconds is None:
+        raise SystemExit(f"--pause-step {step} needs --pause-seconds")
+    if not renew and seconds is not None:
+        raise SystemExit("--pause-seconds goes with --pause-step renew-propose or renew-accept")
+    ledger, chain = step_chain(url, "propose" if step == "renew-propose" else "accept")
+    now = datetime.now(timezone.utc)
+    state = pause_state(chain, now)
+    result = {"step": "pause-" + step, "chainId": chain["chainId"], **state, "dryRun": dry_run}
+    if renew:
+        if not 1 <= seconds <= state["pauseLimitSeconds"]:
+            raise SystemExit(f"--pause-seconds must be between 1 and the chain's longest pause, {state['pauseLimitSeconds']} s")
+        result["pauseSeconds"] = seconds
+
+        def pending():
+            found = [p for p in ledger.active("RenewPauseProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+                     and p.get("confirmer") == chain["confirmer"]]
+            return found, [p for p in found if opt_us(p.get("forHowLong")) == seconds * 1_000_000]
+        proposals, mine = pending()
+        if step == "renew-propose":
+            if proposals and not mine:
+                raise SystemExit("a proposal to pause for another time is on this participant already. Accept it only if that value is wanted; "
+                                 "otherwise the operator takes it back (--withdraw-proposal renew-pause: the Withdraw choice of the RenewPauseProposal, with the operator's token) and proposes again")
+            if mine and mine[0].get("proposedAt"):
+                made = parse_time(mine[0]["proposedAt"])
+                result["proposedAt"], result["acceptableUntil"] = mine[0]["proposedAt"], show_time(made + RENEW_PROPOSAL_LIFE)
+                if now > made + RENEW_PROPOSAL_LIFE:
+                    raise SystemExit(f"a proposal past its hour is there (made at {mine[0]['proposedAt']}, acceptable until {result['acceptableUntil']}): "
+                                     "--withdraw-proposal renew-pause first (the operator's token), then propose again")
+            if not mine and not dry_run:
+                submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeRenewPause",
+                                                            "choiceArgument": {"forHowLong": rel_value(seconds)}}}, "propose")
+            return {**result, "submitted": not mine and not dry_run, "alreadyProposed": bool(mine)}
+        if not mine:
+            if proposals:   # a proposal for another time is pending: never report success for a value nobody proposed
+                others = sorted({opt_us(p.get("forHowLong")) // 1_000_000 for p in proposals})
+                raise SystemExit(f"a proposal to pause for another time is on this participant ({', '.join(str(o) for o in others)} s), not {seconds} s: "
+                                 "accept that value with --pause-seconds, or the operator takes it back (--withdraw-proposal renew-pause) and proposes again")
+            if state["paused"]:   # an accept that went through consumed the proposal: say what is in force, as a re-run of pause does
+                return {**result, "submitted": False, "noProposal": True}
+            raise SystemExit(f"no proposal to pause for {seconds} s is on this participant")
+        if mine[0].get("proposedAt"):
+            made = parse_time(mine[0]["proposedAt"])
+            result["proposedAt"], result["acceptableUntil"] = mine[0]["proposedAt"], show_time(made + RENEW_PROPOSAL_LIFE)
+            if now > made + RENEW_PROPOSAL_LIFE:
+                raise SystemExit(f"the proposal was made at {mine[0]['proposedAt']} and could be accepted until {result['acceptableUntil']}: the chain refuses it now. "
+                                 "The operator takes it back (--withdraw-proposal renew-pause) and proposes it again for the incident at hand")
+        if not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "RenewPauseProposal", "contractId": mine[0]["contractId"], "choice": "AcceptRenewPause",
+                                                        "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
+            return {**result, **chain_after(ledger, chain), "submitted": True}
+        return {**result, "submitted": False}
+    if step == "pause":
+        if state["paused"]:
+            return {**result, "submitted": False, "alreadyPaused": True}
+        cooldown = state["pauseCooldownUntil"]
+        if cooldown and now < parse_time(cooldown) and not os.environ.get("CZE_SKIP_WAIT_CHECK"):
+            raise SystemExit(f"the confirmer alone may start a new pause from {cooldown}; the operator and the confirmer together may pause now (--pause-step renew-propose, then renew-accept)")
+        if not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "PauseLegs", "choiceArgument": {}}}, "pause")
+            return {**result, **chain_after(ledger, chain), "submitted": True}
+        return {**result, "submitted": False}
+    if not state["paused"]:
+        return {**result, "submitted": False, "alreadyUnpaused": True}
+    if not dry_run:
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "UnpauseLegs", "choiceArgument": {}}}, "unpause")
+        return {**result, **chain_after(ledger, chain), "submitted": True}
+    return {**result, "submitted": False}
+
+
 def ensure_chain(args, named: dict, url: str) -> dict:
     parties = {name.upper() + "_PARTY": party for name, party in named.items()}   # as propose.py reads them from parties.env
     operator = propose.operator_ledger(url, parties)
@@ -623,7 +834,7 @@ def main(argv: list) -> int:
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step or --change-delay-step: nothing is submitted")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step or --leg-limits-step: nothing is submitted")
     ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
     ap.add_argument("--program-step", choices=("propose", "accept"), help="replace the chain's program key, ZisK root and rules hash: the operator proposes, the confirmer accepts (see the top of this file)")
@@ -632,9 +843,41 @@ def main(argv: list) -> int:
     ap.add_argument("--rules-hash", help="with --program-step: the new rules hash (64 lowercase hex digits)")
     ap.add_argument("--change-delay-step", choices=("propose", "accept"), help="change the wait that a gas-cap or program change sits out: the operator and the gateway propose, the confirmer accepts (see the top of this file)")
     ap.add_argument("--delay-seconds", type=int, help="with --change-delay-step: the new wait in seconds (0 takes it away; at most 30 days)")
+    ap.add_argument("--pause-step", choices=("pause", "unpause", "renew-propose", "renew-accept"), help="pause the Canton legs, lift the pause, or renew it by the operator and the confirmer together (see the top of this file)")
+    ap.add_argument("--pause-seconds", type=int, help="with --pause-step renew-propose or renew-accept: how long the pause runs from the accept")
+    ap.add_argument("--leg-limits-step", choices=("propose", "accept"), help="set the withdrawal quota and the longest pause: the operator proposes, the confirmer accepts after the change delay (see the top of this file)")
+    ap.add_argument("--quota", help="with --leg-limits-step: the most units of each Canton instrument that may be withdrawn in one window")
+    ap.add_argument("--quota-window-seconds", type=int, help="with --leg-limits-step: the window of the quota in seconds (1 up to 30 days)")
+    ap.add_argument("--no-quota", action="store_true", help="with --leg-limits-step: no withdrawal quota")
+    ap.add_argument("--pause-max-seconds", type=int, help="with --leg-limits-step: the longest a pause may run (1 second up to 14 days); without it, the default of 3 days")
     ap.add_argument("--withdraw-proposal", choices=tuple(PROPOSAL_KINDS), help="the operator takes back its pending proposals of this kind (the Withdraw choice); use it for a proposal that is not wanted")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
+    limit_values = (own.quota is not None or own.quota_window_seconds is not None or own.no_quota or own.pause_max_seconds is not None)
+    if own.pause_step or own.leg_limits_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if (rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step or own.withdraw_proposal
+                or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash or own.delay_seconds is not None or (own.pause_step and own.leg_limits_step)):
+            ap.error("--pause-step and --leg-limits-step each do only their own step: no other step, no --demo and no chain arguments")
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        if own.pause_step:
+            if limit_values:
+                ap.error("--quota, --quota-window-seconds, --no-quota and --pause-max-seconds go with --leg-limits-step")
+            check_settings(own.ledger_url, ("operator",) if own.pause_step == "renew-propose" else ("confirmer",))
+            print(json.dumps(pause_step(own.ledger_url, own.pause_step, own.pause_seconds, own.dry_run)))
+            return 0
+        if own.pause_seconds is not None:
+            ap.error("--pause-seconds goes with --pause-step")
+        if own.no_quota == (own.quota is not None) or (own.no_quota and own.quota_window_seconds is not None):
+            ap.error("--leg-limits-step needs --quota with --quota-window-seconds, or --no-quota (not both)")
+        quota = parse_quota(own.quota) if own.quota is not None else None
+        check_leg_limits(quota, own.quota_window_seconds, own.pause_max_seconds)
+        check_settings(own.ledger_url, ("operator",) if own.leg_limits_step == "propose" else ("confirmer",))
+        print(json.dumps(leg_limits_step(own.ledger_url, own.leg_limits_step, quota, own.quota_window_seconds, own.pause_max_seconds, own.dry_run)))
+        return 0
+    if limit_values or own.pause_seconds is not None:
+        ap.error("--quota, --quota-window-seconds, --no-quota, --pause-max-seconds and --pause-seconds go with --pause-step or --leg-limits-step")
     if own.withdraw_proposal:
         if not own.ledger_url:
             ap.error("--ledger-url (CZE_LEDGER_URL) is required")
@@ -689,7 +932,7 @@ def main(argv: list) -> int:
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step or --withdraw-proposal")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step or --withdraw-proposal")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)

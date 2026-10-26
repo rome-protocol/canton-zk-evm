@@ -30,7 +30,9 @@
 #      over the old cap of 30,000,000.
 #   6. The builder is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the 0.3.0 chain
 #      contract and deposit, and the new chain contract is a 0.2.0 one, with the raised cap.
-#   7. Forward again: a deposit, the builder pinned to 0.3.0, the block commits.
+#   7. Forward again: a deposit, the builder pinned to 0.3.0, the block commits. Then the legs are paused for real (setup.py --pause-step pause, the
+#      confirmer alone): a block with no legs still commits, a block that carries a deposit is refused by Canton and reth goes back, and after
+#      --pause-step unpause the same deposit's block commits.
 # At every block the package id of the chain contract that Advance made is read from the ledger and compared with the pin.
 # Needs Docker, Java 21, Rust, Python 3.12, jq, curl, git and network access. No GPU.
 set -euo pipefail
@@ -299,6 +301,16 @@ grep -q "must be above" "$WORK/setup.err" || { cat "$WORK/setup.err" >&2; fail "
 is "$(probe GasCapProposal | jq '.contracts | length')" 0 "the proposals after the refused proposal (nothing was sent)"
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the acceptance (SetGasCap is 0.3.0's)"
 
+# The pause and leg-limits steps, as dry runs only (a pause or a quota would be on the chain when the scenario goes back to 0.2.0, which cannot read them): they read
+# the chain contract that the real ledger gives, whose 0.3.0 fields are null, and print what they would do.
+r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7575 --leg-limits-step propose --quota 1000 --quota-window-seconds 86400 --dry-run 2> "$WORK/setup.err") \
+  || { cat "$WORK/setup.err" >&2; fail "the dry run of the leg limits proposal failed"; }
+jq -e '.dryRun == true and .submitted == false and .current.quota == null and .new.quota == "1000" and .new.quotaWindowSeconds == 86400' <<<"$r" >/dev/null || fail "the dry run of the leg limits proposal: $r"
+r=$(CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --pause-step pause --dry-run 2> "$WORK/setup.err") \
+  || { cat "$WORK/setup.err" >&2; fail "the dry run of the pause failed"; }
+jq -e '.dryRun == true and .submitted == false and .paused == false and .pauseLimitSeconds == 259200' <<<"$r" >/dev/null || fail "the dry run of the pause: $r"
+is "$(probe LegLimitsProposal | jq '.contracts | length')" 0 "the leg limits proposals after the dry run"
+
 step "stage 4b: the program keys change and change back (setup.py --program-step)"
 program_step() {   # <participant port> <propose|accept> <vk> <root> <rules> [--dry-run]
   local port=$1 step=$2 vk=$3 root=$4 rules=$5; shift 5
@@ -395,4 +407,23 @@ deposit dep-7 "$NEW"
 block_under "$NEW" 7 1 "the block pinned to 0.3.0 again"
 is "$(gas_limit 7)" "$(( $(gas_limit 6) + $(gas_limit 6) / 1024 - 1 ))" "the gas limit of block 7"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"70.0","supply":"70.0"}' "U's wTKB after block 7"
-echo "package upgrade, gas cap raise, ramp over the old cap, downgrade and upgrade again: passed"
+
+# The pause for real, under 0.3.0, which the scenario does not leave again: the emergency brake is sent for the first time here and not during an incident.
+pause_run() {   # <pause|unpause>: network/external/setup.py --pause-step on the confirmer's participant, which has no login here
+  CZE_LEDGER_NO_AUTH=1 python3 "$ROOT/network/external/setup.py" --ledger-url http://127.0.0.1:7576 --pause-step "$1" 2> "$WORK/setup.err" \
+    || { cat "$WORK/setup.err" >&2; fail "setup.py --pause-step $1 failed"; }
+}
+r=$(pause_run pause); jq -e '.submitted == true and .paused == true and .pausedUntil != null and .pauseCooldownUntil != null' <<<"$r" >/dev/null || fail "the pause: $r"
+is "$(chain_package)" "$NEW" "the package the chain contract is under after the pause"
+block_under "$NEW" 8 0 "a block with no legs, while the legs are paused"
+deposit dep-8 "$NEW"
+set +e; out=$(build "$NEW"); status=$?; set -e
+echo "$out" | jq -c '{committed, rejected, reason: (.reason // "" | .[0:300])}'
+is "$status" 2 "the builder's exit status for the block with a deposit while the legs are paused"
+jq -e '.committed == false and .rejected == true and (.reason | contains("the legs are paused until"))' <<<"$out" >/dev/null || fail "the refusal of the block with a deposit under the pause is not the pause's: $out"
+is "$(canton status | jq -r '.chain[0].headNumber')" 8 "Canton's head after the block refused by the pause"
+is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .number)" 0x8 "reth's head after the block refused by the pause (it went back)"
+r=$(pause_run unpause); jq -e '.submitted == true and .paused == false' <<<"$r" >/dev/null || fail "the unpause: $r"
+block_under "$NEW" 9 1 "the block with the deposit, after the pause is lifted"
+is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"80.0","supply":"80.0"}' "U's wTKB after block 9"
+echo "package upgrade, gas cap raise, ramp over the old cap, downgrade, upgrade again and a real pause: passed"

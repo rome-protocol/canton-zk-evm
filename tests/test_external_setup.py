@@ -22,7 +22,7 @@ FAKE_TOKENS = {"admin": "tok-admin-1", "operator": "tok-operator-2", "confirmer"
 class FakeParticipant:
     """What setup.py touches: packages, parties, users and their rights, the chain's two templates. `calls` lists (method, path, authorization)."""
     def __init__(self, packages=(), vetting=True):
-        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": [], "ProgramProposal": [], "ChangeDelayProposal": []}, []
+        self.packages, self.vetting, self.parties, self.users, self.contracts, self.calls = list(packages), vetting, [], {}, {"ZkChain": [], "ChainProposal": [], "GasCapProposal": [], "ProgramProposal": [], "ChangeDelayProposal": [], "LegLimitsProposal": [], "RenewPauseProposal": []}, []
         self.dep, self.dep_vetted, self.ignores_query = None, True, False   # a dependency of the package, whether it is vetted; a participant that ignores vetAllPackages
         self.invalid_dar, self.updates = False, []   # a DAR that /v2/dars/validate refuses; the bodies of /v2/package-vetting/update
         self.remote, self.vetted_by, self.unknown_is_404 = [], "PAR::ostia-test::1220fp", False   # parties hosted elsewhere; who vetted the package; how an unknown party is answered
@@ -55,6 +55,53 @@ class FakeParticipant:
 
     def mutations(self):
         return [c for c in self.calls if c[0] == "POST" and c[1] not in ("/v2/state/active-contracts", "/v2/package-vetting/list") and not c[1].startswith("/v2/dars/validate")]
+
+    def leg_command(self, exercise):
+        """The pause and the leg limits, as the Daml of ZkChain, LegLimitsProposal and RenewPauseProposal does them (the ledger time is the clock of this machine). Sets `leg_answer` and says whether the command was one of them."""
+        choice, name = exercise["choice"], exercise["templateId"].split(":")[-1]
+        if choice not in ("PauseLegs", "UnpauseLegs", "ProposeLegLimits", "ProposeRenewPause", "AcceptLegLimits", "AcceptRenewPause"):
+            return False
+        now = datetime.now(timezone.utc)
+        stamp = lambda t: t.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        self.leg_answer = {}
+        chain_id = exercise["contractId"] if name == "ZkChain" else exercise["choiceArgument"]["chain"]
+        [chain] = [c for c in self.contracts["ZkChain"] if c["contractId"] == chain_id]
+        args = chain["args"]
+        limit = timedelta(microseconds=int((args.get("pauseMax") or {"microseconds": str(3 * 24 * 3600 * 1_000_000)})["microseconds"]))
+        paused = bool(args.get("pausedUntil")) and now < datetime.fromisoformat(args["pausedUntil"].replace("Z", "+00:00"))
+        if choice == "PauseLegs":
+            cooldown = args.get("pauseCooldownUntil")
+            if paused or (cooldown and now < datetime.fromisoformat(cooldown.replace("Z", "+00:00"))):
+                self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "the legs are paused already, or the cooldown has not passed"}, 400)
+            else:
+                args["pausedUntil"], args["pauseCooldownUntil"], args["pauseStartedAt"] = stamp(now + limit), stamp(now + 2 * limit), stamp(now)
+        elif choice == "UnpauseLegs":
+            if not paused:
+                self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "the legs are not paused"}, 400)
+            else:
+                began = datetime.fromisoformat((args.get("pauseStartedAt") or stamp(now)).replace("Z", "+00:00"))
+                args["pausedUntil"], args["pauseCooldownUntil"] = None, stamp(now + (now - began))   # as long as the pause ran
+        elif choice in ("ProposeLegLimits", "ProposeRenewPause"):
+            made = "LegLimitsProposal" if choice == "ProposeLegLimits" else "RenewPauseProposal"
+            self.contracts[made].append({"contractId": {"LegLimitsProposal": "l1", "RenewPauseProposal": "r1"}[made], "args": {
+                **{k: args[k] for k in ("operator", "confirmer", "chainId")}, **exercise["choiceArgument"], "proposedAt": stamp(getattr(self, "ledger_time", None) or now)}})
+        else:
+            [proposal] = [c for c in self.contracts[name] if c["contractId"] == exercise["contractId"]]
+            if choice == "AcceptLegLimits":
+                delay = timedelta(microseconds=int((args.get("changeDelay") or {"microseconds": "0"})["microseconds"]))
+                if now < datetime.fromisoformat(proposal["args"]["proposedAt"].replace("Z", "+00:00")) + delay:
+                    self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "the change may be accepted later"}, 400)
+                    return True
+                args["withdrawalQuota"], args["quotaWindow"], args["pauseMax"] = (proposal["args"]["newQuota"], proposal["args"]["newWindow"], proposal["args"]["newPauseMax"])
+            else:
+                if int(proposal["args"]["forHowLong"]["microseconds"]) > limit / timedelta(microseconds=1):
+                    self.leg_answer = ({"code": "INTERPRETATION_ERROR", "cause": "a pause may last at most the longest pause"}, 400)
+                    return True
+                until = now + timedelta(microseconds=int(proposal["args"]["forHowLong"]["microseconds"]))
+                began = datetime.fromisoformat(args["pauseStartedAt"].replace("Z", "+00:00")) if paused else now
+                args["pausedUntil"], args["pauseCooldownUntil"], args["pauseStartedAt"] = stamp(until), stamp(until + (until - began)), stamp(began)
+            self.contracts[name].remove(proposal)
+        return True
 
     def route(self, method, path, body, raw):
         if (method, path) == ("GET", "/v2/packages"):
@@ -117,6 +164,8 @@ class FakeParticipant:
             command = body["commands"][0]
             self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
             self.submitted_users = getattr(self, "submitted_users", []) + [body.get("userId")]
+            if "ExerciseCommand" in command and self.leg_command(command["ExerciseCommand"]):
+                return self.leg_answer
             if "ExerciseCommand" in command and command["ExerciseCommand"]["choice"].startswith("Withdraw"):
                 exercise = command["ExerciseCommand"]
                 name = exercise["templateId"].split(":")[-1]
@@ -857,6 +906,301 @@ class Setup(unittest.TestCase):
         self.node.calls.clear()
         self.delay_step("accept", 30)
         self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-confirmer-3"})
+
+    def pause(self, step, *extra):
+        """setup.py --pause-step: returns the JSON line it printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--pause-step", step, *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def limits(self, step, *extra):
+        """setup.py --leg-limits-step: returns the JSON line it printed."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(["--ledger-url", self.node.url, "--leg-limits-step", step, *extra])
+        self.assertEqual(code, 0)
+        return json.loads(out.getvalue())
+
+    def chain_args(self):
+        return self.node.contracts["ZkChain"][0]["args"]
+
+    def refused(self, *argv):
+        """A run that stops before sending anything: its exit (a message, or code 2 for a bad command line)."""
+        before = len(self.sent())
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            setup.main(["--ledger-url", self.node.url, *argv])
+        self.assertEqual(len(self.sent()), before, argv)
+        return e.exception
+
+    def test_the_confirmer_alone_pauses_the_legs_and_lifts_the_pause(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.assertEqual(self.chain_args().get("pausedUntil"), None)
+        dry = self.pause("pause", "--dry-run")
+        self.assertEqual((dry["paused"], dry["submitted"], dry["pauseLimitSeconds"]), (False, False, 3 * 24 * 3600))
+        self.assertEqual(len(self.sent()), self.base)
+        done = self.pause("pause")
+        self.assertTrue(done["submitted"])
+        # what is printed is the chain as it is after the step, not before it
+        self.assertEqual((done["paused"], done["pausedUntil"], done["pauseCooldownUntil"]),
+                         (True, self.chain_args()["pausedUntil"], self.chain_args().get("pauseCooldownUntil")))
+        self.assertIsNotNone(done["pausedUntil"])
+        command, acting = self.sent()[-1]
+        self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"], self.node.submitted_users[-1]), ("PauseLegs", {}, "ostia-confirmer"))
+        self.assertEqual(acting, ["ostia-confirmer::1220fp"])
+        self.assertIsNotNone(self.chain_args()["pausedUntil"])
+        again = self.pause("pause")   # the legs are paused: nothing is sent
+        self.assertEqual((again["alreadyPaused"], again["submitted"], again["paused"]), (True, False, True))
+        self.assertEqual(len(self.sent()), self.base + 1)
+        self.assertTrue(self.pause("unpause", "--dry-run")["paused"])
+        self.assertEqual(len(self.sent()), self.base + 1)
+        lifted = self.pause("unpause")
+        self.assertTrue(lifted["submitted"])
+        self.assertEqual((lifted["paused"], lifted["pausedUntil"]), (False, None))
+        self.assertEqual(lifted["pauseCooldownUntil"], self.chain_args()["pauseCooldownUntil"])
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "UnpauseLegs")
+        self.assertIsNone(self.chain_args()["pausedUntil"])
+        self.assertTrue(self.pause("unpause")["alreadyUnpaused"])
+        self.assertEqual(len(self.sent()), self.base + 2)
+
+    def test_the_confirmer_alone_cannot_pause_again_before_the_cooldown_but_the_two_together_can(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.pause("pause")
+        # the pause ran for an hour when it is lifted, so the confirmer alone waits an hour
+        self.chain_args()["pauseStartedAt"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        self.pause("unpause")
+        sent = len(self.sent())
+        self.assertIn("may start a new pause from", str(self.refused("--pause-step", "pause")))
+        # the ledger refuses it too, when the check here is skipped
+        os.environ["CZE_SKIP_WAIT_CHECK"] = "1"; self.addCleanup(os.environ.pop, "CZE_SKIP_WAIT_CHECK", None)
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+            self.pause("pause")
+        self.assertIn("was refused", str(e.exception))
+        self.assertEqual(len(self.sent()), sent + 1)
+        # the operator and the confirmer together start a pause at once
+        self.assertTrue(self.pause("renew-propose", "--pause-seconds", "3600")["submitted"])
+        self.assertTrue(self.pause("renew-accept", "--pause-seconds", "3600")["submitted"])
+        until = setup.parse_time(self.chain_args()["pausedUntil"])
+        self.assertLess(abs((until - datetime.now(timezone.utc)).total_seconds() - 3600), 60)
+
+    def test_a_pause_is_renewed_by_a_proposal_of_the_operator_and_an_accept_of_the_confirmer(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        proposed = self.pause("renew-propose", "--pause-seconds", "7200", "--dry-run")
+        self.assertEqual((proposed["submitted"], proposed["pauseSeconds"]), (False, 7200))
+        self.assertEqual(len(self.sent()), self.base)
+        proposed = self.pause("renew-propose", "--pause-seconds", "7200")
+        self.assertTrue(proposed["submitted"])
+        command, acting = self.sent()[-1]
+        self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"], self.node.submitted_users[-1]),
+                         ("ProposeRenewPause", {"forHowLong": {"microseconds": "7200000000"}}, "ostia-operator"))
+        self.assertEqual(acting, ["ostia-operator::1220fp"])   # the operator alone: the renewal needs no gateway
+        self.assertTrue(self.pause("renew-propose", "--pause-seconds", "7200")["alreadyProposed"])
+        self.assertEqual(len(self.node.contracts["RenewPauseProposal"]), 1)
+        self.assertIn("another time", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "60")))
+        self.assertIn("another time is on this participant (7200 s), not 60 s", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "60")))
+        self.assertEqual(self.pause("renew-accept", "--pause-seconds", "7200", "--dry-run")["submitted"], False)
+        self.assertIsNone(self.chain_args().get("pausedUntil"))
+        renewed = self.pause("renew-accept", "--pause-seconds", "7200")
+        self.assertTrue(renewed["submitted"])
+        self.assertEqual((renewed["paused"], renewed["pausedUntil"]), (True, self.chain_args()["pausedUntil"]))
+        command, acting = self.sent()[-1]
+        self.assertEqual((command["ExerciseCommand"]["choice"], self.node.submitted_users[-1]), ("AcceptRenewPause", "ostia-confirmer"))
+        self.assertEqual(command["ExerciseCommand"]["choiceArgument"], {"chain": "c1"})
+        self.assertEqual(self.node.contracts["RenewPauseProposal"], [])
+        self.assertTrue(self.pause("unpause", "--dry-run")["paused"])   # paused now, so the pause may be lifted early
+
+    def test_renew_accept_prints_its_time_limit_and_can_be_run_twice(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.pause("renew-propose", "--pause-seconds", "7200")
+        dry = self.pause("renew-accept", "--pause-seconds", "7200", "--dry-run")
+        made = setup.parse_time(dry["proposedAt"])
+        self.assertEqual(setup.parse_time(dry["acceptableUntil"]), made + timedelta(hours=1))
+        done = self.pause("renew-accept", "--pause-seconds", "7200")
+        self.assertTrue(done["submitted"])
+        self.assertEqual(done["acceptableUntil"], dry["acceptableUntil"])
+        # a re-run after the accept went through: no proposal is left and the legs are paused, which is not an error
+        sent = len(self.sent())
+        again = self.pause("renew-accept", "--pause-seconds", "7200")
+        self.assertEqual((again["submitted"], again["noProposal"], again["paused"]), (False, True, True))
+        self.assertEqual(again["pausedUntil"], self.chain_args()["pausedUntil"])
+        self.assertEqual(len(self.sent()), sent)
+        # with no proposal and no pause it is still an error
+        self.chain_args()["pausedUntil"] = None
+        self.assertIn("no proposal to pause for 7200 s", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "7200")))
+
+    def test_renew_accept_refuses_a_proposal_that_is_past_its_hour(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.node.ledger_time = datetime.now(timezone.utc) - timedelta(hours=1, minutes=1)
+        self.addCleanup(setattr, self.node, "ledger_time", None)
+        self.pause("renew-propose", "--pause-seconds", "7200")
+        sent = len(self.sent())
+        for extra in ((), ("--dry-run",)):
+            self.assertIn("could be accepted until", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "7200", *extra)))
+        self.assertEqual(len(self.sent()), sent)
+
+    def test_renew_propose_does_not_stand_in_for_a_proposal_that_is_past_its_hour(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.node.ledger_time = datetime.now(timezone.utc) - timedelta(hours=1, minutes=1)
+        self.addCleanup(setattr, self.node, "ledger_time", None)
+        self.pause("renew-propose", "--pause-seconds", "7200")
+        sent = len(self.sent())
+        for extra in ((), ("--dry-run",)):
+            self.assertIn("past its hour", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "7200", *extra)))
+        self.assertIn("another time", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "60")))
+        self.assertEqual(len(self.sent()), sent)   # nothing was sent
+        self.node.ledger_time = None                          # the clock is back: the stale proposal is taken back, then proposed afresh
+        self.assertEqual(self.withdraw("renew-pause")["withdrawn"], 1)
+        fresh = self.pause("renew-propose", "--pause-seconds", "7200")
+        self.assertEqual((fresh["submitted"], fresh["alreadyProposed"]), (True, False))
+        self.assertTrue(self.pause("renew-propose", "--pause-seconds", "7200")["alreadyProposed"])
+        self.assertIn("acceptableUntil", self.pause("renew-propose", "--pause-seconds", "7200"))
+
+    def test_renew_accept_refuses_while_a_proposal_for_another_time_is_pending(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.pause("pause")                                       # the confirmer's own pause is in force
+        self.pause("renew-propose", "--pause-seconds", "7200")    # the operator proposes 7200 s
+        sent = len(self.sent())
+        self.assertIn("another time", str(self.refused("--pause-step", "renew-accept", "--pause-seconds", "3600")))   # a mistyped value is not a success
+        self.assertEqual(len(self.sent()), sent)
+        self.assertTrue(self.pause("renew-accept", "--pause-seconds", "7200")["submitted"])
+
+    def test_a_renewal_is_held_to_the_longest_pause_the_chain_has(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.assertIn("between 1 and the chain's longest pause, 259200 s", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", str(3 * 24 * 3600 + 1))))
+        self.assertTrue(self.pause("renew-propose", "--pause-seconds", str(3 * 24 * 3600), "--dry-run")["pauseSeconds"])
+        self.chain_args()["pauseMax"] = {"microseconds": str(600 * 1_000_000)}
+        self.assertIn("600 s", str(self.refused("--pause-step", "renew-propose", "--pause-seconds", "601")))
+        self.assertEqual(self.pause("renew-propose", "--pause-seconds", "600", "--dry-run")["pauseLimitSeconds"], 600)
+        self.refused("--pause-step", "renew-propose", "--pause-seconds", "0")
+        self.assertIn("needs --pause-seconds", str(self.refused("--pause-step", "renew-propose")))
+        self.assertIn("goes with --pause-step renew", str(self.refused("--pause-step", "pause", "--pause-seconds", "5")))
+
+    def test_each_pause_step_needs_only_its_own_token(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.node.calls.clear()
+        os.environ.pop("CZE_TOKEN_FILE_ADMIN"); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        self.pause("renew-propose", "--pause-seconds", "60")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-operator-2"})
+        os.environ["CZE_TOKEN_FILE_CONFIRMER"] = str(self.tokens["confirmer"]); os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
+        self.node.calls.clear()
+        self.pause("pause"); self.pause("renew-accept", "--pause-seconds", "60"); self.pause("unpause")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-confirmer-3"})
+        os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        self.assertIn("CZE_TOKEN_FILE_CONFIRMER", str(self.refused("--pause-step", "pause")))
+
+    def test_a_pause_step_refuses_the_other_modes_and_values(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        for extra in (["--demo"], ["--package-step", "check"], ["--gas-cap-step", "propose", "--new-gas-cap", "5"], ["--leg-limits-step", "propose", "--no-quota"],
+                      ["--withdraw-proposal", "renew-pause"], ["--quota", "5"], ["--pause-max-seconds", "60"], ["--", *CHAIN_ARGS]):
+            self.assertEqual(self.refused("--pause-step", "pause", *extra).code, 2, extra)
+        for extra in (["--pause-seconds", "5"], ["--quota", "5"]):   # a value without its step
+            self.assertEqual(self.refused(*extra).code, 2, extra)
+
+    def test_a_proposed_quota_is_accepted_and_changed_back_to_none(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.assertEqual(setup.limits_of(self.chain_args()), {"quota": None, "quotaWindowSeconds": None, "pauseMaxSeconds": None})
+        dry = self.limits("propose", "--quota", "1000", "--quota-window-seconds", "86400", "--dry-run")
+        self.assertEqual((dry["submitted"], dry["new"]), (False, {"quota": "1000", "quotaWindowSeconds": 86400, "pauseMaxSeconds": None}))
+        self.assertEqual(len(self.sent()), self.base)
+        proposed = self.limits("propose", "--quota", "1000", "--quota-window-seconds", "86400", "--pause-max-seconds", "7200")
+        self.assertEqual((proposed["submitted"], proposed["changeDelaySeconds"]), (True, 0))
+        command, acting = self.sent()[-1]
+        self.assertEqual(command["ExerciseCommand"]["choice"], "ProposeLegLimits")
+        self.assertEqual(command["ExerciseCommand"]["choiceArgument"],
+                         {"newQuota": "1000", "newWindow": {"microseconds": "86400000000"}, "newPauseMax": {"microseconds": "7200000000"}})
+        self.assertEqual((acting, self.node.submitted_users[-1]), (["ostia-operator::1220fp"], "ostia-operator"))
+        self.assertTrue(self.limits("propose", "--quota", "1000.0", "--quota-window-seconds", "86400", "--pause-max-seconds", "7200")["alreadyProposed"])
+        self.assertEqual(len(self.node.contracts["LegLimitsProposal"]), 1)
+        self.assertIn("other leg limits", str(self.refused("--leg-limits-step", "propose", "--quota", "5", "--quota-window-seconds", "60")))
+        self.assertIn("no proposal for these leg limits", str(self.refused("--leg-limits-step", "accept", "--quota", "5", "--quota-window-seconds", "60")))
+        self.assertIn("no proposal", str(self.refused("--leg-limits-step", "accept", "--quota", "1000", "--quota-window-seconds", "86400")))   # the pause max is part of the values
+        self.assertEqual(self.limits("accept", "--quota", "1000", "--quota-window-seconds", "86400", "--pause-max-seconds", "7200", "--dry-run")["submitted"], False)
+        self.assertIsNone(self.chain_args().get("withdrawalQuota"))
+        accepted = self.limits("accept", "--quota", "1000", "--quota-window-seconds", "86400", "--pause-max-seconds", "7200")
+        self.assertTrue(accepted["submitted"])
+        command, _ = self.sent()[-1]
+        self.assertEqual((command["ExerciseCommand"]["choice"], self.node.submitted_users[-1]), ("AcceptLegLimits", "ostia-confirmer"))
+        self.assertEqual(setup.limits_of(self.chain_args()), {"quota": "1000", "quotaWindowSeconds": 86400, "pauseMaxSeconds": 7200})
+        again = self.limits("accept", "--quota", "1000", "--quota-window-seconds", "86400", "--pause-max-seconds", "7200")
+        self.assertEqual((again["alreadyAccepted"], again["submitted"]), (True, False))
+        self.assertIn("already", str(self.refused("--leg-limits-step", "propose", "--quota", "1000", "--quota-window-seconds", "86400", "--pause-max-seconds", "7200")))
+        # and back to no quota and the default pause
+        self.limits("propose", "--no-quota"); self.limits("accept", "--no-quota")
+        self.assertEqual(self.sent()[-2][0]["ExerciseCommand"]["choiceArgument"], {"newQuota": None, "newWindow": None, "newPauseMax": None})
+        self.assertEqual(setup.limits_of(self.chain_args()), {"quota": None, "quotaWindowSeconds": None, "pauseMaxSeconds": None})
+
+    def test_the_leg_limits_wait_out_the_change_delay_like_a_gas_cap(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.set_chain_delay(3600)
+        proposed = self.limits("propose", "--quota", "5.5", "--quota-window-seconds", "600")
+        self.assertEqual(proposed["changeDelaySeconds"], 3600)
+        self.assertEqual(setup.parse_time(proposed["acceptableAt"]) - setup.parse_time(proposed["proposedAt"]), timedelta(hours=1))
+        dry = self.limits("accept", "--quota", "5.5", "--quota-window-seconds", "600", "--dry-run")
+        self.assertEqual(dry["acceptableAt"], proposed["acceptableAt"])
+        sent = len(self.sent())
+        self.assertIn("may be accepted from", str(self.refused("--leg-limits-step", "accept", "--quota", "5.5", "--quota-window-seconds", "600")))
+        self.assertEqual(len(self.sent()), sent)
+        # the ledger refuses an early accept too, when the check here is skipped
+        os.environ["CZE_SKIP_WAIT_CHECK"] = "1"; self.addCleanup(os.environ.pop, "CZE_SKIP_WAIT_CHECK", None)
+        with self.assertRaises(SystemExit) as e, contextlib.redirect_stderr(io.StringIO()):
+            self.limits("accept", "--quota", "5.5", "--quota-window-seconds", "600")
+        self.assertIn("was refused", str(e.exception))
+        os.environ.pop("CZE_SKIP_WAIT_CHECK")
+        self.age("LegLimitsProposal", 3601)
+        self.assertTrue(self.limits("accept", "--quota", "5.5", "--quota-window-seconds", "600")["submitted"])
+        self.assertEqual(setup.limits_of(self.chain_args())["quota"], "5.5")
+
+    def test_leg_limits_the_daml_would_refuse_are_refused_before_anything_is_sent(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        for argv in (["--quota", "5"], ["--quota-window-seconds", "60"], ["--quota", "0", "--quota-window-seconds", "60"], ["--quota", "-1", "--quota-window-seconds", "60"],
+                     ["--quota", "x", "--quota-window-seconds", "60"], ["--quota", "NaN", "--quota-window-seconds", "60"], ["--quota", "1.12345678901", "--quota-window-seconds", "60"],
+                     ["--quota", "5", "--quota-window-seconds", "0"], ["--quota", "5", "--quota-window-seconds", str(30 * 24 * 3600 + 1)],
+                     ["--quota", "5", "--quota-window-seconds", "60", "--no-quota"], ["--no-quota", "--quota-window-seconds", "60"],
+                     ["--no-quota", "--pause-max-seconds", "0"], ["--no-quota", "--pause-max-seconds", str(14 * 24 * 3600 + 1)], []):
+            with self.subTest(argv=argv):
+                self.refused("--leg-limits-step", "propose", *argv)
+        self.assertTrue(self.limits("propose", "--quota", "5", "--quota-window-seconds", str(30 * 24 * 3600), "--pause-max-seconds", str(14 * 24 * 3600), "--dry-run")["dryRun"])
+        for extra in (["--demo"], ["--pause-step", "pause"], ["--pause-seconds", "5"], ["--delay-seconds", "5"], ["--new-gas-cap", "5"]):
+            self.assertEqual(self.refused("--leg-limits-step", "propose", "--no-quota", *extra).code, 2, extra)
+
+    def test_each_leg_limits_step_needs_only_its_own_token(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.node.calls.clear()
+        os.environ.pop("CZE_TOKEN_FILE_ADMIN"); os.environ.pop("CZE_TOKEN_FILE_CONFIRMER")
+        self.limits("propose", "--quota", "5", "--quota-window-seconds", "60")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-operator-2"})
+        os.environ["CZE_TOKEN_FILE_CONFIRMER"] = str(self.tokens["confirmer"]); os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
+        self.node.calls.clear()
+        self.limits("accept", "--quota", "5", "--quota-window-seconds", "60")
+        self.assertEqual({c[2] for c in self.node.calls}, {"Bearer tok-confirmer-3"})
+
+    def test_the_operator_withdraws_a_pending_leg_limits_or_renewal_proposal(self):
+        self.run_setup()
+        self.base = len(self.sent())
+        self.limits("propose", "--quota", "5", "--quota-window-seconds", "60")
+        self.pause("renew-propose", "--pause-seconds", "60")
+        for kind, name in (("leg-limits", "LegLimitsProposal"), ("renew-pause", "RenewPauseProposal")):
+            self.assertEqual((self.withdraw(kind, "--dry-run")["pending"], len(self.node.contracts[name])), (1, 1))
+            self.assertEqual(self.withdraw(kind)["withdrawn"], 1)
+            self.assertEqual(self.node.contracts[name], [])
+            self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "Withdraw" + {"leg-limits": "LegLimits", "renew-pause": "RenewPause"}[kind])
+        for extra in (["--quota", "5"], ["--pause-seconds", "5"], ["--no-quota"]):
+            self.assertEqual(self.refused("--withdraw-proposal", "leg-limits", *extra).code, 2, extra)
 
     def test_a_chain_whose_cap_is_below_the_pinned_one_is_refused_and_one_above_it_is_found(self):
         self.run_setup()
