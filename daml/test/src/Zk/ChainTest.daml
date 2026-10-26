@@ -1068,6 +1068,29 @@ testAProgramWaitsOutTheDelay = do
   Some c <- queryContractId f.operator next
   (c.programVK, c.rootC, c.rulesHash) === (stubRoot, stubRoot, stubVK)
 
+-- The delay survives a block: proposals made on one contract are accepted on the next one (a block replaces the chain contract), and still wait.
+testTheDelaySurvivesAnAdvance : Script ()
+testTheDelaySurvivesAnAdvance = do
+  f <- fixture
+  c1 <- setDelay f f.chain (Some (seconds 100))
+  pCap <- submit f.operator $ exerciseCmd c1 ProposeGasCap with newCap = 60000000
+  pProg <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c1 ProposeProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubVK
+  (c2, _) <- submit (asBuilder f) $ advance c1 "01" [] []
+  Some chain2 <- queryContractId f.operator c2
+  chain2.changeDelay === Some (seconds 100)
+  mustWait f.confirmer $ exerciseCmd pCap AcceptGasCap with chain = c2
+  mustWait f.confirmer $ exerciseCmd pProg AcceptProgram with chain = c2
+  passTime (seconds 99)
+  mustWait f.confirmer $ exerciseCmd pCap AcceptGasCap with chain = c2
+  passTime (seconds 1)
+  c3 <- submit f.confirmer $ exerciseCmd pCap AcceptGasCap with chain = c2
+  Some chain3 <- queryContractId f.operator c3
+  (chain3.gasCap, chain3.changeDelay) === (60000000, Some (seconds 100))
+  -- the program proposal, made on the first contract, is accepted on the third
+  c4 <- submit f.confirmer $ exerciseCmd pProg AcceptProgram with chain = c3
+  Some chain4 <- queryContractId f.operator c4
+  (chain4.programVK, chain4.changeDelay) === (stubRoot, Some (seconds 100))
+
 -- The delay cannot be cut short: a proposal to lower it waits out the delay that is in force.
 testTheDelayWaitsOutItself : Script ()
 testTheDelayWaitsOutItself = do

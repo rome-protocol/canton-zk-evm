@@ -61,7 +61,7 @@
       propose  the operator's token (which acts for the operator and the gateway party): exercises ProposeChangeDelay on the chain's one contract. Nothing is done if the same proposal is there already.
       accept   the confirmer's token: exercises AcceptChangeDelay on the proposal for exactly --delay-seconds, given the chain's current contract.
     The change of the delay waits out the delay the chain has when it is accepted, like any other change, so a wait cannot be cut short by one step.
-    There is no way round the wait (no emergency bypass in this version).
+    There is no emergency bypass in this version; the wait binds the propose/accept path (see network/README.md, "The wait before a change").
     The gas-cap and program steps print the wait too: "changeDelaySeconds", and for a proposal that is there "proposedAt" (the ledger time it was made at)
     and "acceptableAt" (proposedAt plus the wait). An accept before that time is refused, by this script first and by the chain in any case.
     A dry run of the accept prints the times and sends nothing, so it is the way to ask when a proposal can be accepted.
@@ -551,7 +551,7 @@ def delay_value(seconds: int):
 
 def change_delay_step(url: str, step: str, seconds: int, dry_run: bool) -> dict:
     """ChangeDelayProposal by the operator and the gateway (the operator's user acts for both), AcceptChangeDelay by the confirmer: the chain's change delay becomes `seconds`.
-    The proposal itself waits out the delay the chain has when it is accepted, so a delay is not cut short by one step. There is no way round the wait."""
+    The proposal itself waits out the delay the chain has when it is accepted, so a delay is not cut short by one step. There is no emergency bypass in this version; the wait binds the propose/accept path (see network/README.md, "The wait before a change")."""
     if not 0 <= seconds <= MAX_CHANGE_DELAY:
         raise SystemExit(f"--delay-seconds must be between 0 and {MAX_CHANGE_DELAY} (30 days); 0 takes the delay away")
     ledger, chain = step_chain(url, step, with_gateway=True)
@@ -636,6 +636,7 @@ def main(argv: list) -> int:
         if rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step:
             ap.error("--withdraw-proposal does only the withdrawal: no other step and no chain arguments")
         check_settings(own.ledger_url, ("operator",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
         print(json.dumps(withdraw_step(own.ledger_url, own.withdraw_proposal, own.dry_run)))
         return 0
     if own.gas_cap_step:

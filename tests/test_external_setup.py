@@ -116,6 +116,7 @@ class FakeParticipant:
         if path == "/v2/commands/submit-and-wait":
             command = body["commands"][0]
             self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
+            self.submitted_users = getattr(self, "submitted_users", []) + [body.get("userId")]
             if "ExerciseCommand" in command and command["ExerciseCommand"]["choice"].startswith("Withdraw"):
                 exercise = command["ExerciseCommand"]
                 name = exercise["templateId"].split(":")[-1]
@@ -545,6 +546,14 @@ class Setup(unittest.TestCase):
             code = setup.main(["--ledger-url", self.node.url, "--withdraw-proposal", kind, *extra])
         self.assertEqual(code, 0)
         return json.loads(out.getvalue())
+
+    def test_the_withdraw_uses_the_ostia_operator_user_when_the_prefix_is_not_set(self):
+        self.run_setup()
+        self.raise_step("propose", 50_000_000)
+        os.environ.pop("CZE_USER_PREFIX")                    # the operator runs the step with no prefix in the environment
+        self.addCleanup(os.environ.pop, "CZE_USER_PREFIX", None)
+        self.assertEqual(self.withdraw("gas-cap")["withdrawn"], 1)
+        self.assertEqual(self.node.submitted_users[-1], "ostia-operator")
 
     def test_the_operator_withdraws_a_pending_proposal_of_each_kind_and_can_propose_again(self):
         self.run_setup()
