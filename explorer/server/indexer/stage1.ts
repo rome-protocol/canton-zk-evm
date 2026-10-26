@@ -8,7 +8,7 @@
  */
 import { keccak256 } from "viem";
 import type { PoolClient } from "pg";
-import type { Pins } from "../config.ts";
+import { keyFor, type Pins } from "../config.ts";
 import type { BlockRecord } from "../ledger.ts";
 import { checkProofFacts, readProofFacts } from "../proof.ts";
 import { setHealth } from "./health.ts";
@@ -228,10 +228,11 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
 
   // C7: the program key and the ZisK release in the proof are the pins. The proof's own block hash is recorded, and C1 is what stops a wrong block.
   const facts = readProofFacts(r.proofHex);
-  const checked = facts ? checkProofFacts(facts, i.pins, r.blockHash) : null;
+  const key = keyFor(i.pins, n);
+  const checked = facts ? checkProofFacts(facts, key, r.blockHash) : null;
   if (!facts || !checked || !checked.programVK.ok || !checked.rootC.ok) {
-    throw new IndexerStop("C7", `block ${n}: ${!facts ? "the proof is not 1,344 bytes of hex" : `the proof's program key is ${facts.programVK} and its release root ${facts.rootC}, not the pins' ${i.pins.programVK} and ${i.pins.rootC}`}`,
-      n, { programVK: facts?.programVK ?? null, rootC: facts?.rootC ?? null, pinned: { programVK: i.pins.programVK, rootC: i.pins.rootC } });
+    throw new IndexerStop("C7", `block ${n}: ${!facts ? "the proof is not 1,344 bytes of hex" : `the proof's program key is ${facts.programVK} and its release root ${facts.rootC}, not the ${key.programVK} and ${key.rootC} pinned for this height`}`,
+      n, { programVK: facts?.programVK ?? null, rootC: facts?.rootC ?? null, pinned: { programVK: key.programVK, rootC: key.rootC, fromBlock: key.fromBlock } });
   }
   const signers = new Set([r.operator, r.confirmer]);
   if (r.signatories.length !== signers.size || r.signatories.some((s) => !signers.has(s))) {

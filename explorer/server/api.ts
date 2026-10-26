@@ -1,4 +1,4 @@
-import type { Config } from "./config.ts";
+import { keyFor, type Config } from "./config.ts";
 import { createFaucet, type Faucet } from "./faucet.ts";
 import { LedgerError, type Ledger } from "./ledger.ts";
 import { keccak256 } from "viem";
@@ -117,7 +117,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return {
       status: serving ? 200 : 503,
       body: {
-        chainId: config.chainId, chainName: config.chainName, networkName: config.networkName, coin: pick(config.coin, FIELDS.coin), pins: pick(config.pins, FIELDS.pins), ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
+        chainId: config.chainId, chainName: config.chainName, networkName: config.networkName, coin: pick(config.coin, FIELDS.coin), pins: { ...pick(config.pins, FIELDS.pins), keys: config.pins.keys.map((k) => pick(k, FIELDS.pinsKey)) }, ok: all, starting, problems: s.problems, evm: latest !== undefined, canton,
         final: head ? pick(head, FIELDS.final) : null,
         proving: proving ? pick(proving, FIELDS.proving) : null,
         latest: newest.map((b) => pick(b, FIELDS.latest)),
@@ -162,7 +162,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         txCount: final.txCount, gasUsed: final.gasUsed, gasLimit: final.gasLimit, baseFee: final.baseFee, miner: final.miner, stateRoot: final.stateRoot,
         genesisReferenced: null,
         canton: {
-          updateId: final.updateId, recordTime: final.recordTime, template: "Zk.Chain:BlockRecord", proofBytes: (final.proofHex?.length ?? 0) / 2, proof: proofOf(facts ? checkProofFacts(facts, config.pins, final.hash) : null),
+          updateId: final.updateId, recordTime: final.recordTime, template: "Zk.Chain:BlockRecord", proofBytes: (final.proofHex?.length ?? 0) / 2, proof: proofOf(facts ? checkProofFacts(facts, keyFor(config.pins, final.number), final.hash) : null),
           hashesMatch, headerHex: final.headerHex, txsHex: final.txsHex, proofHex: final.proofHex ?? "",
         },
         transactions,

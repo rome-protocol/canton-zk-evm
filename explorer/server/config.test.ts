@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, loadConfig, parsePins } from "./config.ts";
+import { ConfigError, keyFor, loadConfig, parsePins } from "./config.ts";
 
 const VK = "0x" + "ab".repeat(32);
 const ROOT = "0x" + "cd".repeat(32);
@@ -112,7 +112,7 @@ describe("settings", () => {
 
 describe("pins", () => {
   it("reads programVK and rootC from the file named by PINS_FILE, and names the file", () => {
-    expect(load().pins).toEqual({ programVK: VK, rootC: ROOT, file: "guest.txt" });
+    expect(load().pins).toEqual({ programVK: VK, rootC: ROOT, file: "guest.txt", keys: [{ fromBlock: 0, programVK: VK, rootC: ROOT }] });
   });
 
   it("reads the recorded session's published pins by default", () => {
@@ -126,6 +126,11 @@ describe("pins", () => {
       programVK: "0xdbe132ed93824452dc2466618977d8825653b829576a384f1b6e4367bca00688",
       rootC: "0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4",
       file: "session.txt",
+      keys: [{
+        fromBlock: 0,
+        programVK: "0xdbe132ed93824452dc2466618977d8825653b829576a384f1b6e4367bca00688",
+        rootC: "0xc3f12b9f8707c6a1e96df2bf6702c2ebdfbafedabeac654644a380befe091ac4",
+      }],
     });
   });
 
@@ -133,5 +138,52 @@ describe("pins", () => {
     expect(() => parsePins(`programVK=${VK}\n`, "x.txt")).toThrow(/rootC/);
     expect(() => parsePins(`programVK=${VK}\nrootC=0x12\n`, "x.txt")).toThrow(/rootC/);
     expect(() => loadConfig({ PINS_FILE: "/nope" }, () => { throw new Error("ENOENT"); })).toThrow(/PINS_FILE/);
+  });
+});
+
+describe("pin key ranges", () => {
+  const VK2 = "0x" + "a2".repeat(32), ROOT2 = "0x" + "b3".repeat(32), VK3 = "0x" + "a3".repeat(32), ROOT3 = "0x" + "b4".repeat(32);
+  const base = `programVK=${VK}\nrootC=${ROOT}\n`;
+  const two = `${base}programVK@100=${VK2}\nrootC@100=${ROOT2}\n`;
+
+  it("reads the old two-line file as one range from block 0", () => {
+    const p = parsePins(base, "x.txt");
+    expect(p.keys).toEqual([{ fromBlock: 0, programVK: VK, rootC: ROOT }]);
+    expect(keyFor(p, 0)).toBe(p.keys[0]);
+    expect(keyFor(p, 5_000_000)).toBe(p.keys[0]);
+  });
+
+  it("reads later ranges, and the current key is the last one", () => {
+    const p = parsePins(`# a switch\n${two}programVK@250 = ${VK3}\nrootC@250=${ROOT3.toUpperCase().replace("0X", "0x")}\n`, "x.txt");
+    expect(p.keys).toEqual([{ fromBlock: 0, programVK: VK, rootC: ROOT }, { fromBlock: 100, programVK: VK2, rootC: ROOT2 }, { fromBlock: 250, programVK: VK3, rootC: ROOT3 }]);
+    expect(p).toMatchObject({ programVK: VK3, rootC: ROOT3, file: "x.txt" });
+  });
+
+  it("gives a block the last range that starts at or before it", () => {
+    const p = parsePins(two, "x.txt");
+    expect(keyFor(p, 0).programVK).toBe(VK);
+    expect(keyFor(p, 99).programVK).toBe(VK);
+    expect(keyFor(p, 100)).toEqual({ fromBlock: 100, programVK: VK2, rootC: ROOT2 });
+    expect(keyFor(p, 101).rootC).toBe(ROOT2);
+  });
+
+  it("refuses a range with only one of the pair, bad hex, a repeated or out-of-order block", () => {
+    const bad = (extra: string, re: RegExp) => expect(() => parsePins(base + extra, "x.txt"), extra).toThrow(re);
+    bad(`programVK@100=${VK2}\n`, /needs both programVK@100= and rootC@100=/);
+    bad(`rootC@100=${ROOT2}\n`, /needs both programVK@100= and rootC@100=/);
+    bad(`programVK@100=${VK2}\nrootC@100=0x12\n`, /rootC@100= line of 0x and 64 hex/);
+    bad(`programVK@100=${VK2}\nrootC@100=${ROOT2.slice(0, -1)}g\n`, /rootC@100=/);
+    bad(`programVK@100=\nrootC@100=${ROOT2}\n`, /programVK@100=/);
+    bad(`programVK@100=${VK2}\nprogramVK@100=${VK3}\nrootC@100=${ROOT2}\n`, /programVK@100= is given twice/);
+    bad(`programVK@0=${VK2}\nrootC@0=${ROOT2}\n`, /block number above 0/);
+    bad(`programVK@abc=${VK2}\nrootC@abc=${ROOT2}\n`, /block number above 0/);
+    bad(`programVK@-5=${VK2}\nrootC@-5=${ROOT2}\n`, /block number above 0/);
+    bad(`programVK@007=${VK2}\nrootC@007=${ROOT2}\n`, /block number above 0/);
+    bad(`programVK@200=${VK2}\nrootC@200=${ROOT2}\nprogramVK@100=${VK3}\nrootC@100=${ROOT3}\n`, /increasing order/);
+  });
+
+  it("refuses at startup, naming the file", () => {
+    expect(() => load({}, `${base}programVK@100=${VK2}\n`)).toThrow(ConfigError);
+    expect(load({}, two).pins.keys).toHaveLength(2);
   });
 });

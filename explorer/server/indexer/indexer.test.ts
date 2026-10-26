@@ -174,11 +174,57 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
     r.proofHex = r.proofHex.slice(0, 1536) + "ff".repeat(32) + r.proofHex.slice(1600);
   }, "C7"));
 
+  // A chain that switches program at block 2: blocks before it are checked under the first key, blocks from it under the second.
+  const KEY2 = { fromBlock: 2, programVK: "0x" + "c3".repeat(32), rootC: "0x" + "d4".repeat(32) };
+  const RANGED = { ...PINS, programVK: KEY2.programVK, rootC: KEY2.rootC, keys: [...PINS.keys, KEY2] };
+  const proveUnder = (c: SyntheticChain, i: number, k: { programVK: string; rootC: string }) => {
+    const r = c.blocks[i]!.record;
+    r.proofHex = r.proofHex.slice(0, 1536) + k.programVK.slice(2) + k.rootC.slice(2) + r.proofHex.slice(1664);
+  };
+
+  it("checks each block under the key for its height", () => inDb(async (pool) => {
+    const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }], "inline", { pins: RANGED });
+    proveUnder(chain, 1, KEY2); // block 1 keeps the first key, block 2 is proven under the second
+    expect((await indexer.runOnce()).state).not.toBe("stopped");
+    expect((await counts(pool)).blocks).toBe(2);
+    expect((await pool.query("select number, matches_pins from proofs order by number")).rows).toEqual([{ number: "1", matches_pins: true }, { number: "2", matches_pins: true }]);
+    await indexer.close();
+  }));
+
+  it("stops at C7 for a block proven under the first key at a height of the second", () => inDb(async (pool) => {
+    const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }], "inline", { pins: RANGED });
+    const r = await indexer.runOnce(); // block 2 still carries the first key
+    expect(chain.blocks[1]!.record.proofHex.slice(1536, 1600)).toBe(PINS.programVK.slice(2));
+    expect(r.state).toBe("stopped");
+    if (r.state === "stopped") expect([r.stop.check, r.stop.block]).toEqual(["C7", 2]);
+    expect((await counts(pool)).blocks).toBe(1);
+    await indexer.close();
+  }));
+
+  it("stops at C7 for a block proven under the second key before the switch", () => inDb(async (pool) => {
+    const { chain, indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }], "inline", { pins: RANGED });
+    proveUnder(chain, 0, KEY2);
+    proveUnder(chain, 1, KEY2);
+    const r = await indexer.runOnce();
+    expect(r.state).toBe("stopped");
+    if (r.state === "stopped") expect([r.stop.check, r.stop.block]).toEqual(["C7", 1]);
+    await indexer.close();
+  }));
+
+  it("does not make an existing database another chain's when a key is added to the pins", () => inDb(async (pool) => {
+    const { indexer } = await setup(pool, [{ txs: 1 }]);
+    await indexer.close();
+    const again = createIndexer({ pool, reads: makeChain([{ txs: 1 }]).reads, ledger: makeChain([{ txs: 1 }]).ledger, pins: RANGED, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+    opened.push(again);
+    await again.open();
+    await again.close();
+  }));
+
   it("refuses a database made for other pins", async () => {
     await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }]);
       await indexer.close();
-      const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, programVK: "0x" + "01".repeat(32) }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+      const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, keys: [{ ...PINS.keys[0]!, programVK: "0x" + "01".repeat(32) }] }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
       await expect(other.open()).rejects.toThrow("program_vk");
       await other.close();
     });
@@ -329,7 +375,7 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
     await inDb(async (pool) => {
       const { chain, indexer } = await setup(pool, [{ txs: 1 }]);
       await indexer.close();
-      const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, programVK: "0x" + "01".repeat(32) }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+      const other = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: { ...PINS, keys: [{ ...PINS.keys[0]!, programVK: "0x" + "01".repeat(32) }] }, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
       await expect(other.open()).rejects.toThrow("program_vk");
       await other.close();
       expect((await health(pool, "pins")).status).toBe("down");

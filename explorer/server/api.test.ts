@@ -57,7 +57,7 @@ function handlers(chain: FakeChain, finalized: () => number) {
 /** Adds a `leaked` field to every object it holds, as a careless pass-through of the index's or the config's own objects would send it on. */
 const leaky = <T>(x: T): T => (Array.isArray(x) ? (x.map(leaky) as T) : x && typeof x === "object" ? ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, leaky(v)])), leaked: "x" } as T) : x);
 
-interface Options { tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean; finalized?: number | "unreadable"; missFirstBlockRead?: boolean; checksWritten?: boolean }
+interface Options { pinsText?: string; tracker?: ReturnType<typeof createTracker>; leak?: boolean; faucet?: boolean; store?: FaucetStore; indexed?: number; empty?: boolean; finalized?: number | "unreadable"; missFirstBlockRead?: boolean; checksWritten?: boolean }
 
 /**
  * `indexed` is the newest block the database holds, for an indexer that is behind Canton; `empty` is a database the indexer has not written to at all.
@@ -69,12 +69,12 @@ const writeFreshChecks = (pool: import("pg").Pool, age = "0 seconds") =>
   pool.query(`insert into health_checks (check_id, status, changed_at, checked_at) select c, 'ok', now() - interval '${age}', now() - interval '${age}' from unnest($1::text[]) as c
     on conflict (check_id) do update set status = 'ok', checked_at = excluded.checked_at, changed_at = excluded.changed_at`, [REFRESHED]);
 
-async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false, finalized, missFirstBlockRead = false, checksWritten = true }: Options = {}) {
+async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, store, indexed = Infinity, empty = false, finalized, missFirstBlockRead = false, checksWritten = true, pinsText = settings }: Options = {}) {
   let finalizedAt = 0;
   const base = handlers(chain, () => finalizedAt);
   reth = await startFakeReth(finalized === "unreadable" ? { ...base, eth_getBlockByNumber: (p: unknown[]) => { if (p[0] === "finalized") throw new Error("finalized is not served"); return base.eth_getBlockByNumber(p); } } : base);
   ledger = await startFakeLedger(chain.items);
-  const real = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => settings);
+  const real = loadConfig({ READER_PARTY: FAKE_READER, PINS_FILE: "guest.txt" }, () => pinsText);
   const config = leak ? leaky(real) : real;
   const r = createReth(reth.url, 2000), l = createLedger(ledger.url, 2000, FAKE_READER);
   const db = await makeDatabase(true);
@@ -119,7 +119,7 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
   const b = body as Obj;
   same(b, FIELDS[kind]);
   if (kind === "status") {
-    same(b.coin, FIELDS.coin); same(b.pins, FIELDS.pins); same(b.faucet, FIELDS.faucet);
+    same(b.coin, FIELDS.coin); same(b.pins, FIELDS.pins); for (const k of (b.pins as { keys: Obj[] }).keys) same(k, FIELDS.pinsKey); same(b.faucet, FIELDS.faucet);
     expect(typeof b.publicRpc).toBe("boolean");
     if (b.final) same(b.final, FIELDS.final);
     if (b.proving) same(b.proving, FIELDS.proving);
@@ -337,6 +337,37 @@ describe.skipIf(!TEST_URL)("status and health", () => {
     const status = await get("/api/status"), health = await api("GET", "/healthz");
     expect(status.body).toMatchObject({ ok: false, evm: false, canton: true });
     expect(health).toEqual({ status: 503, body: status.body });
+  });
+});
+
+describe.skipIf(!TEST_URL)("pin key ranges", () => {
+  const OLD = "programVK=0x" + "cd".repeat(32) + "\nrootC=0x" + "ef".repeat(32) + "\n";
+  const NEW = "programVK@2=0x" + "ee".repeat(32) + "\nrootC@2=0x" + "ee".repeat(32) + "\n"; // the fake chain's proofs are under this key
+  const proofOk = async (get: (p: string) => Promise<{ body: any }>, n: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const p = (await get(`/api/block/${n}`)).body.canton.proof;
+    return [p.programVK.ok, p.rootC.ok];
+  };
+
+  it("checks a block's proof under the key for its height, and a proof under another range's key is not ok", async () => {
+    const { get } = await boot(chain(), { pinsText: OLD + NEW });
+    expect(await proofOk(get, 1)).toEqual([false, false]); // height 1 is under the first key, the proof is under the second
+    expect(await proofOk(get, 2)).toEqual([true, true]);
+    const { get: before } = await boot(chain(), { pinsText: "programVK=0x" + "ee".repeat(32) + "\nrootC=0x" + "ee".repeat(32) + "\nprogramVK@2=0x" + "cd".repeat(32) + "\nrootC@2=0x" + "ef".repeat(32) + "\n" });
+    expect(await proofOk(before, 1)).toEqual([true, true]);
+    expect(await proofOk(before, 2)).toEqual([false, false]); // the proof is under the first key, the height is the second's
+  });
+
+  it("keeps the current key in /api/status as programVK, rootC and file, and lists every key", async () => {
+    const { get } = await boot(chain(), { pinsText: OLD + NEW });
+    const body = (await get("/api/status")).body as { pins: unknown };
+    checkFields("status", body);
+    expect(body.pins).toEqual({
+      programVK: "0x" + "ee".repeat(32), rootC: "0x" + "ee".repeat(32), file: "guest.txt",
+      keys: [{ fromBlock: 0, programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) }, { fromBlock: 2, programVK: "0x" + "ee".repeat(32), rootC: "0x" + "ee".repeat(32) }],
+    });
+    const one = (await (await boot(chain())).get("/api/status")).body as { pins: { keys: unknown } };
+    expect(one.pins.keys).toEqual([{ fromBlock: 0, programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) }]);
+    expect(one.pins).toMatchObject({ programVK: "0x" + "cd".repeat(32), rootC: "0x" + "ef".repeat(32) });
   });
 });
 

@@ -1,4 +1,4 @@
-import type { Pins } from "./config.ts";
+import type { KeyRange } from "./config.ts";
 
 /** A wrapped proof is four fields one after the other: the proof (768 bytes), the program key (32), the ZisK release root (32) and the public values (512). */
 export const PROOF_BYTES = 1344;
@@ -38,8 +38,11 @@ export function readProofFacts(proofHex: string): ProofFacts | null {
   return { programVK: hex(b.subarray(PROGRAM_AT, ROOT_AT)), rootC: hex(b.subarray(ROOT_AT, PUBLIC_AT)), blockHash: committedHash(b.subarray(PUBLIC_AT)) };
 }
 
-/** Each fact next to whether it matches: the two keys against this explorer's pins, the hash against the block the record is for. */
-export function checkProofFacts(facts: ProofFacts, pins: Pins, blockHash: string): ProofCheck {
+/**
+ * Each fact next to whether it matches: the two keys against the key for the block's height (`keyFor(pins, number)`: a proof under the key of
+ * another range is not ok), the hash against the block the record is for.
+ */
+export function checkProofFacts(facts: ProofFacts, pins: Pick<KeyRange, "programVK" | "rootC">, blockHash: string): ProofCheck {
   return {
     programVK: { value: facts.programVK, ok: facts.programVK === pins.programVK },
     rootC: { value: facts.rootC, ok: facts.rootC === pins.rootC },

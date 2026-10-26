@@ -12,7 +12,9 @@ export const FIELDS = {
   /** The answer of /api/health, and one check in it. */
   health: ["status", "instance", "starting", "problems", "checks"],
   healthCheck: ["id", "role", "status", "written", "value", "threshold", "detail", "sinceSeconds", "changedAt", "refreshedAt", "refreshedAgoSeconds", "intervalSeconds", "stale", "elsewhere"],
-  pins: ["programVK", "rootC", "file"],
+  /** The current key, as before there were ranges. `keys` is the list of every key and the block it starts at. */
+  pins: ["programVK", "rootC", "file", "keys"],
+  pinsKey: ["fromBlock", "programVK", "rootC"],
   final: ["number", "hash", "timestamp", "recordTime"],
   proving: ["number", "hash", "timestamp"],
   /** One of the newest final blocks, for the home page's list. */
