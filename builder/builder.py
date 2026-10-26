@@ -2158,10 +2158,11 @@ def each_once(lost: list) -> list:
 class Pipeline(Producer):
     """The producer that keeps up to `max_in_flight` blocks in flight: a block is cut while earlier ones prove, built on the newest of them, and
     only the oldest is submitted. At `max_in_flight` 1 it makes the same calls and the same bytes as `Producer` on the golden scenarios (tests/test_golden_pipeline.py). It differs
-    only on fault paths: after a move back that failed, the next step finishes it (after a read of Canton's head, with no `resolved restarted`
-    line) and the block is cut a step later; and a head that lags the last block it saw committed is never gone below (a restore, the parent check
-    of a settle that found the command not committed, and the move back all read the head first and move nothing on a head that does not fit).
-    tests/test_pipeline.py pins these. See README.md, "Provers".
+    only on fault paths and on a stop: after a move back that failed, the next step finishes it (after a read of Canton's head, with no `resolved restarted`
+    line) and the block is cut a step later; a head that lags the last block it saw committed is never gone below (a restore, the parent check
+    of a settle that found the command not committed, and `finish_unwind`, the step that finishes a move back, each read the head first and move nothing on a head that
+    does not fit); and a stop (SIGTERM) at depth 1 gives up the block in flight (its transactions stay kept for the next start) where `Producer` finishes it.
+    tests/test_pipeline_edges.py pins the fault-path differences. See README.md, "Provers".
 
     `self.last` is the last block this process saw Canton commit, as (number, hash): reth's head never goes below it, and its safe and
     finalized blocks are never any other."""
