@@ -5,11 +5,16 @@
 #   rootC        the key of ZisK's final circuit, 32 bytes as hex (a property of the installed ZisK)
 #   rulesHash    the hash of the chain rules built into the guest (see guest/README.md)
 #
+# Usage: build-guest.sh [genesis.json]
+# The genesis file is the one whose `config` the guest accepts (default: network/genesis.json). A chain
+# that starts Osaka at a later time than genesis builds its own guest from its own genesis file, and so
+# has its own programVK and rulesHash. The ELF goes to the same place whichever genesis it came from.
+#
 # Needs ZisK installed (prover/install.sh). It does not need the GPU. The ELF is copied to
 # the prover state folder, where prove-one.sh looks for it.
 #
 # The build runs in one fixed folder, /tmp/cze-guest-build, not in the source folder. The script
-# empties that folder, copies the guest sources into it (guest/ and network/genesis.json, in the
+# empties that folder, copies the guest sources into it (guest/ and the genesis file, default network/genesis.json, in the
 # same layout), and builds there with CARGO_HOME and CARGO_TARGET_DIR inside it. The aim is that the
 # folder the sources came from does not change the ELF, and so not the programVK: cargo hashes the
 # absolute path of each path dependency into the crate's metadata, and --remap-path-prefix does not
@@ -25,7 +30,7 @@ set -euo pipefail
 . "$ROOT/prover/guest-env.sh"
 
 LOCK=$ROOT/guest/bin/guests/stateless-validator-reth/Cargo.lock
-guest_prepare_build
+guest_prepare_build "${1:-}"
 guest_build_env
 PKG=$GUEST_BUILD_PKG
 ( cd "$PKG" && cargo-zisk build --release )
@@ -59,4 +64,5 @@ print("rootC=" + be(root_c))
 PY
 
 echo "elf_sha256=$(sha256sum "$GUEST_ELF" | cut -d' ' -f1)"
-echo "rulesHash=$(cargo run -q --release --locked --manifest-path "$ROOT/guest/rules/Cargo.toml" --bin rules-hash)"
+# The hash comes from the copy that was built, so it is the hash of the genesis the ELF holds.
+echo "rulesHash=$(cargo run -q --release --locked --manifest-path "$GUEST_BUILD_DIR/src/guest/rules/Cargo.toml" --bin rules-hash)"

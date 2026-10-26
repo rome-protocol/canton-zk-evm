@@ -45,6 +45,8 @@ done
 [ "$(jq .config.chainId "$ROOT/network/genesis.json")" = "$CHAIN_ID" ] || fail "genesis chain id differs from PINS"
 [ "$(printf '0x%x' "$GAS_CAP")" = "$(jq -r .gasLimit "$ROOT/network/genesis.json")" ] || fail "GAS_CAP differs from the genesis gas limit"
 [ "$(jq .config.pragueTime "$ROOT/network/genesis.json")" = "0" ] || fail "Prague is not active from genesis"
+[ "$(jq .config.osakaTime "$ROOT/network/genesis.json")" = "0" ] || fail "Osaka is not active from genesis"
+[ "$(jq -c .config.blobSchedule.osaka "$ROOT/network/genesis.json")" = "$(jq -c .config.blobSchedule.prague "$ROOT/network/genesis.json")" ] || fail "the osaka blob schedule is not Prague's"
 
 # The gateway: one contract at a fixed address, put into each run's genesis by network/make-state.sh. It is not in
 # network/genesis.json (the guest program includes that file whole, so any edit would change the program key).
