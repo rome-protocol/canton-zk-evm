@@ -187,7 +187,7 @@ template ZkChain
       do
         now <- getTime
         assertMsg "the legs are paused already" (not (pausedAt this now))
-        assertMsg ("the confirmer alone may start a new pause from " <> maybe "" show pauseCooldownUntil) (maybe True (\t -> now >= t) pauseCooldownUntil)
+        assertMsg ("the confirmer alone may start a new pause from " <> optional "" show pauseCooldownUntil) (optional True (\t -> now >= t) pauseCooldownUntil)
         let expiry = addRelTime now (pauseLimit this)
         create this with pausedUntil = Some expiry; pauseCooldownUntil = Some (addRelTime expiry (pauseLimit this))
 
@@ -222,9 +222,9 @@ template ZkChain
       controller operator, confirmer
       do
         assertMsg "the quota and its window are set together, or neither is" (isSome newQuota == isSome newWindow)
-        assertMsg "the quota must be above zero" (maybe True (> 0.0) newQuota)
-        assertMsg "the quota window must be between one second and maxQuotaWindow" (maybe True rangeOk newWindow)
-        assertMsg "the longest pause must be between one second and maxPauseMax" (maybe True (rangeOkTo maxPauseMax) newPauseMax)
+        assertMsg "the quota must be above zero" (optional True (> 0.0) newQuota)
+        assertMsg "the quota window must be between one second and maxQuotaWindow" (optional True rangeOk newWindow)
+        assertMsg "the longest pause must be between one second and maxPauseMax" (optional True (rangeOkTo maxPauseMax) newPauseMax)
         create this with withdrawalQuota = newQuota; quotaWindow = newWindow; pauseMax = newPauseMax
 
     -- The proposals are made here, not by creating them directly: the proposal records the ledger time it was made at, and
@@ -284,7 +284,7 @@ template ZkChain
         now <- getTime
         -- While the legs are paused a block may still carry no leg, so the chain goes on; one that carries a leg waits for the expiry or
         -- the early unpause (the gateway contract on the EVM side has no pause of its own).
-        assertMsg ("the legs are paused until " <> maybe "" show pausedUntil <> ": a block that carries a leg is refused") (null legs || not (pausedAt this now))
+        assertMsg ("the legs are paused until " <> optional "" show pausedUntil <> ": a block that carries a leg is refused") (null legs || not (pausedAt this now))
         answer <- verifyBlockCall proofHex headerHex txsHex
         b <- either (\why -> abort ("the sidecar refused the block: " <> why)) pure (parseVerify answer)
         assertMsg "the block was proven by another program" (b.programVK == programVK)
@@ -323,8 +323,8 @@ template LegLimitsProposal
   where
     -- Made by `ZkChain.ProposeLegLimits` only (the confirmer signs as well), which stamps it with the ledger time.
     signatory operator, confirmer
-    ensure chainId > 0 && isSome newQuota == isSome newWindow && maybe True (> 0.0) newQuota && maybe True rangeOk newWindow
-      && maybe True (rangeOkTo maxPauseMax) newPauseMax
+    ensure chainId > 0 && isSome newQuota == isSome newWindow && optional True (> 0.0) newQuota && optional True rangeOk newWindow
+      && optional True (rangeOkTo maxPauseMax) newPauseMax
     observer reader
 
     choice WithdrawLegLimits : ()

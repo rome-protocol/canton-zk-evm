@@ -1285,8 +1285,10 @@ testAPausedChainRefusesEveryLegButCarriesOn = do
 testAPauseEndsOnItsOwn : Script ()
 testAPauseEndsOnItsOwn = do
   f <- fixture
-  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
-  passTime (secs (3 * 24 * 3600 - 1))
+  -- (a pause of the 3 days default would outlast the deposit's allocation, which settles within 2 days)
+  short <- setLimits f f.chain None None (Some (secs 1000))
+  chain <- submit f.confirmer $ exerciseCmd short PauseLegs
+  passTime (secs 999)
   refused paused f $ advance chain "01" [depositLine deposit1] [depositLeg f]
   passTime (secs 1)
   (_, _) <- submit (asBuilder f) $ advance chain "01" [depositLine deposit1] [depositLeg f]
@@ -1349,14 +1351,15 @@ testALiftedPauseHasTheSameCooldown = do
 testRenewingAPauseNeedsBothAndNeverMoreThanTheMaximum : Script ()
 testRenewingAPauseNeedsBothAndNeverMoreThanTheMaximum = do
   f <- fixture
-  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
-  passTime (secs (2 * 24 * 3600))
-  -- one day left; the renewal makes it three days from now
-  renewed <- renew f chain (days 3)
-  passTime (secs (2 * 24 * 3600))
-  -- the first pause would have ended a day ago
+  short <- setLimits f f.chain None None (Some (secs 1000))
+  chain <- submit f.confirmer $ exerciseCmd short PauseLegs
+  passTime (secs 500)
+  -- 500 s left; the renewal makes it 1000 s from now
+  renewed <- renew f chain (secs 1000)
+  passTime (secs 600)
+  -- the first pause would have ended 100 s ago
   refused paused f $ advance renewed "01" [depositLine deposit1] [depositLeg f]
-  passTime (secs (24 * 3600))
+  passTime (secs 400)
   (_, _) <- submit (asBuilder f) $ advance renewed "01" [depositLine deposit1] [depositLeg f]
   pure ()
 
