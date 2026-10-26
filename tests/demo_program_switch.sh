@@ -50,7 +50,16 @@ cleanup() {
 }
 trap cleanup EXIT
 background() { local name=$1; shift; nohup "$@" > "$NET/logs/$name.log" 2>&1 < /dev/null & pids+=($!); echo $! > "$NET/$name.pid"; }
-stop_background() { local f; for f in "$@"; do [ -f "${NET:?}/${f:?}.pid" ] || continue; kill "$(cat "$NET/$f.pid")" 2>/dev/null || true; rm -f "${NET:?}/${f:?}.pid"; done; }
+stop_background() {   # the processes by name, and each one is gone (its port is free) when this returns
+  local f pid
+  for f in "$@"; do
+    [ -f "${NET:?}/${f:?}.pid" ] || continue
+    pid=$(cat "$NET/$f.pid"); kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
+    ! kill -0 "$pid" 2>/dev/null || fail "$f (process $pid) did not stop"
+    rm -f "${NET:?}/${f:?}.pid"
+  done
+}
 rpc() { curl -sf -H 'content-type: application/json' --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":[${2:-}]}" "http://127.0.0.1:${RETH_HTTP_PORT:-8545}" | jq -c .result; }
 wait_reth() {
   for _ in $(seq 1 60); do rpc eth_chainId >/dev/null 2>&1 && break; sleep 1; done
@@ -110,7 +119,10 @@ start_sidecars() {
   done
   for _ in $(seq 1 30); do curl -sf http://127.0.0.1:9085/api/v1/version >/dev/null && break; sleep 1; done
   curl -sf http://127.0.0.1:9085/api/v1/version >/dev/null || fail "the real sidecar does not answer"
-  for port in 8085 8086; do curl -sf "http://127.0.0.1:$port/" >/dev/null || fail "the stand-in on $port does not answer"; done
+  for port in 8085 8086; do
+    for _ in $(seq 1 30); do curl -sf "http://127.0.0.1:$port/" >/dev/null && break; sleep 1; done
+    curl -sf "http://127.0.0.1:$port/" >/dev/null || fail "the stand-in on $port does not answer"
+  done
   # The fake prover writes proofs of this key, which the stand-ins accept.
   export DEMO_PROOF_PROGRAM_VK=$vk DEMO_PROOF_ROOT_C=$rc
 }
