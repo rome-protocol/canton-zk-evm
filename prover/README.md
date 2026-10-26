@@ -28,3 +28,7 @@ The supplied installer targets Linux x86-64 with `apt`, `sudo`, an installed NVI
 ## Fixtures
 
 `fixtures/` holds a one-transfer block's GPU proof and its recorded details (see `session.txt`). This is public data. `tests/fixtures.sh` checks its consistency.
+
+## The ZisK release
+
+`PINS` pins ZisK 1.3.2-alpha. It fixes the soundness advisory GHSA-3j5v-j2rm-9c5f of 1.3.1-alpha (see [SECURITY.md](../SECURITY.md)), and a prover must not run 1.3.1 for a new chain. The fixture is the proof of our guest built and proven under 1.3.2, and `session.txt` records its program key and root. It also keeps `previous_programVK` and `previous_rootC` (the guest that stopped at Prague, under 1.3.1, which the recorded demo results ran) and `zisk_1_3_1_programVK`, the key this guest has when it is built for 1.3.1, which is the key of blocks a chain proved under 1.3.1. A new chain's sidecars and explorer are pinned to the keys in `session.txt` and to ZisK 1.3.2.

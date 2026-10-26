@@ -43,7 +43,9 @@ daml/dars/
 verifier/src/vk.rs
     Contains numerical verification-key parameters extracted from ZisK v1.3.1-alpha, commit
     306a9c934ba4947b1d586d69b67120f8b4c41466, zisk-contracts/PlonkVerifier.sol (a generated file
-    marked GPL-3.0). Only the mathematical parameter values were taken; the Rust verifier was written
+    marked GPL-3.0). The same sixteen numbers were found again in the PlonkVerifier.sol that the
+    SNARK setup of ZisK v1.3.2-alpha, commit 1e22630bb7e143c30705a1603ed87cfd3da8c6ec, installs,
+    so they serve both releases. Only the mathematical parameter values were taken; the Rust verifier was written
     independently by Rome Protocol. The file also holds the same kind of parameters from ZisK
     v1.2.0-alpha, commit fbbc69bcd2ea9a78d1a438b4a897bc48ff0b00a3, used only in tests.
 
