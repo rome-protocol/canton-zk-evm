@@ -5,7 +5,7 @@ set -euo pipefail
 [ -s "$1" ] || { echo "missing $1" >&2; exit 1; }
 echo "prove $*" >> "${FAKE_LOG:?}"
 # A pool of provers: FAKE_PROVER_PLAN is a folder with a file per coordinator URL (the URL with every character outside a-z, 0-9 turned into "_"),
-# one line per job, taken in order: "ok", "fail", "connect" (the coordinator cannot be reached), "hang" (never finishes), "sleep <seconds>" (slow, then ok),
+# one line per job, taken in order: "ok", "fail", "connect" (the coordinator cannot be reached), "busy" / "capacity" (the coordinator refuses at once: its workers are busy / it has no ready worker), "hang" (never finishes), "sleep <seconds>" (slow, then ok),
 # "wrong" (a proof of another block). No line left, or no file: "ok". Each job is also logged, as "<file> <line>", to the folder's own file "log".
 if [ -n "${FAKE_PROVER_PLAN:-}" ]; then
   tag=$(printf %s "${ZISK_COORDINATOR_URL:-none}" | tr -c 'a-z0-9\n' _)
@@ -17,6 +17,8 @@ if [ -n "${FAKE_PROVER_PLAN:-}" ]; then
   case "$action" in
     fail) echo "the prover is down" >&2; exit 1 ;;
     connect) echo "error trying to connect: tcp connect error: Connection refused (os error 111)" >&2; exit 1 ;;
+    busy) echo "Error: JobRequest RPC failed ... code: The service is currently unavailable, message: Cluster unavailable: workers are busy running another job; retry shortly" >&2; exit 1 ;;
+    capacity) echo "Error: JobRequest RPC failed ... code: The service is currently unavailable, message: Cluster unavailable: insufficient ready capacity for the request" >&2; exit 1 ;;
     hang) exec sleep 3607 ;;
     sleep\ *) sleep "${action#sleep }" ;;
     wrong) FAKE_PROVER_WRONG_BLOCK=1 ;;
