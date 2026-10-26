@@ -7,7 +7,7 @@ module Zk.Chain where
 
 import DA.Foldable (forA_)
 import DA.Optional (fromOptional)
-import DA.Time (addRelTime, days, seconds, convertRelTimeToMicroseconds)
+import DA.Time (RelTime, addRelTime, days, seconds, convertRelTimeToMicroseconds)
 import qualified DA.Text as T
 import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV1 (Holding, InstrumentId)

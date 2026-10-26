@@ -9,7 +9,7 @@ module Zk.ChainTest where
 import DA.Assert ((===))
 import DA.Foldable (forA_)
 import DA.List ((!!), sort)
-import DA.Time (addRelTime, days, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
+import DA.Time (RelTime, addRelTime, days, seconds, convertRelTimeToMicroseconds, convertMicrosecondsToRelTime)
 import qualified DA.Text as T
 import Daml.Script
 
