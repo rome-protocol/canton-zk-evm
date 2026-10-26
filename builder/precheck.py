@@ -60,6 +60,14 @@ class Emulator:
     input_memory: int = EMULATOR_INPUT_MEMORY
 
 
+@dataclass(frozen=True)
+class Precheck:
+    """What the builder is configured with when --precheck is on."""
+    emu: Emulator
+    budgets: Budgets = Budgets()
+    max_checks: int = 64   # the most blocks one cut may try before it keeps the longest prefix known to fit
+
+
 @dataclass
 class Verdict:
     verdict: str = OK
@@ -207,13 +215,16 @@ def longest_prefix(n: int, check) -> tuple[int, Verdict | None]:
     return lo, bad
 
 
-def select(txs: list, check, max_checks: int = 64) -> Selection:
+def select(txs: list, check, max_checks: int = 64, dependents=None) -> Selection:
     """Cuts a block back to what fits. `check(list of transactions)` returns a Verdict for a block of exactly those transactions.
     The whole list is checked first; over budget, the longest prefix that fits is found by halves and the rest wait. When not even
     the first transaction fits on its own it is convicted, and the search starts again on the transactions after it. A pair that
-    is bad only together is cut between them. After `max_checks` checks the search stops: the longest prefix known to fit is kept."""
+    is bad only together is cut between them. After `max_checks` checks the search stops: the longest prefix known to fit is kept.
+    `dependents(convicted transaction, the transactions after it)`, when given, says which of those cannot run without it (the same
+    sender's later ones): they wait, and are not tried."""
     selection = Selection([], [], [], 0)
     rest = list(txs)
+    stuck: list = []   # waiting for a convicted transaction they depend on
     fit = 0   # the longest prefix of `rest` seen to pass
 
     def counted(items: list) -> Verdict:
@@ -231,11 +242,15 @@ def select(txs: list, check, max_checks: int = 64) -> Selection:
             fit = 0
             k, bad = longest_prefix(len(rest), lambda m: counted(rest[:m]))
             if k > 0:
-                selection.kept, selection.waiting = rest[:k], rest[k:]
+                selection.kept, selection.waiting = rest[:k], rest[k:] + stuck
                 return selection
             selection.convicted.append((rest[0], bad))
-            rest = rest[1:]
+            gone = list(dependents(rest[0], rest[1:])) if dependents else []
+            stuck += gone
+            rest = [t for t in rest[1:] if not any(t is g for g in gone)]
     except _Exhausted:
         selection.exhausted = True
-        selection.kept, selection.waiting = rest[:fit], rest[fit:]
+        selection.kept, selection.waiting = rest[:fit], rest[fit:] + stuck
+    else:
+        selection.waiting = stuck
     return selection

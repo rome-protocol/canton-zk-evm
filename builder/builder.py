@@ -24,6 +24,7 @@ from websockets.sync.client import connect
 from provers import DEFAULT_TIMEOUT, Job, JobError, Pool, Prover, parse_provers, run_command
 from journal import Attempt, Journal, STRATEGIES, check_settings, completions_paused, iso, pause_completions, paid_traffic_cost, parse_traffic, read_traffic as journal_read_traffic, traffic_used
 from keccak import keccak256
+import precheck as pc
 import dataclasses
 from pipeline import FAILED, PROVEN, PROVING, SUBMITTING, InFlight, why_not_cut
 
@@ -90,6 +91,7 @@ class Config:
     max_block_tx_bytes: int = 65536   # the most raw transaction bytes a block is offered (--max-block-tx-bytes): our participant's Daml work grows with the Advance argument, about 23 ms per KB in each of two passes
     prover_input_dir: Path | None = None   # --prover-input-dir: a folder the provers' machines also see; the input is copied there and its path is given to the prover (default: the input's own path)
     pool: object = None               # the prover pool (provers.Pool), made by main(); None: one local prover, the prove command alone, made for each block
+    precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
     @classmethod
@@ -945,14 +947,15 @@ def build_exactly(reth: Reth, head: str, attributes: dict, raws: list, cap: int)
 
 
 def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, attempt: "Attempt | None" = None, known: list | None = None,
-                     settled=None) -> tuple:
+                     settled=None, only: list | None = None) -> tuple:
     """Builds a block on `head` (Canton's head, or with several blocks in flight the newest of them) and makes it reth's head. `settled` says
     which block reth's safe and finalized are: the last one Canton committed, read when the block is imported (default: `head`). The transactions are chosen from reth's pending pool, best price first, less
     the excluded ones (and each such sender's later ones), every time: after a transaction was left out for its leg, put_back has sent the
     block's transactions to the pool again, so the choice is made again with the larger exclude set and the gas and bytes the left-out ones
     held go to others. `known` is the (transaction, raw) pairs of the block just unwound: one of them that the pool did not take back
     (put_back reports it as lost) is still a candidate, with the raw bytes in hand; if it does not make the rebuilt block it is reported in
-    lostTransactions. (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
+    lostTransactions. `only`, when given, is the (transaction, raw) pairs of the block to build exactly, as they are, in place of a choice from the pool (the pre-check's
+    prefix of a block). (payload, the (transaction, raw bytes) pairs in the block, as reth built it)."""
     n, cap = int(chain["headNumber"]) + 1, int(chain["gasCap"])
     parent = reth.call("eth_getBlockByHash", [head, False])
     if not parent or int(parent["number"], 16) != n - 1:
@@ -1015,11 +1018,18 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
     # Offer reth every transaction that could fit if each one before it used the least gas a transaction can. reth runs them in this order and
     # leaves out any it cannot run (a gas limit over what the block has left, a wrong nonce, too little balance, a fee under the base fee) with
     # its sender's later ones: the block is full by gas used.
-    offered = fetch(choose_txs(pending, budget, exclude, used_each=MIN_TX_GAS))
+    offered = [] if only is not None else fetch(choose_txs(pending, budget, exclude, used_each=MIN_TX_GAS))
     try:
-        built, pairs = build_listed(offered)
-        reth.packed = {"packed": "gas_used", "offered": len(offered)}
+        if only is not None:   # the pre-check's prefix: exactly these, in this order
+            pairs = list(only)
+            built = build_exactly(reth, head, attributes, [raw for _, raw in pairs], cap)
+            reth.packed = {"packed": "prefix", "offered": len(pairs)}
+        else:
+            built, pairs = build_listed(offered)
+            reth.packed = {"packed": "gas_used", "offered": len(offered)}
     except BuilderError as e:
+        if only is not None:
+            raise
         # Not what was asked for, or reth cannot build it (it was started without --testing.skip-invalid-transactions): this block is
         # packed by gas limits, as it was before, and never over the cap.
         pairs = fetch(choose_txs(pending, budget, exclude))
@@ -1027,7 +1037,7 @@ def build_and_import(cfg: Config, reth: Reth, chain: dict, head: str, exclude: s
         reth.packed = {"packed": "gas_limits", "offered": len(offered), "pack_reason": str(e)[:300]}
     keep(pairs)
     payload = built["executionPayload"]
-    how = {"gas_used": "gas used", "gas_limits": "gas limits"}[reth.packed["packed"]]
+    how = {"gas_used": "gas used", "gas_limits": "gas limits", "prefix": "the pre-check's prefix"}[reth.packed["packed"]]
     try:  # a closed pipe to a log collector must not stop the chain, as in Producer.emit
         print(f"block {n}: {len(pairs)} transactions, gas used {int(payload['gasUsed'], 16)} of {cap}, packed by {how}"
               + (f" ({reth.packed['pack_reason']})" if "pack_reason" in reth.packed else ""), file=sys.stderr, flush=True)
@@ -1070,6 +1080,74 @@ class Proven:
     seconds: float
 
 
+def precheck_cut(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, payload: dict, pairs: list, settled, lost: list, attempt: "Attempt", work: Path) -> "tuple | None":
+    """The pre-check of a block (precheck.py, README.md "Pre-check"). `payload` and `pairs` are the block that is reth's tip now. The block is run in the fast
+    emulator; if it is within the budgets nothing changes and the answer is None. If not, the longest prefix that fits is found by halves:
+    each try is a block of exactly those transactions (build_exactly), made reth's tip, with its input made and run, and then taken back.
+    The rest wait for the next block, and a transaction over the budget alone is convicted, with the reason for the explorer, and left out
+    for the cool-down (its sender's later ones wait). Returns (payload, pairs, convicted) of the block that is reth's tip now, which is
+    exactly the prefix; the caller reads its legs again. `convicted` is [{"transaction", "reason", "overBudget": True}]."""
+    setup = cfg.precheck
+    n = int(chain["headNumber"]) + 1
+    folder = work / f"precheck-{os.getpid()}-{time.time_ns()}"
+    folder.mkdir(parents=True, exist_ok=True)
+    by_hash = {t["hash"]: (t, raw) for t, raw in pairs}
+    state = {"tip": [t["hash"] for t, _ in pairs], "imported": True, "payload": payload}
+
+    def rewind() -> None:
+        if state["imported"]:
+            final = settled() if settled else head
+            reth.forkchoice(head, final, final)   # back to the block this one is built on, never below the last one Canton committed
+            lost.extend(put_back(reth, n))
+            state["imported"] = False
+
+    def move_to(items: list) -> None:
+        hashes = [t["hash"] for t in items]
+        if state["tip"] == hashes:
+            return
+        rewind()
+        state["tip"] = None
+        state["payload"], got = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs, settled=settled, only=[by_hash[h] for h in hashes])
+        state["imported"] = True
+        state["tip"] = hashes
+
+    def make_input() -> tuple:
+        block, witness, out = folder / "block.json", folder / "witness.json", folder / "input.bin"
+        try:
+            block.write_text(json.dumps(reth.call("eth_getBlockByNumber", [hex(n), True])))
+            witness.write_text(json.dumps(reth.call("debug_executionWitness", [hex(n)])))
+            run(cfg.make_input_cmd, str(block), str(witness), cfg.genesis, str(out))
+        except BuilderError as e:   # the input tool refuses the block (for example reth: the execution witness is too big): over budget
+            raise pc.InputToolFailed(str(e)) from e
+        return out, witness
+
+    def check(items: list) -> "pc.Verdict":
+        try:
+            move_to(items)
+        except BuilderError as e:   # reth cannot build exactly these (a transaction needed one that is not in the set): not a block, over budget
+            state["imported"] = True   # the failed build may have moved reth: the next move goes back first
+            state["tip"] = None
+            v = pc.Verdict(pc.INPUT_TOOL, detail=f"reth cannot build this set of transactions: {str(e)[:150]}")
+        else:
+            v = pc.check_block(setup.emu, setup.budgets, make_input)
+        attempt.event("precheck", transactions=len(items), **v.fields(), **({"detail": v.detail} if v.detail else {}))
+        return v
+
+    items = [t for t, _ in pairs]
+    try:
+        # the whole block is reth's tip: its first check needs no rebuild
+        sel = pc.select(items, check, setup.max_checks, dependents=lambda c, later: [t for t in later if t["from"] == c["from"]])
+        if not sel.convicted and not sel.waiting and not sel.exhausted:
+            return None
+        convicted = [{"transaction": t["hash"], "reason": v.reason(), "overBudget": True} for t, v in sel.convicted]
+        attempt.event("precheck_cut", kept=len(sel.kept), waiting=[t["hash"] for t in sel.waiting], convicted=[x["transaction"] for x in convicted],
+                      checks=sel.checks, exhausted=sel.exhausted)
+        move_to(sel.kept)
+        return state["payload"], [by_hash[t["hash"]] for t in sel.kept], convicted
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_empty: bool = True,
           lost: list | None = None, attempt: "Attempt | None" = None, settled=None, defer_legs: bool = False) -> "Built | dict":
     """Stage one. Cuts the block: chooses its transactions, has reth build it on `head` (Canton's head; `chain` says its number) (again without any transaction whose leg has no
@@ -1085,11 +1163,16 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     packing: dict = {}   # how the last build of this block chose its transactions
     left_out, pairs = [], None   # the transactions left out because a leg of theirs had no Canton side, each with the reason; the last build's transactions
     lost = [] if lost is None else lost   # the ones reth would not take back (the caller's list, so that a failure keeps them)
+    checked, staged = False, None   # with the pre-check on: whether this block was checked, and the prefix it cut the block back to (reth's tip already)
+    work = Path(cfg.work_dir) / f"block-{n}"
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
         # every leg of the block has its Canton side, and a block with no transaction left out is the one that goes on.
-        payload, pairs = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs, settled=settled)
+        if staged is not None:
+            payload, pairs, staged = staged[0], staged[1], None
+        else:
+            payload, pairs = build_and_import(cfg, reth, chain, head, exclude, attempt, known=pairs, settled=settled)
         packing = reth.packed   # how this build chose its transactions: the last one is the block's
         chosen = [t for t, _ in pairs]
         events = read_legs(reth, chain, payload["blockHash"])
@@ -1098,7 +1181,19 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
             bad = {event.tx for event, _ in missing}
             missing = [*missing, *((event, LEG_WAITS) for event in events if event.tx not in bad)]
         if not missing:
-            break
+            if cfg.precheck is None or checked or not pairs:
+                break
+            # Every leg has its Canton side. Before the block is proven it is run in the emulator and kept within the budgets (README.md, "Pre-check").
+            checked = True
+            cut = precheck_cut(cfg, reth, chain, head, exclude, payload, pairs, settled, lost, attempt, work)
+            if cut is None:
+                break
+            staged = cut   # the legs of the prefix are read again, as for any block
+            for x in cut[2]:
+                exclude.add(x["transaction"])
+                left_out.append(x)
+            continue
+        checked = False   # a rebuild: the block that comes of it is checked again
         for event, reason in missing:
             if event.tx not in exclude:
                 exclude.add(event.tx)
@@ -1122,7 +1217,6 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     header, txs = split_block(raw)
     if "0x" + keccak256(header).hex() != block_hash:
         raise BuilderError("the block's header does not hash to its block hash")
-    work = Path(cfg.work_dir) / f"block-{n}"
     attempt_dir = work / f"attempt-{os.getpid()}-{time.time_ns()}"   # a folder of its own: a rebuilt block at this height never overwrites what an earlier attempt's tools may still read
     attempt_dir.mkdir(parents=True, exist_ok=True)
     # Only earlier attempts' folders, named as above, are pruned: never the one just made (a clock that stepped back would sort it oldest),
@@ -1856,6 +1950,7 @@ class Producer:
         failing = not result.get("skipped") and result["committed"] is False and not result.get("rejected")
         if not failing:
             self.note_lost(result.get("lostTransactions"), now)   # `fail` notes its own
+        self.hold_over_budget(result.get("leftOut") or [], now)
         if "proveSeconds" in result:
             self.proof_passed([h.lower() for h in result.get("transactions", result.get("keptTransactions", []))], now)
         if result.get("skipped"):
@@ -1898,6 +1993,13 @@ class Producer:
         if lost:
             self.lost = (self.lost + [{**x, "time": iso(now)} for x in lost])[-100:]
             self.journal.event("lost", transactions=lost)
+
+    def hold_over_budget(self, left_out: list, now: float) -> None:
+        """A transaction the pre-check found over the proving budget on its own is left out for the cool-down, with the reason the explorer shows."""
+        for x in left_out:
+            if x.get("overBudget") and x["transaction"] not in self.excluded:
+                self.hold(x["transaction"], now, x["reason"])
+                self.excluded_why[x["transaction"]] = x["reason"]
 
     def hold(self, tx: str, now: float, why: str) -> None:
         """Leaves a transaction out of the blocks for the cool-down."""
@@ -2435,6 +2537,7 @@ class Pipeline(Producer):
                 self.back_to(reth, e, base, n, lost_so_far)
                 raise
             pairs = list(reth.imported)
+        self.hold_over_budget(built["leftOut"] if isinstance(built, dict) else built.left_out, self.clock())
         if waiting_legs(built["leftOut"] if isinstance(built, dict) else built.left_out):
             self.leg_wait = True
         if isinstance(built, dict):   # skipped: nothing to prove or submit
@@ -2709,11 +2812,38 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--gather-ms", type=float, default=0, help="run: after a transaction reaches an idle pool, wait this long for more before cutting (0: cut at once)")
     ap.add_argument("--heartbeat-seconds", "--empty-every-seconds", dest="heartbeat_seconds", type=float, default=0,
                     help="run: make an empty block when none was made for this long (0: never; --empty-every-seconds is the old name)")
+    ap.add_argument("--precheck", action="store_true", default=os.environ.get("CZE_PRECHECK") == "1", help="before a block is proven, run it in the fast ZisK emulator and keep it within the budgets below; a block over them is cut back to the longest prefix that fits (also CZE_PRECHECK=1). Off by default: the builder is then as it was")
+    ap.add_argument("--ziskemu", default=os.environ.get("CZE_ZISKEMU"), metavar="CMD", help="the emulator program for --precheck (default: $ZISK_DIR/bin/ziskemu if it is there, else ziskemu on the PATH; also CZE_ZISKEMU)")
+    ap.add_argument("--guest-elf", default=os.environ.get("CZE_GUEST_ELF"), metavar="FILE", help="the guest ELF for --precheck: the file the prover uses (default: CZE_GUEST_ELF, else the one prover/build-guest.sh made)")
+    ap.add_argument("--precheck-max-steps", type=int, default=pc.DEFAULT_MAX_STEPS, metavar="N", help=f"--precheck: the most emulator steps a block may take (default {pc.DEFAULT_MAX_STEPS:,})")
+    ap.add_argument("--precheck-timeout", type=float, default=pc.DEFAULT_TIMEOUT, metavar="SECONDS", help=f"--precheck: the most wall time the check itself may take; over it the emulator is killed and the block is over budget (default {pc.DEFAULT_TIMEOUT:g})")
+    ap.add_argument("--precheck-max-input-bytes", type=int, default=pc.DEFAULT_MAX_INPUT_BYTES, metavar="BYTES", help=f"--precheck: the most bytes the block's input may have (default {pc.DEFAULT_MAX_INPUT_BYTES})")
+    ap.add_argument("--precheck-max-codes", type=int, default=pc.DEFAULT_MAX_CODES, metavar="N", help=f"--precheck: the most distinct contract codes a block may load (default {pc.DEFAULT_MAX_CODES})")
+    ap.add_argument("--precheck-max-code-bytes", type=int, default=pc.DEFAULT_MAX_CODE_BYTES, metavar="BYTES", help=f"--precheck: the most bytes of contract code a block may load (default {pc.DEFAULT_MAX_CODE_BYTES})")
     ap.add_argument("--package-id", metavar="ID", help="submit every Advance with packageIdSelectionPreference [ID], so that it runs under that Daml package version whatever else is vetted (default: Canton picks by package name)")
     ap.add_argument("--test", action="store_true", help="run: mark this run in the journal as a flood or another test, so that the explorer's statistics can leave it out")
     ap.add_argument("--status-file", metavar="PATH", help="run: where to write the status (default: status.json in the work folder)")
     ap.add_argument("--exclude-cooldown-seconds", type=float, default=600, help="run: how long a transaction in two refused blocks in a row is left out")
     return ap
+
+
+def precheck_setup(args) -> "pc.Precheck":
+    """The pre-check's emulator and budgets from the arguments. A missing emulator or guest file, or a budget below 1, is a bad-arguments error at start."""
+    for name in ("max_steps", "max_input_bytes", "max_codes", "max_code_bytes"):
+        if getattr(args, "precheck_" + name) < 1:
+            raise BuilderError(f"bad arguments: --precheck-{name.replace('_', '-')} must be at least 1")
+    if not math.isfinite(args.precheck_timeout) or args.precheck_timeout <= 0:
+        raise BuilderError("bad arguments: --precheck-timeout must be more than 0")
+    zisk = os.environ.get("ZISK_DIR") or str(Path.home() / ".zisk")
+    program = args.ziskemu or (str(Path(zisk) / "bin" / "ziskemu") if (Path(zisk) / "bin" / "ziskemu").exists() else "ziskemu")
+    elf = args.guest_elf or str(Path(os.environ.get("CZE_PROVER_STATE") or ROOT / "state" / "prover") / "guest" / "zec-reth.elf")
+    emu = pc.Emulator(program, elf)
+    try:
+        pc.check_start(emu)
+    except pc.PrecheckError as e:
+        raise BuilderError(f"bad arguments: {e}") from e
+    return pc.Precheck(emu, pc.Budgets(args.precheck_max_steps, args.precheck_timeout, args.precheck_max_input_bytes,
+                                       args.precheck_max_codes, args.precheck_max_code_bytes))
 
 
 def main() -> int:
@@ -2744,6 +2874,8 @@ def main() -> int:
         if args.prover_input_dir:
             cfg.prover_input_dir = Path(args.prover_input_dir)
         cfg.max_block_tx_bytes = args.max_block_tx_bytes
+        if args.precheck:
+            cfg.precheck = precheck_setup(args)
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
         if args.disclosed:

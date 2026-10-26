@@ -129,10 +129,28 @@ What the help of `cargo-zisk` 1.3.1 says for `remote prove`: `--timeout <TIMEOUT
 Three things are confirmed on the first remote GPU machine before more than one prover is used on a live chain: whether `-i` with a path uploads the input or names a path on the coordinator, whether a coordinator queues or refuses a second request, and whether killing a job frees its coordinator.
 
 
+## Pre-check
+
+`--precheck` (also `CZE_PRECHECK=1`; off by default, and with it off the builder does what it always did) runs each block in the fast ZisK emulator, `ziskemu` without `-X`, on the block's input, with the guest ELF the prover uses, before the block goes to a prover. It keeps the block within five budgets:
+
+| Budget | Option | Default |
+|---|---|---|
+| emulator steps | `--precheck-max-steps` | 233,000,000 |
+| wall time of the check itself (over it the emulator's process group is killed and the block is over budget) | `--precheck-timeout` | 20 s |
+| input size | `--precheck-max-input-bytes` | 64 MiB (the prover takes 134 MB inline) |
+| distinct contract codes loaded, from the execution witness the input tool is given | `--precheck-max-codes` | 1,000 |
+| contract code bytes loaded | `--precheck-max-code-bytes` | 24 MiB |
+
+The fifth case needs no number: an input tool that fails (for example reth refusing an execution witness that is too big) or a guest that aborts in the emulator (heap, or a failing block validation) counts as over budget. The code defaults sit below the point where a proof was measured to still pass, at about 1,350 loads of 24 KB codes. The check bounds a block; it does not predict the proof's time.
+
+`--ziskemu` (also `CZE_ZISKEMU`) names the emulator (default: `$ZISK_DIR/bin/ziskemu` if it is there, else `ziskemu` on the PATH) and `--guest-elf` (also `CZE_GUEST_ELF`) the guest ELF (default: the one `prover/build-guest.sh` made). With the switch on, a missing emulator or ELF stops the builder at start with a clear error.
+
+A block over a budget is cut back to the longest prefix that fits, found by halves: each try is a block of exactly those transactions, built with reth's explicit list, run and taken back, so a cut costs about log2(n) extra builds and emulator runs (at most 64 tries, then the longest prefix known to fit is kept). The transactions after the prefix stay in reth's pool and wait for the next block. A transaction that is over budget on its own is left out for the cool-down (`--exclude-cooldown-seconds`) with the reason in its `leftOut` entry (`overBudget` is true) and in the status file's `excluded` list, which is what the explorer shows; the same sender's later transactions wait. Two transactions that each fit alone but not together are cut between them, and land in separate blocks. The block that goes on is exactly the prefix that was checked, and its legs are read again. Both the one-block producer and `--max-in-flight` above 1 check each block after its legs have their Canton side and before it is proven. Every check and every cut is a journal line (`precheck`, `precheck_cut`).
+
 ## Running it all the time
 
 ```sh
-python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>] [--prover <name>=<url>]... [--prove-timeout 1800] [--prover-input-dir <folder>] [--max-in-flight 1]
+python3 builder/builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0] [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600] [--max-block-tx-bytes 65536] [--target-gas-limit <gas>] [--prover <name>=<url>]... [--prove-timeout 1800] [--prover-input-dir <folder>] [--max-in-flight 1] [--precheck]
 ```
 
 `run` keeps the chain moving without anyone starting the builder by hand. It reads the same settings as `once` and takes `--read-as`, `--disclosed` and `--package-id` the same way. Each time round it asks reth, on the same builder-only WebSocket port, how many transactions its pool has waiting (`txpool_status`). If there are some, it builds a block with exactly the code `once` runs: from Canton's head, proved, submitted; only that build reads the transactions themselves (`txpool_content`). If the pool is empty it waits `--idle-ms` (at least 50) and looks again, and an idle loop never fetches the pool. With `--heartbeat-seconds N` greater than 0 (the old name `--empty-every-seconds` still works) it also makes an empty block when no block was committed for N seconds, so a quiet chain still shows it is alive. Only that heartbeat ever proves and submits an empty block.
@@ -202,6 +220,8 @@ A journal that cannot be written never stops the chain. The failure is in the st
 | Event | When | Fields |
 |---|---|---|
 | `cut` | the producer decides to build | `number` (Canton's head plus one), `strategy`, `cut_reason` (`pool`, `gather`, `heartbeat`, `retry` or `probe`), `pool_waiting`, `idle_before_cut_ms`, `in_flight_at_cut` |
+| `precheck` | the pre-check ran a block in the emulator (`--precheck`) | `transactions` (the block's size), `verdict` (`ok`, `steps`, `time`, `input_bytes`, `codes`, `code_bytes`, `guest` or `input_tool`), `steps`, `seconds`, `inputBytes`, `codes`, `codeBytes`, and `detail` when over |
+| `precheck_cut` | the pre-check cut a block back | `kept` (how many transactions), `waiting` (the hashes that wait for the next block), `convicted` (the hashes left out for the cool-down), `checks`, `exhausted` |
 | `built` | reth has made the block its head and the legs are matched | `block_hash`, `parent_hash`, `tx_hashes` in order, `gas_used`, `legs`, `rebuilds`, `left_out` (each with its reason), `packed` (how the block's last build, the one that went on, chose its transactions: `gas_used`, or `gas_limits` when the builder fell back, with `pack_reason`), `offered` (how many transactions reth was offered), `tx_bytes` (the raw bytes of the block's transactions), `max_tx_bytes` (the cap in force, `--max-block-tx-bytes`), `package_id` (only with `--package-id`), `target_gas_limit` (what was sent to reth; only with `--target-gas-limit`), `target_gas_limit_asked` and `target_gas_limit_clamped_to_cap` (only when the chain's cap held the target down) |
 | `skipped` | a build with no transaction that can go in (the attempt ends) | `left_out`, `rebuilds` |
 | `proof_queued`, `proof_started`, `proof_ended` | around the prover | `prover`; on the end `outcome` (`ok`, `failed`, `timeout` or `wrong_block`), `seconds`, and for a block that did not prove, `reason` (the first 300 characters of the error). With two or more provers the end also names the `prover` that ended it and, for a block a first try failed on, `tried_first` (the provers it failed on); the end of a block that did not prove names the provers it was tried on as `tried`. `proof_queued` and `proof_started` always name the prove command, not a prover: the prover is named by the end. |
