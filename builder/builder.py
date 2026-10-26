@@ -2320,8 +2320,16 @@ class Pipeline(Producer):
                         self.write_status()
                     self.wait(self.idle)
                     return
-                oldest.proving.ticket.done.wait()   # nothing more can be cut: the oldest is what everything waits for
+                while not oldest.proving.ticket.done.wait(0.2):   # nothing more can be cut: the oldest is what everything waits for, and a signal ends the wait
+                    if self.stop.is_set():
+                        if fault:
+                            self.tell_cut_failed(fault)
+                        return
                 self.collect()
+                if self.stop.is_set():   # the signal came as the proof did: the proof is not sent
+                    if fault:
+                        self.tell_cut_failed(fault)
+                    return
             if oldest.state == FAILED:
                 attempt = self.attempt = oldest.attempt
                 self.unwind(oldest.error, oldest)

@@ -306,6 +306,36 @@ class Stop(Modes):
         self.assertEqual((len(self.cuts(s)), self.numbers(s)), (cuts, []))
         self.assertEqual(len(p.flight), 1)
 
+    def test_a_signal_while_the_step_waits_for_the_oldest_proof_submits_nothing_at_two(self):
+        s = self.setup({})
+        self.script(tp.A, "sleep 3")   # the oldest block's proof is slow; the second block is proven on the other prover meanwhile
+        p = self.pipeline(s, 2, provers=2)
+        s.reth.pool[ALICE] = [tx(ALICE, 0)]
+        self.drive(p, lambda: len(p.flight) == 1)
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        real = p.cut
+        def cut(*a, **kw):
+            found = real(*a, **kw)
+            threading.Timer(0.5, self.stop.set).start()   # the signal arrives once the loop is full and the step waits for the oldest proof
+            return found
+        p.cut = cut
+        started = time.monotonic()
+        self.step(p)
+        self.assertLess(time.monotonic() - started, 2.5, "the wait ended with the signal, not with the proof")
+        self.assertTrue(self.stop.is_set())
+        self.assertEqual(self.numbers(s), [], "no Advance is sent after the signal")
+        self.assertEqual(len(p.flight), 2)
+        p.abandon()
+        self.assertTrue(all(e.proving.ticket.cancelled for e in p.flight))
+        self.assertEqual(sorted(x["number"] for x in b.read_saved_entries(s.cfg)), [FIRST, FIRST + 1])
+        self.stop.clear()
+        self.script(tp.A, "true")
+        later = self.producer(s, max_in_flight=2)   # the next start
+        self.step(later)
+        self.assertEqual([x["recovered"] for x in self.reports if "recovered" in x], [2])
+        self.drive(later, lambda: not later.flight and not self.in_pool(s) and self.committed())
+        self.assertEqual(self.numbers(s), [FIRST], "both blocks' transactions went in again, as one block on Canton's head")
+
     def test_the_running_submit_finishes_and_the_next_start_recovers_the_rest(self):
         s = self.setup({})
         self.script(tp.A, "sleep 3")   # the first block's proof is the slow one: the second is proven before it
