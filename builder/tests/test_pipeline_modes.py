@@ -356,13 +356,13 @@ class Stop(Modes):
         s = self.setup({})
         self.script(tp.A, "sleep 3")   # the first block's proof is the slow one: the second is proven before it
         p = self.pipeline(s, 2)
-        real, submitted = p.submit_oldest, []
+        real, submitted = p.start_send, []
         def submit(entry):
+            real(entry)
             if not submitted:
                 submitted.append(entry.number)
                 self.stop.set()   # the signal arrives while the Advance is on its way
-            return real(entry)
-        p.submit_oldest = submit
+        p.start_send = submit
         run = threading.Thread(target=p.run, daemon=True)
         run.start()
         s.reth.pool[ALICE] = [tx(ALICE, 0)]

@@ -405,6 +405,8 @@ class FakeLedger:
         self.paid: object = None   # the paidTrafficCost POST /v2/commands/completions shows for the last submitted command; None: no completion shown
         self.completion_queries: list = []   # (query string, body) of each completions read
         self.completions_delay = 0.0   # seconds the completions read takes to answer
+        self.hold: "threading.Event | None" = None   # an Advance waits for this to be set before it is decided
+        self.entered = threading.Event()   # set when an Advance has reached the participant and is waiting for `hold`
         self.answer_time = None   # time.time() when submit-and-wait was answered
         self.completions_fail = False   # the completions read is answered with HTTP 500
         self.outcomes: dict = {}   # command id -> the completion the participant shows for it (None: none yet)
@@ -575,6 +577,9 @@ class FakeLedger:
                     return self._reply(200, shown[:int(limit)] if limit else shown)
                 if self.path == "/v2/commands/submit-and-wait":
                     ledger.submitted.append(body)
+                    if ledger.hold is not None:
+                        ledger.entered.set()
+                        ledger.hold.wait(30)
                     command_id = body["commandId"]
                     failed = {"commandId": command_id, "offset": 43, "status": {"code": 9, "message": "failed"}}
                     if ledger.refuse and not ledger.fail_but_commit:
