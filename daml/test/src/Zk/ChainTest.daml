@@ -820,7 +820,7 @@ testALimitOverTheOldCapCommitsAfterTheRaise = do
 
 -- The program: the operator proposes, the confirmer accepts, and the chain's other fields stay as they were.
 
--- The operator proposes the three values and the confirmer accepts them on `chain`.
+-- The operator and the gateway propose the three values and the confirmer accepts them on `chain`.
 switchProgram : F -> ContractId ZkChain -> Text -> Text -> Text -> Script (ContractId ZkChain)
 switchProgram f chain vk root rules = do
   p <- submit (actAs [f.operator, f.gateway]) $ createCmd ProgramProposal with
@@ -853,8 +853,8 @@ testAdvanceFollowsTheRootAlone = do
   (_, _) <- submit (asBuilder f) $ advanceWith switched "06" "aa" ["aa"] [] []
   pure ()
 
-testSetProgramNeedsTheOperatorAndTheConfirmer : Script ()
-testSetProgramNeedsTheOperatorAndTheConfirmer = do
+testSetProgramNeedsTheOperatorTheConfirmerAndTheGateway : Script ()
+testSetProgramNeedsTheOperatorTheConfirmerAndTheGateway = do
   f <- fixture
   let set = exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
   submitMustFail f.operator set
@@ -868,7 +868,7 @@ testSetProgramNeedsTheOperatorAndTheConfirmer = do
   [(cid, c)] <- query @ZkChain f.operator
   (cid, c.programVK) === (chain, stubRoot)
 
--- Only the operator proposes, and only the confirmer accepts; a proposal is for one chain, its operator and its confirmer.
+-- The operator and the gateway propose, and only the confirmer accepts; a proposal is for one chain, its operator, its confirmer and its gateway.
 testProgramProposalAuthorizationAndChain : Script ()
 testProgramProposalAuthorizationAndChain = do
   f <- fixture
@@ -902,7 +902,7 @@ testProgramValuesMustBeHex = do
         operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; chainId = 770101; newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = stubRoot
       all3 = actAs [f.operator, f.confirmer, f.gateway]
       both = actAs [f.operator, f.gateway]
-  forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb"] $ \bad -> do
+  forA_ ["", "zz", "AB", "0x" <> stubRoot, T.take 62 stubRoot, stubRoot <> "bb", T.replicate 64 "B", T.replicate 64 "g"] $ \bad -> do
     submitMustFail both $ createCmd proposal with newProgramVK = bad
     submitMustFail both $ createCmd proposal with newRootC = bad
     submitMustFail both $ createCmd proposal with newRulesHash = bad
@@ -911,7 +911,7 @@ testProgramValuesMustBeHex = do
     submitMustFail all3 $ exerciseCmd f.chain SetProgram with newProgramVK = stubRoot; newRootC = stubRoot; newRulesHash = bad
 
 -- Advance holds a block to the keys in the contract: the old pair before the switch, the new pair after, and the old pair again after
--- the switch back. This is the rollback before a fork time.
+-- the switch back (a program change can be undone by changing back).
 testAdvanceFollowsTheProgram : Script ()
 testAdvanceFollowsTheProgram = do
   f <- fixture

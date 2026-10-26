@@ -214,6 +214,8 @@ Nothing changes until the accept, and the first block after it must be proven un
 
 Both sidecars take one `--program-vk` and one `--root-c` when they start and refuse a proof made under any other, so the sidecars must change with the contract: during the pause, restart the operator's sidecar and the confirmer's sidecar with the new program key and ZisK root, before the block producer starts again, and with the old ones for the way back. Without that, every block fails at verify after the switch.
 
+The explorer's indexer pins one program key and ZisK root too (its pins file) and stops at check C7 on the first block proven under other keys, so restart it with the new pins file during the same pause. With a single pair of pins, a re-index from before the switch would then stop at the older blocks; keys per block range in the explorer are follow-up work.
+
 **Privacy.** The operator of the participant sees every contract of every Ostia party, because all of them are hosted there, and holds what it takes to act as them. Nothing about Ostia keeps a chain's data from the validator's operator. Use a participant whose operator you trust with the chain, and keep the token files off shared machines.
 
 **The explorer.** It and its indexer read Canton as the reader party, with the reader user's token: make a 0600 token file for `ostia-reader` (HS256, audience `https://canton.network.global`, `sub` `ostia-reader`, or your `CZE_USER_PREFIX`'s reader) and give it to `explorer/run.sh` as `LEDGER_TOKEN_FILE` (or `CZE_TOKEN_FILE_READER`), with `LEDGER_URL` and `READER_PARTY` for this participant. The file is read again on every call, so refresh it in place. See `explorer/README.md`.
