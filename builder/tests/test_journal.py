@@ -550,9 +550,21 @@ class TheSetting(Lines):
                           (["--empty-every-seconds", "1"], "cannot keep up"),
                           (["--gather-ms", "-1"], "cannot be negative"),
                           (["--gather-ms", "60000"], "would wait longer"),
-                          (["--strategy", "fixed_rhythm"], "not available")):
+                          (["--strategy", "fixed_rhythm"], "not available"),
+                          (["--max-in-flight", "2"], "not built yet"),
+                          (["--max-in-flight", "2", "--prover", "a=http://127.0.0.1:1", "--prover", "b=http://127.0.0.1:2"], "not built yet"),
+                          (["--max-in-flight", "0"], "at least 1"),
+                          (["--max-in-flight", "4", "--prover", "a=http://127.0.0.1:1", "--prover", "b=http://127.0.0.1:2"], "is over 3"),
+                          (["--max-in-flight", "3", "--prover", "a=http://127.0.0.1:1"], "is over 2")):
             with self.subTest(argv):
                 code, out = self.run_main("run", *argv)
+                self.assertEqual(code, 1)
+                self.assertIn(why, json.loads(out)["error"])
+
+    def test_the_setting_from_the_environment_is_refused_the_same_way(self):
+        for value, why in (("2", "not built yet"), ("0", "at least 1"), ("5", "is over 2")):
+            with self.subTest(value), mock.patch.dict(os.environ, {"CZE_MAX_IN_FLIGHT": value}):
+                code, out = self.run_main("run")
                 self.assertEqual(code, 1)
                 self.assertIn(why, json.loads(out)["error"])
 
