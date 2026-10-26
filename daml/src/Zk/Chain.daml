@@ -237,13 +237,13 @@ template GasCapProposal
     ensure chainId > 0 && newCap > 0
     observer reader
 
-    -- The operator takes its proposal back, or the confirmer turns it down; either one alone, so a pending proposal never gets stuck
+    -- The operator takes its proposal back (Withdraw...), or the confirmer turns it down (Reject...); either one alone, so a pending proposal never gets stuck
     -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
-    choice Withdraw : ()
+    choice WithdrawGasCap : ()
       controller operator
       do pure ()
 
-    choice Reject : ()
+    choice RejectGasCap : ()
       controller confirmer
       do pure ()
 
@@ -277,13 +277,13 @@ template ProgramProposal
     ensure chainId > 0 && all (hexOfLength 64) [newProgramVK, newRootC, newRulesHash]
     observer reader
 
-    -- The operator takes its proposal back, or the confirmer turns it down; either one alone, so a pending proposal never gets stuck
+    -- The operator takes its proposal back (Withdraw...), or the confirmer turns it down (Reject...); either one alone, so a pending proposal never gets stuck
     -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
-    choice Withdraw : ()
+    choice WithdrawProgram : ()
       controller operator
       do pure ()
 
-    choice Reject : ()
+    choice RejectProgram : ()
       controller confirmer
       do pure ()
 
@@ -314,13 +314,13 @@ template ChangeDelayProposal
     ensure chainId > 0 && delayInRange newDelay
     observer reader
 
-    -- The operator takes its proposal back, or the confirmer turns it down; either one alone, so a pending proposal never gets stuck
+    -- The operator takes its proposal back (Withdraw...), or the confirmer turns it down (Reject...); either one alone, so a pending proposal never gets stuck
     -- (the built-in Archive needs every signatory). The reader sees the proposal, so a pending change and the time it may be accepted are public.
-    choice Withdraw : ()
+    choice WithdrawChangeDelay : ()
       controller operator
       do pure ()
 
-    choice Reject : ()
+    choice RejectChangeDelay : ()
       controller confirmer
       do pure ()
 

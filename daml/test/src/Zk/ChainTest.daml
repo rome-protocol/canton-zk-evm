@@ -1184,29 +1184,29 @@ testAPendingProposalCanBeWithdrawnOrRejected = do
   [_] <- query @ProgramProposal f.reader
   [_] <- query @ChangeDelayProposal f.reader
   forA_ [f.builder, f.reader, f.gateway] $ \who -> do
-    submitMustFail who $ exerciseCmd g Withdraw
-    submitMustFail who $ exerciseCmd g Reject
-  submitMustFail f.confirmer $ exerciseCmd g Withdraw
-  submitMustFail f.operator $ exerciseCmd g Reject
+    submitMustFail who $ exerciseCmd g WithdrawGasCap
+    submitMustFail who $ exerciseCmd g RejectGasCap
+  submitMustFail f.confirmer $ exerciseCmd g WithdrawGasCap
+  submitMustFail f.operator $ exerciseCmd g RejectGasCap
   forA_ [f.builder, f.reader, f.confirmer] $ \who -> do
-    submitMustFail who $ exerciseCmd q Withdraw
-    submitMustFail who $ exerciseCmd d Withdraw
+    submitMustFail who $ exerciseCmd q WithdrawProgram
+    submitMustFail who $ exerciseCmd d WithdrawChangeDelay
   forA_ [f.builder, f.reader, f.operator] $ \who -> do
-    submitMustFail who $ exerciseCmd q Reject
-    submitMustFail who $ exerciseCmd d Reject
+    submitMustFail who $ exerciseCmd q RejectProgram
+    submitMustFail who $ exerciseCmd d RejectChangeDelay
   -- the operator withdraws the gas cap and the confirmer rejects the program and the delay
-  submit f.operator $ exerciseCmd g Withdraw
-  submit f.confirmer $ exerciseCmd q Reject
-  submit f.confirmer $ exerciseCmd d Reject
+  submit f.operator $ exerciseCmd g WithdrawGasCap
+  submit f.confirmer $ exerciseCmd q RejectProgram
+  submit f.confirmer $ exerciseCmd d RejectChangeDelay
   [] <- query @GasCapProposal f.operator
   [] <- query @ProgramProposal f.operator
   [] <- query @ChangeDelayProposal f.operator
   submitMustFail f.confirmer $ exerciseCmd g AcceptGasCap with chain
   -- the operator can withdraw the other two as well, and the confirmer reject the gas cap
   (g2, q2, d2) <- proposeAll
-  submit f.confirmer $ exerciseCmd g2 Reject
-  submit f.operator $ exerciseCmd q2 Withdraw
-  submit f.operator $ exerciseCmd d2 Withdraw
+  submit f.confirmer $ exerciseCmd g2 RejectGasCap
+  submit f.operator $ exerciseCmd q2 WithdrawProgram
+  submit f.operator $ exerciseCmd d2 WithdrawChangeDelay
   [] <- query @GasCapProposal f.operator
   pure ()
 

@@ -39,7 +39,7 @@
     300,000,000. With --dry-run nothing is submitted: the step prints what it would do ("dryRun": true). Stop the block producer before the
     accept and start it again after (a block replaces the chain contract, and an accept given a replaced contract is refused: nothing changes,
     and the accept is safe to run again). A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for a value
-    that is not wanted is taken back by the operator (--withdraw-proposal gas-cap, the Withdraw choice, with the operator's token; the confirmer can also reject it) before another is proposed.
+    that is not wanted is taken back by the operator (--withdraw-proposal gas-cap, the WithdrawGasCap choice, with the operator's token; the confirmer can also reject it) before another is proposed.
 
   setup.py --ledger-url <URL> --program-step propose|accept --program-vk <hex> --root-c <hex> --rules-hash <hex> [--dry-run]
 
@@ -51,7 +51,7 @@
       accept   the confirmer's token: exercises AcceptProgram on the proposal for exactly these three values, given the chain's current contract.
     propose refuses a chain that holds these values already; accept on such a chain prints "alreadyAccepted": true. With --dry-run nothing is submitted. Stop the block producer before the accept and start it
     again after, as for the gas cap. A re-run of the accept after it went through prints "alreadyAccepted": true. A proposal for other values is
-    taken back by the operator (--withdraw-proposal program, the Withdraw choice, with the operator's token; the confirmer can also reject it) before another is proposed. The chain check of a later plain setup run
+    taken back by the operator (--withdraw-proposal program, the WithdrawProgram choice, with the operator's token; the confirmer can also reject it) before another is proposed. The chain check of a later plain setup run
     compares the chain with the values it is given, so give it the values the chain holds now.
 
   setup.py --ledger-url <URL> --change-delay-step propose|accept --delay-seconds <N> [--dry-run]
@@ -405,17 +405,18 @@ def step_chain(url: str, step: str, with_gateway: bool = False) -> tuple:
     return ledger, chain
 
 
+CHOICE_SUFFIX = {"gas-cap": "GasCap", "program": "Program", "change-delay": "ChangeDelay"}
 PROPOSAL_KINDS = {"gas-cap": "GasCapProposal", "program": "ProgramProposal", "change-delay": "ChangeDelayProposal"}
 
 
 def withdraw_step(url: str, kind: str, dry_run: bool) -> dict:
-    """The operator takes back its pending proposals of one kind for this chain (the Withdraw choice; the operator alone controls it, and the confirmer can reject instead)."""
+    """The operator takes back its pending proposals of one kind for this chain (the WithdrawGasCap, WithdrawProgram or WithdrawChangeDelay choice; the operator alone controls it, and the confirmer can reject instead)."""
     ledger, chain = step_chain(url, "propose")
     template = PROPOSAL_KINDS[kind]
     found = [p for p in ledger.active(template) if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"] and p.get("confirmer") == chain["confirmer"]]
     if not dry_run:
         for p in found:
-            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + template, "contractId": p["contractId"], "choice": "Withdraw", "choiceArgument": {}}}, "withdraw")
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + template, "contractId": p["contractId"], "choice": "Withdraw" + CHOICE_SUFFIX[kind], "choiceArgument": {}}}, "withdraw")
     return {"step": "withdraw", "kind": kind, "chainId": chain["chainId"], "pending": len(found), "withdrawn": 0 if dry_run else len(found), "dryRun": dry_run}
 
 

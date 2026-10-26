@@ -116,7 +116,7 @@ class FakeParticipant:
         if path == "/v2/commands/submit-and-wait":
             command = body["commands"][0]
             self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
-            if "ExerciseCommand" in command and command["ExerciseCommand"]["choice"] == "Withdraw":
+            if "ExerciseCommand" in command and command["ExerciseCommand"]["choice"].startswith("Withdraw"):
                 exercise = command["ExerciseCommand"]
                 name = exercise["templateId"].split(":")[-1]
                 self.contracts[name] = [c for c in self.contracts[name] if c["contractId"] != exercise["contractId"]]
@@ -560,7 +560,7 @@ class Setup(unittest.TestCase):
             self.assertEqual(self.node.contracts[name], [])
             self.assertEqual(self.withdraw(kind)["pending"], 0)
         command, acting = self.sent()[-1]
-        self.assertEqual(command["ExerciseCommand"]["choice"], "Withdraw")
+        self.assertEqual(command["ExerciseCommand"]["choice"], "WithdrawChangeDelay")
         self.raise_step("propose", 45_000_000)
         self.assertEqual(len(self.node.contracts["GasCapProposal"]), 1)
 
