@@ -2474,7 +2474,7 @@ class Pipeline(Producer):
 
     def abandon(self) -> None:
         """A stop (SIGTERM) cuts nothing more, and the step in progress, a submit included, has finished. The blocks still in flight are given up: their
-        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted).
+        proofs are stopped, and their transactions stay in the kept file for the next start to send again (it closes their attempts as restarted; an empty block has nothing kept, so its attempt is closed here).
         An Advance in its thread is never given up mid-call: it is waited for and its answer booked, and what cannot be booked stays in the record for
         the next start. No further block is submitted."""
         if self.sending is not None:
@@ -2486,9 +2486,13 @@ class Pipeline(Producer):
         for entry in self.flight:
             if entry.proving is not None:
                 entry.proving.ticket.cancel()
+            if not entry.pairs and not entry.attempt.closed:   # an empty block (a heartbeat) has no kept entry for the next start to close it by
+                entry.attempt.closed = True
+                self.close_attempts([(self.journal.run_id, entry.attempt.seq)])
 
     def status(self, state: str = "running") -> dict:
         found = super().status(state)
+        found["inFlight"] = [{"number": e.number, "attempt": e.attempt.seq, "state": e.state} for e in self.flight]
         if self.head_fault:
             found["headFault"] = self.head_fault
         if self.sending is not None:

@@ -54,6 +54,7 @@ class Case16(Held):
         self.assertEqual([x for x in self.reports if x.get("resolved")], [], "nothing is settled by its record while its submit runs")
         self.assertEqual(self.committed(), [])
         self.assertEqual(p.status()["submitting"], FIRST)
+        self.assertEqual([(x["number"], x["state"]) for x in p.status()["inFlight"]][0], (FIRST, "submitting"), "the status lists the block whose Advance is out")
         self.assertEqual(len(p.flight), 2)
         self.release(s)
         self.drive(p, lambda: len(self.committed()) == 2)
