@@ -113,7 +113,7 @@ class OutOfOrder(Depth):
         self.assertEqual(self.committed(), [n0 + i for i in range(k)])
         took = {r["number"]: r["proveSeconds"] for r in self.reports if r.get("committed")}
         self.assertTrue(all(took[n0 + i] < took[n0] for i in range(1, k)), f"the first block's proof was the slowest: {took}")
-        # the next block's Advance is sent only after the answer to the one before
+        # each block is submitted, then answered, in block order, and the next block is submitted only after the answer to the one before
         events = [(x["event"], x["attempt"]) for x in self.lines_in_order(s) if x["event"] in ("submitted", "answered")]
         self.assertEqual(events, [(e, i + 1) for i in range(k) for e in ("submitted", "answered")])
         self.assertEqual(self.refused(s), 0)
@@ -545,12 +545,12 @@ class Failures(Depth):
             self.drive(p, lambda: len(self.lines(s, "cut")) == i + 1)
         s.reth.pool[self.SENDERS[k - 1]] = [tx(self.SENDERS[k - 1], 0)]
         if refused:   # reth is down from the answer of Canton on
-            real_submit = b.submit
+            real_submit = b.settle_reply
             def submit(*a, **kw):
                 result = real_submit(*a, **kw)
                 down["on"] = True
                 return result
-            patch = mock.patch.object(b, "submit", submit)
+            patch = mock.patch.object(b, "settle_reply", submit)
         else:
             real_finish = b.finish_proof
             def finish(cfg, built, running, attempt=None):

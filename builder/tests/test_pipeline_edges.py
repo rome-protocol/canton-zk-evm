@@ -124,7 +124,7 @@ class CancelledLine(Edges):
 
 
 class Nits(Edges):
-    def test_a_refusal_and_a_failed_cut_in_one_step_back_off_once(self):
+    def test_a_failed_cut_in_the_step_a_submit_starts_backs_off_once_and_the_refusal_is_booked_after(self):
         s = self.setup({}, refuse="the sidecar refused the proof")
         self.script(tp.A, "sleep 1")
         p = self.pipeline(s, 2)
@@ -136,10 +136,11 @@ class Nits(Edges):
         s.reth.pool[BOB] = [tx(BOB, 0)]
         waits = len(self.waits)
         with mock.patch.object(b, "build", broken):
-            self.step(p)   # the second cut fails; the oldest block is refused in the same step
-        self.assertEqual([r.get("committed") for r in self.reports if "committed" in r], [False, False], "the refusal, and the failed cut")
+            self.step(p)   # the second cut fails; the oldest block's Advance starts in its thread
         self.assertEqual(len(self.waits) - waits, 1, "one back-off for the step")
         self.assertEqual(sum("reth cannot build" in json.dumps(r) for r in self.reports), 1, "the failed cut is told")
+        self.drive(p, lambda: any(r.get("committed") is False and not r.get("skipped") for r in self.reports))
+        self.assertEqual(sum("reth cannot build" in json.dumps(r) for r in self.reports), 1, "and told once")
 
 
 class InDoubtFlight(Edges):
