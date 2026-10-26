@@ -417,13 +417,16 @@ r=$(pause_run pause); jq -e '.submitted == true and .paused == true and .pausedU
 is "$(chain_package)" "$NEW" "the package the chain contract is under after the pause"
 block_under "$NEW" 8 0 "a block with no legs, while the legs are paused"
 deposit dep-8 "$NEW"
+# The builder reads the pause and leaves the deposit out of the block: it commits a block with no legs, Canton does not refuse it, and the deposit stays in the pool.
 set +e; out=$(build "$NEW"); status=$?; set -e
-echo "$out" | jq -c '{committed, rejected, reason: (.reason // "" | .[0:300])}'
-is "$status" 2 "the builder's exit status for the block with a deposit while the legs are paused"
-jq -e '.committed == false and .rejected == true and (.reason | contains("the legs are paused until"))' <<<"$out" >/dev/null || fail "the refusal of the block with a deposit under the pause is not the pause's: $out"
-is "$(canton status | jq -r '.chain[0].headNumber')" 8 "Canton's head after the block refused by the pause"
-is "$(rpc eth_getBlockByNumber '"latest",false' | jq -r .number)" 0x8 "reth's head after the block refused by the pause (it went back)"
+echo "$out" | jq -c '{committed, number, legs, legTransactions, leftOut}'
+is "$status" 0 "the builder's exit status for the block cut while the legs are paused ($out)"
+jq -e '.committed == true and .number == 9 and (.legTransactions | length) == 0' <<<"$out" >/dev/null || fail "the block cut under the pause carries a leg or is not block 9: $out"
+jq -e '(.leftOut | length) >= 1 and all(.leftOut[]; .reason | startswith("the Canton legs are paused until"))' <<<"$out" >/dev/null || fail "the deposit is not left out for the pause: $out"
+is "$(canton status | jq -r '.chain[0].headNumber')" 9 "Canton's head after the block cut under the pause (a block with no legs commits)"
+is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"70.0","supply":"70.0"}' "U's wTKB after block 9 (the deposit is not in it)"
 r=$(pause_run unpause); jq -e '.submitted == true and .paused == false' <<<"$r" >/dev/null || fail "the unpause: $r"
-block_under "$NEW" 9 1 "the block with the deposit, after the pause is lifted"
-is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"80.0","supply":"80.0"}' "U's wTKB after block 9"
-echo "package upgrade, gas cap raise, ramp over the old cap, downgrade, upgrade again and a real pause: passed"
+# The unpause clears the pause, so the next block takes the deposit that stayed in the pool.
+block_under "$NEW" 10 1 "the block with the deposit, after the pause is lifted"
+is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"80.0","supply":"80.0"}' "U's wTKB after block 10"
+echo "package upgrade, gas cap raise, ramp over the old cap, downgrade, upgrade again and a real pause (the legs left out, then included): passed"
