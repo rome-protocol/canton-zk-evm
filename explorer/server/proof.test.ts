@@ -7,7 +7,9 @@ const repo = (p: string) => new URL(`../../${p}`, import.meta.url);
 const recorded = readFileSync(repo("demo/results/run1-proof.hex"), "utf8").trim();
 const run1 = readFileSync(repo("demo/results/run1.txt"), "utf8");
 const BLOCK_HASH = /^block_hash=(.*)$/m.exec(run1)![1]!;
-const pins = parsePins(readFileSync(repo("prover/fixtures/session.txt"), "utf8"), "session.txt");
+// The recorded proof is from the demo of 2026-10-05, which ran the guest that stopped at Prague: its pins are session.txt's previous_programVK.
+const session = readFileSync(repo("prover/fixtures/session.txt"), "utf8");
+const pins = parsePins(session.replace(/^programVK=.*$/m, `programVK=${/^previous_programVK=(.*)$/m.exec(session)![1]!}`), "session.txt");
 
 describe("the facts a proof carries", () => {
   it("reads the program key, the ZisK release and the block hash from the recorded proof, and they are this chain's pins", () => {

@@ -138,7 +138,9 @@ check_smoke() {
   [[ $(sed -n 's/^source_commit=//p' "$R") =~ ^[0-9a-f]{40}$ ]] || { bad "source_commit is not a full commit hash"; return 1; }
   [[ $(sed -n 's/^dar_sha256=//p' "$R") =~ ^[0-9a-f]{64}$ ]] || { bad "dar_sha256 is not a SHA-256"; return 1; }
   [[ $(sed -n 's/^package_id=//p' "$R") =~ ^[0-9a-f]{64}$ ]] || { bad "package_id is not 64 hex digits"; return 1; }
-  [ "$(sed -n 's/^programVK=//p' "$R")" = "$(sed -n 's/^programVK=//p' "$S")" ] || { bad "programVK is not the recorded one"; return 1; }
+  # A result recorded before Osaka started at genesis ran the guest that stopped at Prague: its key is previous_programVK in session.txt.
+  rvk=$(sed -n 's/^programVK=//p' "$R")
+  [ "$rvk" = "$(sed -n 's/^programVK=//p' "$S")" ] || [ "$rvk" = "$(sed -n 's/^previous_programVK=//p' "$S")" ] || { bad "programVK is not the recorded one"; return 1; }
 }
 # The recorded smoke result is complete and consistent.
 out=$(check_smoke "$ROOT/demo/results/smoke.txt" "$ROOT/prover/fixtures/session.txt") || fail "demo/results/smoke.txt: $out"
