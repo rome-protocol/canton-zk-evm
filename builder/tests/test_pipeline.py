@@ -15,6 +15,7 @@ from test_producer import Loop
 from fakes import HEAD_HASH, HEAD_NUMBER, tx
 
 ALICE, BOB, CAROL = tb.ALICE, tb.BOB, tb.CAROL
+DAVE = "0x" + "d5" * 20
 A, B_ = "http://127.0.0.1:7001", "http://127.0.0.1:7002"
 
 
@@ -481,6 +482,158 @@ class InputToolFails(Depth):
 
     def test_at_three(self):
         self.check(3)
+
+
+class OnTheTip(Depth):
+    """A block built on a block in flight: when it is skipped, left-out rebuilt or fails, reth goes back to the block it was built on (never to the
+    last block Canton committed), finalized stays there, and only this block's transactions go back to the pool. The blocks in flight keep their saved
+    transactions."""
+
+    BAD = tb.Leg(tb.PAYMENT, "ff" * 32, tb.TKA, tb.PAYEE, 10)   # a leg with no Canton side
+
+    def bad_tx(self, s, sender):
+        t = tx(sender, 0)
+        s.reth.tx_legs[t["hash"]] = [self.BAD]
+        return t
+
+    def fcs(self, s, since=0):
+        """(head, finalized) of every move of reth's head, from call number `since`."""
+        return [(p[0]["headBlockHash"], p[0]["finalizedBlockHash"]) for m, p in s.reth.engine_calls[since:] if m == "engine_forkchoiceUpdatedV3"]
+
+    def kept(self, s):
+        return sorted({(x["number"], x["hash"]) for x in b.read_saved_entries(s.cfg) or []})
+
+    def in_pool(self, s):
+        return {t["hash"] for ts in s.reth.pool.values() for t in ts}
+
+    def blocks_in_flight(self, s, p, k, senders):
+        """`k` - 1 blocks in flight (the oldest slow), cut one after the other."""
+        self.script(A, "sleep 3")
+        for i in range(k - 1):
+            s.reth.pool[senders[i]] = [tx(senders[i], 0)]
+            self.drive(p, lambda: len(self.lines(s, "cut")) == i + 1)
+        self.assertEqual(len(p.flight), k - 1)
+
+    def check_left_out(self, k, rebuilt):
+        """Case 10: the next block is left-out rebuilt (it still holds a transaction) or skipped (it holds none) on the tip."""
+        s = self.setup({})
+        p = self.pipeline(s, k)
+        senders = (ALICE, CAROL)
+        self.blocks_in_flight(s, p, k, senders)
+        tip, n_first = p.flight[-1].hash, p.flight[0].number
+        bad = self.bad_tx(s, BOB)
+        s.reth.pool[BOB] = [bad]
+        if rebuilt:
+            s.reth.pool[DAVE] = [tx(DAVE, 0)]
+        before, cuts, done = len(s.reth.engine_calls), len(self.lines(s, "cut")), len(self.committed())
+        self.drive(p, lambda: len(self.lines(s, "cut")) == cuts + 1)
+        moves = self.fcs(s, before)
+        self.assertTrue(moves)
+        self.assertNotIn(HEAD_HASH, {h for h, _ in moves}, "reth's head is never Canton's head while a block is in flight")
+        self.assertIn(tip, {h for h, _ in moves})
+        # finalized stays on the last committed block until the oldest block commits, which a full loop does in the step of the cut: that move is the last
+        commits = len(self.committed()) - done
+        self.assertEqual([fin != HEAD_HASH for _, fin in moves], [False] * (len(moves) - commits) + [True] * commits)
+        self.assertEqual(self.in_pool(s), {bad["hash"]}, "only this block's transactions are back in the pool")
+        self.assertEqual({n for n, _ in self.kept(s)}, {e.number for e in p.flight}, "the blocks in flight keep their entries, and no other")
+        self.assertEqual(len(p.flight), k - commits if rebuilt else k - 1)
+        self.drive(p, lambda: len(self.committed()) >= k - 1 and not p.flight)
+        self.assertEqual(self.committed()[:k - 1], [n_first + i for i in range(k - 1)])
+        self.assert_final_never_back(s)
+
+    def test_a_skipped_block_on_the_tip_at_two(self):
+        self.check_left_out(2, rebuilt=False)
+
+    def test_a_skipped_block_on_the_tip_at_three(self):
+        self.check_left_out(3, rebuilt=False)
+
+    def test_a_left_out_rebuild_on_the_tip_at_two(self):
+        self.check_left_out(2, rebuilt=True)
+
+    def test_a_left_out_rebuild_on_the_tip_at_three(self):
+        self.check_left_out(3, rebuilt=True)
+
+    def fail_one_step(self, s, p):
+        """Steps until the build that is made to fail has failed (a block is cut only once a prover is free)."""
+        seen = len(self.reports)
+        self.drive(p, lambda: len(self.reports) > seen)
+        self.assertEqual(self.reports[-1]["committed"], False)
+
+    def fail_the_build_on_the_tip(self, depth, then_the_move_back=False):
+        """The next read of the legs, on a block built at `depth` blocks above Canton's head, fails once; with `then_the_move_back` so does the move back."""
+        real_legs, real_fc, state = b.read_legs, b.Reth.forkchoice, {"armed": True, "failed": False, "fc": then_the_move_back}
+        def legs(reth, chain, block_hash):
+            if state["armed"] and int(chain["headNumber"]) == HEAD_NUMBER + depth:
+                state["armed"], state["failed"] = False, True
+                raise b.BuilderError("reth broke while the legs were read")
+            return real_legs(reth, chain, block_hash)
+        def forkchoice(reth, head, safe, final):
+            if state["failed"] and state["fc"]:
+                state["fc"] = False
+                raise b.BuilderError("no state found for the block")
+            return real_fc(reth, head, safe, final)
+        for patch in (mock.patch.object(b, "read_legs", legs), mock.patch.object(b.Reth, "forkchoice", forkchoice)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def check_build_fails(self, k):
+        """A build on the tip fails and the move back works: reth is on the tip again, and the oldest block still commits."""
+        s = self.setup({})
+        p = self.pipeline(s, k)
+        senders = (ALICE, CAROL)
+        self.blocks_in_flight(s, p, k, senders)
+        tip, n_first = p.flight[-1].hash, p.flight[0].number
+        self.fail_the_build_on_the_tip(k - 1)
+        s.reth.pool[BOB] = [t := tx(BOB, 0)]
+        before = len(s.reth.engine_calls)
+        self.fail_one_step(s, p)
+        moves = self.fcs(s, before)
+        self.assertEqual({fin for _, fin in moves}, {HEAD_HASH})
+        self.assertEqual(moves[-1], (tip, HEAD_HASH), "reth is on the tip again, finalized on Canton's head")
+        self.assertIn(t["hash"], self.in_pool(s))
+        self.assertEqual({n for n, _ in self.kept(s)}, {n_first + i for i in range(k - 1)})   # only the blocks in flight keep entries
+        self.assertIsNone(p.back_pending)
+        self.drive(p, lambda: len(self.committed()) >= k)
+        self.assertEqual(self.committed()[:k - 1], [n_first + i for i in range(k - 1)])
+        self.assert_final_never_back(s)
+
+    def test_a_build_that_fails_on_the_tip_goes_back_to_the_tip_at_two(self):
+        self.check_build_fails(2)
+
+    def test_a_build_that_fails_on_the_tip_goes_back_to_the_tip_at_three(self):
+        self.check_build_fails(3)
+
+    def check_back_cannot_finish(self, k):
+        """A build on the tip fails and so does the move back: the next step finishes it before anything is cut, and no transaction is lost."""
+        s = self.setup({})
+        p = self.pipeline(s, k)
+        senders = (ALICE, CAROL)
+        self.blocks_in_flight(s, p, k, senders)
+        n_first = p.flight[0].number
+        self.fail_the_build_on_the_tip(k - 1, then_the_move_back=True)
+        everyone = {tx(x, 0)["hash"] for x in (*senders[:k - 1], BOB, DAVE)}
+        s.reth.pool[BOB] = [tx(BOB, 0)]
+        self.fail_one_step(s, p)
+        self.assertIsNotNone(p.back_pending)
+        self.assertIn(tx(BOB, 0)["hash"], {x["hash"] for x in b.read_saved_entries(s.cfg) or []}, "its transactions are kept")
+        s.reth.pool[DAVE] = [tx(DAVE, 0)]   # a new transaction arrives
+        cuts, sends = len(self.lines(s, "cut")), len(s.ledger.submitted)
+        self.step(p)   # finishes the move back and sends the transactions again; cuts and sends nothing
+        self.assertIsNone(p.back_pending)
+        self.assertEqual((len(self.lines(s, "cut")), len(s.ledger.submitted)), (cuts, sends))
+        self.assertIn(tx(BOB, 0)["hash"], self.in_pool(s))
+        self.assertEqual({n for n, _ in self.kept(s)}, {n_first + i for i in range(k - 1)})
+        self.drive(p, lambda: not self.in_pool(s) and not p.flight, limit=60)
+        mined = {h for r in self.reports if r.get("committed") for h in r["transactions"]}
+        self.assertEqual(mined | self.in_pool(s), everyone)
+        self.assertEqual(self.lines(s, "lost"), [])
+        self.assertFalse(b.saved_path(s.cfg).exists())
+
+    def test_a_build_and_a_move_back_that_fail_are_finished_by_the_next_step_at_two(self):
+        self.check_back_cannot_finish(2)
+
+    def test_a_build_and_a_move_back_that_fail_are_finished_by_the_next_step_at_three(self):
+        self.check_back_cannot_finish(3)
 
 
 if __name__ == "__main__":
