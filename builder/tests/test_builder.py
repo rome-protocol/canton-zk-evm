@@ -554,6 +554,25 @@ class VenueLegs(LegCase):
             s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "allocationDisclosed": bad})])
             self.assert_left_out(s, t, "disclosed")
 
+    def test_a_participant_without_040_leaves_an_unmatched_payment_and_deposit_out_with_their_old_reasons(self):
+        s, t = self.setup_leg(PAY)
+        s.ledger.no_040 = True
+        self.assert_left_out(s, t, "no terms", "payment")
+        s, t = self.setup_leg(DEP)
+        s.ledger.no_040 = True
+        self.assert_left_out(s, t, "no deposit request")
+
+    def test_another_refusal_of_the_trade_query_is_raised(self):
+        def refused(code, text):
+            class Ledger:
+                def active(self, template):
+                    raise urllib.error.HTTPError("http://x", code, "refused", {}, io.BytesIO(text.encode()))
+            return b.Canton(Ledger(), {}, datetime.now(timezone.utc))
+        self.assertEqual(refused(404, '{"code":"NOT_FOUND","cause":"PACKAGE_NAMES_NOT_FOUND(11,0)"}').trades, [])
+        for code, text in ((500, '{"cause":"the participant is down"}'), (404, '{"code":"NOT_FOUND","cause":"another thing"}')):
+            with self.assertRaises(urllib.error.HTTPError):
+                refused(code, text).claims
+
     def test_a_deposit_leg_adds_no_disclosure(self):
         s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM])
         self.build(s)
@@ -584,10 +603,25 @@ class VenueLegs(LegCase):
 
     def test_a_trade_whose_allocation_reaches_the_builder_only_by_disclosure_is_used_and_the_disclosure_goes_with_the_advance(self):
         s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+        s.cfg.venues = ("venue::1",)
         result = self.build(s)
         self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
         self.assertEqual((result["legs"], result["leftOut"]), (1, []))
         self.assertEqual(self.sent_disclosed(s), [DISCLOSED_ALLOCATION])
+
+    def test_an_unseen_disclosed_allocation_of_a_venue_that_is_not_trusted_leaves_the_payment_out(self):
+        for venues in ((), ("other-venue::1",)):
+            s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+            s.cfg.venues = venues
+            self.assert_left_out(s, t, "not visible", "--venue")
+
+    def test_a_visible_allocation_of_a_venue_that_is_not_trusted_is_checked_and_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        result = self.build(s)
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.ledger.views["alloc-t1"] = {"settleBefore": "2020-01-01T00:00:00Z"}
+        self.assert_left_out(s, t, "settle-before")
 
     def test_a_disclosed_contract_that_is_not_the_trades_allocation_leaves_the_payment_out(self):
         other = {**DISCLOSED_ALLOCATION, "contractId": "alloc-other"}

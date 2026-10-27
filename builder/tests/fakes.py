@@ -386,6 +386,7 @@ class FakeLedger:
         self.acceptances: list = []   # ... of the WithdrawalAcceptance contracts
         self.trades: list = []        # ... of the VenueTrade contracts (their allocation is executed by the trade's venue)
         self.claims: list = []        # ... of the FundedClaim contracts
+        self.no_040 = False           # a participant that has not uploaded 0.4.0: a query for the VenueTrade or FundedClaim template is refused (HTTP 404)
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
@@ -560,6 +561,8 @@ class FakeLedger:
                         return self._reply(500, {"cause": "the participant is down"})
                     flt = body["eventFormat"]["filtersByParty"][BUILDER]["cumulative"][0]["identifierFilter"]
                     tmpl = (flt.get("TemplateFilter") or flt["InterfaceFilter"])["value"].get("templateId") or flt["InterfaceFilter"]["value"]["interfaceId"]
+                    if ledger.no_040 and tmpl.endswith((":VenueTrade", ":FundedClaim")):
+                        return self._reply(404, {"code": "NOT_FOUND", "cause": "NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME(11,0): no template " + tmpl})
                     return self._reply(200, ledger._active(tmpl))
                 if self.path.split("?")[0] == "/v2/commands/completions":
                     ledger.completion_queries.append((self.path, body))

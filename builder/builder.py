@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The builder: makes one block, gets it proven and submits it to Canton. See README.md.
 
-  builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>]
-  builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
+  builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>]
+  builder.py run [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
                  [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600]
 
 It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
@@ -39,6 +39,7 @@ CHAIN = "#canton-zk-evm:Zk.Chain:ZkChain"
 TERMS = "#canton-zk-evm:Zk.Chain:DvpTerms"
 TRADE = "#canton-zk-evm:Zk.Chain:VenueTrade"
 CLAIM = "#canton-zk-evm:Zk.Chain:FundedClaim"
+NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
 ACCEPTANCE = "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance"
@@ -85,6 +86,7 @@ class Config:
     make_input_cmd: str    # <block.json> <witness.json> <genesis.json> <out.bin>
     prove_cmd: str         # <input.bin> <out-folder>; leaves <out-folder>/wrapped-proof.hex
     read_as: tuple = ()    # more parties whose contracts the builder may read (--read-as); the builder never acts as them
+    venues: tuple = ()     # the venue parties whose trades may name an allocation the builder cannot see, only a disclosed one (--venue)
     disclosed: list = field(default_factory=list)   # contracts passed with Advance as they are (--disclosed)
     package_id: str = ""   # the Daml package version Advance runs under (--package-id): sent as packageIdSelectionPreference; empty: Canton picks by package name
     resolve_seconds: float = 300.0   # how long an Advance with no answer may still commit: after it, with no completion seen, Canton's head decides
@@ -838,8 +840,8 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime):
-        self.ledger, self.chain, self.now = ledger, chain, now
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = ()):
+        self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
@@ -854,11 +856,25 @@ class Canton:
     @functools.cached_property
     def terms(self): return self.ledger.active(TERMS)
 
-    @functools.cached_property
-    def trades(self): return self.ledger.active(TRADE)
+    def active_if_uploaded(self, template: str) -> list:
+        """The active contracts of a template that a newer package version added. A participant that has not uploaded that version refuses the
+        query (the template is in no package it holds); then there are none. Any other refusal is raised."""
+        try:
+            return self.ledger.active(template)
+        except urllib.error.HTTPError as e:
+            try:
+                text = e.read().decode("utf-8", "replace")
+            finally:
+                e.close()
+            if any(code in text for code in NO_TEMPLATE_CODES):
+                return []
+            raise
 
     @functools.cached_property
-    def claims(self): return self.ledger.active(CLAIM)
+    def trades(self): return self.active_if_uploaded(TRADE)
+
+    @functools.cached_property
+    def claims(self): return self.active_if_uploaded(CLAIM)
 
     @functools.cached_property
     def allocations(self): return self.ledger.active_allocations()
@@ -1047,6 +1063,8 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
                 return "its allocation is of another instrument than the token's"
         elif not shown:
             return "its allocation is not active, or not visible to the builder"
+        elif t["venue"] not in canton.venues:
+            return "its allocation is not visible to the builder, and its venue is not one the builder trusts to disclose it (--venue)"
         return allocation_in_use(t["allocation"], taken)
 
     trade = first_fit(trades, problem, "")
@@ -1437,7 +1455,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         # On a block in flight the legs wait for the blocks before them and are judged on Canton's head. The pause is the exception: it is read from the
         # chain contract as Canton has it now, and the legs are left out for it with nothing waiting, so that the blocks go on being cut in a row.
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
-        canton = Canton(Ledger(cfg), chain, now)
+        canton = Canton(Ledger(cfg), chain, now, cfg.venues)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -3286,6 +3304,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("command", choices=["once", "run"])
     ap.add_argument("--exclude", action="append", default=[], metavar="TX_HASH", help="once only: leave this transaction (and its sender's later ones) out")
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
+    ap.add_argument("--venue", action="append", default=[], metavar="PARTY", help="a venue the builder trusts (repeatable): the allocation of that venue's trade may be one the builder cannot see and only a disclosed contract shows. For any other venue the allocation must be visible to the builder and is checked")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -3373,6 +3392,7 @@ def main() -> int:
             cfg.precheck = precheck_setup(args)
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
+        cfg.venues = tuple(dict.fromkeys(args.venue))
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
