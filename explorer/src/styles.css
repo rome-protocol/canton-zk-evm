@@ -238,7 +238,7 @@ nav[aria-label="Breadcrumb"] { min-width: 0; overflow-wrap: anywhere; } /* a lon
 .txs td { vertical-align: middle; }
 .rec { padding: 12px 20px; }
 .rec-row { display: flex; align-items: center; gap: 12px 14px; flex-wrap: wrap; }
-.rec-k { font-weight: 600; font-size: 13.5px; }
+.rec-k { font-weight: 500; font-size: 13.5px; }
 .rd { font-size: 12.5px; border: 1px solid var(--line); border-radius: 7px; padding: 3px 4px 3px 9px; color: var(--muted); white-space: nowrap; }
 .holds { display: grid; gap: 12px; }
 .holds .rec-k { margin: 0; }
@@ -414,8 +414,8 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 .info-b::after { content: ""; position: absolute; inset: -8px; } /* a thumb-sized target around the small circle */
 .info-b:hover, .info-b:focus-visible, .info.open .info-b { color: var(--link); border-color: var(--glow); }
 .info-b:focus-visible { outline: 2px solid var(--canton); outline-offset: 2px; }
-.info-t { display: none; position: absolute; z-index: 20; top: calc(100% + 8px); right: -8px; width: max-content; max-width: min(260px, calc(100vw - 32px)); padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font: 400 12.5px/1.45 "DM Sans", system-ui, sans-serif; letter-spacing: 0; text-align: left; white-space: normal; }
-.info.open .info-t { display: block; } /* shown or hidden by Info.tsx: hover, focus and tap show it, and Escape or a second tap dismiss it */
+.info-t { display: none; position: fixed; z-index: 60; top: 0; left: 0; width: max-content; max-width: min(260px, calc(100vw - 32px)); padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font: 400 12.5px/1.45 "DM Sans", system-ui, sans-serif; letter-spacing: 0; text-align: left; white-space: normal; }
+.info-t.open { display: block; } /* drawn on the page, outside any card; shown or hidden by Info.tsx: hover, focus and tap show it, and Escape or a second tap dismiss it */
 .stat-k .info { margin-left: auto; }
 .about-h { margin: 18px 0 4px; font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px; font-weight: 500; }
 

@@ -27,13 +27,13 @@
 .faucet-page .muted { color: var(--muted); }
 .faucet-page .small { font-size: 12.5px; }
 .faucet-page .ptitle { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.faucet-page .ptitle h1 { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: -0.02em; }
+.faucet-page .ptitle h1 { font-size: 28px; font-weight: 500; margin: 0; letter-spacing: -0.02em; }
 .faucet-page .ptitle .psub { overflow-wrap: anywhere; min-width: 0; }
 .faucet-page .fgrid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .faucet-page .fcol { display: flex; flex-direction: column; gap: 20px; min-width: 0; }
 .faucet-page .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 0; min-width: 0; overflow: hidden; }
 .faucet-page .chead { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--line); }
-.faucet-page .chead h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.faucet-page .chead h2 { font-size: 16px; font-weight: 500; margin: 0; }
 .faucet-page .cbody { padding: 18px 20px; margin: 0; min-width: 0; }
 .faucet-page .cfoot { margin: 0; padding: 12px 20px; border-top: 1px solid var(--line); }
 .faucet-page .lead { margin: 0 0 16px; font-size: 15px; overflow-wrap: anywhere; }

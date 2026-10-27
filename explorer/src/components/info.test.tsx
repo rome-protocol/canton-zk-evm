@@ -60,7 +60,8 @@ describe("the small i", () => {
     const box = container.querySelector(".info")!;
     fireEvent.mouseEnter(box);
     expect(box).toHaveClass("open");
-    fireEvent.keyDown(box, { key: "Escape" });
+    // a hover alone puts the focus nowhere near the i, so the Escape arrives at the page
+    fireEvent.keyDown(document.body, { key: "Escape" });
     expect(box).not.toHaveClass("open");
     fireEvent.mouseLeave(box);
     fireEvent.mouseEnter(box);
@@ -69,14 +70,23 @@ describe("the small i", () => {
     expect(box).not.toHaveClass("open");
   });
 
-  it("moves the note sideways to keep it inside the screen", () => {
-    const rect = (left: number, right: number) => ({ left, right, top: 0, bottom: 0, width: right - left, height: 0, x: left, y: 0, toJSON: () => ({}) }) as DOMRect;
-    const { container } = render(<Info about="a card">The note.</Info>);
-    const note = container.querySelector<HTMLElement>(".info-t")!;
+  it("places the note below the i, moved sideways to sit inside the screen, and above it when there is no room below", () => {
+    const rect = (l: number, t: number, w: number, h: number) => ({ left: l, top: t, right: l + w, bottom: t + h, width: w, height: h, x: l, y: t, toJSON: () => ({}) }) as DOMRect;
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 390 });
-    const fit = (left: number, right: number) => { note.getBoundingClientRect = () => rect(left, right); fireEvent.mouseLeave(container.querySelector(".info")!); fireEvent.mouseEnter(container.querySelector(".info")!); return note.style.transform; };
-    expect(fit(-100, 160)).toBe("translateX(108px)");
-    expect(fit(150, 410)).toBe("translateX(-28px)");
-    expect(fit(40, 300)).toBe("");
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    const { container } = render(<Info about="a card">The note.</Info>);
+    const note = screen.getByRole("tooltip");
+    const btn = screen.getByRole("button", { name: "About a card" });
+    const box = container.querySelector(".info")!;
+    note.getBoundingClientRect = () => rect(0, 0, 260, 60);
+    const at = (l: number, t: number) => {
+      btn.getBoundingClientRect = () => rect(l, t, 18, 18);
+      fireEvent.mouseLeave(box); fireEvent.mouseEnter(box);
+      return [note.style.left, note.style.top];
+    };
+    expect(at(300, 100)).toEqual(["66px", "126px"]); // right edge of the note 8 px past the i's, 8 px below
+    expect(at(10, 100)).toEqual(["8px", "126px"]); // pushed in from the left edge
+    expect(at(370, 100)).toEqual(["122px", "126px"]); // pushed in from the right edge
+    expect(at(200, 760)).toEqual(["8px", "692px"]); // no room below: above the i
   });
 });

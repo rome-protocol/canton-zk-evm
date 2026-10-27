@@ -62,7 +62,7 @@ describe("fonts and outside requests", () => {
     expect(winner(rules, [".card-title h2"], "font-family", false)).toMatch(/Literata/);
   });
 
-  it("finishes the cards, the pages, the buttons and the search box the way Arena does: 20 px cards with a faint border and a soft shadow, pills with the lilac glow", () => {
+  it("finishes the cards, the pages, the buttons and the search box the way the Rome site does: 20 px cards with a faint border and a soft shadow, pills with the lilac glow", () => {
     const rules = rulesOf(css);
     expect(winner(rules, [".card"], "border-radius", false)).toBe("20px");
     expect(winner(rules, [".card"], "border", false)).toContain("var(--line-2)");
@@ -257,5 +257,24 @@ describe("panel notes", () => {
 
   it("draws the block's cube in the accent on Home", () => {
     expect(readFileSync(join(root, "src/pages/home.css"), "utf8")).toMatch(/\.idcell\.blk \.ic \{ color: var\(--canton\);/);
+  });
+});
+
+describe("the display face asks only for the weight that ships", () => {
+  const sheets = sources(join(root, "src")).filter((f) => f.endsWith(".css"));
+  // what takes Literata: the headings, the wordmark, the big numbers, and the classes the pages put on a heading
+  const literata = /(^|[ >])(h[123]|\.name|\.stat-v|\.tx-h|\.rec-k|\.about-h)$/;
+  it("sets no Literata heading or number in a bold the browser would have to fake", () => {
+    for (const f of sheets) {
+      for (const r of rulesOf(readFileSync(f, "utf8"))) {
+        if (literata.test(r.sel) && r.decls["font-weight"]) expect(r.decls["font-weight"], `${f.slice(root.length)} ${r.sel}`).toBe("500");
+      }
+    }
+  });
+  it("gives the Verify panel the card finish of the pages", () => {
+    const rules = rulesOf(readFileSync(join(root, "src/verify/VerifyPanel.css"), "utf8"));
+    expect(winner(rules, [".verify"], "border-radius", false)).toBe("20px");
+    expect(winner(rules, [".verify"], "border", false)).toContain("var(--line-2)");
+    expect(winner(rules, [".verify"], "box-shadow", false)).toBe("var(--shadow)");
   });
 });
