@@ -44,6 +44,8 @@ class FakeReth(http.server.BaseHTTPRequestHandler):
             return "0x" + encode(["string"], ["Wrapped TKB"]).hex() if to.lower() == WRAPPED else "0x"
         if data[2:10] == selector("symbol()"):
             return "0x" + encode(["string"], ["wTKB"]).hex() if to.lower() == WRAPPED else "0x"   # no code, no answer, at any other address
+        if data[2:10] == selector("used(bytes32)"):
+            return hex(1 if data[10:] == "cd" * 32 else 0)             # the gateway has taken one id
         raise AssertionError(f"unexpected call {data}")
 
     def do_POST(self):
@@ -254,6 +256,13 @@ class EvmTests(unittest.TestCase):
         FakeReth.receipt = {"blockNumber": "0x2", "blockHash": "0x" + "cd" * 32, "gasUsed": "0x5208", "status": "0x1", "contractAddress": TOKEN}
         self.assertEqual(evm.main(["receipt", "0x" + "ab" * 32]), {"block": 2, "blockHash": "0x" + "cd" * 32, "gasUsed": 21000, "status": 1, "contract": TOKEN})
         self.assertEqual(evm.main(["balance", TOKEN, "0x" + "22" * 20]), {"tka": 7})
+
+    def test_used_says_whether_the_gateway_has_taken_the_id(self):
+        self.assertEqual(evm.main(["used", "cd" * 32]), {"used": True})
+        self.assertEqual(evm.main(["used", "ab" * 32, "finalized"]), {"used": False})
+        for argv in (["used"], ["used", "ab" * 31], ["used", "AB" * 32], ["used", ID, "pending"]):
+            with self.assertRaises(SystemExit, msg=str(argv)):
+                evm.main(argv)
 
     def test_wrapped_balance_and_supply_are_read_at_the_block_asked_for(self):
         self.assertEqual(evm.main(["wrapped", WRAPPED, "0x" + "22" * 20]), {"balance": "4.0", "supply": "2.5"})

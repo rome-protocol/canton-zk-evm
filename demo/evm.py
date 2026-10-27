@@ -42,6 +42,8 @@
   evm.py chain                     print the chain id
   evm.py balance <token> <holder> [block]
                                    print the holder's TKA balance in whole tokens (eth_call balanceOf)
+  evm.py used <id> [block]         print whether the gateway has taken the id (64 lowercase hex digits): a claim, a deposit or a payment with it
+                                   has been made, so no other one can be (eth_call used)
   evm.py wrapped <token> <holder> [block]
                                    print the holder's balance of a wrapped token and its supply, as Canton writes amounts ("10.0")
   evm.py describe <token> [block]  print a wrapped token's name() and symbol(); both are null where there is no code at the address; an error from the chain stops the command
@@ -347,6 +349,8 @@ def main(argv: list) -> dict:
         return {"chainId": int(rpc("eth_chainId", []), 16)}
     if cmd == ["balance"] and n in (3, 4):
         return {"tka": balance(argv[1], argv[2], block_tag(argv[3:]))}
+    if cmd == ["used"] and n in (2, 3):
+        return {"used": bool(read_word(gateway_address(), call_data("used(bytes32)", [id_of(argv[1])]), block_tag(argv[2:])))}
     if cmd == ["wrapped"] and n in (3, 4):
         tag = block_tag(argv[3:])
         return {"balance": wrapped_text(read_word(argv[1], SELECTOR_BALANCE_OF + pad32(argv[2]), tag)),

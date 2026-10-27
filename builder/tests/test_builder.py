@@ -679,6 +679,18 @@ class VenueLegs(LegCase):
         s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), trades=[TRADE], requests=[steal])
         self.assert_left_out(s, t, "this id belongs to a venue trade's funded claim")
 
+    def test_the_payment_and_a_stealing_deposit_in_one_block_keep_the_payment_and_leave_the_deposit_out(self):
+        steal = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
+        s = self.setup({ALICE: [], BOB: []})
+        s.ledger.trades, s.ledger.requests, s.ledger.tokens = [TRADE], [steal], [TOKEN]
+        pay = self.leg_tx(s, TRADE_PAY, ALICE)
+        grab = self.leg_tx(s, Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [pay], [grab]
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [grab["hash"]])
+        self.assertIn("belongs to a venue trade", result["leftOut"][0]["reason"])
+
     def test_a_trade_of_another_chain_does_not_reserve_its_claim_id(self):
         req = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
         s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), trades=[("trade-1", {**TRADE[1], "gateway": "other"})], requests=[req])
