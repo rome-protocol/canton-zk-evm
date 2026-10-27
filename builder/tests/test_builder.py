@@ -17,6 +17,7 @@ ALICE, BOB, CAROL = "0x" + "a1" * 20, "0x" + "b2" * 20, "0x" + "c4" * 20   # sen
 PAY_ID, DEP_ID, WD_ID = "ee" * 32, "dd" * 32, "ab" * 32
 TKA, WTKB, WTKC = "11" * 20, "22" * 20, "33" * 20   # an ERC-20 that payments are made in, and two wrapped tokens
 PAYEE = "c3" * 20
+OTHER = "d5" * 20   # another recipient on Canton's chain
 TKB = {"admin": "adm", "id": "TKB"}   # the Canton instrument that WTKB wraps
 TKC = {"admin": "adm", "id": "TKC"}
 UNIT = 10**10   # base units in one Canton unit
@@ -657,6 +658,51 @@ class VenueLegs(LegCase):
         self.assertEqual(self.attached(s, "ClaimLeg"), {"claimCid": "claim-1", "tokenCid": "tok-1"})
         self.assertEqual((result["legs"], result["leftOut"]), (1, []))
 
+    def test_a_request_cannot_take_the_id_of_a_funded_claim(self):
+        # the id of a claim is public: another party's valid request with the same id and its own recipient must not settle first
+        steal = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
+        s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), claims=[CLAIM], requests=[steal])
+        self.assert_left_out(s, t, "this id belongs to a venue trade's funded claim")
+        s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM], requests=[steal])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "ClaimLeg"), {"claimCid": "claim-1", "tokenCid": "tok-1"})
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+
+    def test_a_request_with_the_claims_recipient_does_not_settle_the_claims_id_either(self):
+        both = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID})
+        s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM], requests=[both])
+        self.build(s)
+        self.assertEqual(self.attached(s, "ClaimLeg"), {"claimCid": "claim-1", "tokenCid": "tok-1"})
+
+    def test_a_request_cannot_take_the_claim_id_of_a_venue_trade_with_no_claim_yet(self):
+        steal = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
+        s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), trades=[TRADE], requests=[steal])
+        self.assert_left_out(s, t, "this id belongs to a venue trade's funded claim")
+
+    def test_the_payment_and_a_stealing_deposit_in_one_block_keep_the_payment_and_leave_the_deposit_out(self):
+        steal = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
+        s = self.setup({ALICE: [], BOB: []})
+        s.ledger.trades, s.ledger.requests, s.ledger.tokens = [TRADE], [steal], [TOKEN]
+        pay = self.leg_tx(s, TRADE_PAY, ALICE)
+        grab = self.leg_tx(s, Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [pay], [grab]
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [grab["hash"]])
+        self.assertIn("belongs to a venue trade", result["leftOut"][0]["reason"])
+
+    def test_a_trade_of_another_chain_does_not_reserve_its_claim_id(self):
+        req = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "recipient": OTHER})
+        s, t = self.setup_leg(Leg(DEPOSIT, CLAIM_ID, WTKB, OTHER, 10 * UNIT), trades=[("trade-1", {**TRADE[1], "gateway": "other"})], requests=[req])
+        self.build(s)
+        self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-x", "token": "tok-1"})
+
+    def test_a_plain_deposit_is_unchanged_beside_a_trade_and_a_claim_with_other_ids(self):
+        s, t = self.setup_leg(DEP, trades=[TRADE], claims=[CLAIM], requests=[REQUEST])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+
     def test_a_request_that_cannot_settle_and_no_claim_keeps_the_requests_reason(self):
         grief = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "allocation": "alloc-gone"})
         s, t = self.setup_leg(CLAIM_DEP, requests=[grief], allocations=[])
@@ -680,7 +726,7 @@ class VenueLegs(LegCase):
         self.assertEqual(self.sent_disclosed(s), [DISCLOSED_ALLOCATION])
 
     def test_a_claim_for_another_recipient_token_or_amount_is_not_used(self):
-        for change, word in (({"recipient": "d4" * 20}, "no deposit request"), ({"amount": "11.0"}, "amount"), ({"gatewayToken": "tok-2"}, "token")):
+        for change, word in (({"recipient": "d4" * 20}, "belongs to a venue trade"), ({"amount": "11.0"}, "amount"), ({"gatewayToken": "tok-2"}, "token")):
             s, t = self.setup_leg(CLAIM_DEP, claims=[("claim-1", {**CLAIM[1], **change})], tokens=[TOKEN, TOKEN_C])
             self.assert_left_out(s, t, word)
 

@@ -21,13 +21,15 @@ def trade_event(label="t1", cid="trade-1"):
         "settleBefore": "2099-10-27T10:00:00Z"}}
 
 
-def fake_evm(calls):
+def fake_evm(calls, taken=()):
     def main(argv):
         calls.append(argv)
         if argv[0] == "wrapped":
             return {"balance": "2.5", "supply": "2.5"}
         if argv[0] == "balance":
             return {"tka": 3}
+        if argv[0] == "used":
+            return {"used": argv[1] in taken}
         return {"tx": "0x" + argv[0] * 8, "block": 5}
     return main
 
@@ -35,8 +37,8 @@ def fake_evm(calls):
 class OtcTests(LedgerTestCase):
     def setUp(self):
         super().setUp()
-        self.calls = []
-        for patcher in (mock.patch.object(otc.evm, "main", fake_evm(self.calls)),
+        self.calls, self.taken = [], set()   # the evm commands sent; the ids the gateway has taken
+        for patcher in (mock.patch.object(otc.evm, "main", fake_evm(self.calls, self.taken)),
                         mock.patch.object(otc.evm, "make_keys", lambda folder: {"u": "0x" + SELLER_EVM, "v": "0x" + BUYER_EVM})):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -217,19 +219,20 @@ class OtcTests(LedgerTestCase):
         self.published()
         got = otc.pay(self.net, "t1")
         payment = otc.ids(self.net, "t1")["payId"]
-        self.assertEqual(self.calls, [["approve", "v", "0x" + TOKEN, "gateway", "3"], ["pay", "v", payment, "0x" + TOKEN, "0x" + SELLER_EVM, "3"]])
+        claim = otc.ids(self.net, "t1")["claimId"]
+        self.assertEqual(self.calls, [["used", claim], ["approve", "v", "0x" + TOKEN, "gateway", "3"], ["pay", "v", payment, "0x" + TOKEN, "0x" + SELLER_EVM, "3"]])
         self.assertEqual((got["tka"], got["tradeTka"]), (3, 3))
 
     def test_an_empty_amount_is_the_trades_and_the_seconds_still_count(self):
         self.published()
         got = otc.pay(self.net, "t1", "", "30")
-        self.assertEqual((got["tka"], self.calls[2]), (3, ["wait", got["pay"], "30"]))
+        self.assertEqual((got["tka"], self.calls[3]), (3, ["wait", got["pay"], "30"]))
 
     def test_a_smaller_payment_is_sent_as_asked_and_can_be_waited_for(self):
         self.published()
         got = otc.pay(self.net, "t1", "2", "30")
-        self.assertEqual([c[-1] for c in self.calls[:2]], ["2", "2"])
-        self.assertEqual(self.calls[2][0], "wait")
+        self.assertEqual([c[-1] for c in self.calls[1:3]], ["2", "2"])
+        self.assertEqual(self.calls[3][0], "wait")
         self.assertEqual((got["tka"], got["tradeTka"]), (2, 3))
 
     def test_pay_needs_the_published_trade_and_a_whole_amount(self):
@@ -239,6 +242,15 @@ class OtcTests(LedgerTestCase):
         with self.assertRaises(SystemExit):
             otc.pay(self.net, "t1", "0")
         self.assertEqual(self.calls, [])
+
+    def test_the_buyer_does_not_pay_when_the_gateway_has_taken_the_claim_id(self):
+        self.published()
+        claim = otc.ids(self.net, "t1")["claimId"]
+        self.taken.add(claim)
+        with self.assertRaises(SystemExit) as refused:
+            otc.pay(self.net, "t1")
+        self.assertIn("do not pay", str(refused.exception))
+        self.assertEqual(self.calls, [["used", claim]])
 
     def test_the_claim_needs_the_funded_claim_and_names_its_token_and_amount(self):
         with self.assertRaises(canton.Fail):
