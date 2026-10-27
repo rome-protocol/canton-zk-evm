@@ -5,7 +5,7 @@ import { CardHead, DownloadLink, ErrorCard, LoadingCard } from "../components/Ca
 import { Chart, pointTime } from "../components/Chart.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Info } from "../components/Info.tsx";
-import { compactCount, count, pct, peakCount, plural, rate, sec, short, span, trim, units, utcMinute } from "../format.ts";
+import { compactCount, count, nb, pct, peakCount, plural, rate, sec, short, span, trim, units, utcMinute } from "../format.ts";
 import { useStatus } from "../useStatus.ts";
 
 const DEFAULT_WINDOW: StatsWindow = "7d";
@@ -31,7 +31,7 @@ function heading(s: StatsSummary): string {
 
 /** A tile: its title, its number and one short line; what else there is to say is behind the "i". */
 function Tile({ k, v, small, sub, info }: { k: string; v: React.ReactNode; small?: React.ReactNode; sub: React.ReactNode; info?: React.ReactNode }) {
-  return <div className="card stat"><span className="stat-k">{k}{info && <Info about={k}>{info}</Info>}</span><span className="stat-v"><span className="hl">{v}</span>{small && <> <small>{small}</small></>}</span><span className="small muted">{sub}</span></div>;
+  return <div className="card stat"><span className="stat-k">{nb(k)}{info && <Info about={k}>{info}</Info>}</span><span className="stat-v"><span className="hl">{v}</span>{small && <> <small>{small}</small></>}</span><span className="small muted">{sub}</span></div>;
 }
 const timeTile = (k: string, s: StatsSpread | null, sub: string, info?: string) => <Tile k={k} v={s ? sec(s.median) : DASH} small={s && <span className="hl">{`p95 ${sec(s.p95)}`}</span>} sub={s ? sub : "no block in this window"} info={s ? info : undefined} />;
 

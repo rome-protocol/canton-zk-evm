@@ -9,7 +9,7 @@ import { Spark } from "../components/Spark.tsx";
 import { Info } from "../components/Info.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { SearchBox } from "../components/SearchBox.tsx";
-import { compactCount, count, duration, pct, peakCount, plural, rateShort, sec, span, trim } from "../format.ts";
+import { compactCount, count, duration, nb, pct, peakCount, plural, rateShort, sec, span, trim } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
 import type { Fetched, Read, Summary } from "../stats.ts";
 import { useNow } from "../useStatus.ts";
@@ -44,7 +44,7 @@ const Key = ({ icon, children, info, about }: { icon: IconName; children: ReactN
 export function Stat({ icon, label, note, children, foot, sub, tone, info, valueClass }: { icon: IconName; label: string; note?: string; children: ReactNode; foot?: ReactNode; sub?: ReactNode; tone?: "ok"; info?: ReactNode; valueClass?: string }) {
   return (
     <div className={`card stat${tone ? ` stat-${tone}` : ""}`}>
-      <Key icon={icon} info={info} about={label}>{label}{note && <span className="faint"> · {note}</span>}</Key>
+      <Key icon={icon} info={info} about={label}>{label}{note && <span className="faint"> · {nb(note)}</span>}</Key>
       <span className={`stat-v num${valueClass ? ` ${valueClass}` : ""}`}>{children}</span>
       {sub}
       {foot ? <span className="muted small">{foot}</span> : null}

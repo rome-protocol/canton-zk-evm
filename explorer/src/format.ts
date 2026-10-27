@@ -145,3 +145,6 @@ export function dateTime(at: number | string): string {
   const two = (n: number) => String(n).padStart(2, "0");
   return `${two(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${d.toISOString().slice(11, 19)} UTC`;
 }
+
+/** Keeps a number and its unit together ("24 h", "72 h") so a narrow label never breaks between them. */
+export const nb = (text: string) => text.replace(/(\d) (?=[a-z])/g, "$1 ");

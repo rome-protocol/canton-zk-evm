@@ -287,11 +287,11 @@ describe("the finish of small controls and notes", () => {
   it("sets code in IBM Plex Mono like the other mono text", () => {
     expect(/\ncode \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font-family:\s*"IBM Plex Mono"/);
   });
-  it("keeps every mono text at 400 or 500, the weights IBM Plex Mono ships: no .mono or .fn-name rule asks for more", () => {
+  it("keeps every mono text at 400 or 500, the weights IBM Plex Mono ships: no .mono, .fn-name or .ev-name rule asks for more", () => {
     for (const f of sources(join(root, "src")).filter((x) => x.endsWith(".css"))) {
       for (const r of rulesOf(readFileSync(f, "utf8"))) {
         const w = r.decls["font-weight"];
-        if (/\.(mono|fn-name)\b/.test(r.sel) && w) expect(/^\d+$/.test(w) ? Number(w) : 700, `${f.slice(root.length)} ${r.sel}`).toBeLessThanOrEqual(500);
+        if (/\.(mono|fn-name|ev-name)\b/.test(r.sel) && w) expect(/^\d+$/.test(w) ? Number(w) : 700, `${f.slice(root.length)} ${r.sel}`).toBeLessThanOrEqual(500);
       }
     }
   });

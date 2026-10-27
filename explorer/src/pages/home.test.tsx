@@ -423,23 +423,23 @@ describe("the numbers, from the stats routes", () => {
 
   it("counts the day's transactions and blocks, and gives the success rate from accepted, lost and dropped ones, cut and never rounded up", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1020, acceptedFinal: 1016, lost: 1, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(shown(tile("Transactions · 24 h"))).toBe("Transactions · 24 h1,017total not counted yet · 21 blocks");
-    expect(noteOf(tile("Transactions · 24 h"))).toBe("In 21 blocks, each one Canton transaction.");
-    expect(shown(tile("Success rate"))).toBe("Success rate · 24 h, RPC and faucet99.9%1 lost · 0 dropped");
+    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,017total not counted yet · 21 blocks");
+    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("In 21 blocks, each one Canton transaction.");
+    expect(shown(tile("Success rate"))).toBe("Success rate · 24\u00a0h, RPC and faucet99.9%1 lost · 0 dropped");
     expect(noteOf(tile("Success rate"))).toBe("1,017 accepted and settled in 24 h; each is final, lost or dropped by the chain.");
     expect(tile("Success rate").textContent).not.toMatch(/revert/i);
   });
 
   it("shows the all-time total under the day's count, with the block it is as of", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(shown(tile("Transactions · 24 h"))).toBe("Transactions · 24 h1,0171,021 since launch · 21 blocks");
-    expect(noteOf(tile("Transactions · 24 h"))).toBe("1,021 final in all, as of block 21; runs marked as tests are counted. In 21 blocks, each one Canton transaction.");
+    expect(shown(tile("Transactions · 24\u00a0h"))).toBe("Transactions · 24\u00a0h1,0171,021 since launch · 21 blocks");
+    expect(noteOf(tile("Transactions · 24\u00a0h"))).toBe("1,021 final in all, as of block 21; runs marked as tests are counted. In 21 blocks, each one Canton transaction.");
   });
 
   it("says not counted yet, never 0, when the all-time total is not known", async () => {
     await withStats({ day: { txs: { count: 5, failed: 0, reverted: 0, successRate: 1, accepted: 5, acceptedFinal: 5, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 2, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(shown(tile("Transactions · 24 h"))).toContain("total not counted yet · 2 blocks");
-    expect(shown(tile("Transactions · 24 h"))).not.toContain("since launch");
+    expect(shown(tile("Transactions · 24\u00a0h"))).toContain("total not counted yet · 2 blocks");
+    expect(shown(tile("Transactions · 24\u00a0h"))).not.toContain("since launch");
   });
 
   it("shows no success rate for a day with no transaction, and never makes one up", async () => {
@@ -487,16 +487,16 @@ describe("the numbers, from the stats routes", () => {
 
   it("draws the median time to final of the last 72 hours, one bar an hour, with a gap for an hour with no block", async () => {
     await withStats({ series: (i) => (i % 10 === 3 ? null : 8 + (i % 4)) })();
-    const t = tile("Time to final · 72 h");
+    const t = tile("Time to final · 72\u00a0h");
     expect(t.querySelectorAll(".stat-v svg rect")).toHaveLength(65); // the last 72 of 168 hourly points, and 7 of them (every 10th from 103) have no block
     expect(t.querySelector(".stat-v svg")).toHaveAccessibleName(/last 72 hours/);
     expect(noteOf(t)).toBe("Median per hour; gaps are hours with no blocks.");
-    expect(shown(t)).toBe("Time to final · 72 h");
+    expect(shown(t)).toBe("Time to final · 72\u00a0h");
   });
 
   it("shows a dash and says why for every number the stats cannot give, while the rest of the page stays", async () => {
     await withStats({ failing: true })();
-    for (const label of ["Time to final · last hour", "Proof time", "Canton commit time", "Transactions per second", "Transactions · 24 h", "Lost transactions", "Success rate", "Time to final · 72 h"]) {
+    for (const label of ["Time to final · last hour", "Proof time", "Canton commit time", "Transactions per second", "Transactions · 24\u00a0h", "Lost transactions", "Success rate", "Time to final · 72\u00a0h"]) {
       const t = tile(label);
       expect(t.querySelector(".stat-v")!.textContent, label).toBe("—");
       expect(t, label).toHaveTextContent("the stats cannot be read right now");

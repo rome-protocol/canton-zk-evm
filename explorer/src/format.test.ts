@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseFee, bytesOf, compactUnits, count, dateTime, feeOf, gwei, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, compactUnits, count, dateTime, feeOf, gwei, nb, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
 
 describe("a rate of transactions per second", () => {
   it("keeps one place from 1 up and two significant figures under 1, so a busiest minute of 1 or 2 transactions is not 0", () => {
@@ -146,5 +146,12 @@ describe("the short forms the cards use", () => {
     expect(rateShort(181.4)).toBe("181");
     expect(rateShort(9.46)).toBe("9.5");
     expect(rateShort(0.017)).toBe("0.017");
+  });
+});
+
+describe("a label's number and unit", () => {
+  it("stay together on a narrow screen", () => {
+    expect(nb("24 h, RPC and faucet")).toBe("24\u00a0h, RPC and faucet");
+    expect(nb("Time to final")).toBe("Time to final");
   });
 });
