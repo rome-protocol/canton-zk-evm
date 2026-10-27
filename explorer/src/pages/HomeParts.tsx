@@ -81,7 +81,7 @@ export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary
   const peak = d && d.tps.peak !== null && d.txs.count > 0 ? d.tps : null;
   return (
     <section className="stats" aria-label="Numbers">
-      <Stat icon="cube" label="Block height" info="The newest block that is final on Canton." foot={s.height === null ? "No final block yet." : s.proving !== null ? `${s.proving} being proven` : "none being proven"}>{s.height ?? "—"}</Stat>
+      <Stat icon="cube" label="Block height" info="The newest block that is final on Canton." foot={s.height === null ? "No final block yet." : s.proving !== null ? `${s.proving} being proven` : "final on Canton"}>{s.height ?? "—"}</Stat>
       <Time icon="clock" label="Time to final" note="last hour" s={hr(h?.timeToFinal)} read={hour.read} info={`From a transaction being accepted to its block being final on Canton, over ${plural(h?.timeToFinal?.samples ?? 0, "transaction")}. p95 is the time that 95 in 100 stay under.`} foot="accepted → final" none="no transaction in the last hour" />
       <Time icon="shield" label="Proof time" note="last hour" s={hr(h?.proofTime)} read={hour.read} info={`Proved with ZisK, ${plural(h?.proofTime?.samples ?? 0, "block")} in the last hour.`} foot="one proof per block" none="no block in the last hour" />
       <Time icon="link" label="Canton commit time" note="last hour" s={hr(h?.commitTime)} read={hour.read} info="From the block being sent to Canton to Canton's record time." foot="sent → recorded" none="no block in the last hour" />

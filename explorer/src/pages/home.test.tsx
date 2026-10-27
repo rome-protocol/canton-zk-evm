@@ -513,6 +513,17 @@ describe("the numbers, from the stats routes", () => {
     expect(noteOf(tile("Block height"))).toBe("The newest block that is final on Canton.");
     expect(screen.getByRole("region", { name: "Numbers" })).not.toHaveTextContent(/latest \d+ blocks|producer log|not served yet/);
   });
+
+  it("keeps 'final on Canton' under the height when the block being proven is not known, and does not say none is being proven", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    fakeApi(route({ status: () => reply(status({ proving: null })), stats: statsRoute({}) }));
+    renderApp("/");
+    await screen.findByRole("region", { name: "Chain status" });
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    expect(shown(tile("Block height"))).toBe("Block height34final on Canton");
+    expect(screen.getByRole("region", { name: "Numbers" })).not.toHaveTextContent("none being proven");
+  });
 });
 
 describe("the value of a transaction that is not final yet", () => {

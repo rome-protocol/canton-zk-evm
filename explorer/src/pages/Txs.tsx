@@ -150,7 +150,7 @@ function Cards({ live, inBlocks }: { live: boolean; inBlocks?: number }) {
         <Stat icon="clock" label="Not final yet" info={`${count(n.inBlocks)} being proven, and the rest waiting in the pool for the next block.${stuckOf ? ` Stuck means waiting over ${count(stuckOf.stuckAfterSeconds)} s.` : ""}`} foot={`${n.waiting === null ? "pool count not known" : `${count(n.waiting)} waiting`}${stuckOf ? ` · ${count(stuckOf.stuck)} stuck` : ""}`}>{count(n.inBlocks + (n.waiting ?? 0))}</Stat>
       ) : <Stat icon="clock" label="Not final yet" foot={flight.isError ? "what is in flight cannot be read right now" : "Reading…"}>—</Stat>}
       {d ? (
-        <Stat icon="shield" label="Lost" note="all time" tone={d.lost.total ? undefined : "ok"} valueClass={d.lost.total ? "bad" : "ok"} info={d.lost.total ? "Accepted by Ostia and never made final. Stats lists each with its reason." : "Accepted by Ostia and never made final. Any such transaction would be listed here with its reason."} foot={d.lost.total ? <Link to="/stats">each with its reason</Link> : "none lost"}>
+        <Stat icon="shield" label="Lost" note="all time" tone={d.lost.total ? undefined : "ok"} valueClass={d.lost.total ? "bad" : "ok"} info={d.lost.total ? "Accepted by Ostia and never made final. Stats lists each with its reason." : "Accepted by Ostia and never made final. Stats would list any such transaction with its reason."} foot={d.lost.total ? <Link to="/stats">each with its reason</Link> : "none lost"}>
           {count(d.lost.total)}
         </Stat>
       ) : <Stat icon="shield" label="Lost" note="all time" foot={noDay}>—</Stat>}

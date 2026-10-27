@@ -223,7 +223,7 @@ describe("the four cards, from the stats routes", () => {
     expect(tile("Lost · all time")).toHaveTextContent("0");
     expect(tile("Lost · all time")).toHaveClass("stat-ok");
     expect(tile("Lost · all time")).toHaveTextContent("none lost");
-    expect(within(tile("Lost · all time")).getByRole("tooltip")).toHaveTextContent("Accepted by Ostia and never made final.");
+    expect(within(tile("Lost · all time")).getByRole("tooltip")).toHaveTextContent("Accepted by Ostia and never made final. Stats would list any such transaction with its reason.");
   });
 
   it("leaves the Lost card red and leads to the stats page when some were lost", async () => {
