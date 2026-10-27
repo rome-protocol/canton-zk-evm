@@ -64,7 +64,7 @@ describe.skipIf(!explorer || !resultsFile)("the pages, with the explorer running
     expect(verdict("Block hash committed")).toHaveTextContent("this block");
     expect(verdict("Block hash committed")).not.toHaveTextContent("not this block's hash");
     // The pins come with the status answer, which the page asks for beside the block: the block can be on the page before they are, so wait for them.
-    expect(await screen.findByText(/read from the proof's own bytes, compared with this explorer's pins, from/, {}, WAIT)).toHaveTextContent(/compared with this explorer's pins, from guest\.txt/);
+    expect(await screen.findByText(/Read from the proof's own bytes, compared with this explorer's pins, from/, {}, WAIT)).toHaveTextContent(/compared with this explorer's pins, from guest\.txt/);
   }, 90_000);
 
   it("shows the claim's own page, with a link back to the block that holds it", async () => {
