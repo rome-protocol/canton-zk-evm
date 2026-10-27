@@ -83,9 +83,9 @@ h3 { font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px
   .nav .navlink { padding: 6px 9px; font-size: 14px; line-height: 1.45; }
 }
 @media (min-width: 721px) and (max-width: 1365px) {
-  .top { gap: 12px; }
+  .top { gap: 10px; }
   .top .search { flex-basis: 366px; padding: 8px 9px; }
-  .nav .navlink { padding: 6px 7px; }
+  .nav .navlink { padding: 6px 6px; }
 }
 .thread { height: 2px; background: linear-gradient(90deg, var(--evm), var(--canton)); opacity: .85; }
 .main { flex: 1; width: 100%; max-width: 1344px; margin: 0 auto; padding: 26px 32px 30px; display: flex; flex-direction: column; gap: 18px; }
