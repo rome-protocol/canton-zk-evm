@@ -33,7 +33,7 @@ The buyer pays through the gateway's `pay(payId, token, payee, amount)`. The blo
 
 ## On DevNet
 
-The swap ran end to end on Ostia's DevNet on 2026-10-27 at 15:55 UTC, with package `otc-venue` 0.1.0: TKB, a CIP-0056 token on Canton, for TKA (`0xf4b69022b3e6501101600743f17fbe0659dd1af8`), an ERC-20 on the EVM. The buyer's payment in block 16816 committed in one Canton update, `1220ad687926fde1ca580721ea5ab457935b054b82be35435ff52056d3d5adb98a74`, in which the seller's allocation was executed. The buyer's claim was in block 16823 (update `1220f08d8e2cfeca915416a678735f0d236f1cef0a6ab695d79594ac459642f7ff14`). A payment below the trade's amount was left out of block 16834 and moved nothing. The commands are in [demo/README.md](../../demo/README.md) ("The OTC swap").
+The swap ran end to end on Ostia's DevNet on 2026-10-27 at 15:55 UTC, with package `otc-venue` 0.1.0: TKB, a CIP-0056 token on Canton, for TKA (`0xf4b69022b3e6501101600743f17fbe0659dd1af8`), an ERC-20 on the EVM. The buyer's payment in block 16816 committed in one Canton update, `1220ad687926fde1ca580721ea5ab457935b054b82be35435ff52056d3d5adb98a74`, in which the seller's allocation was executed. The buyer's claim was in block 16823 (update `1220f08d8e2cfeca915416a678735f0d236f1cef0a6ab695d79594ac459642f7ff14`). A payment below the trade's amount was left out of block 16834 and moved nothing. Rome ran this swap with its own parties, participant and builder. The commands in [demo/README.md](../../demo/README.md) ("The OTC swap") are for a local network or an operator's own run, and not a walkthrough that an outside user can follow on DevNet today.
 
 ## Build and test
 
