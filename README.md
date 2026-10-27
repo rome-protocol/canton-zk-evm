@@ -24,6 +24,8 @@ It is a DevNet, and it can be reset. tROME is a test coin with no value. This co
 
 The repository also has a settlement demo that runs on the local network, and the block explorer (with its tROME faucet and in-browser proof check) that serves DevNet. The demo (`demo/`) ran on a GPU on 2026-10-05, from commit `6b445073163832e9023850f53678617d90dfc808` of this repository (6b44507). A rehearsal also runs in CI without a GPU.
 
+A Canton-native OTC app, in its own Daml package ([`apps/otc`](apps/otc/README.md)), swaps a seller's Canton token for a buyer's ERC-20: the seller's allocation settles in the same block as the buyer's payment, and `tests/demo_otc.sh` runs the whole swap on the local network.
+
 The guest and prover proved the first block on a GPU: one plain transfer on this chain. ZisK's own verifier and the verifier crate both checked the proof.
 
 Network: on one machine with a GPU, the builder made one empty block, the prover proved it in 6.31 s, `Advance` committed it on a local Canton with the real external call, the chain's head moved to 1 and reth marked the block final. The facts are in [demo/results/smoke.txt](demo/results/smoke.txt). The recorded run ran after `up.sh` had checked that the guest it built has the recorded program key. It used 3.6 snapshots of Canton and the Daml compiler. The repository now pins the released open-source Canton 3.6.3 (the version the Canton Network's DevNet runs) and the compiler of the released Daml SDK 3.6.0; [network/README.md](network/README.md) says which, and how they are pinned.
