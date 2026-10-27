@@ -28,7 +28,7 @@ a.btn-line, .code-tab a.btn { text-decoration: none; }
 .fn-h { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: var(--surface-2); border: 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer; }
 .fn-h:disabled { cursor: default; }
 .fn-h .small { margin-left: auto; }
-.fn .fn-name { font-weight: 600; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+.fn .fn-name { font-weight: 500; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
 .fn-args { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .fn-b { padding: 12px 14px; display: grid; gap: 10px; }
 .field { display: grid; gap: 4px; }

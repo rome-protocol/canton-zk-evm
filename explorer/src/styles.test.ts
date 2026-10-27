@@ -284,6 +284,25 @@ describe("the finish of small controls and notes", () => {
     expect(/\n\.pager button \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font:\s*inherit/);
     expect(/\n\.fn-name \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font-weight:\s*500/);
   });
+  it("sets code in IBM Plex Mono like the other mono text", () => {
+    expect(/\ncode \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font-family:\s*"IBM Plex Mono"/);
+  });
+  it("keeps every mono text at 400 or 500, the weights IBM Plex Mono ships: no .mono or .fn-name rule asks for more", () => {
+    for (const f of sources(join(root, "src")).filter((x) => x.endsWith(".css"))) {
+      for (const r of rulesOf(readFileSync(f, "utf8"))) {
+        const w = r.decls["font-weight"];
+        if (/\.(mono|fn-name)\b/.test(r.sel) && w) expect(/^\d+$/.test(w) ? Number(w) : 700, `${f.slice(root.length)} ${r.sel}`).toBeLessThanOrEqual(500);
+      }
+    }
+  });
+  it("shrinks a stat tile's big number on a phone so an 8-digit count with commas (10,540,146) fits the narrowest tile: a clamp that is at most 25 px at 390 px, and 30 px on a wide screen", () => {
+    const m = /\n\.stat-v \{[^}]*font-size:\s*clamp\((\d+)px,\s*([\d.]+)vw,\s*(\d+)px\)/.exec(css);
+    expect(m).not.toBeNull();
+    const [min, vw, max] = [Number(m![1]), Number(m![2]), Number(m![3])];
+    expect(max).toBe(30);
+    expect(Math.max(min, Math.min(max, (vw / 100) * 390))).toBeLessThanOrEqual(25);
+    expect(css).toMatch(/\n\.cell \.stat-v \{[^}]*clamp\(/);
+  });
   it("puts the peak on a line of its own", () => {
     expect(/\n\.stat-v \.stat-peak \{([^}]*)\}/.exec(css)?.[1]).toMatch(/display:\s*block/);
   });
