@@ -9,7 +9,7 @@ describe("the header", () => {
     renderApp("/faucet");
     const nav = within(screen.getByRole("navigation", { name: "Pages" }));
     expect(nav.getAllByRole("link").map((l) => [l.textContent, l.getAttribute("href")])).toEqual([
-      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Contracts", "/contracts"], ["Tokens", "/tokens"], ["Linked to Canton", "/canton"], ["Swaps", "/swaps"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
+      ["Home", "/"], ["Blocks", "/blocks"], ["Transactions", "/txs"], ["Contracts", "/contracts"], ["Tokens", "/tokens"], ["Linked to Canton", "/canton"], ["Stats", "/stats"], ["Faucet", "/faucet"], ["API", "/docs/api"],
     ]);
     expect(nav.getByRole("link", { name: "Faucet" })).toHaveClass("active");
     expect(nav.getByRole("link", { name: "Home" })).not.toHaveClass("active");
