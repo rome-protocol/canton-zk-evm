@@ -34,6 +34,7 @@ These files pin what the one-block producer does today. A later change to the bu
 - When two blocks can be prepared at once, the input tool and the prove command get a folder of their own for each attempt, and the kept
   entries carry the block `number`.
 - Support for several provers changes nothing in these files, which run with one prover.
+- A payment with no `DvpTerms` (or a deposit with no `DepositRequest`) reads the venue trades (or the funded claims) before it is left out, so `skipped` has one more read of `VenueTrade`.
 - Work that only adds new behaviour beside the one-block path changes nothing in these files.
 
 Any other change in a file means the one-block producer behaves differently, which is a defect to fix in the code, not a reason to regenerate.

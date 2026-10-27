@@ -163,6 +163,37 @@
    }
   ],
   [
+   "ledger",
+   "get",
+   "/v2/state/ledger-end"
+  ],
+  [
+   "ledger",
+   "active-contracts",
+   {
+    "activeAtOffset": 42,
+    "eventFormat": {
+     "filtersByParty": {
+      "builder::1220aa": {
+       "cumulative": [
+        {
+         "identifierFilter": {
+          "TemplateFilter": {
+           "value": {
+            "includeCreatedEventBlob": false,
+            "templateId": "#canton-zk-evm:Zk.Chain:VenueTrade"
+           }
+          }
+         }
+        }
+       ]
+      }
+     },
+     "verbose": false
+    }
+   }
+  ],
+  [
    "engine",
    "engine_forkchoiceUpdatedV3",
    [

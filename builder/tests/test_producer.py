@@ -409,9 +409,9 @@ class Refusals(Loop):
         s.ledger.late = True
         p = self.producer(s)
         real = b.Ledger.advance
-        def advance(ledger, chain, argument, command_id=None):
+        def advance(ledger, chain, argument, command_id=None, disclosed=None):
             try:
-                real(ledger, chain, argument, command_id)
+                real(ledger, chain, argument, command_id, disclosed)
             except Exception:
                 pass
             raise KeyboardInterrupt

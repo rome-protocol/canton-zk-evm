@@ -32,7 +32,16 @@ ACCEPTANCE = ("acc-1", {**named, "gateway": "gw", "party": "r::1"})
 def holding(cid, amount, instrument=TKB, owner="gw", lock=None):
     return cid, {"owner": owner, "instrumentId": instrument, "amount": amount, "lock": lock, "meta": {"values": {}}}
 
+TRADE_ID, CLAIM_ID = "ff" * 32, "cc" * 32
+DISCLOSED_ALLOCATION = {"templateId": "pkg:Some.Token:Allocation", "contractId": "alloc-t1", "createdEventBlob": "beef", "synchronizerId": "sync::1"}
+TRADE = ("trade-1", {**named, "venue": "venue::1", "sender": "s::1", "gateway": "gw", "label": "t1", "payId": TRADE_ID, "token": TKA, "payee": PAYEE,
+                     "amount": "00" * 31 + "0a", "allocation": "alloc-t1", "allocationDisclosed": json.dumps(DISCLOSED_ALLOCATION),
+                     "gatewayToken": "tok-1", "claimId": CLAIM_ID, "recipient": PAYEE})
+CLAIM = ("claim-1", {**named, "gateway": "gw", "claimId": CLAIM_ID, "recipient": PAYEE, "gatewayToken": "tok-1", "amount": "10.0"})
+
 PAY = Leg(PAYMENT, PAY_ID, TKA, PAYEE, 10)
+TRADE_PAY = Leg(PAYMENT, TRADE_ID, TKA, PAYEE, 10)
+CLAIM_DEP = Leg(DEPOSIT, CLAIM_ID, WTKB, PAYEE, 10 * UNIT)
 DEP = Leg(DEPOSIT, DEP_ID, WTKB, PAYEE, 10 * UNIT)
 WD = Leg(WITHDRAWAL, WD_ID, WTKB, PAYEE, 4 * UNIT, "r::1")
 
@@ -494,6 +503,115 @@ class Deposits(LegCase):
         self.assertEqual([x["transaction"] for x in result["leftOut"]], [t2["hash"]])
         self.assertIn("same allocation", result["leftOut"][0]["reason"])
         self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
+
+
+class VenueLegs(LegCase):
+    """A payment settles a venue's trade and a deposit redeems the claim that trade made, besides the terms and the requests of before."""
+
+    def setup_leg(self, leg, trades=(), claims=(), terms=(), requests=(), tokens=(TOKEN,), **k):
+        s = self.setup({ALICE: []}, terms=list(terms), **k)
+        s.ledger.trades, s.ledger.claims, s.ledger.requests, s.ledger.tokens = list(trades), list(claims), list(requests), list(tokens)
+        t = self.leg_tx(s, leg)
+        s.reth.pool[ALICE] = [t]
+        return s, t
+
+    def sent_disclosed(self, s):
+        return s.ledger.submitted[0].get("disclosedContracts")
+
+    def test_a_payment_with_a_venue_trade_is_attached_as_a_trade_leg(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertEqual((result["legs"], result["leftOut"], len(s.builds())), (1, [], 1))
+
+    def test_a_deposit_with_a_funded_claim_is_attached_as_a_claim_leg_with_the_claims_token(self):
+        s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "ClaimLeg"), {"claimCid": "claim-1", "tokenCid": "tok-1"})
+        self.assertEqual((result["legs"], result["leftOut"], len(s.builds())), (1, [], 1))
+
+    def test_the_trades_disclosed_allocation_goes_with_the_static_list(self):
+        static = {"templateId": "pkg:Some.Token:Registry", "contractId": "reg-1", "createdEventBlob": "abcd", "synchronizerId": "sync::1"}
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.cfg.disclosed = [static]
+        self.build(s)
+        self.assertEqual(self.sent_disclosed(s), [static, DISCLOSED_ALLOCATION])
+
+    def test_a_disclosed_allocation_already_in_the_static_list_is_not_sent_twice(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.cfg.disclosed = [DISCLOSED_ALLOCATION]
+        self.build(s)
+        self.assertEqual(self.sent_disclosed(s), [DISCLOSED_ALLOCATION])
+
+    def test_a_trade_without_a_disclosed_allocation_adds_nothing(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "allocationDisclosed": None})])
+        self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertNotIn("disclosedContracts", s.ledger.submitted[0])
+
+    def test_a_disclosed_allocation_that_is_not_a_json_object_leaves_the_payment_out(self):
+        for bad in ("not json", "[1]"):
+            s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "allocationDisclosed": bad})])
+            self.assert_left_out(s, t, "disclosed")
+
+    def test_a_deposit_leg_adds_no_disclosure(self):
+        s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM])
+        self.build(s)
+        self.assertNotIn("disclosedContracts", s.ledger.submitted[0])
+
+    def test_an_id_that_no_trade_has_is_left_out_as_before(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "payId": "aa" * 32})])
+        self.assert_left_out(s, t, "no terms", "payment")
+
+    def test_an_id_that_no_claim_has_is_left_out_as_before(self):
+        s, t = self.setup_leg(CLAIM_DEP, claims=[("claim-1", {**CLAIM[1], "claimId": "aa" * 32})])
+        self.assert_left_out(s, t, "no deposit request")
+
+    def test_a_trade_that_names_another_payee_token_or_amount_is_not_used(self):
+        for change, word in (({"payee": "d4" * 20}, "payee"), ({"token": "44" * 20}, "token"), ({"amount": "00" * 31 + "0b"}, "amount")):
+            s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], **change})])
+            self.assert_left_out(s, t, word)
+
+    def test_a_trade_whose_allocation_is_not_the_venues_to_the_gateway_is_not_used(self):
+        for view, word in (({"executor": "other::1"}, "executor"), ({"receiver": "x::1"}, "receiver"), ({"sender": "x::1"}, "sender")):
+            s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+            s.ledger.views["alloc-t1"] = view
+            self.assert_left_out(s, t, word)
+
+    def test_a_trade_whose_allocation_is_gone_is_not_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+        self.assert_left_out(s, t, "allocation")
+
+    def test_a_claim_for_another_recipient_token_or_amount_is_not_used(self):
+        for change, word in (({"recipient": "d4" * 20}, "no deposit request"), ({"amount": "11.0"}, "amount"), ({"gatewayToken": "tok-2"}, "token")):
+            s, t = self.setup_leg(CLAIM_DEP, claims=[("claim-1", {**CLAIM[1], **change})], tokens=[TOKEN, TOKEN_C])
+            self.assert_left_out(s, t, word)
+
+    def test_a_claim_of_another_chain_is_not_used(self):
+        s, t = self.setup_leg(CLAIM_DEP, claims=[("claim-1", {**CLAIM[1], "operator": "other"})])
+        self.assert_left_out(s, t, "no deposit request")
+
+    def test_a_trade_of_another_chain_is_not_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "gateway": "other"})])
+        self.assert_left_out(s, t, "no terms")
+
+    def test_two_deposits_of_one_claim_use_it_once(self):
+        s = self.setup({ALICE: [], BOB: []})
+        s.ledger.claims, s.ledger.tokens = [CLAIM], [TOKEN]
+        a, c = self.leg_tx(s, CLAIM_DEP), self.leg_tx(s, CLAIM_DEP, sender=BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [a], [c]
+        result = self.build(s)
+        self.assertEqual(result["legs"], 1)
+        self.assertEqual(len(result["leftOut"]), 1)
+
+    def test_terms_and_requests_still_win_their_own_ids(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        s.ledger.trades, s.ledger.claims, s.ledger.requests, s.ledger.tokens = [TRADE], [CLAIM], [REQUEST], [TOKEN]
+        s.reth.pool[ALICE] = [self.leg_tx(s, PAY)]
+        s.reth.pool[BOB] = [self.leg_tx(s, DEP, sender=BOB)]
+        self.build(s)
+        self.assertEqual([l["tag"] for l in s.advance_argument()["legs"]], ["PaymentLeg", "DepositLeg"])
+        self.assertNotIn("disclosedContracts", s.ledger.submitted[0])
 
 
 class Withdrawals(LegCase):
@@ -1825,9 +1943,9 @@ class NoAnswer(Case):
     def interrupted_after_the_post(self):
         """advance() as a process killed during the submit sees it: the POST went out, no answer comes, and the call is cut short."""
         real = b.Ledger.advance
-        def advance(ledger, chain, argument, command_id=None):
+        def advance(ledger, chain, argument, command_id=None, disclosed=None):
             try:
-                real(ledger, chain, argument, command_id)
+                real(ledger, chain, argument, command_id, disclosed)
             except Exception:
                 pass
             raise KeyboardInterrupt

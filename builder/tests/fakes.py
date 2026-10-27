@@ -384,6 +384,8 @@ class FakeLedger:
         self.requests: list = []      # (contract id, create arguments) of the DepositRequest contracts it shows
         self.tokens: list = []        # ... of the GatewayToken contracts
         self.acceptances: list = []   # ... of the WithdrawalAcceptance contracts
+        self.trades: list = []        # ... of the VenueTrade contracts (their allocation is executed by the trade's venue)
+        self.claims: list = []        # ... of the FundedClaim contracts
         self.holdings: list = []      # (contract id, the Holding interface's view) of the holdings it shows
         self.other_chains: list = []   # more ZkChain contracts the party can see (overrides of chain_args), e.g. built by someone else
         self.chains, self.bad_json = chains, bad_json   # how many ZkChain contracts it shows; a reply that is not JSON
@@ -465,6 +467,9 @@ class FakeLedger:
         for _, a in self.terms:
             if a["allocation"] == allocation:
                 return {"sender": a["u"], "receiver": a["v"], "amount": "1.0", "instrument": {"admin": "a", "id": "T"}}
+        for _, a in self.trades:
+            if a["allocation"] == allocation:
+                return {"sender": a["sender"], "receiver": a["gateway"], "amount": "1.0", "instrument": {"admin": "adm", "id": "TKB"}, "executor": a["venue"]}
         for _, a in self.requests:
             if a["allocation"] == allocation:
                 return {"sender": a["depositor"], "receiver": a["gateway"], "amount": "10.0", "instrument": {"admin": "adm", "id": "TKB"}}
@@ -478,7 +483,7 @@ class FakeLedger:
             return []
         base = self._allocation_of(allocation)
         view = {"allocation": {
-            "settlement": {"executor": over.get("executor", "op"), "settlementRef": {"id": "s1", "cid": None},
+            "settlement": {"executor": over.get("executor", base.get("executor", "op")), "settlementRef": {"id": "s1", "cid": None},
                            "requestedAt": "2026-01-01T00:00:00Z", "allocateBefore": "2999-01-01T00:00:00Z",
                            "settleBefore": over.get("settleBefore", "2999-01-01T00:00:00Z"), "meta": {"values": {}}},
             "transferLegId": "leg-0",
@@ -489,7 +494,7 @@ class FakeLedger:
 
     def _active(self, template):
         if template.endswith(":Allocation"):   # the token standard's Allocation interface
-            ids = [a["allocation"] for _, a in [*self.terms, *self.requests]] if self.allocations is None else self.allocations
+            ids = [a["allocation"] for _, a in [*self.terms, *self.requests, *self.trades]] if self.allocations is None else self.allocations
             return [{"contractEntry": {"JsActiveContract": {"createdEvent": {
                         "contractId": i, "templateId": "pkg:Some.Token:Allocation", "interfaceViews": self._views(i)}}}}
                     for i in ids]
@@ -504,7 +509,7 @@ class FakeLedger:
         if template.endswith(":ZkChain"):
             own = [entry(cid, "ZkChain", self.chain_args()) for cid in self.cids]
             return own + [entry(f"other-chain-cid-{i}", "ZkChain", {**self.chain_args(), **o}) for i, o in enumerate(self.other_chains)]
-        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms)):
+        for name, found in (("DepositRequest", self.requests), ("GatewayToken", self.tokens), ("WithdrawalAcceptance", self.acceptances), ("DvpTerms", self.terms), ("VenueTrade", self.trades), ("FundedClaim", self.claims)):
             if template.endswith(":" + name):
                 return [entry(c, name, a) for c, a in found]
         return []
