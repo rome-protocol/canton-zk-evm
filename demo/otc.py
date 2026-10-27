@@ -165,7 +165,7 @@ def trade_spec(trade: dict) -> dict:
 def canonical(value):
     """A ledger value compared by what it says: a decimal by its number, a time by its instant (the ledger may write either with other digits)."""
     if isinstance(value, dict):
-        return {k: canonical(v) for k, v in value.items()}
+        return {k: canonical(v) for k, v in value.items() if v is not None}   # the ledger may leave out an optional field that is None
     if isinstance(value, list):
         return [canonical(v) for v in value]
     if isinstance(value, str):
@@ -174,6 +174,13 @@ def canonical(value):
         if TIME.fullmatch(value):
             return datetime.fromisoformat(value.replace("Z", "+00:00"))
     return value
+
+
+def differences(got, want, path: str = "") -> list:
+    """Where two canonical values differ, as the paths of the fields."""
+    if isinstance(got, dict) and isinstance(want, dict):
+        return [d for k in sorted(set(got) | set(want)) for d in differences(got.get(k), want.get(k), f"{path}/{k}")]
+    return [] if got == want else [f"{path}: {got!r} is not {want!r}"]
 
 
 def is_the_trades(event: dict, trade: dict) -> bool:
@@ -212,7 +219,11 @@ def publish(net: canton.Network, label: str, wrapped: str = None) -> dict:
     # an allocation that is the trade's own (its settlement and its leg, trade_spec) is taken, whoever made it and with whatever label it shares.
     found = [e for e in allocations_of(net, VENUE, label, blob=True) + allocations_of(net, SELLER, label, blob=True) if is_the_trades(e, trade)]
     found = list({e["contractId"]: e for e in found}.values())
-    allocation = one(found, f"allocation of {label!r} that is the trade's own, with its executor, leg and amount (the seller allocates first)")
+    if not found:
+        others = [e for who in (VENUE, SELLER) for e in allocations_of(net, who, label)]
+        why = "; ".join(differences(canonical(others[0]["createArgument"]["allocation"]), canonical(trade_spec(trade)))) if others else "none"
+        raise canton.Fail(f"no allocation of {label!r} is the trade's own, with its executor, leg and amount (the seller allocates first); the first one differs at: {why}")
+    allocation = one(found, f"allocation of {label!r} that is the trade's own")
     token = gateway_token(net, trade["instrument"], wrapped)
     chain = canton.chain_record(net)
     net.submit("users", [VENUE, SELLER], {"CreateCommand": {"templateId": VENUE_TRADE, "createArguments": {

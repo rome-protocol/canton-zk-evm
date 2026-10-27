@@ -128,6 +128,7 @@ class OtcTests(LedgerTestCase):
     def test_the_trades_own_allocation_is_taken_when_the_ledger_writes_its_numbers_and_times_otherwise(self):
         self.allocated(amount="2.5")
         FakeLedger.contracts[("v::1", canton.ALLOCATION_OF_TOKEN)][0]["createArgument"]["allocation"]["settlement"]["requestedAt"] = "2099-10-27T08:00:00.000000Z"
+        FakeLedger.contracts[("v::1", canton.ALLOCATION_OF_TOKEN)][0]["createArgument"]["allocation"]["settlement"]["settlementRef"] = {"id": "t1"}   # the empty cid left out
         otc.publish(self.net, "t1")
         self.assertEqual(len(self.made(otc.VENUE_TRADE)), 1)
 
