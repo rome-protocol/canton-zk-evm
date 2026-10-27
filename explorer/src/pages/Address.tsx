@@ -9,6 +9,7 @@ import { CreatedChip, Holdings, More } from "./AddressParts.tsx";
 import { Contract } from "./Contract.tsx";
 import "./address.css";
 import "./tx.css";
+import { Info } from "../components/Info.tsx";
 
 /** The title: an address that holds no code. A contract and a token have their own pages. */
 const Title = ({ a }: { a: AddressDetail }) => <div className="ptitle"><h1>Address</h1><span className="chip chip-kind">Account</span><CreatedChip a={a} to="?tab=contracts" /></div>;
@@ -22,7 +23,7 @@ function Overview({ a, coin }: { a: AddressDetail; coin: ApiStatus["coin"] | und
       {a.balance === null ? <div className="addr-bal muted">Not known yet</div> : coin ? <div className="addr-bal" title={`${exact(a.balance, coin.decimals)} ${coin.symbol}`}>{units(a.balance, coin.decimals)} <small>{coin.symbol}</small></div> : <div className="addr-bal muted">…</div>}
       {a.balance === null
         ? <p className="small muted">There is no final block to read it at yet.</p>
-        : <p className="small muted">as of final block {a.balanceBlock}, read from reth{coin && <> · exact: <span className="num">{exact(a.balance, coin.decimals)} {coin.symbol}</span></>}</p>}
+        : <p className="small muted">as of final block {a.balanceBlock}<Info about="the balance">Read from reth{coin && <>; exact: <span className="num">{exact(a.balance, coin.decimals)} {coin.symbol}</span></>}.</Info></p>}
     </section>
   );
 }

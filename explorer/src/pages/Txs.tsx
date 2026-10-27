@@ -19,6 +19,7 @@ import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
 import { DASH_WHY, Moved, ProvingMoved, provingToken, SinceLaunch, SinceLaunchNote, Stat, Time } from "./HomeParts.tsx";
 import "./home.css";
+import { Info } from "../components/Info.tsx";
 
 const PER = 25;
 /** The rows of transactions that are not final that one page draws; the rest are counted. */
@@ -211,7 +212,7 @@ function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, ro
         </table>
       </div>
       {showNotFinal && all && all.total > shown.length && <p className="muted small">{all.atLeast ? "At least " : ""}{count(all.total - shown.length)} more not final yet, older than the rows shown, are not listed.</p>}
-      <p className="muted small"><b>Waiting</b>: accepted, in the pool. <b>Being proven</b>: in a block that is not final yet; if Canton refused that block, the transaction would go back to the pool. <b>Final</b>: its block is final on Canton.</p>
+      <p className="muted small">Waiting, being proven, final<Info about="the stages"><b>Waiting</b>: accepted, in the pool. <b>Being proven</b>: in a block that is not final yet; if Canton refused that block, the transaction would go back to the pool. <b>Final</b>: its block is final on Canton.</Info></p>
     </section>
   );
 }

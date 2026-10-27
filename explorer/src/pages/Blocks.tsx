@@ -11,6 +11,7 @@ import { count, duration, span } from "../format.ts";
 import { listPoll, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
+import { Info } from "../components/Info.tsx";
 
 const PER = 25;
 /** A proof that took longer than this is flagged on the list. */
@@ -97,7 +98,7 @@ function Table({ view, st, pager, now, live }: { view: View; st: ApiStatus | und
           </tbody>
         </table>
       </div>
-      <p className="muted small">Ages are counted to {new Date(now).toISOString().slice(11, 19)} UTC. Each final block is one Canton transaction; its update id opens the Canton record.</p>
+      <p className="muted small">Ages as of {new Date(now).toISOString().slice(11, 19)} UTC<Info about="the blocks list">Each final block is one Canton transaction; its update id opens the Canton record.</Info></p>
     </section>
   );
 }

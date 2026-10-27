@@ -15,6 +15,7 @@ import { useNow, useStatus } from "../useStatus.ts";
 import { CantonCustody } from "./CantonCustody.tsx";
 import { Avatar, failedNote, Mint, NftCount, noName, Supply } from "./TokenParts.tsx";
 import "./token.css";
+import { Info } from "../components/Info.tsx";
 
 const PER = 25;
 const ZERO = "0x" + "00".repeat(20);
@@ -192,7 +193,7 @@ export function Transfers({ t }: { t: TokenDetail }) {
         </div>
       )}
       <Gap derived={d.derived} n={d.items.length} none="No transfers yet." />
-      <p className="muted small">Only transfers in final blocks are listed, read from the token's Transfer logs; one in a block that is not final yet is not shown, so a row never changes. A reverted transaction moved nothing, so it is not a transfer; it is on the contract's Transactions tab.</p>
+      <p className="muted small">Final blocks only<Info about="the transfers list">Only transfers in final blocks are listed, read from the token's Transfer logs; one in a block that is not final yet is not shown, so a row never changes. A reverted transaction moved nothing, so it is not a transfer; it is on the contract's Transactions tab.</Info></p>
     </section>
   );
 }
