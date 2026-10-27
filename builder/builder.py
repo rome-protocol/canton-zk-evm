@@ -1063,8 +1063,13 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
         token = next((g for g in canton.tokens if g["contractId"] == t["gatewayToken"] and names_chain(g, chain, "gateway")), None)
         if token is None:
             return "the venue trade's token is not a token of this chain"
-        if canton.used is not None and canton.used(t["claimId"]):   # the claim's deposit settled first: paying now would leave the buyer's claim unredeemable
-            return "the trade's claim id is already used"
+        if canton.used is not None:
+            try:
+                is_used = canton.used(t["claimId"])
+            except (BuilderError, ValueError, TypeError):   # a read that fails leaves the payment out; a closed WebSocket still raises
+                return "the gateway's used(claimId) could not be read"
+            if is_used:   # the claim's deposit settled first: paying now would leave the buyer's claim unredeemable
+                return "the trade's claim id is already used"
         shown = disclosed_allocation(t)
         if shown is False:
             return "the trade's disclosed allocation is not a JSON object"

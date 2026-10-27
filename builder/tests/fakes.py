@@ -107,6 +107,7 @@ class FakeReth:
         self.pool, self.gas_limit = pool, gas_limit
         self.used_slots: set = set()   # the storage slots (0x hex) of used[id] that are set
         self.storage_reads: list = []
+        self.fail_storage_reads = 0   # how many of the next eth_getStorageAt calls fail
         self.fail_proof_reads = 0   # how many of the next eth_getProof calls fail
         self.max_request = max_request   # reth refuses a WebSocket request over 15 MB (the connection is closed, code 1009)
         self.vanished: set = set()       # hashes that txpool_content still lists but eth_getRawTransactionByHash answers null for (replaced or evicted since)
@@ -243,6 +244,9 @@ class FakeReth:
             return self._logs(params[0])
         if method == "eth_getStorageAt":   # only the gateway's used[id] slots are asked for
             self.storage_reads.append(params)
+            if self.fail_storage_reads:
+                self.fail_storage_reads -= 1
+                raise RpcError("the state of the block is not available")
             return "0x" + ("01" if params[1] in self.used_slots else "00").rjust(64, "0")
         if method == "eth_getProof":   # only the gateway's account and its legs slot are ever asked for
             if self.fail_proof_reads:

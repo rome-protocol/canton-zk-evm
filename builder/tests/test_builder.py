@@ -594,6 +594,16 @@ class VenueLegs(LegCase):
         for address, slot, block in reads:   # the gateway's used[id], at the parent of the block being built
             self.assertEqual((address, slot, block), ("0x" + GATEWAY, self.used_slot(CLAIM_ID), HEAD_HASH))
 
+    def test_a_payment_is_left_out_when_the_used_read_fails_and_attached_once_it_works(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.reth.fail_storage_reads = 1
+        self.assert_left_out(s, t, "used(claimId) could not be read")   # the block is still built and committed, with no trade leg
+        self.assertEqual(s.reth.fail_storage_reads, 0)
+        s.ledger.submitted.clear()   # the first block is committed
+        result = self.build(s)   # the read works now
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertEqual(result["leftOut"], [])
+
     def test_a_payment_is_attached_when_the_trades_claim_id_is_not_used(self):
         s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
         s.reth.used_slots.add(self.used_slot("aa" * 32))   # another id is used
