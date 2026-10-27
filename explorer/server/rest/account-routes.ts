@@ -49,7 +49,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
   };
   /** A swap in the fields of its allowlists, each part picked on its own. */
   const swapOf = (s: SwapItem) => pick({
-    ...s, evm: pick(s.evm, F.swapEvm), canton: pick({ ...s.canton, instrument: s.canton.instrument && pick(s.canton.instrument, FIELDS.legInstrument) }, F.swapCanton),
+    ...s, offer: pick(s.offer, F.swapOffer), evm: pick(s.evm, F.swapEvm), canton: pick({ ...s.canton, instrument: s.canton.instrument && pick(s.canton.instrument, FIELDS.legInstrument) }, F.swapCanton),
     payment: pick(s.payment, F.swapPayment), claim: s.claim && pick(s.claim, F.swapClaim),
   }, F.swap);
   const isDerived = async (): Promise<boolean> => {
@@ -365,7 +365,7 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
     ["/api/swaps", (_, q) => swapList(q)],
-    ["/api/swap/{payId}", (id) => oneSwap(id)],
+    ["/api/swaps/{payId}", (id) => oneSwap(id)],
     ["/api/search", (_, q) => find(q.get("q") ?? "")],
   ]);
 }

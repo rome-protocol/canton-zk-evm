@@ -97,6 +97,9 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return m && token ? { symbol: token.symbol, decimals: token.decimals, to: "0x" + m[1], value: dec(BigInt("0x" + m[2])) } : null;
   }
 
+  /** The most legs a block's answer carries: a block can record thousands, and `legsCount` and the paged legs route have the rest. */
+  const BLOCK_LEGS = 50;
+
   /** A gateway leg in the fields of FIELDS.blockLeg, and the Canton side of its swap in the fields of FIELDS.legCanton. */
   const legOf = (l: BlockLeg) => ({ ...pick(l, FIELDS.blockLeg), canton: l.canton && { ...pick(l.canton, FIELDS.legCanton), instrument: l.canton.instrument && pick(l.canton.instrument, FIELDS.legInstrument) } });
 
@@ -170,7 +173,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
           hashesMatch, headerHex: final.headerHex, txsHex: final.txsHex, proofHex: final.proofHex ?? "",
         },
         transactions,
-        legs: (await chain.blockLegs(final.number)).map(legOf),
+        legs: (await chain.blockLegs(final.number, BLOCK_LEGS)).map(legOf),
       });
     }
     // Not in the database: the genesis, a block that is still being proven, or one that Canton holds and the indexer has not written yet. Only reth knows it.

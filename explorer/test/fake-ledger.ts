@@ -75,8 +75,8 @@ const gatewayEvent = (offset: number, entity: string, contractId: string, args: 
 const base = { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gateway: FAKE_GATEWAY, builder: "builder::1220" + "11".repeat(32), chainId: "770101" };
 
 /** A GatewayToken as an update creates it. */
-export const gatewayTokenEvent = (offset: number, contractId: string, evmToken: string, admin = FAKE_REGISTRY, id = "TKB"): Json =>
-  gatewayEvent(offset, "GatewayToken", contractId, { ...base, evmToken, instrumentId: { admin, id }, factory: "00ff" }, [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]);
+export const gatewayTokenEvent = (offset: number, contractId: string, evmToken: string, admin = FAKE_REGISTRY, id = "TKB", over: Json = {}): Json =>
+  gatewayEvent(offset, "GatewayToken", contractId, { ...base, evmToken, instrumentId: { admin, id }, factory: "00ff", ...over }, [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]);
 
 /** A VenueTrade, which names the venue and the seller as it does on Canton (the explorer must not keep either). `amount` is the ERC-20 amount as the contract writes it, 64 hex digits. */
 export const venueTradeEvent = (offset: number, contractId: string, f: { payId: string; claimId: string; token: string; payee: string; recipient: string; amount: bigint; gatewayToken: string }, over: Json = {}): Json =>

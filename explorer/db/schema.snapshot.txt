@@ -149,10 +149,8 @@ table canton_funded_claims
   column amount numeric(78,0) not null
   column gateway_token text not null
   column funded_update_id text not null
-  column funded_offset bigint not null
   constraint canton_funded_claims_amount_check CHECK ((amount > (0)::numeric))
   constraint canton_funded_claims_claim_id_check CHECK ((length(claim_id) = 32))
-  constraint canton_funded_claims_funded_offset_check CHECK ((funded_offset >= 0))
   constraint canton_funded_claims_pkey PRIMARY KEY (claim_id)
   constraint canton_funded_claims_recipient_check CHECK ((length(recipient) = 20))
   CREATE UNIQUE INDEX canton_funded_claims_pkey ON public.canton_funded_claims USING btree (claim_id)
@@ -255,16 +253,18 @@ table canton_venue_trades
   column evm_amount numeric(78,0) not null
   column gateway_token text not null
   column offered_update_id text not null
-  column offered_offset bigint not null
+  column payment_block bigint
+  column payment_leg_index integer
+  constraint canton_venue_trades_check CHECK (((payment_block IS NULL) = (payment_leg_index IS NULL)))
   constraint canton_venue_trades_claim_id_check CHECK ((length(claim_id) = 32))
   constraint canton_venue_trades_evm_amount_check CHECK ((evm_amount > (0)::numeric))
-  constraint canton_venue_trades_offered_offset_check CHECK ((offered_offset >= 0))
   constraint canton_venue_trades_pay_id_check CHECK ((length(pay_id) = 32))
   constraint canton_venue_trades_payee_check CHECK ((length(payee) = 20))
   constraint canton_venue_trades_pkey PRIMARY KEY (pay_id)
   constraint canton_venue_trades_recipient_check CHECK ((length(recipient) = 20))
   constraint canton_venue_trades_token_check CHECK ((length(token) = 20))
   CREATE INDEX canton_venue_trades_claim_id_idx ON public.canton_venue_trades USING btree (claim_id)
+  CREATE INDEX canton_venue_trades_payment_block_payment_leg_index_idx ON public.canton_venue_trades USING btree (payment_block DESC, payment_leg_index DESC) WHERE (payment_block IS NOT NULL)
   CREATE UNIQUE INDEX canton_venue_trades_pkey ON public.canton_venue_trades USING btree (pay_id)
 
 table coin_balance_history
@@ -385,7 +385,6 @@ table gateway_legs
   column party text
   constraint gateway_legs_pkey PRIMARY KEY (block_number, leg_index)
   CREATE INDEX gateway_legs_account_block_number_idx ON public.gateway_legs USING btree (account, block_number DESC)
-  CREATE INDEX gateway_legs_block_number_leg_index_idx ON public.gateway_legs USING btree (block_number DESC, leg_index DESC) WHERE (kind = 3)
   CREATE INDEX gateway_legs_leg_id_idx ON public.gateway_legs USING btree (leg_id)
   CREATE INDEX gateway_legs_token_block_number_idx ON public.gateway_legs USING btree (token, block_number DESC)
   CREATE UNIQUE INDEX gateway_legs_pkey ON public.gateway_legs USING btree (block_number, leg_index)

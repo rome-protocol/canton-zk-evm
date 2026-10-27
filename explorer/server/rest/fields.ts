@@ -82,7 +82,7 @@ export const REST_FIELDS = {
   labels: ["items"],
   /** One transaction: what the pages already have, with the stage 2 fields (null until the block is derived), its place in its block, and the fee caps the sender signed. */
   txDetail: [...FIELDS.tx.filter((f) => f !== "logs"), "derived", "callCount", "revertReason", "index", "maxFeePerGas", "maxPriorityFeePerGas"],
-  leg: ["legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount"],
+  leg: ["legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount", "canton"],
   record: ["number", "hash", "contractId", "header", "txs", "proof"],
   /** `logIndex` is the log's place in its block, as Ethereum counts it; `position` is its place among this transaction's logs. Both are 0-based. */
   log: ["logIndex", "position", "address", "topics", "data", "decoded"],
@@ -137,13 +137,14 @@ export const REST_FIELDS = {
   cantonCustody: ["instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "supply", "supplyBlock", "ledgerOffset", "readAt"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */
+  legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount", "party"],
   /** A swap a Canton venue made with the EVM: both sides, the payment that settled it and the claim that redeemed it, if one did. */
-  swap: ["payId", "claimId", "status", "evm", "canton", "payment", "claim"],
+  swap: ["payId", "claimId", "status", "offer", "evm", "canton", "payment", "claim"],
+  swapOffer: ["updateId"],
   swapEvm: ["token", "symbol", "decimals", "payer", "payee", "amount"],
   swapCanton: ["amount", "instrument", "recipient", "updateId"],
   swapPayment: ["block", "txHash", "legIndex", "updateId", "recordTime"],
   swapClaim: ["block", "txHash", "legIndex", "updateId", "recordTime"],
-  legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount", "party"],
   /** What a search found: the page to open, and, for a name, the matches (at most ten). */
   search: ["path", "matches"],
   searchMatch: ["kind", "name", "symbol", "address", "path"],

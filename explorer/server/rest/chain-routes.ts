@@ -7,7 +7,7 @@ import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
 import type { ChainRest, TxListItem } from "./chain-rest.ts";
 import { traceKey } from "./chain-rest.ts";
-import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
+import { FIELDS, REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, aroundOf, cursorOf, isTrace, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import { traceOf, type CallFrame } from "./trace.ts";
@@ -103,7 +103,11 @@ export function chainRoutes({ rest, reth, block, transaction }: ChainRouteDeps) 
   async function blockLegs(id: string, q: URLSearchParams): Promise<Answer> {
     const limit = limitOf(q.get("limit")), after = afterOf(q, ["int4"]), n = await finalBlock(id);
     if (n === undefined) return fail(404, NOT_FOUND_HERE);
-    return cached(ok(page(await rest.blockLegs(n, (after?.[0] as number | undefined) ?? null, limit), limit, (l) => keyOf(l.legIndex), F.leg)), "composite");
+    // The Canton side of a swap is picked by its own allowlists, as in a block's answer.
+    const legs = (await rest.blockLegs(n, (after?.[0] as number | undefined) ?? null, limit)).map((l) => ({
+      ...l, canton: l.canton && { ...pick(l.canton, FIELDS.legCanton), instrument: l.canton.instrument && pick(l.canton.instrument, FIELDS.legInstrument) },
+    }));
+    return cached(ok(page(legs, limit, (l) => keyOf(l.legIndex), F.leg)), "composite");
   }
 
   /** The record is a chain fact that never changes: header, transactions and proof, as hex. */

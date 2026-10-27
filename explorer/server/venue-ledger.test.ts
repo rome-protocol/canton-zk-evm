@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createLedger, CUSTODY_ENDPOINTS, FUNDED_CLAIM_TEMPLATE, GATEWAY_TOKEN_TEMPLATE, LedgerError, VENUE_TRADE_TEMPLATE, venueIn, type VenueUpdate } from "./ledger.ts";
 import { checkpoint, createdEvent, FAKE_GATEWAY, FAKE_SELLER, FAKE_VENUE, fundedClaimEvent, gatewayTokenEvent, startFakeLedger, transaction, venueTradeEvent, type FakeLedger } from "../test/fake-ledger.ts";
 
+const CHAIN = 770101;
 const TKB = "0x" + "d1".repeat(20);
 const PAY = "a1".repeat(32), CLAIM = "b2".repeat(32);
 const BUYER = "0x" + "e5".repeat(20), PAYEE = "0x" + "f6".repeat(20);
@@ -12,7 +13,7 @@ let fake: FakeLedger | undefined;
 afterEach(async () => { await fake?.close(); fake = undefined; });
 const walk = async (l: ReturnType<typeof createLedger>, after: number, upTo: number) => {
   const out: { updates: VenueUpdate[]; offset: number }[] = [];
-  for await (const p of l.venuePages(after, upTo)) out.push(p);
+  for await (const p of l.venuePages(after, upTo, CHAIN)) out.push(p);
   return out;
 };
 
@@ -55,6 +56,20 @@ describe("the Canton side of the swaps, read as the gateway", () => {
     expect(text).not.toContain("alice");
   });
 
+  it("reads only the contracts of its chain: another chain's token, trade and claim are dropped, and a chain id that is not a number fails the read", async () => {
+    const other = { chainId: "12" };
+    const item = transaction(15, "u", [
+      gatewayTokenEvent(15, "00tokX", TKB, undefined, "TKB", other), venueTradeEvent(15, "00tradeX", trade, other), fundedClaimEvent(15, "00claimX", claim, other),
+      venueTradeEvent(15, "00trade", trade), fundedClaimEvent(15, "00claim", claim),
+    ]);
+    const { update } = venueIn(item, CHAIN);
+    expect(update!.tokens).toEqual([]);
+    expect(update!.trades).toEqual([trade]);
+    expect(update!.claims.map((c) => c.claimId)).toEqual([CLAIM]);
+    expect(venueIn(transaction(15, "u", [venueTradeEvent(15, "00tradeX", trade, other)]), CHAIN).update).toBeNull();
+    expect(() => venueIn(transaction(15, "u", [venueTradeEvent(15, "00t", trade, { chainId: "x" })]), CHAIN)).toThrow(LedgerError);
+  });
+
   it("walks a page at a time and goes on from where the last page ended, and a checkpoint or another template is no fact", async () => {
     fake = await startFakeLedger([
       transaction(10, "u1", [gatewayTokenEvent(10, "00tok1", TKB)]), checkpoint(11),
@@ -78,8 +93,8 @@ describe("the Canton side of the swaps, read as the gateway", () => {
     ["a claim with a negative amount", fundedClaimEvent(5, "00c", claim, { amount: "-1" })],
     ["a registered token that is not an address", gatewayTokenEvent(5, "00k", "0x12")],
   ])("fails the read, with a LedgerError, on %s", async (_, event) => {
-    expect(() => venueIn(transaction(5, "u", [event]))).toThrow(LedgerError);
-    expect(() => venueIn(transaction(5, "u", [event]))).toThrow(/venue trades cannot be read|custody cannot be read/);
+    expect(() => venueIn(transaction(5, "u", [event]), CHAIN)).toThrow(LedgerError);
+    expect(() => venueIn(transaction(5, "u", [event]), CHAIN)).toThrow(/venue trades cannot be read|custody cannot be read/);
   });
 
   it("fails as a LedgerError when Canton does not answer", async () => {

@@ -27,6 +27,8 @@ describe("the gateway's custody, read as the gateway", () => {
     const custody = createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS);
     await expect(custody.ledgerEnd()).rejects.toThrow(/not on the list/);
     await expect(custody.participantId()).rejects.toThrow(/not on the list/);
+    // The updates call is shared, but the gateway's client never reads the block records with it.
+    await expect(custody.records(0, 5)).rejects.toThrow(/not the gateway's/);
     expect(fake.requests).toEqual([]);
   });
 

@@ -588,7 +588,7 @@ export function createIndexer(o: IndexerOptions) {
         }
         // The Canton side of the swaps (a venue's trades and the funded claims) is read the same way, as the gateway party, and fails on its own.
         try {
-          await venueOnce(o.pool, o.custody.ledger, (participantId ??= await o.ledger.participantId()));
+          await venueOnce(o.pool, o.custody.ledger, (participantId ??= await o.ledger.participantId()), o.chainId);
           venueFailing = "";
         } catch (e) {
           if (venueFailing !== (e as Error).message) log(`indexer (venue trades): ${(e as Error).message}`);

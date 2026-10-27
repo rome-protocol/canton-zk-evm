@@ -24,7 +24,9 @@ export interface SwapEvm { token: string; symbol: string | null; decimals: numbe
 export interface SwapCanton { amount: string | null; instrument: { admin: string; id: string } | null; recipient: string; updateId: string | null }
 export interface SwapPayment { block: number; txHash: string | null; legIndex: number; updateId: string; recordTime: string }
 export interface SwapClaim { block: number; txHash: string | null; legIndex: number; updateId: string; recordTime: string }
-export interface SwapItem { payId: string; claimId: string; status: "settled" | "claimed"; evm: SwapEvm; canton: SwapCanton; payment: SwapPayment; claim: SwapClaim | null }
+/** The Canton update that offered the trade, before any payment. */
+export interface SwapOffer { updateId: string }
+export interface SwapItem { payId: string; claimId: string; status: "settled" | "claimed"; offer: SwapOffer; evm: SwapEvm; canton: SwapCanton; payment: SwapPayment; claim: SwapClaim | null }
 
 export type AddressSort = "balance" | "txs";
 export type ContractSort = "interactions" | "newest" | "oldest";
@@ -536,15 +538,17 @@ export function createAccountRest(pool: Pool) {
   }
 
   /**
-   * The swaps: each payment leg that a venue's trade is behind, with the trade, the payer, the funded claim and the token, and the deposit that redeemed the claim, if one did. A payment
-   * that no trade is behind is not a swap (it is in the legs list). Newest first, after the key (block, leg index) of the payment.
+   * The swaps: each venue trade that a payment settled, with the payer, the funded claim and the token, and the deposit that redeemed the claim, if one did. The payment is the leg the venue
+   * read recorded on the trade (`payment_block`, `payment_leg_index`: the first payment of the trade's id that pays its token, to its payee, for its amount); a payment that no trade is behind
+   * is not a swap (it is in the legs list). The deposit counts only when it is for the claim's recipient, for its amount and in its registered token. Newest first, after the key (block, leg index)
+   * of the payment, by the partial index on those two columns: a page reads its own rows, not the payments between them. The recipient is the claim's once the claim is read, the offer's before.
    */
-  const swapSelect = `g.block_number, g.leg_index, g.leg_id as pay_id, g.token, g.account as payee, g.amount::text as amount, vt.claim_id, vt.recipient,
+  const swapSelect = `vt.pay_id, g.block_number, g.leg_index, g.token, g.account as payee, g.amount::text as amount, vt.claim_id, coalesce(fc.recipient, vt.recipient) as recipient, vt.offered_update_id,
     pt.hash as pay_tx_hash, pt.from_address as payer, pb.update_id as pay_update_id, ${US("pb.record_time")} as pay_record_time,
     fc.amount::text as canton_amount, fc.funded_update_id, ct.instrument_admin, ct.instrument_id, tk.symbol, tk.decimals,
     cl.block_number as claim_block, cl.leg_index as claim_leg_index, cl.tx_hash as claim_tx_hash, cl.update_id as claim_update_id, cl.record_time as claim_record_time`;
-  const swapFrom = `from gateway_legs g
-    join canton_venue_trades vt on vt.pay_id = g.leg_id
+  const swapFrom = `from canton_venue_trades vt
+    join gateway_legs g on g.block_number = vt.payment_block and g.leg_index = vt.payment_leg_index
     join blocks pb on pb.number = g.block_number
     left join transactions pt on pt.block_number = g.block_number and pt.tx_index = g.tx_index
     left join canton_funded_claims fc on fc.claim_id = vt.claim_id
@@ -554,10 +558,10 @@ export function createAccountRest(pool: Pool) {
       select d.block_number, d.leg_index, dt.hash as tx_hash, db.update_id, ${US("db.record_time")} as record_time
       from gateway_legs d join blocks db on db.number = d.block_number
         left join transactions dt on dt.block_number = d.block_number and dt.tx_index = d.tx_index
-      where d.kind = 1 and d.leg_id = vt.claim_id order by d.block_number, d.leg_index limit 1
+      where fc.claim_id is not null and d.kind = 1 and d.leg_id = fc.claim_id and d.account = fc.recipient and d.amount = fc.amount and d.token = ct.evm_token order by d.block_number, d.leg_index limit 1
     ) cl on true`;
   const swapItem = (r: Row): SwapItem => ({
-    payId: hex(r.pay_id), claimId: hex(r.claim_id), status: r.claim_block === null ? "settled" : "claimed",
+    payId: hex(r.pay_id), claimId: hex(r.claim_id), status: r.claim_block === null ? "settled" : "claimed", offer: { updateId: r.offered_update_id },
     evm: { token: hex(r.token), symbol: r.symbol ?? null, decimals: num(r.decimals), payer: hexOrNull(r.payer), payee: hex(r.payee), amount: r.amount },
     canton: { amount: r.canton_amount ?? null, instrument: r.instrument_id ? { admin: r.instrument_admin, id: r.instrument_id } : null, recipient: hex(r.recipient), updateId: r.funded_update_id ?? null },
     payment: { block: Number(r.block_number), txHash: hexOrNull(r.pay_tx_hash), legIndex: r.leg_index, updateId: r.pay_update_id, recordTime: isoTime(r.pay_record_time) },
@@ -567,15 +571,16 @@ export function createAccountRest(pool: Pool) {
   async function swaps(before: Key | null, limit: number): Promise<SwapItem[]> {
     const [bn, li] = before ?? [null, null];
     const rows = await query(
-      `select ${swapSelect} ${swapFrom} where g.kind = 3 and ($1::bigint is null or (g.block_number, g.leg_index) < ($1::bigint, $2::int)) order by g.block_number desc, g.leg_index desc limit $3`,
+      `select ${swapSelect} ${swapFrom} where vt.payment_block is not null and ($1::bigint is null or (vt.payment_block, vt.payment_leg_index) < ($1::bigint, $2::int))
+       order by vt.payment_block desc, vt.payment_leg_index desc limit $3`,
       [bn, li, limit + 1],
     );
     return rows.map(swapItem);
   }
 
-  /** One swap by its payment id; if the same id is ever recorded twice, the first payment. */
+  /** One swap by its payment id. */
   async function swap(payId: string): Promise<SwapItem | undefined> {
-    const [r] = await query(`select ${swapSelect} ${swapFrom} where g.kind = 3 and g.leg_id = $1 order by g.block_number, g.leg_index limit 1`, [bytes(payId)]);
+    const [r] = await query(`select ${swapSelect} ${swapFrom} where vt.pay_id = $1 and vt.payment_block is not null`, [bytes(payId)]);
     return r && swapItem(r);
   }
 

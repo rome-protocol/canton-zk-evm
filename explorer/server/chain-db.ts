@@ -127,10 +127,10 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
     return rows.map((r) => ({ hash: hex(r.hash), from: hex(r.from_address), to: hexOrNull(r.to_address), success: r.status === 1, transferInput: r.transfer_input ? hex(r.transfer_input) : null }));
   }
 
-  /** The gateway legs a final block recorded, each with what Canton shows of the swap it is one side of. */
-  async function blockLegs(number: number): Promise<BlockLeg[]> {
+  /** The gateway legs a final block recorded, each with what Canton shows of the swap it is one side of: the first `limit` of them, or all. */
+  async function blockLegs(number: number, limit: number | null = null): Promise<BlockLeg[]> {
     try {
-      return await legsOfBlock(pool, number);
+      return await legsOfBlock(pool, number, { limit });
     } catch (e) {
       throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`);
     }

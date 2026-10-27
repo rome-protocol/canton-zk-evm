@@ -228,8 +228,17 @@ const hexField = (a: Json, name: string, digits: number, what: string): string =
 };
 const cidField = (a: Json, what: string): string => (typeof a.gatewayToken === "string" && a.gatewayToken !== "" ? a.gatewayToken : venueFail(`${what} names no registered token`));
 
-/** The GatewayToken, VenueTrade and FundedClaim contracts one update created, as the gateway party sees them. Other contracts and archived events are not read, and no party is kept. */
-export function venueIn(item: unknown): { offset: number; update: VenueUpdate | null } {
+/** The chain a contract is for, as a number: Canton writes an Int as a string. */
+const chainOfContract = (a: Json, what: string): number => {
+  const v = typeof a.chainId === "string" && /^\d+$/.test(a.chainId) ? Number(a.chainId) : a.chainId;
+  return typeof v === "number" && Number.isSafeInteger(v) ? v : venueFail(`${what} has a chainId that is not a whole number`);
+};
+
+/**
+ * The GatewayToken, VenueTrade and FundedClaim contracts of chain `chainId` that one update created, as the gateway party sees them: the party sees the contracts of every chain it
+ * serves, and only this chain's are the explorer's. Other contracts and archived events are not read, and no party is kept.
+ */
+export function venueIn(item: unknown, chainId: number): { offset: number; update: VenueUpdate | null } {
   const [kind, body] = Object.entries(obj(obj(item, "an update").update, "an update"))[0] ?? fail("an empty update");
   const value = obj(obj(body, "an update").value, "an update");
   const offset = value.offset;
@@ -245,6 +254,7 @@ export function venueIn(item: unknown): { offset: number; update: VenueUpdate | 
     if (!template.endsWith(GATEWAY_TOKEN_SUFFIX) && !template.endsWith(VENUE_TRADE_SUFFIX) && !template.endsWith(FUNDED_CLAIM_SUFFIX)) continue;
     const contractId = typeof c.contractId === "string" && c.contractId !== "" ? c.contractId : fail("an event with no contract id");
     const a = obj(c.createArgument, "a createArgument");
+    if (chainOfContract(a, template.endsWith(GATEWAY_TOKEN_SUFFIX) ? "a registered token" : template.endsWith(VENUE_TRADE_SUFFIX) ? "a venue trade" : "a funded claim") !== chainId) continue;
     if (template.endsWith(GATEWAY_TOKEN_SUFFIX)) {
       const { admin, id } = instrumentOf(a.instrumentId, "a registered token");
       update.tokens.push({ contractId, evmToken: "0x" + hexField(a, "evmToken", 40, "a registered token"), instrumentAdmin: admin, instrumentId: id });
@@ -306,6 +316,8 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
    */
   async function* recordPages(after: number, upTo: number): AsyncGenerator<BlockRecord[]> {
     if (!readerParty) throw new LedgerError("READER_PARTY is not set: the explorer reads Canton as the reader party only");
+    // The gateway's client shares the updates call but never reads the block records: those are the reader's.
+    if (endpoints === CUSTODY_ENDPOINTS) throw new LedgerError("the block records are read with the reader's client, not the gateway's");
     for (let begin = after; begin < upTo; ) {
       const items = await call("POST", `/v2/updates?limit=${pageSize}`, updatesRequest(readerParty, begin, upTo));
       if (!Array.isArray(items)) return fail("an answer that is not a list");
@@ -353,10 +365,10 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
 
   /**
    * The Canton side of the swaps, as the gateway sees it: the registered tokens, the venue trades and the funded claims that Canton committed after offset `after`, up to
-   * and including `upTo`, oldest first, one page of the walk at a time (like `recordPages`). The call is filtered to those three templates; a trade's venue and seller are never read.
+   * and including `upTo`, for chain `chainId`, oldest first, one page of the walk at a time (like `recordPages`). The call is filtered to those three templates; a trade's venue and seller are never read.
    * `offset` of a page is how far the walk has got.
    */
-  async function* venuePages(after: number, upTo: number): AsyncGenerator<{ updates: VenueUpdate[]; offset: number }> {
+  async function* venuePages(after: number, upTo: number, chainId: number): AsyncGenerator<{ updates: VenueUpdate[]; offset: number }> {
     if (!readerParty) throw new LedgerError("the gateway party is not set: the venue read is for the gateway party only");
     const filter = (templateId: string) => ({ identifierFilter: { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } } });
     for (let begin = after; begin < upTo; ) {
@@ -373,7 +385,7 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
       let last = begin;
       const updates: VenueUpdate[] = [];
       for (const item of items) {
-        const r = venueIn(item);
+        const r = venueIn(item, chainId);
         last = Math.max(last, r.offset);
         if (r.update) updates.push(r.update);
       }

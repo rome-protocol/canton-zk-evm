@@ -4,7 +4,7 @@ import type { Pool } from "pg";
 import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
 import { createLedger, CUSTODY_ENDPOINTS, type Ledger } from "../ledger.ts";
-import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
+import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type BlockShape, type SyntheticChain } from "../../test/synthetic-chain.ts";
 import { FAKE_GATEWAY, FAKE_REGISTRY, FAKE_SELLER, FAKE_VENUE, fundedClaimEvent, gatewayTokenEvent, startFakeLedger, transaction, venueTradeEvent, type FakeLedger } from "../../test/fake-ledger.ts";
 import type { Json } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
@@ -13,8 +13,11 @@ import { venueOnce as venueAt } from "./venue.ts";
 
 const TKB = "0x" + "d1".repeat(20);
 const PAY = "a1".repeat(32), CLAIM = "b2".repeat(32);
-const BUYER = "0x" + "e5".repeat(20), PAYEE = "0x" + "f6".repeat(20);
-const trade = { payId: PAY, claimId: CLAIM, token: "0x" + "d2".repeat(20), payee: PAYEE, recipient: BUYER, amount: 2_500_000n, gatewayToken: "00tok1" };
+const BUYER = "0x" + "e5".repeat(20), PAYEE = "0x" + "00".repeat(17) + "0a11ce";
+// What the synthetic chain's payment leg pays by default (token 0xd000 to 0xa11ce, 42): the trade says the same, as the builder's check wants.
+const ERC = "0x" + "00".repeat(18) + "d000";
+const trade = { payId: PAY, claimId: CLAIM, token: ERC, payee: PAYEE, recipient: BUYER, amount: 42n, gatewayToken: "00tok1" };
+const SQUATTER = "0x" + "ab".repeat(20);
 const claim = { claimId: CLAIM, recipient: BUYER, amount: "12.5", gatewayToken: "00tok1" };
 
 const fakes: FakeLedger[] = [];
@@ -25,7 +28,7 @@ afterEach(async () => {
 const inDb = (fn: (pool: Pool) => Promise<void>) => withDatabase(async (pool) => {
   try { await fn(pool); } finally { for (const i of opened.splice(0)) await i.close().catch(() => undefined); }
 });
-const venueOnce = (pool: Pool, ledger: Pick<Ledger, "venuePages">, participant: string = PARTICIPANT) => venueAt(pool, ledger, participant);
+const venueOnce = (pool: Pool, ledger: Pick<Ledger, "venuePages">, participant: string = PARTICIPANT) => venueAt(pool, ledger, participant, CHAIN_ID);
 const gatewayLedger = async (items: Json[], pageSize = 100) => {
   const f = await startFakeLedger(items, { ledgerEnd: 999 });
   fakes.push(f);
@@ -36,9 +39,10 @@ const gatewayLedger = async (items: Json[], pageSize = 100) => {
  * Five blocks (the Canton records are at offsets 10 to 50): block 2 records the payment of a venue's trade, block 3 the deposit that redeems its funded claim, block 4 a withdrawal,
  * and block 5 a payment that no Canton trade is behind. The first `n` are indexed.
  */
-async function indexed(pool: Pool, n: number): Promise<{ chain: SyntheticChain; indexer: Indexer }> {
+const SHAPES: BlockShape[] = [{ txs: 2 }, { txs: 2, leg: 3, legId: "0x" + PAY }, { txs: 2, leg: 1, legId: "0x" + CLAIM, legToken: TKB, legAccount: BUYER, legAmount: 125000000000n }, { txs: 2, leg: 2 }, { txs: 2, leg: 3 }];
+async function indexed(pool: Pool, n: number, shapes: BlockShape[] = SHAPES): Promise<{ chain: SyntheticChain; indexer: Indexer }> {
   await migrate(pool);
-  const chain = makeChain([{ txs: 2 }, { txs: 2, leg: 3, legId: "0x" + PAY }, { txs: 2, leg: 1, legId: "0x" + CLAIM }, { txs: 2, leg: 2 }, { txs: 2, leg: 3 }]);
+  const chain = makeChain(shapes);
   chain.reads.rethHead = n;
   chain.ledger.ledgerHead = n;
   const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
@@ -63,10 +67,10 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       const { chain } = await indexed(pool, 5);
       const { ledger } = await gatewayLedger(items(chain));
       expect(await venueOnce(pool, ledger)).toEqual({ tokens: 1, trades: 1, claims: 1, offset: 50 });
-      expect((await pool.query("select encode(pay_id, 'hex') as pay, encode(claim_id, 'hex') as claim, encode(token, 'hex') as token, encode(payee, 'hex') as payee, encode(recipient, 'hex') as recipient, evm_amount::text as amount, gateway_token, offered_update_id, offered_offset::int as at from canton_venue_trades")).rows)
-        .toEqual([{ pay: PAY, claim: CLAIM, token: "d2".repeat(20), payee: "f6".repeat(20), recipient: "e5".repeat(20), amount: "2500000", gateway_token: "00tok1", offered_update_id: "u-offered", at: 15 }]);
-      expect((await pool.query("select encode(claim_id, 'hex') as claim, encode(recipient, 'hex') as recipient, amount::text as amount, gateway_token, funded_offset::int as at from canton_funded_claims")).rows)
-        .toEqual([{ claim: CLAIM, recipient: "e5".repeat(20), amount: "125000000000", gateway_token: "00tok1", at: 20 }]);
+      expect((await pool.query("select encode(pay_id, 'hex') as pay, encode(claim_id, 'hex') as claim, encode(token, 'hex') as token, encode(payee, 'hex') as payee, encode(recipient, 'hex') as recipient, evm_amount::text as amount, gateway_token, offered_update_id, payment_block::int as block, payment_leg_index as leg from canton_venue_trades")).rows)
+        .toEqual([{ pay: PAY, claim: CLAIM, token: "00".repeat(18) + "d000", payee: "00".repeat(17) + "0a11ce", recipient: "e5".repeat(20), amount: "42", gateway_token: "00tok1", offered_update_id: "u-offered", block: 2, leg: 0 }]);
+      expect((await pool.query("select encode(claim_id, 'hex') as claim, encode(recipient, 'hex') as recipient, amount::text as amount, gateway_token, funded_update_id from canton_funded_claims")).rows)
+        .toEqual([{ claim: CLAIM, recipient: "e5".repeat(20), amount: "125000000000", gateway_token: "00tok1", funded_update_id: chain.blocks[1]!.record.updateId }]);
       expect((await pool.query("select encode(evm_token, 'hex') as evm, instrument_admin, instrument_id from canton_gateway_tokens")).rows).toEqual([{ evm: "d1".repeat(20), instrument_admin: FAKE_REGISTRY, instrument_id: "TKB" }]);
       expect((await pool.query("select participant_id, ledger_offset::int as at from canton_venue_cursor")).rows).toEqual([{ participant_id: PARTICIPANT, at: 50 }]);
       // Neither the venue's party nor the seller's is in any table, as text or as bytes.
@@ -85,15 +89,15 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       const settling = chain.blocks[1]!.record.updateId, redeeming = chain.blocks[2]!.record.updateId;
       const hash = (b: number) => chain.blocks[b - 1]!.block.transactions[0]!.hash;
       const instrument = { admin: FAKE_REGISTRY, id: "TKB" };
-      const common = { txIndex: 0, token: "0x" + "00".repeat(18) + "d000", account: "0x" + "00".repeat(17) + "0a11ce", amount: "42" };
+      const paid = { txIndex: 0, token: ERC, account: PAYEE, amount: "42" }, redeemed = { txIndex: 0, token: TKB, account: BUYER, amount: "125000000000" };
 
       expect(await blockLegs(pool, 1)).toEqual([]);
       expect(await blockLegs(pool, 2)).toEqual([
-        { block: 2, legIndex: 0, logIndex: expect.any(Number), kind: "payment", legId: "0x" + PAY, ...common, txHash: hash(2), updateId: settling,
+        { block: 2, legIndex: 0, logIndex: expect.any(Number), kind: "payment", legId: "0x" + PAY, ...paid, txHash: hash(2), updateId: settling,
           canton: { role: "venue-trade", amount: "125000000000", instrument, settledUpdateId: settling, recipient: BUYER } },
       ]);
       expect(await blockLegs(pool, 3)).toEqual([
-        { block: 3, legIndex: 0, logIndex: expect.any(Number), kind: "deposit", legId: "0x" + CLAIM, ...common, txHash: hash(3), updateId: redeeming,
+        { block: 3, legIndex: 0, logIndex: expect.any(Number), kind: "deposit", legId: "0x" + CLAIM, ...redeemed, txHash: hash(3), updateId: redeeming,
           canton: { role: "funded-claim", amount: "125000000000", instrument, settledUpdateId: settling, recipient: BUYER } },
       ]);
       // A withdrawal has nothing of the swap, and no Canton party in what is served; a payment with no trade behind it is a plain payment.
@@ -162,6 +166,92 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       const g = await gatewayLedger(items(chain));
       expect(await venueOnce(pool, g.ledger)).toMatchObject({ tokens: 1, trades: 1, claims: 1, offset: 50 });
       expect((g.fake.requests[0]!.body as Json).beginExclusive).toBe(0);
+    });
+  });
+
+  it("keeps one trade for each payment id and one claim for each claim id when a page creates them more than once, the newest of them, and the read goes on past it", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 5);
+      const OTHER = "0x" + "c7".repeat(20), NEWEST = "0x" + "c8".repeat(20);
+      const settling = chain.blocks[1]!.record.updateId;
+      // Two offers of the payment id in one update and a third in a later one, and two claims of the claim id, one in each of two updates, all in one page.
+      const twice = [
+        transaction(5, "u-registered", [gatewayTokenEvent(5, "00tok1", TKB, FAKE_REGISTRY, "TKB")]),
+        transaction(15, "u-offered", [venueTradeEvent(15, "00trade", trade, { recipient: OTHER }), venueTradeEvent(15, "00trade-b", trade, { recipient: BUYER })]),
+        transaction(16, "u-again", [venueTradeEvent(16, "00trade-c", trade, { recipient: NEWEST })]),
+        transaction(19, "u-claimed", [fundedClaimEvent(19, "00claim-a", claim, { recipient: OTHER })]),
+        transaction(20, settling, [fundedClaimEvent(20, "00claim", claim)]),
+      ];
+      const { ledger } = await gatewayLedger(twice);
+      expect(await venueOnce(pool, ledger)).toMatchObject({ offset: 50 });
+      expect((await pool.query("select encode(recipient, 'hex') as recipient, offered_update_id from canton_venue_trades")).rows).toEqual([{ recipient: "c8".repeat(20), offered_update_id: "u-again" }]);
+      expect((await pool.query("select encode(recipient, 'hex') as recipient, funded_update_id from canton_funded_claims")).rows).toEqual([{ recipient: "e5".repeat(20), funded_update_id: settling }]);
+      // The read is not stuck: a trade created later is read, and the cursor is where the walk ended.
+      expect((await pool.query("select ledger_offset::int as at from canton_venue_cursor")).rows).toEqual([{ at: 50 }]);
+      // The same ids offered again by later pages (one update each) are kept once too.
+      await pool.query("delete from canton_venue_cursor");
+      const { ledger: onePerPage } = await gatewayLedger(twice, 1);
+      expect(await venueOnce(pool, onePerPage)).toMatchObject({ offset: 50 });
+      expect(await count(pool, "canton_venue_trades")).toBe(1);
+      expect(await count(pool, "canton_funded_claims")).toBe(1);
+    });
+  });
+
+  it("keeps the matched payment when a trade is offered again with the same terms, and matches again when the terms change", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 5);
+      const base = items(chain);
+      await venueOnce(pool, (await gatewayLedger(base)).ledger);
+      const matched = () => pool.query("select payment_block::int as block, payment_leg_index as leg from canton_venue_trades").then((r) => r.rows);
+      expect(await matched()).toEqual([{ block: 2, leg: 0 }]);
+      // The same terms, offered again: still matched. Other terms (a dearer price): no payment is the trade's until one pays them.
+      await pool.query("delete from canton_venue_cursor");
+      await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-again", [venueTradeEvent(25, "00trade-b", trade)])])).ledger);
+      expect(await matched()).toEqual([{ block: 2, leg: 0 }]);
+      await pool.query("delete from canton_venue_cursor");
+      await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
+      expect(await matched()).toEqual([{ block: null, leg: null }]);
+      expect(await blockLegs(pool, 2)).toEqual([expect.objectContaining({ kind: "payment", canton: null })]);
+      // A match that is lost is found again on the next read, which has nothing new to read.
+      await pool.query("update canton_venue_trades set evm_amount = 42");
+      await venueOnce(pool, (await gatewayLedger(base)).ledger);
+      expect(await matched()).toEqual([{ block: 2, leg: 0 }]);
+    });
+  });
+
+  it("serves a deposit as the redemption of a claim only for the claim's recipient in the claim's token, and a payment as the trade's only when it pays the trade's terms", async () => {
+    await inDb(async (pool) => {
+      // Block 2 pays a different amount under the payment id, block 3 pays the trade's terms, block 4 is a deposit under the claim id that another address signed, block 5 one for the
+      // recipient in another token, block 6 the recipient's own, block 7 one for the recipient in the token but for another amount.
+      const { chain } = await indexed(pool, 7, [
+        { txs: 2 }, { txs: 2, leg: 3, legId: "0x" + PAY, legAmount: 41n }, { txs: 2, leg: 3, legId: "0x" + PAY }, { txs: 2, leg: 1, legId: "0x" + CLAIM, legToken: TKB, legAccount: SQUATTER },
+        { txs: 2, leg: 1, legId: "0x" + CLAIM, legToken: ERC, legAccount: BUYER, legAmount: 125000000000n }, { txs: 2, leg: 1, legId: "0x" + CLAIM, legToken: TKB, legAccount: BUYER, legAmount: 125000000000n },
+        { txs: 2, leg: 1, legId: "0x" + CLAIM, legToken: TKB, legAccount: BUYER, legAmount: 42n },
+      ]);
+      const settling = chain.blocks[2]!.record.updateId;
+      await venueOnce(pool, (await gatewayLedger([
+        transaction(5, "u-registered", [gatewayTokenEvent(5, "00tok1", TKB, FAKE_REGISTRY, "TKB")]),
+        transaction(15, "u-offered", [venueTradeEvent(15, "00trade", trade)]),
+        transaction(30, settling, [fundedClaimEvent(30, "00claim", claim)]),
+      ])).ledger);
+      const roles = async () => (await Promise.all([2, 3, 4, 5, 6].map((b) => blockLegs(pool, b)))).map((l) => l[0]!.canton?.role ?? null);
+      expect(await roles()).toEqual([null, "venue-trade", null, null, "funded-claim"]);
+      expect((await blockLegs(pool, 3))[0]!.canton!.settledUpdateId).toBe(settling);
+    });
+  });
+
+  it("reads only the contracts of this chain", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 5);
+      const other = { chainId: "12" };
+      expect(await venueOnce(pool, (await gatewayLedger([
+        ...items(chain),
+        transaction(16, "u-other", [gatewayTokenEvent(16, "00tokX", "0x" + "d3".repeat(20), FAKE_REGISTRY, "TKX", other), venueTradeEvent(16, "00tradeX", { ...trade, payId: "c3".repeat(32) }, other)]),
+        transaction(21, "u-other-claim", [fundedClaimEvent(21, "00claimX", { ...claim, claimId: "c4".repeat(32) }, other)]),
+      ])).ledger)).toEqual({ tokens: 1, trades: 1, claims: 1, offset: 50 });
+      expect(await count(pool, "canton_gateway_tokens")).toBe(1);
+      expect(await count(pool, "canton_venue_trades")).toBe(1);
+      expect(await count(pool, "canton_funded_claims")).toBe(1);
     });
   });
 });
