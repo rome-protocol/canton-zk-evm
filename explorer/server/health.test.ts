@@ -39,6 +39,17 @@ describe("the health model (design 6.5)", () => {
     }
   });
 
+  it("is degraded for db_ids above 50% and down above 90%, in the words the indexer wrote, and degraded (not down) when its row stops", () => {
+    expect(evaluate([...fresh(), row("db_ids", "ok")]).status).toBe("ok");
+    const warn = evaluate([...fresh(), row("db_ids", "degraded", 1, "canton_parties.id has used 61% of its ids")]);
+    expect(warn.status).toBe("degraded");
+    expect(warn.problems).toEqual(["db_ids: canton_parties.id has used 61% of its ids"]);
+    const out = evaluate([...fresh(), row("db_ids", "down", 1, "canton_parties.id has used 95% of its ids")]);
+    expect(out.status).toBe("down");
+    expect(httpStatusOf(out.status)).toBe(503);
+    expect(evaluate([...fresh(), row("db_ids", "ok", 10)]).status).toBe("degraded");
+  });
+
   it("is degraded for C5 over 5 s and down over 30 s, in the words the indexer wrote", () => {
     expect(evaluate([...fresh().filter((r) => r.id !== "C5"), row("C5", "degraded", 1, "the index is 2 blocks behind")]).status).toBe("degraded");
     const down = evaluate([...fresh().filter((r) => r.id !== "C5"), row("C5", "down", 1, "the index is 9 blocks behind")]);

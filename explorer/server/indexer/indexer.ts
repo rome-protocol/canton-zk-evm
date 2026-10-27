@@ -17,6 +17,7 @@ import { recordGenesisSupply, seedGenesis } from "./genesis.ts";
 import { clearStops, setHealth, type HealthRow } from "./health.ts";
 import { createJournal } from "./journal.ts";
 import { createLifecycleChecks } from "./lifecycle.ts";
+import { checkIds } from "./db-ids.ts";
 import { legsSlot } from "./legs.ts";
 import { notify } from "./notify.ts";
 import { repairTrexProxies } from "./proxies.ts";
@@ -387,6 +388,7 @@ export function createIndexer(o: IndexerOptions) {
         detail: lagSeconds > DEGRADED_LAG_S ? `the index is ${lagBlocks} blocks behind, and its oldest waiting record became readable ${lagSeconds} s ago` : null },
       { id: "derive_lag", status: deriveSeconds > DERIVE_LAG_S ? "degraded" : "ok", value: { blocks: Math.max(0, head - at), seconds: deriveSeconds }, threshold: { degradedSeconds: DERIVE_LAG_S },
         detail: deriveSeconds > DERIVE_LAG_S ? `stage 2 is ${Math.max(0, head - at)} blocks behind stage 1, and the block it waits on was indexed ${deriveSeconds} s ago` : null },
+      await checkIds(o.pool),
     ]);
     // C10 is written only by blocks that have legs; its row is made ok when none was seen, and its look is refreshed (the status is not) so that a quiet chain does not read as a stale check.
     await o.pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'ok', null, now(), now()) on conflict (check_id) do update set checked_at = now()");
