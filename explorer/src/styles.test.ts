@@ -295,12 +295,13 @@ describe("the finish of small controls and notes", () => {
       }
     }
   });
-  it("shrinks a stat tile's big number on a phone so an 8-digit count with commas (10,540,146) fits the narrowest tile: a clamp that is at most 25 px at 390 px, and 30 px on a wide screen", () => {
+  it("shrinks a stat tile's big number on a phone so an 8-digit count with commas (10,540,146) fits the narrowest tile: a clamp that is at most 25 px at 390 px and under 29 px at 768 px (four tiles in a row), and 30 px on a wide screen", () => {
     const m = /\n\.stat-v \{[^}]*font-size:\s*clamp\((\d+)px,\s*([\d.]+)vw,\s*(\d+)px\)/.exec(css);
     expect(m).not.toBeNull();
     const [min, vw, max] = [Number(m![1]), Number(m![2]), Number(m![3])];
     expect(max).toBe(30);
     expect(Math.max(min, Math.min(max, (vw / 100) * 390))).toBeLessThanOrEqual(25);
+    expect(Math.max(min, Math.min(max, (vw / 100) * 768))).toBeLessThan(29);
     expect(css).toMatch(/\n\.cell \.stat-v \{[^}]*clamp\(/);
   });
   it("keeps the header no wider than before the restyle: the search box takes 380 px (366 px below 1366 px) at most, and the links are 14 px with a 20.3 px line", () => {
