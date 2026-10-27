@@ -105,5 +105,44 @@ for (const w of [390, 768, 1280, 1440]) {
   }
   await ctx.close();
 }
+// an 8-digit count with commas ('10,540,146') in every big number must stay inside its tile (the live counts pass 10 M), on home and on Stats, on a phone and above
+for (const w of [390, 768, 1024, 1280, 1440]) {
+  const ctx = await b.newContext({ viewport: { width: w, height: 900 } });
+  const p = await ctx.newPage();
+  for (const path of ["/", "/stats", "/stats?window=30d"]) {
+    await p.goto(base + path, { waitUntil: "load" }); await p.waitForTimeout(4000);
+    const r = await p.evaluate(() => {
+      const out = [];
+      for (const v of document.querySelectorAll(".stat-v:not(.stat-hash)")) {
+        const card = v.closest(".stat, .cell"); if (!card) continue;
+        const keep = v.innerHTML; v.textContent = "10,540,146";
+        const rg = document.createRange(); rg.selectNodeContents(v);
+        const right = Math.max(...[...rg.getClientRects()].map((q) => q.right)), cs = getComputedStyle(card), cr = card.getBoundingClientRect();
+        const edge = cr.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth);
+        if (right > edge + 0.5) out.push(`${card.querySelector(".stat-k, .cell-k")?.textContent ?? "?"} ${Math.round(right)}>${Math.round(edge)}`);
+        v.innerHTML = keep;
+      }
+      return out;
+    });
+    say("tiles 8 digits", w, path, "past the padding", r.length);
+    if (r.length) { bad++; say("BAD 8-digit tile", w, path, JSON.stringify(r.slice(0, 4))); }
+  }
+  await ctx.close();
+}
+// the header is no taller than before the restyle at any width from 721 to 1440 (MAIN names a server with main's build; without it this part is left out), and is one row from 1280 up
+if (process.env.MAIN) {
+  for (const w of [721, 768, 800, 900, 1024, 1100, 1200, 1280, 1366, 1440]) {
+    const hs = [];
+    for (const u of [base, process.env.MAIN]) {
+      const ctx = await b.newContext({ viewport: { width: w, height: 900 } });
+      const p = await ctx.newPage();
+      await p.goto(u + "/blocks", { waitUntil: "load" }); await p.waitForTimeout(2500);
+      hs.push(await p.$eval(".top", (e) => e.getBoundingClientRect().height));
+      await ctx.close();
+    }
+    say("header height", w, "now", hs[0].toFixed(1), "main", hs[1].toFixed(1));
+    if (hs[0] > hs[1] + 0.5) { bad++; say("BAD header taller than main", w); }
+  }
+}
 await b.close();
 process.exit(bad ? 1 : 0);
