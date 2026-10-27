@@ -58,17 +58,17 @@ describe("the stats page", () => {
     const ttf = await tile("Time to final");
     expect(ttf).toHaveTextContent("8.4 s"); expect(ttf).toHaveTextContent("p95 80.6 s");
     const proof = await tile("Proof time");
-    expect(proof).toHaveTextContent("7.1 s"); expect(proof).toHaveTextContent("p95 7.9 s"); expect(proof).toHaveTextContent("per block, 901 proofs");
+    expect(proof).toHaveTextContent("7.1 s"); expect(proof).toHaveTextContent("p95 7.9 s"); expect(proof).toHaveTextContent("one proof per block"); expect(within(proof).getByRole("tooltip")).toHaveTextContent("Proved with ZisK, 901 proofs in this window.");
     expect(await tile("Canton commit")).toHaveTextContent("0.58 s");
     const txs = await tile("Transactions");
-    expect(txs).toHaveTextContent("5,899"); expect(txs).toHaveTextContent("in 901 blocks · 6.5 per block");
+    expect(txs).toHaveTextContent("5,899"); expect(txs).toHaveTextContent("901 blocks · 6.5 per block");
     const peak = await tile("Peak rate");
     expect(peak).toHaveTextContent("20.8 tx/s"); expect(peak).toHaveTextContent("busiest minute, 15 Oct 14:07");
     const ok = await tile("Success rate");
-    expect(ok).toHaveTextContent("100%"); expect(ok).toHaveTextContent("5,899 accepted and settled · 0 lost · 0 dropped by the chain"); expect(ok).toHaveTextContent("sent through Ostia's RPC or the faucet");
+    expect(ok).toHaveTextContent("100%"); expect(ok).toHaveTextContent("0 lost · 0 dropped"); expect(within(ok).getByRole("tooltip")).toHaveTextContent("5,899 accepted and settled."); expect(ok).toHaveTextContent("sent through Ostia's RPC or the faucet");
     expect(ok).toHaveTextContent("A drop the sender caused (no funds, a nonce gap, a fee too low), the explorer caused, or a long wait in the pool is not counted.");
     const first = await tile("Block attempts committed");
-    expect(first).toHaveTextContent("99%"); expect(first).toHaveTextContent("901 of 910 attempts committed · 6 refused · 2 failed · 1 unknown");
+    expect(first).toHaveTextContent("99%"); expect(first).toHaveTextContent("901 of 910 committed"); expect(within(first).getByRole("tooltip")).toHaveTextContent("6 refused · 2 failed · 1 unknown.");
     const redo = await tile("Delayed by a redo");
     expect(redo).toHaveTextContent("9"); expect(redo).toHaveTextContent("carried by a block attempt that did not commit");
     expect(document.body.textContent).not.toMatch(/revert/i);
@@ -77,9 +77,9 @@ describe("the stats page", () => {
   it("shows the all-time total beside the window's transactions, with the block it is as of", async () => {
     await open("/stats", { summary: () => reply(summary({ txs: { count: 5899, failed: 16, reverted: 16, successRate: 5900 / 5903, accepted: 5903, acceptedFinal: 5900, lost: 2, droppedByChain: 1, delayedByRedo: 0, allTime: { total: 6021, asOfBlock: 901, asOf: "2026-10-15T14:07:00.000Z" } } })) });
     const txs = await tile("Transactions");
-    expect(txs).toHaveTextContent("5,899 6,021 final all time · test runs included");
-    expect(within(txs).getByText("6,021 final all time · test runs included")).toHaveAttribute("title", "All time, as of block 901; runs marked as tests are counted");
-    expect(txs).toHaveTextContent("all time as of block 901");  });
+    expect(txs).toHaveTextContent("5,899 6,021 since launch");
+    expect(within(txs).getByRole("tooltip")).toHaveTextContent("6,021 final all time, as of block 901; runs marked as tests are counted.");
+  });
 
   it("says the all-time total is not counted yet, never 0, when the server cannot say", async () => {
     await open();
@@ -106,8 +106,8 @@ describe("the stats page", () => {
     await open();
     const card = (await screen.findByRole("heading", { name: "Reliability" })).closest("section")!;
     const w = within(card);
-    expect(w.getByText("Final").parentElement).toHaveTextContent("every transaction in a final block, whether or not Ostia accepted it");
-    expect(w.getByText("Accepted").parentElement).toHaveTextContent("only those sent through Ostia's RPC or the faucet");
+    expect(w.getByText("Final").parentElement).toHaveTextContent("Every transaction in a final block, whether or not Ostia accepted it.");
+    expect(w.getByText("Accepted").parentElement).toHaveTextContent("Only those sent through Ostia's RPC or the faucet.");
     expect(card).not.toHaveTextContent("every transaction Ostia accepted, by what became of it");
   });
 
