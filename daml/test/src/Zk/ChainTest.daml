@@ -18,7 +18,7 @@ import Splice.Api.Token.MetadataV1
 import qualified Splice.Api.Token.HoldingV1 as H
 import Splice.Api.Token.AllocationV1
 import Splice.Api.Token.AllocationInstructionV1
-import Splice.Testing.Tokens.TestTokenV1 (Token(..), TokenRules(..))
+import Splice.Testing.Tokens.TestTokenV1 (Token(..), TokenAllocation, TokenRules(..))
 
 import qualified DA.Crypto.Text as C
 import Zk.Chain
@@ -1845,9 +1845,10 @@ testAClaimIsRedeemedOnce = do
   submitMustFail (actAs [f.operator, f.confirmer, f.gateway]) $ exerciseCmd claim Redeem
   pure ()
 
--- A trade cannot be settled outside `Advance` either, nor twice.
-testATradeIsSettledOnceAndOnlyInAdvance : Script ()
-testATradeIsSettledOnceAndOnlyInAdvance = do
+-- A trade is settled once, and needs the operator, the confirmer and the gateway together, whom `Advance` brings. By design those three
+-- can settle it with no EVM payment: they are the chain's root of trust, as for `Lock` and `Settle`.
+testATradeIsSettledOnceAndNeedsAllThree : Script ()
+testATradeIsSettledOnceAndNeedsAllThree = do
   f <- fixture
   venue <- makeVenue
   trade <- makeTrade f venue
@@ -1883,3 +1884,34 @@ testTradeAndClaimLegsAreNotCountedAgainstTheWithdrawalQuota = do
   (c2, _) <- submit (asBuilderV f venue) $ advance c1 "11" [claimLine (venueClaimId pid)] [claimLegOf f claim]
   Some z <- queryContractId f.operator c2
   z.withdrawn === Some []
+
+-- A trade that names another chain's token (here a token registered for chain 2) is refused before anything is settled: the claim it
+-- would make could never be redeemed, as the claim leg needs a token of this chain.
+testATradeNamingAnotherChainsTokenIsRefused : Script ()
+testATradeNamingAnotherChainsTokenIsRefused = do
+  f <- fixture
+  venue <- makeVenue
+  t2 <- makeToken f.operator f.confirmer f.gateway f.builder 2 f.reg wTkb
+  t1 <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with gatewayToken = t2)
+  refusedTrade "the token is for another chain" f venue t1
+  t3 <- makeTokenOf "TKB" f.operator f.confirmer f.v f.builder 770101 f.reg wTkb
+  t4 <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with gatewayToken = t3)
+  refusedTrade "the token names another gateway than the chain's" f venue t4
+
+-- The seller's allocation belongs to the seller and the registry, and the venue is its executor: the builder, reading only as the chain's
+-- parties, sees it only because the submission discloses it (`allocationDisclosed` is how the venue hands it over).
+testATradeSettlesWhenItsAllocationReachesTheBuilderOnlyByDisclosure : Script ()
+testATradeSettlesWhenItsAllocationReachesTheBuilderOnlyByDisclosure = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  Some t <- queryContractId venue trade
+  Some d <- queryDisclosure venue (fromInterfaceContractId @TokenAllocation t.allocation)
+  let pid = venueTradeId venue tradeLabel
+  let chainParties = actAs f.builder <> readAs [f.operator, f.confirmer, f.gateway]
+  submitMustFail chainParties $ advance f.chain "01" [tradeLine pid] [tradeLeg trade]
+  holds f.gateway "TKB" >>= \xs -> xs === []
+  (_, _) <- submit (chainParties <> disclose d) $ advance f.chain "01" [tradeLine pid] [tradeLeg trade]
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+  [(_, c)] <- query @FundedClaim f.gateway
+  (c.claimId, c.recipient, c.amount) === (venueClaimId pid, recipientAddr, 10.0)

@@ -1,8 +1,9 @@
 -- One EVM chain on Canton. A block is one Canton transaction: `ZkChain.Advance` has the sidecar check the block's
 -- proof, checks that the block follows the chain's head, checks with the sidecar that the legs attached are exactly the
 -- ones the block recorded in the gateway contract's state, settles them, and moves the head on. Daml does no proof checking
--- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The one hash it takes is the payment
--- id of a pair of parties (`paymentId`), which only names terms and proves nothing.
+-- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The only hashes it takes name things and
+-- prove nothing: the payment id of a pair of parties (`paymentId`), the payment id of a venue's trade (`venueTradeId`) and the id of the
+-- claim that trade makes (`venueClaimId`).
 module Zk.Chain where
 
 import DA.Date (date, Month(Jan))
@@ -659,6 +660,8 @@ legLine chain (TradeLeg tradeCid) = do
   t <- fetch tradeCid
   checkChain "the venue trade" chain t.chainId t.operator t.confirmer
   checkGateway "the venue trade" chain t.gateway
+  g <- fetch t.gatewayToken
+  checkToken chain g   -- the claim a settled trade leaves can be redeemed only with a token of this chain
   pure (legField "payment" t.payId t.token t.payee t.amount "")
 legLine chain (ClaimLeg claimCid tokenCid) = do
   c <- fetch claimCid

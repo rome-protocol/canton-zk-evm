@@ -578,9 +578,68 @@ class VenueLegs(LegCase):
             s.ledger.views["alloc-t1"] = view
             self.assert_left_out(s, t, word)
 
-    def test_a_trade_whose_allocation_is_gone_is_not_used(self):
-        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+    def test_a_trade_whose_allocation_is_gone_and_not_disclosed_is_not_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "allocationDisclosed": None})], allocations=[])
         self.assert_left_out(s, t, "allocation")
+
+    def test_a_trade_whose_allocation_reaches_the_builder_only_by_disclosure_is_used_and_the_disclosure_goes_with_the_advance(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+        self.assertEqual(self.sent_disclosed(s), [DISCLOSED_ALLOCATION])
+
+    def test_a_disclosed_contract_that_is_not_the_trades_allocation_leaves_the_payment_out(self):
+        other = {**DISCLOSED_ALLOCATION, "contractId": "alloc-other"}
+        for active in (None, []):   # whether or not the builder sees the allocation itself
+            s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "allocationDisclosed": json.dumps(other)})], allocations=active)
+            self.assert_left_out(s, t, "disclosed contract")
+
+    def test_a_trade_whose_token_is_not_a_token_of_this_chain_is_not_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "gatewayToken": "tok-x"})])
+        self.assert_left_out(s, t, "token of this chain")
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], tokens=[("tok-1", {**TOKEN[1], "gateway": "other"})])
+        self.assert_left_out(s, t, "token of this chain")
+
+    def test_a_trade_whose_allocation_is_of_another_instrument_than_its_token_is_not_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.ledger.views["alloc-t1"] = {"instrument": TKC}
+        self.assert_left_out(s, t, "instrument")
+
+    def test_a_payment_whose_terms_cannot_settle_still_finds_its_trade(self):
+        dead = ("terms-x", {**TERMS[1], "dvpId": TRADE_ID, "token": TKA, "allocation": "alloc-gone"})
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], terms=[dead], allocations=["alloc-t1"])
+        self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+
+    def test_a_deposit_request_that_cannot_settle_does_not_hold_back_the_claim(self):
+        # any party can sign a request that names a claim's id and recipient, and point it at an allocation that does not exist
+        grief = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "allocation": "alloc-gone"})
+        s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM], requests=[grief], allocations=[])
+        result = self.build(s)
+        self.assertEqual(self.attached(s, "ClaimLeg"), {"claimCid": "claim-1", "tokenCid": "tok-1"})
+        self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+
+    def test_a_request_that_cannot_settle_and_no_claim_keeps_the_requests_reason(self):
+        grief = ("req-x", {**REQUEST[1], "depositId": CLAIM_ID, "allocation": "alloc-gone"})
+        s, t = self.setup_leg(CLAIM_DEP, requests=[grief], allocations=[])
+        self.assert_left_out(s, t, "allocation")
+
+    def test_a_claim_whose_token_is_not_a_token_of_this_chain_is_not_used(self):
+        s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM], tokens=[("tok-1", {**TOKEN[1], "gateway": "other"})])
+        self.assert_left_out(s, t, "another token")
+
+    def test_only_the_disclosures_of_the_legs_that_are_attached_go_with_the_advance(self):
+        # two trades that name the same allocation: one settles, the other is left out, and the disclosure goes once
+        other_id = "ee" * 32
+        trade2 = ("trade-2", {**TRADE[1], "payId": other_id})
+        s = self.setup({ALICE: [], BOB: []})
+        s.ledger.trades, s.ledger.tokens = [TRADE, trade2], [TOKEN]
+        a, c = self.leg_tx(s, TRADE_PAY), self.leg_tx(s, Leg(PAYMENT, other_id, TKA, PAYEE, 10), sender=BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [a], [c]
+        result = self.build(s)
+        self.assertEqual((result["legs"], len(result["leftOut"])), (1, 1))
+        self.assertEqual(self.sent_disclosed(s), [DISCLOSED_ALLOCATION])
 
     def test_a_claim_for_another_recipient_token_or_amount_is_not_used(self):
         for change, word in (({"recipient": "d4" * 20}, "no deposit request"), ({"amount": "11.0"}, "amount"), ({"gatewayToken": "tok-2"}, "token")):

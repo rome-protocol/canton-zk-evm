@@ -840,7 +840,7 @@ class Canton:
 
     def __init__(self, ledger: Ledger, chain: dict, now: datetime):
         self.ledger, self.chain, self.now = ledger, chain, now
-        self.disclosed: dict = {}   # contract id -> the disclosed allocation of each venue trade that a leg uses: it goes with the Advance
+        self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
     def requests(self): return self.ledger.active(DEPOSIT_REQUEST)
@@ -891,14 +891,24 @@ def allocation_in_use(cid: str, taken: set | None) -> str | None:
 
 def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     """A deposit needs an active request with its id and recipient, whose allocation goes from the depositor to the gateway in the registered
-    instrument, for the amount claimed, and is live."""
-    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+    instrument, for the amount claimed, and is live. A deposit whose request is no good may instead redeem a funded claim: any party can sign a
+    request that names a claim's id, so a request never holds the claim back."""
+    chain = canton.chain
     requests = [r for r in canton.requests if r["depositId"] == leg.id and r["recipient"] == leg.account and names_chain(r, chain, "gateway")]
-    if not requests:   # the claims are read only for a deposit that has no request
-        claims = [c for c in canton.claims if c["claimId"] == leg.id and c["recipient"] == leg.account and names_chain(c, chain, "gateway")]
-        if not claims:
-            raise NoCantonSide("no deposit request of this chain for this id and recipient")
+    problem = None
+    if requests:   # the claims are read only when no request settles
+        try:
+            return request_leg(leg, canton, claimed, requests)
+        except NoCantonSide as e:
+            problem = e
+    claims = [c for c in canton.claims if c["claimId"] == leg.id and c["recipient"] == leg.account and names_chain(c, chain, "gateway")]
+    if claims:
         return claim_leg(leg, canton, claimed, claims)
+    raise problem or NoCantonSide("no deposit request of this chain for this id and recipient")
+
+
+def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: list) -> dict:
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
     token = canton.token(leg)
 
     def problem(r):
@@ -928,7 +938,7 @@ def claim_leg(leg: LegEvent, canton: Canton, claimed: dict | None, claims: list)
 
     def problem(c):
         token = next((t for t in canton.tokens if t["contractId"] == c["gatewayToken"]), None)
-        if token is None or token["evmToken"] != leg.token:
+        if token is None or token["evmToken"] != leg.token or not names_chain(token, canton.chain, "gateway"):
             return "the funded claim is for another token"
         if base_units(c["amount"]) != leg.amount:
             return "the funded claim's amount is not the amount claimed"
@@ -969,13 +979,24 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
 
 
 def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
-    """A payment needs active terms with its id, token, payee and amount, whose allocation goes from u to v and is live."""
-    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+    """A payment needs active terms with its id, token, payee and amount, whose allocation goes from u to v and is live. A payment whose terms
+    are no good may instead settle a venue's trade."""
+    chain = canton.chain
     named = [t for t in canton.terms if t["dvpId"] == leg.id and names_chain(t, chain)]
-    if not named:   # the trades are read only for a payment that has no terms
-        trades = [t for t in canton.trades if t["payId"] == leg.id and names_chain(t, chain, "gateway")]
-        if trades:
-            return trade_leg(leg, canton, claimed, trades)
+    problem = None
+    if named:   # the trades are read only when no terms settle
+        try:
+            return terms_leg(leg, canton, claimed, named)
+        except NoCantonSide as e:
+            problem = e
+    trades = [t for t in canton.trades if t["payId"] == leg.id and names_chain(t, chain, "gateway")]
+    if trades:
+        return trade_leg(leg, canton, claimed, trades)
+    raise problem or NoCantonSide("no terms of this chain for this payment id")
+
+
+def terms_leg(leg: LegEvent, canton: Canton, claimed: dict | None, named: list) -> dict:
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
 
     def problem(t):
         if t["token"] != leg.token:
@@ -989,15 +1010,17 @@ def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
         found = allocation_problem(canton.allocations[t["allocation"]], chain["operator"], canton.now, t["u"], t["v"], "the terms' u", "the terms' v")
         return found or allocation_in_use(t["allocation"], taken)
 
-    terms = first_fit(named, problem, "no terms of this chain for this payment id")
+    terms = first_fit(named, problem, "")
     if claimed is not None:
         claimed["allocations"].add(terms["allocation"])
     return {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
 
 
 def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list) -> dict:
-    """A payment with no terms may settle a venue's trade: the trade names the payment's token, payee and amount, and its allocation, executed by the
-    venue, goes from the trade's sender to the gateway and is live. The trade may carry that allocation as a disclosed contract; it goes with the Advance."""
+    """A payment may settle a venue's trade: the trade names the payment's token, payee and amount, its gateway token is a token of this chain, and
+    its allocation, executed by the venue, goes from the trade's sender to the gateway in that token's instrument and is live. The allocation
+    belongs to the seller and the registry, so the builder may not see it: the trade then carries it as a disclosed contract, and that
+    allocation (its contract id the trade's) is accepted unseen, as Daml's SettleTrade checks it when the block is settled."""
     chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
 
     def problem(t):
@@ -1007,14 +1030,23 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
             return "the venue trade names another payee"
         if t["amount"] != f"{leg.amount:064x}":
             return "the venue trade names another amount"
-        if t["allocation"] not in canton.allocations:
-            return "its allocation is not active, or not visible to the builder"
-        found = allocation_problem(canton.allocations[t["allocation"]], t["venue"], canton.now, t["sender"], chain["gateway"], "the trade's sender",
-                                   "the gateway", "the trade's venue")
-        if found:
-            return found
-        if disclosed_allocation(t) is False:
+        token = next((g for g in canton.tokens if g["contractId"] == t["gatewayToken"] and names_chain(g, chain, "gateway")), None)
+        if token is None:
+            return "the venue trade's token is not a token of this chain"
+        shown = disclosed_allocation(t)
+        if shown is False:
             return "the trade's disclosed allocation is not a JSON object"
+        if shown and shown.get("contractId") != t["allocation"]:
+            return "the trade's disclosed contract is not its allocation"
+        if t["allocation"] in canton.allocations:
+            found = allocation_problem(canton.allocations[t["allocation"]], t["venue"], canton.now, t["sender"], chain["gateway"], "the trade's sender",
+                                       "the gateway", "the trade's venue")
+            if found:
+                return found
+            if canton.allocations[t["allocation"]]["transferLeg"].get("instrumentId") != token["instrumentId"]:
+                return "its allocation is of another instrument than the token's"
+        elif not shown:
+            return "its allocation is not active, or not visible to the builder"
         return allocation_in_use(t["allocation"], taken)
 
     trade = first_fit(trades, problem, "")
@@ -1024,6 +1056,16 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
     if shown:
         canton.disclosed[trade["contractId"]] = shown
     return {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
+
+
+def venue_disclosed(legs: list, canton: Canton) -> list:
+    """The disclosed allocations of the venue trades that the block's legs finally use, each once."""
+    found = {}
+    for leg in legs:
+        shown = canton.disclosed.get(leg["value"]["tradeCid"]) if leg["tag"] == "TradeLeg" else None
+        if shown:
+            found[shown.get("contractId")] = shown
+    return list(found.values())
 
 
 def disclosed_allocation(trade: dict) -> "dict | None | bool":
@@ -1465,7 +1507,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
-                 disclosed=list(canton.disclosed.values()))
+                 disclosed=venue_disclosed(legs, canton))
 
 
 @dataclass
