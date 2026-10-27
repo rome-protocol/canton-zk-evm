@@ -392,6 +392,7 @@ describe("the numbers, from the stats routes", () => {
   it("shows the last hour's times from the hour's summary: time to final, proof time and Canton commit time, each with its 95th percentile", async () => {
     await withStats({ hour: { timeToFinal: { median: 8.5, p95: 8.7, samples: 12, capped: false }, proofTime: { median: 7.4, p95: 7.7, samples: 4, capped: false, bySize: [] }, commitTime: { median: 0.59, p95: 0.6, samples: 4, capped: false } } })();
     expect(shown(tile("Time to final · last hour"))).toBe("Time to final · last hour8.5 s p95 8.7 saccepted → final");
+    expect(tile("Time to final · last hour").querySelector(".stat-v small")).toHaveClass("hl");
     expect(noteOf(tile("Time to final · last hour"))).toBe("From a transaction being accepted to its block being final on Canton, over 12 transactions. p95 is the time that 95 in 100 stay under.");
     expect(shown(tile("Proof time · last hour"))).toBe("Proof time · last hour7.4 s p95 7.7 sone proof per block");
     expect(noteOf(tile("Proof time · last hour"))).toBe("Proved with ZisK, 4 blocks in the last hour.");
@@ -402,6 +403,8 @@ describe("the numbers, from the stats routes", () => {
   it("shows the rate now with the busiest minute of the day, and says when it was", async () => {
     await withStats({ day: { tps: { now: 0.03, peak: 10.2, peakAt: "2026-10-04T12:49:00.000Z" } } })();
     expect(shown(tile("Transactions per second"))).toBe("Transactions per second0.03 now · peak 10 (12:49 UTC)");
+    // the peak and its time stay on one line, and so does a time's p95
+    expect(tile("Transactions per second").querySelector(".stat-v small .hl")).toHaveTextContent("peak 10 (12:49 UTC)");
     expect(noteOf(tile("Transactions per second"))).toBe("Peak is the busiest minute in 24 h, at 12:49 UTC.");
   });
 

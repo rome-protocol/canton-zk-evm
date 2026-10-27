@@ -31,7 +31,7 @@ function heading(s: StatsSummary): string {
 
 /** A tile: its title, its number and one short line; what else there is to say is behind the "i". */
 function Tile({ k, v, small, sub, info }: { k: string; v: React.ReactNode; small?: React.ReactNode; sub: React.ReactNode; info?: React.ReactNode }) {
-  return <div className="card stat"><span className="stat-k">{k}{info && <Info about={k}>{info}</Info>}</span><span className="stat-v">{v}{small && <small> {small}</small>}</span><span className="small muted">{sub}</span></div>;
+  return <div className="card stat"><span className="stat-k">{k}{info && <Info about={k}>{info}</Info>}</span><span className="stat-v">{v}{small && <small className="hl"> {small}</small>}</span><span className="small muted">{sub}</span></div>;
 }
 const timeTile = (k: string, s: StatsSpread | null, sub: string, info?: string) => <Tile k={k} v={s ? sec(s.median) : DASH} small={s && `p95 ${sec(s.p95)}`} sub={s ? sub : "no block in this window"} info={s ? info : undefined} />;
 

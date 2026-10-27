@@ -79,12 +79,13 @@ h3 { font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px
 @media (min-width: 721px) {
   .top { gap: 16px; }
   .top .search { flex-basis: 380px; }
-  .nav .navlink { padding: 6px 9px; }
+  .nav { gap: 2px; }
+  .nav .navlink { padding: 6px 10px; }
 }
 @media (min-width: 721px) and (max-width: 1365px) {
   .top { gap: 12px; }
   .top .search { flex-basis: 366px; }
-  .nav .navlink { padding: 6px 7px; }
+  .nav .navlink { padding: 6px 8px; }
 }
 .thread { height: 2px; background: linear-gradient(90deg, var(--evm), var(--canton)); opacity: .85; }
 .main { flex: 1; width: 100%; max-width: 1344px; margin: 0 auto; padding: 26px 32px 30px; display: flex; flex-direction: column; gap: 18px; }
@@ -412,9 +413,9 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 .info-b { position: relative; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--muted); font: italic 500 11.5px/1 "Literata", Georgia, serif; cursor: help; display: inline-flex; align-items: center; justify-content: center; box-shadow: none; }
 .info-b::after { content: ""; position: absolute; inset: -8px; } /* a thumb-sized target around the small circle */
 .info-b:hover, .info-b:focus-visible, .info.open .info-b { color: var(--link); border-color: var(--glow); }
-.info-b:focus-visible { outline: 2px solid var(--glow); outline-offset: 2px; }
+.info-b:focus-visible { outline: 2px solid var(--canton); outline-offset: 2px; }
 .info-t { display: none; position: absolute; z-index: 20; top: calc(100% + 8px); right: -8px; width: max-content; max-width: min(260px, calc(100vw - 32px)); padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font: 400 12.5px/1.45 "DM Sans", system-ui, sans-serif; letter-spacing: 0; text-align: left; white-space: normal; }
-.info:hover .info-t, .info:focus-within .info-t, .info.open .info-t { display: block; }
+.info.open .info-t { display: block; } /* shown or hidden by Info.tsx: hover, focus and tap show it, and Escape or a second tap dismiss it */
 .stat-k .info { margin-left: auto; }
 .about-h { margin: 18px 0 4px; font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px; font-weight: 500; }
 
