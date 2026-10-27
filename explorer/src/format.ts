@@ -118,6 +118,10 @@ export const trim = (n: number, places: number) => String(+n.toFixed(places));
 /** A rate of transactions per second: one place from 1 up, and two significant figures under 1, so one transaction in a minute (0.017) is not shown as 0. */
 export const rate = (n: number) => (n >= 1 ? trim(n, 1) : n === 0 ? "0" : String(+n.toPrecision(2)));
 /** The busiest minute as a count, for a peak under 1 tx/s: "2 tx in the busiest minute" (a minute has 60 s, so the rate is the count over 60). */
+/** A peak without the decimals once it is 10 or more ("181"), as the home card says it. */
+export const rateShort = (n: number) => (n >= 10 ? String(Math.round(n)) : rate(n));
+/** A big count in short: "6.96 M" from a million, "12.4 k" from ten thousand, the whole count under that. */
+export const compactCount = (n: number) => (n >= 1_000_000 ? `${trim(n / 1_000_000, 2)} M` : n >= 10_000 ? `${trim(n / 1000, 1)} k` : count(n));
 export const peakCount = (perSecond: number) => plural(Math.round(perSecond * 60), "tx", "tx");
 export const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
 

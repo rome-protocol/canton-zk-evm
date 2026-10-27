@@ -116,6 +116,7 @@ function ShellBody({ children }: { children: ReactNode }) {
       <footer className="foot">
         <p className="foot-text"><Icon name="lock" size={13} /><span>{FOOTER_LINE}</span></p>
         <nav className="foot-links" aria-label="Footer">
+          <Link to="/about">About</Link>
           <Link to="/docs/api">API</Link>
           <a href="/api/health">Health</a>
           {status?.publicRpc && <Link to="/docs/api#rpc-h">Add {name} to your wallet</Link>}

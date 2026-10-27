@@ -194,7 +194,7 @@ describe("the list of latest final blocks", () => {
   it("reads the columns in a plain order, says each block is one Canton transaction, and leads to all of them", async () => {
     await home();
     expect(within(screen.getByRole("region", { name: "Latest final blocks" })).getAllByRole("columnheader").map((c) => c.textContent)).toEqual(["Block", "Txs", "Time to final", "Canton update", "Stage"]);
-    expect(screen.getByText("One Canton transaction each")).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: "Latest final blocks" })).getByRole("tooltip")).toHaveTextContent("Each block is one Canton transaction.");
     expect(screen.getByRole("link", { name: "View all blocks →" })).toHaveAttribute("href", "/blocks");
   });
 
@@ -323,7 +323,7 @@ describe("the list of latest transactions, with those not final yet", () => {
     expect(rows[1]).toHaveTextContent("1 tROME");
     expect(within(rows[2]!).getByText("Final")).toHaveClass("chip-final");
     expect(within(rows[3]!).getByText("Final")).toHaveClass("chip-final");
-    expect(region.getByText("Including those not final yet")).toBeInTheDocument();
+    expect(region.getByRole("tooltip")).toHaveTextContent("Including those not final yet.");
   });
 
   it("keeps the stage of a transaction whose details cannot be read, and says so in place of who and how much", async () => {
@@ -373,6 +373,9 @@ const statsRoute = (h: { hour?: Partial<StatsSummary>; day?: Partial<StatsSummar
   const w = u.searchParams.get("window") as StatsWindow;
   return reply(summary({ window: w, ...(w === "1h" ? h.hour : h.day) }));
 };
+/** What a card shows: its text without the "i" and the note behind it, which the tests read with `noteOf`. */
+const shown = (el: HTMLElement) => { const c = el.cloneNode(true) as HTMLElement; c.querySelectorAll(".info").forEach((n) => n.remove()); return c.textContent; };
+const noteOf = (el: HTMLElement) => within(el).getByRole("tooltip").textContent;
 const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => ReturnType<typeof reply>) => async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
@@ -388,44 +391,51 @@ const withStats = (h: Parameters<typeof statsRoute>[0] = {}, flight?: () => Retu
 describe("the numbers, from the stats routes", () => {
   it("shows the last hour's times from the hour's summary: time to final, proof time and Canton commit time, each with its 95th percentile", async () => {
     await withStats({ hour: { timeToFinal: { median: 8.5, p95: 8.7, samples: 12, capped: false }, proofTime: { median: 7.4, p95: 7.7, samples: 4, capped: false, bySize: [] }, commitTime: { median: 0.59, p95: 0.6, samples: 4, capped: false } } })();
-    expect(tile("Time to final · last hour")).toHaveTextContent("8.5 s p95 8.7 saccepted to final on Canton, 12 transactions");
-    expect(tile("Proof time · last hour")).toHaveTextContent("7.4 s p95 7.7 sZisK, one proof per block, 4 blocks");
-    expect(tile("Canton commit time · last hour")).toHaveTextContent("0.59 s p95 0.60 ssent to Canton's record time");
+    expect(shown(tile("Time to final · last hour"))).toBe("Time to final · last hour8.5 s p95 8.7 saccepted → final");
+    expect(noteOf(tile("Time to final · last hour"))).toBe("From a transaction being accepted to its block being final on Canton, over 12 transactions. p95 is the time that 95 in 100 stay under.");
+    expect(shown(tile("Proof time · last hour"))).toBe("Proof time · last hour7.4 s p95 7.7 sone proof per block");
+    expect(noteOf(tile("Proof time · last hour"))).toBe("Proved with ZisK, 4 blocks in the last hour.");
+    expect(shown(tile("Canton commit time · last hour"))).toBe("Canton commit time · last hour0.59 s p95 0.60 ssent → recorded");
+    expect(noteOf(tile("Canton commit time · last hour"))).toBe("From the block being sent to Canton to Canton's record time.");
   });
 
   it("shows the rate now with the busiest minute of the day, and says when it was", async () => {
     await withStats({ day: { tps: { now: 0.03, peak: 10.2, peakAt: "2026-10-04T12:49:00.000Z" } } })();
-    expect(tile("Transactions per second")).toHaveTextContent("0.03 now peak 10.2peak: the busiest minute in 24 h, 12:49 UTC");
+    expect(shown(tile("Transactions per second"))).toBe("Transactions per second0.03 now · peak 10 (12:49 UTC)");
+    expect(noteOf(tile("Transactions per second"))).toBe("Peak is the busiest minute in 24 h, at 12:49 UTC.");
   });
 
-  it.each([[1, "0.017"], [2, "0.033"]] as const)("shows a busiest minute of %i transaction(s) as peak %s, never peak 0, and says how many it was", async (txs, shown) => {
+  it.each([[1, "0.017"], [2, "0.033"]] as const)("shows a busiest minute of %i transaction(s) as peak %s, never peak 0, and says how many it was", async (txs, peakShown) => {
     await withStats({ day: { tps: { now: 0, peak: txs / 60, peakAt: "2026-10-04T12:49:00.000Z" }, txs: { count: txs, failed: 0, reverted: 0, successRate: 1, accepted: txs, acceptedFinal: txs, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null } } })();
-    expect(tile("Transactions per second")).toHaveTextContent(`0 now peak ${shown}peak: ${txs} tx in the busiest minute in 24 h, 12:49 UTC`);
+    expect(shown(tile("Transactions per second"))).toBe(`Transactions per second0 now · peak ${peakShown} (12:49 UTC)`);
+    expect(noteOf(tile("Transactions per second"))).toBe(`Peak is the busiest minute in 24 h (${txs} tx), at 12:49 UTC.`);
   });
 
   it("shows a rate of nothing as 0, and no peak when the day had no transaction", async () => {
     await withStats({ day: { tps: { now: 0, peak: null, peakAt: null }, txs: { count: 0, failed: 0, reverted: 0, successRate: null, accepted: 0, acceptedFinal: 0, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null } } })();
-    expect(tile("Transactions per second")).toHaveTextContent("0 nowno transaction in 24 h");
+    expect(shown(tile("Transactions per second"))).toBe("Transactions per second0 nowno transaction in 24 h");
     expect(tile("Transactions per second")).not.toHaveTextContent("peak");
   });
 
   it("counts the day's transactions and blocks, and gives the success rate from accepted, lost and dropped ones, cut and never rounded up", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1020, acceptedFinal: 1016, lost: 1, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(tile("Transactions · 24 h")).toHaveTextContent("1,017total not counted yetin 21 blocks, each one Canton transaction");
-    expect(tile("Success rate")).toHaveTextContent("99.9%1,017 accepted and settled · 1 lost · 0 dropped by the chain");
+    expect(shown(tile("Transactions · 24 h"))).toBe("Transactions · 24 h1,017total not counted yet · 21 blocks");
+    expect(noteOf(tile("Transactions · 24 h"))).toBe("In 21 blocks, each one Canton transaction.");
+    expect(shown(tile("Success rate"))).toBe("Success rate · 24 h, RPC and faucet99.9%1 lost · 0 dropped");
+    expect(noteOf(tile("Success rate"))).toBe("1,017 accepted and settled in 24 h; each is final, lost or dropped by the chain.");
     expect(tile("Success rate").textContent).not.toMatch(/revert/i);
   });
 
   it("shows the all-time total under the day's count, with the block it is as of", async () => {
     await withStats({ day: { txs: { count: 1017, failed: 1, reverted: 1, successRate: 1016 / 1017, accepted: 1017, acceptedFinal: 1017, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: { total: 1021, asOfBlock: 21, asOf: "2026-10-04T12:49:00.000Z" } }, blocks: { count: 21, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(tile("Transactions · 24 h")).toHaveTextContent("1,0171,021 final in all · as of block 21 · test runs includedin 21 blocks, each one Canton transaction");
-    expect(screen.getByText("1,021 final in all · as of block 21")).toHaveAttribute("title", "All time, as of block 21; runs marked as tests are counted");
+    expect(shown(tile("Transactions · 24 h"))).toBe("Transactions · 24 h1,0171,021 since launch · 21 blocks");
+    expect(noteOf(tile("Transactions · 24 h"))).toBe("1,021 final in all, as of block 21; runs marked as tests are counted. In 21 blocks, each one Canton transaction.");
   });
 
   it("says not counted yet, never 0, when the all-time total is not known", async () => {
     await withStats({ day: { txs: { count: 5, failed: 0, reverted: 0, successRate: 1, accepted: 5, acceptedFinal: 5, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null }, blocks: { count: 2, empty: 0, busy: 0, firstTry: null, bySize: [] } } })();
-    expect(within(tile("Transactions · 24 h")).getByText("total not counted yet")).toBeInTheDocument();
-    expect(tile("Transactions · 24 h")).not.toHaveTextContent("0 in all");
+    expect(shown(tile("Transactions · 24 h"))).toContain("total not counted yet · 2 blocks");
+    expect(shown(tile("Transactions · 24 h"))).not.toContain("since launch");
   });
 
   it("shows no success rate for a day with no transaction, and never makes one up", async () => {
@@ -443,7 +453,7 @@ describe("the numbers, from the stats routes", () => {
 
   it("adds how many are stuck to what is not final yet, and says nothing of it while the stats are unread", async () => {
     await withStats({ hour: { acceptedNotFinal: { ...summary().acceptedNotFinal, stuck: 2 } } })();
-    expect(tile("Not final yet")).toHaveTextContent("pool count not known · 2 stuck");
+    expect(shown(tile("Not final yet"))).toContain("pool count not known · 2 stuck");
   });
 
   it("says nothing of stuck transactions when the stats cannot be read", async () => {
@@ -457,7 +467,8 @@ describe("the numbers, from the stats routes", () => {
     expect(tile("Lost transactions").querySelector(".stat-v")!.textContent).toBe("0");
     expect(tile("Lost transactions").querySelector(".stat-v")).toHaveClass("ok");
     expect(tile("Lost transactions")).toHaveClass("stat-ok");
-    expect(tile("Lost transactions")).toHaveTextContent("Accepted by Ostia and never made final");
+    expect(shown(tile("Lost transactions"))).toBe("Lost transactions0none lost");
+    expect(noteOf(tile("Lost transactions"))).toBe("Accepted by Ostia and never made final. Any such transaction would be listed here with its reason.");
   });
 
   it("names lost transactions in red and leads to the stats page, which lists them with the reason", async () => {
@@ -466,7 +477,8 @@ describe("the numbers, from the stats routes", () => {
     expect(t.querySelector(".stat-v")!.textContent).toBe("2");
     expect(t.querySelector(".stat-v")).toHaveClass("bad");
     expect(t).not.toHaveClass("stat-ok");
-    expect(within(t).getByRole("link", { name: /Stats/ })).toHaveAttribute("href", "/stats");
+    expect(within(t).getByRole("link", { name: "each with its reason" })).toHaveAttribute("href", "/stats");
+    expect(noteOf(t)).toBe("Accepted by Ostia and never made final. Stats lists each with its reason.");
   });
 
   it("draws the median time to final of the last 72 hours, one bar an hour, with a gap for an hour with no block", async () => {
@@ -474,7 +486,8 @@ describe("the numbers, from the stats routes", () => {
     const t = tile("Time to final · 72 h");
     expect(t.querySelectorAll(".stat-v svg rect")).toHaveLength(65); // the last 72 of 168 hourly points, and 7 of them (every 10th from 103) have no block
     expect(t.querySelector(".stat-v svg")).toHaveAccessibleName(/last 72 hours/);
-    expect(t).toHaveTextContent("median per hour; gaps are hours with no blocks");
+    expect(noteOf(t)).toBe("Median per hour; gaps are hours with no blocks.");
+    expect(shown(t)).toBe("Time to final · 72 h");
   });
 
   it("shows a dash and says why for every number the stats cannot give, while the rest of the page stays", async () => {
@@ -496,7 +509,8 @@ describe("the numbers, from the stats routes", () => {
 
   it("keeps the height, and what is not final yet from the in-flight route, and says nothing of a log window of ten blocks", async () => {
     await withStats()();
-    expect(tile("Block height")).toHaveTextContent("3final on Canton · block 4 is being proven");
+    expect(shown(tile("Block height"))).toBe("Block height34 being proven");
+    expect(noteOf(tile("Block height"))).toBe("The newest block that is final on Canton.");
     expect(screen.getByRole("region", { name: "Numbers" })).not.toHaveTextContent(/latest \d+ blocks|producer log|not served yet/);
   });
 });
@@ -638,13 +652,26 @@ describe("the hero", () => {
   });
 });
 
-describe("what this explorer can and cannot show", () => {
-  it("is one line, as on screen 01: what is shown, what is not, and who sees the legs, with no proof size or ZisK version", async () => {
+describe("what this explorer shows", () => {
+  it("is one link to the About page, with the paragraph moved there and no proof size or ZisK version on the home page", async () => {
     await home();
-    const box = screen.getByRole("region", { name: "What this explorer can and cannot show" });
-    expect(box).toHaveTextContent("What this explorer can and cannot show. Shown: every EVM block, transaction and address, and for each final block its record on Canton (update id, record time, synchronizer, offset and the proof). Not shown: anything else on Canton. Daml legs settled with a block are seen only by their parties, the chain's operator, confirmer, gateway and builder, and each token's registry.");
+    const box = screen.getByRole("region", { name: "About this explorer" });
+    expect(within(box).getByRole("link", { name: "What this explorer shows →" })).toHaveAttribute("href", "/about");
     expect(box.querySelectorAll("p")).toHaveLength(1);
+    expect(box).not.toHaveTextContent("Shown:");
     expect(box).not.toHaveTextContent("1.3.1");
+  });
+
+  it("says in one line what the chain is, and keeps the longer sentence for the About page", async () => {
+    await home();
+    expect(within(screen.getByRole("region", { name: "Ostia block explorer" })).getByText("An EVM chain on Canton: every block proven, then final on Canton.")).toBeInTheDocument();
+    expect(screen.queryByText(/committed to Canton as one transaction/)).toBeNull();
+  });
+
+  it("says how many transactions a second the newest ones are sampled from", async () => {
+    await withStats({ day: { tps: { now: 181.4, peak: 181.4, peakAt: "2026-10-04T12:49:00.000Z" } } })();
+    const region = screen.getByRole("region", { name: "Latest transactions" });
+    expect(within(region).getByText("the newest of ~181 per second")).toBeInTheDocument();
   });
 
   it("leaves no wallet card on the home page", async () => {

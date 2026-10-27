@@ -4,7 +4,7 @@ import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { addr, fakeApi, renderApp, route, status } from "../test-utils.tsx";
 
-const FOOTER = "This explorer reads Canton as the chain's reader party, which is shown the record of every block and nothing else on Canton. Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";
+const FOOTER = "Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";
 const NOT_FOUND = "Not found. Search takes a block number, a block or transaction hash, an address, or a Canton update id. A block that Canton refused is gone, and cannot be found.";
 
 describe("the shell", () => {
@@ -89,7 +89,7 @@ describe("the shell", () => {
     expect(await within(screen.getByRole("banner")).findByRole("link", { name: /Another/ })).toBeInTheDocument();
   });
 
-  it("ends every page with the reader-party line and the four links: API, Health, the wallet and the source", async () => {
+  it("ends every page with the numbers line and the five links: About, API, Health, the wallet and the source", async () => {
     fakeApi(() => ({ status: 200, body: status() }));
     for (const route of ["/", "/faucet", "/nowhere"]) {
       const { unmount } = renderApp(route);
@@ -99,7 +99,7 @@ describe("the shell", () => {
       expect(foot.getByRole("link", { name: "Health" })).toHaveAttribute("href", "/api/health");
       expect(foot.getByRole("link", { name: "Source code" })).toHaveAttribute("href", "https://github.com/rome-protocol/canton-zk-evm");
       expect(await foot.findByRole("link", { name: "Add Ostia to your wallet" })).toHaveAttribute("href", "/docs/api#rpc-h");
-      expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["API", "Health", "Add Ostia to your wallet", "Source code"]);
+      expect(foot.getAllByRole("link").map((a) => a.textContent)).toEqual(["About", "API", "Health", "Add Ostia to your wallet", "Source code"]);
       unmount();
     }
   });

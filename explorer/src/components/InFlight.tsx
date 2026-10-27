@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { InFlightAttempt, InFlightTx } from "../api.ts";
+import { Info } from "./Info.tsx";
 import { Chip, type Status } from "./Chip.tsx";
 import type { Read } from "../stats.ts";
 import type { StreamState } from "../useLive.ts";
@@ -85,7 +86,7 @@ export function InFlightPanel({ attempts: listed, waiting, stream, read = "ok", 
     <section className="card flight" aria-labelledby="flight-h">
       <div className="sec-h">
         <h3 id="flight-h">In flight</h3>
-        <span className="muted small">Not final yet. These can still change: a block that Canton refuses is gone, and its transactions go back to the pool.</span>
+        <Info about="in flight">Not final yet. These can still change: a block that Canton refuses is gone, and its transactions go back to the pool.</Info>
         <span className={`live-pill small${stream === "live" ? " on" : ""}`}>{PILL[stream]}</span>
       </div>
       {read === "loading" ? <p className="muted">Reading…</p> : read === "error" ? <p className="muted">The explorer cannot read what is in flight right now.</p> : (

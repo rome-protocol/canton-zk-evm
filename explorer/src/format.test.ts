@@ -136,3 +136,15 @@ describe("compactUnits", () => {
     expect(compactUnits("1", 6)).toBe("0.000001");
   });
 });
+
+describe("the short forms the cards use", () => {
+  it("says a big count in short and a rate without decimals from 10", async () => {
+    const { compactCount, rateShort } = await import("./format.ts");
+    expect(compactCount(6_961_234)).toBe("6.96 M");
+    expect(compactCount(12_400)).toBe("12.4 k");
+    expect(compactCount(9_245)).toBe("9,245");
+    expect(rateShort(181.4)).toBe("181");
+    expect(rateShort(9.46)).toBe("9.5");
+    expect(rateShort(0.017)).toBe("0.017");
+  });
+});

@@ -407,6 +407,17 @@ rect.ch-b, circle.ch-b, path.ch-b, .sw.ch-b { fill: var(--evm); }
 .k-label { display: none; }
 /* phone width: every block below comes after all the base rules, so it wins the cascade */
 /* phone width: one column, the search box under the name */
+/* the small "i": a note that shows on hover, on focus and on a tap */
+.info { position: relative; display: inline-flex; align-items: center; margin-left: 6px; vertical-align: middle; font-weight: 400; }
+.info-b { position: relative; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface); color: var(--muted); font: italic 500 11.5px/1 "Literata", Georgia, serif; cursor: help; display: inline-flex; align-items: center; justify-content: center; box-shadow: none; }
+.info-b::after { content: ""; position: absolute; inset: -8px; } /* a thumb-sized target around the small circle */
+.info-b:hover, .info-b:focus-visible, .info.open .info-b { color: var(--link); border-color: var(--glow); }
+.info-b:focus-visible { outline: 2px solid var(--glow); outline-offset: 2px; }
+.info-t { display: none; position: absolute; z-index: 20; top: calc(100% + 8px); right: -8px; width: max-content; max-width: min(260px, calc(100vw - 32px)); padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); font: 400 12.5px/1.45 "DM Sans", system-ui, sans-serif; letter-spacing: 0; text-align: left; white-space: normal; }
+.info:hover .info-t, .info:focus-within .info-t, .info.open .info-t { display: block; }
+.stat-k .info { margin-left: auto; }
+.about-h { margin: 18px 0 4px; font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px; font-weight: 500; }
+
 @media (max-width: 720px) {
   .top { flex-wrap: wrap; gap: 10px 16px; padding: 12px 16px; }
   .brand { order: 1; }
