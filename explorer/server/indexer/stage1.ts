@@ -81,10 +81,20 @@ export async function setReaderCursor(c: PoolClient, offset: number, participant
   );
 }
 
-/** The id of a row in a dictionary table, adding the row when it is not there. These rows are shared and never counted, so `ON CONFLICT DO NOTHING` is right. */
-async function dictionary(c: PoolClient, table: string, find: string, insert: string, values: unknown[]): Promise<number> {
-  const found = await c.query(`with ins as (${insert} on conflict do nothing returning id) select id from ins union all select id from ${table} where ${find} limit 1`, values);
-  return found.rows[0].id as number;
+/**
+ * The id of a row in a dictionary table, adding the row when it is not there. An identity column takes its next value before the conflict check,
+ * so an insert that finds the row already there still spends an id: the row is looked up first, and inserted only when it is new. The
+ * `ON CONFLICT DO NOTHING` stays for two indexers that add the same value at once; the lookup after it finds the winner's row.
+ */
+export async function dictionary(c: PoolClient, table: string, find: string, insert: string, values: unknown[]): Promise<number> {
+  const select = `select id from ${table} where ${find}`;
+  // The lookup names only the values that identify the row; the insert may carry more (a role, an offset).
+  const keys = values.slice(0, Math.max(...[...find.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]))));
+  const known = await c.query(select, keys);
+  if (known.rows[0]) return known.rows[0].id as number;
+  await c.query(`${insert} on conflict do nothing`, values);
+  const added = await c.query(select, keys);
+  return added.rows[0].id as number;
 }
 
 async function writeCanton(c: PoolClient, i: Stage1Input): Promise<{ updateId: string }> {
