@@ -1,8 +1,9 @@
 -- One EVM chain on Canton. A block is one Canton transaction: `ZkChain.Advance` has the sidecar check the block's
 -- proof, checks that the block follows the chain's head, checks with the sidecar that the legs attached are exactly the
 -- ones the block recorded in the gateway contract's state, settles them, and moves the head on. Daml does no proof checking
--- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The one hash it takes is the payment
--- id of a pair of parties (`paymentId`), which only names terms and proves nothing.
+-- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The only hashes it takes name things and
+-- prove nothing: the payment id of a pair of parties (`paymentId`), the payment id of a venue's trade (`venueTradeId`) and the id of the
+-- claim that trade makes (`venueClaimId`).
 module Zk.Chain where
 
 import DA.Date (date, Month(Jan))
@@ -68,6 +69,13 @@ data Leg
       inputs : [ContractId Holding]
   | PaymentLeg with
       terms : ContractId DvpTerms
+  -- From package 0.4.0, at the end so that 0.3.0 contracts upgrade. A payment that settles a venue's trade, and the claim that
+  -- the trade's settlement made, which the EVM side redeems as a deposit would be.
+  | TradeLeg with
+      tradeCid : ContractId VenueTrade
+  | ClaimLeg with
+      claimCid : ContractId FundedClaim
+      tokenCid : ContractId GatewayToken
   deriving (Eq, Show)
 
 noExtraArgs : ExtraArgs
@@ -648,6 +656,21 @@ legLine chain (PaymentLeg termsCid) = do
   t <- fetch termsCid
   checkChain "the DvpTerms contract" chain t.chainId t.operator t.confirmer
   pure (legField "payment" t.dvpId t.token t.payee t.amount "")
+legLine chain (TradeLeg tradeCid) = do
+  t <- fetch tradeCid
+  checkChain "the venue trade" chain t.chainId t.operator t.confirmer
+  checkGateway "the venue trade" chain t.gateway
+  g <- fetch t.gatewayToken
+  checkToken chain g   -- the claim a settled trade leaves can be redeemed only with a token of this chain
+  pure (legField "payment" t.payId t.token t.payee t.amount "")
+legLine chain (ClaimLeg claimCid tokenCid) = do
+  c <- fetch claimCid
+  t <- fetch tokenCid
+  checkChain "the funded claim" chain c.chainId c.operator c.confirmer
+  checkGateway "the funded claim" chain c.gateway
+  checkToken chain t
+  assertMsg "the funded claim is for another token than the leg's" (c.gatewayToken == tokenCid)
+  pure (legField "deposit" c.claimId t.evmToken c.recipient (show c.amount) "")
 
 -- Settle a leg that the sidecar has confirmed. Each choice adds the authority of its own contract's signatory to the
 -- authority of `Advance`: the operator, the confirmer and the gateway, who are the signatories of `ZkChain`.
@@ -656,6 +679,10 @@ settle (DepositLeg requestCid _) = exercise requestCid Lock
 settle (WithdrawalLeg _ tokenCid _ amount acceptanceCid inputs) =
   exercise acceptanceCid Receive with token = tokenCid; amount; inputs
 settle (PaymentLeg termsCid) = exercise termsCid Settle
+settle (TradeLeg tradeCid) = do
+  _ <- exercise tradeCid SettleTrade
+  pure ()
+settle (ClaimLeg claimCid _) = exercise claimCid Redeem
 
 -- One per block: everything a third party needs to replay the chain and re-check each proof.
 template BlockRecord
@@ -827,3 +854,85 @@ template DvpTerms
         assertMsg "the allocation is not from u to v" (leg.transferLeg.sender == u && leg.transferLeg.receiver == v)
         _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
         pure ()
+
+-- The id of the EVM payment that settles a venue's trade: the SHA-256 of a domain tag, the venue's party id and a label. The tag
+-- "venue-trade" is not a party id, so this id can never equal a `paymentId` (whose first part is one): a payment recorded for
+-- terms of two parties cannot be taken for a trade's, nor the other way round.
+venueTradeId : Party -> Text -> Text
+venueTradeId v label = T.sha256 (T.intercalate "," ["venue-trade", partyToText v, label])
+
+-- The id of the claim that a trade's settlement makes, and with which the EVM side redeems it (the id of a `deposit` line).
+venueClaimId : Text -> Text
+venueClaimId payId = T.sha256 ("claim," <> payId)
+
+-- "If the gateway records this payment (`payId`: `token`, `amount` to `payee`) in the proven block, execute `allocation`", for a
+-- trade that a Canton venue made, and make the funded claim of `recipient`. The venue and `sender`, the party whose holding the allocation
+-- locks, sign it: the token standard's `Allocation_ExecuteTransfer` needs its executor, sender and receiver together, and the sender's
+-- consent is this signature. The trade names the allocation, of which the venue is the executor: the allocation goes to the gateway, which holds what the EVM side's buyer (the `recipient`) will claim. `payId` is
+-- the payment id itself (see `venueTradeId`) and `claimId` the id of the claim (see `venueClaimId`); token, payee and recipient are
+-- EVM addresses and the amount is the ERC-20 amount as 64 hex digits, not zero. `allocationDisclosed`, if present, is the allocation
+-- as a disclosed contract in the JSON Ledger API's form, which the builder adds to its `Advance`: the allocation's holder and its
+-- registry are not the builder's parties, and would otherwise not be visible to it.
+template VenueTrade
+  with
+    venue : Party
+    sender : Party
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    label : Text
+    payId : Text
+    token : Text
+    payee : Text
+    amount : Text
+    allocation : ContractId Allocation
+    allocationDisclosed : Optional Text
+    gatewayToken : ContractId GatewayToken
+    claimId : Text
+    recipient : Text
+  where
+    signatory venue, sender
+    observer operator, confirmer, gateway, builder
+    ensure payId == venueTradeId venue label && claimId == venueClaimId payId
+      && hexOfLength 40 token && hexOfLength 40 payee && hexOfLength 40 recipient && hexOfLength 64 amount
+      && T.explode amount /= replicate 64 "0" && chainId > 0
+
+    -- Its controllers sign `ZkChain`, so their authority is present together inside `Advance` and nowhere else.
+    choice SettleTrade : ContractId FundedClaim
+      controller operator, confirmer, gateway
+      do
+        a <- fetch allocation
+        g <- fetch gatewayToken
+        let leg = (view a).allocation
+        assertMsg "the allocation's executor is not the venue" (leg.settlement.executor == venue)
+        assertMsg "the allocation's sender is not the trade's" (leg.transferLeg.sender == sender)
+        assertMsg "the allocation's receiver is not the gateway" (leg.transferLeg.receiver == gateway)
+        assertMsg "the allocation is of another instrument than the token's" (leg.transferLeg.instrumentId == g.instrumentId)
+        assertMsg "the allocation is of no amount" (leg.transferLeg.amount > 0.0)
+        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+        create FundedClaim with
+          operator; confirmer; gateway; builder; chainId; claimId; recipient; gatewayToken
+          amount = leg.transferLeg.amount
+
+-- What a settled trade leaves: the gateway holds the Canton token, and the EVM side's `recipient` may claim its wrapped form with
+-- the deposit line of `claimId`. Redeeming it is what a `ClaimLeg` does; it can be redeemed once.
+template FundedClaim
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    claimId : Text
+    recipient : Text
+    gatewayToken : ContractId GatewayToken
+    amount : Decimal
+  where
+    signatory operator, confirmer, gateway
+    observer builder
+
+    choice Redeem : ()
+      controller operator, confirmer, gateway
+      do pure ()

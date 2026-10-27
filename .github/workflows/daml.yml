@@ -37,13 +37,14 @@ jobs:
       - name: Build the DAR and run the Daml Script tests
         run: daml/test.sh
 
-  # 0.3.0 must be a valid upgrade of 0.2.0 and of 0.1.0. The DARs are the external form, built with the toolchain in PINS
+  # 0.4.0 must be a valid upgrade of 0.3.0, of 0.2.0 and of 0.1.0. The DARs are the external form, built with the toolchain in PINS
   # (the one the network runs), so each old package id is the live one.
   upgrade:
     runs-on: ubuntu-latest
     env:
       PACKAGE_ID_V0_1_0: ea89dbabb095e49f05b3d23b22916592f6ab65a2f3ad98400c6a68262495bb08
       PACKAGE_ID_V0_2_0: a07a2e4d5fc10ba0ef486164dfadce6af066cb92879425ff1e0ec7629c43da7e
+      PACKAGE_ID_V0_3_0: 4b72df653f288402ed35fa3f9e72e6d902eed7533eb6424f1761b4653d6c2bb4
       CZE_TOOLS_DIR: ${{ github.workspace }}/../tools
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -58,9 +59,9 @@ jobs:
           . ./PINS
           export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
           SDK_VERSION=$DAML_SDK_VERSION TARGET=$DAML_TARGET daml/test.sh
-      - name: Rebuild 0.1.0 and 0.2.0 from their tags and check their package ids
+      - name: Rebuild 0.1.0, 0.2.0 and 0.3.0 from their tags and check their package ids
         run: |
-          for v in 0.1.0 0.2.0; do
+          for v in 0.1.0 0.2.0 0.3.0; do
             git fetch --no-tags --depth=1 origin tag "v$v"
             git worktree add "$RUNNER_TEMP/v$v" "v$v"
             grep -qx "version: $v" "$RUNNER_TEMP/v$v/daml/daml.yaml"
@@ -73,13 +74,13 @@ jobs:
           done
       - name: Build this version and run the upgrade checks
         run: |
-          grep -qx 'version: 0.3.0' daml/daml.yaml
+          grep -qx 'version: 0.4.0' daml/daml.yaml
           new=$(network/canton/build-dar.sh)
           cp "$new" "$RUNNER_TEMP/new.dar"
           network/canton/dar-id.sh "$RUNNER_TEMP/new.dar"
           . ./PINS
           export DPM_HOME=$CZE_TOOLS_DIR/dpm DPM_REGISTRY PATH="$CZE_TOOLS_DIR/bin:$PATH"
-          for v in 0.2.0 0.1.0; do
+          for v in 0.3.0 0.2.0 0.1.0; do
             echo "upgrade check from $v"
             dpm upgrade-check --both "$RUNNER_TEMP/old-$v.dar" "$RUNNER_TEMP/new.dar"
           done

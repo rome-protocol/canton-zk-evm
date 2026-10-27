@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The builder: makes one block, gets it proven and submits it to Canton. See README.md.
 
-  builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--disclosed <file>] [--package-id <id>]
-  builder.py run [--read-as <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
+  builder.py once [--exclude <tx hash>]... [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>]
+  builder.py run [--read-as <party>]... [--venue <party>]... [--disclosed <file>] [--package-id <id>] [--idle-ms 500] [--strategy on_demand] [--gather-ms 0]
                  [--heartbeat-seconds 0] [--test] [--status-file <path>] [--exclude-cooldown-seconds 600]
 
 It builds a block, reads the Canton legs the block's transactions asked the gateway contract for, finds each leg's Canton
@@ -37,6 +37,9 @@ KINDS = {DEPOSIT: "deposit", WITHDRAWAL: "withdrawal", PAYMENT: "payment"}
 EMPTY_LIST = b"\xc0"   # the RLP of a list with nothing in it; the transactions of an empty block
 CHAIN = "#canton-zk-evm:Zk.Chain:ZkChain"
 TERMS = "#canton-zk-evm:Zk.Chain:DvpTerms"
+TRADE = "#canton-zk-evm:Zk.Chain:VenueTrade"
+CLAIM = "#canton-zk-evm:Zk.Chain:FundedClaim"
+NO_TEMPLATE_CODES = ("NO_TEMPLATES_FOR_PACKAGE_NAME_AND_QUALIFIED_NAME", "PACKAGE_NAMES_NOT_FOUND")   # what a participant says of a template that no package it holds defines
 DEPOSIT_REQUEST = "#canton-zk-evm:Zk.Chain:DepositRequest"
 GATEWAY_TOKEN = "#canton-zk-evm:Zk.Chain:GatewayToken"
 ACCEPTANCE = "#canton-zk-evm:Zk.Chain:WithdrawalAcceptance"
@@ -83,6 +86,7 @@ class Config:
     make_input_cmd: str    # <block.json> <witness.json> <genesis.json> <out.bin>
     prove_cmd: str         # <input.bin> <out-folder>; leaves <out-folder>/wrapped-proof.hex
     read_as: tuple = ()    # more parties whose contracts the builder may read (--read-as); the builder never acts as them
+    venues: tuple = ()     # the venue parties whose trades may name an allocation the builder cannot see, only a disclosed one (--venue)
     disclosed: list = field(default_factory=list)   # contracts passed with Advance as they are (--disclosed)
     package_id: str = ""   # the Daml package version Advance runs under (--package-id): sent as packageIdSelectionPreference; empty: Canton picks by package name
     resolve_seconds: float = 300.0   # how long an Advance with no answer may still commit: after it, with no completion seen, Canton's head decides
@@ -589,13 +593,14 @@ class Ledger:
             raise BuilderError(f"expected one active ZkChain contract built by {self.cfg.party}, found {len(found)}")
         return found[0]
 
-    def advance(self, chain: dict, argument: dict, command_id: str | None = None) -> dict:
+    def advance(self, chain: dict, argument: dict, command_id: str | None = None, disclosed: list | None = None) -> dict:
         """Submits the Advance and waits. Returns what the participant answered: {"updateId", "completionOffset"} (None for what it did not say)."""
         command = {"ExerciseCommand": {"templateId": CHAIN, "contractId": chain["contractId"], "choice": "Advance", "choiceArgument": argument}}
         body = {"commands": [command], "commandId": command_id or str(uuid.uuid4()), "userId": self.cfg.ledger_user,
                 "actAs": [self.cfg.party], "readAs": self.readers()}
-        if self.cfg.disclosed:
-            body["disclosedContracts"] = self.cfg.disclosed
+        shown = [*self.cfg.disclosed, *(d for d in disclosed or [] if d not in self.cfg.disclosed)]   # --disclosed, then the venue trades' allocations
+        if shown:
+            body["disclosedContracts"] = shown
         if self.cfg.package_id:   # without it Canton picks the highest version every hosting participant has vetted, so vetting a new one would switch it
             body["packageIdSelectionPreference"] = [self.cfg.package_id]
         answer = post_json(self.cfg.ledger_url + "/v2/commands/submit-and-wait", body, self.auth)
@@ -802,8 +807,10 @@ def quota_problem(state: tuple, name: str, amount: int) -> Said | None:
     return Said(f"the withdrawal is over the whole withdrawal quota of {name}")   # unreachable: the tallies alone are within the quota
 
 
-def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str) -> str | None:
-    """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock."""
+def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: str, receiver: str, sender_is: str, receiver_is: str,
+                       executor_is: str = "the chain's operator") -> str | None:
+    """Why an allocation cannot settle in this block, or None. The deadline is judged by the builder's clock. `operator` is the executor
+    the allocation must name (for a venue's trade, the venue)."""
     if spec is None:
         return "the participant shows no view of its allocation"
     try:
@@ -815,7 +822,7 @@ def allocation_problem(spec: dict | None, operator: str, now: datetime, sender: 
     if now >= settle_before:
         return f"its allocation's settle-before time ({spec['settlement']['settleBefore']}) has passed"
     if spec["settlement"].get("executor") != operator:
-        return "its allocation's executor is not the chain's operator"
+        return f"its allocation's executor is not {executor_is}"
     leg = spec.get("transferLeg") or {}
     if leg.get("sender") != sender:
         return f"its allocation's sender is not {sender_is}"
@@ -833,8 +840,9 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime):
-        self.ledger, self.chain, self.now = ledger, chain, now
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = ()):
+        self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
+        self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
     def requests(self): return self.ledger.active(DEPOSIT_REQUEST)
@@ -847,6 +855,26 @@ class Canton:
 
     @functools.cached_property
     def terms(self): return self.ledger.active(TERMS)
+
+    def active_if_uploaded(self, template: str) -> list:
+        """The active contracts of a template that a newer package version added. A participant that has not uploaded that version refuses the
+        query (the template is in no package it holds); then there are none. Any other refusal is raised."""
+        try:
+            return self.ledger.active(template)
+        except urllib.error.HTTPError as e:
+            try:
+                text = e.read().decode("utf-8", "replace")
+            finally:
+                e.close()
+            if any(code in text for code in NO_TEMPLATE_CODES):
+                return []
+            raise
+
+    @functools.cached_property
+    def trades(self): return self.active_if_uploaded(TRADE)
+
+    @functools.cached_property
+    def claims(self): return self.active_if_uploaded(CLAIM)
 
     @functools.cached_property
     def allocations(self): return self.ledger.active_allocations()
@@ -879,11 +907,24 @@ def allocation_in_use(cid: str, taken: set | None) -> str | None:
 
 def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     """A deposit needs an active request with its id and recipient, whose allocation goes from the depositor to the gateway in the registered
-    instrument, for the amount claimed, and is live."""
-    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+    instrument, for the amount claimed, and is live. A deposit whose request is no good may instead redeem a funded claim: any party can sign a
+    request that names a claim's id, so a request never holds the claim back."""
+    chain = canton.chain
     requests = [r for r in canton.requests if r["depositId"] == leg.id and r["recipient"] == leg.account and names_chain(r, chain, "gateway")]
-    if not requests:
-        raise NoCantonSide("no deposit request of this chain for this id and recipient")
+    problem = None
+    if requests:   # the claims are read only when no request settles
+        try:
+            return request_leg(leg, canton, claimed, requests)
+        except NoCantonSide as e:
+            problem = e
+    claims = [c for c in canton.claims if c["claimId"] == leg.id and c["recipient"] == leg.account and names_chain(c, chain, "gateway")]
+    if claims:
+        return claim_leg(leg, canton, claimed, claims)
+    raise problem or NoCantonSide("no deposit request of this chain for this id and recipient")
+
+
+def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: list) -> dict:
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
     token = canton.token(leg)
 
     def problem(r):
@@ -904,6 +945,25 @@ def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     if claimed is not None:
         claimed["allocations"].add(request["allocation"])
     return {"tag": "DepositLeg", "value": {"request": request["contractId"], "token": token["contractId"]}}
+
+
+def claim_leg(leg: LegEvent, canton: Canton, claimed: dict | None, claims: list) -> dict:
+    """A deposit with no request may redeem a funded claim: the claim's token is the registered one of the EVM token, and its amount is the amount claimed.
+    A claim can be redeemed once, so one leg of a block can use it."""
+    taken = None if claimed is None else claimed["claims"]
+
+    def problem(c):
+        token = next((t for t in canton.tokens if t["contractId"] == c["gatewayToken"]), None)
+        if token is None or token["evmToken"] != leg.token or not names_chain(token, canton.chain, "gateway"):
+            return "the funded claim is for another token"
+        if base_units(c["amount"]) != leg.amount:
+            return "the funded claim's amount is not the amount claimed"
+        return "an earlier leg of this block redeems the same claim" if taken is not None and c["contractId"] in taken else None
+
+    claim = first_fit(claims, problem, "")
+    if claimed is not None:
+        claimed["claims"].add(claim["contractId"])
+    return {"tag": "ClaimLeg", "value": {"claimCid": claim["contractId"], "tokenCid": claim["gatewayToken"]}}
 
 
 def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
@@ -935,9 +995,24 @@ def withdrawal_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
 
 
 def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
-    """A payment needs active terms with its id, token, payee and amount, whose allocation goes from u to v and is live."""
-    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+    """A payment needs active terms with its id, token, payee and amount, whose allocation goes from u to v and is live. A payment whose terms
+    are no good may instead settle a venue's trade."""
+    chain = canton.chain
     named = [t for t in canton.terms if t["dvpId"] == leg.id and names_chain(t, chain)]
+    problem = None
+    if named:   # the trades are read only when no terms settle
+        try:
+            return terms_leg(leg, canton, claimed, named)
+        except NoCantonSide as e:
+            problem = e
+    trades = [t for t in canton.trades if t["payId"] == leg.id and names_chain(t, chain, "gateway")]
+    if trades:
+        return trade_leg(leg, canton, claimed, trades)
+    raise problem or NoCantonSide("no terms of this chain for this payment id")
+
+
+def terms_leg(leg: LegEvent, canton: Canton, claimed: dict | None, named: list) -> dict:
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
 
     def problem(t):
         if t["token"] != leg.token:
@@ -951,10 +1026,76 @@ def payment_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
         found = allocation_problem(canton.allocations[t["allocation"]], chain["operator"], canton.now, t["u"], t["v"], "the terms' u", "the terms' v")
         return found or allocation_in_use(t["allocation"], taken)
 
-    terms = first_fit(named, problem, "no terms of this chain for this payment id")
+    terms = first_fit(named, problem, "")
     if claimed is not None:
         claimed["allocations"].add(terms["allocation"])
     return {"tag": "PaymentLeg", "value": {"terms": terms["contractId"]}}
+
+
+def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list) -> dict:
+    """A payment may settle a venue's trade: the trade names the payment's token, payee and amount, its gateway token is a token of this chain, and
+    its allocation, executed by the venue, goes from the trade's sender to the gateway in that token's instrument and is live. The allocation
+    belongs to the seller and the registry, so the builder may not see it: the trade then carries it as a disclosed contract, and that
+    allocation (its contract id the trade's) is accepted unseen, as Daml's SettleTrade checks it when the block is settled."""
+    chain, taken = canton.chain, None if claimed is None else claimed["allocations"]
+
+    def problem(t):
+        if t["token"] != leg.token:
+            return "the venue trade names another token"
+        if t["payee"] != leg.account:
+            return "the venue trade names another payee"
+        if t["amount"] != f"{leg.amount:064x}":
+            return "the venue trade names another amount"
+        token = next((g for g in canton.tokens if g["contractId"] == t["gatewayToken"] and names_chain(g, chain, "gateway")), None)
+        if token is None:
+            return "the venue trade's token is not a token of this chain"
+        shown = disclosed_allocation(t)
+        if shown is False:
+            return "the trade's disclosed allocation is not a JSON object"
+        if shown and shown.get("contractId") != t["allocation"]:
+            return "the trade's disclosed contract is not its allocation"
+        if t["allocation"] in canton.allocations:
+            found = allocation_problem(canton.allocations[t["allocation"]], t["venue"], canton.now, t["sender"], chain["gateway"], "the trade's sender",
+                                       "the gateway", "the trade's venue")
+            if found:
+                return found
+            if canton.allocations[t["allocation"]]["transferLeg"].get("instrumentId") != token["instrumentId"]:
+                return "its allocation is of another instrument than the token's"
+        elif not shown:
+            return "its allocation is not active, or not visible to the builder"
+        elif t["venue"] not in canton.venues:
+            return "its allocation is not visible to the builder, and its venue is not one the builder trusts to disclose it (--venue)"
+        return allocation_in_use(t["allocation"], taken)
+
+    trade = first_fit(trades, problem, "")
+    if claimed is not None:
+        claimed["allocations"].add(trade["allocation"])
+    shown = disclosed_allocation(trade)
+    if shown and trade["allocation"] not in canton.allocations:   # only an allocation the builder cannot see needs it, and only a trusted venue's got here
+        canton.disclosed[trade["contractId"]] = shown
+    return {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
+
+
+def venue_disclosed(legs: list, canton: Canton) -> list:
+    """The disclosed allocations of the venue trades that the block's legs finally use, each once."""
+    found = {}
+    for leg in legs:
+        shown = canton.disclosed.get(leg["value"]["tradeCid"]) if leg["tag"] == "TradeLeg" else None
+        if shown:
+            found[shown.get("contractId")] = shown
+    return list(found.values())
+
+
+def disclosed_allocation(trade: dict) -> "dict | None | bool":
+    """The allocation a venue trade carries as a disclosed contract (a JSON object in the Ledger API's form): None if it carries none, False if what it carries is not one."""
+    text = trade.get("allocationDisclosed")
+    if text is None:
+        return None
+    try:
+        found = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return found if isinstance(found, dict) else False
 
 
 def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
@@ -965,7 +1106,7 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     holdings, so a leg that is going to be left out never takes the place of another."""
     finders = {DEPOSIT: deposit_leg, WITHDRAWAL: withdrawal_leg, PAYMENT: payment_leg}
     state = quota_state(canton.chain, canton.now) if limits and any(e.kind == WITHDRAWAL for e in events) else None
-    for claimed in (None, {"allocations": set(), "instruments": set()}):
+    for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set()}):
         legs, missing = [], []
         for event in events:
             try:
@@ -1179,6 +1320,7 @@ class Built:
     account_nodes: list
     storage_nodes: list
     checked_input: bool = False   # the pre-check already made input.bin of this very block in `attempt_dir`
+    disclosed: list = field(default_factory=list)   # the allocations of the venue trades in `legs`, passed with Advance next to --disclosed
 
 
 @dataclass
@@ -1313,7 +1455,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         # On a block in flight the legs wait for the blocks before them and are judged on Canton's head. The pause is the exception: it is read from the
         # chain contract as Canton has it now, and the legs are left out for it with nothing waiting, so that the blocks go on being cut in a row.
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
-        canton = Canton(Ledger(cfg), chain, now)
+        canton = Canton(Ledger(cfg), chain, now, cfg.venues)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
@@ -1382,7 +1524,8 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
     return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
-                 account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input)
+                 account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
+                 disclosed=venue_disclosed(legs, canton))
 
 
 @dataclass
@@ -1524,7 +1667,7 @@ def send_advance(cfg: Config, sub: Submission) -> Reply:
     reply = Reply()
     advancing = time.monotonic()
     try:
-        reply.answer = Ledger(cfg).advance(sub.built.chain, sub.argument, sub.command_id)
+        reply.answer = Ledger(cfg).advance(sub.built.chain, sub.argument, sub.command_id, sub.built.disclosed)
     except urllib.error.HTTPError as e:
         with e:
             text = e.read().decode(errors="replace")
@@ -3161,6 +3304,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("command", choices=["once", "run"])
     ap.add_argument("--exclude", action="append", default=[], metavar="TX_HASH", help="once only: leave this transaction (and its sender's later ones) out")
     ap.add_argument("--read-as", action="append", default=[], metavar="PARTY", help="also read the contracts this party sees (repeatable); the builder still acts only as itself")
+    ap.add_argument("--venue", action="append", default=[], metavar="PARTY", help="a venue the builder trusts (repeatable): the allocation of that venue's trade may be one the builder cannot see and only a disclosed contract shows. For any other venue the allocation must be visible to the builder and is checked")
     ap.add_argument("--disclosed", metavar="FILE", help="a JSON list of disclosed contracts, passed with Advance as they are")
     ap.add_argument("--max-block-tx-bytes", type=int, default=65536, help="the most raw transaction bytes a block is offered (default 65536: about 130 KB of Advance argument, about 6 s of our participant's work; raise it when the participant's per-KB cost falls)")
     ap.add_argument("--target-gas-limit", type=int, default=None, metavar="GAS", help="ask reth to move the block gas limit toward this (it moves each block by less than 1/1024 of the parent's, and stops at the target); never more than the chain's gasCap, read from Canton for every block, and a target above it is held at it with a journal line. Default: none asked")
@@ -3248,6 +3392,7 @@ def main() -> int:
             cfg.precheck = precheck_setup(args)
         cfg.target_gas_limit = args.target_gas_limit or 0
         cfg.read_as = tuple(dict.fromkeys(args.read_as))
+        cfg.venues = tuple(dict.fromkeys(args.venue))
         if args.disclosed:
             cfg.disclosed = read_disclosed(args.disclosed)
         if args.package_id is not None:
