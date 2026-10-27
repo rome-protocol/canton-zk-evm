@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getStatsSummary, type BlockSummary, type ApiTx } from "../api.ts";
 import { at, clock, secs } from "../block-times.ts";
 import { Icon } from "../components/Icon.tsx";
+import { Info } from "../components/Info.tsx";
 import { sec } from "../format.ts";
 import "./block.css";
 
@@ -44,11 +45,11 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
   const took = final && l?.timeToFinalMs != null;
   const typical = final && median !== null;
   const clean = final && l !== null && l.attempts === 1 && !l.leftOutReason;
-  const caption = l === null ? "No row in the producer's journal, so only the times Canton and the block give are shown."
-    : "One line per step, each with its own time. Only measured times are shown.";
+  const caption = l === null ? "Only the times Canton and the block give." : "Each step with its own time.";
+  const note = l === null ? "The producer's journal has no row for this transaction, so Accepted, In block and Proof done have no times." : "Only measured times are shown.";
   return (
     <section className="card way" aria-labelledby="way-h">
-      <div className="sec-h"><h3 id="way-h">The way to final</h3><span className="muted small">{caption}</span></div>
+      <div className="sec-h"><h3 id="way-h">The way to final</h3><span className="muted small">{caption}</span><Info about="the way to final">{note}</Info></div>
       <ol className="how-steps way-steps">
         {steps.map((s, i) => {
           const prev = steps[i - 1];
@@ -65,7 +66,6 @@ export function TxFinal({ t, block, read, index }: { t: ApiTx; block: BlockSumma
           );
         })}
       </ol>
-      {l === null && <p className="way-foot muted small">The producer's journal has no row for this transaction, so Accepted, In block and Proof done have no times.</p>}
       {l !== null && (took || typical || l.attempts > 1 || l.leftOutReason || clean) && (
         <div className="way-foot small">
           {(took || typical) && <span className="way-foot-l"><Icon name="clock" size={13} />

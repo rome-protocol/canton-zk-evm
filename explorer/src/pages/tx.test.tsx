@@ -484,7 +484,8 @@ describe("the way to final", () => {
   it("says when the producer's journal has no row, shows a dash for each time it would hold, and still gives Canton's record time", async () => {
     await openFinal(tx());
     await waitFor(() => expect(way().getByText("Canton record time")).toBeInTheDocument());
-    expect(way().getByText(/no row for this transaction/)).toBeInTheDocument();
+    expect(way().getByRole("tooltip")).toHaveTextContent(/no row for this transaction/);
+    expect(way().getByText("Only the times Canton and the block give.")).toBeInTheDocument();
     expect(way().getAllByText("—")).toHaveLength(3);
     expect(way().queryByText(/after Ostia accepted it/)).toBeNull();
     expect(way().queryByText(/\+\d/)).toBeNull();

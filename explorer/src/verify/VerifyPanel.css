@@ -2,6 +2,7 @@
    --canton, --btn, --btn-ink). Everything is scoped to .verify, so the panel needs no other stylesheet. */
 .verify { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
 .verify h3 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -0.005em; }
+.verify .v-t { display: inline-flex; align-items: center; }
 .verify .v-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .verify p { margin: 6px 0 0; }
 .verify .muted { color: var(--muted); }
