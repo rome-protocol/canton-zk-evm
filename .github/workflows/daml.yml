@@ -2,10 +2,10 @@ name: daml
 
 on:
   pull_request:
-    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "apps/otc/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
   push:
     branches: [main]
-    paths: ["daml/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "apps/otc/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
 
 permissions:
   contents: read
@@ -36,6 +36,12 @@ jobs:
           echo "$HOME/.dpm/bin" >> "$GITHUB_PATH"
       - name: Build the DAR and run the Daml Script tests
         run: daml/test.sh
+      # The OTC app is its own package: it depends only on the token-standard packages in daml/dars, not on the package above.
+      - name: Build the OTC app and run its Daml Script tests
+        run: |
+          [ "$(sed -n 's/^sdk-version: *//p' apps/otc/daml.yaml)" = "$(sed -n 's/^sdk-version: *//p' daml/daml.yaml)" ]
+          if cat apps/otc/daml.yaml apps/otc/test/daml.yaml | grep -v '^ *#' | grep -q canton-zk-evm; then echo 'the OTC app must not depend on the canton-zk-evm package' >&2; exit 1; fi
+          apps/otc/test.sh
 
   # 0.4.0 must be a valid upgrade of 0.3.0, of 0.2.0 and of 0.1.0. The DARs are the external form, built with the toolchain in PINS
   # (the one the network runs), so each old package id is the live one.

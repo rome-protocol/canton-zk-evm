@@ -1,0 +1,116 @@
+-- The OTC app: a seller offers an amount of a Canton instrument to a buyer who pays on an EVM chain, through a venue.
+--
+-- The package depends only on the Canton token standard (CIP-0056). It knows nothing of how the venue's chain settles:
+-- the venue's own driver, once the seller has allocated, links the trade to the chain (apps/otc/README.md).
+--
+--   TradeOffer  the seller's offer, which the venue sees: the Canton side (instrument, amount) and the EVM side (the ERC-20
+--               token, its amount, the seller's address that is paid, the buyer's address that receives, a label).
+--   Trade       what the venue makes when it accepts the offer. It is the token standard's `AllocationRequest`, so a
+--               CIP-0056 wallet shows the seller a request to allocate the amount to the chain's gateway, with the venue as
+--               the settlement's executor and the label as its reference.
+module Otc.Otc where
+
+import qualified DA.TextMap as TM
+import qualified DA.Text as T
+import DA.Time (RelTime, addRelTime)
+import Splice.Api.Token.MetadataV1
+import Splice.Api.Token.HoldingV1 (InstrumentId)
+import Splice.Api.Token.AllocationV1
+import Splice.Api.Token.AllocationRequestV1
+
+-- The id of the one transfer leg in a trade's request (the key of `transferLegs`, and the `transferLegId` of the seller's allocation).
+legId : Text
+legId = "leg"
+
+-- `n` lowercase hex digits (an EVM address is 40, an ERC-20 amount 64).
+hexOfLength : Int -> Text -> Bool
+hexOfLength n t = T.length t == n && all (`elem` T.explode "0123456789abcdef") (T.explode t)
+
+-- The EVM side of a trade is well formed: token, payee and recipient are addresses, the amount is 64 hex digits and not zero.
+evmSideOk : Text -> Text -> Text -> Text -> Bool
+evmSideOk token amountBase payee recipient =
+  hexOfLength 40 token && hexOfLength 40 payee && hexOfLength 40 recipient && hexOfLength 64 amountBase
+    && T.explode amountBase /= replicate 64 "0"
+
+template TradeOffer
+  with
+    seller : Party
+    venue : Party
+    gateway : Party        -- the chain's gateway party: the seller's allocation goes to it
+    instrument : InstrumentId
+    amount : Decimal       -- of the Canton instrument
+    token : Text           -- the EVM side: the ERC-20 token the buyer pays with (40 hex digits)
+    amountBase : Text      -- ... and how much, in base units (64 hex digits)
+    payee : Text           -- ... to which EVM address (the seller's)
+    recipient : Text       -- the EVM address of the buyer, who claims the Canton instrument's wrapped form
+    label : Text           -- the seller's name for this trade; with the venue it fixes the EVM payment's id
+    allocateWithin : RelTime  -- how long the seller has to allocate, from the venue's acceptance
+    settleWithin : RelTime    -- how long the settlement may take, from the venue's acceptance
+  where
+    signatory seller
+    observer venue
+    ensure amount > 0.0 && evmSideOk token amountBase payee recipient && label /= "" && settleWithin >= allocateWithin
+
+    -- The venue accepts the offer and makes the trade. The seller's signature on the offer is the seller's on the trade.
+    choice Accept : ContractId Trade
+      controller venue
+      do
+        now <- getTime
+        create Trade with
+          seller; venue; gateway; instrument; amount; token; amountBase; payee; recipient; label
+          requestedAt = now
+          allocateBefore = addRelTime now allocateWithin
+          settleBefore = addRelTime now settleWithin
+
+    choice Withdraw : ()
+      controller seller
+      do pure ()
+
+    choice Decline : ()
+      controller venue
+      do pure ()
+
+template Trade
+  with
+    seller : Party
+    venue : Party
+    gateway : Party
+    instrument : InstrumentId
+    amount : Decimal
+    token : Text
+    amountBase : Text
+    payee : Text
+    recipient : Text
+    label : Text
+    requestedAt : Time
+    allocateBefore : Time
+    settleBefore : Time
+  where
+    signatory venue, seller
+    ensure amount > 0.0 && evmSideOk token amountBase payee recipient && label /= ""
+      && requestedAt <= allocateBefore && allocateBefore <= settleBefore
+
+    -- The venue archives a trade it will not settle (settled, expired or called off).
+    choice Close : ()
+      controller venue
+      do pure ()
+
+    interface instance AllocationRequest for Trade where
+      view = AllocationRequestView with
+        settlement = SettlementInfo with
+          executor = venue
+          settlementRef = Reference with id = label; cid = None
+          requestedAt; allocateBefore; settleBefore
+          meta = emptyMetadata
+        transferLegs = TM.fromList
+          [ (legId, TransferLeg with sender = seller; receiver = gateway; amount; instrumentId = instrument; meta = emptyMetadata) ]
+        meta = emptyMetadata
+
+      -- The seller or the venue may turn the request down, which ends the trade.
+      allocationRequest_RejectImpl _self AllocationRequest_Reject{actor} = do
+        assertMsg "only the seller or the venue may reject the trade" (actor == seller || actor == venue)
+        pure (ChoiceExecutionMetadata with meta = emptyMetadata)
+
+      -- The executor (the venue) withdraws it.
+      allocationRequest_WithdrawImpl _self _ =
+        pure (ChoiceExecutionMetadata with meta = emptyMetadata)
