@@ -416,6 +416,206 @@ class Timeouts(Case):
             self.assertEqual(seen, [passed])
 
 
+class Unavailable(Case):
+    """A coordinator that refuses a request at once (workers busy, no ready worker) is the prover being unavailable, not a failed proof."""
+
+    def test_a_busy_refusal_is_asked_again_on_the_same_prover_and_counts_no_failure(self):
+        pool = self.pool([A, B_], busy_wait=0.2)
+        self.script(A, "sleep 3")     # gpu0 is kept proving another block, so gpu1 is the only free prover
+        other = pool.submit(self.job())
+        time.sleep(0.5)
+        self.script(B_, "busy", "busy", "ok")
+        done = self.prove(pool, self.job(), 10)
+        self.assertEqual(done.prover, "gpu1")
+        self.assertEqual(done.tried, [])
+        self.assertEqual([c for c in self.calls() if c.startswith(tag(B_))], [f"{tag(B_)} busy", f"{tag(B_)} busy", f"{tag(B_)} ok"])
+        self.result(other)
+        self.assertEqual([p["failures"] for p in pool.status()], [0, 0])
+        self.assertEqual(pool.events(), [])
+
+    def test_a_busy_refusal_goes_to_another_prover_that_is_free(self):
+        pool = self.pool([A, B_], busy_wait=5)
+        self.script(A, "busy")
+        start = time.monotonic()
+        done = self.prove(pool, self.job())
+        self.assertEqual((done.prover, done.tried), ("gpu1", []))
+        self.assertLess(time.monotonic() - start, 4)    # no wait
+        self.assertEqual(pool.events(), [])
+
+    def test_a_busy_refusal_with_one_prover_waits_and_retries(self):
+        pool = self.pool([A], busy_wait=0.2)
+        self.script(A, "busy", "ok")
+        self.assertEqual(self.prove(pool, self.job()).prover, "gpu0")
+        self.assertEqual(self.calls(), [f"{tag(A)} busy", f"{tag(A)} ok"])
+        self.assertEqual((pool.events(), pool.status()), ([], None))
+
+    def test_a_prover_that_stays_busy_goes_down_after_the_bounded_retries(self):
+        pool = self.pool([A, B_], busy_wait=0.05, busy_retries=2)
+        self.script(A, "sleep 2")
+        other = pool.submit(self.job())
+        time.sleep(0.4)
+        self.script(B_, "busy", "busy", "busy")
+        done = self.prove(pool, self.job(), 10)
+        self.assertIn(done.prover, ("gpu0", "gpu1"))   # gpu0 when it frees up, or gpu1 when its cool-down is over
+        evs = pool.events()
+        self.assertEqual([(e["name"], e["state"]) for e in evs if e["state"] == "down"], [("gpu1", "down")])
+        self.assertIn("stays busy", evs[0]["reason"])
+        self.assertEqual(sum(1 for c in self.calls() if c == f"{tag(B_)} busy"), 3)
+        self.assertEqual(pool.status()[1]["failures"], 0)
+        self.result(other)
+
+    def test_a_capacity_refusal_marks_the_prover_down_and_the_block_goes_to_the_other(self):
+        pool = self.pool([A, B_])
+        self.script(A, "capacity")
+        done = self.prove(pool, self.job())
+        self.assertEqual((done.prover, done.tried), ("gpu1", []))   # not tried-and-failed on gpu0
+        (ev,) = pool.events()
+        self.assertEqual((ev["name"], ev["state"], ev["reason"]), ("gpu0", "down", "its coordinator has no ready worker"))
+        self.assertEqual([p["failures"] for p in pool.status()], [0, 0])
+        self.assertEqual([p["state"] for p in pool.status()], ["down", "up"])
+
+    def test_a_capacity_refusal_is_not_blamed_on_the_block_when_the_other_prover_fails(self):
+        pool = self.pool([A, B_])
+        self.script(A, "capacity")
+        self.script(B_, "fail", "ok")
+        with self.assertRaises(pv.JobError) as e:
+            self.prove(pool, self.job())
+        self.assertEqual(e.exception.tried, ["gpu1"])      # one real try, on one prover
+        self.assertEqual([p["failures"] for p in pool.status()], [0, 1])
+        self.assertEqual([(x["name"], x["state"]) for x in pool.events()], [("gpu0", "down")])   # gpu1 only failed a block
+
+    def test_a_downed_prover_comes_back_after_its_cooldown(self):
+        pool = self.pool([A, B_])
+        self.script(A, "capacity")
+        self.prove(pool, self.job())
+        time.sleep(0.5)    # cool-down 0.4 s
+        self.assertTrue(pool.any_up())
+        self.script(B_, "sleep 2")
+        pool.submit(self.job())
+        time.sleep(0.2)
+        done = self.prove(pool, self.job(), 10)
+        self.assertEqual(done.prover, "gpu0")
+        self.assertIn("cool-down over", [e["reason"] for e in pool.events() if e["state"] == "up"])
+
+    def test_every_prover_without_a_ready_worker_waits_and_retries(self):
+        pool = self.pool([A, B_])
+        self.script(A, "capacity", "ok")
+        self.script(B_, "capacity", "ok")
+        done = self.prove(pool, self.job(), 10)
+        self.assertIn(done.prover, ("gpu0", "gpu1"))
+        self.assertEqual(done.tried, [])
+        self.assertEqual(sum(1 for c in self.calls() if c.endswith("capacity")), 2)
+        self.assertEqual([p["failures"] for p in pool.status()], [0, 0])
+
+    def test_a_capacity_refusal_with_one_prover_waits_and_retries_instead_of_failing_the_block(self):
+        pool = self.pool([A])
+        self.script(A, "capacity", "capacity", "ok")
+        start = time.monotonic()
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")
+        self.assertGreaterEqual(time.monotonic() - start, 0.4 + 0.8 - 0.1)   # waited 0.4 s, then 0.8 s
+        self.assertEqual(self.calls(), [f"{tag(A)} capacity", f"{tag(A)} capacity", f"{tag(A)} ok"])
+        self.assertEqual((pool.events(), pool.status()), ([], None))
+
+    def test_a_cancelled_block_ends_the_wait(self):
+        pool = self.pool([A])
+        self.script(A, *["capacity"] * 20)
+        ticket = pool.submit(self.job())
+        time.sleep(0.2)
+        ticket.cancel()
+        with self.assertRaises(pv.JobError) as e:
+            self.result(ticket, 5)
+        self.assertEqual(e.exception.outcome, "cancelled")
+
+    def test_a_real_failure_then_a_busy_retry_never_hangs(self):
+        pool = self.pool([A, B_], busy_wait=0.1, busy_retries=2)
+        self.script(A, "fail")
+        self.script(B_, "busy", "ok")
+        done = self.prove(pool, self.job(), 10)
+        self.assertEqual((done.prover, done.tried), ("gpu1", ["gpu0"]))
+        self.script(A, "ok")
+        self.assertEqual(self.prove(pool, self.job(), 10).prover in ("gpu0", "gpu1"), True)   # a later block is not stuck behind it
+
+    def test_a_real_failure_then_a_prover_that_stays_busy_ends_as_a_block_failure(self):
+        pool = self.pool([A, B_], busy_wait=0.05, busy_retries=2)
+        self.script(A, "fail", "ok")
+        self.script(B_, "busy", "busy", "busy")
+        with self.assertRaises(pv.JobError) as e:
+            self.prove(pool, self.job(), 10)
+        self.assertEqual(e.exception.tried, ["gpu0"])
+        self.assertEqual(pool.status()[1]["failures"], 0)
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")
+
+    def test_a_real_failure_then_a_capacity_refusal_is_a_bounded_block_failure(self):
+        pool = self.pool([A, B_])
+        self.script(A, "fail", "ok")
+        self.script(B_, "capacity", "capacity")
+        start = time.monotonic()
+        with self.assertRaises(pv.JobError) as e:
+            self.prove(pool, self.job(), 10)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertEqual(e.exception.tried, ["gpu0"])
+        self.assertEqual([p["state"] for p in pool.status()], ["up", "down"])
+        self.assertEqual([p["failures"] for p in pool.status()], [1, 0])
+        self.assertEqual(sum(1 for c in self.calls() if c.endswith("capacity")), 1)   # gpu1 was asked once, not over and over
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")             # a later block proves on gpu0
+
+    def test_a_refused_job_keeps_its_place_ahead_of_newer_blocks(self):
+        pool = self.pool([A])
+        self.script(A, "capacity", "ok", "sleep 1")
+        first = pool.submit(self.job())
+        time.sleep(0.1)
+        second = pool.submit(self.job())
+        self.result(first, 10)
+        self.assertFalse(second.done.is_set())      # the second block did not take the prover while the first waited out its refusal
+        self.result(second, 10)
+
+    def test_a_stop_ends_the_wait_after_a_refusal(self):
+        for script in ("capacity", "busy"):
+            stop = threading.Event()
+            pool = self.pool([A], stop=stop, busy_wait=30)
+            self.script(A, *[script] * 20)
+            ticket = pool.submit(self.job())
+            time.sleep(0.3)
+            stop.set()
+            with self.assertRaises(pv.JobError) as e:
+                self.result(ticket, 5)
+            self.assertEqual(e.exception.outcome, "cancelled", script)
+
+    def test_a_stop_does_not_end_the_wait_of_a_block_that_was_never_refused(self):
+        stop = threading.Event()
+        pool = self.pool([A], stop=stop)
+        self.script(A, "sleep 1")
+        stop.set()
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")
+
+    def test_a_refusal_that_also_names_a_lost_connection_is_a_connection_error(self):
+        script = self.dir / "refuse.sh"
+        script.write_text("#!/bin/sh\necho 'code: The service is currently unavailable, message: tcp connect error: Connection refused (os error 111)' >&2\nexit 1\n")
+        script.chmod(0o755)
+        with self.assertRaises(pv.JobError) as e:
+            pv.run_command(str(script), [], {}, 10)
+        self.assertTrue(e.exception.connection)
+        pool = self.pool([A], busy_wait=0.05)
+        job = pv.Job(make_input=None, prove_cmd=str(script), input_path=self.input, out_dir=self.dir / "out-x", check=check_block)
+        start = time.monotonic()
+        with self.assertRaises(pv.JobError):    # one prover: a failed block at once, as before; no waiting as for a busy coordinator
+            self.result(pool.submit(job), 5)
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_the_jobs_count_leaves_out_refused_asks(self):
+        pool = self.pool([A, B_], busy_wait=0.05)
+        self.script(A, "busy", "busy", "ok")
+        self.prove(pool, self.job(), 10)
+        self.assertEqual(sum(p["jobs"] for p in pool.status()), 1)
+
+    def test_the_stable_parts_of_the_messages_are_recognised(self):
+        for text, kind in [("Cluster unavailable: workers are busy running another job; retry shortly", "busy"),
+                           ("code: The service is currently unavailable", "busy"),
+                           ("Cluster unavailable: insufficient ready capacity for the request", "capacity"),
+                           ("the prover is down", None), ("proof failed: wrong block", None)]:
+            self.assertEqual(pv.refusal_kind(text), kind, text)
+
+
 class Settings(unittest.TestCase):
     def test_the_heartbeat_floor_is_one_proof_whatever_the_number_of_provers(self):
         for provers in (1, 2, 3):
