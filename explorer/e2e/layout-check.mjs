@@ -114,12 +114,12 @@ for (const w of [390, 768, 1024, 1280, 1440]) {
     const r = await p.evaluate(() => {
       const out = [];
       for (const v of document.querySelectorAll(".stat-v:not(.stat-hash)")) {
-        const card = v.closest(".stat, .cell"); if (!card) continue;
+        const card = v.closest(".stat, .cell"); if (!card || !/^[\d,]+$/.test(v.textContent.trim())) continue; // the tiles that show a count
         const keep = v.innerHTML; v.textContent = "10,540,146";
         const rg = document.createRange(); rg.selectNodeContents(v);
         const right = Math.max(...[...rg.getClientRects()].map((q) => q.right)), cs = getComputedStyle(card), cr = card.getBoundingClientRect();
         const edge = cr.right - parseFloat(cs.paddingRight) - parseFloat(cs.borderRightWidth);
-        if (right > edge + 0.5) out.push(`${card.querySelector(".stat-k, .cell-k")?.textContent ?? "?"} ${Math.round(right)}>${Math.round(edge)}`);
+        if (right > edge + 0.5) out.push(`${card.querySelector(".stat-k")?.firstChild?.textContent ?? "?"} ${Math.round(right)}>${Math.round(edge)}`);
         v.innerHTML = keep;
       }
       return out;
