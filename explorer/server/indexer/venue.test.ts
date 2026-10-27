@@ -219,12 +219,14 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       await pool.query("delete from canton_venue_cursor");
       await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
       expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
-      // A trade that no indexed payment pays takes the newest offer: with a dearer price, the payment of block 2 is not its payment.
-      await pool.query("update canton_venue_trades set evm_amount = 41, payment_block = null, payment_leg_index = null");
+      // A trade that no indexed payment pays takes the newest offer: the payment of block 2 pays 7 here, so it is not the payment of either offer, and the dearer one is kept.
+      await pool.query("update gateway_legs set amount = 7 where kind = 3 and block_number = 2");
+      await pool.query("delete from canton_venue_trades");
       await pool.query("delete from canton_venue_cursor");
       await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
       expect(await matched()).toEqual([{ block: null, leg: null, amount: 43 }]);
       expect(await blockLegs(pool, 2)).toEqual([expect.objectContaining({ kind: "payment", canton: null })]);
+      await pool.query("update gateway_legs set amount = 42 where kind = 3 and block_number = 2");
       // A match that was lost is found again on the next read, which has nothing new to read, once the match starts from the first block again.
       await pool.query("update canton_venue_trades set evm_amount = 42");
       await pool.query("update canton_venue_cursor set matched_block = 0");
