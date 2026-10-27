@@ -303,10 +303,10 @@ describe("the finish of small controls and notes", () => {
     expect(Math.max(min, Math.min(max, (vw / 100) * 390))).toBeLessThanOrEqual(25);
     expect(css).toMatch(/\n\.cell \.stat-v \{[^}]*clamp\(/);
   });
-  it("keeps the header no wider than before the restyle: the search box takes 380 px (366 px below 1366 px) at most, and the links keep a 20.3 px line", () => {
+  it("keeps the header no wider than before the restyle: the search box takes 380 px (366 px below 1366 px) at most, and the links are 14 px with a 20.3 px line", () => {
     expect(/\n@media \(min-width: 721px\) \{[^@]*?\.top \.search \{[^}]*flex-basis:\s*(\d+)px/.exec(css)?.[1]).toBe("380");
     expect(/max-width: 1365px\) \{[^@]*?\.top \.search \{[^}]*flex-basis:\s*(\d+)px/.exec(css)?.[1]).toBe("366");
-    expect(/\n\.nav \.navlink \{[^}]*line-height:\s*1\.4/.test(css) || /min-width: 721px\) \{[^@]*?\.nav \.navlink \{[^}]*line-height:\s*1\.4/.test(css)).toBe(true);
+    expect(/\n\.nav \.navlink \{[^}]*line-height:\s*1\.45/.test(css) || /min-width: 721px\) \{[^@]*?\.nav \.navlink \{[^}]*line-height:\s*1\.45/.test(css)).toBe(true);
   });
   it("puts the peak on a line of its own", () => {
     expect(/\n\.stat-v \.stat-peak \{([^}]*)\}/.exec(css)?.[1]).toMatch(/display:\s*block/);
