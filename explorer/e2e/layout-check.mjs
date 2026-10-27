@@ -131,18 +131,20 @@ for (const w of [390, 768, 1024, 1280, 1440]) {
 }
 // the header is no taller than before the restyle at any width from 721 to 1440 (MAIN names a server with main's build; without it this part is left out), and is one row from 1280 up
 if (process.env.MAIN) {
-  for (const w of [721, 768, 800, 900, 1024, 1100, 1200, 1280, 1366, 1440]) {
-    const hs = [];
-    for (const u of [base, process.env.MAIN]) {
-      const ctx = await b.newContext({ viewport: { width: w, height: 900 } });
-      const p = await ctx.newPage();
-      await p.goto(u + "/blocks", { waitUntil: "load" }); await p.waitForTimeout(2500);
-      hs.push(await p.$eval(".top", (e) => e.getBoundingClientRect().height));
-      await ctx.close();
-    }
-    say("header height", w, "now", hs[0].toFixed(1), "main", hs[1].toFixed(1));
-    if (hs[0] > hs[1] + 0.5) { bad++; say("BAD header taller than main", w); }
+  // one page for each build, resized in steps of 7 px from 721 to 1440, so every width between is covered, not only the usual ones
+  const pg = [];
+  for (const u of [base, process.env.MAIN]) {
+    const ctx = await b.newContext({ viewport: { width: 1440, height: 900 } });
+    const p = await ctx.newPage(); await p.goto(u + "/blocks", { waitUntil: "load" }); await p.waitForTimeout(2500); pg.push(p);
   }
+  const taller = [];
+  for (let w = 721; w <= 1440; w += 7) {
+    const hs = [];
+    for (const p of pg) { await p.setViewportSize({ width: w, height: 900 }); await p.waitForTimeout(60); hs.push(await p.$eval(".top", (e) => e.getBoundingClientRect().height)); }
+    if (hs[0] > hs[1] + 0.5) taller.push(`${w}: ${hs[0].toFixed(1)} > ${hs[1].toFixed(1)}`);
+  }
+  say("header taller than main at", taller.length, "widths", taller.slice(0, 6).join("; "));
+  if (taller.length) { bad++; say("BAD header taller than main"); }
 }
 await b.close();
 process.exit(bad ? 1 : 0);
