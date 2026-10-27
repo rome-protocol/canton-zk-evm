@@ -16,8 +16,9 @@
                                         trade against the buyer's payment. The seller's allocation goes with it as a disclosed contract (JSON
                                         Ledger API v2 form), for a builder started with --venue for the venue's party. The wrapped token is the
                                         one registered for TKB (canton.py register-token); name it only if there are several
-  otc.py close <label>                  the venue ends a trade it will not settle: it archives the venue's trade, the seller takes back his allocation,
-                                        and the trade is closed. Each step is done only if it is there
+  otc.py close <label>                  the venue ends a trade it will not settle: it archives the venue's trade, the seller takes back his allocation
+                                        (the trade's own), and the trade is closed. Each step is done only if it is there, so it also works after the
+                                        request was rejected or withdrawn (which alone does not stop a published trade)
   otc.py pay <label> [<tka> [<seconds>]]
                                         the buyer approves the gateway and pays the seller through it, naming the trade: his payment is his
                                         acceptance. <tka> is a whole number, the trade's amount if none: a smaller one is the refused case (the
@@ -237,21 +238,31 @@ def publish(net: canton.Network, label: str, wrapped: str = None) -> dict:
 
 def close(net: canton.Network, label: str) -> dict:
     """The venue ends a trade it will not settle (called off, past its time, or settled): it archives the chain package's VenueTrade (as the venue and
-    the seller, its signatories), has the seller take back his allocation, and closes the Trade. Each is done only if it is there, so it can be run again.
-    A builder started with --venue cannot see a withdrawn allocation, so a VenueTrade left active would keep getting Advances Canton refuses."""
-    trade = trade_of(net, label)
+    the seller, its signatories), has the seller take back his allocation, and closes the Trade. Each is done only if it is there, so it can be run again,
+    and it also works when the Trade is gone already (the seller rejected the request, or the venue withdrew it): the VenueTrade is found by the payment
+    id and names the allocation. Only the trade's own allocation is taken back (publish's test), not another settlement's with the same reference id.
+    Turning down the request does not stop a published trade: the VenueTrade and the allocation stay, and a full payment still settles, until this
+    is run. A builder started with --venue cannot see a withdrawn allocation, so a VenueTrade left active would keep getting Advances Canton refuses."""
+    found = with_label(net.template("users", VENUE, TRADE), label)
+    trade = one(found, f"trade {label!r}") if found else None
     payment = pay_id(net.party(VENUE), label)
+    made = [e for e in net.template("users", VENUE, VENUE_TRADE) if e["createArgument"]["payId"] == payment]
+    if not trade and not made:
+        raise canton.Fail(f"nothing of the trade {label!r} is left to close")
+    named = {e["createArgument"]["allocation"] for e in made}
+    mine = [e for e in allocations_of(net, SELLER, label) if e["contractId"] in named or (trade and is_the_trades(e, trade["createArgument"]))]
     done = []
-    for made in [e for e in net.template("users", VENUE, VENUE_TRADE) if e["createArgument"]["payId"] == payment]:
-        net.submit("users", [VENUE, SELLER], {"ExerciseCommand": {"templateId": VENUE_TRADE, "contractId": made["contractId"], "choice": "Archive", "choiceArgument": {}}})
+    for e in made:
+        net.submit("users", [VENUE, SELLER], {"ExerciseCommand": {"templateId": VENUE_TRADE, "contractId": e["contractId"], "choice": "Archive", "choiceArgument": {}}})
         done.append("venueTrade")
-    for held in allocations_of(net, SELLER, label):
+    for held in mine:
         net.submit("users", [SELLER], {"ExerciseCommand": {"templateId": canton.ALLOCATION_INTERFACE, "contractId": held["contractId"], "choice": "Allocation_Withdraw",
                                                           "choiceArgument": {"extraArgs": canton.NO_EXTRA_ARGS}}})
         done.append("allocation")
-    net.submit("users", [VENUE], {"ExerciseCommand": {"templateId": TRADE, "contractId": trade["contractId"], "choice": "Close", "choiceArgument": {}}})
-    net.wait_for("the trade to be gone", lambda: not with_label(net.template("users", VENUE, TRADE), label) or None)
-    return {"label": label, "closed": ["trade"] + done}
+    if trade:
+        net.submit("users", [VENUE], {"ExerciseCommand": {"templateId": TRADE, "contractId": trade["contractId"], "choice": "Close", "choiceArgument": {}}})
+        net.wait_for("the trade to be gone", lambda: not with_label(net.template("users", VENUE, TRADE), label) or None)
+    return {"label": label, "closed": (["trade"] if trade else []) + done}
 
 
 def finalized(tx: str, seconds: str) -> dict:
@@ -301,7 +312,7 @@ def check(net: canton.Network, label: str) -> dict:
     return {"label": label,
             "offer": bool(with_label(net.template("users", VENUE, OFFER), label)),
             "trade": True,
-            "allocation": bool(allocations_of(net, SELLER, label)),
+            "allocation": bool([e for e in allocations_of(net, SELLER, label) if is_the_trades(e, trade)]),
             "venueTrade": bool([e for e in net.template("operator", "operator", VENUE_TRADE) if e["createArgument"]["payId"] == payment]),
             "fundedClaim": bool([e for e in net.template("operator", "operator", FUNDED_CLAIM) if e["createArgument"]["claimId"] == claim_of]),
             "tkb": {"seller": canton.holdings(net, SELLER), "gateway": canton.holdings(net, "gateway", "operator")},

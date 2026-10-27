@@ -167,7 +167,7 @@ testVenueCloses = do
   gone <- queryContractId f.venue trade
   gone === None
 
--- The seller or the venue rejects the request and the trade ends; a bystander cannot even when the trade is visible to it; the venue (its executor) withdraws it.
+-- The seller or the venue rejects the request, which consumes the Trade (a published trade is ended by the driver's close, not by this); a bystander cannot even when the trade is visible to it; the venue (its executor) withdraws it.
 testRejectAndWithdraw : Script ()
 testRejectAndWithdraw = do
   f <- setup

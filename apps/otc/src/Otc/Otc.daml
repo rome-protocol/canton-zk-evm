@@ -106,7 +106,8 @@ template Trade
           [ (legId, TransferLeg with sender = seller; receiver = gateway; amount; instrumentId = instrument; meta = emptyMetadata) ]
         meta = emptyMetadata
 
-      -- The seller or the venue may turn the request down, which ends the trade.
+      -- The seller or the venue may turn the request down. This consumes the Trade, but it does not stop a published trade from settling: the chain's
+      -- VenueTrade and the seller's allocation stay until the venue closes the trade (the driver's `close`) or the seller withdraws the allocation.
       allocationRequest_RejectImpl _self AllocationRequest_Reject{actor} = do
         assertMsg "only the seller or the venue may reject the trade" (actor == seller || actor == venue)
         pure (ChoiceExecutionMetadata with meta = emptyMetadata)

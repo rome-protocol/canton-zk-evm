@@ -139,17 +139,41 @@ class OtcTests(LedgerTestCase):
             otc.publish(self.net, "t1")
         self.assertEqual(FakeLedger.submitted, [])
 
-    def test_close_archives_the_venue_trade_withdraws_the_allocation_and_closes_the_trade(self):
+    def other_allocation(self):
+        """An allocation of the seller's under the same reference id that is another settlement's (another amount): never the trade's."""
+        return {"contractId": "alloc-other", "offset": 1, "createArgument": {"allocation": self.spec(amount="0.0001000000")}}
+
+    def published_trade(self, trade=True):
+        """The trade t1 as published: the seller's allocation alloc-1 and the VenueTrade that names it, and another settlement's allocation with the same label."""
         self.allocated()
-        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = FakeLedger.contracts.pop(("v::1", canton.ALLOCATION_OF_TOKEN))
-        FakeLedger.contracts[("v::1", otc.VENUE_TRADE)] = [{"contractId": "vt-1", "offset": 1, "createArgument": {"payId": otc.ids(self.net, "t1")["payId"]}}]
+        mine = FakeLedger.contracts.pop(("v::1", canton.ALLOCATION_OF_TOKEN))
+        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = mine + [self.other_allocation()]
+        FakeLedger.contracts[("v::1", otc.VENUE_TRADE)] = [{"contractId": "vt-1", "offset": 1, "createArgument": {"payId": otc.ids(self.net, "t1")["payId"], "allocation": "alloc-1"}}]
+        if not trade:
+            FakeLedger.contracts[("v::1", otc.TRADE)] = []
+
+    def test_close_archives_the_venue_trade_withdraws_the_trades_own_allocation_and_closes_the_trade(self):
+        self.published_trade()
         self.assertEqual(otc.close(self.net, "t1"), {"label": "t1", "closed": ["trade", "venueTrade", "allocation"]})
         [(_, archived)] = self.exercised("Archive")
-        [(_, withdrawn)] = self.exercised("Allocation_Withdraw")
+        [(_, withdrawn)] = self.exercised("Allocation_Withdraw")   # alloc-other, the other settlement's, is left alone
         [(_, closed)] = self.exercised("Close")
         self.assertEqual((archived["actAs"], withdrawn["actAs"], closed["actAs"]), (["v::1", "u::1"], ["u::1"], ["v::1"]))
         self.assertEqual((archived["commands"][0]["ExerciseCommand"]["contractId"], withdrawn["commands"][0]["ExerciseCommand"]["contractId"],
                           closed["commands"][0]["ExerciseCommand"]["contractId"]), ("vt-1", "alloc-1", "trade-1"))
+
+    def test_close_after_the_trade_is_gone_archives_the_venue_trade_and_withdraws_the_allocation_it_names(self):
+        self.published_trade(trade=False)   # the seller rejected the request, or the venue withdrew it: the Trade is consumed
+        self.assertEqual(otc.close(self.net, "t1"), {"label": "t1", "closed": ["venueTrade", "allocation"]})
+        [(_, withdrawn)] = self.exercised("Allocation_Withdraw")
+        self.assertEqual(withdrawn["commands"][0]["ExerciseCommand"]["contractId"], "alloc-1")
+        self.assertEqual(len(self.exercised("Archive")), 1)
+        self.assertEqual(self.exercised("Close"), [])
+
+    def test_close_with_nothing_left_of_the_trade_is_refused(self):
+        with self.assertRaises(canton.Fail):
+            otc.close(self.net, "t1")
+        self.assertEqual(FakeLedger.submitted, [])
 
     def test_close_of_a_trade_with_nothing_else_left_only_closes_it(self):
         FakeLedger.contracts[("v::1", otc.TRADE)] = [trade_event()]
@@ -235,6 +259,13 @@ class OtcTests(LedgerTestCase):
         self.assertEqual(got["tkb"]["seller"], [97.5])
         self.assertEqual((got["tka"], got["wrapped"]), ({"seller": 3, "buyer": 3}, {"token": "0x" + WRAPPED, "buyer": "2.5", "supply": "2.5"}))
         self.assertTrue(all(c[-1] == "finalized" for c in self.calls))
+
+    def test_check_reports_an_allocation_only_if_it_is_the_trades_own(self):
+        FakeLedger.contracts[("v::1", otc.TRADE)] = [trade_event()]
+        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = [self.other_allocation()]
+        self.assertFalse(otc.check(self.net, "t1")["allocation"])
+        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)].append({"contractId": "alloc-1", "offset": 1, "createArgument": {"allocation": self.spec()}})
+        self.assertTrue(otc.check(self.net, "t1")["allocation"])
 
 
 if __name__ == "__main__":

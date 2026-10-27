@@ -18,7 +18,7 @@ An offer or a trade whose EVM side is malformed (a token, payee or recipient tha
 1. The seller creates a `TradeOffer`; the venue accepts it, which makes the `Trade`.
 2. The seller's wallet shows the `AllocationRequest`. The seller allocates through the token's own factory (`AllocationFactory_Allocate`) with the trade's spec: the request's settlement, transfer leg id `leg` and the leg itself.
 3. The buyer pays on the EVM and the chain settles the trade, which executes the seller's allocation and leaves the buyer a claim (below).
-4. The venue archives the `Trade` (`Close`). For a trade it will not settle, the driver's `close` also archives the `VenueTrade` and has the seller take back his allocation: a builder started with `--venue` cannot see a withdrawn allocation, and would keep sending `Advance`s that Canton refuses.
+4. The venue archives the `Trade` (`Close`). For a trade it will not settle, the driver's `close` also archives the `VenueTrade` and has the seller take back his allocation: a builder started with `--venue` cannot see a withdrawn allocation, and would keep sending `Advance`s that Canton refuses. Once a trade is published, turning down the request (`AllocationRequest_Reject` by the seller or the venue, or `AllocationRequest_Withdraw` by the venue) does not stop it: the `VenueTrade` and the seller's allocation stay, and a full payment still settles. Only `close` (or the seller withdrawing his allocation, and then `close`) ends it, and `close` also works when the `Trade` is already gone.
 
 ## How a chain like Ostia settles its trades
 
