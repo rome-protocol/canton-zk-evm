@@ -87,9 +87,9 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       // A new value still gets the next id.
       const c = await pool.connect();
       try {
-        const id = await dictionary(c, "canton_parties", "party = $1", "insert into canton_parties (party, role) values ($1, $2)", ["other::1220" + "ab".repeat(32), "operator"]);
+        const id = await dictionary(c, "canton_parties", "party = $1", ["other::1220" + "ab".repeat(32)], "insert into canton_parties (party, role) values ($1, $2)", ["other::1220" + "ab".repeat(32), "operator"]);
         expect(id).toBe(3);
-        expect(await dictionary(c, "canton_parties", "party = $1", "insert into canton_parties (party, role) values ($1, $2)", ["other::1220" + "ab".repeat(32), "operator"])).toBe(3);
+        expect(await dictionary(c, "canton_parties", "party = $1", ["other::1220" + "ab".repeat(32)], "insert into canton_parties (party, role) values ($1, $2)", ["other::1220" + "ab".repeat(32), "operator"])).toBe(3);
       } finally { c.release(); }
       expect((await used()).canton_parties).toBe("3");
       await indexer.close();

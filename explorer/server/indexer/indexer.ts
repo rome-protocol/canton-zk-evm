@@ -382,13 +382,20 @@ export function createIndexer(o: IndexerOptions) {
     const at = await deriveCursor(o.pool);
     const waiting = await o.pool.query("select extract(epoch from now() - indexed_at) as s from blocks where number = $1", [at + 1]);
     const deriveSeconds = waiting.rowCount ? Math.max(0, Math.round(Number(waiting.rows[0].s) * 10) / 10) : 0;
+    // A warning-only check must not hold back the others: when the id columns cannot be read, db_ids says so and the rows above are still written.
+    let idsRow: HealthRow;
+    try {
+      idsRow = await checkIds(o.pool);
+    } catch (e) {
+      idsRow = { id: "db_ids", status: "degraded", detail: `the id columns cannot be read: ${(e as Error).message}` };
+    }
     await setHealth(o.pool, [
       c4Row,
       { id: "C5", status: lagSeconds > DOWN_LAG_S ? "down" : lagSeconds > DEGRADED_LAG_S ? "degraded" : "ok", value: { lagBlocks, lagSeconds }, threshold: { degradedSeconds: DEGRADED_LAG_S, downSeconds: DOWN_LAG_S },
         detail: lagSeconds > DEGRADED_LAG_S ? `the index is ${lagBlocks} blocks behind, and its oldest waiting record became readable ${lagSeconds} s ago` : null },
       { id: "derive_lag", status: deriveSeconds > DERIVE_LAG_S ? "degraded" : "ok", value: { blocks: Math.max(0, head - at), seconds: deriveSeconds }, threshold: { degradedSeconds: DERIVE_LAG_S },
         detail: deriveSeconds > DERIVE_LAG_S ? `stage 2 is ${Math.max(0, head - at)} blocks behind stage 1, and the block it waits on was indexed ${deriveSeconds} s ago` : null },
-      await checkIds(o.pool),
+      idsRow,
     ]);
     // C10 is written only by blocks that have legs; its row is made ok when none was seen, and its look is refreshed (the status is not) so that a quiet chain does not read as a stale check.
     await o.pool.query("insert into health_checks (check_id, status, value, changed_at, checked_at) values ('C10', 'ok', null, now(), now()) on conflict (check_id) do update set checked_at = now()");
