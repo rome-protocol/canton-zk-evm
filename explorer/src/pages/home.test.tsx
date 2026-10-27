@@ -521,7 +521,7 @@ describe("the numbers, from the stats routes", () => {
     renderApp("/");
     await screen.findByRole("region", { name: "Chain status" });
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
-    expect(shown(tile("Block height"))).toBe("Block height34final on Canton");
+    expect(shown(tile("Block height"))).toBe("Block height3final on Canton");
     expect(screen.getByRole("region", { name: "Numbers" })).not.toHaveTextContent("none being proven");
   });
 });
