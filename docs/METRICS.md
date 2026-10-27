@@ -160,13 +160,13 @@ What these numbers do not show: plain transfers are the cheapest transaction the
 
 | Cap | Load | Result |
 |---|---|---|
-| 30,000,000 gas | a burst of plain transfers on two GPUs (2026-10-26 and 27) | 158 tx/s steady; the 9,000 burst was final 74 s after the first send |
+| 30,000,000 gas | a burst of plain transfers on two GPUs (2026-10-27) | 158 tx/s steady; the 9,000 burst was final 74 s after the first send |
 | 60,000,000 gas | a burst of 9,000 plain transfers (2026-10-27) | 79 s from the send to the last block final, with blocks cut at a pace of about 200 tx/s: one block of 2,857 transfers about every 14 s, and a proof of 18 to 22 s for each full block |
 | 60,000,000 gas | the sustained rate at which fees stayed stable, found by an adaptive ramp of 2 hours | about 93 tx/s |
 | 30,000,000 gas | the same, fee-stable sustained rate | about 75 tx/s |
 
 - A full block at 60,000,000 gas holds 2,857 plain transfers, twice the 1,428 of the 30,000,000 cap. The proof of such a block took 18 to 22 s while a block was cut about every 14 s, with two provers working on blocks at once.
-- The standing load (the soak lane, which follows the number of live provers) is set to about 75% of the fee-stable rate: 70 tx/s with two provers and 45 with one, at 60,000,000 gas. These are rates that were set from 12:05 UTC on 2026-10-27, not measured; at 30,000,000 gas the lane ran at 57 and 37.
+- The standing load (Rome's standing background load on DevNet, which follows the number of live provers) is set to about 75% of the fee-stable rate: 70 tx/s with two provers (about 75% of the 93 measured) and 45 with one, at 60,000,000 gas. These are rates that were set from 12:05 UTC on 2026-10-27, not measured; at 30,000,000 gas the load ran at 57 and 37.
 - Each figure is one run or one ramp, so there is no spread.
 - As on 2026-10-25, plain transfers are the cheapest transaction there is, so these are not figures for contract-heavy traffic, and they say nothing about more confirmers or builders. DevNet still has one confirmer.
 
