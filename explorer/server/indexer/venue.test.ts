@@ -106,6 +106,7 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       expect(await blockLegs(pool, 5)).toEqual([expect.objectContaining({ kind: "payment", legId: "0x" + "01".repeat(32), canton: null })]);
       // By the transaction, the same legs.
       expect(await txLegs(pool, hash(2))).toEqual(await blockLegs(pool, 2));
+      expect(await txLegs(pool, hash(2), 1)).toEqual((await blockLegs(pool, 2)).slice(0, 1));
       expect(await txLegs(pool, "0x" + "00".repeat(32))).toEqual([]);
     });
   });
@@ -197,25 +198,45 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
     });
   });
 
-  it("keeps the matched payment when a trade is offered again with the same terms, and matches again when the terms change", async () => {
+  it("keeps the trade a payment settled when it is offered again, and takes the new terms of a trade that no payment has settled", async () => {
     await inDb(async (pool) => {
       const { chain } = await indexed(pool, 5);
       const base = items(chain);
       await venueOnce(pool, (await gatewayLedger(base)).ledger);
-      const matched = () => pool.query("select payment_block::int as block, payment_leg_index as leg from canton_venue_trades").then((r) => r.rows);
-      expect(await matched()).toEqual([{ block: 2, leg: 0 }]);
-      // The same terms, offered again: still matched. Other terms (a dearer price): no payment is the trade's until one pays them.
+      const matched = () => pool.query("select payment_block::int as block, payment_leg_index as leg, evm_amount::int as amount from canton_venue_trades").then((r) => r.rows);
+      expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
+      // The gateway spends a payment id once: an offer under the spent id, the same or dearer, does not replace the trade that was paid, and block 2 stays the trade's payment.
       await pool.query("delete from canton_venue_cursor");
       await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-again", [venueTradeEvent(25, "00trade-b", trade)])])).ledger);
-      expect(await matched()).toEqual([{ block: 2, leg: 0 }]);
+      expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
       await pool.query("delete from canton_venue_cursor");
       await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
-      expect(await matched()).toEqual([{ block: null, leg: null }]);
+      expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
+      expect(await blockLegs(pool, 2)).toEqual([expect.objectContaining({ kind: "payment", canton: expect.objectContaining({ role: "venue-trade" }) })]);
+      // A trade that no payment has settled takes the newest offer: with a dearer price, the payment of block 2 is not its payment.
+      await pool.query("update canton_venue_trades set payment_block = null, payment_leg_index = null");
+      await pool.query("delete from canton_venue_cursor");
+      await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
+      expect(await matched()).toEqual([{ block: null, leg: null, amount: 43 }]);
       expect(await blockLegs(pool, 2)).toEqual([expect.objectContaining({ kind: "payment", canton: null })]);
-      // A match that is lost is found again on the next read, which has nothing new to read.
+      // A match that was lost is found again on the next read, which has nothing new to read, once the match starts from the first block again.
       await pool.query("update canton_venue_trades set evm_amount = 42");
+      await pool.query("update canton_venue_cursor set matched_block = 0");
       await venueOnce(pool, (await gatewayLedger(base)).ledger);
-      expect(await matched()).toEqual([{ block: 2, leg: 0 }]);
+      expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
+    });
+  });
+
+  it("looks for payments only in the blocks since the last match", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 5);
+      const base = items(chain);
+      await venueOnce(pool, (await gatewayLedger(base)).ledger);
+      await pool.query("update canton_venue_trades set payment_block = null, payment_leg_index = null");
+      // The cursor is past block 2 and nothing is new: the payment is not looked for again.
+      await venueOnce(pool, (await gatewayLedger(base)).ledger);
+      expect(await pool.query("select payment_block from canton_venue_trades").then((r) => r.rows)).toEqual([{ payment_block: null }]);
+      expect(await pool.query("select matched_block::int as at from canton_venue_cursor").then((r) => r.rows)).toEqual([{ at: 5 }]);
     });
   });
 
@@ -234,8 +255,8 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
         transaction(15, "u-offered", [venueTradeEvent(15, "00trade", trade)]),
         transaction(30, settling, [fundedClaimEvent(30, "00claim", claim)]),
       ])).ledger);
-      const roles = async () => (await Promise.all([2, 3, 4, 5, 6].map((b) => blockLegs(pool, b)))).map((l) => l[0]!.canton?.role ?? null);
-      expect(await roles()).toEqual([null, "venue-trade", null, null, "funded-claim"]);
+      const roles = async () => (await Promise.all([2, 3, 4, 5, 6, 7].map((b) => blockLegs(pool, b)))).map((l) => l[0]!.canton?.role ?? null);
+      expect(await roles()).toEqual([null, "venue-trade", null, null, "funded-claim", null]);
       expect((await blockLegs(pool, 3))[0]!.canton!.settledUpdateId).toBe(settling);
     });
   });

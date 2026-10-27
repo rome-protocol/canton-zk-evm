@@ -239,7 +239,9 @@ table canton_venue_cursor
   column participant_id text not null
   column ledger_offset bigint not null
   column read_at timestamp with time zone not null
+  column matched_block bigint not null default 0
   constraint canton_venue_cursor_ledger_offset_check CHECK ((ledger_offset >= 0))
+  constraint canton_venue_cursor_matched_block_check CHECK ((matched_block >= 0))
   constraint canton_venue_cursor_only_row_check CHECK (only_row)
   constraint canton_venue_cursor_pkey PRIMARY KEY (only_row)
   CREATE UNIQUE INDEX canton_venue_cursor_pkey ON public.canton_venue_cursor USING btree (only_row)

@@ -87,7 +87,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
   const built = createChainDb(db.pool);
   const chainDb0: ChainDb = leak
     ? {
-        head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)), blockLegs: async (n, l) => leaky(await built.blockLegs(n, l)), txLegs: async (h) => leaky(await built.txLegs(h)),
+        head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)), blockLegs: async (n, l) => leaky(await built.blockLegs(n, l)), txLegs: async (h, l) => leaky(await built.txLegs(h, l)),
         tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf, lifecycleOf: built.lifecycleOf, inFlight: built.inFlight,
         indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced, indexFacts: built.indexFacts, health: built.health,
       }

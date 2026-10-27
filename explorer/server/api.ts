@@ -97,7 +97,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return m && token ? { symbol: token.symbol, decimals: token.decimals, to: "0x" + m[1], value: dec(BigInt("0x" + m[2])) } : null;
   }
 
-  /** The most legs a block's answer carries: a block can record thousands, and `legsCount` and the paged legs route have the rest. */
+  /** The most legs a block's answer carries: a block can record thousands, and `legsCount` and the paged legs route have the rest. A transaction's answer is bounded the same way (the first 50 of the legs it caused). */
   const BLOCK_LEGS = 50;
 
   /** A gateway leg in the fields of FIELDS.blockLeg, and the Canton side of its swap in the fields of FIELDS.legCanton. */
@@ -234,7 +234,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         from: final.from, to: final.to, value: final.value, nonce: final.nonce, type: final.type, gas: final.gas,
         gasUsed: final.gasUsed, gasPrice: final.gasPrice, fee: dec(BigInt(final.gasUsed) * BigInt(final.gasPrice)), success: final.success,
         input: final.input, logs: final.logs.map((l) => pick(l, FIELDS.log)), transfer, toToken, created: final.created,
-        legs: (await chain.txLegs(hash)).map(legOf),
+        legs: (await chain.txLegs(hash, BLOCK_LEGS)).map(legOf),
       });
     }
     // Not in the database: waiting in reth's pool, or in a block that is still being proven (or not indexed yet), or only the tracker knows it.

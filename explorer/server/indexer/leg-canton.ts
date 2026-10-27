@@ -5,8 +5,8 @@ export const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
 
 /**
  * What Canton shows of a leg, when the leg is one side of a swap: a payment that settled a Canton venue's trade (`venue-trade`, matched by its payment id) or a deposit that redeemed a
- * funded claim (`funded-claim`, matched by its claim id). `amount` is the Canton side's, in base units of 10 decimals, and the instrument is the registered token's; both are null
- * while the funded claim has not been read. The settling Canton update is the block's own for a payment and the claim's, which an earlier block made, for a deposit.
+ * funded claim (`funded-claim`, matched by its claim id). `amount` is the Canton side's, in base units of 10 decimals, and is null until the funded claim has been read; the instrument is
+ * the registered token's, from the trade until then. The settling Canton update is the block's own for a payment and the claim's, which an earlier block made, for a deposit.
  * There is no party in it: the venue, the seller and the buyer's Canton side are never kept, and the viewer is shown "a Canton party".
  */
 export interface LegCanton {
@@ -72,11 +72,11 @@ export async function blockLegs(pool: Pick<Pool, "query">, number: number, { aft
   return rows.map(blockLegOf);
 }
 
-/** The legs a transaction caused, in the same form. */
-export async function txLegs(pool: Pick<Pool, "query">, txHash: string): Promise<BlockLeg[]> {
+/** The legs a transaction caused, in the same form: all of them, or the first `limit` (one contract call can make many legs). */
+export async function txLegs(pool: Pick<Pool, "query">, txHash: string, limit: number | null = null): Promise<BlockLeg[]> {
   const { rows } = await pool.query(
-    `select ${LEG_CANTON_SELECT} ${LEG_CANTON_FROM} where (g.block_number, g.tx_index) in (select block_number, tx_index from tx_hashes where hash = $1) order by g.block_number, g.leg_index`,
-    [Buffer.from(txHash.replace(/^0x/, ""), "hex")],
+    `select ${LEG_CANTON_SELECT} ${LEG_CANTON_FROM} where (g.block_number, g.tx_index) in (select block_number, tx_index from tx_hashes where hash = $1) order by g.block_number, g.leg_index limit $2`,
+    [Buffer.from(txHash.replace(/^0x/, ""), "hex"), limit],
   );
   return rows.map(blockLegOf);
 }

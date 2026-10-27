@@ -17,8 +17,8 @@ const num = (v: unknown): number | null => (v === null || v === undefined ? null
 
 /**
  * A swap a Canton venue made with the EVM: the venue's trade, settled by the buyer's payment in a block (its Canton update made the funded claim), and, once the buyer has claimed the
- * wrapped token, the deposit that redeemed it. Canton parties are never part of it: `canton.recipient` is the EVM address that claims. `canton.amount` and `instrument` are null while the
- * funded claim has not been read.
+ * wrapped token, the deposit that redeemed it. Canton parties are never part of it: `canton.recipient` is the EVM address that claims. `canton.amount` is null until the funded claim has been read, and the
+ * instrument is the registered token's, from the trade, until then.
  */
 export interface SwapEvm { token: string; symbol: string | null; decimals: number | null; payer: string | null; payee: string; amount: string }
 export interface SwapCanton { amount: string | null; instrument: { admin: string; id: string } | null; recipient: string; updateId: string | null }

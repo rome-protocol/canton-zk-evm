@@ -136,10 +136,10 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
     }
   }
 
-  /** The gateway legs a final transaction caused, in the same form. */
-  async function txLegs(hash: string): Promise<BlockLeg[]> {
+  /** The gateway legs a final transaction caused, in the same form: the first `limit` of them, or all. */
+  async function txLegs(hash: string, limit: number | null = null): Promise<BlockLeg[]> {
     try {
-      return await legsOfTx(pool, hash);
+      return await legsOfTx(pool, hash, limit);
     } catch (e) {
       throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`);
     }

@@ -27,15 +27,15 @@ async function writePage(c: PoolClient, updates: VenueUpdate[]): Promise<void> {
       [tokens.map((t) => t.contractId), tokens.map((t) => bytea(t.evmToken)), tokens.map((t) => t.instrumentAdmin), tokens.map((t) => t.instrumentId)],
     );
   }
-  // A trade offered again under the same label has the same payment id: the newest offer is the one kept. The payment that settled it stays matched while the terms are the same.
+  // A trade offered again under the same label has the same payment id: the newest offer is the one kept, until a payment has settled it. The gateway spends a payment id once, so a later offer
+  // under a spent id can never be paid and does not replace the trade that was.
   if (trades.length > 0) {
     await c.query(
       `insert into canton_venue_trades as vt (pay_id, claim_id, token, payee, recipient, evm_amount, gateway_token, offered_update_id)
        select * from unnest($1::bytea[], $2::bytea[], $3::bytea[], $4::bytea[], $5::bytea[], $6::numeric[], $7::text[], $8::text[])
        on conflict (pay_id) do update set claim_id = excluded.claim_id, token = excluded.token, payee = excluded.payee, recipient = excluded.recipient, evm_amount = excluded.evm_amount,
-         gateway_token = excluded.gateway_token, offered_update_id = excluded.offered_update_id,
-         payment_block = case when vt.token = excluded.token and vt.payee = excluded.payee and vt.evm_amount = excluded.evm_amount then vt.payment_block end,
-         payment_leg_index = case when vt.token = excluded.token and vt.payee = excluded.payee and vt.evm_amount = excluded.evm_amount then vt.payment_leg_index end`,
+         gateway_token = excluded.gateway_token, offered_update_id = excluded.offered_update_id
+       where vt.payment_block is null`,
       [trades.map((t) => bytea(t.payId)), trades.map((t) => bytea(t.claimId)), trades.map((t) => bytea(t.token)), trades.map((t) => bytea(t.payee)), trades.map((t) => bytea(t.recipient)),
         trades.map((t) => t.amount.toString()), trades.map((t) => t.gatewayToken), trades.map((t) => t.updateId)],
     );
@@ -52,18 +52,27 @@ async function writePage(c: PoolClient, updates: VenueUpdate[]): Promise<void> {
 
 /**
  * The payment that settled each trade, among the indexed legs: the first payment leg of the trade's id that pays what the trade says (its token, to its payee, for its amount), as the
- * builder settles a request only when its terms match. A payment under the id that pays something else is not the trade's, so it is no swap. Run after every read, because a payment's
- * block is indexed on its own time.
+ * builder settles a request only when its terms match. A payment under the id that pays something else is not the trade's, so it is no swap. A trade is offered before its payment's block
+ * is read, and the read is bound to the block `upToBlock`, so the work is the legs of the blocks after the last match and the trades this read wrote (`fresh`, matched against every leg),
+ * and the block it ended on is kept in the cursor.
  */
-export async function matchPayments(pool: Pick<Pool, "query">): Promise<void> {
-  await pool.query(
-    `update canton_venue_trades vt set payment_block = m.block_number, payment_leg_index = m.leg_index
-     from (select t.pay_id, g.block_number, g.leg_index from canton_venue_trades t
-             cross join lateral (select block_number, leg_index from gateway_legs
-               where kind = 3 and leg_id = t.pay_id and token = t.token and account = t.payee and amount = t.evm_amount order by block_number, leg_index limit 1) g
-            where t.payment_block is null) m
-     where vt.pay_id = m.pay_id`,
-  );
+export async function matchPayments(pool: Pick<Pool, "query">, upToBlock: number, fresh: Buffer[] = []): Promise<void> {
+  const [cursor] = (await pool.query("select matched_block from canton_venue_cursor")).rows;
+  if (!cursor) return;
+  const set = "update canton_venue_trades vt set payment_block = m.block_number, payment_leg_index = m.leg_index";
+  const from = `distinct on (t.pay_id) t.pay_id, g.block_number, g.leg_index from canton_venue_trades t
+     join gateway_legs g on g.kind = 3 and g.leg_id = t.pay_id and g.token = t.token and g.account = t.payee and g.amount = t.evm_amount`;
+  const order = "order by t.pay_id, g.block_number, g.leg_index";
+  if (fresh.length > 0) {
+    await pool.query(`${set} from (select ${from} where t.pay_id = any($1::bytea[]) and t.payment_block is null ${order}) m where vt.pay_id = m.pay_id`, [fresh]);
+  }
+  if (upToBlock > Number(cursor.matched_block)) {
+    await pool.query(
+      `${set} from (select ${from} where g.block_number > $1 and g.block_number <= $2 and t.payment_block is null ${order}) m where vt.pay_id = m.pay_id`,
+      [Number(cursor.matched_block), upToBlock],
+    );
+    await pool.query("update canton_venue_cursor set matched_block = $1", [upToBlock]);
+  }
 }
 
 const setCursor = (c: PoolClient, participantId: string, offset: number) => c.query(
@@ -81,18 +90,19 @@ const setCursor = (c: PoolClient, participantId: string, offset: number) => c.qu
  */
 export async function venueOnce(pool: Pick<Pool, "connect" | "query">, ledger: Pick<Ledger, "venuePages">, participantId: string, chainId: number): Promise<{ trades: number; claims: number; tokens: number; offset: number | null }> {
   const [at] = (await pool.query(
-    "select u.reader_offset, (p.participant_id = $1 and p.moved_out_at is null) as current from blocks b join canton_updates u on u.update_id = b.update_id join canton_participants p on p.id = u.participant order by b.number desc limit 1",
+    "select b.number, u.reader_offset, (p.participant_id = $1 and p.moved_out_at is null) as current from blocks b join canton_updates u on u.update_id = b.update_id join canton_participants p on p.id = u.participant order by b.number desc limit 1",
     [participantId],
   )).rows;
   if (!at || !at.current) return { trades: 0, claims: 0, tokens: 0, offset: null };
-  const upTo = Number(at.reader_offset);
+  const upTo = Number(at.reader_offset), upToBlock = Number(at.number);
   const [cursor] = (await pool.query("select participant_id, ledger_offset from canton_venue_cursor")).rows;
   const from = cursor && cursor.participant_id === participantId ? Number(cursor.ledger_offset) : 0;
   const done = { trades: 0, claims: 0, tokens: 0 };
   if (from >= upTo) {
-    await matchPayments(pool);
+    await matchPayments(pool, upToBlock);
     return { ...done, offset: from };
   }
+  const fresh: Buffer[] = [];
   for await (const page of ledger.venuePages(from, upTo, chainId)) {
     const c = await pool.connect();
     try {
@@ -106,7 +116,7 @@ export async function venueOnce(pool: Pick<Pool, "connect" | "query">, ledger: P
     } finally {
       c.release();
     }
-    for (const u of page.updates) { done.tokens += u.tokens.length; done.trades += u.trades.length; done.claims += u.claims.length; }
+    for (const u of page.updates) { for (const t of u.trades) fresh.push(bytea(t.payId)); done.tokens += u.tokens.length; done.trades += u.trades.length; done.claims += u.claims.length; }
   }
   // The walk ended on an empty answer: nothing more is there up to the record's offset.
   const c = await pool.connect();
@@ -115,6 +125,6 @@ export async function venueOnce(pool: Pick<Pool, "connect" | "query">, ledger: P
   } finally {
     c.release();
   }
-  await matchPayments(pool);
+  await matchPayments(pool, upToBlock, fresh);
   return { ...done, offset: upTo };
 }
