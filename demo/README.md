@@ -23,6 +23,7 @@ The demo is limited to these runs on one local network with one operator, one bu
 | `TKA.sol`, `TKA.bin`, `build-token.sh` | The EVM test token (a plain ERC-20 whose supply goes to V when it is deployed), and its creation code. `build-token.sh` compiles the source with the solc image in `PINS`; CI checks that `TKA.bin` is what it gives. |
 | `evm.py` | The EVM side: the keys of V and U, the genesis that funds both, and the transactions they send, including the gateway's `register`, `claim`, `withdraw` and `pay`. It also reads TKA and wrapped-token balances and a wrapped token's supply. |
 | `canton.py` | The Canton side: loads the token standard's factory and the test token, makes U's holding, registers a wrapped token, makes the acceptance, the deposit request, the allocations and the terms, sends a saved block to Canton again without its legs, and reads back what is on Canton, including which update made a contract and what the gateway holds. |
+| `otc.py` | The OTC swap: the commands of a seller on Canton, a venue and a buyer on the EVM (offer, accept, allocate, publish, pay, claim, check). It reuses `canton.py` and `evm.py`. See "The OTC swap" below. |
 | `prepare.sh` | Run once before `network/up.sh`: Python packages (by hash), the two keys, and the funded genesis. |
 | `run.sh` | The setup and the five runs. It checks every claim and stops at the first one that does not hold, then writes `results/`. |
 | `prove-tampered.sh` | The demo-only switch of run 5: a prover command that runs the real prover and then flips one hex digit of the proof. It exists only here; nothing in `network/` or `builder/` knows about it. |
@@ -123,6 +124,24 @@ These are what the demo scripts call. Both programs print one JSON object per co
 `live.sh cycle` repeats a balanced cycle for as long as it is asked to. A cycle makes the three runs of `legs` (a deposit of 10 TKB, a payment, a withdrawal of the 10 wTKB that the deposit made), then V sends U the 10 TKB the payment moved (`canton.py return-tkb`) and U sends V the WtROME it was paid (`evm.py give`), so U, V, the custody and wTKB's supply are where they were when the cycle began (V wraps `CZE_LIVE_PAY` of the chain's coin into WtROME once, if it holds less). It needs U to hold 20 TKB and no more, however long it runs. A cycle starts every `CZE_LIVE_CYCLE_MINUTES` (default 10; 0 starts the next at once) until the file `CZE_LIVE_STOP_FILE` exists (default `state/demo/cycle.stop`) or `CZE_LIVE_CYCLES` cycles have run (default 0, no limit). Each cycle makes the checks of `legs` (one leg of its kind in its block, a `BlockRecord` with a proof, the block and the holding from one Canton update, the balances, the custody equal to wTKB's supply) and checks that every balance is back at its start. It appends one line to `CZE_LIVE_RESULTS/cycle-<start time>.txt`: `result=pass` with the three blocks, the Canton updates and the balances, or `result=fail` with the reason. A failed check stops the lane. Nothing is retried, and nothing is minted to cover a difference. Stop the lane by making the stop file; it ends between cycles, and a stop file left from an earlier lane is refused at the start (remove it first). A TERM, INT or HUP during a cycle writes a `result=fail` line for it, because the balances may be part-way through the cycle (up to 20 TKB moved); between cycles it writes `end=signal`. `CZE_LIVE_CYCLE_MINUTES` and `CZE_LIVE_CYCLES` are whole numbers without a leading zero.
 
 `canton.py status` also shows the gateway's custody (its TKB holdings), and the number of active deposit requests and acceptances.
+
+## The OTC swap
+
+A seller who holds TKB on Canton and a buyer who holds TKA on the EVM trade through a venue, in one Canton transaction with the block. The app is the Daml package in [`apps/otc`](../apps/otc/README.md) (it depends only on the token standard); `otc.py` is the venue's driver and the two parties' commands. Here the seller is the Canton party U (the EVM key u is paid), the venue is the Canton party V, and the buyer is the EVM key v, who holds TKA and has no Canton party. Before it: the network is up, the Daml package, `canton.py upload-dars` and `canton.py setup` are done, TKA is deployed, and the wrapped token is registered for TKB (`canton.py register-token`). The builder runs with `--venue <V's party id>`, so that it takes the seller's allocation, which it cannot see, as the trade's (the venue's driver discloses it, as the trade's `allocationDisclosed`).
+
+```
+apps/otc/build.sh                                     # once: dist/otc-venue.dar
+python3 demo/otc.py upload-dar                        # once: the package, into the users participant
+python3 demo/otc.py offer swap-1 2.5 <TKA> 2          # the seller: 2.5 TKB for 2 TKA, paid to the seller's EVM address
+python3 demo/otc.py accept swap-1                     # the venue: the trade, and the request to allocate
+python3 demo/otc.py allocate swap-1                   # the seller allocates, through the token's own factory, with the trade's spec
+python3 demo/otc.py publish swap-1                    # the venue's driver: the VenueTrade, with the allocation disclosed
+python3 demo/otc.py pay swap-1 "" 600                 # the buyer: approve, then pay through the gateway; wait for the block
+python3 demo/otc.py claim swap-1 600                  # the buyer claims the wrapped TKB, in a later block
+python3 demo/otc.py check swap-1                      # Canton and EVM balances, and that the funded claim is gone
+```
+
+`pay` without an amount pays the trade's; `pay swap-1 1` is the refused case: the buyer pays less than the trade names, the builder leaves the payment out of the block, and nothing moves: `check` still shows the seller's allocation, the venue's trade and no funded claim. `claim` stops with an error until the trade's block is committed on Canton (the funded claim is what it redeems), so it always goes in a block after the trade's. `otc.py` with no arguments prints every command.
 
 ## How the Canton side is set up
 
