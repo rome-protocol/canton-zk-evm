@@ -33,7 +33,7 @@ A proof is accepted when it verifies under the PLONK key of an entry's release a
 
 Listing a key does not make the chain take it. The chain contract (Daml's `Advance`) holds one program key and refuses a block under any other, whatever the sidecars accept, so a sidecar that lists the old and the new key during a program switch is safe: a block under the key the chain does not hold is refused at the commit. This lets the sidecars be restarted before a switch and not at a moment inside it (see "Switching a running chain" in [`network/README.md`](../network/README.md)).
 
-On DevNet, as of 2026-10-27, the sidecars of both participants (P1 and P2) run the `8a4e8cd` build with `--key A` (programVK `0xdb79251d...`, ZisK 1.3.1) and `--key B` (programVK `0x424aeb2b...bd69`, ZisK 1.3.2-alpha), so the blocks 0 to 15572 (key A) and from 15573 (key B) both verify. Only the sidecar on P1 confirms blocks today: P2's sidecar is up and hosts no party.
+On DevNet, as of 2026-10-27, the sidecars of both participants run the `8a4e8cd` build with two `--key` entries, key A (programVK `0xdb79251d...`, ZisK 1.3.1) and key B (programVK `0x424aeb2b...bd69`, ZisK 1.3.2-alpha), so the blocks 0 to 15572 (key A) and from 15573 (key B) both verify. Only the sidecar on the first participant confirms blocks today: the second participant's sidecar is up and hosts no party.
 
 ## What Canton calls
 

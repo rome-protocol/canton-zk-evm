@@ -148,7 +148,7 @@ Three things were open when the first remote GPU machine was added: whether `-i`
 
 ## Pre-check
 
-`--precheck` (also `CZE_PRECHECK=1`; off by default, and with it off the builder does what it always did; DevNet runs it on every block, with the default budget of 120 s) runs each block in the ZisK emulator, `ziskemu -X`, on the block's input, with the guest ELF the prover uses, before the block goes to a prover. The main test is the emulator's own cost figure (the `TOTAL` line of its `COST DISTRIBUTION` report): the block's proof time is predicted as `cost / cost-per-second + intercept`, and a block predicted over the budget is cut. The other budgets bound what the prediction cannot see.
+`--precheck` (also `CZE_PRECHECK=1`; off by default, and with it off the builder does what it always did; DevNet runs it on every block, with the default predicted proof time budget of 120 s) runs each block in the ZisK emulator, `ziskemu -X`, on the block's input, with the guest ELF the prover uses, before the block goes to a prover. The main test is the emulator's own cost figure (the `TOTAL` line of its `COST DISTRIBUTION` report): the block's proof time is predicted as `cost / cost-per-second + intercept`, and a block predicted over the budget is cut. The other budgets bound what the prediction cannot see.
 
 | Budget | Option | Default |
 |---|---|---|
