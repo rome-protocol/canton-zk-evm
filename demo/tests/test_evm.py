@@ -26,6 +26,7 @@ class FakeReth(http.server.BaseHTTPRequestHandler):
     calls: list = []
     receipt = None
     error = None   # a JSON-RPC error that every eth_call is answered with
+    pending = "0x2"   # the sender's transaction count with the pending tag; the latest tag is always 0x2
 
     def log_message(self, *args):
         pass
@@ -53,7 +54,7 @@ class FakeReth(http.server.BaseHTTPRequestHandler):
             body = json.dumps({"jsonrpc": "2.0", "id": 1, "error": FakeReth.error}).encode()
             self.send_response(200); self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
             return
-        result = {"eth_chainId": hex(770101), "eth_getTransactionCount": "0x2", "eth_sendRawTransaction": "0x" + "ab" * 32,
+        result = {"eth_chainId": hex(770101), "eth_getTransactionCount": FakeReth.pending if m == "eth_getTransactionCount" and req["params"][1] == "pending" else "0x2", "eth_sendRawTransaction": "0x" + "ab" * 32,
                   "eth_getTransactionReceipt": FakeReth.receipt,
                   "eth_call": self.call_result(req["params"][0]["to"], req["params"][0]["data"]) if m == "eth_call" else None}[m]
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "result": result}).encode()
@@ -70,7 +71,7 @@ class EvmTests(unittest.TestCase):
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         os.environ["RETH_HTTP_PORT"] = str(self.server.server_address[1])
-        FakeReth.calls, FakeReth.receipt, FakeReth.error = [], None, None
+        FakeReth.calls, FakeReth.receipt, FakeReth.error, FakeReth.pending = [], None, None, "0x2"
 
     def test_keys_are_private_and_stable(self):
         a = evm.main(["keys"])
@@ -184,6 +185,25 @@ class EvmTests(unittest.TestCase):
         evm.main(["approve", "v", TOKEN, "0x" + "11" * 20, "0"])   # an approval back to zero is allowed
         _, data, _ = self.sent("v")
         self.assertEqual(decode(["address", "uint256"], bytes.fromhex(data[8:])), ("0x" + "11" * 20, 0))
+
+    def test_replace_sends_a_transfer_of_nothing_at_twice_the_fee_for_each_pending_nonce(self):
+        a = evm.main(["keys"])
+        FakeReth.pending = "0x4"   # two of the sender's transactions wait in the pool (nonces 2 and 3)
+        out = evm.main(["replace", "v"])
+        self.assertEqual(len(out["txs"]), 2)
+        raws = [HexBytes(c["params"][0]) for c in FakeReth.calls if c["method"] == "eth_sendRawTransaction"]
+        txs = [TypedTransaction.from_bytes(raw).as_dict() for raw in raws]
+        self.assertEqual([t["nonce"] for t in txs], [2, 3])
+        for raw, tx in zip(raws, txs):
+            self.assertEqual(Account.recover_transaction(raw), a["v"])
+            self.assertEqual(("0x" + bytes(tx["to"]).hex(), tx["value"], bytes(tx["data"])), (a["v"].lower(), 0, b""))
+            self.assertEqual((tx["maxFeePerGas"], tx["maxPriorityFeePerGas"]), (2 * evm.MAX_FEE, 2 * evm.PRIORITY_FEE))
+        FakeReth.calls.clear()
+        FakeReth.pending = "0x2"   # nothing waits: nothing is sent
+        self.assertEqual(evm.main(["replace", "v"]), {"txs": []})
+        self.assertEqual([c for c in FakeReth.calls if c["method"] == "eth_sendRawTransaction"], [])
+        with self.assertRaises(SystemExit):
+            evm.main(["replace", "x"])
 
     def test_give_is_sent_by_the_sender_to_any_address_through_the_tokens_transfer(self):
         a = evm.main(["keys"])

@@ -22,7 +22,8 @@
   otc.py pay <label> [<tka> [<seconds>]]
                                         the buyer approves the gateway and pays the seller through it, naming the trade: his payment is his
                                         acceptance. <tka> is a whole number, the trade's amount if none: a smaller one is the refused case (the
-                                        builder leaves it out and nothing moves). With <seconds>, waits until the payment's block is finalized
+                                        builder leaves it out and nothing moves on Canton, but the short payment stays pending in reth's pool and holds back every later
+                                        transaction of the buyer's key until it is replaced: `evm.py replace v`, same nonce). With <seconds>, waits until the payment's block is finalized
   otc.py claim <label> [<seconds>]      the buyer claims the wrapped TKB that the settled trade left for him (the gateway's claim). It needs
                                         the funded claim, so send it after the trade's block is finalized: it goes in a later block. With
                                         <seconds>, waits until its block is finalized

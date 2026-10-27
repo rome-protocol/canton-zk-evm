@@ -7,7 +7,7 @@
 # Steps, each checked (the script stops at the first claim that does not hold): the setup block (TKA, the wrapped TKB), the offer, the venue's
 # acceptance, the seller's allocation, the venue's trade; the buyer's payment, in a block that settles the trade (the seller's TKB goes to the
 # gateway, TKA to the seller, and the funded claim appears), the buyer's claim in a later block (the wrapped TKB, the funded claim gone); then the
-# refused case: the buyer pays less than the trade names, the builder leaves the payment out and nothing moves.
+# refused case: the buyer pays less than the trade names, the builder leaves the payment out and nothing moves; the short payment stays in reth's pool and holds back the buyer's later transactions, so the buyer replaces it (same nonce) before anything else.
 # Needs Docker, Java 21, Rust, Python 3, jq, curl and network access. No GPU.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -185,6 +185,13 @@ set +e; otc claim swap-2 >/dev/null 2>&1; claim_status=$?; set -e
 [ "$claim_status" != 0 ] || fail "the buyer could claim the wrapped TKB of a trade that was never settled"
 
 
+step "the buyer replaces the short payment (it stays in reth's pool and holds back every later transaction of his key)"
+replaced=$(evm replace v); echo "$replaced" | jq -c .
+[ "$(jq '.txs | length' <<<"$replaced")" -ge 1 ] || fail "the short payment was not waiting in the pool: nothing was replaced ($replaced)"
+commit "the block with the replacements"
+is "$(jq -c '.transactions | length' <<<"$OUT")" "$(jq -c '.txs | length' <<<"$replaced")" "the transactions of the block with the replacements"
+is "$(jq -r .legs <<<"$OUT")" 0 "the legs of the block with the replacements"
+
 step "the venue closes the refused trade: its venue trade is archived and the seller has his TKB back"
 closed=$(otc close swap-2); echo "$closed" | jq -c .
 is "$(jq -c .closed <<<"$closed")" '["trade","venueTrade","allocation"]' "what the close of swap-2 ended"
@@ -193,7 +200,7 @@ jq -e '(.tkb.u | add) == 97.5 and (.allocations | index("swap-2") | not)' <<<"$b
 set +e; otc check swap-2 >/dev/null 2>&1; check_status=$?; set -e
 [ "$check_status" != 0 ] || fail "the closed trade swap-2 is still there"
 
-step "a builder that does not trust the venue leaves a full payment out: the allocation is not visible to it"
+step "a builder that does not trust the venue leaves a full payment out: the allocation is not visible to it (the buyer is no longer held back, so his approval goes in)"
 otc offer swap-3 1 "$TOKEN" 2 | jq -c .
 otc accept swap-3 | jq -c .
 otc allocate swap-3 | jq -c .
@@ -207,6 +214,8 @@ is "$(jq -r --arg tx "$full_tx" '[.leftOut[] | select(.transaction == $tx)] | le
 jq -e --arg tx "$full_tx" '.leftOut[] | select(.transaction == $tx) | .reason | contains("its venue is not one the builder trusts")' <<<"$OUT" >/dev/null \
   || fail "the full payment was left out for another reason: $(jq -c .leftOut <<<"$OUT")"
 is "$(jq -r .legs <<<"$OUT")" 0 "the legs of the block without --venue"
+# The buyer's key is not held back (the short payment was replaced), so his approval of swap-3 went in and only the payment was left out.
+is "$(jq -r --arg tx "$(jq -r .approve <<<"$paid3")" '[.transactions[] | select(. == $tx)] | length' <<<"$OUT")" 1 "the approval of swap-3 in the block without --venue"
 otc close swap-3 | jq -c .
 jq -e '(.tkb.u | add) == 97.5' <<<"$(canton balances)" >/dev/null || fail "the seller's TKB is not back to 97.5 after closing swap-3"
 
