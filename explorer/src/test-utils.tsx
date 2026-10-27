@@ -51,6 +51,7 @@ export function block(over: Partial<ApiBlock> = {}): ApiBlock {
       hashesMatch: true, headerHex: "22".repeat(612), txsHex: "33".repeat(181), proofHex: "11".repeat(1344),
     },
     transactions: [{ hash: hash(0xf6), from: addr(0x5a + 1), to: addr(0xcb), success: true, transfer: { symbol: "TKA", decimals: 18, to: TRANSFER_TO, value: "10000000000000000000" } }],
+    legs: [],
     ...over,
   };
 }
@@ -70,7 +71,7 @@ export function tx(over: Partial<ApiTxSeen> = {}): ApiTxSeen {
     gasUsed: 51698, gasPrice: "1670000000", fee: "86335660000000", success: true,
     input: "0xa9059cbb" + "0".repeat(24) + "5a".repeat(20) + "0".repeat(48) + "8ac7230489e80000",
     logs: [{ address: addr(0xcb), topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", "0x" + "0".repeat(24) + "5b".repeat(20), "0x" + "0".repeat(24) + "5a".repeat(20)], data: "0x" + "0".repeat(48) + "8ac7230489e80000" }],
-    transfer, toToken: "TKA", created: null,
+    transfer, toToken: "TKA", created: null, legs: [],
     ...over,
     // The state follows the status unless a test names it.
     state: over.state ?? (over.status === "waiting" ? "pending" : over.status ?? "final"),
@@ -195,7 +196,7 @@ export async function tick(ms = 2000) {
 export function goneTx(over: Partial<ApiTxUnseen> = {}): ApiTxUnseen {
   return {
     hash: hash(0xf7), status: "dropped", state: "dropped", reason: "The chain refused it 5 times in a row: nonce too low.", lifecycle: null, block: null, from: addr(0x5b), to: null, value: null, nonce: 7, type: null, gas: null,
-    gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null,
+    gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null, legs: [],
     ...over,
   };
 }
