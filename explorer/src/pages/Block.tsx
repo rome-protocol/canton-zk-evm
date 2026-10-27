@@ -2,7 +2,7 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getBlock, getBlockDetail, type ApiBlock, type ApiStatus, type BlockRow, type CantonSide } from "../api.ts";
 import { unready } from "../components/Cards.tsx";
-import { BlockLegs, PagedTransactions } from "../components/BlockParts.tsx";
+import { PagedTransactions } from "../components/BlockParts.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { CopyButton, HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
@@ -14,6 +14,7 @@ import { VerifyPanel } from "../verify/VerifyPanel.tsx";
 import { HowFinal, Tiles, timesOf } from "./BlockFinal.tsx";
 import { pinsAt } from "../pins.ts";
 import { Info } from "../components/Info.tsx";
+import { LegsPanel } from "../components/Swap.tsx";
 import { LegsPrivacy } from "./LegParts.tsx";
 import { ProofCard } from "./BlockProof.tsx";
 import { Bad, CantonPanel, EvmSide, Good } from "./BlockSides.tsx";
@@ -126,8 +127,8 @@ export function Block() {
           {b.canton && <ProofCard c={b.canton} pins={st?.pins} block={b.number}><Verify b={b} st={st} /></ProofCard>}
           {!b.canton && <Verify b={b} st={st} />}
           <LegsPrivacy />
+          <LegsPanel title="Settled with this block" info="The deposits, payments, claims and withdrawals this block recorded on the gateway. A swap shows both its sides." legs={b.legs} total={detail.data?.legsCount ?? b.legs.length} block={String(b.number)} />
           {final ? (st && <PagedTransactions id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}
-          {final && <BlockLegs key={b.number} id={String(b.number)} />}
           {b.canton && <RecordData c={b.canton} />}
         </>
       )}

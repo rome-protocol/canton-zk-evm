@@ -8,8 +8,8 @@ import { LEGS_NOT_PUBLIC_THESE, LEGS_NOT_PUBLIC_THIS, LEGS_WHO_SEES } from "../c
 import { count, exact, units } from "../format.ts";
 
 /** The token of a leg, as the token route names it. It reads no balance from reth, so a page of legs costs the database only. Null while unread or when the token cannot be read. */
-export function useLegToken(token: string) {
-  return useQuery({ queryKey: ["token-info", token], queryFn: () => getTokenInfo(token), retry: false, staleTime: 60_000 }).data ?? null;
+export function useLegToken(token: string, enabled = true) {
+  return useQuery({ queryKey: ["token-info", token], queryFn: () => getTokenInfo(token), retry: false, staleTime: 60_000, enabled }).data ?? null;
 }
 
 /** The amount of a leg in whole tokens with the token's decimals; the raw amount, and nothing guessed, when they are not known. */

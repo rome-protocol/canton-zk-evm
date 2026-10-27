@@ -1,0 +1,38 @@
+/* The swap card: the seller's side on Canton, the buyer's on Ostia, and the seal of the one Canton transaction. */
+.sw-card { border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--surface); }
+.sw-sides { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; }
+.sw-side { padding: 18px 20px; min-width: 0; display: flex; flex-direction: column; gap: 4px; border-top: 3px solid transparent; }
+.sw-side.canton { background: var(--canton-tint); border-top-color: var(--canton); }
+.sw-side.evm { background: var(--evm-tint); border-top-color: var(--evm); }
+.sw-role { font-size: 12px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.sw-amt { font-family: "Literata", Georgia, serif; font-size: 30px; line-height: 1.15; letter-spacing: -0.015em; overflow-wrap: anywhere; }
+.sw-amt em { font-style: italic; font-size: .7em; color: var(--muted); }
+.sw-where { font-size: 13px; color: var(--muted); }
+.sw-who { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.sw-mid { display: flex; align-items: center; justify-content: center; width: 0; position: relative; z-index: 1; }
+.sw-knot { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); color: var(--link); box-shadow: var(--shadow); }
+.sw-seal { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 11px 20px; background: var(--ok-tint); border-top: 1px solid var(--ok-line); color: var(--ok); font-size: 13px; font-weight: 500; }
+.sw-seal .ic { vertical-align: -2px; }
+.sw-seal-r { color: var(--ink); font-weight: 400; }
+.sw-card.mini .sw-side { padding: 14px 20px; }
+.sw-card.mini .sw-amt { font-size: 24px; }
+.sw-one + .sw-one, .sw-one + .sw-lines { margin-top: 14px; }
+.sw-one-h { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.sw-lines { list-style: none; margin: 0; padding: 0; }
+.sw-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 9px 0; border-bottom: 1px solid var(--line-2); font-size: 13.5px; }
+.sw-line:last-child { border-bottom: 0; }
+.sw-line .tag { margin-left: 0; }
+.linkish { background: none; border: 0; padding: 0; font: inherit; color: var(--link); cursor: pointer; text-decoration: underline; }
+@media (max-width: 640px) {
+  .sw-sides { grid-template-columns: minmax(0, 1fr); }
+  .sw-mid { width: auto; height: 0; }
+  .sw-amt { font-size: 26px; }
+}
+/* The journey of a swap: the offer, the payment, the claim. */
+.sw-road { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.sw-step { display: flex; gap: 12px; min-width: 0; }
+.sw-step > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 13.5px; }
+.sw-step small { color: var(--muted); font-size: 12px; }
+.sw-dot { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--ok-tint); border: 1px solid var(--ok-line); color: var(--ok); }
+.sw-step.wait .sw-dot { background: transparent; border: 1.5px dashed var(--amber-line); }
+@media (max-width: 720px) { .sw-road { grid-template-columns: minmax(0, 1fr); } }

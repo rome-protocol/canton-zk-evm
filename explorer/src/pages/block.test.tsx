@@ -4,7 +4,7 @@ import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ApiBlock, ApiStatus } from "../api.ts";
-import { addr, block, blockDetail, fakeApi, hash, inFlight, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update, updateDetail } from "../test-utils.tsx";
+import { addr, block, blockDetail, fakeApi, hash, inFlight, NOT_FOUND, page, plainLeg, renderApp, reply, route, status, tick, txItem, update, updateDetail } from "../test-utils.tsx";
 
 const LEGS = "Daml legs settled with this block are not shown to the public.";
 const LEGS_WHO = "Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
@@ -290,21 +290,18 @@ describe("the block page, for a final block", () => {
     expect(await within(screen.getByRole("region", { name: "Transactions" })).findByText("No transactions in this block.")).toBeInTheDocument();
   });
 
-  it("lists the gateway legs the block recorded, and shows nothing when it recorded none", async () => {
-    await open(block(), status(), "3", { blockLegs: () => reply(page([{ legIndex: 0, txIndex: 0, logIndex: 1, kind: "Deposit", legId: hash(0x1e), token: addr(0xcb), account: addr(0x5b), amount: "250" }])) });
-    const legs = within(await screen.findByRole("region", { name: "Gateway legs" }));
-    const r = legs.getAllByRole("row")[1]!;
-    expect(r).toHaveTextContent("Deposit");
-    expect(within(r).getByRole("link", { name: "0xcbcb…cbcb" })).toHaveAttribute("href", `/token/${addr(0xcb)}`);
-    expect(r).toHaveTextContent("250");
-    expect(within(r).getByRole("link", { name: "0" })).toHaveAttribute("href", `/leg/${hash(0x1e)}`);
-    expect(within(await screen.findByRole("region", { name: "Gateway legs" })).getByRole("link", { name: "All gateway legs" })).toHaveAttribute("href", "/legs");
+  it("lists the legs the block recorded in a panel, and shows nothing when it recorded none", async () => {
+    await open(block({ legs: [plainLeg({ legIndex: 0, kind: "deposit", legId: hash(0x1e), token: addr(0xcb), account: addr(0x5b), amount: "250" })] }));
+    const line = within(await screen.findByRole("region", { name: "Settled with this block" })).getByRole("listitem");
+    expect(line).toHaveTextContent("Deposit");
+    expect(within(line).getByRole("link", { name: "0x5b5b…5b5b" })).toHaveAttribute("href", `/address/${addr(0x5b)}`);
+    expect(within(line).getByRole("link", { name: "Leg 0" })).toHaveAttribute("href", `/leg/${hash(0x1e)}`);
   });
 
   it("has no legs section for a block with none", async () => {
     await open();
     await screen.findByRole("region", { name: "Transactions" });
-    expect(screen.queryByRole("region", { name: "Gateway legs" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Settled with this block" })).toBeNull();
   });
 
   it("lists the transactions a block being proven holds, as the block's own answer gives them, and says when a transaction failed, is not known, or created a contract", async () => {

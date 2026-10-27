@@ -22,6 +22,7 @@ import { InternalTab } from "./TxCalls.tsx";
 import { Panel, Tabs, type TabId, type TabSpec } from "./TxTabs.tsx";
 import { RawTab, TreeTab } from "./TxTrace.tsx";
 import { AmountCell, TransfersCard } from "./TxTransfers.tsx";
+import { LegsPanel } from "../components/Swap.tsx";
 import "./tx.css";
 
 const TYPES: Record<number, string> = { 0: "legacy", 1: "EIP-2930", 2: "EIP-1559", 3: "EIP-4844", 4: "EIP-7702" };
@@ -319,6 +320,7 @@ function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin |
   // The transfers and the input are full-width cards under the facts and the side cards, as on the screen; on a phone they follow the Canton record and the proof.
   const below = (
     <>
+      <LegsPanel title="Canton side" info="The gateway legs this transaction caused. A payment that settled a swap shows both sides of the swap." legs={t.legs} total={t.legs.length} payer={t.from} />
       {final && <TransfersCard hash={t.hash} />}
       {t.status !== "waiting" && <InputCard t={t} />}
     </>
