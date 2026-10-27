@@ -93,11 +93,13 @@ explorer/
     further material, including Unicode-3.0 data in core, so the standard library and what it is built
     with are not only MIT or Apache-2.0. Their notices apply where the file is redistributed.
 
-    IBM Plex Sans, IBM Plex Serif and IBM Plex Mono, in explorer/public/fonts/: the Latin subsets as packaged by
-    Fontsource (https://fontsource.org), copyright IBM Corp. Licensed under the SIL Open Font
-    License 1.1. The licence texts are in OFL-IBM-Plex-Sans.txt, OFL-IBM-Plex-Serif.txt and OFL-IBM-Plex-Mono.txt, next to the
-    font files, and the explorer serves them with the fonts. The explorer serves the fonts itself and
-    loads no font from another host.
+    Literata, DM Sans and IBM Plex Mono, in explorer/public/fonts/: the Latin subsets as packaged by
+    Fontsource (https://fontsource.org). Copyright 2017 The Literata Project Authors
+    (https://github.com/googlefonts/literata); copyright 2014 The DM Sans Project Authors
+    (https://github.com/googlefonts/dm-fonts); copyright 2017 IBM Corp. All rights reserved. All three are
+    licensed under the SIL Open Font License 1.1. The licence texts are in OFL-Literata.txt, OFL-DM-Sans.txt and
+    OFL-IBM-Plex-Mono.txt, next to the font files, and the explorer serves them with the fonts. The explorer
+    serves the fonts itself and loads no font from another host.
 
 Other Rust crates are pinned in the Cargo.lock files in this repository (prover/make-input starts from
 zisk-eth-client's own lockfile; see prover/make-input/Cargo.toml), and keep their own licences.
