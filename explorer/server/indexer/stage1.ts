@@ -81,23 +81,33 @@ export async function setReaderCursor(c: PoolClient, offset: number, participant
   );
 }
 
-/** The id of a row in a dictionary table, adding the row when it is not there. These rows are shared and never counted, so `ON CONFLICT DO NOTHING` is right. */
-async function dictionary(c: PoolClient, table: string, find: string, insert: string, values: unknown[]): Promise<number> {
-  const found = await c.query(`with ins as (${insert} on conflict do nothing returning id) select id from ins union all select id from ${table} where ${find} limit 1`, values);
-  return found.rows[0].id as number;
+/**
+ * The id of a row in a dictionary table, adding the row when it is not there. An identity column takes its next value before the conflict check,
+ * so an insert that finds the row already there still spends an id: the row is looked up first, and inserted only when it is new. The
+ * `ON CONFLICT DO NOTHING` stays for two indexers that add the same value at once; the lookup after it finds the winner's row.
+ */
+export async function dictionary(c: PoolClient, table: string, find: string, keys: unknown[], insert: string, values: unknown[]): Promise<number> {
+  const select = `select id from ${table} where ${find}`;
+  // `keys` are the values the lookup names; the insert may carry more (a role, an offset).
+  const known = await c.query(select, keys);
+  if (known.rows[0]) return known.rows[0].id as number;
+  await c.query(`${insert} on conflict do nothing`, values);
+  const added = await c.query(select, keys);
+  if (!added.rows[0]) throw new Error(`${table}: the row for ${JSON.stringify(keys)} was neither found nor added (an id may already be taken; the next attempt moves past it)`);
+  return added.rows[0].id as number;
 }
 
 async function writeCanton(c: PoolClient, i: Stage1Input): Promise<{ updateId: string }> {
   const r = i.record;
-  const sync = await dictionary(c, "canton_synchronizers", "synchronizer_id = $1", "insert into canton_synchronizers (synchronizer_id, first_seen) values ($1, now())", [r.synchronizerId]);
-  const template = await dictionary(c, "canton_templates", "package_id = $1 and module = $2 and entity = $3",
+  const sync = await dictionary(c, "canton_synchronizers", "synchronizer_id = $1", [r.synchronizerId], "insert into canton_synchronizers (synchronizer_id, first_seen) values ($1, now())", [r.synchronizerId]);
+  const template = await dictionary(c, "canton_templates", "package_id = $1 and module = $2 and entity = $3", [r.template.packageId, r.template.module, r.template.entity],
     "insert into canton_templates (package_id, module, entity) values ($1, $2, $3)", [r.template.packageId, r.template.module, r.template.entity]);
-  const participant = await dictionary(c, "canton_participants", "participant_id = $1",
+  const participant = await dictionary(c, "canton_participants", "participant_id = $1", [i.participantId],
     "insert into canton_participants (participant_id, first_offset, moved_in_at) values ($1, $2, now())", [i.participantId, i.startOffset]);
   const roles = new Map<string, string>([[r.operator, "operator"], [r.confirmer, "confirmer"]]);
   const parties: number[] = [];
   for (const signer of r.signatories) {
-    parties.push(await dictionary(c, "canton_parties", "party = $1", "insert into canton_parties (party, role) values ($1, $2)", [signer, roles.get(signer)]));
+    parties.push(await dictionary(c, "canton_parties", "party = $1", [signer], "insert into canton_parties (party, role) values ($1, $2)", [signer, roles.get(signer)]));
   }
   await c.query(
     `insert into canton_updates (update_id, participant, reader_offset, record_time, effective_at, synchronizer, reader_template, signatories)

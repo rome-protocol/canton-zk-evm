@@ -6,6 +6,7 @@ import { CHAIN_ID, GATEWAY, PINS, makeChain, type BlockShape, type SyntheticChai
 import { RethError } from "../reth.ts";
 import { createIndexer, type DeriveShape, type Indexer, type Timing } from "./indexer.ts";
 import { reindexRange } from "./reindex.ts";
+import { dictionary } from "./stage1.ts";
 
 // Every indexer a test opens is closed when the test ends, pass or fail: an open one holds the advisory lock, and the database cannot be dropped
 // until it is released, so a failed assertion would otherwise end as a timeout with its message lost.
@@ -60,6 +61,37 @@ describe.skipIf(!TEST_URL)("the indexer's write path, on the pinned PostgreSQL",
       for (const id of ["C1", "C2", "C3", "C7"]) expect((await health(pool, id)).status).toBe("ok");
       const b = (await pool.query("select tx_count, log_count, legs_count, encode(legs_hash, 'hex') as lh from blocks where number = 2")).rows[0];
       expect(b).toMatchObject({ tx_count: 10, legs_count: 1, lh: (chain.blocks[1]!.legsHash as string).slice(2), log_count: logsOf(chain, 1) });
+      await indexer.close();
+    });
+  });
+
+  it("spends a dictionary id only on a new value, not on every block", async () => {
+    await inDb(async (pool) => {
+      const used = async () => {
+        const out: Record<string, string> = {};
+        for (const t of ["canton_synchronizers", "canton_templates", "canton_participants", "canton_parties"]) {
+          out[t] = (await pool.query(`select last_value from ${t}_id_seq`)).rows[0].last_value;
+        }
+        return out;
+      };
+      const { indexer } = await setup(pool, [{ txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }, { txs: 1 }]);
+      // Five blocks share one synchronizer, template, participant and pair of parties: each took one id, once.
+      await indexer.runOnce();
+      expect(await count(pool, "canton_updates")).toBe(5);
+      const first = await used();
+      expect(first).toEqual({ canton_synchronizers: "1", canton_templates: "1", canton_participants: "1", canton_parties: "2" });
+      // Reading them again moves no sequence.
+      await pool.query("update cursors set position = 0, detail = null where stream = 'reader_updates'");
+      await indexer.runOnce();
+      expect(await used()).toEqual(first);
+      // A new value still gets the next id.
+      const c = await pool.connect();
+      try {
+        const id = await dictionary(c, "canton_parties", "party = $1", ["other::1220" + "ab".repeat(32)], "insert into canton_parties (party, role) values ($1, $2)", ["other::1220" + "ab".repeat(32), "operator"]);
+        expect(id).toBe(3);
+        expect(await dictionary(c, "canton_parties", "party = $1", ["other::1220" + "ab".repeat(32)], "insert into canton_parties (party, role) values ($1, $2)", ["other::1220" + "ab".repeat(32), "operator"])).toBe(3);
+      } finally { c.release(); }
+      expect((await used()).canton_parties).toBe("3");
       await indexer.close();
     });
   });

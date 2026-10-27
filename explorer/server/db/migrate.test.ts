@@ -111,3 +111,29 @@ describe.skipIf(!TEST_URL)("the migration runner, on the pinned PostgreSQL", () 
     });
   });
 });
+
+describe.skipIf(!TEST_URL)("the migration that gives back the dictionary ids", () => {
+  checkRequired();
+  const TABLES = ["canton_synchronizers", "canton_templates", "canton_parties", "canton_participants"];
+  const RESTART = loadMigrations().find((m) => m.name.includes("dictionary_id_restart"))!;
+  const next = async (pool: import("pg").Pool, t: string) => Number((await pool.query(`select nextval(pg_get_serial_sequence('${t}', 'id')) as n`)).rows[0].n);
+
+  it("restarts a sequence that burned its ids just above the highest id in use, and does nothing when run again", async () => {
+    await withDatabase(async (pool) => {
+      await migrate(pool);
+      await pool.query("insert into canton_synchronizers (synchronizer_id, first_seen) values ('s', now())");
+      await pool.query("insert into canton_parties (party, role) values ('a', 'operator'), ('b', 'confirmer')");
+      // Burn ids the way the old insert did: an id taken with no row added.
+      for (let i = 0; i < 500; i++) await next(pool, "canton_parties");
+      await pool.query("select setval(pg_get_serial_sequence('canton_templates', 'id'), 300)");
+      await pool.query(RESTART.sql);
+      await pool.query(RESTART.sql);
+      expect(await next(pool, "canton_parties")).toBe(3);
+      expect(await next(pool, "canton_synchronizers")).toBe(2);
+      // An empty table starts again at 1, whatever its sequence had reached.
+      expect(await next(pool, "canton_templates")).toBe(1);
+      expect(await next(pool, "canton_participants")).toBe(1);
+      for (const t of TABLES) expect(Number((await pool.query(`select count(*) as n from ${t}`)).rows[0].n)).toBeLessThanOrEqual(2);
+    });
+  });
+});

@@ -430,6 +430,29 @@ describe.skipIf(!TEST_URL)("review fixes: a walk that cannot read, the checks wi
     });
   });
 
+  it("checkOnce writes the db_ids row, and a failed read of the id columns leaves the other rows written", async () => {
+    await inDb(async (pool) => {
+      const chain = makeChain(shapes(2));
+      const ix = await start(pool, chain);
+      await ix.runOnce();
+      await pool.query("delete from health_checks where check_id in ('C4', 'C5', 'derive_lag', 'db_ids')");
+      await ix.checkOnce();
+      const ids = await row(pool, "db_ids");
+      expect(ids.status).toBe("ok");
+      expect((ids.value as { counted: number }).counted).toBeGreaterThan(3);
+      // A role that cannot read a sequence: the catalog query fails, db_ids is degraded, and the other rows are still there.
+      await pool.query("delete from health_checks where check_id in ('C4', 'C5', 'derive_lag', 'db_ids')");
+      const query = pool.query.bind(pool);
+      (pool as unknown as { query: unknown }).query = (text: unknown, ...rest: unknown[]) =>
+        typeof text === "string" && text.includes("pg_sequence_last_value") ? Promise.reject(new Error("permission denied")) : (query as (...a: unknown[]) => unknown)(text, ...rest);
+      await ix.checkOnce();
+      expect(await row(pool, "db_ids")).toMatchObject({ status: "degraded" });
+      expect((await row(pool, "db_ids")).detail).toContain("permission denied");
+      expect((await row(pool, "C5")).status).toBe("ok");
+      expect((await row(pool, "derive_lag")).status).toBe("ok");
+    });
+  });
+
   it("C10's checked_at moves with every look while its status stays, and clear-check sets it ok and says who", async () => {
     await inDb(async (pool) => {
       const chain = makeChain([{ txs: 1, leg: 1 }, { txs: 1 }]);

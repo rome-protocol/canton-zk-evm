@@ -40,6 +40,8 @@ const SPECS: Record<string, CheckSpec> = {
   derive_lag: { ...ROUND, stale: "down" }, C10: { ...ROUND, stale: "down" },
   C6: { role: "indexer", worst: "degraded", intervalSeconds: 600, stale: "degraded" },
   C8: { ...ROUND, intervalSeconds: 10 }, C9: ROUND,
+  // The id columns: down above 90% of a type's range, and stale rows only degrade, as the check is a warning ahead of the failure.
+  db_ids: { role: "indexer", worst: "down", intervalSeconds: INDEXER_ROUND, stale: "degraded" },
   producer_alive: ROUND, producer_state: ROUND, prover: ROUND,
   journal: { role: "indexer", worst: "degraded" }, reth_reads: { role: "indexer", worst: "degraded" },
   // The shared rows of the API: the instance that holds the faucet's or the tracker's lock writes them.
