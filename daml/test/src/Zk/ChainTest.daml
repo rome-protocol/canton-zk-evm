@@ -1624,3 +1624,255 @@ testALimitsProposalNeedsTheCurrentContractAndItsChain = do
   submitMustFail f.confirmer $ exerciseCmd p AcceptLegLimits with chain = other
   _ <- submit f.confirmer $ exerciseCmd p AcceptLegLimits with chain = f.chain
   submitMustFail f.confirmer $ exerciseCmd p AcceptLegLimits with chain = f.chain
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- From package 0.4.0: a venue's trade, settled by a proven EVM payment, and the funded claim it leaves for the EVM buyer.
+
+tradeLabel : Text
+tradeLabel = "trade-1"
+
+-- A party that is a venue: it signs trades and is the executor of the allocations they name.
+makeVenue : Script Party
+makeVenue = allocateParty "Venue"
+
+-- The builder's submission when a venue's contracts are in the block.
+asBuilderV : F -> Party -> SubmitOptions
+asBuilderV f venue = asBuilder f <> readAs [venue]
+
+-- U allocates 10 of `inst` to `receiver` (executor `exec`). The venue's trade names that allocation, and `modify` changes what the trade says.
+makeTradeOf : F -> Party -> Party -> Party -> Text -> (VenueTrade -> VenueTrade) -> Script (ContractId VenueTrade)
+makeTradeOf f venue exec receiver inst modify = do
+  let pid = venueTradeId venue tradeLabel
+  allocation <- allocate f.reg f.u receiver exec inst 10.0 pid
+  submit venue $ createCmd (modify VenueTrade with
+    venue; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    label = tradeLabel; payId = pid; token = tokenAddr; payee = uAddr; amount = tenTokens
+    allocation; allocationDisclosed = None; gatewayToken = f.token; claimId = venueClaimId pid; recipient = recipientAddr)
+
+-- The honest trade: U's 10 TKB go to the gateway, with the venue as executor.
+makeTrade : F -> Party -> Script (ContractId VenueTrade)
+makeTrade f venue = makeTradeOf f venue venue f.gateway "TKB" identity
+
+tradeLeg : ContractId VenueTrade -> Leg
+tradeLeg c = TradeLeg with tradeCid = c
+
+claimLegOf : F -> ContractId FundedClaim -> Leg
+claimLegOf f c = ClaimLeg with claimCid = c; tokenCid = f.token
+
+tradeLine : Text -> Text
+tradeLine pid = line "payment" pid tokenAddr uAddr tenTokens ""
+
+claimLine : Text -> Text
+claimLine cid = line "deposit" cid wTkb recipientAddr "10.0" ""
+
+-- A funded claim made directly by its signatories (and the parties a test names in their place), for the tests of the claim leg.
+makeClaim : F -> (FundedClaim -> FundedClaim) -> Script (ContractId FundedClaim)
+makeClaim f modify = submit (actAs [f.operator, f.confirmer, f.gateway, f.builder, f.v]) $ createCmd (modify FundedClaim with
+  operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+  claimId = venueClaimId (venueTradeId f.u tradeLabel); recipient = recipientAddr; gatewayToken = f.token; amount = 10.0)
+
+-- A trade block the chain must refuse: the chain is at its genesis, the trade stands, and the gateway holds nothing.
+refusedTrade : Text -> F -> Party -> ContractId VenueTrade -> Script ()
+refusedTrade why f venue trade = do
+  refusedAs why f (asBuilderV f venue) $ advance f.chain "01" [tradeLine (venueTradeId venue tradeLabel)] [tradeLeg trade]
+  Some _ <- queryContractId venue trade
+  holds f.gateway "TKB" >>= \xs -> xs === []
+  query @FundedClaim f.gateway >>= \cs -> length cs === 0
+
+-- A trade: the allocation to the gateway is executed, so the gateway holds U's 10 TKB, and a funded claim of that amount stands.
+testATradeSettlesAndFundsAClaim : Script ()
+testATradeSettlesAndFundsAClaim = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  let pid = venueTradeId venue tradeLabel
+  (_, _) <- submit (asBuilderV f venue) $ advance f.chain "01" [tradeLine pid] [tradeLeg trade]
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+  holds f.u "TKB" >>= \xs -> xs === []
+  None <- queryContractId venue trade             -- the trade is used up
+  [(_, c)] <- query @FundedClaim f.gateway
+  (c.claimId, c.recipient, c.amount, c.gatewayToken) === (venueClaimId pid, recipientAddr, 10.0, f.token)
+  [(_, z)] <- query @ZkChain f.operator
+  z.headNumber === 1
+
+-- The whole trip: block 1 settles the trade, block 2 redeems the claim it made. Both blocks go through `Advance` with the stub.
+testATradeThenItsClaimSettleInTwoBlocks : Script ()
+testATradeThenItsClaimSettleInTwoBlocks = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  let pid = venueTradeId venue tradeLabel
+  (c1, _) <- submit (asBuilderV f venue) $ advance f.chain "01" [tradeLine pid] [tradeLeg trade]
+  [(claim, _)] <- query @FundedClaim f.gateway
+  (_, _) <- submit (asBuilderV f venue) $ advance c1 "11" [claimLine (venueClaimId pid)] [claimLegOf f claim]
+  None <- queryContractId f.gateway claim         -- redeemed: nothing is left to redeem twice
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]  -- the Canton token stays in the gateway's custody
+  [(_, z)] <- query @ZkChain f.operator
+  (z.headNumber, z.headHash) === (2, stubHash2)
+
+testATradeLegWithTheWrongExecutorIsRefused : Script ()
+testATradeLegWithTheWrongExecutorIsRefused = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTradeOf f venue f.operator f.gateway "TKB" identity
+  refusedTrade "the allocation's executor is not the venue" f venue trade
+
+testATradeLegWhoseReceiverIsNotTheGatewayIsRefused : Script ()
+testATradeLegWhoseReceiverIsNotTheGatewayIsRefused = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTradeOf f venue venue f.v "TKB" identity
+  refusedTrade "the allocation's receiver is not the gateway" f venue trade
+
+testATradeLegOfAnotherInstrumentThanTheTokensIsRefused : Script ()
+testATradeLegOfAnotherInstrumentThanTheTokensIsRefused = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTradeOf f venue venue f.gateway "TKA" identity
+  refusedTrade "the allocation is of another instrument than the token's" f venue trade
+
+testATradeOfAnotherChainOperatorConfirmerOrGatewayIsRefused : Script ()
+testATradeOfAnotherChainOperatorConfirmerOrGatewayIsRefused = do
+  f <- fixture
+  venue <- makeVenue
+  t1 <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with chainId = 770102)
+  refusedTrade "the venue trade is for another chain" f venue t1
+  t2 <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with operator = f.builder)
+  refusedTrade "the venue trade names another operator than the chain's" f venue t2
+  t3 <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with confirmer = f.builder)
+  refusedTrade "the venue trade names another confirmer than the chain's" f venue t3
+  t4 <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with gateway = f.v)
+  refusedTrade "the venue trade names another gateway than the chain's" f venue t4
+
+-- The trade's own `ensure`: the ids are derived from the venue and the label, and the rest is well formed.
+testATradeNeedsItsIdsFromTheVenueAndTheLabel : Script ()
+testATradeNeedsItsIdsFromTheVenueAndTheLabel = do
+  f <- fixture
+  venue <- makeVenue
+  let pid = venueTradeId venue tradeLabel
+  allocation <- allocate f.reg f.u venue venue "TKB" 10.0 pid
+  let mk modify = submitMustFail venue $ createCmd (modify VenueTrade with
+        venue; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+        label = tradeLabel; payId = pid; token = tokenAddr; payee = uAddr; amount = tenTokens
+        allocation; allocationDisclosed = None; gatewayToken = f.token; claimId = venueClaimId pid; recipient = recipientAddr)
+  mk (\t -> t with payId = idOf "99")                                   -- not derived from venue and label
+  mk (\t -> t with label = "trade-2")                                   -- the label is not the one the id was made from
+  mk (\t -> t with payId = paymentId venue f.v tradeLabel)              -- the id of terms between two parties
+  mk (\t -> t with payId = T.sha256 (T.intercalate "," [partyToText venue, tradeLabel]))   -- without the domain tag
+  mk (\t -> t with claimId = idOf "99")                                 -- not derived from the payId
+  mk (\t -> t with claimId = pid)
+  mk (\t -> t with token = "11")
+  mk (\t -> t with payee = mconcat (replicate 20 "AB"))                       -- hex, but not lowercase
+  mk (\t -> t with recipient = idOf "44")                               -- 64 digits, not 40
+  mk (\t -> t with amount = "10")
+  mk (\t -> t with amount = mconcat (replicate 64 "0"))
+  mk (\t -> t with chainId = 0)
+  pure ()
+
+-- A claim block the chain must refuse. The claim is still there afterwards, and the chain is at its genesis.
+refusedClaim : Text -> F -> Text -> [Leg] -> ContractId FundedClaim -> Script ()
+refusedClaim why f recorded legs claim = do
+  refusedAs why f (asBuilder f) $ advance f.chain "01" [recorded] legs
+  Some _ <- queryContractId f.gateway claim
+  pure ()
+
+testAClaimLegSettlesAndNamesTheDepositLine : Script ()
+testAClaimLegSettlesAndNamesTheDepositLine = do
+  f <- fixture
+  claim <- makeClaim f identity
+  let cid = venueClaimId (venueTradeId f.u tradeLabel)
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [claimLine cid] [claimLegOf f claim]
+  None <- queryContractId f.gateway claim
+  -- it is exactly the line of a deposit of the same id, token, recipient and amount
+  claimLine cid === depositLine cid
+
+testAClaimLegOfAnotherChainOperatorConfirmerGatewayOrTokenIsRefused : Script ()
+testAClaimLegOfAnotherChainOperatorConfirmerGatewayOrTokenIsRefused = do
+  f <- fixture
+  let cid = venueClaimId (venueTradeId f.u tradeLabel)
+  c1 <- makeClaim f (\c -> c with chainId = 770102)
+  refusedClaim "the funded claim is for another chain" f (claimLine cid) [claimLegOf f c1] c1
+  c2 <- makeClaim f (\c -> c with operator = f.builder)
+  refusedClaim "the funded claim names another operator than the chain's" f (claimLine cid) [claimLegOf f c2] c2
+  c3 <- makeClaim f (\c -> c with confirmer = f.builder)
+  refusedClaim "the funded claim names another confirmer than the chain's" f (claimLine cid) [claimLegOf f c3] c3
+  c4 <- makeClaim f (\c -> c with gateway = f.v)
+  refusedClaim "the funded claim names another gateway than the chain's" f (claimLine cid) [claimLegOf f c4] c4
+  -- a claim of one token cannot be redeemed with another registered token of the chain
+  other <- makeTokenOf "TKA" f.operator f.confirmer f.gateway f.builder 770101 f.reg (mconcat (replicate 20 "66"))
+  c5 <- makeClaim f identity
+  refusedClaim "the funded claim is for another token than the leg's" f (claimLine cid) [ClaimLeg with claimCid = c5; tokenCid = other] c5
+
+-- What the claim leg writes is the claim's own: a block that recorded another recipient, amount or id is not this one.
+testAClaimLegIsHeldToWhatTheBlockRecorded : Script ()
+testAClaimLegIsHeldToWhatTheBlockRecorded = do
+  f <- fixture
+  claim <- makeClaim f identity
+  let cid = venueClaimId (venueTradeId f.u tradeLabel)
+  refusedClaim notRecorded f (line "deposit" cid wTkb recipientAddr "9.0" "") [claimLegOf f claim] claim
+  refusedClaim notRecorded f (line "deposit" cid wTkb uAddr "10.0" "") [claimLegOf f claim] claim
+  refusedClaim notRecorded f (line "deposit" (idOf "99") wTkb recipientAddr "10.0" "") [claimLegOf f claim] claim
+  refusedClaim notRecorded f (line "payment" cid wTkb recipientAddr "10.0" "") [claimLegOf f claim] claim
+
+-- The same for the trade's payment line.
+testATradeLegIsHeldToWhatTheBlockRecorded : Script ()
+testATradeLegIsHeldToWhatTheBlockRecorded = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  let pid = venueTradeId venue tradeLabel
+  refusedAs notRecorded f (asBuilderV f venue) $ advance f.chain "01" [line "payment" pid tokenAddr uAddr fiveTokens ""] [tradeLeg trade]
+  refusedAs notRecorded f (asBuilderV f venue) $ advance f.chain "01" [line "payment" (idOf "99") tokenAddr uAddr tenTokens ""] [tradeLeg trade]
+  refusedAs notRecorded f (asBuilderV f venue) $ advance f.chain "01" [] [tradeLeg trade]
+  Some _ <- queryContractId venue trade
+  pure ()
+
+-- A claim is redeemed once, and only with the authority that `Advance` brings.
+testAClaimIsRedeemedOnce : Script ()
+testAClaimIsRedeemedOnce = do
+  f <- fixture
+  claim <- makeClaim f identity
+  submitMustFail f.builder $ exerciseCmd claim Redeem
+  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd claim Redeem
+  submit (actAs [f.operator, f.confirmer, f.gateway]) $ exerciseCmd claim Redeem
+  submitMustFail (actAs [f.operator, f.confirmer, f.gateway]) $ exerciseCmd claim Redeem
+  pure ()
+
+-- A trade cannot be settled outside `Advance` either, nor twice.
+testATradeIsSettledOnceAndOnlyInAdvance : Script ()
+testATradeIsSettledOnceAndOnlyInAdvance = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  submitMustFail (actAs f.builder <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade
+  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd trade SettleTrade
+  _ <- submit (actAs [f.operator, f.confirmer, f.gateway] <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade
+  submitMustFail (actAs [f.operator, f.confirmer, f.gateway] <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade
+  holds f.gateway "TKB" >>= \xs -> xs === [10.0]
+
+-- While the legs are paused a trade leg and a claim leg are refused like any other.
+testAPausedChainRefusesTradeAndClaimLegs : Script ()
+testAPausedChainRefusesTradeAndClaimLegs = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  claim <- makeClaim f identity
+  chain <- submit f.confirmer $ exerciseCmd f.chain PauseLegs
+  let pid = venueTradeId venue tradeLabel
+  refusedAs paused f (asBuilderV f venue) $ advance chain "01" [tradeLine pid] [tradeLeg trade]
+  refusedAs paused f (asBuilderV f venue) $ advance chain "01" [claimLine (venueClaimId (venueTradeId f.u tradeLabel))] [claimLegOf f claim]
+  holds f.gateway "TKB" >>= \xs -> xs === []
+
+-- Neither is a withdrawal: a chain whose quota is smaller than the trade does not count it.
+testTradeAndClaimLegsAreNotCountedAgainstTheWithdrawalQuota : Script ()
+testTradeAndClaimLegsAreNotCountedAgainstTheWithdrawalQuota = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTrade f venue
+  chain <- setLimits f f.chain (Some 1.0) (Some (seconds 100)) None
+  let pid = venueTradeId venue tradeLabel
+  (c1, _) <- submit (asBuilderV f venue) $ advance chain "01" [tradeLine pid] [tradeLeg trade]
+  [(claim, _)] <- query @FundedClaim f.gateway
+  (c2, _) <- submit (asBuilderV f venue) $ advance c1 "11" [claimLine (venueClaimId pid)] [claimLegOf f claim]
+  Some z <- queryContractId f.operator c2
+  z.withdrawn === Some []
