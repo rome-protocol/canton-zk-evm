@@ -574,6 +574,7 @@ Some tests need something the machine may not have, and are skipped without it:
 | Docker and the pinned sandbox image | `EXPLORER_TEST_REQUIRE_SANDBOX=1` makes a missing Docker a failure | The verifier's sandbox, for real: a compile in a container with no network, a memory limit and a time limit |
 | Canton's OpenAPI document | `CANTON_OPENAPI`, a JSON copy of it | The explorer's Ledger API requests, field for field, against what Canton says it takes |
 | A running explorer and chain | `EXPLORER_URL`, `RUN1_FILE`; for the ethers checks also `CHAIN_ID`, `ETHERSCAN_ADDRESS`, `ETHERSCAN_BALANCE` and `ETHERSCAN_TX` | `e2e/running.test.tsx` and `e2e/etherscan.test.ts`. `tests/demo_rehearsal.sh` sets them |
+| A built explorer and a browser | `BASE` (the explorer's address); `BLOCK`, `TX` and `TOKEN` to add a block, a transaction and a token page | `node e2e/layout-check.mjs`, which needs `playwright-core` and a Chromium: opens every small i on the pages at 390, 1280 and 1440 px and checks that its note sits inside the screen and closes on a second tap and on Escape, and that the header's links share one row at 1280, 1366 and 1440 px |
 
 For example, with a PostgreSQL on the loopback:
 
