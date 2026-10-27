@@ -78,7 +78,19 @@ describe("the stats page", () => {
     await open("/stats", { summary: () => reply(summary({ txs: { count: 5899, failed: 16, reverted: 16, successRate: 5900 / 5903, accepted: 5903, acceptedFinal: 5900, lost: 2, droppedByChain: 1, delayedByRedo: 0, allTime: { total: 6021, asOfBlock: 901, asOf: "2026-10-15T14:07:00.000Z" } } })) });
     const txs = await tile("Transactions");
     expect(txs).toHaveTextContent("5,899 6,021 since launch");
+    // the note sits next to a nine-digit number on a phone, so it must be able to wrap
+    expect(txs.querySelector(".stat-v small")).toHaveTextContent("6,021 since launch");
+    expect(txs.querySelector(".stat-v small.hl")).toBeNull();
     expect(within(txs).getByRole("tooltip")).toHaveTextContent("6,021 final all time, as of block 901; runs marked as tests are counted.");
+  });
+
+  it("keeps a time with its unit and its p95 whole", async () => {
+    await open();
+    // a time never splits '22.3' from 's', and the space before p95 is outside the nowrap run
+    const ttf = await tile("Time to final");
+    expect(ttf.querySelector(".stat-v > .hl")).toHaveTextContent(/^8\.4 s$/);
+    expect(ttf.querySelector(".stat-v small > .hl")).toHaveTextContent(/^p95 80\.6 s$/);
+    expect(ttf.querySelector(".stat-v")!.textContent).toMatch(/^8\.4 s p95 80\.6 s$/);
   });
 
   it("says the all-time total is not counted yet, never 0, when the server cannot say", async () => {

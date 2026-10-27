@@ -66,7 +66,7 @@ const ago = (iso: string) => `${iso.slice(11, 16)}\u00a0UTC`;
 /** A time from a summary: the middle and the 95th percentile, "8.5 s p95 8.7 s", or a dash and why. */
 export function Time({ icon, label, note, s, read, foot, none, info }: { icon: IconName; label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string; info?: ReactNode }) {
   if (s === undefined) return <Stat icon={icon} label={label} note={note} info={info} foot={DASH_WHY(read)}>—</Stat>;
-  return <Stat icon={icon} label={label} note={note} info={info} foot={s ? foot : none}>{s ? <>{sec(s.median)} <small className="hl">p95 {sec(s.p95)}</small></> : "—"}</Stat>;
+  return <Stat icon={icon} label={label} note={note} info={info} foot={s ? foot : none}>{s ? <><span className="hl">{sec(s.median)}</span> <small className="hl">p95 {sec(s.p95)}</small></> : "—"}</Stat>;
 }
 
 /**
@@ -87,7 +87,7 @@ export function Stats({ summary: s, flight = "ok", hour, day, spark }: { summary
       <Time icon="shield" label="Proof time" note="last hour" s={hr(h?.proofTime)} read={hour.read} info={`Proved with ZisK, ${plural(h?.proofTime?.samples ?? 0, "block")} in the last hour.`} foot="one proof per block" none="no block in the last hour" />
       <Time icon="link" label="Canton commit time" note="last hour" s={hr(h?.commitTime)} read={hour.read} info="From the block being sent to Canton to Canton's record time." foot="sent → recorded" none="no block in the last hour" />
       {d ? (
-        <Stat icon="bolt" label="Transactions per second" info={peak ? `Peak is the busiest minute in 24 h${peak.peak! < 1 ? ` (${peakCount(peak.peak!)})` : ""}, at ${ago(peak.peakAt!)}.` : undefined} foot={peak ? undefined : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now{peak && <> · <span className="hl"><b>peak {rateShort(peak.peak!)}</b> ({ago(peak.peakAt!)})</span></>}</small></Stat>
+        <Stat icon="bolt" label="Transactions per second" info={peak ? `Peak is the busiest minute in 24 h${peak.peak! < 1 ? ` (${peakCount(peak.peak!)})` : ""}, at ${ago(peak.peakAt!)}.` : undefined} foot={peak ? undefined : "no transaction in 24 h"}>{trim(d.tps.now, 2)} <small>now</small>{peak && <> <small className="hl stat-peak"><b>peak {rateShort(peak.peak!)}</b> ({ago(peak.peakAt!)})</small></>}</Stat>
       ) : <Stat icon="bolt" label="Transactions per second" foot={noDay}>—</Stat>}
       {d ? (
         <Stat icon="doc" label="Transactions" note="24 h" info={<SinceLaunchNote t={d.txs.allTime} blocks={d.blocks.count} />} foot={<SinceLaunch t={d.txs.allTime} blocks={d.blocks.count} />}>{count(d.txs.count)}</Stat>

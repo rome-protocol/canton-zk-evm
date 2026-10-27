@@ -38,9 +38,9 @@ function Later({ a, later }: { a: InFlightAttempt; later: InFlightTx[] }) {
   const one = later.length === 1 ? later[0]! : null;
   return (
     <p className="fl-later small muted">
-      {later.length} more {one ? "waits" : "wait"} for block {a.number + 1}
+      {later.length} more{one && <>, <Link className="mono" to={`/tx/${one.hash}`}>{short(one.hash, 8, 4)}</Link>,</>} {one ? "waits" : "wait"} for block {a.number + 1}
       <Info about="the transactions that came after the cut">
-        {later.length} more transaction{one ? "" : "s"}{one && <>, <Link className="mono" to={`/tx/${one.hash}`}>{short(one.hash, 8, 4)}</Link>,</>} arrived after this block was cut. {one ? "It waits" : "They wait"} for block {a.number + 1}, which is cut when block {a.number} is final.
+        {later.length} more transaction{one ? "" : "s"} arrived after this block was cut. {one ? "It waits" : "They wait"} for block {a.number + 1}, which is cut when block {a.number} is final.
       </Info>
     </p>
   );

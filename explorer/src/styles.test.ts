@@ -278,3 +278,13 @@ describe("the display face asks only for the weight that ships", () => {
     expect(winner(rules, [".verify"], "box-shadow", false)).toBe("var(--shadow)");
   });
 });
+
+describe("the finish of small controls and notes", () => {
+  it("draws the pager buttons in the page font, and keeps a mono function name at the weight that ships", () => {
+    expect(/\n\.pager button \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font:\s*inherit/);
+    expect(/\n\.fn-name \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font-weight:\s*500/);
+  });
+  it("puts the peak on a line of its own", () => {
+    expect(/\n\.stat-v \.stat-peak \{([^}]*)\}/.exec(css)?.[1]).toMatch(/display:\s*block/);
+  });
+});
