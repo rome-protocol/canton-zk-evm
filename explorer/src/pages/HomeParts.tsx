@@ -60,7 +60,8 @@ function NotFinal({ n, read, stuck }: { n: Summary["notFinal"]; read: Read; stuc
 }
 
 export const DASH_WHY = (read: Read) => (read === "loading" ? "Reading…" : "the stats cannot be read right now");
-const ago = (iso: string) => `${iso.slice(11, 16)} UTC`;
+/** "09:18 UTC", with a no-break space so the time and "UTC" never part across two lines. */
+const ago = (iso: string) => `${iso.slice(11, 16)}\u00a0UTC`;
 
 /** A time from a summary: the middle and the 95th percentile, "8.5 s p95 8.7 s", or a dash and why. */
 export function Time({ icon, label, note, s, read, foot, none, info }: { icon: IconName; label: string; note: string; s: StatsSpread | null | undefined; read: Read; foot: string; none: string; info?: ReactNode }) {

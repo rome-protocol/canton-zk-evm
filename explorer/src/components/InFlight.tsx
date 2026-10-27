@@ -38,7 +38,10 @@ function Later({ a, later }: { a: InFlightAttempt; later: InFlightTx[] }) {
   const one = later.length === 1 ? later[0]! : null;
   return (
     <p className="fl-later small muted">
-      {later.length} more transaction{one ? "" : "s"}{one && <>, <Link className="mono" to={`/tx/${one.hash}`}>{short(one.hash, 8, 4)}</Link>,</>} arrived after this block was cut. {one ? "It waits" : "They wait"} for block {a.number + 1}, which is cut when block {a.number} is final.
+      {later.length} more {one ? "waits" : "wait"} for block {a.number + 1}
+      <Info about="the transactions that came after the cut">
+        {later.length} more transaction{one ? "" : "s"}{one && <>, <Link className="mono" to={`/tx/${one.hash}`}>{short(one.hash, 8, 4)}</Link>,</>} arrived after this block was cut. {one ? "It waits" : "They wait"} for block {a.number + 1}, which is cut when block {a.number} is final.
+      </Info>
     </p>
   );
 }
@@ -93,7 +96,7 @@ export function InFlightPanel({ attempts: listed, waiting, stream, read = "ok", 
         <>
           {attempts.length ? <ul className="fl-list">{attempts.map((a) => <Attempt key={`${a.number}`} a={a} now={now} usual={usual} later={a.number === newest ? later.filter((t) => t.stage === "waiting" && Date.parse(t.at) > Date.parse(a.cutAt)) : []} />)}</ul> : <p className="muted">{idle ? "No block is being made right now." : "Nothing is in flight: every block made so far is final."}</p>}
           {waiting === null ? <p className="fl-wait small muted">The pool count is not known right now.</p> : waiting > 0 && (
-            <p className="fl-wait small muted">{waiting} transaction{waiting === 1 ? "" : "s"} {waiting === 1 ? "is" : "are"} waiting in the pool, in no block yet{cut.size ? "; the next block takes them" : ""}.</p>
+            <p className="fl-wait small muted">{waiting} waiting in the pool<Info about="the transactions waiting in the pool">{waiting} transaction{waiting === 1 ? "" : "s"} {waiting === 1 ? "is" : "are"} waiting in the pool, in no block yet{cut.size ? "; the next block takes them" : ""}.</Info></p>
           )}
         </>
       )}

@@ -402,16 +402,16 @@ describe("the numbers, from the stats routes", () => {
 
   it("shows the rate now with the busiest minute of the day, and says when it was", async () => {
     await withStats({ day: { tps: { now: 0.03, peak: 10.2, peakAt: "2026-10-04T12:49:00.000Z" } } })();
-    expect(shown(tile("Transactions per second"))).toBe("Transactions per second0.03 now · peak 10 (12:49 UTC)");
+    expect(shown(tile("Transactions per second"))).toBe("Transactions per second0.03 now · peak 10 (12:49\u00a0UTC)");
     // the peak and its time stay on one line, and so does a time's p95
     expect(tile("Transactions per second").querySelector(".stat-v small .hl")).toHaveTextContent("peak 10 (12:49 UTC)");
-    expect(noteOf(tile("Transactions per second"))).toBe("Peak is the busiest minute in 24 h, at 12:49 UTC.");
+    expect(noteOf(tile("Transactions per second"))).toBe("Peak is the busiest minute in 24 h, at 12:49\u00a0UTC.");
   });
 
   it.each([[1, "0.017"], [2, "0.033"]] as const)("shows a busiest minute of %i transaction(s) as peak %s, never peak 0, and says how many it was", async (txs, peakShown) => {
     await withStats({ day: { tps: { now: 0, peak: txs / 60, peakAt: "2026-10-04T12:49:00.000Z" }, txs: { count: txs, failed: 0, reverted: 0, successRate: 1, accepted: txs, acceptedFinal: txs, lost: 0, droppedByChain: 0, delayedByRedo: 0, allTime: null } } })();
-    expect(shown(tile("Transactions per second"))).toBe(`Transactions per second0 now · peak ${peakShown} (12:49 UTC)`);
-    expect(noteOf(tile("Transactions per second"))).toBe(`Peak is the busiest minute in 24 h (${txs} tx), at 12:49 UTC.`);
+    expect(shown(tile("Transactions per second"))).toBe(`Transactions per second0 now · peak ${peakShown} (12:49\u00a0UTC)`);
+    expect(noteOf(tile("Transactions per second"))).toBe(`Peak is the busiest minute in 24 h (${txs} tx), at 12:49\u00a0UTC.`);
   });
 
   it("shows a rate of nothing as 0, and no peak when the day had no transaction", async () => {
