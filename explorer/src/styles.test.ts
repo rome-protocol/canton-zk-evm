@@ -13,9 +13,13 @@ function sources(dir: string): string[] {
   });
 }
 
+function darkOf(c: string): string {
+  return /@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/.exec(c)?.[1] ?? "";
+}
+
 describe("themes", () => {
   const tokens = ["--bg", "--surface", "--ink", "--muted", "--link", "--evm", "--canton", "--ok", "--bad", "--amber"];
-  const dark = /@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const dark = darkOf(css);
 
   it("defines the colours once for light and again for dark, which follows the system setting", () => {
     const light = /:root \{([^}]*)\}/.exec(css)?.[1] ?? "";
@@ -32,19 +36,46 @@ describe("themes", () => {
 });
 
 describe("fonts and outside requests", () => {
-  it("serves IBM Plex from the explorer: every font file the styles name is in public/fonts, with its licence", () => {
+  it("serves its fonts from the explorer: every font file the styles name is in public/fonts, with its licence, and only the weights used", () => {
     const files = [...css.matchAll(/url\((\/fonts\/[^)]+)\)/g)].map((m) => m[1]!);
-    expect(files.length).toBe(7);
+    expect(files.sort()).toEqual([
+      "/fonts/dm-sans-latin-400-normal.woff2", "/fonts/dm-sans-latin-500-normal.woff2", "/fonts/dm-sans-latin-600-normal.woff2",
+      "/fonts/ibm-plex-mono-latin-400-normal.woff2", "/fonts/ibm-plex-mono-latin-500-normal.woff2",
+      "/fonts/literata-latin-500-italic.woff2", "/fonts/literata-latin-500-normal.woff2",
+    ]);
     for (const f of files) expect(existsSync(join(root, "public", f)), f).toBe(true);
-    expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Sans.txt"))).toBe(true);
-    expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Mono.txt"))).toBe(true);
-    expect(readFileSync(join(root, "public/fonts/OFL-IBM-Plex-Serif.txt"), "utf8")).toMatch(/SIL Open Font License, Version 1\.1/);
+    for (const l of ["Literata", "DM-Sans", "IBM-Plex-Mono"]) expect(readFileSync(join(root, `public/fonts/OFL-${l}.txt`), "utf8"), l).toMatch(/SIL Open Font License, Version 1\.1/);
+    // nothing in public/fonts that the styles do not use
+    const onDisk = readdirSync(join(root, "public/fonts")).filter((n) => n.endsWith(".woff2")).map((n) => `/fonts/${n}`);
+    expect(onDisk.sort()).toEqual(files);
   });
 
-  it("sets the wordmark and every h1 in IBM Plex Serif, and numbers in tabular figures", () => {
-    expect(css).toMatch(/@font-face \{ font-family: "IBM Plex Serif"; font-weight: 500;/);
-    expect(css).toMatch(/\nh1, \.name \{ font-family: "IBM Plex Serif", /);
+  it("sets the wordmark, the headings and the big numbers in Literata 500 with its italic, and the text in DM Sans", () => {
+    expect(css).toMatch(/@font-face \{ font-family: "Literata"; font-weight: 500; font-style: normal;/);
+    expect(css).toMatch(/@font-face \{ font-family: "Literata"; font-weight: 500; font-style: italic;/);
+    expect(css).toMatch(/\nh1, h2, \.name \{ font-family: "Literata", [^}]*font-weight: 500/);
+    expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain('font-family: "DM Sans"');
     expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain("font-variant-numeric: tabular-nums");
+    const rules = rulesOf(css);
+    expect(winner(rules, [".stat-v"], "font-family", false)).toMatch(/Literata/);
+    expect(winner(rules, [".stat-v"], "font-weight", false)).toBe("500");
+    expect(winner(rules, [".card-title h2"], "font-family", false)).toMatch(/Literata/);
+  });
+
+  it("finishes the cards, the pages, the buttons and the search box the way Arena does: 20 px cards with a faint border and a soft shadow, pills with the lilac glow", () => {
+    const rules = rulesOf(css);
+    expect(winner(rules, [".card"], "border-radius", false)).toBe("20px");
+    expect(winner(rules, [".card"], "border", false)).toContain("var(--line-2)");
+    expect(winner(rules, [".card"], "box-shadow", false)).toBe("var(--shadow)");
+    for (const sel of [".nav .navlink", ".btn", ".rpc-btn", ".search", ".pager button"]) expect(winner(rules, [sel], "border-radius", false), sel).toBe("999px");
+    for (const sel of [".btn", ".rpc-btn"]) expect(winner(rules, [sel], "box-shadow", false), sel).toBe("var(--btn-shadow)");
+    expect(css).toContain("--glow: #D69ED6");
+    expect(css).toContain("--btn-shadow: inset 0 0 14px rgba(214,158,214,.55)");
+    expect(winner(rules, [".hero"], "background", false)).toMatch(/radial-gradient\(120% 140% at 50% 0%, var\(--hero-from\)/);
+  });
+
+  it("keeps the dark theme in step: the glow, the shadow, the hero gradient and the top bar have their own dark values", () => {
+    for (const t of ["--glow", "--shadow", "--btn-shadow", "--nav-bg", "--hero-from", "--hero-to", "--topbar"]) expect(darkOf(css), t).toContain(`${t}:`);
   });
 
   it("sets numbers in the text face with figures of equal width, and only hashes and ids in IBM Plex Mono", () => {
