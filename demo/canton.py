@@ -363,22 +363,27 @@ def read_disclosed(net: Network) -> list:
     return json.loads(path.read_text())
 
 
-def allocate(net: Network, label: str, receiver: str, amount: str) -> dict:
+def allocate(net: Network, label: str, receiver: str, amount: str, spec: dict = None, who: str = "u") -> dict:
     """U allocates `amount` TKB to `receiver` through the token standard's factory, with the operator as executor. The token registry's
-    rules contract goes with the call as a disclosed contract, because U is not a stakeholder of it. Gives the new allocation."""
-    u, registry = net.party("u"), net.party("registry")
+    rules contract goes with the call as a disclosed contract, because U is not a stakeholder of it. Gives the new allocation. With `spec` (an
+    AllocationSpecification, with its own executor and leg) it makes that allocation as the party `who` instead: demo/otc.py allocates a trade's."""
+    u, registry = net.party(who), net.party("registry")
     disclosed = read_disclosed(net)
-    inputs = [e["contractId"] for e in net.template("users", "u", TOKEN)]
+    inputs = [e["contractId"] for e in net.template("users", who, TOKEN)]
     if not inputs:
-        raise Fail("U has no TKB holding to allocate")
-    before = {e["contractId"] for e in net.template("users", "u", ALLOCATION_OF_TOKEN)}
-    leg = {"settlement": {"executor": net.party("operator"), "settlementRef": {"id": label, "cid": None}, "requestedAt": utc(timedelta(minutes=-1)),
-                          "allocateBefore": utc(timedelta(hours=1)), "settleBefore": utc(timedelta(hours=2)), "meta": {"values": {}}},
-           "transferLegId": "leg-" + label,
-           "transferLeg": {"sender": u, "receiver": receiver, "amount": amount, "instrumentId": {"admin": registry, "id": INSTRUMENT}, "meta": {"values": {}}}}
-    net.submit("users", ["u"], {"ExerciseCommand": {"templateId": ALLOCATION_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
-        "expectedAdmin": registry, "allocation": leg, "requestedAt": utc(timedelta(minutes=-1)), "inputHoldingCids": inputs, "extraArgs": NO_EXTRA_ARGS}}}, disclosed)
-    [allocation] = net.wait_for("the allocation", lambda: [e for e in net.template("users", "u", ALLOCATION_OF_TOKEN) if e["contractId"] not in before])
+        raise Fail(f"{who.upper()} has no TKB holding to allocate")
+    before = {e["contractId"] for e in net.template("users", who, ALLOCATION_OF_TOKEN)}
+    requested = utc(timedelta(minutes=-1))
+    if spec is None:
+        spec = {"settlement": {"executor": net.party("operator"), "settlementRef": {"id": label, "cid": None}, "requestedAt": requested,
+                               "allocateBefore": utc(timedelta(hours=1)), "settleBefore": utc(timedelta(hours=2)), "meta": {"values": {}}},
+                "transferLegId": "leg-" + label,
+                "transferLeg": {"sender": u, "receiver": receiver, "amount": amount, "instrumentId": {"admin": registry, "id": INSTRUMENT}, "meta": {"values": {}}}}
+    else:
+        requested = spec["settlement"]["requestedAt"]
+    net.submit("users", [who], {"ExerciseCommand": {"templateId": ALLOCATION_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
+        "expectedAdmin": registry, "allocation": spec, "requestedAt": requested, "inputHoldingCids": inputs, "extraArgs": NO_EXTRA_ARGS}}}, disclosed)
+    [allocation] = net.wait_for("the allocation", lambda: [e for e in net.template("users", who, ALLOCATION_OF_TOKEN) if e["contractId"] not in before])
     return allocation
 
 

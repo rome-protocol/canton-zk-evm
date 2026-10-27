@@ -23,7 +23,7 @@ The demo is limited to these runs on one local network with one operator, one bu
 | `TKA.sol`, `TKA.bin`, `build-token.sh` | The EVM test token (a plain ERC-20 whose supply goes to V when it is deployed), and its creation code. `build-token.sh` compiles the source with the solc image in `PINS`; CI checks that `TKA.bin` is what it gives. |
 | `evm.py` | The EVM side: the keys of V and U, the genesis that funds both, and the transactions they send, including the gateway's `register`, `claim`, `withdraw` and `pay`. It also reads TKA and wrapped-token balances and a wrapped token's supply. |
 | `canton.py` | The Canton side: loads the token standard's factory and the test token, makes U's holding, registers a wrapped token, makes the acceptance, the deposit request, the allocations and the terms, sends a saved block to Canton again without its legs, and reads back what is on Canton, including which update made a contract and what the gateway holds. |
-| `otc.py` | The OTC swap: the commands of a seller on Canton, a venue and a buyer on the EVM (offer, accept, allocate, publish, pay, claim, check). It reuses `canton.py` and `evm.py`. See "The OTC swap" below. |
+| `otc.py` | The OTC swap: the commands of a seller on Canton, a venue and a buyer on the EVM (offer, accept, allocate, publish, pay, claim, check, close). It reuses `canton.py` and `evm.py`. See "The OTC swap" below. |
 | `prepare.sh` | Run once before `network/up.sh`: Python packages (by hash), the two keys, and the funded genesis. |
 | `run.sh` | The setup and the five runs. It checks every claim and stops at the first one that does not hold, then writes `results/`. |
 | `prove-tampered.sh` | The demo-only switch of run 5: a prover command that runs the real prover and then flips one hex digit of the proof. It exists only here; nothing in `network/` or `builder/` knows about it. |
@@ -139,9 +139,14 @@ python3 demo/otc.py publish swap-1                    # the venue's driver: the 
 python3 demo/otc.py pay swap-1 "" 600                 # the buyer: approve, then pay through the gateway; wait for the block
 python3 demo/otc.py claim swap-1 600                  # the buyer claims the wrapped TKB, in a later block
 python3 demo/otc.py check swap-1                      # Canton and EVM balances, and that the funded claim is gone
+python3 demo/otc.py close swap-2                      # the venue ends a trade it will not settle: the venue's trade archived, the allocation taken back
 ```
 
 `pay` without an amount pays the trade's; `pay swap-1 1` is the refused case: the buyer pays less than the trade names, the builder leaves the payment out of the block, and nothing moves: `check` still shows the seller's allocation, the venue's trade and no funded claim. `claim` stops with an error until the trade's block is committed on Canton (the funded claim is what it redeems), so it always goes in a block after the trade's. `otc.py` with no arguments prints every command.
+
+The driver checks what the chain does not. The chain ties the Canton side of a trade to nothing but the seller's allocation, so `publish` takes only an allocation that is the trade's own: its settlement (the venue as executor, the label as reference, the times) and its one leg (the seller to the gateway, the trade's instrument and amount) must equal what `allocate` makes from the Trade. An allocation with the same label but another amount, executor or receiver is refused, and so is a trade past its settle-before time. A builder started with `--venue` cannot see a withdrawn allocation, so the venue runs `close` for a trade it will not settle.
+
+Settling on this chain needs the seller's signature on the VenueTrade (it is signed by the venue and the seller), so `publish` submits as both: the seller's party must be hosted where the venue's driver can act as it, or the seller co-submits. In this demo the seller and the venue are on the same participant. The driver therefore has the seller's authority on the Ledger API, which the seller's own allocation does not give it.
 
 ## How the Canton side is set up
 

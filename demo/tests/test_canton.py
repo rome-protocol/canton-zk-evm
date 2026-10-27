@@ -69,7 +69,7 @@ class FakeLedger(http.server.BaseHTTPRequestHandler):
                 made = [e for es in FakeLedger.contracts.values() for e in es if e["contractId"] == command["ExerciseCommand"]["contractId"]][0]
                 FakeLedger.created.append({"contractId": f"cid-{n}", "templateId": canton.CHAIN + "GatewayToken", "offset": 100 + n,
                                            "createArgument": {k: made["createArgument"][k] for k in ("evmToken", "instrumentId")}})
-            elif command["ExerciseCommand"]["choice"] == "Allocation_Withdraw":   # the sender takes the allocation back: it is gone for everyone
+            elif command["ExerciseCommand"]["choice"] in ("Allocation_Withdraw", "Close", "Archive"):   # the sender takes the allocation back: it is gone for everyone
                 gone = command["ExerciseCommand"]["contractId"]
                 FakeLedger.created = [e for e in FakeLedger.created if e["contractId"] != gone]
                 FakeLedger.contracts = {k: [e for e in v if e["contractId"] != gone] for k, v in FakeLedger.contracts.items()}

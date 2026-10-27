@@ -16,6 +16,8 @@
                                         trade against the buyer's payment. The seller's allocation goes with it as a disclosed contract (JSON
                                         Ledger API v2 form), for a builder started with --venue for the venue's party. The wrapped token is the
                                         one registered for TKB (canton.py register-token); name it only if there are several
+  otc.py close <label>                  the venue ends a trade it will not settle: it archives the venue's trade, the seller takes back his allocation,
+                                        and the trade is closed. Each step is done only if it is there
   otc.py pay <label> [<tka> [<seconds>]]
                                         the buyer approves the gateway and pays the seller through it, naming the trade: his payment is his
                                         acceptance. <tka> is a whole number, the trade's amount if none: a smaller one is the refused case (the
@@ -31,8 +33,9 @@ buyer is the EVM key v (V of demo/evm.py), who holds TKA and has no Canton party
 its settings apply (CZE_STATE_DIR, the Ledger API URLs, CZE_CANTON=external with its token files); the EVM ones through demo/evm.py.
 Run `canton.py setup` and register the wrapped token (`canton.py register-token`) first. Every command prints one JSON object.
 """
-import hashlib, json, sys
-from datetime import timedelta
+import hashlib, json, re, sys
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,10 +46,11 @@ OTC = "#otc-venue:Otc.Otc:"
 OFFER, TRADE = OTC + "TradeOffer", OTC + "Trade"
 VENUE_TRADE, FUNDED_CLAIM, GATEWAY_TOKEN = canton.CHAIN + "VenueTrade", canton.CHAIN + "FundedClaim", canton.CHAIN + "GatewayToken"
 SELLER, VENUE, BUYER = "u", "v", "v"   # the Canton parties of the seller and the venue; the EVM key of the buyer
+DECIMAL, TIME = re.compile(r"-?[0-9]+\.[0-9]+"), re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z")
 DAR = ROOT / "apps" / "otc" / "dist" / "otc-venue.dar"
 LEG = "leg"   # the id of the trade's one transfer leg (apps/otc/src/Otc/Otc.daml, legId)
 ALLOCATE_WITHIN, SETTLE_WITHIN = timedelta(hours=1), timedelta(hours=2)
-COMMAND_ROLES = {"upload-dar": ("admin",), "ids": (), "offer": ("demo",), "accept": ("demo",), "allocate": ("demo",)}
+COMMAND_ROLES = {"upload-dar": ("admin",), "ids": (), "offer": ("demo",), "accept": ("demo",), "allocate": ("demo",), "close": ("demo",)}
 DEFAULT_ROLES = ("demo", "operator")
 
 
@@ -148,24 +152,42 @@ def accept(net: canton.Network, label: str) -> dict:
     return {"label": label, "trade": trade["contractId"]}
 
 
+def trade_spec(trade: dict) -> dict:
+    """The allocation the trade asks for: its settlement (the venue is the executor, the label the reference) and its one leg, seller to gateway, for
+    the trade's amount. The seller makes exactly this, and the driver takes no other allocation for the trade."""
+    meta = canton.NO_EXTRA_ARGS["meta"]
+    return {"settlement": {"executor": trade["venue"], "settlementRef": {"id": trade["label"], "cid": None}, "requestedAt": trade["requestedAt"],
+                           "allocateBefore": trade["allocateBefore"], "settleBefore": trade["settleBefore"], "meta": meta},
+            "transferLegId": LEG,
+            "transferLeg": {"sender": trade["seller"], "receiver": trade["gateway"], "amount": trade["amount"], "instrumentId": trade["instrument"], "meta": meta}}
+
+
+def canonical(value):
+    """A ledger value compared by what it says: a decimal by its number, a time by its instant (the ledger may write either with other digits)."""
+    if isinstance(value, dict):
+        return {k: canonical(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [canonical(v) for v in value]
+    if isinstance(value, str):
+        if DECIMAL.fullmatch(value):
+            return Decimal(value)
+        if TIME.fullmatch(value):
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return value
+
+
+def is_the_trades(event: dict, trade: dict) -> bool:
+    return canonical(event["createArgument"]["allocation"]) == canonical(trade_spec(trade))
+
+
 def allocate(net: canton.Network, label: str) -> dict:
-    """The seller allocates through the token's factory with the trade's spec: the request's settlement and its one leg. The token registry's rules
-    contract goes with the call as a disclosed contract, as canton.py allocate does."""
+    """The seller allocates through the token's factory with the trade's spec (trade_spec). canton.py's allocate makes the call: the token registry's
+    rules contract goes with it as a disclosed contract."""
     trade = trade_of(net, label)["createArgument"]
-    mine = allocations_of(net, SELLER, label)
+    mine = [e for e in allocations_of(net, SELLER, label) if is_the_trades(e, trade)]
     if mine:   # a repeated run: the allocation stands, and no second one is made
         return {"label": label, "allocation": one(mine, "allocation")["contractId"]}
-    disclosed = canton.read_disclosed(net)
-    inputs = [e["contractId"] for e in net.template("users", SELLER, canton.TOKEN)]
-    if not inputs:
-        raise canton.Fail("the seller has no TKB holding to allocate")
-    spec = {"settlement": {"executor": trade["venue"], "settlementRef": {"id": label, "cid": None}, "requestedAt": trade["requestedAt"],
-                           "allocateBefore": trade["allocateBefore"], "settleBefore": trade["settleBefore"], "meta": canton.NO_EXTRA_ARGS["meta"]},
-            "transferLegId": LEG,
-            "transferLeg": {"sender": trade["seller"], "receiver": trade["gateway"], "amount": trade["amount"], "instrumentId": trade["instrument"], "meta": canton.NO_EXTRA_ARGS["meta"]}}
-    net.submit("users", [SELLER], {"ExerciseCommand": {"templateId": canton.ALLOCATION_FACTORY, "contractId": disclosed[0]["contractId"], "choice": "AllocationFactory_Allocate", "choiceArgument": {
-        "expectedAdmin": trade["instrument"]["admin"], "allocation": spec, "requestedAt": trade["requestedAt"], "inputHoldingCids": inputs, "extraArgs": canton.NO_EXTRA_ARGS}}}, disclosed)
-    made = one(net.wait_for("the allocation", lambda: allocations_of(net, SELLER, label)), "allocation")
+    made = canton.allocate(net, label, None, None, spec=trade_spec(trade), who=SELLER)
     return {"label": label, "allocation": made["contractId"]}
 
 
@@ -177,14 +199,20 @@ def disclosed_form(event: dict) -> dict:
 
 
 def publish(net: canton.Network, label: str, wrapped: str = None) -> dict:
-    """The venue's driver: once the seller allocated, make the chain package's VenueTrade, signed by the venue and the seller (the allocation is the
-    seller's consent). The allocation goes with it as a disclosed contract, from the venue's view of it or else the seller's."""
+    """The venue's driver: once the seller allocated, make the chain package's VenueTrade. Its signatories are the venue and the seller, so the driver
+    submits as both: the seller's party is hosted where the venue's driver can act as it. The allocation goes with it as a disclosed contract, from
+    the venue's view of it or else the seller's, and only if it is the trade's own."""
     trade = trade_of(net, label)["createArgument"]
     payment, claim = pay_id(net.party(VENUE), label), claim_id(pay_id(net.party(VENUE), label))
     if [e for e in net.template("operator", "operator", VENUE_TRADE) if e["createArgument"]["payId"] == payment]:
         raise canton.Fail(f"the trade {label!r} is published already")
-    found = allocations_of(net, VENUE, label, blob=True) or allocations_of(net, SELLER, label, blob=True)
-    allocation = one(found, f"allocation of {label!r} (the seller allocates first)")
+    if canonical(trade["settleBefore"]) <= datetime.now(timezone.utc):
+        raise canton.Fail(f"the trade {label!r} is past its settle-before time {trade['settleBefore']}: close it")
+    # The chain ties the Canton side to nothing but the allocation's own amount, so this is the check that the buyer gets what the trade says: only
+    # an allocation that is the trade's own (its settlement and its leg, trade_spec) is taken, whoever made it and with whatever label it shares.
+    found = [e for e in allocations_of(net, VENUE, label, blob=True) + allocations_of(net, SELLER, label, blob=True) if is_the_trades(e, trade)]
+    found = list({e["contractId"]: e for e in found}.values())
+    allocation = one(found, f"allocation of {label!r} that is the trade's own, with its executor, leg and amount (the seller allocates first)")
     token = gateway_token(net, trade["instrument"], wrapped)
     chain = canton.chain_record(net)
     net.submit("users", [VENUE, SELLER], {"CreateCommand": {"templateId": VENUE_TRADE, "createArguments": {
@@ -194,6 +222,25 @@ def publish(net: canton.Network, label: str, wrapped: str = None) -> dict:
         "claimId": claim, "recipient": trade["recipient"]}}})
     made = net.wait_for("the venue's trade", lambda: [e for e in net.template("operator", "operator", VENUE_TRADE) if e["createArgument"]["payId"] == payment])
     return {"label": label, "venueTrade": made[0]["contractId"], "payId": payment, "claimId": claim, "wrappedToken": "0x" + token["createArgument"]["evmToken"]}
+
+
+def close(net: canton.Network, label: str) -> dict:
+    """The venue ends a trade it will not settle (called off, past its time, or settled): it archives the chain package's VenueTrade (as the venue and
+    the seller, its signatories), has the seller take back his allocation, and closes the Trade. Each is done only if it is there, so it can be run again.
+    A builder started with --venue cannot see a withdrawn allocation, so a VenueTrade left active would keep getting Advances Canton refuses."""
+    trade = trade_of(net, label)
+    payment = pay_id(net.party(VENUE), label)
+    done = []
+    for made in [e for e in net.template("users", VENUE, VENUE_TRADE) if e["createArgument"]["payId"] == payment]:
+        net.submit("users", [VENUE, SELLER], {"ExerciseCommand": {"templateId": VENUE_TRADE, "contractId": made["contractId"], "choice": "Archive", "choiceArgument": {}}})
+        done.append("venueTrade")
+    for held in allocations_of(net, SELLER, label):
+        net.submit("users", [SELLER], {"ExerciseCommand": {"templateId": canton.ALLOCATION_INTERFACE, "contractId": held["contractId"], "choice": "Allocation_Withdraw",
+                                                          "choiceArgument": {"extraArgs": canton.NO_EXTRA_ARGS}}})
+        done.append("allocation")
+    net.submit("users", [VENUE], {"ExerciseCommand": {"templateId": TRADE, "contractId": trade["contractId"], "choice": "Close", "choiceArgument": {}}})
+    net.wait_for("the trade to be gone", lambda: not with_label(net.template("users", VENUE, TRADE), label) or None)
+    return {"label": label, "closed": ["trade"] + done}
 
 
 def finalized(tx: str, seconds: str) -> dict:
@@ -268,6 +315,8 @@ def main(argv: list) -> dict:
         return allocate(net, argv[1])
     if cmd == ["publish"] and n in (2, 3):
         return publish(net, *argv[1:])
+    if cmd == ["close"] and n == 2:
+        return close(net, argv[1])
     if cmd == ["pay"] and n in (2, 3, 4):
         return pay(net, *argv[1:])
     if cmd == ["claim"] and n in (2, 3):

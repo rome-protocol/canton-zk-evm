@@ -17,8 +17,8 @@ ONE = 10**18
 def trade_event(label="t1", cid="trade-1"):
     return {"contractId": cid, "offset": 1, "templateId": otc.TRADE, "createArgument": {
         "seller": "u::1", "venue": "v::1", "gateway": "gw::1", "instrument": INSTRUMENT, "amount": "2.5000000000", "token": TOKEN, "amountBase": f"{3 * ONE:064x}",
-        "payee": SELLER_EVM, "recipient": BUYER_EVM, "label": label, "requestedAt": "2026-10-27T08:00:00Z", "allocateBefore": "2026-10-27T09:00:00Z",
-        "settleBefore": "2026-10-27T10:00:00Z"}}
+        "payee": SELLER_EVM, "recipient": BUYER_EVM, "label": label, "requestedAt": "2099-10-27T08:00:00Z", "allocateBefore": "2099-10-27T09:00:00Z",
+        "settleBefore": "2099-10-27T10:00:00Z"}}
 
 
 def fake_evm(calls):
@@ -81,23 +81,79 @@ class OtcTests(LedgerTestCase):
         argument = body["commands"][0]["ExerciseCommand"]["choiceArgument"]
         spec = argument["allocation"]
         self.assertEqual(body["actAs"], ["u::1"])
-        self.assertEqual(spec["settlement"], {"executor": "v::1", "settlementRef": {"id": "t1", "cid": None}, "requestedAt": "2026-10-27T08:00:00Z",
-                                              "allocateBefore": "2026-10-27T09:00:00Z", "settleBefore": "2026-10-27T10:00:00Z", "meta": {"values": {}}})
+        self.assertEqual(spec["settlement"], {"executor": "v::1", "settlementRef": {"id": "t1", "cid": None}, "requestedAt": "2099-10-27T08:00:00Z",
+                                              "allocateBefore": "2099-10-27T09:00:00Z", "settleBefore": "2099-10-27T10:00:00Z", "meta": {"values": {}}})
         self.assertEqual((spec["transferLegId"], spec["transferLeg"]["sender"], spec["transferLeg"]["receiver"], spec["transferLeg"]["amount"]), ("leg", "u::1", "gw::1", "2.5000000000"))
         self.assertEqual((argument["inputHoldingCids"], argument["expectedAdmin"]), (["hold-1"], "rg::1"))
         self.assertEqual(got["label"], "t1")
 
     def test_a_repeated_allocate_makes_no_second_allocation(self):
         FakeLedger.contracts[("v::1", otc.TRADE)] = [trade_event()]
-        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = [{"contractId": "alloc-1", "offset": 1, "createArgument": {"allocation": {"settlement": {"settlementRef": {"id": "t1"}}}}}]
+        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = [{"contractId": "alloc-1", "offset": 1, "createArgument": {"allocation": otc.trade_spec(trade_event()["createArgument"])}}]
         self.assertEqual(otc.allocate(self.net, "t1")["allocation"], "alloc-1")
         self.assertEqual(FakeLedger.submitted, [])
 
-    def allocated(self, owner="v::1"):
+    def test_an_allocation_that_is_not_the_trades_is_not_taken_for_it_and_a_second_is_made(self):
+        FakeLedger.contracts[("v::1", otc.TRADE)] = [trade_event()]
+        FakeLedger.contracts[("u::1", canton.TOKEN)] = [{"contractId": "hold-1", "offset": 1, "createArgument": {}}]
+        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = [{"contractId": "alloc-small", "offset": 1, "createArgument": {"allocation": self.spec(amount="0.0001000000")}}]
+        self.assertNotEqual(otc.allocate(self.net, "t1")["allocation"], "alloc-small")
+        self.assertEqual(len(self.exercised("AllocationFactory_Allocate")), 1)
+
+    def spec(self, **changed):
+        """The allocation the trade t1 asks for, with the settlement or leg fields named here changed (amount, receiver, executor...)."""
+        spec = otc.trade_spec(trade_event()["createArgument"])
+        for key, value in changed.items():
+            if key == "executor":
+                spec["settlement"]["executor"] = value
+            else:
+                spec["transferLeg"][key] = value
+        return spec
+
+    def allocated(self, owner="v::1", **changed):
         FakeLedger.contracts[("v::1", otc.TRADE)] = [trade_event()]
         FakeLedger.contracts[(owner, canton.ALLOCATION_OF_TOKEN)] = [{
             "contractId": "alloc-1", "offset": 1, "templateId": "pkg:Splice.Testing.Tokens.TestTokenV1:TokenAllocation", "createdEventBlob": "blob-a",
-            "createArgument": {"allocation": {"settlement": {"settlementRef": {"id": "t1"}}}}}]
+            "createArgument": {"allocation": self.spec(**changed)}}]
+
+    def test_an_allocation_with_the_right_label_but_another_amount_executor_or_receiver_is_refused(self):
+        for changed in ({"amount": "0.0001000000"}, {"executor": "op::1"}, {"receiver": "elsewhere::1"}, {"sender": "other::1"}):
+            for owner in ("v::1", "u::1"):
+                FakeLedger.contracts.clear()
+                self.allocated(owner=owner, **changed)
+                with self.assertRaises(canton.Fail, msg=f"{changed} seen by {owner}"):
+                    otc.publish(self.net, "t1")
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_the_trades_own_allocation_is_taken_when_the_ledger_writes_its_numbers_and_times_otherwise(self):
+        self.allocated(amount="2.5")
+        FakeLedger.contracts[("v::1", canton.ALLOCATION_OF_TOKEN)][0]["createArgument"]["allocation"]["settlement"]["requestedAt"] = "2099-10-27T08:00:00.000000Z"
+        otc.publish(self.net, "t1")
+        self.assertEqual(len(self.made(otc.VENUE_TRADE)), 1)
+
+    def test_a_trade_past_its_settle_before_time_is_not_published(self):
+        self.allocated()
+        FakeLedger.contracts[("v::1", otc.TRADE)][0]["createArgument"]["settleBefore"] = "2020-01-01T00:00:00Z"
+        with self.assertRaises(canton.Fail):
+            otc.publish(self.net, "t1")
+        self.assertEqual(FakeLedger.submitted, [])
+
+    def test_close_archives_the_venue_trade_withdraws_the_allocation_and_closes_the_trade(self):
+        self.allocated()
+        FakeLedger.contracts[("u::1", canton.ALLOCATION_OF_TOKEN)] = FakeLedger.contracts.pop(("v::1", canton.ALLOCATION_OF_TOKEN))
+        FakeLedger.contracts[("v::1", otc.VENUE_TRADE)] = [{"contractId": "vt-1", "offset": 1, "createArgument": {"payId": otc.ids(self.net, "t1")["payId"]}}]
+        self.assertEqual(otc.close(self.net, "t1"), {"label": "t1", "closed": ["trade", "venueTrade", "allocation"]})
+        [(_, archived)] = self.exercised("Archive")
+        [(_, withdrawn)] = self.exercised("Allocation_Withdraw")
+        [(_, closed)] = self.exercised("Close")
+        self.assertEqual((archived["actAs"], withdrawn["actAs"], closed["actAs"]), (["v::1", "u::1"], ["u::1"], ["v::1"]))
+        self.assertEqual((archived["commands"][0]["ExerciseCommand"]["contractId"], withdrawn["commands"][0]["ExerciseCommand"]["contractId"],
+                          closed["commands"][0]["ExerciseCommand"]["contractId"]), ("vt-1", "alloc-1", "trade-1"))
+
+    def test_close_of_a_trade_with_nothing_else_left_only_closes_it(self):
+        FakeLedger.contracts[("v::1", otc.TRADE)] = [trade_event()]
+        self.assertEqual(otc.close(self.net, "t1"), {"label": "t1", "closed": ["trade"]})
+        self.assertEqual([b["commands"][0]["ExerciseCommand"]["choice"] for _, b in FakeLedger.submitted], ["Close"])
 
     def test_the_venue_publishes_the_trade_with_the_allocation_disclosed(self):
         self.allocated()

@@ -89,12 +89,14 @@ export CZE_MAKE_INPUT_CMD=$ROOT/builder/tests/fake-make-input.sh CZE_PROVE_CMD=$
 evm() { "$PY" "$ROOT/demo/evm.py" "$@"; }
 canton() { "$PY" "$ROOT/demo/canton.py" "$@"; }
 otc() { "$PY" "$ROOT/demo/otc.py" "$@"; }
-# One builder run, for the venue's party (--venue): the payment of a trade whose allocation the builder cannot see is settled only because of that.
-# Prints its JSON line; the exit status is the builder's (0 committed, 2 refused).
-build() {
+# One builder run, for the venue's party (--venue): the payment of a trade whose allocation the builder cannot see is settled only because of that
+# (build_untrusting, below, runs without it and shows it). Prints its JSON line; the exit status is the builder's (0 committed, 2 refused).
+builder_once() {
   CZE_LEDGER_USER=builder CZE_BUILDER_PARTY=$BUILDER_PARTY CZE_FEE_RECIPIENT=0x0000000000000000000000000000000000000fee \
-    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --venue "$V_PARTY" --disclosed "$DEMO/disclosed.json"
+    "$PY" "$ROOT/builder/builder.py" once --read-as "$OPERATOR_PARTY" --read-as "$GATEWAY_PARTY" --disclosed "$DEMO/disclosed.json" "$@"
 }
+build() { builder_once --venue "$V_PARTY"; }
+build_untrusting() { builder_once; }
 # <what>: one builder run that must commit; its report is left in $OUT.
 commit() {
   set +e; OUT=$(build); local status=$?; set -e
@@ -182,4 +184,30 @@ is "$(jq -r .venueTrade <<<"$CHECK")" true "the venue's trade after the short pa
 set +e; otc claim swap-2 >/dev/null 2>&1; claim_status=$?; set -e
 [ "$claim_status" != 0 ] || fail "the buyer could claim the wrapped TKB of a trade that was never settled"
 
-echo "the OTC swap ran end to end: settled in one block, claimed in a later one, and the short payment left out"
+
+step "the venue closes the refused trade: its venue trade is archived and the seller has his TKB back"
+closed=$(otc close swap-2); echo "$closed" | jq -c .
+is "$(jq -c .closed <<<"$closed")" '["trade","venueTrade","allocation"]' "what the close of swap-2 ended"
+back=$(canton balances); echo "$back" | jq -c '{tkb, allocations}'
+jq -e '(.tkb.u | add) == 97.5 and (.allocations | index("swap-2") | not)' <<<"$back" >/dev/null || fail "the seller's TKB is not back to 97.5 with no allocation of swap-2: $back"
+set +e; otc check swap-2 >/dev/null 2>&1; check_status=$?; set -e
+[ "$check_status" != 0 ] || fail "the closed trade swap-2 is still there"
+
+step "a builder that does not trust the venue leaves a full payment out: the allocation is not visible to it"
+otc offer swap-3 1 "$TOKEN" 2 | jq -c .
+otc accept swap-3 | jq -c .
+otc allocate swap-3 | jq -c .
+otc publish swap-3 | jq -c .
+paid3=$(otc pay swap-3); echo "$paid3" | jq -c .
+full_tx=$(jq -r .pay <<<"$paid3")
+set +e; OUT=$(build_untrusting); status=$?; set -e
+echo "$OUT" | jq -c .
+is "$status" 0 "the builder's exit status without --venue ($OUT)"
+is "$(jq -r --arg tx "$full_tx" '[.leftOut[] | select(.transaction == $tx)] | length' <<<"$OUT")" 1 "the full payment is left out without --venue"
+jq -e --arg tx "$full_tx" '.leftOut[] | select(.transaction == $tx) | .reason | contains("its venue is not one the builder trusts")' <<<"$OUT" >/dev/null \
+  || fail "the full payment was left out for another reason: $(jq -c .leftOut <<<"$OUT")"
+is "$(jq -r .legs <<<"$OUT")" 0 "the legs of the block without --venue"
+otc close swap-3 | jq -c .
+jq -e '(.tkb.u | add) == 97.5' <<<"$(canton balances)" >/dev/null || fail "the seller's TKB is not back to 97.5 after closing swap-3"
+
+echo "the OTC swap ran end to end: settled in one block, claimed in a later one, the short payment left out, and the closed trades give the seller his TKB back"

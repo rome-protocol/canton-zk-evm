@@ -167,7 +167,7 @@ testVenueCloses = do
   gone <- queryContractId f.venue trade
   gone === None
 
--- The seller or the venue rejects the request and the trade ends; a bystander cannot; the venue (its executor) withdraws it.
+-- The seller or the venue rejects the request and the trade ends; a bystander cannot even when the trade is visible to it; the venue (its executor) withdraws it.
 testRejectAndWithdraw : Script ()
 testRejectAndWithdraw = do
   f <- setup
@@ -177,7 +177,8 @@ testRejectAndWithdraw = do
   g1 <- queryContractId f.venue t1
   g1 === None
   t2 <- accepted f
-  submitMustFail f.buyer $ exerciseCmd (req t2) AllocationRequest_Reject with actor = f.buyer; extraArgs = noExtraArgs
+  -- The buyer reads as the venue, so the trade is visible to the submission and it is the actor check that refuses it.
+  submitMustFail (actAs f.buyer <> readAs f.venue) $ exerciseCmd (req t2) AllocationRequest_Reject with actor = f.buyer; extraArgs = noExtraArgs
   _ <- submit f.venue $ exerciseCmd (req t2) AllocationRequest_Withdraw with extraArgs = noExtraArgs
   g2 <- queryContractId f.venue t2
   g2 === None
