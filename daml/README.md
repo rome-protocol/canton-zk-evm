@@ -146,7 +146,7 @@ Both forms share all other source code, including every check that `Advance` and
 ## Versions and dependencies
 
 - **Daml SDK 3.5.12**, the version in `daml.yaml`, the latest 3.5 release when this was written. It compiles to LF 2.1, which Canton 3.5 and 3.6 both load. Canton 3.6 is the target network; the tests of the stub form run on the 3.5 SDK (the `test` job) and on the pinned 3.6.0 / LF 2.4 toolchain (the `upgrade` job), and the DAR needs no change for 3.6 except the `external` form's toolchain, the released Daml 3.6 SDK.
-- **Token standard (CIP-0056) API packages**, from the Splice 0.8.3 release, unchanged and pinned by `dars/SHA256SUMS`. The package builds against the metadata, holding, allocation and transfer-instruction packages. `dars/README.md` says where they come from. The reference token the tests use is Splice's own test token from the same release.
+- **Token standard (CIP-0056) API packages**, from the Splice 0.8.3 release, unchanged and pinned by `dars/SHA256SUMS`. DevNet's validator runs Splice 0.9.4 (2026-10-27); whether the API packages of 0.9.4 are byte for byte those of 0.8.3 has not been checked here, and the package is built against the 0.8.3 ones. The legs and the OTC swap ran on DevNet under 0.9.4. The package builds against the metadata, holding, allocation and transfer-instruction packages. `dars/README.md` says where they come from. The reference token the tests use is Splice's own test token from the same release.
 
 ## Build and test
 
@@ -173,6 +173,8 @@ Both versions have the same package name, the same templates and types; only the
 ### Package 0.4.0 is an upgrade of 0.3.0, 0.2.0 and 0.1.0
 
 0.4.0 is additive: it adds two templates (`VenueTrade`, `FundedClaim`) and two constructors at the end of `Leg` (`TradeLeg`, `ClaimLeg`), and changes the bodies of `Advance`'s helpers (`legLine`, `settle`). No existing template, field or choice changes, so a chain made by 0.3.0 goes on under 0.4.0 and a block with no trade or claim leg behaves as before. The CI job `upgrade` rebuilds 0.1.0, 0.2.0 and 0.3.0 from their tags, checks their package ids and runs `dpm upgrade-check --both` against this source.
+
+On DevNet, 0.4.0 (package id `4f57b2ae83bf65b23d90f90aca64bab42ba4269a16c77a0236aa0d1a295d75f`) has been pinned since 2026-10-27 at 15:44 UTC. 0.3.0 (id `4b72df65...`) was pinned from 2026-10-26 at 22:01 UTC, and 0.2.0 from block 1453 on 2026-10-25.
 
 ### The gas cap
 
