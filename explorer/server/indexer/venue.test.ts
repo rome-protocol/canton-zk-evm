@@ -185,7 +185,8 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       ];
       const { ledger } = await gatewayLedger(twice);
       expect(await venueOnce(pool, ledger)).toMatchObject({ offset: 50 });
-      expect((await pool.query("select encode(recipient, 'hex') as recipient, offered_update_id from canton_venue_trades")).rows).toEqual([{ recipient: "c8".repeat(20), offered_update_id: "u-again" }]);
+      expect((await pool.query("select encode(recipient, 'hex') as recipient, offered_update_id from canton_venue_trades")).rows).toEqual([{ recipient: "e5".repeat(20), offered_update_id: "u-offered" }]);
+      // The payment of block 2 pays these terms: the later offer in u-again does not replace the row, and the newest of the two in one update is the one kept.
       expect((await pool.query("select encode(recipient, 'hex') as recipient, funded_update_id from canton_funded_claims")).rows).toEqual([{ recipient: "e5".repeat(20), funded_update_id: settling }]);
       // The read is not stuck: a trade created later is read, and the cursor is where the walk ended.
       expect((await pool.query("select ledger_offset::int as at from canton_venue_cursor")).rows).toEqual([{ at: 50 }]);
@@ -213,8 +214,13 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
       await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
       expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
       expect(await blockLegs(pool, 2)).toEqual([expect.objectContaining({ kind: "payment", canton: expect.objectContaining({ role: "venue-trade" }) })]);
-      // A trade that no payment has settled takes the newest offer: with a dearer price, the payment of block 2 is not its payment.
-      await pool.query("update canton_venue_trades set payment_block = null, payment_leg_index = null");
+      // A new or rebuilt database walks from the start and reads the paid offer and a later, dearer re-offer together: the payment is indexed, so the re-offer does not replace the trade.
+      await pool.query("delete from canton_venue_trades");
+      await pool.query("delete from canton_venue_cursor");
+      await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
+      expect(await matched()).toEqual([{ block: 2, leg: 0, amount: 42 }]);
+      // A trade that no indexed payment pays takes the newest offer: with a dearer price, the payment of block 2 is not its payment.
+      await pool.query("update canton_venue_trades set evm_amount = 41, payment_block = null, payment_leg_index = null");
       await pool.query("delete from canton_venue_cursor");
       await venueOnce(pool, (await gatewayLedger([...base, transaction(25, "u-dearer", [venueTradeEvent(25, "00trade-c", { ...trade, amount: 43n })])])).ledger);
       expect(await matched()).toEqual([{ block: null, leg: null, amount: 43 }]);

@@ -13,13 +13,17 @@ function newest<T extends { offset: number }>(rows: T[], key: (r: T) => string):
   return [...kept.values()];
 }
 
-/** One page of the gateway party's walk, written: the registered tokens first, so that a trade or a claim in the same page finds its instrument. */
+/** One page of the gateway party's walk, written one Canton update at a time in offset order: the registered tokens first, so that a trade or a claim in the same update finds its instrument. */
 async function writePage(c: PoolClient, updates: VenueUpdate[]): Promise<void> {
-  // One statement cannot change a row twice, and a payment id or a claim id can be created more than once in a page (an offer made again under the same label, a retry, a replay from the
-  // start after a move): each id is kept once, as the newest of its creations, which is the last one in offset order.
-  const tokens = updates.flatMap((u) => u.tokens);
-  const trades = [...newest(updates.flatMap((u) => u.trades.map((t) => ({ ...t, updateId: u.updateId, offset: u.offset }))), (t) => t.payId)];
-  const claims = [...newest(updates.flatMap((u) => u.claims.map((x) => ({ ...x, updateId: u.updateId, offset: u.offset }))), (x) => x.claimId)];
+  for (const u of updates) await writeUpdate(c, u);
+}
+
+async function writeUpdate(c: PoolClient, u: VenueUpdate): Promise<void> {
+  // One statement cannot change a row twice, and a payment id or a claim id can be created more than once in an update: each id is kept once, as the newest of its creations. Across updates
+  // the order of the writes is the order of the offsets, so a payment that settled a trade is indexed before a later offer under the same id is written.
+  const tokens = u.tokens;
+  const trades = [...newest(u.trades.map((t) => ({ ...t, updateId: u.updateId, offset: u.offset })), (t) => t.payId)];
+  const claims = [...newest(u.claims.map((x) => ({ ...x, updateId: u.updateId, offset: u.offset })), (x) => x.claimId)];
   if (tokens.length > 0) {
     await c.query(
       `insert into canton_gateway_tokens (contract_id, evm_token, instrument_admin, instrument_id)
@@ -27,7 +31,7 @@ async function writePage(c: PoolClient, updates: VenueUpdate[]): Promise<void> {
       [tokens.map((t) => t.contractId), tokens.map((t) => bytea(t.evmToken)), tokens.map((t) => t.instrumentAdmin), tokens.map((t) => t.instrumentId)],
     );
   }
-  // A trade offered again under the same label has the same payment id: the newest offer is the one kept, until a payment has settled it. The gateway spends a payment id once, so a later offer
+  // A trade offered again under the same label has the same payment id: the newest offer is the one kept, until a payment has settled it (a payment leg already indexed that pays the row's terms counts, even before the match has recorded it). The gateway spends a payment id once, so a later offer
   // under a spent id can never be paid and does not replace the trade that was.
   if (trades.length > 0) {
     await c.query(
@@ -35,7 +39,8 @@ async function writePage(c: PoolClient, updates: VenueUpdate[]): Promise<void> {
        select * from unnest($1::bytea[], $2::bytea[], $3::bytea[], $4::bytea[], $5::bytea[], $6::numeric[], $7::text[], $8::text[])
        on conflict (pay_id) do update set claim_id = excluded.claim_id, token = excluded.token, payee = excluded.payee, recipient = excluded.recipient, evm_amount = excluded.evm_amount,
          gateway_token = excluded.gateway_token, offered_update_id = excluded.offered_update_id
-       where vt.payment_block is null`,
+       where vt.payment_block is null
+         and not exists (select 1 from gateway_legs g where g.kind = 3 and g.leg_id = vt.pay_id and g.token = vt.token and g.account = vt.payee and g.amount = vt.evm_amount)`,
       [trades.map((t) => bytea(t.payId)), trades.map((t) => bytea(t.claimId)), trades.map((t) => bytea(t.token)), trades.map((t) => bytea(t.payee)), trades.map((t) => bytea(t.recipient)),
         trades.map((t) => t.amount.toString()), trades.map((t) => t.gatewayToken), trades.map((t) => t.updateId)],
     );
