@@ -581,6 +581,26 @@ class VenueLegs(LegCase):
         self.build(s)
         self.assertNotIn("disclosedContracts", s.ledger.submitted[0])
 
+    @staticmethod
+    def used_slot(claim_id):
+        return "0x" + keccak256(bytes.fromhex(claim_id) + (1).to_bytes(32, "big")).hex()
+
+    def test_a_payment_is_left_out_when_the_trades_claim_id_is_already_used_at_the_parent_block(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.reth.used_slots.add(self.used_slot(CLAIM_ID))
+        self.assert_left_out(s, t, "the trade's claim id is already used")
+        reads = s.reth.storage_reads
+        self.assertTrue(reads)
+        for address, slot, block in reads:   # the gateway's used[id], at the parent of the block being built
+            self.assertEqual((address, slot, block), ("0x" + GATEWAY, self.used_slot(CLAIM_ID), HEAD_HASH))
+
+    def test_a_payment_is_attached_when_the_trades_claim_id_is_not_used(self):
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s.reth.used_slots.add(self.used_slot("aa" * 32))   # another id is used
+        self.build(s)
+        self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
+        self.assertTrue(s.reth.storage_reads)
+
     def test_an_id_that_no_trade_has_is_left_out_as_before(self):
         s, t = self.setup_leg(TRADE_PAY, trades=[("trade-1", {**TRADE[1], "payId": "aa" * 32})])
         self.assert_left_out(s, t, "no terms", "payment")

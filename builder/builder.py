@@ -699,6 +699,12 @@ def read_legs(reth: Reth, chain: dict, block_hash: str) -> list:
     return [decode_leg(log) for log in logs]
 
 
+def claim_used(reth: Reth, chain: dict, block_hash: str, claim_id: str) -> bool:
+    """Whether the gateway's `used[claim_id]` is set at the block (its slot 1 mapping)."""
+    slot = "0x" + keccak256(bytes.fromhex(claim_id) + (1).to_bytes(32, "big")).hex()
+    return int(reth.call("eth_getStorageAt", ["0x" + chain["gatewayAddress"], slot, block_hash]), 16) != 0
+
+
 def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
     """(account nodes, storage nodes) of the gateway's account and its `legs[number]` slot at the block, in hex without 0x."""
     slot = "0x" + keccak256(int(number, 16).to_bytes(32, "big") + bytes(32)).hex()   # Solidity's key for a mapping at slot 0
@@ -840,8 +846,9 @@ def names_chain(contract: dict, chain: dict, *roles: str) -> bool:
 class Canton:
     """What the builder can see on Canton for the legs of one block. Each kind of contract is read once, when a leg first needs it."""
 
-    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = ()):
+    def __init__(self, ledger: Ledger, chain: dict, now: datetime, venues: tuple = (), used=None):
         self.ledger, self.chain, self.now, self.venues = ledger, chain, now, venues
+        self.used = used   # claim id (hex) -> whether the gateway has used it at the block the new block builds on; None: not asked
         self.disclosed: dict = {}   # trade contract id -> the disclosed allocation of each venue trade a leg may use; the block's final legs pick which go with the Advance
 
     @functools.cached_property
@@ -1056,6 +1063,8 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
         token = next((g for g in canton.tokens if g["contractId"] == t["gatewayToken"] and names_chain(g, chain, "gateway")), None)
         if token is None:
             return "the venue trade's token is not a token of this chain"
+        if canton.used is not None and canton.used(t["claimId"]):   # the claim's deposit settled first: paying now would leave the buyer's claim unredeemable
+            return "the trade's claim id is already used"
         shown = disclosed_allocation(t)
         if shown is False:
             return "the trade's disclosed allocation is not a JSON object"
@@ -1462,7 +1471,8 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         # On a block in flight the legs wait for the blocks before them and are judged on Canton's head. The pause is the exception: it is read from the
         # chain contract as Canton has it now, and the legs are left out for it with nothing waiting, so that the blocks go on being cut in a row.
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
-        canton = Canton(Ledger(cfg), chain, now, cfg.venues)
+        parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
+        canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id))
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:
