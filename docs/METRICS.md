@@ -1,6 +1,6 @@
 # What was measured, and on what
 
-This page records test results, hardware and software versions for Ostia, a Canton zkEVM (chain id 770101). Every number comes from a file in this repository, from the benchmark run named below, from the notes of the 2026-10-25 runs (their logs are not in this repository), from the reference-machine measurement described under "The indexer on a real chain (W1)", or from the CI run or laptop measurement named beside it. Missing information is marked "not recorded".
+This page records test results, hardware and software versions for Ostia, a Canton zkEVM (chain id 770101). Every number comes from a file in this repository, from the benchmark run named below, from the notes of the 2026-10-25, 2026-10-26 and 2026-10-27 runs (their logs are not in this repository), from the reference-machine measurement described under "The indexer on a real chain (W1)", or from the CI run or laptop measurement named beside it. Missing information is marked "not recorded".
 
 Five sets of measurements are reported:
 
@@ -34,7 +34,7 @@ The scripts read most of these versions from [`PINS`](../PINS), and CI checks th
 
 | What | Version | Source |
 |---|---|---|
-| ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` (the release the benchmark and the 2026-10-25 runs used; `PINS` now pins 1.3.2-alpha, commit `1e22630bb7e143c30705a1603ed87cfd3da8c6ec`, and DevNet has proved under it since block 15573 on 2026-10-27 at 12:02 UTC; the proof times of 18 to 22 s per full 60,000,000-gas block in "DevNet throughput, 2026-10-26 and 27" are under 1.3.2-alpha, and the benchmark itself was not run again on it) | `PINS` at the time |
+| ZisK | 1.3.1-alpha, commit `306a9c934ba4947b1d586d69b67120f8b4c41466` (the release the benchmark and the 2026-10-25, 2026-10-26 and 2026-10-27 runs used; `PINS` now pins 1.3.2-alpha, commit `1e22630bb7e143c30705a1603ed87cfd3da8c6ec`, and DevNet has proved under it since block 15573 on 2026-10-27 at 12:02 UTC; the benchmark itself was not run again on it) | `PINS` at the time |
 | zisk-eth-client (the source of the guest) | 0.13.1, commit `edf8adcda75c015f4225abe3aabb3bed03e21beb` | `PINS` |
 | reth | 2.5.2 | `PINS` |
 | Canton | 3.6.3, the open-source release of 2026-10-20, as pinned for the local network and CI (the recorded runs used the snapshot 3.6.0-snapshot.20260930.20337.0.ve610bc8f). DevNet's validator runs Splice 0.9.4 with Canton 3.6.4 | `PINS`; DevNet |
@@ -156,17 +156,17 @@ What these numbers do not show: plain transfers are the cheapest transaction the
 
 ## DevNet throughput, 2026-10-26 and 27
 
-**Setup.** These runs were on Ostia DevNet itself, with the builder at pipelining depth 3 (`--max-in-flight 3`; at most one more than the number of provers) on two spot GPU provers, one proof on each GPU, and with the pre-check on (every block is run in ziskemu with a budget of 120 s before it is proven). Blocks are still submitted to Canton in order. The 10-25 runs above were at depth 1 with one prover. The gas cap was 30,000,000 until 2026-10-27 and is 60,000,000 since then (`SetGasCap` at 07:20 UTC; the new limit was reached at 09:06 UTC), and the builder's byte cap went from 196,608 to 393,216 raw transaction bytes a block. The 60,000,000 proofs were made under ZisK 1.3.2-alpha, which DevNet has used since block 15573 (12:02 UTC on 2026-10-27). The figures come from the notes of the runs; the raw logs are not in this repository.
+**Setup.** These runs were on Ostia DevNet itself, with the builder at pipelining depth 3 (`--max-in-flight 3`; at most one more than the number of provers) on two spot GPU provers, one proof on each GPU, and, for the 60,000,000-gas runs only, with the pre-check on (every block is run in ziskemu with a predicted proof time budget of 120 s before it is proven; the pre-check was turned on at 04:26 UTC on 2026-10-27, so the 30,000,000-gas burst and ramp ran without it). Blocks are still submitted to Canton in order. The 10-25 runs above were at depth 1 with one prover. The gas cap was 30,000,000 until 2026-10-27 and is 60,000,000 since then (`SetGasCap` at 07:20 UTC; the new limit was reached at 09:06 UTC), and the builder's byte cap went from 196,608 to 393,216 raw transaction bytes a block. Every run of 26 and 27 October was proven under ZisK 1.3.1-alpha (key A): the 9,000-transfer burst ran at 09:17 UTC on 27 October in blocks 14656 to 14659 and the 60,000,000-gas ramp from 09:36 to 11:36 UTC, both before DevNet moved to ZisK 1.3.2-alpha at block 15573 (12:02 UTC on 2026-10-27). The figures come from the notes of the runs; the raw logs are not in this repository.
 
 | Cap | Load | Result |
 |---|---|---|
-| 30,000,000 gas | a burst of plain transfers on two GPUs (2026-10-26 and 27) | 158 tx/s over 74 s |
-| 60,000,000 gas | a burst of 9,000 plain transfers (2026-10-27) | 79 s from the send to the last block final, at about 200 tx/s of pipeline cadence: one block of 2,857 transfers about every 14 s, and a proof of 18 to 22 s for each full block |
+| 30,000,000 gas | a burst of plain transfers on two GPUs (2026-10-26 and 27) | 158 tx/s steady; the 9,000 burst was final 74 s after the first send |
+| 60,000,000 gas | a burst of 9,000 plain transfers (2026-10-27) | 79 s from the send to the last block final, with blocks cut at a pace of about 200 tx/s: one block of 2,857 transfers about every 14 s, and a proof of 18 to 22 s for each full block |
 | 60,000,000 gas | the sustained rate at which fees stayed stable, found by an adaptive ramp of 2 hours | about 93 tx/s |
 | 30,000,000 gas | the same, fee-stable sustained rate | about 75 tx/s |
-| either | the soak lane (a standing load that follows the number of live provers) | 70 tx/s with two provers, 45 tx/s with one |
 
 - A full block at 60,000,000 gas holds 2,857 plain transfers, twice the 1,428 of the 30,000,000 cap. The proof of such a block took 18 to 22 s while a block was cut about every 14 s, with two provers working on blocks at once.
+- The standing load (the soak lane, which follows the number of live provers) is set to about 75% of the fee-stable rate: 70 tx/s with two provers and 45 with one, at 60,000,000 gas. These are rates that were set from 12:05 UTC on 2026-10-27, not measured; at 30,000,000 gas the lane ran at 57 and 37.
 - Each figure is one run or one ramp, so there is no spread.
 - As on 2026-10-25, plain transfers are the cheapest transaction there is, so these are not figures for contract-heavy traffic, and they say nothing about more confirmers or builders. DevNet still has one confirmer.
 
