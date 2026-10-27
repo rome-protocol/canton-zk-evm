@@ -863,8 +863,9 @@ venueClaimId : Text -> Text
 venueClaimId payId = T.sha256 ("claim," <> payId)
 
 -- "If the gateway records this payment (`payId`: `token`, `amount` to `payee`) in the proven block, execute `allocation`", for a
--- trade that a Canton venue made, and make the funded claim of `recipient`. The venue signs it, and names the allocation it is the
--- executor of: the allocation goes to the gateway, which holds what the EVM side's buyer (the `recipient`) will claim. `payId` is
+-- trade that a Canton venue made, and make the funded claim of `recipient`. The venue and `sender`, the party whose holding the allocation
+-- locks, sign it: the token standard's `Allocation_ExecuteTransfer` needs its executor, sender and receiver together, and the sender's
+-- consent is this signature. The trade names the allocation, of which the venue is the executor: the allocation goes to the gateway, which holds what the EVM side's buyer (the `recipient`) will claim. `payId` is
 -- the payment id itself (see `venueTradeId`) and `claimId` the id of the claim (see `venueClaimId`); token, payee and recipient are
 -- EVM addresses and the amount is the ERC-20 amount as 64 hex digits, not zero. `allocationDisclosed`, if present, is the allocation
 -- as a disclosed contract in the JSON Ledger API's form, which the builder adds to its `Advance`: the allocation's holder and its
@@ -872,6 +873,7 @@ venueClaimId payId = T.sha256 ("claim," <> payId)
 template VenueTrade
   with
     venue : Party
+    sender : Party
     operator : Party
     confirmer : Party
     gateway : Party
@@ -888,7 +890,7 @@ template VenueTrade
     claimId : Text
     recipient : Text
   where
-    signatory venue
+    signatory venue, sender
     observer operator, confirmer, gateway, builder
     ensure payId == venueTradeId venue label && claimId == venueClaimId payId
       && hexOfLength 40 token && hexOfLength 40 payee && hexOfLength 40 recipient && hexOfLength 64 amount
@@ -902,6 +904,7 @@ template VenueTrade
         g <- fetch gatewayToken
         let leg = (view a).allocation
         assertMsg "the allocation's executor is not the venue" (leg.settlement.executor == venue)
+        assertMsg "the allocation's sender is not the trade's" (leg.transferLeg.sender == sender)
         assertMsg "the allocation's receiver is not the gateway" (leg.transferLeg.receiver == gateway)
         assertMsg "the allocation is of another instrument than the token's" (leg.transferLeg.instrumentId == g.instrumentId)
         assertMsg "the allocation is of no amount" (leg.transferLeg.amount > 0.0)

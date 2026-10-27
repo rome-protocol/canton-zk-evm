@@ -1644,8 +1644,8 @@ makeTradeOf : F -> Party -> Party -> Party -> Text -> (VenueTrade -> VenueTrade)
 makeTradeOf f venue exec receiver inst modify = do
   let pid = venueTradeId venue tradeLabel
   allocation <- allocate f.reg f.u receiver exec inst 10.0 pid
-  submit venue $ createCmd (modify VenueTrade with
-    venue; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+  submit (actAs [venue, f.u, f.v]) $ createCmd (modify VenueTrade with
+    venue; sender = f.u; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
     label = tradeLabel; payId = pid; token = tokenAddr; payee = uAddr; amount = tenTokens
     allocation; allocationDisclosed = None; gatewayToken = f.token; claimId = venueClaimId pid; recipient = recipientAddr)
 
@@ -1717,6 +1717,13 @@ testATradeLegWithTheWrongExecutorIsRefused = do
   trade <- makeTradeOf f venue f.operator f.gateway "TKB" identity
   refusedTrade "the allocation's executor is not the venue" f venue trade
 
+testATradeLegWhoseAllocationIsAnotherSendersIsRefused : Script ()
+testATradeLegWhoseAllocationIsAnotherSendersIsRefused = do
+  f <- fixture
+  venue <- makeVenue
+  trade <- makeTradeOf f venue venue f.gateway "TKB" (\t -> t with sender = f.v)
+  refusedTrade "the allocation's sender is not the trade's" f venue trade
+
 testATradeLegWhoseReceiverIsNotTheGatewayIsRefused : Script ()
 testATradeLegWhoseReceiverIsNotTheGatewayIsRefused = do
   f <- fixture
@@ -1751,8 +1758,8 @@ testATradeNeedsItsIdsFromTheVenueAndTheLabel = do
   venue <- makeVenue
   let pid = venueTradeId venue tradeLabel
   allocation <- allocate f.reg f.u venue venue "TKB" 10.0 pid
-  let mk modify = submitMustFail venue $ createCmd (modify VenueTrade with
-        venue; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+  let mk modify = submitMustFail (actAs [venue, f.u]) $ createCmd (modify VenueTrade with
+        venue; sender = f.u; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
         label = tradeLabel; payId = pid; token = tokenAddr; payee = uAddr; amount = tenTokens
         allocation; allocationDisclosed = None; gatewayToken = f.token; claimId = venueClaimId pid; recipient = recipientAddr)
   mk (\t -> t with payId = idOf "99")                                   -- not derived from venue and label
@@ -1773,7 +1780,7 @@ testATradeNeedsItsIdsFromTheVenueAndTheLabel = do
 refusedClaim : Text -> F -> Text -> [Leg] -> ContractId FundedClaim -> Script ()
 refusedClaim why f recorded legs claim = do
   refusedAs why f (asBuilder f) $ advance f.chain "01" [recorded] legs
-  Some _ <- queryContractId f.gateway claim
+  Some _ <- queryContractId f.builder claim
   pure ()
 
 testAClaimLegSettlesAndNamesTheDepositLine : Script ()

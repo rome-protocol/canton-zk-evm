@@ -17,7 +17,7 @@
 | `DepositRequest` | Signed by the depositor: the deposit id, the EVM address that will claim the wrapped token, and the depositor's allocation to the gateway. Its `Lock` choice executes the allocation. |
 | `WithdrawalAcceptance` | Signed by a party that wants to receive withdrawals. It stands until archived. Its `Receive` choice has the gateway transfer a Canton token from its custody to that party through the registry's own factory, and accepts the transfer as the party in the same transaction. |
 | `DvpTerms` | Signed by U and V: "if the gateway records this payment (this id, token, payee and amount), execute this allocation". The payment id is the EVM payment id itself, 64 lowercase hex digits, and it is the SHA-256, in lowercase hex, of the UTF-8 bytes of the text `<U's party id>,<V's party id>,<label>` (`paymentId` in `Chain.daml`), so only terms that U and V both signed can carry it. The amount is never zero. `Settle` executes the allocation. |
-| `VenueTrade` | From package 0.4.0. Signed by a venue, a Canton party that runs trades of its own: "if the gateway records this payment (this id, token, payee and amount), execute this allocation, which goes to the gateway, and make a funded claim for this EVM address". The payment id is `venueTradeId venue label` and the claim id `venueClaimId payId` (see "A venue's trade" below). Its `SettleTrade` choice executes the allocation and creates the `FundedClaim`; it needs the operator, the confirmer and the gateway together, so only `Advance` can exercise it. |
+| `VenueTrade` | From package 0.4.0. Signed by a venue, a Canton party that runs trades of its own, and by the seller (`sender`), whose holding the allocation locks: "if the gateway records this payment (this id, token, payee and amount), execute this allocation, which goes to the gateway, and make a funded claim for this EVM address". The payment id is `venueTradeId venue label` and the claim id `venueClaimId payId` (see "A venue's trade" below). Its `SettleTrade` choice executes the allocation and creates the `FundedClaim`; it needs the operator, the confirmer and the gateway together, so only `Advance` can exercise it. |
 | `FundedClaim` | From package 0.4.0. Signed by the operator, the confirmer and the gateway: "the gateway holds this amount of the Canton token, and this EVM address may claim its wrapped form with the deposit line of this claim id". Its `Redeem` choice archives it, and is what a claim leg does. |
 
 ## One `Advance`
@@ -48,7 +48,7 @@ Who provides the authority: `Advance` runs with the authority of the signatories
 | Deposit | `DepositRequest.Lock` | the depositor, the operator, the confirmer and the gateway |
 | Withdrawal | `WithdrawalAcceptance.Receive` | the receiver, the operator, the confirmer and the gateway |
 | Payment | `DvpTerms.Settle` | U and V, the operator and the confirmer |
-| Trade (0.4.0) | `VenueTrade.SettleTrade` | the venue, the operator, the confirmer and the gateway |
+| Trade (0.4.0) | `VenueTrade.SettleTrade` | the venue, the seller, the operator, the confirmer and the gateway |
 | Claim (0.4.0) | `FundedClaim.Redeem` | the operator, the confirmer and the gateway |
 
 `Lock` and `Receive` need the operator, the confirmer and the gateway together, and `Settle` the operator and the confirmer together. As the signatories of `ZkChain`, they provide that authority inside `Advance`; the design provides it nowhere else. None of them can settle alone, and the builder cannot settle at all. The operator, the confirmer and the gateway can settle together by design. They are the chain's root of trust.
@@ -62,7 +62,7 @@ A Canton venue can settle a trade against a payment made on the EVM, with no cha
 What Daml checks:
 
 - the trade and the claim name this chain's id, operator, confirmer and gateway, and a claim leg's token is the one the claim names;
-- `SettleTrade` checks that the allocation's executor is the venue, that it goes to the gateway, that it is of the instrument the trade's `GatewayToken` names and that its amount is more than zero. The claim's amount is the allocation's;
+- `SettleTrade` checks that the allocation's executor is the venue, that its sender is the trade's `sender` (the token standard's `Allocation_ExecuteTransfer` needs its executor, sender and receiver together, so the seller signs the trade), that it goes to the gateway, that it is of the instrument the trade's `GatewayToken` names and that its amount is more than zero. The claim's amount is the allocation's;
 - a trade's `ensure` checks that `payId` is `venueTradeId venue label`, that `claimId` is `venueClaimId payId`, that `token`, `payee` and `recipient` are 40 lowercase hex digits, that the amount is 64 and not zero, and that the chain id is more than zero.
 
 **Why the payment id has a domain tag.** `venueTradeId venue label` is the SHA-256 of `venue-trade,<venue party id>,<label>`. A `DvpTerms` payment id is the SHA-256 of two party ids and a label (`paymentId`). The tag "venue-trade" is not a party id, so a trade's id can never equal the id of any `DvpTerms`: a payment that the gateway recorded for one cannot settle the other. The claim id is the SHA-256 of `claim,` and the payment id, so one payment has one claim.
