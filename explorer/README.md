@@ -4,6 +4,8 @@ A block explorer and faucet for Ostia, a Canton zkEVM (chain id 770101). It show
 
 The explorer reads two sources. reth, the chain's execution client, gives the EVM side of every block. Canton gives the block record: the explorer reads it as the reader party, a party that sees the block records and nothing else. A block is shown as final only when its record is on Canton. Until then it is shown from reth and marked as being proven. The block page's Verify button checks the proof in the visitor's browser and is greyed out while a block is being proven.
 
+On Ostia's DevNet the explorer checks every proof under the key for its block (see [Key ranges](#key-ranges)): key A from block 0 (ZisK 1.3.1) and key B from block 15573 (ZisK 1.3.2-alpha, since 12:02 UTC on 2026-10-27). On the same day the indexer stopped after 16,384 blocks, because every block spent a new id for each row it looked up in a dictionary table, even when the row existed (two a block in the two-row party table, whose ids are a smallint). Pull request #120 looks a value up before it inserts it, restarts the four id sequences after their highest id, and adds the `db_ids` health check, which is `degraded` above 50% of an id column's range and `down` above 90%.
+
 ## The parts
 
 | Part | Where | What it does |
