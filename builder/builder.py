@@ -1071,7 +1071,7 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
     if claimed is not None:
         claimed["allocations"].add(trade["allocation"])
     shown = disclosed_allocation(trade)
-    if shown:
+    if shown and trade["allocation"] not in canton.allocations:   # only an allocation the builder cannot see needs it, and only a trusted venue's got here
         canton.disclosed[trade["contractId"]] = shown
     return {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
 

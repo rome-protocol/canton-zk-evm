@@ -532,13 +532,15 @@ class VenueLegs(LegCase):
 
     def test_the_trades_disclosed_allocation_goes_with_the_static_list(self):
         static = {"templateId": "pkg:Some.Token:Registry", "contractId": "reg-1", "createdEventBlob": "abcd", "synchronizerId": "sync::1"}
-        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+        s.cfg.venues = ("venue::1",)
         s.cfg.disclosed = [static]
         self.build(s)
         self.assertEqual(self.sent_disclosed(s), [static, DISCLOSED_ALLOCATION])
 
     def test_a_disclosed_allocation_already_in_the_static_list_is_not_sent_twice(self):
-        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], allocations=[])
+        s.cfg.venues = ("venue::1",)
         s.cfg.disclosed = [DISCLOSED_ALLOCATION]
         self.build(s)
         self.assertEqual(self.sent_disclosed(s), [DISCLOSED_ALLOCATION])
@@ -619,6 +621,7 @@ class VenueLegs(LegCase):
         s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
         result = self.build(s)
         self.assertEqual((result["legs"], result["leftOut"]), (1, []))
+        self.assertIsNone(self.sent_disclosed(s))   # the builder sees it, so the trade's unchecked disclosure does not go with the Advance
         s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
         s.ledger.views["alloc-t1"] = {"settleBefore": "2020-01-01T00:00:00Z"}
         self.assert_left_out(s, t, "settle-before")
@@ -668,7 +671,8 @@ class VenueLegs(LegCase):
         other_id = "ee" * 32
         trade2 = ("trade-2", {**TRADE[1], "payId": other_id})
         s = self.setup({ALICE: [], BOB: []})
-        s.ledger.trades, s.ledger.tokens = [TRADE, trade2], [TOKEN]
+        s.cfg.venues = ("venue::1",)
+        s.ledger.trades, s.ledger.tokens, s.ledger.allocations = [TRADE, trade2], [TOKEN], []
         a, c = self.leg_tx(s, TRADE_PAY), self.leg_tx(s, Leg(PAYMENT, other_id, TKA, PAYEE, 10), sender=BOB)
         s.reth.pool[ALICE], s.reth.pool[BOB] = [a], [c]
         result = self.build(s)
@@ -1714,6 +1718,20 @@ class CommandLine(Case):
         (sub,) = s.ledger.submitted
         self.assertEqual(sub["readAs"], [BUILDER, "op::1", "op2::2"])   # the builder first, no party twice
         self.assertEqual(sub["disclosedContracts"], disclosed)
+
+    def test_venue_comes_from_the_command_line(self):
+        s = self.setup({ALICE: [tx(ALICE, 0)]})
+        seen = []
+        real = b.build_block
+
+        def spy(cfg, *args, **kwargs):
+            seen.append(cfg.venues)
+            return real(cfg, *args, **kwargs)
+
+        with mock.patch.object(b, "build_block", spy):
+            code, out = self.run_main(s, "--venue", "v::1", "--venue", "v::1")
+        self.assertEqual((code, out["committed"]), (0, True))
+        self.assertEqual(seen, [("v::1",)])   # no party twice
 
     def test_the_package_id_comes_from_the_command_line(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
