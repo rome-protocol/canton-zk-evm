@@ -78,13 +78,13 @@ h3 { font-family: "Literata", Georgia, "Times New Roman", serif; font-size: 16px
 /* Above a phone the nine links and the search share one row (the page is 1280 px wide at most, so a wide screen needs the same room): the links sit a little closer, and below 1366 px a little closer still, with a box that still shows the whole hint. */
 @media (min-width: 721px) {
   .top { gap: 16px; }
-  .top .search { flex-basis: 400px; }
+  .top .search { flex-basis: 388px; }
   .nav { gap: 2px; }
   .nav .navlink { padding: 6px 9px; }
 }
 @media (min-width: 721px) and (max-width: 1365px) {
   .top { gap: 12px; }
-  .top .search { flex-basis: 388px; padding: 8px 12px; }
+  .top .search { flex-basis: 380px; padding: 8px 12px; }
   .nav .navlink { padding: 6px 6px; }
 }
 .thread { height: 2px; background: linear-gradient(90deg, var(--evm), var(--canton)); opacity: .85; }
