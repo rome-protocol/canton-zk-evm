@@ -7,7 +7,7 @@ nor the journal: they report state changes through `Pool.events()`, and the prod
 With one prover (or none configured: the local prover the prove command names) the pool is a plain synchronous runner: one try, no health,
 no retry, no events. With two or more, a failed job is tried once more on another prover, and a prover's health is tracked.
 """
-import math, os, re, shutil, signal, subprocess, threading, time
+import math, os, re, shutil, signal, subprocess, sys, threading, time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -161,12 +161,13 @@ class Ticket:
 class Pool:
     def __init__(self, provers: list, timeout: float = DEFAULT_TIMEOUT, clock=time.monotonic, run=run_command,
                  cooldown_start: float = COOLDOWN_START, cooldown_max: float = COOLDOWN_MAX,
-                 busy_wait: float = BUSY_RETRY_WAIT, busy_retries: int = BUSY_RETRIES):
+                 busy_wait: float = BUSY_RETRY_WAIT, busy_retries: int = BUSY_RETRIES, stop: threading.Event | None = None):
         if not provers:
             raise ValueError("a pool needs at least one prover")
         self.provers, self.timeout, self.clock, self.run = list(provers), timeout, clock, run
         self.cooldown_start, self.cooldown_max = cooldown_start, cooldown_max
         self.busy_wait, self.busy_retries = busy_wait, busy_retries
+        self.stop = stop    # set by a stop signal: the waits that follow a coordinator's refusal end (the block is given up, its transactions kept)
         for p in self.provers:
             p.cooldown = cooldown_start
         self.managed = len(self.provers) >= 2   # health and retry only exist with two or more provers
@@ -223,23 +224,25 @@ class Pool:
         tried: list = []     # (prover, error) of the tries that failed
         avoid_now: list = []  # a prover that just said its workers are busy, while another is free
         busy_asked = 0       # refusals "workers are busy" in a row
+        refused = False      # a coordinator refused this job at least once: its later waits end on a stop and it keeps its place in the queue
         single_wait = self.cooldown_start   # the wait before a lone prover is asked again after "no ready worker"; it doubles
         while True:
-            prover = self._take(ticket, [t[0] for t in tried] + avoid_now)
+            prover = self._take(ticket, [t[0] for t in tried] + avoid_now, front=refused, stoppable=refused)
             avoid_now = []
-            if prover is None:   # cancelled while it waited: never sent
-                raise JobError("cancelled", outcome="cancelled")
+            if prover is None:   # cancelled (or stopped, while it waited out a refusal): never sent
+                raise JobError("cancelled" if ticket.cancelled else "stopped while its prover was unavailable", outcome="cancelled")
             out = job.out_dir if not tried else job.out_dir.with_name(job.out_dir.name + "-retry")
             try:
                 proof = self._try(prover, job, out)
             except JobError as e:
-                if e.unavailable:   # a refusal at once: the prover is unavailable, no proof was tried; the block is not blamed and the failure count does not grow
+                if e.unavailable and not e.connection:   # a refusal at once: the prover is unavailable, no proof was tried; the block is not blamed and the failure count does not grow
                     self._release(prover, None, failed=None)
                     if ticket.cancelled:
                         raise JobError("cancelled", outcome="cancelled")
+                    refused = True
                     busy_asked = busy_asked + 1 if e.unavailable == "busy" else 0
                     if e.unavailable == "busy" and busy_asked <= self.busy_retries:
-                        if self._free_other(prover):
+                        if self._free_other(prover, [t[0] for t in tried]):
                             avoid_now = [prover]       # another prover is free: send the job there at once
                         else:
                             self._pause(ticket, self.busy_wait)   # this one, after a short wait: a job abandoned or timed out may still be finishing
@@ -248,7 +251,12 @@ class Pool:
                     reason = "its coordinator has no ready worker" if e.unavailable == "capacity" else "its coordinator stays busy"
                     if self.managed:   # down with the usual cool-down; the job waits for a prover that is up (this one again when its cool-down is over)
                         self._down(prover, reason)
+                        if tried and not self._another(prover, [t[0] for t in tried]):   # the first prover's real failure stays the block's failure: no waiting for a prover that is out
+                            err = self._failed(tried[-1][1], tried)
+                            err.tried = [t[0].name for t in tried]
+                            raise err
                     else:              # one prover: wait, then ask again, rather than fail the block over and over
+                        self._note(f"{prover.name} refused the job ({reason}); asking again in {single_wait:g} s")
                         self._pause(ticket, single_wait)
                         single_wait = min(single_wait * 2, self.cooldown_max)
                     continue
@@ -276,16 +284,20 @@ class Pool:
         err = JobError(f"the block failed on every prover it was tried on: {why}", outcome=last.outcome)
         return err
 
-    def _another(self, prover: Prover) -> bool:
+    def _another(self, prover: Prover, exclude: list = ()) -> bool:
+        """Another prover, not in `exclude`, that is up or whose cool-down is over."""
         now = self.clock()
         with self.cond:
-            return any(p is not prover and (p.state == "up" or now >= p.down_until) for p in self.provers)
+            return any(p is not prover and p not in exclude and (p.state == "up" or now >= p.down_until) for p in self.provers)
 
-    def _free_other(self, prover: Prover) -> bool:
-        """Another prover that is up and not busy right now."""
+    def _free_other(self, prover: Prover, exclude: list = ()) -> bool:
+        """Another prover, not in `exclude` (the ones this block already failed on, which it never goes back to), that is up and not busy right now."""
         now = self.clock()
         with self.cond:
-            return any(p is not prover and not p.busy and (p.state == "up" or now >= p.down_until) for p in self.provers)
+            return any(p is not prover and p not in exclude and not p.busy and (p.state == "up" or now >= p.down_until) for p in self.provers)
+
+    def _note(self, text: str) -> None:
+        print(f"prover pool: {text}", file=sys.stderr, flush=True)
 
     def _try(self, prover: Prover, job: Job, out: Path) -> str:
         env = {"CZE_PROVE_TIMEOUT": str(math.ceil(self.timeout))}
@@ -315,14 +327,18 @@ class Pool:
 
     # -- dispatch and health
 
-    def _take(self, ticket: Ticket, avoid: list) -> Prover | None:
-        """Waits for the ticket's turn (oldest first) and a free prover that is up (one that is not in `avoid` when another will do)."""
+    def _stopped(self) -> bool:
+        return self.stop is not None and self.stop.is_set()
+
+    def _take(self, ticket: Ticket, avoid: list, front: bool = False, stoppable: bool = False) -> Prover | None:
+        """Waits for the ticket's turn (oldest first) and a free prover that is up (one that is not in `avoid` when another will do).
+        `front`: a retry, or a job a coordinator refused, goes before the blocks that came after it. `stoppable`: a stop ends the wait (None)."""
         with self.cond:
             if ticket not in self.queue:
-                self.queue.insert(0, ticket) if avoid else self.queue.append(ticket)   # a retry goes before the blocks that came after it
+                self.queue.insert(0, ticket) if avoid or front else self.queue.append(ticket)   # a retry goes before the blocks that came after it
             try:
                 while True:
-                    if ticket.cancelled:
+                    if ticket.cancelled or (stoppable and self._stopped()):
                         return None
                     if self.queue[0] is ticket:
                         now = self.clock()
@@ -338,25 +354,27 @@ class Pool:
                             prover.jobs += 1
                             return prover
                     waits = [p.down_until - now for p in self.provers if p.state == "down"] if self.queue[0] is ticket else []
-                    self.cond.wait(timeout=min(max(0.05, min(waits)), 1.0) if waits else None)
+                    self.cond.wait(timeout=min(max(0.05, min(waits)), 1.0) if waits else (0.5 if self.stop is not None else None))
             finally:
                 if ticket in self.queue:
                     self.queue.remove(ticket)
                     self.cond.notify_all()
 
     def _pause(self, ticket: Ticket, seconds: float) -> None:
-        """Waits `seconds` (real time), at most; a cancel ends it at once."""
+        """Waits `seconds` (real time), at most; a cancel ends it at once, and a stop within half a second."""
         end = time.monotonic() + seconds
         with self.cond:
-            while not ticket.cancelled and (left := end - time.monotonic()) > 0:
-                self.cond.wait(timeout=left)
+            if ticket not in self.queue:   # the job keeps its place at the front while it waits (the next _take removes it), so no newer block takes the prover it will ask again
+                self.queue.insert(0, ticket)
+            while not ticket.cancelled and not self._stopped() and (left := end - time.monotonic()) > 0:
+                self.cond.wait(timeout=min(left, 0.5))
 
     def _release(self, prover: Prover, connection_error: JobError | None, failed: bool | None) -> None:
         """`failed` None: the job never ran (the coordinator refused it): neither a failure nor a proof."""
         with self.cond:
             prover.busy = False
             if failed is None:
-                pass
+                prover.jobs -= 1   # `jobs` counts the jobs a prover took, and a refused ask was not one
             elif failed:
                 prover.failures += 1
             elif self.managed:
@@ -375,4 +393,5 @@ class Pool:
             prover.down_until = self.clock() + prover.cooldown
             prover.cooldown = min(prover.cooldown * 2, self.cooldown_max)
             self._events.append({"name": prover.name, "state": "down", "reason": reason})
+            self._note(f"{prover.name} is down for {prover.down_until - self.clock():g} s: {reason}")
             self.cond.notify_all()

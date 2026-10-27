@@ -526,6 +526,88 @@ class Unavailable(Case):
             self.result(ticket, 5)
         self.assertEqual(e.exception.outcome, "cancelled")
 
+    def test_a_real_failure_then_a_busy_retry_never_hangs(self):
+        pool = self.pool([A, B_], busy_wait=0.1, busy_retries=2)
+        self.script(A, "fail")
+        self.script(B_, "busy", "ok")
+        done = self.prove(pool, self.job(), 10)
+        self.assertEqual((done.prover, done.tried), ("gpu1", ["gpu0"]))
+        self.script(A, "ok")
+        self.assertEqual(self.prove(pool, self.job(), 10).prover in ("gpu0", "gpu1"), True)   # a later block is not stuck behind it
+
+    def test_a_real_failure_then_a_prover_that_stays_busy_ends_as_a_block_failure(self):
+        pool = self.pool([A, B_], busy_wait=0.05, busy_retries=2)
+        self.script(A, "fail", "ok")
+        self.script(B_, "busy", "busy", "busy")
+        with self.assertRaises(pv.JobError) as e:
+            self.prove(pool, self.job(), 10)
+        self.assertEqual(e.exception.tried, ["gpu0"])
+        self.assertEqual(pool.status()[1]["failures"], 0)
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")
+
+    def test_a_real_failure_then_a_capacity_refusal_is_a_bounded_block_failure(self):
+        pool = self.pool([A, B_])
+        self.script(A, "fail", "ok")
+        self.script(B_, "capacity", "capacity")
+        start = time.monotonic()
+        with self.assertRaises(pv.JobError) as e:
+            self.prove(pool, self.job(), 10)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertEqual(e.exception.tried, ["gpu0"])
+        self.assertEqual([p["state"] for p in pool.status()], ["up", "down"])
+        self.assertEqual([p["failures"] for p in pool.status()], [1, 0])
+        self.assertEqual(sum(1 for c in self.calls() if c.endswith("capacity")), 1)   # gpu1 was asked once, not over and over
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")             # a later block proves on gpu0
+
+    def test_a_refused_job_keeps_its_place_ahead_of_newer_blocks(self):
+        pool = self.pool([A])
+        self.script(A, "capacity", "ok", "sleep 1")
+        first = pool.submit(self.job())
+        time.sleep(0.1)
+        second = pool.submit(self.job())
+        self.result(first, 10)
+        self.assertFalse(second.done.is_set())      # the second block did not take the prover while the first waited out its refusal
+        self.result(second, 10)
+
+    def test_a_stop_ends_the_wait_after_a_refusal(self):
+        for script in ("capacity", "busy"):
+            stop = threading.Event()
+            pool = self.pool([A], stop=stop, busy_wait=30)
+            self.script(A, *[script] * 20)
+            ticket = pool.submit(self.job())
+            time.sleep(0.3)
+            stop.set()
+            with self.assertRaises(pv.JobError) as e:
+                self.result(ticket, 5)
+            self.assertEqual(e.exception.outcome, "cancelled", script)
+
+    def test_a_stop_does_not_end_the_wait_of_a_block_that_was_never_refused(self):
+        stop = threading.Event()
+        pool = self.pool([A], stop=stop)
+        self.script(A, "sleep 1")
+        stop.set()
+        self.assertEqual(self.prove(pool, self.job(), 10).prover, "gpu0")
+
+    def test_a_refusal_that_also_names_a_lost_connection_is_a_connection_error(self):
+        script = self.dir / "refuse.sh"
+        script.write_text("#!/bin/sh\necho 'code: The service is currently unavailable, message: tcp connect error: Connection refused (os error 111)' >&2\nexit 1\n")
+        script.chmod(0o755)
+        with self.assertRaises(pv.JobError) as e:
+            pv.run_command(str(script), [], {}, 10)
+        self.assertTrue(e.exception.connection)
+        pool = self.pool([A], busy_wait=0.05)
+        job = pv.Job(make_input=None, prove_cmd=str(script), input_path=self.input, out_dir=self.dir / "out-x", check=check_block)
+        start = time.monotonic()
+        with self.assertRaises(pv.JobError):    # one prover: a failed block at once, as before; no waiting as for a busy coordinator
+            self.result(pool.submit(job), 5)
+        self.assertLess(time.monotonic() - start, 3)
+
+    def test_the_jobs_count_leaves_out_refused_asks(self):
+        pool = self.pool([A, B_], busy_wait=0.05)
+        self.script(A, "busy", "busy", "ok")
+        self.prove(pool, self.job(), 10)
+        self.assertEqual(sum(p["jobs"] for p in pool.status()), 1)
+
     def test_the_stable_parts_of_the_messages_are_recognised(self):
         for text, kind in [("Cluster unavailable: workers are busy running another job; retry shortly", "busy"),
                            ("code: The service is currently unavailable", "busy"),

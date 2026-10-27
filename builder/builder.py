@@ -91,6 +91,7 @@ class Config:
     max_block_tx_bytes: int = 65536   # the most raw transaction bytes a block is offered (--max-block-tx-bytes): our participant's Daml work grows with the Advance argument, about 23 ms per KB in each of two passes
     prover_input_dir: Path | None = None   # --prover-input-dir: a folder the provers' machines also see; the input is copied there and its path is given to the prover (default: the input's own path)
     pool: object = None               # the prover pool (provers.Pool), made by main(); None: one local prover, the prove command alone, made for each block
+    stop: object = None               # the producer's stop event (threading.Event), set by produce(): a stop ends the wait that follows a prover's refusal
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -636,8 +637,8 @@ def run_prover(cmd: str, args: list, env: dict | None = None, timeout: float | N
     run_command(cmd, args, env, timeout)
 
 
-def new_pool(provers: list, timeout: float = DEFAULT_TIMEOUT) -> Pool:
-    return Pool(provers, timeout, run=lambda *a, **k: run_prover(*a, **k))
+def new_pool(provers: list, timeout: float = DEFAULT_TIMEOUT, stop: "threading.Event | None" = None) -> Pool:
+    return Pool(provers, timeout, run=lambda *a, **k: run_prover(*a, **k), stop=stop)
 
 
 def utcnow() -> datetime:
@@ -1407,7 +1408,7 @@ def start_proof(cfg: Config, built: Built, attempt: "Attempt | None" = None) -> 
     attempt = attempt or Attempt(None, 1)
     work, attempt_dir, block_hash = built.work, built.attempt_dir, built.block_hash
     prover = Path(cfg.prove_cmd).name
-    pool = cfg.pool or new_pool([Prover(prover)])
+    pool = cfg.pool or new_pool([Prover(prover)], stop=cfg.stop)
     attempt.event("proof_queued", prover=prover)
     proving = time.monotonic()
     kept = [t["hash"] for t in built.chosen]
@@ -3129,6 +3130,9 @@ def produce(cfg: Config, args) -> int:
         signal.signal(signal.SIGINT, signal.SIG_DFL)
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    cfg.stop = stop
+    if cfg.pool is not None:
+        cfg.pool.stop = stop
     engine = Pipeline if args.max_in_flight > 1 else Producer   # one block at a time keeps the code path it has always had
     producer = engine(cfg, stop, args.idle_ms / 1000, args.heartbeat_seconds, args.status_file, args.exclude_cooldown_seconds,
            gather_ms=args.gather_ms, test=args.test, source_commit=source_commit(), max_in_flight=args.max_in_flight)
