@@ -3,10 +3,10 @@ name: demo
 on:
   workflow_dispatch:
   pull_request:
-    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "apps/otc/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
   push:
     branches: [main]
-    paths: [".github/actions/pinned-images/**", "demo/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
+    paths: [".github/actions/pinned-images/**", "demo/**", "apps/otc/**", "gateway/**", "tests/demo_*", "tests/test_demo_*", "network/**", "daml/**", "builder/**", "sidecar/**", "verifier/**", "mpt/**", "explorer/**", "PINS", "tests/FOUNDRY", ".github/workflows/demo.yml"]
 
 permissions:
   contents: read
@@ -59,6 +59,22 @@ jobs:
           distribution: temurin
           java-version: "21"
       - run: tests/demo_rehearsal.sh
+
+  # The OTC swap of apps/otc (a Canton token for an ERC-20, through a venue) on the real network: real reth (launch.sh, discovery off), Canton, both Daml packages,
+  # the builder started with --venue, the sidecar for the legs; the proof is a stand-in. The swap settles in one block, the claim follows in a later one, and
+  # a short payment is left out (tests/demo_otc.sh).
+  otc-swap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_otc.sh
 
   # A chain that runs is upgraded to the next version of the Daml package, its gas cap is raised, and the block gas limit goes over the old cap,
   # on the real network: the DAR of the tag v0.2.0 and the current source (0.4.0), the package put on each participant in the steps of

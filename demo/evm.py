@@ -22,6 +22,9 @@
   evm.py pay <u|v> <payment id> <token> <to> <amount>
                                    the sender pays <to> <amount> TKA (a whole number) through the gateway, against the payment with that
                                    id (64 lowercase hex digits). The sender must have approved the gateway for it first
+  evm.py replace <u|v>             replace each transaction of the sender that is waiting in reth's pool (not in a block) with a transfer of nothing to
+                                   itself, at twice the fee, same nonce; print the new transaction hashes. A payment the builder leaves out stays in the
+                                   pool and holds back every later transaction of its sender, until it is replaced
   evm.py wrap <u|v> <token> <amount>
                                    the sender wraps <amount> of the chain's coin (a whole number) into WtROME, the wrapped coin at <token>:
                                    a send of that much with deposit(), which mints as many WtROME to the sender. Then WtROME can be paid
@@ -132,16 +135,29 @@ def rpc(method: str, params: list):
     return reply["result"]
 
 
-def send(folder: Path, who: str, to: str | None, data: str, gas: int, value: int = 0) -> str:
-    """U or V signs a type-2 transaction and sends it to reth's pool. The key is read from its file and used here only."""
+def send(folder: Path, who: str, to: str | None, data: str, gas: int, value: int = 0, nonce: int | None = None, fee_factor: int = 1) -> str:
+    """U or V signs a type-2 transaction and sends it to reth's pool. The key is read from its file and used here only. The nonce is the next one the
+    pool would take if none is given; a nonce that is pending already, with a fee_factor of 2 or more, replaces that transaction."""
     make_keys(folder)
     account = Account.from_key(load_key(folder, who))
-    tx = {"type": 2, "chainId": int(rpc("eth_chainId", []), 16), "nonce": int(rpc("eth_getTransactionCount", [account.address, "pending"]), 16),
-          "value": value, "gas": gas, "maxFeePerGas": MAX_FEE, "maxPriorityFeePerGas": PRIORITY_FEE, "data": "0x" + data}
+    if nonce is None:
+        nonce = int(rpc("eth_getTransactionCount", [account.address, "pending"]), 16)
+    tx = {"type": 2, "chainId": int(rpc("eth_chainId", []), 16), "nonce": nonce, "value": value, "gas": gas,
+          "maxFeePerGas": MAX_FEE * fee_factor, "maxPriorityFeePerGas": PRIORITY_FEE * fee_factor, "data": "0x" + data}
     if to:
         tx["to"] = to_checksum_address(to)
     raw = account.sign_transaction(tx).raw_transaction.hex().removeprefix("0x")
     return rpc("eth_sendRawTransaction", ["0x" + raw])
+
+
+def replace_pending(folder: Path, who: str) -> list:
+    """Replaces each transaction of the sender that is in the pool and not in a block (nonces from the latest count up to the pending count) with
+    a transfer of nothing to itself, at twice the fee, which the pool takes in place of the old one. A payment that the builder leaves out stays in
+    the pool and holds back every later transaction of its sender until it is replaced like this."""
+    make_keys(folder)
+    address = Account.from_key(load_key(folder, who)).address
+    first, last = (int(rpc("eth_getTransactionCount", [address, tag]), 16) for tag in ("latest", "pending"))
+    return [send(folder, who, address, "", 21_000, nonce=nonce, fee_factor=2) for nonce in range(first, last)]
 
 
 def deploy_data(v_address: str) -> str:
@@ -305,6 +321,8 @@ def main(argv: list) -> dict:
     if cmd == ["pay"] and n == 6:
         data = call_data("pay(bytes32,address,address,uint256)", [id_of(argv[2]), address_of(argv[3], "the token"), address_of(argv[4], "the payee"), whole(argv[5], "the amount") * ONE])
         return {"tx": send(folder, who_sends(argv[1]), gateway_address(), data, PAY_GAS)}
+    if cmd == ["replace"] and n == 2:
+        return {"txs": replace_pending(folder, who_sends(argv[1]))}
     if cmd == ["wrap"] and n == 4:
         return {"tx": send(folder, who_sends(argv[1]), address_of(argv[2], "the token"), SELECTOR_DEPOSIT, WRAP_GAS, whole(argv[3], "the amount") * ONE)}
     if cmd == ["receipt"] and n == 2:

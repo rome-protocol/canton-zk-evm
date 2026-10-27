@@ -13,3 +13,5 @@ daml/dist/
 node_modules/
 explorer/dist/
 explorer/public/verify/
+apps/otc/build/
+apps/otc/dist/

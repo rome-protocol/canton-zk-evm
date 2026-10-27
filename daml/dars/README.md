@@ -8,7 +8,8 @@ The Canton token standard (CIP-0056) API packages the Daml package builds agains
 | `splice-api-token-holding-v1-1.0.0.dar` | the `Holding` interface |
 | `splice-api-token-allocation-v1-1.0.0.dar` | the `Allocation` interface, whose `Allocation_ExecuteTransfer` the terms execute |
 | `splice-api-token-allocation-instruction-v1-1.0.0.dar` | the factory a wallet allocates through (tests only) |
+| `splice-api-token-allocation-request-v1-1.0.0.dar` | the `AllocationRequest` interface, which the OTC app's trade implements (`apps/otc`; the canton-zk-evm package does not use it) |
 | `splice-api-token-transfer-instruction-v1-1.0.0.dar` | the factory a withdrawal transfers through; the reference token needs it too |
 | `splice-test-token-v1-1.0.1.dar` | the reference token (tests only) |
 
-On 2026-10-03 every file here was compared, byte for byte, with the one in the release bundle (same SHA-256).
+On 2026-10-03 every file here was compared, byte for byte, with the one in the release bundle (same SHA-256). `splice-api-token-allocation-request-v1-1.0.0.dar` was added on 2026-10-27 from the same release bundle, with the same check.
