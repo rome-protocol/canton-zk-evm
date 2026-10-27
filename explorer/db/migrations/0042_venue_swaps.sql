@@ -33,3 +33,5 @@ create table canton_venue_cursor (
   ledger_offset  bigint not null check (ledger_offset >= 0),
   read_at        timestamptz not null
 );
+-- The swaps list walks the payments, newest first, and takes the ones that a venue's trade is behind.
+create index on gateway_legs (block_number desc, leg_index desc) where kind = 3;

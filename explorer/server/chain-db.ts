@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { blockLegs as legsOfBlock, txLegs as legsOfTx, type BlockLeg } from "./indexer/leg-canton.ts";
 import { evaluate, specOf, withNotStarted, type Evaluation, type RawRow } from "./health.ts";
 
 /** The database could not be read. The routes answer 502 for it, like a read that reth failed. */
@@ -124,6 +125,24 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
       [number],
     );
     return rows.map((r) => ({ hash: hex(r.hash), from: hex(r.from_address), to: hexOrNull(r.to_address), success: r.status === 1, transferInput: r.transfer_input ? hex(r.transfer_input) : null }));
+  }
+
+  /** The gateway legs a final block recorded, each with what Canton shows of the swap it is one side of. */
+  async function blockLegs(number: number): Promise<BlockLeg[]> {
+    try {
+      return await legsOfBlock(pool, number);
+    } catch (e) {
+      throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`);
+    }
+  }
+
+  /** The gateway legs a final transaction caused, in the same form. */
+  async function txLegs(hash: string): Promise<BlockLeg[]> {
+    try {
+      return await legsOfTx(pool, hash);
+    } catch (e) {
+      throw new ChainDbError(`the database cannot be read: ${(e as Error).message}`);
+    }
   }
 
   /** A final transaction with its receipt's fields and logs, or undefined. */
@@ -270,7 +289,7 @@ export function createChainDb(pool: Pool, healthPool: Pool = pool) {
     return { deriveCursor: r?.derive === null || r?.derive === undefined ? null : Number(r.derive), chainInstance: r?.instance ?? null };
   }
 
-  return { head, latest, block, blockTxs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, health, genesisReferenced, indexFacts };
+  return { head, latest, block, blockTxs, blockLegs, txLegs, tx, blockOfUpdate, createdBy, finalOf, lifecycleOf, inFlight, indexer, health, genesisReferenced, indexFacts };
 }
 
 export type ChainDb = ReturnType<typeof createChainDb>;

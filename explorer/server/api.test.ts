@@ -87,7 +87,7 @@ async function boot(chain: FakeChain, { tracker, leak = false, faucet = false, s
   const built = createChainDb(db.pool);
   const chainDb0: ChainDb = leak
     ? {
-        head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)),
+        head: async () => leaky(await built.head()), latest: async (n) => leaky(await built.latest(n)), block: async (k) => leaky(await built.block(k)), blockTxs: async (n) => leaky(await built.blockTxs(n)), blockLegs: async (n) => leaky(await built.blockLegs(n)), txLegs: async (h) => leaky(await built.txLegs(h)),
         tx: async (h) => leaky(await built.tx(h)), blockOfUpdate: built.blockOfUpdate, createdBy: async (a) => leaky(await built.createdBy(a)), finalOf: built.finalOf, lifecycleOf: built.lifecycleOf, inFlight: built.inFlight,
         indexer: async () => leaky(await built.indexer()), genesisReferenced: built.genesisReferenced, indexFacts: built.indexFacts, health: built.health,
       }
@@ -115,6 +115,11 @@ const same = (o: unknown, fields: readonly string[]) => expect(keys(o)).toEqual(
 type Obj = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 /** Every object in an answer carries exactly its listed fields, the nested ones too. */
+function checkLeg(l: Obj) {
+  same(l, FIELDS.blockLeg);
+  if (l.canton) { same(l.canton, FIELDS.legCanton); if (l.canton.instrument) same(l.canton.instrument, FIELDS.legInstrument); }
+}
+
 function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown) {
   const b = body as Obj;
   same(b, FIELDS[kind]);
@@ -131,11 +136,13 @@ function checkFields(kind: "status" | "block" | "tx" | "address", body: unknown)
       if (b.canton.proof) { same(b.canton.proof, FIELDS.proof); for (const f of ["programVK", "rootC", "blockHash"]) same(b.canton.proof[f], FIELDS.fact); }
     }
     for (const t of b.transactions) { same(t, FIELDS.blockTx); if (t.transfer) same(t.transfer, FIELDS.transfer); }
+    for (const l of b.legs) checkLeg(l);
   } else if (kind === "tx") {
     if (b.lifecycle) same(b.lifecycle, FIELDS.lifecycle);
     if (b.block) same(b.block, FIELDS.txBlock);
     if (b.transfer) same(b.transfer, FIELDS.transfer);
     for (const l of b.logs) same(l, FIELDS.log);
+    for (const l of b.legs) checkLeg(l);
   } else {
     if (b.token) same(b.token, FIELDS.token);
     if (b.createdBy) same(b.createdBy, FIELDS.createdBy);

@@ -385,6 +385,7 @@ table gateway_legs
   column party text
   constraint gateway_legs_pkey PRIMARY KEY (block_number, leg_index)
   CREATE INDEX gateway_legs_account_block_number_idx ON public.gateway_legs USING btree (account, block_number DESC)
+  CREATE INDEX gateway_legs_block_number_leg_index_idx ON public.gateway_legs USING btree (block_number DESC, leg_index DESC) WHERE (kind = 3)
   CREATE INDEX gateway_legs_leg_id_idx ON public.gateway_legs USING btree (leg_id)
   CREATE INDEX gateway_legs_token_block_number_idx ON public.gateway_legs USING btree (token, block_number DESC)
   CREATE UNIQUE INDEX gateway_legs_pkey ON public.gateway_legs USING btree (block_number, leg_index)

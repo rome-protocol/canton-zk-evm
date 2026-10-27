@@ -31,7 +31,11 @@ export const FIELDS = {
   /** What a submission for verification is answered with, and where a verification is. */
   verifyQueued: ["guid"],
   verifyJob: ["guid", "status", "result"],
-  block: ["status", "number", "hash", "parentHash", "timestamp", "txCount", "gasUsed", "gasLimit", "baseFee", "miner", "stateRoot", "genesisReferenced", "canton", "transactions"],
+  block: ["status", "number", "hash", "parentHash", "timestamp", "txCount", "gasUsed", "gasLimit", "baseFee", "miner", "stateRoot", "genesisReferenced", "canton", "transactions", "legs"],
+  /** A gateway leg inside a block or a transaction, with what Canton shows of the swap it is one side of (`canton`, null on a leg that is not): no Canton party is ever part of it. */
+  blockLeg: ["block", "legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount", "txHash", "updateId", "canton"],
+  legCanton: ["role", "amount", "instrument", "settledUpdateId", "recipient"],
+  legInstrument: ["admin", "id"],
   canton: ["updateId", "recordTime", "template", "proofBytes", "proof", "hashesMatch", "headerHex", "txsHex", "proofHex"],
   /** The proof's three facts, each of which is a {value, ok} pair. */
   proof: ["programVK", "rootC", "blockHash"],
@@ -47,7 +51,7 @@ export const FIELDS = {
   inFlightTx: ["hash", "stage", "at"],
   inFlightAttempt: ["number", "strategy", "cutReason", "stage", "txCount", "poolWaiting", "cutAt", "builtAt", "proofStartedAt", "proofEndedAt", "submittedAt", "answeredAt", "outcome"],
   poolSample: ["waiting", "at"],
-  tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created"],
+  tx: ["hash", "status", "state", "reason", "lifecycle", "block", "from", "to", "value", "nonce", "type", "gas", "gasUsed", "gasPrice", "fee", "success", "input", "logs", "transfer", "toToken", "created", "legs"],
   address: ["address", "kind", "balance", "nonce", "token", "createdBy"],
   token: ["name", "symbol", "decimals"],
   createdBy: ["txHash", "block"],
@@ -133,6 +137,12 @@ export const REST_FIELDS = {
   cantonCustody: ["instrumentAdmin", "instrumentId", "custody", "custodyDecimals", "holdings", "supply", "supplyBlock", "ledgerOffset", "readAt"],
   holder: ["holder", "tokenId", "value", "updatedBlock"],
   /** A gateway leg in a list: where it is, and what the EVM recorded of it. `party` is the Canton party a withdrawal paid (its EVM event names it), null on the other kinds. */
+  /** A swap a Canton venue made with the EVM: both sides, the payment that settled it and the claim that redeemed it, if one did. */
+  swap: ["payId", "claimId", "status", "evm", "canton", "payment", "claim"],
+  swapEvm: ["token", "symbol", "decimals", "payer", "payee", "amount"],
+  swapCanton: ["amount", "instrument", "recipient", "updateId"],
+  swapPayment: ["block", "txHash", "legIndex", "updateId", "recordTime"],
+  swapClaim: ["block", "txHash", "legIndex", "updateId", "recordTime"],
   legItem: ["block", "txHash", "legIndex", "txIndex", "logIndex", "kind", "legId", "token", "account", "amount", "party"],
   /** What a search found: the page to open, and, for a name, the matches (at most ten). */
   search: ["path", "matches"],
