@@ -170,7 +170,7 @@ describe.skipIf(!TEST_URL)("the Canton side of the swaps, as the indexer keeps i
     });
   });
 
-  it("keeps one trade for each payment id and one claim for each claim id when a page creates them more than once, the newest of them, and the read goes on past it", async () => {
+  it("keeps one trade for each payment id and one claim for each claim id when a page creates them more than once (the trade an indexed payment pays, else the newest offer; the newest claim), and the read goes on past it", async () => {
     await inDb(async (pool) => {
       const { chain } = await indexed(pool, 5);
       const OTHER = "0x" + "c7".repeat(20), NEWEST = "0x" + "c8".repeat(20);
