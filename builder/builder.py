@@ -908,18 +908,25 @@ def allocation_in_use(cid: str, taken: set | None) -> str | None:
 def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     """A deposit needs an active request with its id and recipient, whose allocation goes from the depositor to the gateway in the registered
     instrument, for the amount claimed, and is live. A deposit whose request is no good may instead redeem a funded claim: any party can sign a
-    request that names a claim's id, so a request never holds the claim back."""
+    request that names a claim's id, so a request never holds the claim back. The reverse holds too: a claim's id is public (the payment's id is
+    in the chain's event), so an id that is the claim id of a funded claim, or of a venue trade whose payment would create one, is never settled
+    by a request: only that funded claim, with its own recipient, may settle it. Otherwise another party's request could use the id at the
+    gateway first, and the claim would be refused as used for ever."""
     chain = canton.chain
+    claims = [c for c in canton.claims if c["claimId"] == leg.id and names_chain(c, chain, "gateway")]
+    reserved = bool(claims) or any(t["claimId"] == leg.id and names_chain(t, chain, "gateway") for t in canton.trades)
     requests = [r for r in canton.requests if r["depositId"] == leg.id and r["recipient"] == leg.account and names_chain(r, chain, "gateway")]
     problem = None
-    if requests:   # the claims are read only when no request settles
+    if requests and not reserved:
         try:
             return request_leg(leg, canton, claimed, requests)
         except NoCantonSide as e:
             problem = e
-    claims = [c for c in canton.claims if c["claimId"] == leg.id and c["recipient"] == leg.account and names_chain(c, chain, "gateway")]
-    if claims:
-        return claim_leg(leg, canton, claimed, claims)
+    own = [c for c in claims if c["recipient"] == leg.account]
+    if own:
+        return claim_leg(leg, canton, claimed, own)
+    if reserved:
+        raise NoCantonSide("this id belongs to a venue trade's funded claim")
     raise problem or NoCantonSide("no deposit request of this chain for this id and recipient")
 
 
