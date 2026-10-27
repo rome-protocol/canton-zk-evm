@@ -17,15 +17,14 @@ async function ledger(active: ActiveContract[], opts: { cap?: number } = {}, tok
 }
 
 describe("the gateway's custody, read as the gateway", () => {
-  it("is a client of its own with one call, and the reader's client cannot make it", async () => {
-    expect([...CUSTODY_ENDPOINTS]).toEqual(["POST /v2/state/active-contracts"]);
+  it("is a client of its own with two calls, and the reader's client cannot make the contracts one", async () => {
+    expect([...CUSTODY_ENDPOINTS]).toEqual(["POST /v2/state/active-contracts", "POST /v2/updates"]);
     expect([...READER_ENDPOINTS]).toEqual(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
-    expect([...ALLOWED_ENDPOINTS].sort()).toEqual([...READER_ENDPOINTS, ...CUSTODY_ENDPOINTS].sort());
+    expect([...ALLOWED_ENDPOINTS].sort()).toEqual([...new Set([...READER_ENDPOINTS, ...CUSTODY_ENDPOINTS])].sort());
     fake = await startFakeLedger([], { active: [] });
-    // Each client reads with the rights of its own party only: the reader's refuses the contracts, the custody client refuses the updates and the ledger end.
+    // Each client reads with the rights of its own party only: the reader's refuses the contracts, the custody client refuses the ledger end and the participant's id.
     await expect(createLedger(fake.url, 2000, FAKE_READER).gatewayCustody(5, 1)).rejects.toThrow(/not on the list/);
     const custody = createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS);
-    await expect(custody.records(0, 5)).rejects.toThrow(/not on the list/);
     await expect(custody.ledgerEnd()).rejects.toThrow(/not on the list/);
     await expect(custody.participantId()).rejects.toThrow(/not on the list/);
     expect(fake.requests).toEqual([]);

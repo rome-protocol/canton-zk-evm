@@ -11,6 +11,7 @@ import type { Pins } from "../config.ts";
 import { ensurePartitions, PARTITIONS_AHEAD, recordPartitionWidth } from "../db/partitions.ts";
 import type { BlockRecord, Ledger } from "../ledger.ts";
 import { custodyOnce } from "./custody.ts";
+import { venueOnce } from "./venue.ts";
 import { RethError } from "../reth.ts";
 import { IndexerStop, Paused, RethBehind } from "./errors.ts";
 import { recordGenesisSupply, seedGenesis } from "./genesis.ts";
@@ -64,6 +65,7 @@ export interface IndexerOptions {
    * The custody read (the registered tokens and the gateway's holdings, as the gateway party sees them, at the offset of the newest indexed block, set against each token's supply at that block): a Ledger API client built for the gateway party
    * (a token of its own, with the right to read as it and nothing else). Left out, nothing is read and the table stays empty. `ms` is how often `start`
    * reads it (default 30 seconds); `limit` is how many contracts to ask Canton for (default 200, Canton's own list maximum), and a read that fills it fails.
+   * The same client reads the Canton side of the swaps (a venue's trades and the funded claims, `venueOnce`), after each custody read.
    */
   custody?: { ledger: Ledger; ms?: number; limit?: number };
   /** For C6's choice of blocks. */
@@ -574,7 +576,7 @@ export function createIndexer(o: IndexerOptions) {
     // The custody is Canton's side only and never on the way of a block: a read that fails is logged, and the last rows stay with the time they were read at.
     const custodyMs = o.custody?.ms ?? 30_000;
     const custodyLoop = async () => {
-      let failing = "";
+      let failing = "", venueFailing = "";
       while (running && o.custody) {
         try {
           await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()));
@@ -583,6 +585,14 @@ export function createIndexer(o: IndexerOptions) {
           // Said once for each kind of failure, not on every pass.
           if (failing !== (e as Error).message) log(`indexer (custody): ${(e as Error).message}`);
           failing = (e as Error).message;
+        }
+        // The Canton side of the swaps (a venue's trades and the funded claims) is read the same way, as the gateway party, and fails on its own.
+        try {
+          await venueOnce(o.pool, o.custody.ledger, (participantId ??= await o.ledger.participantId()));
+          venueFailing = "";
+        } catch (e) {
+          if (venueFailing !== (e as Error).message) log(`indexer (venue trades): ${(e as Error).message}`);
+          venueFailing = (e as Error).message;
         }
         for (let waited = 0; running && waited < custodyMs; waited += 50) await sleep(50);
       }

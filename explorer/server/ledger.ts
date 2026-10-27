@@ -4,13 +4,14 @@ import { isHexBytes } from "./hex.ts";
 /**
  * The explorer's whole view of Canton: the JSON Ledger API of the participant that holds the reader party, three calls only, all reads.
  * It asks for the reader party's transactions, filtered to the block record, and keeps nothing else the answer might carry.
- * The custody read (`gatewayCustody`) is a second client with one call of its own, made only when the gateway party and a token for it are configured:
- * it is the one place the explorer reads as the gateway, for the registered tokens and the sum of the holdings, and it keeps nothing else the answer carries.
+ * The custody read (`gatewayCustody`) and the venue read (`venuePages`) belong to a second client, made only when the gateway party and a token for it are configured:
+ * it is the one place the explorer reads as the gateway, for the registered tokens, the sum of the holdings and the Canton side of the swaps (a venue's trades and the
+ * funded claims they leave, without the venue's or the seller's party), and it keeps nothing else the answer carries.
  * The gateway party must be hosted on the participant at the same URL, since the offset it reads at is that participant's.
  */
 export const READER_ENDPOINTS: ReadonlySet<string> = new Set(["GET /v2/state/ledger-end", "POST /v2/updates", "GET /v2/parties/participant-id"]);
-/** The custody client reads as the gateway with a token of its own, and may make this one call: each client may read only with the rights of its own party. */
-export const CUSTODY_ENDPOINTS: ReadonlySet<string> = new Set(["POST /v2/state/active-contracts"]);
+/** The gateway client reads as the gateway with a token of its own, and may make these two calls: each client may read only with the rights of its own party. */
+export const CUSTODY_ENDPOINTS: ReadonlySet<string> = new Set(["POST /v2/state/active-contracts", "POST /v2/updates"]);
 /** Every call either client may make (the two lists together), for the check against Canton's own OpenAPI document. */
 export const ALLOWED_ENDPOINTS: ReadonlySet<string> = new Set([...READER_ENDPOINTS, ...CUSTODY_ENDPOINTS]);
 
@@ -19,6 +20,11 @@ export const BLOCK_RECORD_TEMPLATE = "#canton-zk-evm:Zk.Chain:BlockRecord";
 const RECORD_SUFFIX = ":Zk.Chain:BlockRecord";
 export const GATEWAY_TOKEN_TEMPLATE = "#canton-zk-evm:Zk.Chain:GatewayToken";
 const GATEWAY_TOKEN_SUFFIX = ":Zk.Chain:GatewayToken";
+/** The Canton side of a swap, as the gateway party sees it (Daml 0.4.0): a venue's trade, and the claim that settling it leaves. */
+export const VENUE_TRADE_TEMPLATE = "#canton-zk-evm:Zk.Chain:VenueTrade";
+export const FUNDED_CLAIM_TEMPLATE = "#canton-zk-evm:Zk.Chain:FundedClaim";
+const VENUE_TRADE_SUFFIX = ":Zk.Chain:VenueTrade";
+const FUNDED_CLAIM_SUFFIX = ":Zk.Chain:FundedClaim";
 /** The token standard's Holding interface: what a holding shows as its view, whatever template the registry made it with. */
 export const HOLDING_INTERFACE = "#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding";
 const HOLDING_SUFFIX = ":Splice.Api.Token.HoldingV1:Holding";
@@ -204,6 +210,58 @@ export function custodyFrom(items: unknown[], party: string): CustodyToken[] {
   }).sort((a, b) => (a.evmToken < b.evmToken ? -1 : 1));
 }
 
+/**
+ * What the gateway party's read of one Canton update shows of the Canton side of a swap. Of a venue's trade only what the EVM side knows is kept (the payment's id,
+ * token, payee and amount, the claim it leaves and the EVM address of the claim's buyer); the venue and the seller are Canton parties and are read and dropped here.
+ */
+export interface VenueTradeFact { payId: string; claimId: string; token: string; payee: string; recipient: string; amount: bigint; gatewayToken: string }
+/** A claim a settled trade left, redeemed once by the deposit line of `claimId`. The amount is in base units of 10 decimals (a Canton amount's own). */
+export interface FundedClaimFact { claimId: string; recipient: string; amount: bigint; gatewayToken: string }
+/** A registered token's contract: which EVM token it is and which instrument it wraps. */
+export interface GatewayTokenFact { contractId: string; evmToken: string; instrumentAdmin: string; instrumentId: string }
+export interface VenueUpdate { updateId: string; offset: number; tokens: GatewayTokenFact[]; trades: VenueTradeFact[]; claims: FundedClaimFact[] }
+
+const venueFail = (what: string): never => { throw new LedgerError(`the gateway's venue trades cannot be read: ${what}`); };
+const hexField = (a: Json, name: string, digits: number, what: string): string => {
+  const v = typeof a[name] === "string" ? (a[name] as string).replace(/^0x/, "").toLowerCase() : "";
+  return new RegExp(`^[0-9a-f]{${digits}}$`).test(v) ? v : venueFail(`${what} has a ${name} that is not ${digits} hex digits`);
+};
+const cidField = (a: Json, what: string): string => (typeof a.gatewayToken === "string" && a.gatewayToken !== "" ? a.gatewayToken : venueFail(`${what} names no registered token`));
+
+/** The GatewayToken, VenueTrade and FundedClaim contracts one update created, as the gateway party sees them. Other contracts and archived events are not read, and no party is kept. */
+export function venueIn(item: unknown): { offset: number; update: VenueUpdate | null } {
+  const [kind, body] = Object.entries(obj(obj(item, "an update").update, "an update"))[0] ?? fail("an empty update");
+  const value = obj(obj(body, "an update").value, "an update");
+  const offset = value.offset;
+  if (typeof offset !== "number") fail("an update with no offset");
+  if (kind !== "Transaction") return { offset: offset as number, update: null };
+  const updateId = typeof value.updateId === "string" && value.updateId !== "" ? value.updateId : fail("an update with no id");
+  const events = Array.isArray(value.events) ? value.events : fail("a transaction with no events");
+  const update: VenueUpdate = { updateId, offset: offset as number, tokens: [], trades: [], claims: [] };
+  for (const e of events as unknown[]) {
+    const created = obj(e, "an event").CreatedEvent;
+    if (created === undefined) continue;
+    const c = obj(created, "an event"), template = typeof c.templateId === "string" ? c.templateId : "";
+    if (!template.endsWith(GATEWAY_TOKEN_SUFFIX) && !template.endsWith(VENUE_TRADE_SUFFIX) && !template.endsWith(FUNDED_CLAIM_SUFFIX)) continue;
+    const contractId = typeof c.contractId === "string" && c.contractId !== "" ? c.contractId : fail("an event with no contract id");
+    const a = obj(c.createArgument, "a createArgument");
+    if (template.endsWith(GATEWAY_TOKEN_SUFFIX)) {
+      const { admin, id } = instrumentOf(a.instrumentId, "a registered token");
+      update.tokens.push({ contractId, evmToken: "0x" + hexField(a, "evmToken", 40, "a registered token"), instrumentAdmin: admin, instrumentId: id });
+    } else if (template.endsWith(VENUE_TRADE_SUFFIX)) {
+      // The venue and the sender are named in the argument and are not read.
+      update.trades.push({
+        payId: hexField(a, "payId", 64, "a venue trade"), claimId: hexField(a, "claimId", 64, "a venue trade"), token: "0x" + hexField(a, "token", 40, "a venue trade"),
+        payee: "0x" + hexField(a, "payee", 40, "a venue trade"), recipient: "0x" + hexField(a, "recipient", 40, "a venue trade"),
+        amount: BigInt("0x" + hexField(a, "amount", 64, "a venue trade")), gatewayToken: cidField(a, "a venue trade"),
+      });
+    } else {
+      update.claims.push({ claimId: hexField(a, "claimId", 64, "a funded claim"), recipient: "0x" + hexField(a, "recipient", 40, "a funded claim"), amount: baseUnits(a.amount), gatewayToken: cidField(a, "a funded claim") });
+    }
+  }
+  return { offset: offset as number, update: update.tokens.length + update.trades.length + update.claims.length > 0 ? update : null };
+}
+
 export function createLedger(url: string, timeoutMs: number, readerParty: string | null, pageSize = 100, tokenFile: string | null = null, endpoints: ReadonlySet<string> = READER_ENDPOINTS) {
   async function call(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown> {
     const route = `${method} ${path.split("?")[0]}`;
@@ -293,7 +351,39 @@ export function createLedger(url: string, timeoutMs: number, readerParty: string
     return { offset, tokens: custodyFrom(items, readerParty) };
   }
 
-  return { call, ledgerEnd, records, recordPages, participantId, gatewayCustody };
+  /**
+   * The Canton side of the swaps, as the gateway sees it: the registered tokens, the venue trades and the funded claims that Canton committed after offset `after`, up to
+   * and including `upTo`, oldest first, one page of the walk at a time (like `recordPages`). The call is filtered to those three templates; a trade's venue and seller are never read.
+   * `offset` of a page is how far the walk has got.
+   */
+  async function* venuePages(after: number, upTo: number): AsyncGenerator<{ updates: VenueUpdate[]; offset: number }> {
+    if (!readerParty) throw new LedgerError("the gateway party is not set: the venue read is for the gateway party only");
+    const filter = (templateId: string) => ({ identifierFilter: { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } } });
+    for (let begin = after; begin < upTo; ) {
+      const items = await call("POST", `/v2/updates?limit=${pageSize}`, {
+        beginExclusive: begin, endInclusive: upTo,
+        updateFormat: { includeTransactions: {
+          eventFormat: { filtersByParty: { [readerParty]: { cumulative: [filter(GATEWAY_TOKEN_TEMPLATE), filter(VENUE_TRADE_TEMPLATE), filter(FUNDED_CLAIM_TEMPLATE)] } }, verbose: false },
+          transactionShape: "TRANSACTION_SHAPE_ACS_DELTA",
+        } },
+      });
+      if (!Array.isArray(items)) return fail("an answer that is not a list");
+      // Only an empty answer ends the walk, as for the block records.
+      if (items.length === 0) break;
+      let last = begin;
+      const updates: VenueUpdate[] = [];
+      for (const item of items) {
+        const r = venueIn(item);
+        last = Math.max(last, r.offset);
+        if (r.update) updates.push(r.update);
+      }
+      if (last <= begin) throw new LedgerError("Canton's updates did not move forward");
+      begin = last;
+      yield { updates, offset: last };
+    }
+  }
+
+  return { call, ledgerEnd, records, recordPages, participantId, gatewayCustody, venuePages };
 }
 
 export type Ledger = ReturnType<typeof createLedger>;

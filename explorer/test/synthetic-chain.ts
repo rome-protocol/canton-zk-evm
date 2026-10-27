@@ -26,6 +26,8 @@ export interface BlockShape {
   txs: number;
   /** The gateway records a Leg of this kind (1 to 3) in the first transaction. */
   leg?: number;
+  /** The id of that Leg (32 bytes of 0x01 when absent). */
+  legId?: string;
   /** The sender of every `hotEvery`th transaction (an address with a long history: the load test's one address with a million). */
   hot?: string;
   /** Every how many transactions the hot address sends one: 10 when absent. */
@@ -104,7 +106,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     if (kind === 3) for (let l = 0; l < 6; l++) logs.push({ address: hex(0xe000 + l), topics: ["0x" + "77".repeat(32)], data: "0x" + "00".repeat(32) });
     if (k === 0 && shape.leg) {
       const data = encodeAbiParameters([{ type: "uint8" }, { type: "bytes32" }, { type: "address" }, { type: "address" }, { type: "uint256" }, { type: "string" }],
-        [shape.leg, ("0x" + "01".repeat(32)) as `0x${string}`, hex(0xd000) as `0x${string}`, hex(0xa11ce) as `0x${string}`, 42n, "alice::1220" + "ab".repeat(32)]);
+        [shape.leg, (shape.legId ?? "0x" + "01".repeat(32)) as `0x${string}`, hex(0xd000) as `0x${string}`, hex(0xa11ce) as `0x${string}`, 42n, "alice::1220" + "ab".repeat(32)]);
       logs.push({ address: GATEWAY, topics: [LEG_TOPIC], data });
     }
     const gasUsed = failed ? 30000 : kind === 3 ? 90000 : 21000 + (kind === 2 ? 50000 : 0);
@@ -121,7 +123,7 @@ export function makeBlock(number: number, parentHash: string, shape: BlockShape,
     const subs: TraceFrame[] = kind === 3 ? [0, 1, 2].map((i) => ({ traceAddress: [i], type: "call", callType: "staticcall", from: to as string, to: hex(0xe000 + i), value: 0n, gas: 5000, gasUsed: 100, input: "0x", error: null, created: null })) : [];
     traces.push({ transactionHash: hash, output: failed ? reason : "0x", calls: 1 + subs.length, error: failed ? "Reverted" : null, frames: [top, ...subs] });
   }
-  const legsHash = shape.leg ? expectedLegHash(shape.leg, "0x" + "01".repeat(32), hex(0xd000), hex(0xa11ce), 42n, "alice::1220" + "ab".repeat(32)) : null;
+  const legsHash = shape.leg ? expectedLegHash(shape.leg, shape.legId ?? "0x" + "01".repeat(32), hex(0xd000), hex(0xa11ce), 42n, "alice::1220" + "ab".repeat(32)) : null;
   const headerHex = number.toString(16).padStart(8, "0") + instance.toString(16).padStart(2, "0") + "f9".repeat(39);
   const hash = keccak256(`0x${headerHex}`);
   const block: FinalBlock = {

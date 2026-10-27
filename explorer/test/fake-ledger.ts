@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-type Json = Record<string, unknown>;
+export type Json = Record<string, unknown>;
 
 export interface FakeRequest { method: string; path: string; query: URLSearchParams; body: Json | null; authorization: string | null }
 
@@ -61,6 +61,33 @@ export function holding(n: number, owner: string, amount: string, admin = FAKE_R
     interfaceViews: [view === "unreadable" ? { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 3, message: "no view" } } : { interfaceId: HOLDING_INTERFACE_ID, viewStatus: { code: 0, message: "" }, viewValue: value }],
   };
 }
+
+export const FAKE_VENUE = "venue::1220" + "c3".repeat(32);
+export const FAKE_SELLER = "seller::1220" + "d4".repeat(32);
+
+/** A created event of a Daml 0.4.0 contract the gateway party sees, as the JSON Ledger API shows it in an update. */
+const gatewayEvent = (offset: number, entity: string, contractId: string, args: Json, signatories: string[]): Json => ({
+  CreatedEvent: {
+    offset, nodeId: 0, contractId, templateId: `abc123def456:Zk.Chain:${entity}`, createdAt: "2026-10-04T01:37:15.412Z", packageName: "canton-zk-evm", representativePackageId: "abc123def456",
+    acsDelta: true, createArgument: args, witnessParties: [FAKE_GATEWAY], signatories,
+  },
+});
+const base = { operator: FAKE_OPERATOR, confirmer: FAKE_CONFIRMER, gateway: FAKE_GATEWAY, builder: "builder::1220" + "11".repeat(32), chainId: "770101" };
+
+/** A GatewayToken as an update creates it. */
+export const gatewayTokenEvent = (offset: number, contractId: string, evmToken: string, admin = FAKE_REGISTRY, id = "TKB"): Json =>
+  gatewayEvent(offset, "GatewayToken", contractId, { ...base, evmToken, instrumentId: { admin, id }, factory: "00ff" }, [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]);
+
+/** A VenueTrade, which names the venue and the seller as it does on Canton (the explorer must not keep either). `amount` is the ERC-20 amount as the contract writes it, 64 hex digits. */
+export const venueTradeEvent = (offset: number, contractId: string, f: { payId: string; claimId: string; token: string; payee: string; recipient: string; amount: bigint; gatewayToken: string }, over: Json = {}): Json =>
+  gatewayEvent(offset, "VenueTrade", contractId, {
+    ...base, venue: FAKE_VENUE, sender: FAKE_SELLER, label: "order-1", payId: f.payId, token: f.token, payee: f.payee, amount: f.amount.toString(16).padStart(64, "0"), allocation: "00a110", allocationDisclosed: null,
+    gatewayToken: f.gatewayToken, claimId: f.claimId, recipient: f.recipient, ...over,
+  }, [FAKE_VENUE, FAKE_SELLER]);
+
+/** A FundedClaim, with its amount as a Daml Decimal. */
+export const fundedClaimEvent = (offset: number, contractId: string, f: { claimId: string; recipient: string; amount: string; gatewayToken: string }, over: Json = {}): Json =>
+  gatewayEvent(offset, "FundedClaim", contractId, { ...base, claimId: f.claimId, recipient: f.recipient, gatewayToken: f.gatewayToken, amount: f.amount, ...over }, [FAKE_OPERATOR, FAKE_CONFIRMER, FAKE_GATEWAY]);
 
 export interface ActiveContract { contractId: string; templateId: string; createArgument?: Json; interfaceViews?: Json[]; signatories?: string[] }
 
