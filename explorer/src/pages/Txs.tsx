@@ -11,14 +11,15 @@ import { Icon } from "../components/Icon.tsx";
 import { useBothEnds } from "../components/Ends.tsx";
 import { NumberedPager } from "../components/Numbered.tsx";
 import { Pager, usePaged } from "../components/Pager.tsx";
-import { count, duration, exact, feeOf } from "../format.ts";
+import { count, duration, exact, feeOf, plural } from "../format.ts";
 import { useLabels, type Labels } from "../labels.ts";
 import { methodOf } from "../method.ts";
 import { listPoll, notFinalCounts, readOf, useInFlight } from "../stats.ts";
 import { useLive } from "../useLive.ts";
 import { POLL_MS, useNow, useStatus } from "../useStatus.ts";
-import { AllTime, DASH_WHY, Moved, ProvingMoved, provingToken, Stat, Time } from "./HomeParts.tsx";
+import { DASH_WHY, Moved, ProvingMoved, provingToken, SinceLaunch, SinceLaunchNote, Stat, Time } from "./HomeParts.tsx";
 import "./home.css";
+import { Info } from "../components/Info.tsx";
 
 const PER = 25;
 /** The rows of transactions that are not final that one page draws; the rest are counted. */
@@ -142,15 +143,15 @@ function Cards({ live, inBlocks }: { live: boolean; inBlocks?: number }) {
   return (
     <section className="stats stats-4" aria-label="Numbers">
       {d ? (
-        <Stat icon="doc" label="Transactions" note="24 h" sub={<AllTime t={d.txs.allTime} />} foot={`in ${count(d.blocks.count)} ${d.blocks.count === 1 ? "block" : "blocks"}, each one Canton transaction`}>{count(d.txs.count)}</Stat>
+        <Stat icon="doc" label="Transactions" note="24 h" info={<SinceLaunchNote t={d.txs.allTime} blocks={d.blocks.count} />} foot={<SinceLaunch t={d.txs.allTime} blocks={d.blocks.count} />}>{count(d.txs.count)}</Stat>
       ) : <Stat icon="doc" label="Transactions" note="24 h" foot={noDay}>—</Stat>}
-      <Time icon="clock" label="Time to final" note="last hour" s={h ? h.timeToFinal : undefined} read={readOf(hour)} foot="accepted to final on Canton" none="no transaction in the last hour" />
+      <Time icon="clock" label="Time to final" note="last hour" s={h ? h.timeToFinal : undefined} read={readOf(hour)} info={`From a transaction being accepted to its block being final on Canton, over ${plural(h?.timeToFinal?.samples ?? 0, "transaction")}.`} foot="accepted → final" none="no transaction in the last hour" />
       {n ? (
-        <Stat icon="clock" label="Not final yet" foot={`${count(n.inBlocks)} being proven · ${n.waiting === null ? "pool count not known" : `${count(n.waiting)} waiting`}${stuckOf ? ` · ${count(stuckOf.stuck)} stuck (over ${count(stuckOf.stuckAfterSeconds)} s)` : ""}`}>{count(n.inBlocks + (n.waiting ?? 0))}</Stat>
+        <Stat icon="clock" label="Not final yet" info={`${count(n.inBlocks)} being proven, and the rest waiting in the pool for the next block.${stuckOf ? ` Stuck means waiting over ${count(stuckOf.stuckAfterSeconds)} s.` : ""}`} foot={`${n.waiting === null ? "pool count not known" : `${count(n.waiting)} waiting`}${stuckOf ? ` · ${count(stuckOf.stuck)} stuck` : ""}`}>{count(n.inBlocks + (n.waiting ?? 0))}</Stat>
       ) : <Stat icon="clock" label="Not final yet" foot={flight.isError ? "what is in flight cannot be read right now" : "Reading…"}>—</Stat>}
       {d ? (
-        <Stat icon="shield" label="Lost" note="all time" tone={d.lost.total ? undefined : "ok"} foot={d.lost.total ? <>Accepted by Ostia and never made final. <Link to="/stats">Stats</Link> lists each with its reason.</> : "accepted by Ostia and never made final"}>
-          <span className={d.lost.total ? "bad" : "ok"}>{count(d.lost.total)}</span>
+        <Stat icon="shield" label="Lost" note="all time" tone={d.lost.total ? undefined : "ok"} valueClass={d.lost.total ? "bad" : "ok"} info={d.lost.total ? "Accepted by Ostia and never made final. Stats lists each with its reason." : "Accepted by Ostia and never made final. Stats would list any such transaction with its reason."} foot={d.lost.total ? <Link to="/stats">each with its reason</Link> : "none lost"}>
+          {count(d.lost.total)}
         </Stat>
       ) : <Stat icon="shield" label="Lost" note="all time" foot={noDay}>—</Stat>}
     </section>
@@ -211,7 +212,7 @@ function FinalList({ view, st, now, faucet, notFinal, all, inAll, finalTotal, ro
         </table>
       </div>
       {showNotFinal && all && all.total > shown.length && <p className="muted small">{all.atLeast ? "At least " : ""}{count(all.total - shown.length)} more not final yet, older than the rows shown, are not listed.</p>}
-      <p className="muted small"><b>Waiting</b>: accepted, in the pool. <b>Being proven</b>: in a block that is not final yet; if Canton refused that block, the transaction would go back to the pool. <b>Final</b>: its block is final on Canton.</p>
+      <p className="muted small">Waiting, being proven, final<Info about="the stages"><b>Waiting</b>: accepted, in the pool. <b>Being proven</b>: in a block that is not final yet; if Canton refused that block, the transaction would go back to the pool. <b>Final</b>: its block is final on Canton.</Info></p>
     </section>
   );
 }

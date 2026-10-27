@@ -247,7 +247,7 @@ describe("one Canton update", () => {
   it("shows what the record holds: the three parts in proportion with their sizes, each to copy, and Verify as the main action", async () => {
     await open({ block: () => reply(block()) });
     const r = within(await screen.findByRole("region", { name: "What the record holds" }));
-    expect(r.getByText("the three parts Verify checks; each can be copied as hex")).toBeInTheDocument();
+    expect(r.getByText("The three parts Verify checks; each can be copied as hex.")).toBeInTheDocument();
     expect(r.getByText("header 612 B")).toBeInTheDocument();
     expect(r.getByText("proof 1,344 B")).toBeInTheDocument();
     expect(r.getByText("header 612 bytes")).toBeInTheDocument();
@@ -290,7 +290,7 @@ describe("one Canton update", () => {
     expect(within(rows[0]!).getByRole("link", { name: "12200404…0404" })).toHaveAttribute("href", `/canton/${update(4)}`);
     expect(within(rows[1]!).getByRole("link", { name: "12200303…0303" })).toHaveAttribute("href", `/canton/${update(3)}`);
     expect(within(rows[0]!).getByRole("link", { name: "Block 4" })).toHaveAttribute("href", "/block/4");
-    expect(t.getByText("ordered by record time and update id · offsets on the reader's participant")).toBeInTheDocument();
+    expect(t.getByText("Ordered by record time and update id; offsets are on the reader's participant.")).toBeInTheDocument();
     expect(t.getByRole("link", { name: "All Canton updates" })).toHaveAttribute("href", "/canton");
   });
 

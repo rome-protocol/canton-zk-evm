@@ -1,9 +1,9 @@
 /* the API page: three ways in, the Etherscan modules, the setup blocks, the routes, the wallet and the limits */
 .api-intro { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; margin: 18px 0; }
-.api-intro h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.api-intro h2 { margin: 0 0 4px; font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
 .api-intro p { margin: 0; }
 .api-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-.api-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.api-head h2 { margin: 0; font-size: 16px; font-weight: 500; }
 .api-head .api-copy { margin-left: auto; }
 .api-copy { display: inline-flex; align-items: center; gap: 6px; align-self: center; border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
 .api-copy:hover { background: var(--surface-2); text-decoration: none; }

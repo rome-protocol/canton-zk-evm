@@ -75,7 +75,7 @@ export function Home() {
       <InFlightPanel attempts={flight.data?.attempts ?? []} waiting={flight.data?.poolWaiting?.waiting ?? null} stream={stream} read={flightRead} usual={usualProof(blocks.data?.items ?? [])} later={pending} />
       <div className="cols home-cols">
         <LatestBlocks blocks={blocks.data?.items} error={blocks.isError ? NO_LIST : undefined} />
-        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} faucet={faucet} chain={data.chainName} />
+        <LatestTxs txs={txs.data?.items} coin={data.coin} error={txs.isError ? NO_LIST : undefined} pending={pending} pendingRead={flightRead} details={details} faucet={faucet} chain={data.chainName} perSecond={homeStats.day.data?.tps.now ?? null} />
       </div>
       <LockBanner />
     </>

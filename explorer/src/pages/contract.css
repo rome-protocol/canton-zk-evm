@@ -3,7 +3,7 @@
 .code-cols { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(0, 2fr); gap: 20px; align-items: start; }
 @media (max-width: 800px) { .code-cols { grid-template-columns: minmax(0, 1fr); } }
 .code-cols > * { min-width: 0; overflow-wrap: anywhere; }
-.code-tab h2, .code-tab h3 { font-size: 15px; font-weight: 600; margin: 0 0 10px; }
+.code-tab h2, .code-tab h3 { font-size: 15px; font-weight: 500; margin: 0 0 10px; }
 .code-tab h3 { margin-top: 16px; }
 .code-tab h2 .chip { margin-left: 8px; vertical-align: 1px; }
 .code-tab .thin { font-weight: 400; font-size: 12.5px; margin-left: 8px; }
@@ -28,7 +28,7 @@ a.btn-line, .code-tab a.btn { text-decoration: none; }
 .fn-h { display: flex; align-items: center; gap: 8px; width: 100%; padding: 10px 14px; background: var(--surface-2); border: 0; text-align: left; font: inherit; color: var(--ink); cursor: pointer; }
 .fn-h:disabled { cursor: default; }
 .fn-h .small { margin-left: auto; }
-.fn .fn-name { font-weight: 600; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
+.fn .fn-name { font-weight: 500; font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
 .fn-args { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .fn-b { padding: 12px 14px; display: grid; gap: 10px; }
 .field { display: grid; gap: 4px; }

@@ -56,16 +56,21 @@ describe("the in-flight panel", () => {
     const cut = inFlight().attempts[0]!.cutAt;
     const later: InFlightTx[] = [{ hash: "0x" + "55".repeat(32), stage: "waiting", at: new Date(Date.parse(cut) + 2000).toISOString() }, { hash: "0x" + "66".repeat(32), stage: "waiting", at: new Date(Date.parse(cut) - 2000).toISOString() }];
     show(inFlight().attempts, 2, "live", "ok", { later });
-    const line = screen.getByText(/arrived after this block was cut/);
-    expect(line).toHaveTextContent("1 more transaction, 0x555555…5555, arrived after this block was cut. It waits for block 5, which is cut when block 4 is final.");
-    expect(within(line).getByRole("link", { name: "0x555555…5555" })).toHaveAttribute("href", `/tx/0x${"55".repeat(32)}`);
+    const line = document.querySelector(".fl-later") as HTMLElement;
+    expect(line).toHaveTextContent(/^1 more, 0x555555…5555, waits for block 5/);
+    expect(within(line).getByRole("tooltip")).toHaveTextContent("1 more transaction arrived after this block was cut. It waits for block 5, which is cut when block 4 is final.");
+    // the link sits in the visible line, never inside the note, so a keyboard reaches it and the note holds no interactive content
+    const link = within(line).getByRole("link", { name: "0x555555…5555" });
+    expect(link).toHaveAttribute("href", `/tx/0x${"55".repeat(32)}`);
+    expect(within(within(line).getByRole("tooltip")).queryByRole("link")).toBeNull();
   });
 
   it("counts several that arrived after the cut, without naming them", () => {
     const cut = inFlight().attempts[0]!.cutAt;
     const at = new Date(Date.parse(cut) + 2000).toISOString();
     show(inFlight().attempts, 2, "live", "ok", { later: [{ hash: "0x" + "55".repeat(32), stage: "waiting", at }, { hash: "0x" + "66".repeat(32), stage: "waiting", at }] });
-    expect(screen.getByText(/arrived after this block was cut/)).toHaveTextContent("2 more transactions arrived after this block was cut. They wait for block 5, which is cut when block 4 is final.");
+    const line = screen.getByText(/2 more wait for block 5/);
+    expect(within(line).getByRole("tooltip")).toHaveTextContent("2 more transactions arrived after this block was cut. They wait for block 5, which is cut when block 4 is final.");
   });
 
   it("marks the proof done once it ended and the block is waiting to be sent", () => {
@@ -78,7 +83,9 @@ describe("the in-flight panel", () => {
 
   it("counts the transactions waiting in the pool, and has an empty state", () => {
     show(inFlight().attempts, 2);
-    expect(screen.getByText(/2 transactions are waiting in the pool, in no block yet/)).toBeInTheDocument();
+    const line = screen.getByText(/2 waiting in the pool/);
+    expect(line).toHaveTextContent(/^2 waiting in the pool/);
+    expect(within(line).getByRole("tooltip")).toHaveTextContent("2 transactions are waiting in the pool, in no block yet; the next block takes them.");
   });
 
   it("says nothing is in flight, and whether the stream is live", () => {

@@ -46,7 +46,7 @@
   .how-steps.way-steps li { padding-left: 36px; }
   .how-steps.way-steps li::before { left: 11px; top: 26px; bottom: -12px; right: auto; width: 2px; height: auto; }
 }
-.tx-h { margin: 0; font-size: 15px; font-weight: 600; }
+.tx-h { margin: 0; font-size: 15px; font-weight: 500; }
 .tx-table .arrow { color: var(--muted); width: 28px; text-align: center; }
 .ev-filter .btn-line { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; }
 .ev-filter .btn-line[aria-pressed="true"] { border-color: var(--canton-line); background: var(--canton-tint); color: var(--canton); }
@@ -57,7 +57,7 @@
 .args-table { border: 1px solid var(--line); border-radius: 0 0 8px 8px; }
 .args-table th { font-size: 12px; font-weight: 600; color: var(--muted); }
 .argchip { display: inline-block; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 0 7px; margin-right: 4px; background: var(--surface); }
-.ev-name { color: var(--canton); font-weight: 600; }
+.ev-name { color: var(--canton); font-weight: 500; }
 .lognum { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 8px; background: var(--ok-tint, var(--canton-tint)); color: var(--ink); }
 .ctype { display: inline-block; font-size: 11.5px; font-weight: 600; letter-spacing: .02em; color: var(--canton); border: 1px solid var(--canton-line); background: var(--canton-tint); border-radius: 5px; padding: 1px 7px; }
 .calls-table .call-top td { background: var(--canton-tint); }

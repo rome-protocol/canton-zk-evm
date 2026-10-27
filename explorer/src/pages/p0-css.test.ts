@@ -75,9 +75,9 @@ describe("the token page's cards", () => {
 });
 
 describe("the card header", () => {
-  it("is small, in the shared sheet only: the title at 15px, the words beside it at 12.5px, over a line; tx.css keeps no copy", () => {
+  it("is small, in the shared sheet only: the title at 18px, the words beside it at 12.5px, over a line; tx.css keeps no copy", () => {
     const get = (s: string) => rules(styles).find(([x]) => x === s)?.[1] ?? "";
-    expect(get(".card-title h2")).toMatch(/font-size: 15px/);
+    expect(get(".card-title h2")).toMatch(/font-size: 18px/);
     expect(get(".card-title .muted")).toMatch(/font-size: 12.5px/);
     expect(get(".card-head")).toMatch(/border-bottom: 1px solid/);
     expect(tx).not.toMatch(/\.card-h\b/);

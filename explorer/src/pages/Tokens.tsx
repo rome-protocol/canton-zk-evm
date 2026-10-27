@@ -16,6 +16,7 @@ import { listPoll } from "../stats.ts";
 import { useNow, useStatus } from "../useStatus.ts";
 import { Avatar, Mint, noName, Supply, useTokenList } from "./TokenParts.tsx";
 import "./token.css";
+import { Info } from "../components/Info.tsx";
 
 const PER = 25;
 const FEED = 10;
@@ -117,7 +118,7 @@ function Feed({ now }: { now: number }) {
           </table>
         </div>
       )}
-      <p className="muted small card-note">Read from the Transfer logs of final blocks. A transfer in a block that is not final yet is not listed here, so a row never changes.</p>
+      <p className="muted small card-note">Final blocks only<Info about="the transfers list">Read from the Transfer logs of final blocks. A transfer in a block that is not final yet is not listed here, so a row never changes.</Info></p>
     </section>
   );
 }
@@ -157,7 +158,7 @@ export function Tokens() {
               </table>
             </div>
           )}
-          <p className="muted small card-note">Holders, transfers and supply are the explorer's copy, read from the Transfer logs of final blocks and the contract. A token with no name here did not answer, and is still listed.</p>
+          <p className="muted small card-note">Read from final blocks<Info about="the token counts">Holders, transfers and supply are the explorer's copy, read from the Transfer logs of final blocks and the contract. A token with no name here did not answer, and is still listed.</Info></p>
           {d?.derived === false && <p className="muted small card-note">The explorer is still reading blocks, so this list may be missing the newest tokens and their counts.</p>}
         </section>
       )}

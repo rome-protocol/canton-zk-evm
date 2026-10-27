@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ApiError } from "../api.ts";
 import { short } from "../format.ts";
 import { Icon } from "./Icon.tsx";
+import { Info } from "./Info.tsx";
 
 /** The answer when the server cannot read the chain. A page that polls tries again by itself. */
 export function ErrorCard({ message, retrying = false }: { message: string; retrying?: boolean }) {
@@ -48,11 +49,11 @@ export function unready(q: { data?: unknown; error: Error | null }, loading: str
   return e ? <ErrorCard message={e.message} retrying /> : <LoadingCard>{loading}</LoadingCard>;
 }
 
-/** The head of a card: a bold title with a grey subtitle on the same line, and an action (a button, a link) at the end. */
-export function CardHead({ title, sub, action, as: H = "h3" }: { title: ReactNode; sub?: ReactNode; action?: ReactNode; as?: "h1" | "h2" | "h3" }) {
+/** The head of a card: a bold title with a grey subtitle on the same line, a small "i" for what else there is to say (`info`, about `about`, the card's name by default), and an action (a button, a link) at the end. */
+export function CardHead({ title, sub, action, info, about, as: H = "h3" }: { title: ReactNode; sub?: ReactNode; action?: ReactNode; info?: ReactNode; about?: string; as?: "h1" | "h2" | "h3" }) {
   return (
     <div className="card-head">
-      <div className="card-title"><H>{title}</H>{sub ? <span className="muted small">{sub}</span> : null}</div>
+      <div className="card-title"><H>{title}</H>{sub ? <span className="muted small">{sub}</span> : null}{info ? <Info about={about ?? (typeof title === "string" ? title : "this card")}>{info}</Info> : null}</div>
       {action}
     </div>
   );

@@ -43,8 +43,8 @@ describe("the address page: the head and the overview", () => {
     await open();
     const card = screen.getByRole("region", { name: "Overview" });
     expect(card).toHaveTextContent("9.99791 tROME");
-    expect(card).toHaveTextContent("as of final block 21, read from reth");
-    expect(card).toHaveTextContent("exact: 9.99791 tROME");
+    expect(card).toHaveTextContent("as of final block 21");
+    expect(card).toHaveTextContent("Read from reth; exact: 9.99791 tROME.");
   });
 
   it("says 0 for an empty account", async () => {

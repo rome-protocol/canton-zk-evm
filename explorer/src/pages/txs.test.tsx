@@ -181,7 +181,8 @@ describe("the all-time total", () => {
     expect(screen.getByText("Showing 2 of about 1,020")).toBeInTheDocument();
     // The Not final yet card counts the same attempts as the title: one total, not two.
     const card = within(screen.getByRole("region", { name: "Numbers" })).getByText("Not final yet").closest(".stat")!;
-    await waitFor(() => expect(card).toHaveTextContent("2 being proven · 1 waiting"));
+    await waitFor(() => expect(within(card as HTMLElement).getByRole("tooltip")).toHaveTextContent("2 being proven, and the rest waiting"));
+    expect(card).toHaveTextContent("1 waiting");
     expect(card).not.toHaveTextContent("5 being proven");
   });
 
@@ -213,25 +214,28 @@ describe("the four cards, from the stats routes", () => {
 
   it("shows, as screen 04 does, the day's transactions with the all-time total, the last hour's time to final, what is not final with how many are stuck, and the lost ones", async () => {
     await open({ stats: stats({}, dayOf()), inFlight: () => reply(inFlight({ attempts: [{ ...inFlight().attempts[0]!, number: 22, txCount: 3 }], poolWaiting: { waiting: 1, at: "2026-10-04T01:37:58Z" }, transactions: [] })) });
-    await waitFor(() => expect(tile("Transactions · 24 h")).toHaveTextContent("1,017"));
-    expect(tile("Transactions · 24 h")).toHaveTextContent("1,021 final in all · as of block 21");
+    await waitFor(() => expect(tile("Transactions · 24\u00a0h")).toHaveTextContent("1,017"));
+    expect(tile("Transactions · 24\u00a0h")).toHaveTextContent("1,021 since launch · 21 blocks");
+    expect(within(tile("Transactions · 24\u00a0h")).getByRole("tooltip")).toHaveTextContent("1,021 final in all, as of block 21");
     expect(tile("Time to final · last hour")).toHaveTextContent(/p95/);
-    await waitFor(() => expect(tile("Not final yet")).toHaveTextContent("43 being proven · 1 waiting · 0 stuck (over 120 s)"));
+    await waitFor(() => expect(tile("Not final yet")).toHaveTextContent("1 waiting · 0 stuck"));
+    expect(within(tile("Not final yet")).getByRole("tooltip")).toHaveTextContent("3 being proven, and the rest waiting in the pool for the next block. Stuck means waiting over 120 s.");
     expect(tile("Lost · all time")).toHaveTextContent("0");
     expect(tile("Lost · all time")).toHaveClass("stat-ok");
-    expect(tile("Lost · all time")).toHaveTextContent("accepted by Ostia and never made final");
+    expect(tile("Lost · all time")).toHaveTextContent("none lost");
+    expect(within(tile("Lost · all time")).getByRole("tooltip")).toHaveTextContent("Accepted by Ostia and never made final. Stats would list any such transaction with its reason.");
   });
 
   it("leaves the Lost card red and leads to the stats page when some were lost", async () => {
     await open({ stats: stats({}, dayOf({ lost: { window: 2, total: 2, listed: [] } })) });
     await waitFor(() => expect(tile("Lost · all time")).toHaveTextContent("2"));
     expect(tile("Lost · all time")).not.toHaveClass("stat-ok");
-    expect(within(tile("Lost · all time")).getByRole("link", { name: "Stats" })).toHaveAttribute("href", "/stats");
+    expect(within(tile("Lost · all time")).getByRole("link", { name: "each with its reason" })).toHaveAttribute("href", "/stats");
   });
 
   it("says a dash and why for each card the stats cannot give, never a made-up number", async () => {
     await open({ stats: () => reply({ error: "down" }, 500) });
-    await waitFor(() => expect(tile("Transactions · 24 h")).toHaveTextContent("the stats cannot be read right now"));
+    await waitFor(() => expect(tile("Transactions · 24\u00a0h")).toHaveTextContent("the stats cannot be read right now"));
     expect(tile("Lost · all time").querySelector(".stat-v")!.textContent).toBe("—");
     expect(tile("Time to final · last hour").querySelector(".stat-v")!.textContent).toBe("—");
   });

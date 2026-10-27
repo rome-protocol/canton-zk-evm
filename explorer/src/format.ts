@@ -119,6 +119,10 @@ export const trim = (n: number, places: number) => String(+n.toFixed(places));
 export const rate = (n: number) => (n >= 1 ? trim(n, 1) : n === 0 ? "0" : String(+n.toPrecision(2)));
 /** The busiest minute as a count, for a peak under 1 tx/s: "2 tx in the busiest minute" (a minute has 60 s, so the rate is the count over 60). */
 export const peakCount = (perSecond: number) => plural(Math.round(perSecond * 60), "tx", "tx");
+/** A peak without the decimals once it is 10 or more ("181"), as the home card says it. */
+export const rateShort = (n: number) => (n >= 10 ? String(Math.round(n)) : rate(n));
+/** A big count in short: "6.96 M" from a million, "12.4 k" from ten thousand, the whole count under that. */
+export const compactCount = (n: number) => (n >= 1_000_000 ? `${trim(n / 1_000_000, 2)} M` : n >= 10_000 ? `${trim(n / 1000, 1)} k` : count(n));
 export const plural = (n: number, one: string, many = `${one}s`) => `${count(n)} ${n === 1 ? one : many}`;
 
 /** A fee in whole coins to ten decimals, cut and never rounded, with the zeros at the end left off ("0.0000035364"). A fee below the tenth place is "<0.0000000001", never "0". */
@@ -141,3 +145,6 @@ export function dateTime(at: number | string): string {
   const two = (n: number) => String(n).padStart(2, "0");
   return `${two(d.getUTCDate())} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${d.toISOString().slice(11, 19)} UTC`;
 }
+
+/** Keeps a number and its unit together ("24 h", "72 h") so a narrow label never breaks between them. */
+export const nb = (text: string) => text.replace(/(\d) (?=[a-z])/g, "$1 ");

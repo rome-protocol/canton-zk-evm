@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import "./VerifyPanel.css";
+import { Info } from "../components/Info.tsx";
 import { fetchVerifier, parseAnswer, type BlockFields, type LoadedVerifier, type Pins } from "./verifier.ts";
 
 /** The pins as /api/status gives them, with the file they came from. */
@@ -194,8 +195,8 @@ export function VerifyPanel({ block, blockHash, pins, proving, moduleUrl, module
 
   return (
     <section className="card verify">
-      <div className="v-h"><h3>Verify this block in your browser</h3>{button("Verify", true)}</div>
-      <p>Canton's confirmers checked this block's proof before it committed. Verify runs the same check again, here, on your own machine, on the proof, header and transactions this block's record holds.</p>
+      <div className="v-h"><span className="v-t"><h3>Verify this block in your browser</h3><Info about="Verify">Canton's confirmers checked this block's proof before it committed. Verify runs the same check again, here, on your own machine, on the proof, header and transactions this block's record holds.</Info></span>{button("Verify", true)}</div>
+      <p>The same check Canton's confirmers ran, on your own machine.</p>
       <p className="small muted">{pinLine} The check downloads once{moduleSize !== undefined && <>, about {formatSize(moduleSize)},</>} when you press Verify.</p>
     </section>
   );

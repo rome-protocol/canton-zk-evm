@@ -2,6 +2,7 @@ import { Route, Routes, useLocation } from "react-router-dom";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 import { NoPage } from "./components/Cards.tsx";
 import { Shell } from "./components/Shell.tsx";
+import { About } from "./pages/About.tsx";
 import { Address } from "./pages/Address.tsx";
 import { Addresses } from "./pages/Addresses.tsx";
 import { Contract } from "./pages/Contract.tsx";
@@ -46,6 +47,7 @@ export function App() {
           <Route path="/tx/:hash" element={<Tx />} />
           <Route path="/search" element={<Search />} />
           <Route path="/stats" element={<Stats />} />
+          <Route path="/about" element={<About />} />
           <Route path="/docs/api" element={<ApiDocs />} />
           <Route path="*" element={<NoPage />} />
         </Routes>

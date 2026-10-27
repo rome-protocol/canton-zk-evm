@@ -3,7 +3,8 @@ import { getTokenInfo, type LegListItem } from "../api.ts";
 import { Amount } from "../components/Amount.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { LEGS_THESE_BLOCKS, LEGS_THIS_BLOCK } from "../copy.ts";
+import { Info } from "../components/Info.tsx";
+import { LEGS_NOT_PUBLIC_THESE, LEGS_NOT_PUBLIC_THIS, LEGS_WHO_SEES } from "../copy.ts";
 import { count, exact, units } from "../format.ts";
 
 /** The token of a leg, as the token route names it. It reads no balance from reth, so a page of legs costs the database only. Null while unread or when the token cannot be read. */
@@ -27,5 +28,5 @@ export function LegToken({ token, full = false }: { token: string; full?: boolea
 
 /** The line on what is not shown: the Daml side of a leg is not public. On a list of many blocks it says "these blocks". */
 export function LegsPrivacy({ many = false }: { many?: boolean }) {
-  return <div className="legs" role="note"><Icon name="lock" size={14} /><span>{many ? LEGS_THESE_BLOCKS : LEGS_THIS_BLOCK}</span></div>;
+  return <div className="legs" role="note"><Icon name="lock" size={14} /><span>{many ? LEGS_NOT_PUBLIC_THESE : LEGS_NOT_PUBLIC_THIS}</span><Info about="who sees the legs">{LEGS_WHO_SEES}</Info></div>;
 }

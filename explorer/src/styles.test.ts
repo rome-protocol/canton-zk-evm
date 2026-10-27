@@ -13,9 +13,13 @@ function sources(dir: string): string[] {
   });
 }
 
+function darkOf(c: string): string {
+  return /@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/.exec(c)?.[1] ?? "";
+}
+
 describe("themes", () => {
   const tokens = ["--bg", "--surface", "--ink", "--muted", "--link", "--evm", "--canton", "--ok", "--bad", "--amber"];
-  const dark = /@media \(prefers-color-scheme: dark\) \{\s*:root \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const dark = darkOf(css);
 
   it("defines the colours once for light and again for dark, which follows the system setting", () => {
     const light = /:root \{([^}]*)\}/.exec(css)?.[1] ?? "";
@@ -32,19 +36,46 @@ describe("themes", () => {
 });
 
 describe("fonts and outside requests", () => {
-  it("serves IBM Plex from the explorer: every font file the styles name is in public/fonts, with its licence", () => {
+  it("serves its fonts from the explorer: every font file the styles name is in public/fonts, with its licence, and only the weights used", () => {
     const files = [...css.matchAll(/url\((\/fonts\/[^)]+)\)/g)].map((m) => m[1]!);
-    expect(files.length).toBe(7);
+    expect(files.sort()).toEqual([
+      "/fonts/dm-sans-latin-400-normal.woff2", "/fonts/dm-sans-latin-500-normal.woff2", "/fonts/dm-sans-latin-600-normal.woff2",
+      "/fonts/ibm-plex-mono-latin-400-normal.woff2", "/fonts/ibm-plex-mono-latin-500-normal.woff2",
+      "/fonts/literata-latin-500-italic.woff2", "/fonts/literata-latin-500-normal.woff2",
+    ]);
     for (const f of files) expect(existsSync(join(root, "public", f)), f).toBe(true);
-    expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Sans.txt"))).toBe(true);
-    expect(existsSync(join(root, "public/fonts/OFL-IBM-Plex-Mono.txt"))).toBe(true);
-    expect(readFileSync(join(root, "public/fonts/OFL-IBM-Plex-Serif.txt"), "utf8")).toMatch(/SIL Open Font License, Version 1\.1/);
+    for (const l of ["Literata", "DM-Sans", "IBM-Plex-Mono"]) expect(readFileSync(join(root, `public/fonts/OFL-${l}.txt`), "utf8"), l).toMatch(/SIL Open Font License, Version 1\.1/);
+    // nothing in public/fonts that the styles do not use
+    const onDisk = readdirSync(join(root, "public/fonts")).filter((n) => n.endsWith(".woff2")).map((n) => `/fonts/${n}`);
+    expect(onDisk.sort()).toEqual(files);
   });
 
-  it("sets the wordmark and every h1 in IBM Plex Serif, and numbers in tabular figures", () => {
-    expect(css).toMatch(/@font-face \{ font-family: "IBM Plex Serif"; font-weight: 500;/);
-    expect(css).toMatch(/\nh1, \.name \{ font-family: "IBM Plex Serif", /);
+  it("sets the wordmark, the headings and the big numbers in Literata 500 with its italic, and the text in DM Sans", () => {
+    expect(css).toMatch(/@font-face \{ font-family: "Literata"; font-weight: 500; font-style: normal;/);
+    expect(css).toMatch(/@font-face \{ font-family: "Literata"; font-weight: 500; font-style: italic;/);
+    expect(css).toMatch(/\nh1, h2, \.name \{ font-family: "Literata", [^}]*font-weight: 500/);
+    expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain('font-family: "DM Sans"');
     expect(/\nbody \{[^}]*\}/.exec(css)?.[0]).toContain("font-variant-numeric: tabular-nums");
+    const rules = rulesOf(css);
+    expect(winner(rules, [".stat-v"], "font-family", false)).toMatch(/Literata/);
+    expect(winner(rules, [".stat-v"], "font-weight", false)).toBe("500");
+    expect(winner(rules, [".card-title h2"], "font-family", false)).toMatch(/Literata/);
+  });
+
+  it("finishes the cards, the pages, the buttons and the search box the way the Rome site does: 20 px cards with a faint border and a soft shadow, pills with the lilac glow", () => {
+    const rules = rulesOf(css);
+    expect(winner(rules, [".card"], "border-radius", false)).toBe("20px");
+    expect(winner(rules, [".card"], "border", false)).toContain("var(--line-2)");
+    expect(winner(rules, [".card"], "box-shadow", false)).toBe("var(--shadow)");
+    for (const sel of [".nav .navlink", ".btn", ".rpc-btn", ".search", ".pager button"]) expect(winner(rules, [sel], "border-radius", false), sel).toBe("999px");
+    for (const sel of [".btn", ".rpc-btn"]) expect(winner(rules, [sel], "box-shadow", false), sel).toBe("var(--btn-shadow)");
+    expect(css).toContain("--glow: #D69ED6");
+    expect(css).toContain("--btn-shadow: inset 0 0 14px rgba(214,158,214,.55)");
+    expect(winner(rules, [".hero"], "background", false)).toMatch(/radial-gradient\(120% 140% at 50% 0%, var\(--hero-from\)/);
+  });
+
+  it("keeps the dark theme in step: the glow, the shadow, the hero gradient and the top bar have their own dark values", () => {
+    for (const t of ["--glow", "--shadow", "--btn-shadow", "--nav-bg", "--hero-from", "--hero-to", "--topbar"]) expect(darkOf(css), t).toContain(`${t}:`);
   });
 
   it("sets numbers in the text face with figures of equal width, and only hashes and ids in IBM Plex Mono", () => {
@@ -226,5 +257,59 @@ describe("panel notes", () => {
 
   it("draws the block's cube in the accent on Home", () => {
     expect(readFileSync(join(root, "src/pages/home.css"), "utf8")).toMatch(/\.idcell\.blk \.ic \{ color: var\(--canton\);/);
+  });
+});
+
+describe("the display face asks only for the weight that ships", () => {
+  const sheets = sources(join(root, "src")).filter((f) => f.endsWith(".css"));
+  // what takes Literata: the headings, the wordmark, the big numbers, and the classes the pages put on a heading
+  const literata = /(^|[ >])(h[123]|\.name|\.stat-v|\.tx-h|\.rec-k|\.about-h)$/;
+  it("sets no Literata heading or number in a bold the browser would have to fake", () => {
+    for (const f of sheets) {
+      for (const r of rulesOf(readFileSync(f, "utf8"))) {
+        if (literata.test(r.sel) && r.decls["font-weight"]) expect(r.decls["font-weight"], `${f.slice(root.length)} ${r.sel}`).toBe("500");
+      }
+    }
+  });
+  it("gives the Verify panel the card finish of the pages", () => {
+    const rules = rulesOf(readFileSync(join(root, "src/verify/VerifyPanel.css"), "utf8"));
+    expect(winner(rules, [".verify"], "border-radius", false)).toBe("20px");
+    expect(winner(rules, [".verify"], "border", false)).toContain("var(--line-2)");
+    expect(winner(rules, [".verify"], "box-shadow", false)).toBe("var(--shadow)");
+  });
+});
+
+describe("the finish of small controls and notes", () => {
+  it("draws the pager buttons in the page font, and keeps a mono function name at the weight that ships", () => {
+    expect(/\n\.pager button \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font:\s*inherit/);
+    expect(/\n\.fn-name \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font-weight:\s*500/);
+  });
+  it("sets code in IBM Plex Mono like the other mono text", () => {
+    expect(/\ncode \{([^}]*)\}/.exec(css)?.[1]).toMatch(/font-family:\s*"IBM Plex Mono"/);
+  });
+  it("keeps every mono text at 400 or 500, the weights IBM Plex Mono ships: no .mono, .fn-name or .ev-name rule asks for more", () => {
+    for (const f of sources(join(root, "src")).filter((x) => x.endsWith(".css"))) {
+      for (const r of rulesOf(readFileSync(f, "utf8"))) {
+        const w = r.decls["font-weight"];
+        if (/\.(mono|fn-name|ev-name)\b/.test(r.sel) && w) expect(/^\d+$/.test(w) ? Number(w) : 700, `${f.slice(root.length)} ${r.sel}`).toBeLessThanOrEqual(500);
+      }
+    }
+  });
+  it("shrinks a stat tile's big number on a phone so an 8-digit count with commas (10,540,146) fits the narrowest tile: a clamp that is at most 25 px at 390 px and under 29 px at 768 px (four tiles in a row), and 30 px on a wide screen", () => {
+    const m = /\n\.stat-v \{[^}]*font-size:\s*clamp\((\d+)px,\s*([\d.]+)vw,\s*(\d+)px\)/.exec(css);
+    expect(m).not.toBeNull();
+    const [min, vw, max] = [Number(m![1]), Number(m![2]), Number(m![3])];
+    expect(max).toBe(30);
+    expect(Math.max(min, Math.min(max, (vw / 100) * 390))).toBeLessThanOrEqual(25);
+    expect(Math.max(min, Math.min(max, (vw / 100) * 768))).toBeLessThan(29);
+    expect(css).toMatch(/\n\.cell \.stat-v \{[^}]*clamp\(/);
+  });
+  it("keeps the header no wider than before the restyle: the search box takes 380 px (366 px below 1366 px) at most, and the links are 14 px with a 20.3 px line", () => {
+    expect(/\n@media \(min-width: 721px\) \{[^@]*?\.top \.search \{[^}]*flex-basis:\s*(\d+)px/.exec(css)?.[1]).toBe("380");
+    expect(/max-width: 1365px\) \{[^@]*?\.top \.search \{[^}]*flex-basis:\s*(\d+)px/.exec(css)?.[1]).toBe("366");
+    expect(/\n\.nav \.navlink \{[^}]*line-height:\s*1\.45/.test(css) || /min-width: 721px\) \{[^@]*?\.nav \.navlink \{[^}]*line-height:\s*1\.45/.test(css)).toBe(true);
+  });
+  it("puts the peak on a line of its own", () => {
+    expect(/\n\.stat-v \.stat-peak \{([^}]*)\}/.exec(css)?.[1]).toMatch(/display:\s*block/);
   });
 });

@@ -1,4 +1,5 @@
 import { howItBecameFinal, secs, type Became, type Lifecycle } from "../block-times.ts";
+import { Info } from "../components/Info.tsx";
 import { count } from "../format.ts";
 import "./block.css";
 
@@ -18,8 +19,8 @@ export function timesOf({ lifecycle, recordTime, reading, failed, final, proofBy
 }
 
 const NONE = "—";
-const tile = (k: string, v: string, s: string) => (
-  <div className="tile"><span className="tile-k">{k}</span><b className="tile-v">{v}</b><span className="tile-s">{s}</span></div>
+const tile = (k: string, v: string, s: string, info?: string) => (
+  <div className="tile"><span className="tile-k">{k}{info && <Info about={k}>{info}</Info>}</span><b className="tile-v">{v}</b><span className="tile-s">{s}</span></div>
 );
 
 /** The four numbers at the top of the block page. A time the producer's journal does not hold is shown as a dash, with the reason under it. */
@@ -30,9 +31,9 @@ export function Tiles({ txCount, gasUsed, times, unindexed = false }: { txCount:
   return (
     <div className="tiles" role="group" aria-label="This block in numbers">
       {tile("Transactions", count(txCount), `${count(gasUsed)} gas`)}
-      {tile("Proof time", t?.proofMs != null ? secs(t.proofMs) : NONE, t?.proofMs != null ? "ZisK, from the producer's log" : why)}
-      {tile("Canton commit", t?.commitMs != null ? secs(t.commitMs) : NONE, t?.commitMs != null ? "sent to record time" : why)}
-      {tile("Cut to final", t?.totalMs != null ? secs(t.totalMs) : NONE, t?.totalMs != null ? "the block's whole way to final" : why)}
+      {tile("Proof time", t?.proofMs != null ? secs(t.proofMs) : NONE, t?.proofMs != null ? "ZisK" : why, t?.proofMs != null ? "Proved with ZisK; the time is from the producer's log." : undefined)}
+      {tile("Canton commit", t?.commitMs != null ? secs(t.commitMs) : NONE, t?.commitMs != null ? "sent → recorded" : why, t?.commitMs != null ? "From the block being sent to Canton to Canton's record time." : undefined)}
+      {tile("Cut to final", t?.totalMs != null ? secs(t.totalMs) : NONE, t?.totalMs != null ? "cut → final" : why, t?.totalMs != null ? "The block's whole way to final, from the cut to Canton's record time." : undefined)}
     </div>
   );
 }
@@ -46,13 +47,13 @@ export function HowFinal({ times, final, unindexed = false }: { times: Times; fi
     : !final ? "This block is not final yet, so its way is not finished."
     : times.state === "reading" ? "Reading the producer's times…"
     : times.state === "unreadable" ? "The producer's times cannot be read right now, so only Canton's record time is shown."
-    : t?.totalMs != null ? `Cut to final in ${secs(t.totalMs, 3)}. Times are from the producer's log, and the last one is Canton's record time.`
+    : t?.totalMs != null ? `Cut to final in ${secs(t.totalMs, 3)}.`
     : times.lifecycle === null ? "The producer's log has no row for this block, so only Canton's record time is known."
     : "The producer's log misses some of this block's times, so the steps and the numbers that need them are left out.";
   const total = t?.totalMs ?? 0;
   return (
     <section className="card how" aria-labelledby="how-h">
-      <div className="sec-h"><h3 id="how-h">How this block became final</h3><span className="muted small">{caption}</span></div>
+      <div className="sec-h"><h3 id="how-h">How this block became final</h3><span className="muted small">{caption}</span>{final && times.state === "read" && t?.totalMs != null && <Info about="the times">Times are from the producer's log, and the last one is Canton's record time.</Info>}</div>
       {final && t?.bar && total > 0 && (
         <div className="how-bar-w">
           <div className="how-bar" role="img" aria-label={`The way to final, ${secs(total, 2)} in all`}>

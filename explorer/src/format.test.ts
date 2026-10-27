@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseFee, bytesOf, compactUnits, count, dateTime, feeOf, gwei, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
+import { baseFee, bytesOf, compactUnits, count, dateTime, feeOf, gwei, nb, party, peakCount, rate, seconds, shortUpdate, units, utcDate, utcMs } from "./format.ts";
 
 describe("a rate of transactions per second", () => {
   it("keeps one place from 1 up and two significant figures under 1, so a busiest minute of 1 or 2 transactions is not 0", () => {
@@ -134,5 +134,24 @@ describe("compactUnits", () => {
     expect(compactUnits("1999999999999999999", 18)).toBe("2");
     expect(compactUnits("1500000", 6)).toBe("1.5");
     expect(compactUnits("1", 6)).toBe("0.000001");
+  });
+});
+
+describe("the short forms the cards use", () => {
+  it("says a big count in short and a rate without decimals from 10", async () => {
+    const { compactCount, rateShort } = await import("./format.ts");
+    expect(compactCount(6_961_234)).toBe("6.96 M");
+    expect(compactCount(12_400)).toBe("12.4 k");
+    expect(compactCount(9_245)).toBe("9,245");
+    expect(rateShort(181.4)).toBe("181");
+    expect(rateShort(9.46)).toBe("9.5");
+    expect(rateShort(0.017)).toBe("0.017");
+  });
+});
+
+describe("a label's number and unit", () => {
+  it("stay together on a narrow screen", () => {
+    expect(nb("24 h, RPC and faucet")).toBe("24\u00a0h, RPC and faucet");
+    expect(nb("Time to final")).toBe("Time to final");
   });
 });

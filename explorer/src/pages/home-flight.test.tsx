@@ -18,7 +18,7 @@ describe("the home page when it cannot tell what is in flight", () => {
     expect(card()).toHaveTextContent("cannot be read right now");
     expect(card()).not.toHaveTextContent("0 ·");
     // The status on the same page still says a block is being proven.
-    expect(screen.getAllByText(/block 4 is being proven/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/4 being proven/).length).toBeGreaterThan(0);
   });
 
   it("says Reading while the in-flight route has not answered, and nothing about final", async () => {
@@ -49,6 +49,7 @@ describe("the home page when it cannot tell what is in flight", () => {
     fakeApi(route({ inFlight: () => reply(inFlight({ attempts: [], poolWaiting: { waiting: 0, at: "2026-10-04T01:37:25.000Z" } })) }));
     renderApp("/");
     expect(await screen.findByText(FINAL_LINE)).toBeInTheDocument();
-    expect(card()).toHaveTextContent("0 in blocks being made or proven · 0 waiting");
+    expect(card()).toHaveTextContent("0 waiting");
+    expect(within(card() as HTMLElement).getByRole("tooltip")).toHaveTextContent("0 in blocks being made or proven");
   });
 });

@@ -41,6 +41,9 @@ describe("not run", () => {
     const { load } = panel();
     expect(screen.getByRole("heading", { name: "Verify this block in your browser" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Verify" })).toBeEnabled();
+    // one short line on the card, the rest behind the small i
+    expect(screen.getByText("The same check Canton's confirmers ran, on your own machine.")).toBeInTheDocument();
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Verify runs the same check again, here, on your own machine");
     expect(screen.getByText("0xdb79…6d3f")).toBeInTheDocument();
     expect(screen.getByText("0xc3f1…1ac4")).toBeInTheDocument();
     expect(screen.getByText("prover/fixtures/session.txt")).toBeInTheDocument();

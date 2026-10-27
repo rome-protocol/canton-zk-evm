@@ -18,6 +18,7 @@ import { useLive } from "../useLive.ts";
 import { Bad, Good } from "./BlockSides.tsx";
 import "./block.css";
 import "./canton.css";
+import { Info } from "../components/Info.tsx";
 
 /** The reader's note, said once for both pages: what the offset is the offset of. */
 const READER = "on the reader's participant";
@@ -51,7 +52,7 @@ export function CantonUpdates() {
               </tbody>
             </table>
           </div>
-          <p className="muted small">Offsets are {READER}. Updates there that carry no block are not listed, so offsets can skip.</p>
+          <p className="muted small">Offsets as the reader party sees them<Info about="the offsets">Offsets are {READER}. Updates there that carry no block are not listed, so offsets can skip.</Info></p>
         </section>
       )}
     </>
@@ -187,7 +188,7 @@ function RecordHolds({ c, block }: { c: NonNullable<ApiBlock["canton"]>; block: 
   return (
     <section className="card rec holds" aria-labelledby="holds-h">
       <div className="rec-row">
-        <h3 className="rec-k" id="holds-h">What the record holds</h3><span className="muted small">the three parts Verify checks; each can be copied as hex</span>
+        <h3 className="rec-k" id="holds-h">What the record holds</h3><Info about="what the record holds">The three parts Verify checks; each can be copied as hex.</Info>
         <span className="grow" />
         {parts.map(([name, hex]) => <CopyPart key={name} name={name} hex={hex} />)}
         <Link className="btn-primary" to={`/block/${block}`}><Icon name="check" size={13} />Verify in your browser</Link>
@@ -264,7 +265,7 @@ function Around({ id }: { id: string }) {
   const gap = items && skipped(items);
   return (
     <section className="card" aria-labelledby="around-h">
-      <div className="sec-h"><h3 id="around-h">Canton updates around this one</h3><span className="muted small">ordered by record time and update id · offsets {READER}</span><span className="grow" /><Link className="btn-line" to="/canton">All Canton updates <Icon name="next" size={13} /></Link></div>
+      <div className="sec-h"><h3 id="around-h">Canton updates around this one</h3><span className="muted small">by record time</span><Info about="the order">Ordered by record time and update id; offsets are {READER}.</Info><span className="grow" /><Link className="btn-line" to="/canton">All Canton updates <Icon name="next" size={13} /></Link></div>
       {q.isError ? <p className="muted">The explorer cannot read the updates around this one right now.</p> : !items ? <p className="muted">Reading the Canton updates…</p> : (
         <>
           <div className="scroll">

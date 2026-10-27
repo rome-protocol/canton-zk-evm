@@ -1,3 +1,4 @@
+import { Info } from "../components/Info.tsx";
 import type { ReactNode } from "react";
 import type { ApiStatus, CantonSummary, Fact } from "../api.ts";
 import { HashLink } from "../components/HashLink.tsx";
@@ -79,7 +80,7 @@ export function ProofCard({ c, pins: all, block, children, compactFor }: { c: Ca
   const pins = all && pinsAt(all, block);
   return (
     <section className={`card side canton proof${compact ? " compact" : ""}`} aria-labelledby="proof-h">
-      <div className="side-h"><span className="side-l" id="proof-h">The proof</span><span className="muted small">{compact ? `of block ${compactFor}` : <>read from the proof's own bytes, compared with this explorer's pins{pins?.file && <>, from <span className="mono">{pins.file}</span></>}</>}</span></div>
+      <div className="side-h"><span className="side-l" id="proof-h">The proof</span>{compact ? <span className="muted small">{`of block ${compactFor}`}</span> : <Info about="the proof">Read from the proof's own bytes, compared with this explorer's pins{pins?.file && <>, from <span className="mono">{pins.file}</span></>}.</Info>}</div>
       {compact ? <CompactFacts c={c} pins={pins} block={compactFor} /> : <ProofFacts c={c} pins={pins} />}
       <div className="proof-verify">{children}</div>
     </section>
