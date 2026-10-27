@@ -8,8 +8,8 @@
  */
 import type { Answer } from "../api.ts";
 import { cached } from "./cache.ts";
-import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type NftGroup, type TokenSort, type TokenStandard, type TokenTransferItem, type TxDirection } from "./account-rest.ts";
-import { REST_FIELDS as F, pick, pickTx } from "./fields.ts";
+import { TOKEN_STANDARDS, TX_DIRECTIONS, type AccountRest, type AddressSort, type ContractSort, type NftGroup, type TokenSort, type TokenStandard, type TokenTransferItem, type SwapItem, type TxDirection } from "./account-rest.ts";
+import { FIELDS, REST_FIELDS as F, pick, pickTx } from "./fields.ts";
 import { BadRequest, cursorOf, keyOf, limitOf, pageOf } from "./paging.ts";
 import { router } from "./router.ts";
 import type { Reth } from "../reth.ts";
@@ -26,6 +26,7 @@ export const NO_ADDRESS = "An address is 0x and 40 hex digits.";
 export const NO_CONTRACT = "No contract is held at that address.";
 export const NO_TOKEN = "No token is held at that address.";
 export const NO_LEG = "No gateway leg has that id.";
+export const NO_SWAP = "No swap has that payment id.";
 /** Most addresses one request may ask the labels of. */
 export const MAX_LABELS = 100;
 /** What the first part of a name search may be: it is matched as text, never as a pattern, and a very short or very long one is not a name. */
@@ -46,6 +47,11 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     const p = pageOf(rows, limit, key);
     return pick({ derived, items: p.items.map((r) => pick(r, fields)), next: p.next }, F.derivedPage);
   };
+  /** A swap in the fields of its allowlists, each part picked on its own. */
+  const swapOf = (s: SwapItem) => pick({
+    ...s, offer: pick(s.offer, F.swapOffer), evm: pick(s.evm, F.swapEvm), canton: pick({ ...s.canton, instrument: s.canton.instrument && pick(s.canton.instrument, FIELDS.legInstrument) }, F.swapCanton),
+    payment: pick(s.payment, F.swapPayment), claim: s.claim && pick(s.claim, F.swapClaim),
+  }, F.swap);
   const isDerived = async (): Promise<boolean> => {
     const { head, cursor } = await accounts.derivedThrough();
     return head === null || cursor >= head;
@@ -303,6 +309,19 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     return l ? cached(ok(pick(l, F.legItem)), "composite") : fail(404, NO_LEG);
   }
 
+  // The swaps are stage 1 facts too: a trade, its payment and its claim are read without stage 2.
+  async function swapList(q: URLSearchParams): Promise<Answer> {
+    const limit = limitOf(q.get("limit")), before = cursorOf(q.get("before"), ["int", "int4"]);
+    const p = pageOf(await accounts.swaps(before, limit), limit, (s) => keyOf(s.payment.block, s.payment.legIndex));
+    return cached(ok(pick({ items: p.items.map(swapOf), next: p.next }, F.page)), "list");
+  }
+
+  async function oneSwap(id: string): Promise<Answer> {
+    if (!LEG_ID.test(id)) throw new BadRequest("A swap is named by its payment id, 0x and 64 hex digits.");
+    const s = await accounts.swap(id);
+    return s ? cached(ok(swapOf(s)), "composite") : fail(404, NO_SWAP);
+  }
+
   /** The names of up to MAX_LABELS addresses at once, for the pages that show a contract or a token by name. Each address is answered once, in the order it was first asked. */
   async function labelList(q: URLSearchParams): Promise<Answer> {
     const raw = q.get("addresses");
@@ -345,6 +364,8 @@ export function accountRoutes({ accounts, reth, search }: AccountRouteDeps) {
     ["/api/labels", (_, q) => labelList(q)],
     ["/api/legs", (_, q) => legList(q)],
     ["/api/legs/{id}", (id) => oneLeg(id)],
+    ["/api/swaps", (_, q) => swapList(q)],
+    ["/api/swaps/{payId}", (id) => oneSwap(id)],
     ["/api/search", (_, q) => find(q.get("q") ?? "")],
   ]);
 }

@@ -4,6 +4,7 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
+import { blockLegs as legsOfBlock, type LegCanton } from "../indexer/leg-canton.ts";
 import { txTotal as totalOf, type TxTotal } from "./tx-total.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -13,7 +14,6 @@ export const bytes = (h: string): Buffer => Buffer.from(h.replace(/^0x/, ""), "h
 export const MS = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 export const US = (c: string): string => `to_char(${c} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.replace(/(\.\d{3})000Z/, "$1Z");
 export const isoTime = (s: string): string => s.replace(/(\.\d{3})000Z$/, "$1Z");
-const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
 
 /** A trace address as a page key: "t", then the indexes joined by "-" (the top call, which has none, is just "t"). */
 export const traceKey = (a: number[]): string => "t" + a.join("-");
@@ -45,7 +45,7 @@ export interface BlockExtras {
   /** The producer's attempt that made the block, from its journal; null before the journal is loaded. */
   lifecycle: { strategy: string; cutReason: string; cutAt: string; builtAt: string | null; proofStartedAt: string | null; proofEndedAt: string | null; submittedAt: string | null; answeredAt: string | null } | null;
 }
-export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string }
+export interface LegItem { legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; canton: LegCanton | null }
 export interface LogItem { logIndex: number; position: number; address: string; topics: string[]; data: string }
 export interface InternalItem { traceAddress: number[]; callType: string; from: string; to: string | null; value: string; gas: number | null; gasUsed: number | null; selector: string | null; inputSize: number | null; error: string | null }
 export interface TransferItem { logIndex: number; batchIndex: number; methodId: string | null; creation: boolean; timestamp: number; token: string; standard: string | null; from: string; to: string; amount: string | null; tokenId: string | null }
@@ -183,12 +183,10 @@ export function createChainRest(pool: Pool) {
     return withTokenMoves(query, rows.map(txItem));
   }
 
+  /** The legs of a block after the leg index `after`, one more than `limit` of them, each with what Canton shows of the swap it is one side of. */
   async function blockLegs(number: number, after: number | null, limit: number): Promise<LegItem[]> {
-    const rows = await query(
-      `select leg_index, tx_index, log_index, kind, leg_id, token, account, amount::text as amount from gateway_legs where block_number = $1 and ($2::int is null or leg_index > $2) order by leg_index limit $3`,
-      [number, after, limit + 1],
-    );
-    return rows.map((r) => ({ legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: LEG_KINDS[r.kind] ?? String(r.kind), legId: hex(r.leg_id), token: hex(r.token), account: hex(r.account), amount: r.amount }));
+    const legs = await legsOfBlock(pool, number, { after, limit: limit + 1 }).catch((e: Error) => { throw new ChainDbError(`the database cannot be read: ${e.message}`); });
+    return legs.map((l) => ({ legIndex: l.legIndex, txIndex: l.txIndex, logIndex: l.logIndex, kind: l.kind, legId: l.legId, token: l.token, account: l.account, amount: l.amount, canton: l.canton }));
   }
 
   /** A block's record as the Verify page needs it: the header, the transactions and the proof, all as hex. */

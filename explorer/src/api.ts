@@ -51,6 +51,13 @@ export interface CantonSide {
 }
 /** The Canton side as the REST block route gives it: every fact, and none of the record's hex (that is /record, fetched when Verify is pressed). */
 export type CantonSummary = Omit<CantonSide, "headerHex" | "txsHex" | "proofHex">;
+/** What Canton shows of the swap a leg is one side of: a payment that settled a venue's trade, or the deposit that redeemed its funded claim. No Canton party is part of it. */
+export interface LegCanton { role: "venue-trade" | "funded-claim"; amount: string | null; instrument: { admin: string; id: string } | null; settledUpdateId: string | null; recipient: string }
+/** A gateway leg inside a block's or a transaction's answer, with the Canton side of its swap (null on a leg that is not one). */
+export interface BlockLeg {
+  block: number; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string;
+  txHash: string | null; updateId: string | null; canton: LegCanton | null;
+}
 export interface ApiBlock {
   /** "unindexed": final on Canton, and the explorer's indexer has not written the block yet (the status says when the indexer is behind or stopped). */
   status: "final" | "proving" | "unindexed" | "genesis";
@@ -69,6 +76,7 @@ export interface ApiBlock {
   genesisReferenced: boolean | null;
   canton: CantonSide | null;
   transactions: BlockRow[];
+  legs: BlockLeg[];
 }
 export interface Log { address: string; topics: string[]; data: string }
 /** Where a transaction is. Pending: in reth's pool. Proving: in a block that is being proven. Final: in a block that is final on Canton. Unindexed: in a block Canton holds that the explorer has not indexed yet. Replaced and dropped: it will not be in a block. */
@@ -99,6 +107,8 @@ interface ApiTxCommon {
   toToken: string | null;
   /** The contract this transaction created. */
   created: string | null;
+  /** The gateway legs it caused. */
+  legs: BlockLeg[];
 }
 /** A transaction that reth holds, in its pool or in a block. */
 export interface ApiTxSeen extends ApiTxCommon {

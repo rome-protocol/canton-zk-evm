@@ -143,6 +143,29 @@ table bytecodes
   constraint bytecodes_pkey PRIMARY KEY (code_hash)
   CREATE UNIQUE INDEX bytecodes_pkey ON public.bytecodes USING btree (code_hash)
 
+table canton_funded_claims
+  column claim_id bytea not null
+  column recipient bytea not null
+  column amount numeric(78,0) not null
+  column gateway_token text not null
+  column funded_update_id text not null
+  constraint canton_funded_claims_amount_check CHECK ((amount > (0)::numeric))
+  constraint canton_funded_claims_claim_id_check CHECK ((length(claim_id) = 32))
+  constraint canton_funded_claims_pkey PRIMARY KEY (claim_id)
+  constraint canton_funded_claims_recipient_check CHECK ((length(recipient) = 20))
+  CREATE UNIQUE INDEX canton_funded_claims_pkey ON public.canton_funded_claims USING btree (claim_id)
+
+table canton_gateway_tokens
+  column contract_id text not null
+  column evm_token bytea not null
+  column instrument_admin text not null
+  column instrument_id text not null
+  constraint canton_gateway_tokens_evm_token_check CHECK ((length(evm_token) = 20))
+  constraint canton_gateway_tokens_instrument_admin_check CHECK ((instrument_admin <> ''::text))
+  constraint canton_gateway_tokens_instrument_id_check CHECK ((instrument_id <> ''::text))
+  constraint canton_gateway_tokens_pkey PRIMARY KEY (contract_id)
+  CREATE UNIQUE INDEX canton_gateway_tokens_pkey ON public.canton_gateway_tokens USING btree (contract_id)
+
 table canton_participants
   column id smallint not null identity always
   column participant_id text not null
@@ -210,6 +233,41 @@ table canton_updates
   CREATE INDEX canton_updates_unjoined_idx ON public.canton_updates USING btree (record_time) WHERE (command_id IS NULL)
   CREATE UNIQUE INDEX canton_updates_participant_reader_offset_key ON public.canton_updates USING btree (participant, reader_offset)
   CREATE UNIQUE INDEX canton_updates_pkey ON public.canton_updates USING btree (update_id)
+
+table canton_venue_cursor
+  column only_row boolean not null default true
+  column participant_id text not null
+  column ledger_offset bigint not null
+  column read_at timestamp with time zone not null
+  column matched_block bigint not null default 0
+  constraint canton_venue_cursor_ledger_offset_check CHECK ((ledger_offset >= 0))
+  constraint canton_venue_cursor_matched_block_check CHECK ((matched_block >= 0))
+  constraint canton_venue_cursor_only_row_check CHECK (only_row)
+  constraint canton_venue_cursor_pkey PRIMARY KEY (only_row)
+  CREATE UNIQUE INDEX canton_venue_cursor_pkey ON public.canton_venue_cursor USING btree (only_row)
+
+table canton_venue_trades
+  column pay_id bytea not null
+  column claim_id bytea not null
+  column token bytea not null
+  column payee bytea not null
+  column recipient bytea not null
+  column evm_amount numeric(78,0) not null
+  column gateway_token text not null
+  column offered_update_id text not null
+  column payment_block bigint
+  column payment_leg_index integer
+  constraint canton_venue_trades_check CHECK (((payment_block IS NULL) = (payment_leg_index IS NULL)))
+  constraint canton_venue_trades_claim_id_check CHECK ((length(claim_id) = 32))
+  constraint canton_venue_trades_evm_amount_check CHECK ((evm_amount > (0)::numeric))
+  constraint canton_venue_trades_pay_id_check CHECK ((length(pay_id) = 32))
+  constraint canton_venue_trades_payee_check CHECK ((length(payee) = 20))
+  constraint canton_venue_trades_pkey PRIMARY KEY (pay_id)
+  constraint canton_venue_trades_recipient_check CHECK ((length(recipient) = 20))
+  constraint canton_venue_trades_token_check CHECK ((length(token) = 20))
+  CREATE INDEX canton_venue_trades_claim_id_idx ON public.canton_venue_trades USING btree (claim_id)
+  CREATE INDEX canton_venue_trades_payment_block_payment_leg_index_idx ON public.canton_venue_trades USING btree (payment_block DESC, payment_leg_index DESC) WHERE (payment_block IS NOT NULL)
+  CREATE UNIQUE INDEX canton_venue_trades_pkey ON public.canton_venue_trades USING btree (pay_id)
 
 table coin_balance_history
   column address bytea not null

@@ -21,6 +21,7 @@ import { buildOpenApi } from "./rest/openapi.ts";
 import { router } from "./rest/router.ts";
 import type { VerifyApi } from "./verifier/api.ts";
 import { FIELDS, pick } from "./rest/fields.ts";
+import type { BlockLeg } from "./indexer/leg-canton.ts";
 import type { ApiHealth } from "./api-health.ts";
 import { httpStatusOf } from "./health.ts";
 
@@ -96,6 +97,12 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
     return m && token ? { symbol: token.symbol, decimals: token.decimals, to: "0x" + m[1], value: dec(BigInt("0x" + m[2])) } : null;
   }
 
+  /** The most legs a block's answer carries: a block can record thousands, and `legsCount` and the paged legs route have the rest. A transaction's answer is bounded the same way (the first 50 of the legs it caused). */
+  const BLOCK_LEGS = 50;
+
+  /** A gateway leg in the fields of FIELDS.blockLeg, and the Canton side of its swap in the fields of FIELDS.legCanton. */
+  const legOf = (l: BlockLeg) => ({ ...pick(l, FIELDS.blockLeg), canton: l.canton && { ...pick(l.canton, FIELDS.legCanton), instrument: l.canton.instrument && pick(l.canton.instrument, FIELDS.legInstrument) } });
+
   async function status(): Promise<Answer> {
     const latest = await reth.block("latest").then((b) => b, () => undefined);
     const canton = await ledger.ledgerEnd().then(() => true, () => false);
@@ -166,6 +173,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
           hashesMatch, headerHex: final.headerHex, txsHex: final.txsHex, proofHex: final.proofHex ?? "",
         },
         transactions,
+        legs: (await chain.blockLegs(final.number, BLOCK_LEGS)).map(legOf),
       });
     }
     // Not in the database: the genesis, a block that is still being proven, or one that Canton holds and the indexer has not written yet. Only reth knows it.
@@ -189,6 +197,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
       genesisReferenced: genesis ? await chain.genesisReferenced() : null,
       canton: null,
       transactions,
+      legs: [],
     });
   }
 
@@ -196,7 +205,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
   async function gone(hash: string, tr: ReturnType<Tracker["state"]> & object): Promise<Answer> {
     return ok({
       hash, status: tr.state === "pending" ? "waiting" : tr.state, state: tr.state, reason: tr.reason, lifecycle: await lifecycleOf(hash), block: null, from: tr.from, to: null, value: null, nonce: tr.nonce, type: null, gas: null,
-      gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null,
+      gasUsed: null, gasPrice: null, fee: null, success: null, input: null, logs: [], transfer: null, toToken: null, created: null, legs: [],
     });
   }
 
@@ -225,6 +234,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
         from: final.from, to: final.to, value: final.value, nonce: final.nonce, type: final.type, gas: final.gas,
         gasUsed: final.gasUsed, gasPrice: final.gasPrice, fee: dec(BigInt(final.gasUsed) * BigInt(final.gasPrice)), success: final.success,
         input: final.input, logs: final.logs.map((l) => pick(l, FIELDS.log)), transfer, toToken, created: final.created,
+        legs: (await chain.txLegs(hash, BLOCK_LEGS)).map(legOf),
       });
     }
     // Not in the database: waiting in reth's pool, or in a block that is still being proven (or not indexed yet), or only the tracker knows it.
@@ -242,7 +252,7 @@ export function createApi({ config, reth, ledger, chain, tracker, rest, accounts
       from: t.from, to: t.to, value: dec(t.value), nonce: t.nonce, type: t.type, gas: t.gas,
       gasUsed: r?.gasUsed ?? null, gasPrice: r ? dec(r.effectiveGasPrice) : null, fee: r ? dec(BigInt(r.gasUsed) * r.effectiveGasPrice) : null, success: r?.success ?? null,
       input: t.input, logs: (r?.logs ?? []).map((l) => ({ address: l.address, topics: [...l.topics], data: l.data })), transfer,
-      toToken: transfer?.symbol ?? (t.to ? (await tokenOf(t.to))?.symbol ?? null : null), created: r?.contractAddress ?? null,
+      toToken: transfer?.symbol ?? (t.to ? (await tokenOf(t.to))?.symbol ?? null : null), created: r?.contractAddress ?? null, legs: [],
     });
   }
 
