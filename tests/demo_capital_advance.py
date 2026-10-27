@@ -11,13 +11,13 @@ import builder
 advance = builder.Ledger.advance
 
 
-def with_a_capital(self, chain, argument, command_id=None):
+def with_a_capital(self, chain, argument, command_id=None, *more):
     header = argument["headerHex"]
     found = re.search("[a-f]", header)
     if not found:
         raise SystemExit("the header hex has no letter to put in capitals")
     changed = {**argument, "headerHex": header[:found.start()] + found.group().upper() + header[found.end():]}
-    return advance(self, chain, changed, command_id)
+    return advance(self, chain, changed, command_id, *more)
 
 
 builder.Ledger.advance = with_a_capital
