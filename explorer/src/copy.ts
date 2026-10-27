@@ -1,7 +1,10 @@
-/** Said on every block page. It says what Canton keeps from the public, and who does see it. It gives no count of legs: a count could point at one public transfer. */
-export const LEGS_THIS_BLOCK = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
+/** Said on every block page: what Canton keeps from the public. It gives no count of legs: a count could point at one public transfer. The sentence on who does see them is behind the small i. */
+export const LEGS_NOT_PUBLIC_THIS = "Daml legs settled with this block are not shown to the public.";
 /** The same, for a list of the legs of many blocks. */
-export const LEGS_THESE_BLOCKS = "Daml legs settled with these blocks are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
+export const LEGS_NOT_PUBLIC_THESE = "Daml legs settled with these blocks are not shown to the public.";
+export const LEGS_WHO_SEES = "Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
+export const LEGS_THIS_BLOCK = `${LEGS_NOT_PUBLIC_THIS} ${LEGS_WHO_SEES}`;
+export const LEGS_THESE_BLOCKS = `${LEGS_NOT_PUBLIC_THESE} ${LEGS_WHO_SEES}`;
 
 /** The line that ends every page: what the pages promise about where their numbers come from. The rest of what the explorer says about itself is on the About page. */
 export const FOOTER_LINE = "Every number on this site is read from the chain, from Canton or from the chain's own producer log; nothing is loaded from another host.";

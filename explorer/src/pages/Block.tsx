@@ -6,7 +6,6 @@ import { BlockLegs, PagedTransactions } from "../components/BlockParts.tsx";
 import { Chip } from "../components/Chip.tsx";
 import { CopyButton, HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
-import { LEGS_THIS_BLOCK } from "../copy.ts";
 import { bytesOf, units } from "../format.ts";
 import { useInFlight } from "../stats.ts";
 import { useFollowing, useStatus } from "../useStatus.ts";
@@ -14,6 +13,8 @@ import { VERIFY_MODULE_URL, useModuleSize } from "../verify/module-size.ts";
 import { VerifyPanel } from "../verify/VerifyPanel.tsx";
 import { HowFinal, Tiles, timesOf } from "./BlockFinal.tsx";
 import { pinsAt } from "../pins.ts";
+import { Info } from "../components/Info.tsx";
+import { LegsPrivacy } from "./LegParts.tsx";
 import { ProofCard } from "./BlockProof.tsx";
 import { Bad, CantonPanel, EvmSide, Good } from "./BlockSides.tsx";
 
@@ -71,7 +72,7 @@ function RecordData({ c }: { c: CantonSide }) {
   return (
     <section className="card rec" aria-label="The record's data">
       <div className="rec-row">
-        <span className="rec-k">The record's data</span><span className="muted small">What Verify checks, as the record holds it, to copy.</span>
+        <span className="rec-k">The record's data</span><Info about="the record's data">What Verify checks, as the record holds it, to copy.</Info>
         <span className="grow" />
         {parts.map(([name, hex]) => <span key={name} className="rd mono">{`${name} ${bytesOf(hex)} `}<CopyButton value={hex} label={`Copy the ${name}`} /></span>)}
       </div>
@@ -124,7 +125,7 @@ export function Block() {
           <HowFinal times={times} final={b.canton !== null} unindexed={b.status === "unindexed"} />
           {b.canton && <ProofCard c={b.canton} pins={st?.pins} block={b.number}><Verify b={b} st={st} /></ProofCard>}
           {!b.canton && <Verify b={b} st={st} />}
-          <div className="legs"><Icon name="lock" size={14} /><span>{LEGS_THIS_BLOCK}</span></div>
+          <LegsPrivacy />
           {final ? (st && <PagedTransactions id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}
           {final && <BlockLegs key={b.number} id={String(b.number)} />}
           {b.canton && <RecordData c={b.canton} />}

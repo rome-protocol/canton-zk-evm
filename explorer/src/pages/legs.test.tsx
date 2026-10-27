@@ -2,7 +2,7 @@
 import { screen, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { LEGS_THESE_BLOCKS, LEGS_THIS_BLOCK } from "../copy.ts";
+import { LEGS_NOT_PUBLIC_THESE, LEGS_NOT_PUBLIC_THIS, LEGS_WHO_SEES } from "../copy.ts";
 import { addr, blockSummary, fakeApi, hash, legListItem, page, renderApp, reply, route, update } from "../test-utils.tsx";
 
 const TOKEN = (a: string) => reply({ address: a, standard: "ERC-20", name: "Test USD", symbol: "tUSD", decimals: 6, derived: true });
@@ -62,7 +62,8 @@ describe("the gateway legs page", () => {
 
   it("states that the Daml side is not public, in the words of a list of many blocks", async () => {
     await openList();
-    expect(screen.getByRole("note")).toHaveTextContent(LEGS_THESE_BLOCKS);
+    expect(screen.getByRole("note")).toHaveTextContent(LEGS_NOT_PUBLIC_THESE);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(LEGS_WHO_SEES);
     expect(screen.getByRole("note")).not.toHaveTextContent("this block");
   });
 
@@ -141,7 +142,8 @@ describe("the gateway leg page", () => {
 
   it("gives the privacy note and shows no Daml side", async () => {
     await openLeg();
-    expect(screen.getByRole("note")).toHaveTextContent(LEGS_THIS_BLOCK);
+    expect(screen.getByRole("note")).toHaveTextContent(LEGS_NOT_PUBLIC_THIS);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(LEGS_WHO_SEES);
     expect(screen.queryByText(/allocation|holding|settled/i, { selector: "dt" })).toBeNull();
   });
 

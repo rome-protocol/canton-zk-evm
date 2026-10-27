@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ApiBlock, ApiStatus } from "../api.ts";
 import { addr, block, blockDetail, fakeApi, hash, inFlight, NOT_FOUND, page, renderApp, reply, route, status, tick, txItem, update, updateDetail } from "../test-utils.tsx";
 
-const LEGS = "Daml legs settled with this block are not shown to the public. Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
+const LEGS = "Daml legs settled with this block are not shown to the public.";
+const LEGS_WHO = "Only the parties to each leg and the chain's operator, confirmer, gateway and builder see them, and each token's registry sees its own token move.";
 const KEY = "0x" + "cd".repeat(32);
 const EE = "0x" + "ee".repeat(32);
 
@@ -61,6 +62,22 @@ describe("the block page, for a final block", () => {
     const evm = side("On the EVM");
     expect(row(evm, "Gas used")).toHaveTextContent("45,000,000 (75.00% of 60,000,000)");
     expect(screen.getByRole("group", { name: "This block in numbers" })).toHaveTextContent("45,000,000 gas");
+  });
+
+  it("keeps each tile to its title, its number and one short line, with the rest behind the small i", async () => {
+    await open(block());
+    const tiles = within(screen.getByRole("group", { name: "This block in numbers" }));
+    expect(await tiles.findByText("ZisK")).toBeInTheDocument();
+    expect(tiles.getByText("sent → recorded")).toBeInTheDocument();
+    expect(tiles.getByText("cut → final")).toBeInTheDocument();
+    expect(tiles.getAllByRole("tooltip").map((t) => t.textContent)).toEqual([
+      "Proved with ZisK; the time is from the producer's log.",
+      "From the block being sent to Canton to Canton's record time.",
+      "The block's whole way to final, from the cut to Canton's record time.",
+    ]);
+    const how = within(screen.getByRole("region", { name: "How this block became final" }));
+    expect(how.getByRole("tooltip")).toHaveTextContent("Times are from the producer's log, and the last one is Canton's record time.");
+    expect(how.queryByText(/Times are from the producer's log.*Cut to final/)).toBeNull();
   });
 
   it("says the producer's times cannot be read right now when the detail request fails, never that the log has no row", async () => {
@@ -167,7 +184,7 @@ describe("the block page, for a final block", () => {
 
   it("shows the proof's facts next to what they should match", async () => {
     await open();
-    expect(screen.getByRole("region", { name: "The proof" })).toHaveTextContent("read from the proof's own bytes, compared with this explorer's pins, from session.txt");
+    expect(screen.getByRole("region", { name: "The proof" })).toHaveTextContent("Read from the proof's own bytes, compared with this explorer's pins, from session.txt.");
     const facts = within(screen.getByRole("group", { name: "Facts read from the proof" }));
     expect(row(facts, "Program key")).toHaveTextContent("0xcdcd…cdcd");
     expect(row(facts, "Program key").nextElementSibling).toHaveTextContent("ours");
@@ -181,6 +198,7 @@ describe("the block page, for a final block", () => {
   it("says in full that Daml legs are not shown, and shows no count of them", async () => {
     await open();
     expect(screen.getByText(LEGS)).toBeInTheDocument();
+    expect(screen.getByText(LEGS_WHO)).toHaveAttribute("role", "tooltip");
     expect(screen.queryByText(/\b\d+ (Daml )?legs?\b/i)).toBeNull();
   });
 
@@ -524,6 +542,7 @@ describe("a block that is still being proven", () => {
   it("still says that Daml legs are not shown, and still lists the transactions", async () => {
     await open(proving());
     expect(screen.getByText(LEGS)).toBeInTheDocument();
+    expect(screen.getByText(LEGS_WHO)).toHaveAttribute("role", "tooltip");
     expect(within(screen.getByRole("region", { name: "Transactions" })).getAllByRole("row")).toHaveLength(2);
   });
 
