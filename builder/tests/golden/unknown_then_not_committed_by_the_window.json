@@ -204,7 +204,6 @@
       "ExerciseCommand": {
        "choice": "Advance",
        "choiceArgument": {
-        "extraGateways": [],
         "gatewayAccountNodes": [
          "aa01",
          "aa02"
@@ -565,7 +564,6 @@
       "ExerciseCommand": {
        "choice": "Advance",
        "choiceArgument": {
-        "extraGateways": [],
         "gatewayAccountNodes": [
          "aa01",
          "aa02"
@@ -688,7 +686,7 @@
    "v": 1
   },
   {
-   "argument_bytes": 3018,
+   "argument_bytes": 2997,
    "attempt": 1,
    "command_id": "ostia-770101-5-07a9c4aef00c646c-1",
    "event": "submitted",
@@ -786,7 +784,7 @@
    "v": 1
   },
   {
-   "argument_bytes": 3018,
+   "argument_bytes": 2997,
    "attempt": 2,
    "command_id": "ostia-770101-5-07a9c4aef00c646c-2",
    "event": "submitted",

@@ -27,7 +27,7 @@ class Registered(tb.LegCase):
         return s
 
     def extras(self, s):
-        return s.advance_argument()["extraGateways"]
+        return s.advance_argument().get("extraGateways", [])
 
     def pay_at(self, s, address, leg=PAY, sender=BOB, **k):
         t = tx(sender, 0, **k)
@@ -35,17 +35,17 @@ class Registered(tb.LegCase):
         s.reth.pool[sender] = [t]
         return t
 
-    def test_a_chain_with_no_registry_sends_an_explicit_empty_list(self):
+    def test_a_chain_with_no_registry_leaves_the_field_out(self):
         s = self.setup({ALICE: [tx(ALICE, 0)]})
         self.build(s)
-        self.assertEqual(self.extras(s), [])
+        self.assertNotIn("extraGateways", s.advance_argument())   # the packages before 0.5.0 refuse a field they do not have
 
-    def test_a_registry_that_is_none_or_empty_sends_an_empty_list(self):
+    def test_a_registry_that_is_none_or_empty_leaves_the_field_out(self):
         for registry in (None, []):
             s = self.setup({ALICE: [tx(ALICE, 0)]})
             s.ledger.chain_extra = {"contracts": registry}
             self.build(s)
-            self.assertEqual(self.extras(s), [])
+            self.assertNotIn("extraGateways", s.advance_argument())
 
     def test_a_vault_gives_nothing_to_send_and_nothing_is_read_for_it(self):
         s = self.chain(entry(VAULT, "Vault"))

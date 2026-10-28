@@ -138,7 +138,7 @@ class OneBlock(Case):
         self.assertEqual(arg["txsHex"], rlp([bytes.fromhex(raw_of(t1)[2:]), bytes.fromhex(raw_of(t2)[2:])]).hex())
         self.assertEqual((arg["gatewayAccountNodes"], arg["gatewayStorageNodes"]), (["aa01", "aa02"], ["bb01"]))
         self.assertEqual(arg["legs"], [{"tag": "PaymentLeg", "value": {"terms": "terms-1"}}])
-        self.assertEqual(sorted(arg), ["extraGateways", "gatewayAccountNodes", "gatewayStorageNodes", "headerHex", "legs", "proofHex", "txsHex"])
+        self.assertEqual(sorted(arg), ["gatewayAccountNodes", "gatewayStorageNodes", "headerHex", "legs", "proofHex", "txsHex"])
         self.assertEqual(s.ledger.bad_auth, 0)
 
     def test_the_gateways_proofs_are_asked_for_at_the_new_block_and_nothing_else_is(self):

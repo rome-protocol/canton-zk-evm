@@ -741,7 +741,7 @@ def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
 
 def extra_gateway_blocks(reth: Reth, chain: dict, number: str, legs: dict) -> list:
     """Advance's `extraGateways`: one entry for each registered gateway, each with its proofs at the block and the legs it recorded in it (`legs`
-    maps an address to them). A chain with no registered gateway gets an empty list, which is still sent."""
+    maps an address to them). A chain with no registered gateway gets an empty list, which `prepare_submit` leaves out of the argument (a package before 0.5.0 has no such field)."""
     blocks = []
     for address in registered_gateways(chain):
         account_nodes, storage_nodes = proofs_of(reth, address, number)
@@ -1704,8 +1704,9 @@ def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attemp
     the `submitted` line, and reads the traffic before. Nothing has been sent to Canton yet."""
     n, chain, block_hash, header, txs, legs = built.n, built.chain, built.block_hash, built.header, built.txs, built.legs
     argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proven.proof,
-                "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs,
-                "extraGateways": built.extra_gateways}
+                "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs}
+    if built.extra_gateways:   # left out when none is registered, so that the argument is still the one the packages before 0.5.0 take
+        argument["extraGateways"] = built.extra_gateways
     argument_text = json.dumps(argument)
     (built.work / "advance.json").write_text(argument_text)   # kept: the argument of the Advance, as it was sent
     command_id = f"ostia-{int(chain['chainId'])}-{n}-{block_hash[2:18]}-{attempt.seq}"   # the same block hash and attempt give the same id
