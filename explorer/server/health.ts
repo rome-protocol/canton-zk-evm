@@ -31,8 +31,15 @@ export const STALE_AFTER_INTERVALS = 3;
 export const API_INTERVAL_SECONDS = 5;
 
 const INDEXER_ROUND = 2;
-/** How often the custody loop writes its rows (`CUSTODY_MS`, 30 s unless set, at least 1 s); the API and the indexer read the same setting. */
-export const CUSTODY_INTERVAL_SECONDS = Math.max(1, Math.ceil((Number(process.env.CUSTODY_MS) || 30_000) / 1000));
+/** How often the custody loop writes its rows when a row does not say (`CUSTODY_MS` is 30 s unless set). The indexer writes its own interval into the row's threshold (`intervalSeconds`), so the API never has to know the setting. */
+export const CUSTODY_INTERVAL_SECONDS = 30;
+/** The rows whose writer says its own interval in the row's threshold. */
+const OWN_INTERVAL = new Set(["custody", "registered_legs"]);
+/** The interval a row is held to: the one the row says for the custody loop's rows, else the check's own. */
+function intervalOf(id: string, threshold: unknown, spec: CheckSpec): number | undefined {
+  const said = OWN_INTERVAL.has(id) && threshold !== null && typeof threshold === "object" ? (threshold as { intervalSeconds?: unknown }).intervalSeconds : undefined;
+  return typeof said === "number" && Number.isFinite(said) && said >= 1 ? said : spec.intervalSeconds;
+}
 const ROUND: CheckSpec = { role: "indexer", worst: "degraded", intervalSeconds: INDEXER_ROUND, stale: "degraded" };
 /** The indexer's own rows. C1, C2, C3 and C7 are written when they fail, and the indexer stops at that block, so they are `down` and have no interval. */
 const SPECS: Record<string, CheckSpec> = {
@@ -119,7 +126,8 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
   const checks: HealthEntry[] = [];
   for (const r of [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     const spec = specOf(r.id);
-    const stale = spec.intervalSeconds !== undefined && r.ageSeconds > spec.intervalSeconds * STALE_AFTER_INTERVALS;
+    const interval = intervalOf(r.id, r.threshold, spec);
+    const stale = interval !== undefined && r.ageSeconds > interval * STALE_AFTER_INTERVALS;
     const written = asStatus(r.status);
     // What a check writes is held to its worst word; a writer that has stopped counts for what the stop means, which can be more (a stopped indexer: final data is stale).
     const held = RANK[written] > RANK[spec.worst] ? spec.worst : written;
@@ -134,7 +142,7 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
     checks.push({
       id: r.id, role: spec.role, status, ...(r.status !== status ? { written: r.status } : {}), value: r.value, threshold: r.threshold, detail,
       sinceSeconds: Math.max(0, Math.round(r.sinceSeconds)), changedAt: r.changedAt, refreshedAt: r.refreshedAt, refreshedAgoSeconds: Math.max(0, Math.round(r.ageSeconds * 10) / 10),
-      intervalSeconds: spec.intervalSeconds ?? null, stale, elsewhere: spec.role === "api" && owner !== null && owner !== instance,
+      intervalSeconds: interval ?? null, stale, elsewhere: spec.role === "api" && owner !== null && owner !== instance,
     });
   }
   // A refreshed check with no row has not been looked at: after a rebuild from an export, or before a new indexer's first round. No row must not read as healthy.

@@ -48,6 +48,17 @@ describe("the health model (design 6.5)", () => {
     }
   });
 
+  it("holds the custody rows to the interval the indexer wrote into the row, not to a setting of the API", () => {
+    for (const id of ["custody", "registered_legs"]) {
+      const slow = (age: number): RawRow => ({ ...row(id, "ok", age), threshold: { intervalSeconds: 120 } });
+      // 100 s old: stale at the default 30 s interval, fresh at the 120 s the row says
+      expect(evaluate([...fresh(), row(id, "ok", 100)]).status, id).toBe("degraded");
+      expect(evaluate([...fresh(), slow(100)]).status, id).toBe("ok");
+      expect(evaluate([...fresh(), slow(400)]).status, id).toBe("degraded");
+      expect(evaluate([...fresh(), slow(100)]).checks.find((c) => c.id === id)?.intervalSeconds, id).toBe(120);
+    }
+  });
+
   it("is degraded for db_ids above 50% and down above 90%, in the words the indexer wrote, and degraded (not down) when its row stops", () => {
     expect(evaluate([...fresh(), row("db_ids", "ok")]).status).toBe("ok");
     const warn = evaluate([...fresh(), row("db_ids", "degraded", 1, "canton_parties.id has used 61% of its ids")]);
