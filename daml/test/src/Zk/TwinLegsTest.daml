@@ -536,10 +536,13 @@ testAPinIsCheckedAgainstItsRules = do
   case r of
     Left e -> assertMsg ("refused, but not as a second pin: " <> show e) ("is pinned already" `T.isInfixOf` show e)
     Right _ -> abort "a token was pinned twice"
-  -- rules of another admin cannot be fetched by the chain
-  foreign <- twinRulesOf f.registry twin6Addr "TKS" 6
+  -- rules of an admin other than the chain's gateway are refused (the operator can be fetched by the confirmer, so the check itself is reached)
+  foreign <- twinRulesOf f.operator twin6Addr "TKS" 6
   q <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = PinnedTwin with twinToken = twin6Addr; twinDecimals = 6; twinRules = foreign
-  submitMustFail (confirmerOf f) $ exerciseCmd q AcceptTwin with chain = c
+  r2 <- trySubmit (confirmerOf f <> readAs [f.operator]) $ exerciseCmd q AcceptTwin with chain = c
+  case r2 of
+    Left e -> assertMsg ("refused, but not for the admin: " <> show e) ("another admin's than the chain's gateway" `T.isInfixOf` show e)
+    Right _ -> abort "rules of another admin were pinned"
   pinnedOf f c >>= \x -> x === Some [good]
 
 -- A pin waits out the change delay and is made by the right parties; it is taken back by the operator or turned down by the confirmer.
@@ -574,14 +577,35 @@ testAPinWaitsOutTheDelayAndTheRightParties = do
   submitMustFail f.confirmer $ exerciseCmd p2 AcceptTwin with chain = next
   pinnedOf f next >>= \x -> x === Some [entry]
 
--- A proposal made for one chain is not accepted on another.
+-- A proposal made for one chain, by the same parties, is not accepted on another.
 testAPinProposalIsOfItsChain : Script ()
 testAPinProposalIsOfItsChain = do
   t <- bareFixture
   let f = t.fx
-  other <- fixture
-  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
-  submitMustFail f.confirmer $ exerciseCmd p AcceptTwin with chain = other.chain
+  other <- secondChain f
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd other ProposeTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
+  r <- trySubmit (confirmerOf f) $ exerciseCmd p AcceptTwin with chain = f.chain
+  case r of
+    Left e -> assertMsg ("refused, but not as another chain's: " <> show e) ("is for another chain" `T.isInfixOf` show e)
+    Right _ -> abort "a pin proposed for another chain was accepted"
+  pinnedOf f f.chain >>= \x -> x === None
+
+-- `AddTwin` skips the proposal and the wait, so it takes the operator, the confirmer and the gateway together, and no fewer.
+testAddTwinNeedsTheOperatorTheConfirmerAndTheGateway : Script ()
+testAddTwinNeedsTheOperatorTheConfirmerAndTheGateway = do
+  t <- bareFixture
+  let f = t.fx
+  let add = exerciseCmd f.chain AddTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
+  submitMustFail (actAs f.operator <> readAs [f.gateway]) add
+  submitMustFail (actAs f.confirmer <> readAs [f.gateway]) add
+  submitMustFail (actAs f.builder <> readAs [f.operator, f.confirmer, f.gateway]) add
+  submitMustFail (actAs f.gateway) add
+  submitMustFail (actAs [f.operator, f.gateway]) add   -- without the confirmer
+  submitMustFail (actAs [f.operator, f.confirmer] <> readAs [f.gateway]) add   -- without the gateway
+  submitMustFail (actAs [f.confirmer, f.gateway]) add   -- without the operator
+  pinnedOf f f.chain >>= \x -> x === None
+  chain <- submit (actAs [f.operator, f.confirmer, f.gateway]) add
+  pinnedOf f chain >>= \x -> x === Some [PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules]
 
 -- A twin of 6 decimals for each tag in turn, on the chain contract the one before made.
 pinSixes : F -> ContractId ZkChain -> [Text] -> Script (ContractId ZkChain)
