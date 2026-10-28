@@ -474,7 +474,7 @@ def accept(net: Network, who: str) -> dict:
 def deposit(net: Network, label: str, recipient: str, amount: str) -> dict:
     """U allocates `amount` TKB to the gateway and signs a request to deposit it for the EVM address `recipient`. The request carries `label`, and its
     deposit id is the one derived from U and the label (`deposit_id_of`). A chain on package 0.4.0 or earlier has no label in its request:
-    CZE_DEPOSIT_WITHOUT_LABEL=1 makes the request of that package, with a random id (tests/demo_package_upgrade.sh)."""
+    CZE_DEPOSIT_WITHOUT_LABEL=1 makes the request of that package, with a random id (the package-upgrade test makes its 0.2.0 requests so)."""
     read_label(label)
     if not CANTON_AMOUNT.fullmatch(amount) or float(amount) == 0:
         raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
