@@ -1683,6 +1683,36 @@ ENTRY_A = {"twinToken": TOKEN_A, "twinDecimals": "6", "twinRules": RULES_A}
 DISCLOSED_RULES = {"templateId": "pkg:Twin.Twin:TwinRules", "contractId": RULES_A, "createdEventBlob": "beef", "synchronizerId": "sync::1"}
 
 
+class FakeRethToken:
+    """reth's eth_getCode and eth_call (`decimals()`) at the finalized block: the ERC-20s it holds, address -> decimals; none at the rest."""
+    def __init__(self, held: dict):
+        self.held, self.calls, self.word = held, [], None   # word: an eth_call answer to give instead of the decimals
+        node = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)))
+                node.calls.append((body["method"], body["params"]))
+                if body["method"] == "eth_getCode":
+                    result = "0x6000" if body["params"][0][2:] in node.held else "0x"
+                else:
+                    to, data = body["params"][0]["to"][2:], body["params"][0]["data"]
+                    assert data == "0x313ce567", data
+                    result = node.word or "0x" + f"{node.held[to]:064x}"
+                data = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": result}).encode()
+                self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(data)
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown(); self.server.server_close()
+
+
 class Twins(unittest.TestCase):
     """setup.py --twin-step: the chain's pinned twins."""
     run_setup = Setup.run_setup
@@ -1700,10 +1730,12 @@ class Twins(unittest.TestCase):
         self.base = len(getattr(self.node, "submitted", []))
         self.disclosed = Path(self.dar).parent / "rules.json"
         self.disclosed.write_text(json.dumps(DISCLOSED_RULES))
+        self.reth = FakeRethToken({TOKEN_A: 6})
+        self.addCleanup(self.reth.close)
 
     def step(self, step, *extra, token=TOKEN_A, expect=0):
         out = io.StringIO()
-        args = ["--ledger-url", self.node.url, "--twin-step", step, "--twin-token", token, *extra]
+        args = ["--ledger-url", self.node.url, "--twin-step", step, "--twin-token", token, *([] if "--reth-url" in extra else ["--reth-url", self.reth.url]), *extra]
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             code = setup.main(args)
         self.assertEqual(code, expect)
@@ -1767,6 +1799,7 @@ class Twins(unittest.TestCase):
 
     def test_a_proposal_with_other_decimals_is_taken_back_before_another_is_made(self):
         self.step("propose", *self.A)
+        self.reth.held[TOKEN_A] = 18   # the ERC-20 has 18: a pin of 6 would be wrong, and the proposal of 6 is still on the participant
         self.assertIn("other decimals or other rules", self.refused("propose", "--twin-decimals", "18", "--twin-rules", RULES_A))
         withdrawn = self.step("withdraw")
         self.assertEqual((withdrawn["pending"], withdrawn["done"]), (1, 1))
@@ -1795,6 +1828,41 @@ class Twins(unittest.TestCase):
         dry = self.step("propose", *self.A, "--dry-run")
         self.assertEqual((dry["submitted"], dry["dryRun"], dry["entry"]), (False, True, ENTRY_A))
         self.assertEqual((self.sent(), self.node.contracts["TwinProposal"]), ([], []))
+
+    def test_the_decimals_of_the_erc20_are_read_from_reth_and_must_be_the_pins(self):
+        proposed = self.step("propose", *self.A)
+        self.assertEqual(proposed["tokenDecimals"], 6)
+        self.assertEqual(self.reth.calls, [("eth_getCode", ["0x" + TOKEN_A, "finalized"]), ("eth_call", [{"to": "0x" + TOKEN_A, "data": "0x313ce567"}, "finalized"])])
+        self.assertEqual(self.step("withdraw")["pending"], 1)
+        self.assertEqual(len(self.reth.calls), 2)   # a withdraw reads nothing
+
+    def test_a_pin_with_other_decimals_than_the_erc20s_is_refused_in_every_step_and_a_dry_run(self):
+        self.reth.held[TOKEN_A] = 18
+        for step, extra in (("propose", ()), ("propose", ("--dry-run",)), ("add", ()), ("add", ("--dry-run",)), ("accept", ("--twin-rules-disclosed", str(self.disclosed)))):
+            with self.subTest(step=step, extra=extra):
+                self.assertIn("has 18 decimals, not 6", self.refused(step, *self.A, *extra))
+        self.assertEqual((self.sent(), self.node.contracts["TwinProposal"], self.pinned()), ([], [], []))
+
+    def test_a_token_with_no_code_or_no_decimals_is_refused(self):
+        self.reth.held.clear()
+        self.assertIn("no code at", self.refused("propose", *self.A))
+        self.reth.held[TOKEN_A] = 6
+        for word in ("0x", "0x" + "0" * 63, "0x" + "00" * 31 + "zz", "0x" + "01" + "00" * 31):
+            self.reth.word = word
+            self.assertIn("gave no decimals", self.refused("add", *self.A))
+        self.assertEqual((self.sent(), self.pinned()), ([], []))
+
+    def test_a_reth_url_that_is_remote_and_plain_http_is_refused_before_anything_is_read_by_a_twin_step(self):
+        for step in ("propose", "accept", "add"):
+            with self.subTest(step=step):
+                self.assertIn("reth URL must be https", self.refused(step, *self.A, "--reth-url", "http://203.0.113.5:8545"))
+        self.assertEqual((self.sent(), self.reth.calls), ([], []))
+
+    def test_no_other_step_goes_with_a_twin_step(self):
+        for other in (("--pause-step", "pause"), ("--leg-limits-step", "propose"), ("--delay-seconds", "5"), ("--gas-cap-step", "propose"), ("--contract-address", V1)):
+            with self.subTest(other=other), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.step("propose", *self.A, *other)
+        self.assertEqual((self.sent(), self.reth.calls), ([], []))
 
     def test_the_arguments_are_checked(self):
         for extra, words in (((), "--twin-decimals"), (("--twin-decimals", "37", "--twin-rules", RULES_A), "0 to 36"), (("--twin-decimals", "6"), "--twin-rules")):

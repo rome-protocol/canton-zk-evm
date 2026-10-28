@@ -110,7 +110,7 @@
     Accept no Gateway entry before the builder sends its proofs (pinned to 0.5.0) and the explorer reads the legs of registered gateways.
     With --dry-run nothing is submitted.
 
-  setup.py --ledger-url <URL> --twin-step propose|accept|withdraw|reject|add --twin-token <hex> [--twin-decimals <0-36> --twin-rules <contract id>] [--twin-rules-disclosed <FILE>] [--dry-run]
+  setup.py --ledger-url <URL> --twin-step propose|accept|withdraw|reject|add --twin-token <hex> [--twin-decimals <0-36> --twin-rules <contract id>] [--twin-rules-disclosed <FILE>] [--reth-url <URL>] [--dry-run]
 
     The chain's pinned twins (Daml 0.5.0, ZkChain.twins): an ERC-20's address, its decimals and the TwinRules contract of its Canton twin, in the steps of
     the registry, each printing one JSON line. The twin legs of the builder name exactly the pinned rules; an unpinned token has no twin leg.
@@ -120,7 +120,8 @@
                 --twin-rules), createdEventBlob and synchronizerId, as the gateway's participant gives it from the active contracts with the blob. The accept is refused without it.
       withdraw  the operator's token (WithdrawTwin) on every pending proposal for the token. reject is the confirmer's RejectTwin on them.
       add       AddTwin at once, signed by the operator, the confirmer and the gateway together, as --contract-step add does. It skips the change delay.
-    This version has no removal of a pin: check the token's decimals against the ERC-20 itself first, and use --dry-run.
+    This version has no removal of a pin, so propose, accept and add first read the ERC-20 from reth (--reth-url, https or http on this machine; the finalized block): there must be code
+    at the token's address and its decimals() must be --twin-decimals, or the step is refused. The JSON line has the decimals read (tokenDecimals).
     With --dry-run nothing is submitted.
 
   setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay|leg-limits|renew-pause [--dry-run]
@@ -660,6 +661,29 @@ def check_contract(reth_url: str, address: str, kind: str) -> str:
     return code_hash
 
 
+def twin_token_decimals(reth_url: str, token: str, decimals: int) -> int:
+    """The ERC-20's own decimals, read from reth at the finalized block (`decimals()` at the address), after checking that there is code at the address
+    and that they are the decimals asked for. A pin cannot be removed and every lock and release is scaled by its decimals, so a pin with the wrong ones
+    would inflate or deflate the twin against the vault for good: anything else is refused."""
+    def ask(method: str, params: list):
+        try:
+            answer = propose.post(reth_url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        except (OSError, ValueError) as e:
+            raise SystemExit(f"cannot ask reth about the token {token}: {e}") from None
+        return answer.get("result") if isinstance(answer, dict) else None
+    code = ask("eth_getCode", ["0x" + token, "finalized"])
+    if not isinstance(code, str) or not re.fullmatch(r"0x([0-9a-f]{2})*", code):
+        raise SystemExit(f"reth gave no code for {token}")
+    if code == "0x":
+        raise SystemExit(f"there is no code at {token} (at reth's finalized block): it is not an ERC-20")
+    word = ask("eth_call", [{"to": "0x" + token, "data": "0x313ce567"}, "finalized"])   # decimals()
+    if not isinstance(word, str) or not re.fullmatch(r"0x[0-9a-f]{64}", word) or int(word, 16) > 255:
+        raise SystemExit(f"the token {token} gave no decimals (decimals() answered {word!r})")
+    if int(word, 16) != decimals:
+        raise SystemExit(f"the token {token} has {int(word, 16)} decimals, not {decimals}: a pin with other decimals scales every lock and release wrongly, for good")
+    return int(word, 16)
+
+
 def entry_of(address: str, code_hash: str, kind: str) -> dict:
     return {"contractAddress": address, "contractCodeHash": code_hash, "contractKind": CONTRACT_KINDS[kind]}
 
@@ -752,11 +776,12 @@ def read_rules_disclosed(path: str, rules: str) -> dict:
     return {k: found[k] for k in keys}
 
 
-def twin_step(url: str, step: str, token: str, decimals, rules, disclosed_path, dry_run: bool) -> dict:
+def twin_step(url: str, step: str, token: str, decimals, rules, disclosed_path, reth_url: str, dry_run: bool) -> dict:
     """The pinned twins' steps, each by the party that controls it: `propose` (ProposeTwin, the operator and the gateway), `accept` (AcceptTwin, the
     confirmer, after the change delay, with the rules disclosed to it), `withdraw` (WithdrawTwin, the operator) and `reject` (RejectTwin, the confirmer)
     take the pin for the token (withdraw and reject: every pending proposal for the token), and `add` (AddTwin) pins it at once for a submission that
-    acts for all three parties."""
+    acts for all three parties. propose, accept and add first check that the ERC-20 at the token's address has the decimals asked for (reth's
+    finalized block), as the registry's steps check the code."""
     if not ADDRESS40.fullmatch(token or ""):
         raise SystemExit("--twin-token must be 40 lowercase hex digits without 0x")
     if step in ("withdraw", "reject"):
@@ -779,6 +804,7 @@ def twin_step(url: str, step: str, token: str, decimals, rules, disclosed_path, 
                                                           "choice": "WithdrawTwin" if step == "withdraw" else "RejectTwin", "choiceArgument": {}}}, step)
         return {**result, "pending": len(pending), "done": 0 if dry_run else len(pending)}
     result["entry"] = entry
+    result["tokenDecimals"] = twin_token_decimals(reth_url, token, decimals)
     registered = [t for t in known if twin_key(t) == twin_key(entry)]
     if known and not registered:
         raise SystemExit(f"{token} is pinned already, with other decimals or other rules: {known[0]}")
@@ -1094,7 +1120,7 @@ def main(argv: list) -> int:
     ap.add_argument("--contract-step", choices=("propose", "accept", "withdraw", "reject", "add"), help="the registry of EVM contracts: the operator proposes an entry, the confirmer accepts or rejects it, the operator withdraws it, or `add` puts it in at once for a submission that acts for all three parties (see the top of this file)")
     ap.add_argument("--contract-address", help="with --contract-step: the contract's address (40 lowercase hex digits without 0x)")
     ap.add_argument("--contract-kind", choices=("gateway", "vault"), help="with --contract-step propose, accept or add: what the contract is; its code must be the reviewed build of that kind")
-    ap.add_argument("--reth-url", default=os.environ.get("CZE_RETH_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}", help="with --contract-step propose, accept or add: reth's HTTP RPC, which the code at the address is read from")
+    ap.add_argument("--reth-url", default=os.environ.get("CZE_RETH_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}", help="with --contract-step or --twin-step propose, accept or add: reth's HTTP RPC, which the code at the address, or the token's decimals, is read from")
     ap.add_argument("--twin-step", choices=("propose", "accept", "withdraw", "reject", "add"), help="the pinned twins: the operator proposes a twin of an ERC-20, the confirmer accepts or rejects it, the operator withdraws it, or all three add it at once (see the top of this file)")
     ap.add_argument("--twin-token", help="with --twin-step: the ERC-20's address (40 lowercase hex digits without 0x)")
     ap.add_argument("--twin-decimals", type=int, help="with --twin-step propose, accept or add: the ERC-20's decimals (0 to 36), which must be the rules' own")
@@ -1116,11 +1142,14 @@ def main(argv: list) -> int:
             ap.error(f"--twin-step {own.twin_step} needs --twin-decimals and --twin-rules")
         if (rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step or own.contract_step or own.contract_address
                 or own.contract_kind or own.withdraw_proposal or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash
+                or own.pause_step or own.leg_limits_step or own.delay_seconds is not None
                 or own.pause_seconds is not None or own.quota is not None or own.quota_window_seconds is not None or own.no_quota or own.pause_max_seconds is not None):
             ap.error("--twin-step does only the twin's step: no other step, no --demo, no values and no chain arguments")
+        if own.twin_step in ("propose", "accept", "add") and not LOOPBACK_OR_HTTPS.match(own.reth_url):
+            raise SystemExit("the reth URL must be https, or http on this machine (127.0.0.1): its answer about the token's decimals is the only check before a pin that cannot be removed")
         check_settings(own.ledger_url, ("confirmer",) if own.twin_step in ("accept", "reject") else ("operator",))
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
-        print(json.dumps(twin_step(own.ledger_url, own.twin_step, own.twin_token, own.twin_decimals, own.twin_rules, own.twin_rules_disclosed, own.dry_run)))
+        print(json.dumps(twin_step(own.ledger_url, own.twin_step, own.twin_token, own.twin_decimals, own.twin_rules, own.twin_rules_disclosed, own.reth_url, own.dry_run)))
         return 0
     if own.twin_token or own.twin_decimals is not None or own.twin_rules or own.twin_rules_disclosed:
         ap.error("--twin-token, --twin-decimals, --twin-rules and --twin-rules-disclosed go with --twin-step")
