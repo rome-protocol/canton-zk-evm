@@ -16,9 +16,15 @@ from test_builder import ALICE, BOB, DEP, PAY, PAY_ID, PAYEE, REQUEST, TERMS, TK
 ADMIN = "adm::1220" + "ab" * 32
 TERMS_ADMIN = "a"   # the fake ledger's allocation of terms is of the instrument {"admin": "a", "id": "T"}; the others' is {"admin": "adm", ...}
 TOKEN_ADMIN = "adm"
-VALUES = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": "00ab12"}, "open-round": {"tag": "AV_ContractId", "value": "00cd34"}}}
-ROUND = {"templateId": "pkg:Splice.Round:OpenMiningRound", "contractId": "round-cid", "createdEventBlob": "0abc", "synchronizerId": "sync::1"}
-RULES = {"templateId": "pkg:Splice.AmuletRules:AmuletRules", "contractId": "rules-cid", "createdEventBlob": "0def", "synchronizerId": "sync::1"}
+def cid(n: int, suffix: str = "ca11") -> str:
+    """A contract id as Daml writes one (V1): "00", a 32-byte discriminator, a suffix; lowercase hex."""
+    return "00" + ("%02x" % n) * 32 + suffix
+
+
+PACKAGE = "e1" * 32   # a package id: 64 hex digits
+VALUES = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": cid(0xab)}, "open-round": {"tag": "AV_ContractId", "value": cid(0xcd)}}}
+ROUND = {"templateId": PACKAGE + ":Splice.Round:OpenMiningRound", "contractId": cid(0x11), "createdEventBlob": "CgMyLjES" + "QUJD" * 20, "synchronizerId": "sync::1"}
+RULES = {"templateId": "#splice-amulet:Splice.AmuletRules:AmuletRules", "contractId": cid(0x22), "createdEventBlob": "CgMyLjES" + "REVG" * 20, "synchronizerId": "sync::1"}
 ANSWER = {"choiceContextData": VALUES, "disclosedContracts": [ROUND, RULES]}
 FACTORY = {"factoryId": "fac-1", "transferKind": "direct", "choiceContext": ANSWER}
 
@@ -124,7 +130,7 @@ class Contexts(tb.LegCase):
         r = self.registry(s, TOKEN_ADMIN, answer=ANSWER)
         self.build(s)
         self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1", "choiceContext": VALUES})
-        self.assertEqual([a[0] for a in r.asked], ["/registry/allocations/v1/alloc-t1/choice-contexts/execute-transfer"])
+        self.assertEqual([a[0] for a in r.asked], ["/registry/allocations/v1/" + tb.ALLOCATION_ID + "/choice-contexts/execute-transfer"])
         self.assertEqual(self.disclosed(s), [tb.DISCLOSED_ALLOCATION, ROUND, RULES])
 
     def withdrawal(self):
@@ -164,8 +170,8 @@ class Contexts(tb.LegCase):
 
     def test_two_payments_each_carry_their_own_context_and_a_shared_contract_is_disclosed_once(self):
         s = self.two()
-        other = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": "00ab12"}, "open-round": {"tag": "AV_ContractId", "value": "00ef56"}}}
-        round2 = {**ROUND, "contractId": "round-2"}
+        other = {"values": {"amulet-rules": {"tag": "AV_ContractId", "value": cid(0xab)}, "open-round": {"tag": "AV_ContractId", "value": cid(0xef)}}}
+        round2 = {**ROUND, "contractId": cid(0x33)}
         base = "/registry/allocations/v1/%s/choice-contexts/execute-transfer"
         self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": ANSWER, base % "alloc-2": {"choiceContextData": other, "disclosedContracts": [round2, RULES]}})
         self.build(s)
@@ -176,7 +182,7 @@ class Contexts(tb.LegCase):
     def test_a_contract_named_differently_for_another_leg_leaves_the_later_leg_out(self):
         s = self.two()
         base = "/registry/allocations/v1/%s/choice-contexts/execute-transfer"
-        self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": ANSWER, base % "alloc-2": {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": "ffff"}]}})
+        self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": ANSWER, base % "alloc-2": {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": "/+/+"}]}})
         result = self.build(s)
         self.assertEqual(len(result["leftOut"]), 1)
         self.assertIn("differently", result["leftOut"][0]["reason"])
@@ -201,22 +207,22 @@ class Contexts(tb.LegCase):
         s.ledger.allocations = []
         t = self.leg_tx(s, TRADE_PAY)
         s.reth.pool[ALICE] = [t]
-        same = {**ROUND, "contractId": tb.DISCLOSED_ALLOCATION["contractId"], "createdEventBlob": "zz"}
+        same = {**ROUND, "contractId": tb.DISCLOSED_ALLOCATION["contractId"], "createdEventBlob": "enp6"}
         self.registry(s, TOKEN_ADMIN, answer={"choiceContextData": VALUES, "disclosedContracts": [same]})
         self.assert_left_out(s, t, "token registry", "differently")
 
     def test_the_contracts_a_blocks_registries_name_are_bounded_in_bytes(self):
         s = self.two()
-        big = lambda cid: {**ROUND, "contractId": cid, "createdEventBlob": "ab" * 600}
+        big = lambda cid: {**ROUND, "contractId": cid, "createdEventBlob": "QUJD" * 300}
         base = "/registry/allocations/v1/%s/choice-contexts/execute-transfer"
-        self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": {"choiceContextData": VALUES, "disclosedContracts": [big("c-1")]},
-                                               base % "alloc-2": {"choiceContextData": VALUES, "disclosedContracts": [big("c-2")]}})
+        self.registry(s, TERMS_ADMIN, by_path={base % "alloc-1": {"choiceContextData": VALUES, "disclosedContracts": [big(cid(0x41))]},
+                                               base % "alloc-2": {"choiceContextData": VALUES, "disclosedContracts": [big(cid(0x42))]}})
         old, b.CONTEXT_MAX_DISCLOSED_BYTES = b.CONTEXT_MAX_DISCLOSED_BYTES, 2000
         self.addCleanup(setattr, b, "CONTEXT_MAX_DISCLOSED_BYTES", old)
         result = self.build(s)
         self.assertEqual(len(result["leftOut"]), 1)
         self.assertIn("token registry", result["leftOut"][0]["reason"])
-        self.assertEqual([d["contractId"] for d in self.disclosed(s)], ["c-1"])
+        self.assertEqual([d["contractId"] for d in self.disclosed(s)], [cid(0x41)])
 
     # ---- a registry trusted for nothing
     def left_out(self, **k):
@@ -254,6 +260,16 @@ class Contexts(tb.LegCase):
                {"choiceContextData": VALUES, "disclosedContracts": [{"contractId": "x"}]},
                {"choiceContextData": VALUES, "disclosedContracts": "x"},
                {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": 7}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": "not base64!"}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": "QUJ"}]},     # padding missing
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": "===="}]},    # nothing in it
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "createdEventBlob": ""}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "contractId": "round-cid"}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "contractId": ROUND["contractId"].upper()}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "contractId": ROUND["contractId"] + "a"}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "templateId": "pkg:Splice.Round:OpenMiningRound"}]},   # not a package id or a #name
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "templateId": PACKAGE + ":OpenMiningRound"}]},
+               {"choiceContextData": VALUES, "disclosedContracts": [{**ROUND, "templateId": PACKAGE + ":Splice.Round:Open Mining"}]},
                {"choiceContextData": VALUES, "disclosedContracts": [ROUND] * (b.CONTEXT_MAX_DISCLOSED + 1)}]
         for answer in bad:
             with self.subTest(answer=str(answer)[:60]):
@@ -275,6 +291,9 @@ class Contexts(tb.LegCase):
                                  ("decimal with an exponent", "AV_Decimal", "1e3"), ("decimal with 11 places", "AV_Decimal", "0.12345678901"),
                                  ("decimal with 29 digits", "AV_Decimal", "1" * 29), ("int", "AV_Int", "zz"), ("int over 64 bits", "AV_Int", str(2**63)),
                                  ("empty contract id", "AV_ContractId", ""), ("contract id that is not hex", "AV_ContractId", "rules-cid"),
+                                 ("contract id in uppercase", "AV_ContractId", cid(0xab).upper()), ("contract id of an odd length", "AV_ContractId", cid(0xab) + "a"),
+                                 ("contract id with no 00 prefix", "AV_ContractId", cid(0xab)[2:]), ("contract id that is too short", "AV_ContractId", "00ab12"),
+                                 ("contract id over 254 characters", "AV_ContractId", cid(0xab, "ab" * 95)),
                                  ("date", "AV_Date", "29/10/2026"), ("date that is not one", "AV_Date", "2026-13-40"), ("time", "AV_Time", "yesterday"),
                                  ("time with no zone", "AV_Time", "2026-10-29T12:00:00"), ("reltime as text", "AV_RelTime", "garbage"),
                                  ("reltime with a bad count", "AV_RelTime", {"microseconds": "x"}), ("reltime with more", "AV_RelTime", {"microseconds": "1", "x": "2"}),
@@ -294,7 +313,7 @@ class Contexts(tb.LegCase):
     def test_every_kind_of_value_a_registry_may_give_is_taken(self):
         values = {"values": {"t": {"tag": "AV_Text", "value": "x"}, "i": {"tag": "AV_Int", "value": "7"}, "b": {"tag": "AV_Bool", "value": False},
                              "l": {"tag": "AV_List", "value": [{"tag": "AV_Party", "value": ADMIN}]},
-                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": "0c"}}},
+                             "m": {"tag": "AV_Map", "value": {"a": {"tag": "AV_ContractId", "value": cid(0x0c, "")}, "z": {"tag": "AV_ContractId", "value": cid(0x0d, "ab" * 94)}}},
                              "d": {"tag": "AV_Decimal", "value": "-12.5"}, "n": {"tag": "AV_Decimal", "value": "7"}, "y": {"tag": "AV_Date", "value": "2026-10-29"},
                              "ts": {"tag": "AV_Time", "value": "2026-10-29T12:00:00.123456Z"}, "r": {"tag": "AV_RelTime", "value": {"microseconds": "60000000"}},
                              "big": {"tag": "AV_Int", "value": "-9223372036854775808"}}}
@@ -352,7 +371,7 @@ class Contexts(tb.LegCase):
         self.assertLess(time.monotonic() - started, 1.5)
         self.assertEqual(len(r.asked), 1)
 
-    def test_all_the_requests_of_a_block_share_one_budget(self):
+    def test_all_the_requests_of_a_block_to_one_registry_share_its_budget(self):
         r = Registry(answer=ANSWER, delay=0.25)
         self.addCleanup(r.close)
         b.REGISTRY_DOWN.clear()
@@ -363,6 +382,30 @@ class Contexts(tb.LegCase):
         with self.assertRaisesRegex(b.NoCantonSide, "used|not asked|cannot"):
             reader.allocation(ADMIN, "a-3")
         self.assertEqual(len(r.asked), 2)
+
+    def test_a_registry_that_answered_but_used_its_budget_is_left_out_for_the_block_only(self):
+        r = Registry(answer=ANSWER)
+        self.addCleanup(r.close)
+        b.REGISTRY_DOWN.clear()
+        reader = b.ChoiceContexts({ADMIN: r.url}, deadline=5, budget=0.4, backoff=30)
+        reader.allocation(ADMIN, "a-1")
+        reader.allocation(ADMIN, "a-2")   # answered
+        reader.spent[r.url] = 0.4         # what a busy registry's answers add up to
+        with self.assertRaisesRegex(b.NoCantonSide, "used"):   # the budget is gone: the rest of this block's legs are left out
+            reader.allocation(ADMIN, "a-3")
+        self.assertEqual(b.REGISTRY_DOWN, {})   # ... and the registry is not marked down: the next block asks it again
+        reader = b.ChoiceContexts({ADMIN: r.url}, deadline=5, budget=0.4, backoff=30)
+        self.assertEqual(reader.allocation(ADMIN, "a-4")[0], VALUES)
+
+    def test_a_request_cut_short_by_what_is_left_of_the_budget_does_not_mark_the_registry_down(self):
+        r = Registry(answer=ANSWER, delay=0.25)
+        self.addCleanup(r.close)
+        b.REGISTRY_DOWN.clear()
+        reader = b.ChoiceContexts({ADMIN: r.url}, deadline=5, budget=0.4, backoff=30)
+        reader.allocation(ADMIN, "a-1")
+        with self.assertRaisesRegex(b.NoCantonSide, "cannot be read"):   # 0.15 s are left, the answer takes 0.25: timed out by the budget, not by the deadline
+            reader.allocation(ADMIN, "a-2")
+        self.assertEqual(b.REGISTRY_DOWN, {})
 
     def test_a_registry_that_hangs_never_takes_the_legs_of_another_out(self):
         slow, fast = Registry(answer=ANSWER, delay=3), Registry(answer=ANSWER)

@@ -309,11 +309,17 @@ CONTEXT_MAX_CONTEXT_BYTES = 16 * 1024      # the most bytes of one choice contex
 CONTEXT_MAX_BLOCK_BYTES = 128 * 1024       # the most bytes of the choice contexts of all the legs of a block; the later legs are left out
 INT64 = re.compile(r"-?[0-9]{1,19}")
 DECIMAL = re.compile(r"-?[0-9]{1,28}(\.[0-9]{1,10})?")   # a Daml Decimal: 28 digits before the point, 10 after
-CONTRACT_ID = re.compile(r"[0-9a-fA-F]{1,256}")
+CONTRACT_ID = re.compile(r"00[0-9a-f]{64}([0-9a-f]{2})*")   # a Daml contract id (V1): "00", a 32-byte discriminator, a suffix; lowercase hex, at most 254 characters
+CONTRACT_ID_MAX = 254
+TEMPLATE_ID = re.compile(r"(#[A-Za-z0-9_-]+|[0-9a-f]{64}):[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*")   # the Ledger API's identifier: <package id or #package name>:<module>:<entity>
 DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z")   # UTC, to the microsecond
 CONTEXT_SCALARS = {"AV_Text": (str,), "AV_Party": (str,), "AV_ContractId": (str,), "AV_Decimal": (str,), "AV_Date": (str,), "AV_Time": (str,),
                    "AV_RelTime": (dict,), "AV_Int": (str, int), "AV_Bool": (bool,)}   # the JSON API writes a Decimal as text, an Int as text (or a whole number), a RelTime as {"microseconds": Int}
+
+
+def contract_id_ok(x) -> bool:
+    return isinstance(x, str) and len(x) <= CONTRACT_ID_MAX and CONTRACT_ID.fullmatch(x) is not None
 
 
 def int64_text(x) -> bool:
@@ -329,7 +335,7 @@ def scalar_ok(tag: str, payload) -> bool:
     if tag == "AV_Int":
         return int64_text(payload) if isinstance(payload, str) else -2**63 <= payload < 2**63
     if tag == "AV_ContractId":
-        return CONTRACT_ID.fullmatch(payload) is not None
+        return contract_id_ok(payload)
     if tag == "AV_RelTime":
         return set(payload) == {"microseconds"} and (int64_text(payload["microseconds"]) or (type(payload["microseconds"]) is int and -2**63 <= payload["microseconds"] < 2**63))
     if tag in ("AV_Date", "AV_Time"):
@@ -397,6 +403,14 @@ def context_disclosed(items) -> list:
             raise ValueError("not a disclosed contract")
         if d.get("synchronizerId") is not None and not isinstance(d["synchronizerId"], str):
             raise ValueError("not a disclosed contract")
+        if not contract_id_ok(d["contractId"]) or TEMPLATE_ID.fullmatch(d["templateId"]) is None:
+            raise ValueError("not a disclosed contract")
+        try:   # the JSON API decodes the blob while it parses the request: strict base64 (binascii.Error is a ValueError), and something in it
+            blob = base64.b64decode(d["createdEventBlob"], validate=True)
+        except ValueError as e:
+            raise ValueError("not a disclosed contract") from e
+        if not blob:
+            raise ValueError("not a disclosed contract")
         found.append({k: d[k] for k in ("templateId", "contractId", "createdEventBlob", "synchronizerId") if d.get(k)})
     return found
 
@@ -456,10 +470,8 @@ class ChoiceContexts:
         if down and time.monotonic() < down[0]:
             raise NoCantonSide(down[1])
         limit = min(self.deadline, self.budget - self.spent.get(base, 0.0))
-        if limit <= 0:   # this registry's own time: another registry's legs are not taken out by it
-            why = f"the token registry cannot be read: the block's {self.budget:g} s for it are used"
-            REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
-            raise NoCantonSide(why)
+        if limit <= 0:   # this registry's own time is used: its remaining legs are left out for this block only (it is not marked down; it answered what it was asked)
+            raise NoCantonSide(f"the token registry cannot be read: the block's {self.budget:g} s for it are used")
         headers = {"content-type": "application/json"}
         if self.tokens.get(admin):
             headers["authorization"] = f"Bearer {registry_token(self.tokens[admin])}"
@@ -473,7 +485,8 @@ class ChoiceContexts:
             raise NoCantonSide("the token registry gave an answer that is not JSON") from e
         except (OSError, http.client.HTTPException) as e:
             why = f"the token registry cannot be read: {e}"
-            REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
+            if limit >= self.deadline or not isinstance(e, TimeoutError):   # a request cut short by what was left of the block's budget is not the registry's failure
+                REGISTRY_DOWN[("choice", base)] = (time.monotonic() + self.backoff, why)
             raise NoCantonSide(why) from e
         finally:
             self.spent[base] = self.spent.get(base, 0.0) + time.monotonic() - started

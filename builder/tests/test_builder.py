@@ -35,9 +35,10 @@ def holding(cid, amount, instrument=TKB, owner="gw", lock=None):
     return cid, {"owner": owner, "instrumentId": instrument, "amount": amount, "lock": lock, "meta": {"values": {}}}
 
 TRADE_ID, CLAIM_ID = "ff" * 32, "cc" * 32
-DISCLOSED_ALLOCATION = {"templateId": "pkg:Some.Token:Allocation", "contractId": "alloc-t1", "createdEventBlob": "beef", "synchronizerId": "sync::1"}
+ALLOCATION_ID = "00" + "a7" * 32 + "5e01"   # a contract id as Daml writes one
+DISCLOSED_ALLOCATION = {"templateId": "pkg:Some.Token:Allocation", "contractId": ALLOCATION_ID, "createdEventBlob": "beef", "synchronizerId": "sync::1"}
 TRADE = ("trade-1", {**named, "venue": "venue::1", "sender": "s::1", "gateway": "gw", "label": "t1", "payId": TRADE_ID, "token": TKA, "payee": PAYEE,
-                     "amount": "00" * 31 + "0a", "allocation": "alloc-t1", "allocationDisclosed": json.dumps(DISCLOSED_ALLOCATION),
+                     "amount": "00" * 31 + "0a", "allocation": ALLOCATION_ID, "allocationDisclosed": json.dumps(DISCLOSED_ALLOCATION),
                      "gatewayToken": "tok-1", "claimId": CLAIM_ID, "recipient": PAYEE})
 CLAIM = ("claim-1", {**named, "gateway": "gw", "claimId": CLAIM_ID, "recipient": PAYEE, "gatewayToken": "tok-1", "amount": "10.0"})
 
@@ -629,7 +630,7 @@ class VenueLegs(LegCase):
     def test_a_trade_whose_allocation_is_not_the_venues_to_the_gateway_is_not_used(self):
         for view, word in (({"executor": "other::1"}, "executor"), ({"receiver": "x::1"}, "receiver"), ({"sender": "x::1"}, "sender")):
             s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
-            s.ledger.views["alloc-t1"] = view
+            s.ledger.views[ALLOCATION_ID] = view
             self.assert_left_out(s, t, word)
 
     def test_a_trade_whose_allocation_is_gone_and_not_disclosed_is_not_used(self):
@@ -656,7 +657,7 @@ class VenueLegs(LegCase):
         self.assertEqual((result["legs"], result["leftOut"]), (1, []))
         self.assertIsNone(self.sent_disclosed(s))   # the builder sees it, so the trade's unchecked disclosure does not go with the Advance
         s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
-        s.ledger.views["alloc-t1"] = {"settleBefore": "2020-01-01T00:00:00Z"}
+        s.ledger.views[ALLOCATION_ID] = {"settleBefore": "2020-01-01T00:00:00Z"}
         self.assert_left_out(s, t, "settle-before")
 
     def test_a_disclosed_contract_that_is_not_the_trades_allocation_leaves_the_payment_out(self):
@@ -673,12 +674,12 @@ class VenueLegs(LegCase):
 
     def test_a_trade_whose_allocation_is_of_another_instrument_than_its_token_is_not_used(self):
         s, t = self.setup_leg(TRADE_PAY, trades=[TRADE])
-        s.ledger.views["alloc-t1"] = {"instrument": TKC}
+        s.ledger.views[ALLOCATION_ID] = {"instrument": TKC}
         self.assert_left_out(s, t, "instrument")
 
     def test_a_payment_whose_terms_cannot_settle_still_finds_its_trade(self):
         dead = ("terms-x", {**TERMS[1], "dvpId": TRADE_ID, "token": TKA, "allocation": "alloc-gone"})
-        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], terms=[dead], allocations=["alloc-t1"])
+        s, t = self.setup_leg(TRADE_PAY, trades=[TRADE], terms=[dead], allocations=[ALLOCATION_ID])
         self.build(s)
         self.assertEqual(self.attached(s, "TradeLeg"), {"tradeCid": "trade-1"})
 
