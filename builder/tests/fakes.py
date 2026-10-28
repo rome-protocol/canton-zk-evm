@@ -109,6 +109,7 @@ class FakeReth:
         self.storage_reads: list = []
         self.fail_storage_reads = 0   # how many of the next eth_getStorageAt calls fail
         self.fail_proof_reads = 0   # how many of the next eth_getProof calls fail
+        self.fail_proof_address = None   # every eth_getProof call for this address (0x...) fails
         self.max_request = max_request   # reth refuses a WebSocket request over 15 MB (the connection is closed, code 1009)
         self.vanished: set = set()       # hashes that txpool_content still lists but eth_getRawTransactionByHash answers null for (replaced or evicted since)
         self.ws_frames: list = []        # the size of each WebSocket request, in characters
@@ -128,6 +129,8 @@ class FakeReth:
         self.jwt_failures = 0
         self.tx_legs: dict = {}   # transaction hash -> the Leg events that transaction makes, in order, when it is in a block (or a function from the block's transaction hashes to them)
         self.block_txs: dict = {}   # block hash -> the hashes of its transactions
+        self.other_gateway_legs: dict = {}   # a registered gateway's address (40 hex) -> transaction hash -> the Leg events that transaction makes at that gateway
+        self.proof_reads: list = []   # the params of each eth_getProof call
         self.bad_log_data = None   # bytes to put in place of the first log's data
         self.head = HEAD_HASH   # the block reth's head is at: a forkchoice that fails leaves it where it was
         self.refuse_resend = False   # eth_sendRawTransaction answers an error for every transaction
@@ -252,9 +255,15 @@ class FakeReth:
             if self.fail_proof_reads:
                 self.fail_proof_reads -= 1
                 raise RpcError("the state of the block is not available")
+            if self.fail_proof_address and params[0] == self.fail_proof_address:
+                raise RpcError(f"the proof of {params[0]} is not available")
             # reth --rpc.eth-proof-window 1: the state of a block more than one below the head is gone, and the call fails
             if int(params[2], 16) < self.blocks[self.head]["number"] - PROOF_WINDOW:
                 raise RpcError(f"distance to target block exceeds maximum proof window {PROOF_WINDOW}")
+            self.proof_reads.append(params)
+            if params[0] != "0x" + GATEWAY:   # a registered gateway: nodes of its own, the last one ending in the code hash that its address says
+                return {"codeHash": "0x" + "c1" * 32, "accountProof": ["0xaa01", "0xdd" + params[0][2:] + "c1" * 32],
+                        "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb" + params[0][2:6]]}]}
             return {"codeHash": "0x" + "c0" * 32, "accountProof": ["0xaa01", "0xaa02"],
                     "storageProof": [{"key": params[1][0], "value": "0x00", "proof": ["0xbb01"]}]}
         raise KeyError(method)
@@ -318,14 +327,15 @@ class FakeReth:
     def _logs(self, flt):
         """The Leg events of the transactions of the block flt names, in log order; other filters match nothing."""
         out = []
+        asked = str(flt.get("address", "")).removeprefix("0x")
         in_block = self.block_txs.get(flt.get("blockHash"), [])
         for hash_ in in_block:
-            legs = self.tx_legs.get(hash_, [])
+            legs = self.tx_legs.get(hash_, []) if asked == GATEWAY else self.other_gateway_legs.get(asked, {}).get(hash_, [])
             for leg in legs(in_block) if callable(legs) else legs:   # a function of the block's transactions, for a leg that depends on them
                 data = self.bad_log_data if self.bad_log_data is not None and not out else leg.data()
-                out.append({"address": "0x" + GATEWAY, "topics": [LEG_TOPIC], "data": "0x" + data.hex(), "blockHash": flt["blockHash"],
+                out.append({"address": "0x" + asked, "topics": [LEG_TOPIC], "data": "0x" + data.hex(), "blockHash": flt["blockHash"],
                             "transactionHash": hash_, "logIndex": hex(len(out)), "removed": False})
-        if flt.get("address") not in ("0x" + GATEWAY, GATEWAY) or flt.get("topics") != [LEG_TOPIC]:
+        if flt.get("topics") != [LEG_TOPIC]:
             return []
         return out
 

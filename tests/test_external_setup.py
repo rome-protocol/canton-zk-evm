@@ -1422,6 +1422,229 @@ class Setup(unittest.TestCase):
         self.assertTrue(self.node.vetting)
 
 
+class ContractParticipant(FakeParticipant):
+    """The participant of the registry's steps: the chain's `contracts`, the ContractProposal template and its choices, as the Daml of 0.5.0 does them."""
+    def __init__(self):
+        super().__init__()
+        self.contracts["ContractProposal"] = []
+
+    def route(self, method, path, body, raw):
+        if path == "/v2/commands/submit-and-wait":
+            command = body["commands"][0]
+            exercise = command.get("ExerciseCommand") or {}
+            choice, name = exercise.get("choice"), exercise.get("templateId", "").split(":")[-1]
+            if choice in ("ProposeContract", "AddContract", "AcceptContract", "RejectContract", "WithdrawContract"):
+                self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
+                self.submitted_users = getattr(self, "submitted_users", []) + [body.get("userId")]
+                [chain] = self.contracts["ZkChain"]
+                if choice == "ProposeContract":
+                    now = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+                    keys = ("operator", "confirmer", "gateway", "chainId")
+                    self.contracts["ContractProposal"].append({"contractId": f"cp{len(self.contracts['ContractProposal']) + 1}", "args": {
+                        **{k: chain["args"][k] for k in keys}, "entry": exercise["choiceArgument"]["entry"], "proposedAt": now}})
+                elif choice == "AddContract":
+                    chain["args"]["contracts"] = [*(chain["args"].get("contracts") or []), exercise["choiceArgument"]["entry"]]
+                else:
+                    [proposal] = [c for c in self.contracts["ContractProposal"] if c["contractId"] == exercise["contractId"]]
+                    self.contracts["ContractProposal"].remove(proposal)
+                    if choice == "AcceptContract":
+                        chain["args"]["contracts"] = [*(chain["args"].get("contracts") or []), proposal["args"]["entry"]]
+                return {}
+        return super().route(method, path, body, raw)
+
+
+class FakeRethCode:
+    """reth's eth_getCode: the code held at each address (hex, no 0x); none at the rest."""
+    def __init__(self, held: dict):
+        self.held, self.calls = held, []
+        node = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("content-length") or 0)))
+                node.calls.append(body["params"])
+                code = "0x" + node.held.get(body["params"][0][2:], "")
+                data = json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": code}).encode()
+                self.send_response(200); self.send_header("content-type", "application/json"); self.end_headers(); self.wfile.write(data)
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown(); self.server.server_close()
+
+
+GATEWAY_CODE = (ROOT / "gateway" / "Gateway.bin-runtime").read_text().strip()
+VAULT_CODE = (ROOT / "gateway" / "Vault.bin-runtime").read_text().strip()
+G2, V1, OTHER_CODE = "b8" * 20, "ca" * 20, "6000"
+VAULT_HASH = setup.keccak256(bytes.fromhex(VAULT_CODE)).hex()
+GATEWAY_HASH = setup.keccak256(bytes.fromhex(GATEWAY_CODE)).hex()
+
+
+class Registry(unittest.TestCase):
+    """setup.py --contract-step: the registry of EVM contracts, with the checks of the code at the address."""
+    run_setup = Setup.run_setup
+
+    def sent(self):   # what the registry's steps sent: not the chain's own creation
+        return getattr(self.node, "submitted", [])[self.base:]
+
+    def setUp(self):
+        Setup.setUp(self)
+        self.node.close()
+        self.node = ContractParticipant()
+        self.addCleanup(self.node.close)
+        self.reth = FakeRethCode({G2: GATEWAY_CODE, V1: VAULT_CODE, "dd" * 20: OTHER_CODE})
+        self.addCleanup(self.reth.close)
+        self.base = 0
+        self.run_setup()
+        self.base = len(getattr(self.node, "submitted", []))
+
+    def step(self, step, address, kind=None, *extra, expect=0):
+        out = io.StringIO()
+        args = ["--ledger-url", self.node.url, "--contract-step", step, "--contract-address", address, "--reth-url", self.reth.url, *(["--contract-kind", kind] if kind else []), *extra]
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(args)
+        self.assertEqual(code, expect)
+        return json.loads(out.getvalue())
+
+    def refused(self, *args):
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.step(*args)
+        return str(ctx.exception)
+
+    def registered(self):
+        return self.node.contracts["ZkChain"][0]["args"].get("contracts") or []
+
+    def test_the_hashes_are_those_of_the_reviewed_builds_and_differ(self):
+        self.assertEqual((setup.reviewed_hash("vault"), setup.reviewed_hash("gateway")), (VAULT_HASH, GATEWAY_HASH))
+        self.assertNotEqual(VAULT_HASH, GATEWAY_HASH)
+
+    def test_a_vault_is_proposed_by_the_operator_and_accepted_by_the_confirmer(self):
+        before = len(self.sent())
+        proposed = self.step("propose", V1, "vault")
+        self.assertEqual((proposed["submitted"], proposed["alreadyProposed"]), (True, False))
+        entry = {"contractAddress": V1, "contractCodeHash": VAULT_HASH, "contractKind": "Vault"}
+        self.assertEqual(proposed["entry"], entry)
+        [(command, acts)] = self.sent()[before:]
+        self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])
+        self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"]), ("ProposeContract", {"entry": entry}))
+        self.assertEqual(self.registered(), [])   # a proposal alone adds nothing
+        self.assertEqual(self.reth.calls[-1], ["0x" + V1, "finalized"])
+        self.assertFalse(self.step("propose", V1, "vault")["submitted"])   # the same proposal again
+        self.assertEqual(len(self.node.contracts["ContractProposal"]), 1)
+        accepted = self.step("accept", V1, "vault")
+        self.assertTrue(accepted["submitted"])
+        self.assertEqual(self.sent()[-1][1], ["ostia-confirmer::1220fp"])
+        self.assertEqual((self.sent()[-1][0]["ExerciseCommand"]["choice"], self.sent()[-1][0]["ExerciseCommand"]["choiceArgument"]), ("AcceptContract", {"chain": "c1"}))
+        self.assertEqual(self.registered(), [entry])
+        again = self.step("accept", V1, "vault")
+        self.assertEqual((again["submitted"], again["alreadyAccepted"]), (False, True))
+        self.assertIn("registered already", self.refused("propose", V1, "vault"))
+
+    def test_a_gateway_needs_the_gateway_build_and_a_vault_the_vault_build(self):
+        self.assertIn("is the vault build", self.refused("propose", V1, "gateway"))
+        self.assertIn("is the gateway build", self.refused("propose", G2, "vault"))
+        self.assertIn("is not the reviewed gateway build", self.refused("propose", "dd" * 20, "gateway"))
+        self.assertIn("is not the reviewed vault build", self.refused("accept", "dd" * 20, "vault"))
+        self.assertIn("there is no code at", self.refused("propose", "ee" * 20, "vault"))
+        self.assertIn("is the vault build", self.refused("add", V1, "gateway"))
+        self.assertEqual((self.sent(), self.node.contracts["ContractProposal"]), ([], []))
+        self.assertTrue(self.step("propose", G2, "gateway")["submitted"])
+        self.assertEqual(self.node.contracts["ContractProposal"][0]["args"]["entry"]["contractCodeHash"], GATEWAY_HASH)
+
+    def test_an_accept_waits_out_the_change_delay_and_a_dry_run_says_when(self):
+        self.node.contracts["ZkChain"][0]["args"]["changeDelay"] = {"microseconds": str(3600 * 10**6)}
+        self.step("propose", V1, "vault")
+        dry = self.step("accept", V1, "vault", "--dry-run")
+        self.assertEqual((dry["submitted"], dry["changeDelaySeconds"], dry["dryRun"]), (False, 3600, True))
+        self.assertIn("acceptableAt", dry)
+        self.assertIn("may be accepted from", self.refused("accept", V1, "vault"))
+        args = self.node.contracts["ContractProposal"][0]["args"]
+        args["proposedAt"] = setup.show_time(setup.parse_time(args["proposedAt"]) - timedelta(seconds=3601))
+        self.assertTrue(self.step("accept", V1, "vault")["submitted"])
+        self.assertEqual(len(self.registered()), 1)
+
+    def test_an_accept_with_no_proposal_for_the_entry_is_refused(self):
+        self.assertIn("no proposal for this contract", self.refused("accept", V1, "vault"))
+
+    def test_a_proposal_for_the_address_with_another_kind_is_taken_back_before_another_is_made(self):
+        self.step("propose", V1, "vault")
+        self.node.contracts["ContractProposal"][0]["args"]["entry"]["contractKind"] = "Gateway"
+        self.assertIn("another code hash or kind", self.refused("propose", V1, "vault"))
+        withdrawn = self.step("withdraw", V1)
+        self.assertEqual((withdrawn["pending"], withdrawn["done"]), (1, 1))
+        self.assertEqual(self.sent()[-1][0]["ExerciseCommand"]["choice"], "WithdrawContract")
+        self.assertEqual(self.sent()[-1][1], ["ostia-operator::1220fp"])
+        self.assertEqual(self.node.contracts["ContractProposal"], [])
+        self.assertTrue(self.step("propose", V1, "vault")["submitted"])
+
+    def test_the_confirmer_rejects_and_a_dry_run_of_a_withdraw_or_reject_sends_nothing(self):
+        self.step("propose", V1, "vault")
+        count = len(self.sent())
+        self.assertEqual(self.step("reject", V1, None, "--dry-run")["done"], 0)
+        self.assertEqual(self.step("withdraw", V1, None, "--dry-run")["done"], 0)
+        self.assertEqual(len(self.sent()), count)
+        rejected = self.step("reject", V1)
+        self.assertEqual(rejected["done"], 1)
+        self.assertEqual((self.sent()[-1][0]["ExerciseCommand"]["choice"], self.sent()[-1][1]), ("RejectContract", ["ostia-confirmer::1220fp"]))
+        self.assertEqual(self.step("reject", V1)["pending"], 0)   # nothing left for it
+        self.assertEqual(self.reth.calls[-1][0], "0x" + V1)   # no code was read for the two that only take a proposal away: the last read is the propose's
+
+    def test_a_propose_dry_run_submits_nothing(self):
+        dry = self.step("propose", G2, "gateway", "--dry-run")
+        self.assertEqual((dry["submitted"], dry["dryRun"], dry["entry"]["contractCodeHash"]), (False, True, GATEWAY_HASH))
+        self.assertEqual((self.sent(), self.node.contracts["ContractProposal"]), ([], []))
+
+    def test_add_acts_for_all_three_parties_and_is_idempotent(self):
+        self.assertTrue(self.step("add", G2, "gateway")["submitted"])
+        (command, acts), = self.sent()
+        self.assertEqual(sorted(acts), ["ostia-confirmer::1220fp", "ostia-gateway::1220fp", "ostia-operator::1220fp"])
+        self.assertEqual(command["ExerciseCommand"]["choice"], "AddContract")
+        self.assertEqual(self.registered(), [{"contractAddress": G2, "contractCodeHash": GATEWAY_HASH, "contractKind": "Gateway"}])
+        self.assertTrue(self.step("add", G2, "gateway")["alreadyAccepted"])
+        self.assertEqual(len(self.sent()), 1)
+        self.assertIn("registered already", self.refused("propose", G2, "gateway"))
+
+    def test_an_address_registered_under_another_hash_or_kind_and_the_first_gateway_are_refused(self):
+        self.node.contracts["ZkChain"][0]["args"]["contracts"] = [{"contractAddress": V1, "contractCodeHash": "00" * 32, "contractKind": "Vault"}]
+        self.assertIn("with another code hash or kind", self.refused("propose", V1, "vault"))
+        self.node.contracts["ZkChain"][0]["args"]["gatewayAddress"] = G2
+        self.assertIn("first gateway", self.refused("propose", G2, "gateway"))
+
+    def test_a_full_registry_takes_no_more(self):
+        self.node.contracts["ZkChain"][0]["args"]["contracts"] = [{"contractAddress": f"{i:040x}", "contractCodeHash": "00" * 32, "contractKind": "Vault"} for i in range(1, 17)]
+        self.assertIn("the most it may", self.refused("propose", V1, "vault"))
+
+    def test_the_arguments_are_checked_before_anything_is_sent(self):
+        for args in (["--contract-step", "propose", "--contract-kind", "vault"],                                     # no address
+                     ["--contract-step", "propose", "--contract-address", V1],                                       # no kind
+                     ["--contract-step", "withdraw", "--contract-address", V1, "--contract-kind", "vault"],           # a kind with a withdraw
+                     ["--contract-step", "propose", "--contract-address", V1, "--contract-kind", "vault", "--gas-cap-step", "propose"],
+                     ["--contract-step", "propose", "--contract-address", V1, "--contract-kind", "vault", "--demo"],
+                     ["--contract-address", V1]):
+            with self.subTest(args=args), self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                setup.main(["--ledger-url", self.node.url, "--reth-url", self.reth.url, *args])
+        for bad in ("0x" + V1, V1.upper(), "ab" * 19):
+            self.assertIn("40 lowercase hex", self.refused("propose", bad, "vault"))
+        self.assertEqual((self.sent(), self.reth.calls), ([], []))
+
+    def test_a_reth_url_that_is_remote_and_plain_http_is_refused_before_anything_is_read(self):
+        for step, kind in (("propose", "vault"), ("accept", "vault"), ("add", "gateway")):
+            with self.subTest(step=step):
+                self.assertIn("reth URL must be https", self.refused(step, V1, kind, "--reth-url", "http://203.0.113.5:8545"))
+        self.assertEqual((self.sent(), self.reth.calls), ([], []))
+
+    def test_a_propose_needs_the_operators_token_and_an_accept_the_confirmers(self):
+        os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
+        with self.assertRaises(SystemExit) as ctx:
+            self.step("propose", V1, "vault")
+        self.assertIn("CZE_TOKEN_FILE_OPERATOR", str(ctx.exception))
+
+
 class Timing(unittest.TestCase):
     def test_the_proposal_time_and_the_accept_time_print_in_one_form(self):
         # the ledger drops trailing zeros of the fraction ("24.1737Z"); both times must print the same way, so a reader can compare them as text
