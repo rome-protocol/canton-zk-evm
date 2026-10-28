@@ -178,6 +178,12 @@ def call_data(signature: str, values: list) -> str:
 
 
 def gateway_address() -> str:
+    """The chain's gateway (PINS), or the one CZE_DEMO_GATEWAY_ADDRESS names (tests/demo_registered_gateway.sh sends to a second, registered gateway)."""
+    override = os.environ.get("CZE_DEMO_GATEWAY_ADDRESS")
+    if override:
+        if not re.fullmatch(r"0x[0-9a-f]{40}", override):
+            raise SystemExit("CZE_DEMO_GATEWAY_ADDRESS is not an address: 0x and 40 lowercase hex digits")
+        return override
     pins = dict(line.split("=", 1) for line in (ROOT / "PINS").read_text().splitlines() if "=" in line and not line.startswith("#"))
     return pins["GATEWAY_ADDRESS"]
 
