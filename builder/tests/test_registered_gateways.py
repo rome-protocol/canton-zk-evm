@@ -118,11 +118,13 @@ class Registered(tb.LegCase):
 
     def test_the_refusal_for_a_gateway_registered_since_the_read_is_nobodys_fault(self):
         text = f"the block carries no entry for the registered gateway {G2}"
-        self.assertEqual(b.no_fault_refusal({"reason": f"INTERPRETATION_ERROR: {text}"}), "changed")
-        self.assertIsNone(b.no_fault_refusal({"reason": "the block carries no entry for the registered gateway nothing"}))
+        self.assertEqual(b.no_fault_refusal({"reason": f"INTERPRETATION_ERROR: {text}", "registeredGateways": [G2]}), "changed")
+        self.assertIsNone(b.no_fault_refusal({"reason": text}))   # no proof that Canton holds the entry: an ordinary refusal
+        self.assertIsNone(b.no_fault_refusal({"reason": "the block carries no entry for the registered gateway nothing", "registeredGateways": [G2]}))
         self.assertIsNone(b.no_fault_refusal({"reason": "the block's parent is not the chain's head"}))
-        self.assertEqual(b.no_fault_refusal({"reason": text, "carriedGateways": ["0x" + G3, GATEWAY]}), "changed")   # it names a gateway the block did not carry
-        self.assertIsNone(b.no_fault_refusal({"reason": text, "carriedGateways": [GATEWAY, G2.upper()]}))   # it names one the block carried: not that race
+        self.assertEqual(b.no_fault_refusal({"reason": text, "carriedGateways": ["0x" + G3, GATEWAY], "registeredGateways": ["0x" + G2.upper().lower()]}), "changed")   # it names a gateway the block did not carry, and the registry has it
+        self.assertIsNone(b.no_fault_refusal({"reason": text, "carriedGateways": [GATEWAY, G2.upper()], "registeredGateways": [G2]}))   # it names one the block carried: not that race
+        self.assertIsNone(b.no_fault_refusal({"reason": text, "carriedGateways": [GATEWAY], "registeredGateways": [G3]}))   # neither carried nor registered: forged
 
     def test_an_entry_the_builder_cannot_read_stops_the_block(self):
         for bad in (entry("B8" * 20), entry("b8" * 19), entry(G2, "Pool"), {"contractAddress": G2}):
@@ -170,6 +172,27 @@ class Pipelined(Depth, tb.LegCase):
         self.drive(p, lambda: p.excluded)
         self.assertEqual(list(p.excluded), [t["hash"]])
         self.assertTrue(all(not r["committed"] for r in self.reports))
+
+    def test_a_refusal_naming_an_address_neither_carried_nor_registered_twice_in_a_row_holds_the_transaction(self):
+        s = self.setup({}, terms=[TERMS])
+        p = self.pipeline(s, 2)
+        t = tx(ALICE, 0)
+        s.reth.pool[ALICE] = [t]
+        text = f"the block carries no entry for the registered gateway {G3}"   # the registry never has G3
+        s.ledger.refusal = lambda header, cid: (409, "INTERPRETATION_ERROR", text)   # every time: a forged sentence, not a race
+        self.drive(p, lambda: p.excluded)
+        self.assertEqual(list(p.excluded), [t["hash"]])
+        self.assertTrue(all(not r["committed"] for r in self.reports))
+
+    def test_the_same_address_named_twice_is_no_race_the_second_time(self):
+        s = self.setup({}, terms=[TERMS])
+        p = self.pipeline(s, 2)
+        text = f"the block carries no entry for the registered gateway {G2}"
+        result = {"reason": text, "keptTransactions": ["0x" + "aa" * 32], "legTransactions": [], "carriedGateways": [GATEWAY], "registeredGateways": [G2]}
+        p.refusal(result, 0.0)
+        self.assertEqual((p.previous_kept, p.suspects, p.probe), (set(), [], None))   # the first is the race
+        p.refusal(result, 1.0)
+        self.assertEqual(p.previous_kept, {"0x" + "aa" * 32})   # the second is an ordinary refusal: the transaction is suspected
 
 
 if __name__ == "__main__":

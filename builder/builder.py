@@ -789,9 +789,21 @@ def no_fault_refusal(result: dict) -> str | None:
     if cid and "CONTRACT_NOT_FOUND" in text and cid in text:
         return "changed"
     named = GATEWAY_REFUSAL.search(text)
-    if named and named.group(1) not in {str(a).lower().removeprefix("0x") for a in result.get("carriedGateways", [])}:
-        return "changed"
+    if named:   # a race only when the block did not carry that entry AND the registry as Canton holds it now has it: any other address is a forged sentence
+        norm = lambda key: {str(a).lower().removeprefix("0x") for a in result.get(key, [])}
+        if named.group(1) not in norm("carriedGateways") and named.group(1) in norm("registeredGateways"):
+            return "changed"
     return None
+
+
+def gateway_evidence(cfg: Config, sub: Submission) -> dict:
+    """What tells the registry race from a forged refusal sentence: the gateways the block carried, and the Gateway entries of the registry as Canton holds
+    it now (one chain read). The registry has no removal, so a real race names an entry that is there now. A read that fails leaves the list empty: an ordinary refusal."""
+    try:
+        registered = registered_gateways(Ledger(cfg).head())
+    except Exception:
+        registered = []
+    return {"carriedGateways": [sub.built.chain["gatewayAddress"], *(g["address"] for g in sub.built.extra_gateways)], "registeredGateways": registered}
 
 
 class Said(str):
@@ -1810,7 +1822,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
             report["rewindError"] = rewind_error
         answered("refused" if rejected else "not_taken", reason=reason[:600])
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen],
-                **({"carriedGateways": [sub.built.chain["gatewayAddress"], *(g["address"] for g in sub.built.extra_gateways)]} if GATEWAY_REFUSAL.search(reason) else {}),   # the entries the block carried, to tell a race from a forged sentence
+                **(gateway_evidence(cfg, sub) if GATEWAY_REFUSAL.search(reason) else {}),   # the entries the block carried and the registry as Canton holds it now, to tell a race from a forged sentence
                 **({"chainContract": sub.built.chain["contractId"]} if "CONTRACT_NOT_FOUND" in reason else {})}   # which contract is gone: the Advance's own chain contract, or another
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))
@@ -2214,6 +2226,7 @@ class Producer:
         self.excluded: dict = {}          # transaction hash -> the time its cool-down ends
         self.previous_kept: set = set()   # the transactions of the last block Canton refused, when it was the one before
         self.limit_kept: set = set()      # the transactions of the last block Canton refused for the legs pause or a quota ...
+        self.gateways_named: set = set()  # the gateway addresses that registry-race refusals named since the last commit: a real race cannot name one twice
         self.limit_legs: set = set()      # ... and its leg transactions: a second such refusal that carries one of them again is theirs
         self.suspects: list = []          # transactions that were in two refused blocks together: tried one block each before any is left out
         self.probe = None                 # the suspect the next block may hold
@@ -2587,6 +2600,7 @@ class Producer:
             self.committed += 1
             self.refusals_in_row = 0
             self.previous_kept = set()
+            self.gateways_named = set()
             self.limit_kept = set()
             self.limit_legs = set()
             self.proof_kept = set()
@@ -2620,6 +2634,11 @@ class Producer:
         cool-down. Several are tried one block each (the others kept out of it) before any is held back, so an honest transaction that
         was only next to a bad one is not held back with it."""
         why = no_fault_refusal(result)
+        named = GATEWAY_REFUSAL.search(result.get("reason") or "")
+        if why == "changed" and named:
+            # The next block is cut on the registry that has this entry, so a refusal that names the same address again is no race: normal handling.
+            why = None if named.group(1) in self.gateways_named else why
+            self.gateways_named.add(named.group(1))
         kept = {h.lower() for h in result.get("keptTransactions", [])}
         legs = {h.lower() for h in result.get("legTransactions", [])}
         if why == "limit" and legs & self.limit_legs:
