@@ -1265,6 +1265,8 @@ def release_id_of(vault: str, ref: str) -> str:
 def twin_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> "dict | None":
     """The twin legs. A payment into a registered vault is a lock; a payment whose id is the release id of a redeem request of this chain (for a
     registered vault) is a release. A payment that is neither returns None, so that the caller says what it always says."""
+    if not canton.vaults:   # a chain with no registered vault has no twin legs, and nothing is read for them
+        return None
     if leg.account in canton.vaults:
         return lock_leg(leg, canton)
     requests = [(q, v) for q in canton.redeems if names_chain(q, canton.chain, "gateway") for v in canton.vaults if release_id_of(v, q["ref"]) == leg.id]
