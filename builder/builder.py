@@ -1636,11 +1636,12 @@ def trade_leg(leg: LegEvent, canton: Canton, claimed: dict | None, trades: list)
     leg_out = {"tag": "TradeLeg", "value": {"tradeCid": trade["contractId"]}}
     token = next(g for g in canton.tokens if g["contractId"] == trade["gatewayToken"])
     with_context(canton, leg_out, token["instrumentId"]["admin"], lambda c, admin: c.allocation(admin, trade["allocation"]))
-    if claimed is not None:
-        claimed["allocations"].add(trade["allocation"])
     shown = disclosed_allocation(trade)
     if shown and any(o != shown for o in canton.leg_disclosed.get(leg_key(leg_out), ()) if o["contractId"] == shown.get("contractId")):
+        forget_leg(canton, leg_out)   # a leg that is left out holds no bytes and no contracts of the block's
         raise NoCantonSide("the token registry names the venue's allocation differently than the trade carries it")
+    if claimed is not None:
+        claimed["allocations"].add(trade["allocation"])
     if shown and trade["allocation"] not in canton.allocations:   # only an allocation the builder cannot see needs it, and only a trusted venue's got here
         canton.disclosed[trade["contractId"]] = shown
     return leg_out
@@ -1692,6 +1693,12 @@ def with_context(canton: Canton, leg: dict, admin: str, ask) -> None:
         leg["value"]["choiceContext"] = context
     canton.leg_context_bytes[leg_key(leg)] = size
     canton.leg_disclosed[leg_key(leg)] = shown
+
+
+def forget_leg(canton: Canton, leg: dict) -> None:
+    """What with_context recorded for a leg that is then left out: its context's bytes and the contracts it named do not count for the block."""
+    canton.leg_context_bytes.pop(leg_key(leg), None)
+    canton.leg_disclosed.pop(leg_key(leg), None)
 
 
 def disclosed_allocation(trade: dict) -> "dict | None | bool":
@@ -1864,12 +1871,16 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
     state = canton.quota if limits and any(e.kind == WITHDRAWAL for e in events) else None
     for claimed in (None, {"allocations": set(), "instruments": set(), "claims": set(), "redeems": set(), "holdings": set(), "quota": {}}):
         legs, missing = [], []
+        canton.leg_context_bytes.clear()   # each pass counts the legs it keeps, and only those
+        canton.leg_disclosed.clear()
         for event in events:
+            before = set(canton.leg_context_bytes)
             try:
                 leg = finders[event.kind](event, canton, claimed)
                 if claimed is None and state is not None and event.kind == WITHDRAWAL:
                     found = quota_problem(state, instrument_name(canton.token(event)), event.amount)
                     if found:
+                        forget_leg(canton, leg)   # the finder gave it a context; a leg that is left out holds no bytes and no contracts of the block's
                         missing.append((event, found))
                         continue
                 if claimed is not None and state is not None and event.kind == WITHDRAWAL:   # what the release legs of this block add to is counted with it
@@ -1877,6 +1888,9 @@ def match_legs(canton: Canton, events: list, limits: bool = True) -> tuple:
                     claimed["quota"][name] = claimed["quota"].get(name, 0) + event.amount
                 legs.append(leg)
             except NoCantonSide as e:
+                for key in set(canton.leg_context_bytes) - before:   # a leg left out after its context was recorded
+                    canton.leg_context_bytes.pop(key, None)
+                    canton.leg_disclosed.pop(key, None)
                 missing.append((event, str(e)))
         if missing:
             return legs, missing

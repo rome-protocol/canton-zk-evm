@@ -11,7 +11,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
-from fakes import PAYMENT, Leg
+from fakes import PAYMENT, WITHDRAWAL, Leg
 from test_builder import ALICE, BOB, DEP, PAY, PAY_ID, PAYEE, REQUEST, TERMS, TKA, TOKEN, TRADE, TRADE_PAY, WD, WD_ID, holding, ACCEPTANCE
 
 ADMIN = "adm::1220" + "ab" * 32
@@ -296,6 +296,43 @@ class Contexts(tb.LegCase):
             result = self.assert_left_out(s, t, "token registry cannot be read")
         self.assertLess(len(result["leftOut"][0]["reason"]), 300)
         self.assertTrue(all(len(v[1]) < 300 for v in b.REGISTRY_DOWN.values()))
+
+    def test_a_leg_left_out_by_the_quota_after_its_context_was_read_does_not_count_in_the_blocks_bytes(self):
+        import test_legs_limits as tl
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        s.ledger.tokens, s.ledger.acceptances, s.ledger.holdings = [TOKEN], [ACCEPTANCE], [holding("h-1", "60.0")]
+        s.ledger.chain_extra = tl.quota("5.0")
+        wd = self.leg_tx(s, Leg(WITHDRAWAL, tb.WD_ID, tb.WTKB, tb.PAYEE, 6 * tl.UNIT, "r::1"), ALICE, price=20)   # over the whole quota
+        pay = self.leg_tx(s, PAY, BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [wd], [pay]
+        big = {"values": {"big": {"tag": "AV_Text", "value": "x" * 9600}}}
+        self.registry(s, TOKEN_ADMIN, answer={**FACTORY, "choiceContext": {"choiceContextData": big}})
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        limit = len(json.dumps(big)) + len(json.dumps(VALUES)) - 1   # each fits alone; both together do not
+        old, b.CONTEXT_MAX_BLOCK_BYTES = b.CONTEXT_MAX_BLOCK_BYTES, limit
+        self.addCleanup(setattr, b, "CONTEXT_MAX_BLOCK_BYTES", old)
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [wd["hash"]])
+        self.assertIn("quota", result["leftOut"][0]["reason"])
+        self.assertEqual(result["legs"], 1)   # the payment is in
+
+    def test_a_trade_left_out_for_the_venues_allocation_does_not_count_in_the_blocks_bytes(self):
+        s = self.setup({ALICE: [], BOB: []}, terms=[TERMS])
+        s.ledger.trades, s.ledger.tokens = [TRADE], [TOKEN]
+        s.cfg.venues = ("venue::1",)
+        trade = self.leg_tx(s, TRADE_PAY, ALICE, price=20)
+        pay = self.leg_tx(s, PAY, BOB)
+        s.reth.pool[ALICE], s.reth.pool[BOB] = [trade], [pay]
+        big = {"values": {"big": {"tag": "AV_Text", "value": "x" * 9600}}}
+        same = {**ROUND, "contractId": tb.DISCLOSED_ALLOCATION["contractId"], "createdEventBlob": "enp6"}   # named differently than the trade carries it
+        self.registry(s, TOKEN_ADMIN, answer={"choiceContextData": big, "disclosedContracts": [same]})
+        self.registry(s, TERMS_ADMIN, answer=ANSWER)
+        old, b.CONTEXT_MAX_BLOCK_BYTES = b.CONTEXT_MAX_BLOCK_BYTES, len(json.dumps(big)) + len(json.dumps(VALUES)) - 1
+        self.addCleanup(setattr, b, "CONTEXT_MAX_BLOCK_BYTES", old)
+        result = self.build(s)
+        self.assertEqual([x["transaction"] for x in result["leftOut"]], [trade["hash"]])
+        self.assertIn("differently", result["leftOut"][0]["reason"])
+        self.assertEqual(result["legs"], 1)
 
     def test_a_registry_that_fails_leaves_the_leg_out(self):
         _, result = self.left_out(answer=ANSWER, status=500)
