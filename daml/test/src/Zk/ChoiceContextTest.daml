@@ -82,6 +82,45 @@ template GatedRules with
           senderChangeCids = []
           meta = emptyMetadata
 
+-- A registry whose transfer stays pending until the receiver accepts, and whose accept needs the entry. The factory itself
+-- asks for nothing, so a block is refused only if the accept's context lacks the entry.
+template PendingInstruction with
+    admin : Party
+    transfer : TI.Transfer
+  where
+    signatory admin
+    observer transfer.sender, transfer.receiver
+    interface instance TI.TransferInstruction for PendingInstruction where
+      view = TI.TransferInstructionView with
+        originalInstructionCid = None; transfer = transfer; status = TI.TransferPendingReceiverAcceptance; meta = emptyMetadata
+      transferInstruction_acceptImpl _self arg = do
+        needsEntry arg.extraArgs
+        out <- create GatedHolding with
+          admin = admin; owner = transfer.receiver
+          instrument = transfer.instrumentId.id; amount = transfer.amount
+        pure TI.TransferInstructionResult with
+          output = TI.TransferInstructionResult_Completed with receiverHoldingCids = [toInterfaceContractId out]
+          senderChangeCids = []
+          meta = emptyMetadata
+      transferInstruction_rejectImpl _self _arg = abort "not used by the tests"
+      transferInstruction_withdrawImpl _self _arg = abort "not used by the tests"
+      transferInstruction_updateImpl _self _arg = abort "not used by the tests"
+
+template PendingRules with
+    admin : Party
+  where
+    signatory admin
+    interface instance TI.TransferFactory for PendingRules where
+      view = TI.TransferFactoryView with admin = admin; meta = emptyMetadata
+      transferFactory_publicFetchImpl _self _arg = pure (TI.TransferFactoryView with admin = admin; meta = emptyMetadata)
+      transferFactory_transferImpl _self arg = do
+        assertMsg "expectedAdmin is not this registry" (arg.expectedAdmin == admin)
+        inst <- create PendingInstruction with admin = admin; transfer = arg.transfer
+        pure TI.TransferInstructionResult with
+          output = TI.TransferInstructionResult_Pending with transferInstructionCid = toInterfaceContractId inst
+          senderChangeCids = []
+          meta = emptyMetadata
+
 data G = G with
   admin : Party
   rules : Disclosure
@@ -93,10 +132,22 @@ gatedSetup f = do
   admin <- allocateParty "GatedRegistry"
   rulesCid <- submit admin $ createCmd GatedRules with admin = admin
   Some rules <- queryDisclosure admin rulesCid
+  setupWith f admin (toInterfaceContractId @TI.TransferFactory rulesCid) rules
+
+-- The same with the registry whose transfers stay pending until the receiver accepts.
+pendingSetup : F -> Script G
+pendingSetup f = do
+  admin <- allocateParty "PendingRegistry"
+  rulesCid <- submit admin $ createCmd PendingRules with admin = admin
+  Some rules <- queryDisclosure admin rulesCid
+  setupWith f admin (toInterfaceContractId @TI.TransferFactory rulesCid) rules
+
+setupWith : F -> Party -> ContractId TI.TransferFactory -> Disclosure -> Script G
+setupWith f admin factory rules = do
   p <- submit (actAs [f.operator, f.gateway]) $ createCmd GatewayTokenProposal with
     operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
     evmToken = wTkb; instrumentId = H.InstrumentId with admin = admin; id = "CC"
-    factory = toInterfaceContractId @TI.TransferFactory rulesCid
+    factory = factory
   token <- submit f.confirmer $ exerciseCmd p AcceptToken
   pure G with admin = admin; rules = rules; token = token
 
@@ -210,3 +261,15 @@ testAContextWithoutTheEntryIsRefused = do
   venue <- makeVenue
   let other = ChoiceContext with values = TM.fromList [("open-round", AV_Text "round-1")]
   refusedForEntry (gatedBuilder f g venue) $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [gWithdrawal f g (Some other)]
+
+-- A registry that leaves the withdrawal pending gets the leg's context on the receiver's accept, not an empty one.
+testAPendingWithdrawalAcceptCarriesTheContext : Script ()
+testAPendingWithdrawalAcceptCarriesTheContext = do
+  f <- fixture
+  g <- pendingSetup f
+  venue <- makeVenue
+  let block c = advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [gWithdrawal f g c]
+  refusedForEntry (gatedBuilder f g venue) (block None)
+  gHolds f.u >>= \xs -> xs === []
+  (_, _) <- submit (gatedBuilder f g venue) (block (Some withEntry))
+  gHolds f.u >>= \xs -> xs === [4.0]
