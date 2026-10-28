@@ -41,10 +41,16 @@ twinRulesOf admin token symbol decimals =
 
 twinFixture : Script TF
 twinFixture = do
+  t <- bareFixture
+  c <- register t.fx t.fx.chain vaultEntry
+  pure t with tchain = c
+
+-- The same, with the chain as the fixture made it: a registry of no entries (so no vault).
+bareFixture : Script TF
+bareFixture = do
   f <- fixture
-  c <- register f f.chain vaultEntry
   r <- twinRulesOf f.gateway twinAddr "TKA" 18
-  pure TF with fx = f; tchain = c; trules = r
+  pure TF with fx = f; tchain = f.chain; trules = r
 
 twinHeld : Party -> Script [Decimal]
 twinHeld p = sort . map (\(_, h) -> h.amount) <$> query @TW.TwinHolding p
@@ -143,9 +149,9 @@ testALockToAnUnregisteredVaultIsRefused = do
 -- A chain with no registry has no vault.
 testALockOnAChainWithNoRegistryIsRefused : Script ()
 testALockOnAChainWithNoRegistryIsRefused = do
-  t <- twinFixture
+  t <- bareFixture
   let f = t.fx
-  refused "is not a vault in the chain's registry" f $ advance f.chain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
+  refused "is not a vault in the chain's registry" f $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
 
 -- The leg's parts must give the id the block recorded (and the token, payee and amount): the line Daml makes from the leg is the one the
 -- sidecar compares with the block's legs.
@@ -158,12 +164,18 @@ testALockWithWrongPartsIsRefused = do
   refused notRecorded f $ advance t.tchain "01" [lockLine f.v "ref-2" vaultAddr tenTokens] [l]
   refused notRecorded f $ advance t.tchain "01" [lockLine f.u "ref-1" vaultAddr tenTokens] [l]
   refused notRecorded f $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr fiveTokens] [l]
-  c2 <- register f t.tchain (vaultEntry with contractAddress = otherVaultAddr)
-  refused notRecorded f $ advance c2 "01" [lockLine f.v "ref-1" otherVaultAddr tenTokens] [l]
   -- a recorded lock with no leg, and a leg with no recorded lock
   refused notRecorded f $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] []
   refused notRecorded f $ advance t.tchain "01" [] [l]
+  -- a vault of the registry, but not the one the leg names (the registering archives the chain contract, so this goes last)
+  c2 <- register f t.tchain (vaultEntry with contractAddress = otherVaultAddr)
+  refused notRecorded f $ advance c2 "01" [lockLine f.v "ref-1" otherVaultAddr tenTokens] [l]
   twinHeld f.v >>= \xs -> xs === []
+
+-- What the ledger says when the chain is handed the rules of another admin than its gateway: the chain's parties are not stakeholders of
+-- those rules, so it cannot fetch them, and the block is refused before `checkTwin` could name the admin.
+otherAdmin : Text
+otherAdmin = "of the fetched contract to be an authorizer"
 
 -- The twin must be the chain gateway's: rules of another admin name no registered token.
 testALockOfATokenWithNoTwinOfTheGatewayIsRefused : Script ()
@@ -172,7 +184,7 @@ testALockOfATokenWithNoTwinOfTheGatewayIsRefused = do
   let f = t.fx
   other <- twinRulesOf f.registry twinAddr "TKA" 18
   let l = (lockLegOf t f.v "ref-1" tenTokens) with lockRules = other
-  refused "another admin's than the chain's gateway" f $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [l]
+  refused otherAdmin f $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [l]
 
 -- An amount finer than 10 decimals is refused, and never rounded; the smallest twin amount, 10^-10, is accepted.
 testALockFinerThanTenDecimalsIsRefused : Script ()
@@ -263,7 +275,7 @@ testAReleaseNeedsARegisteredVaultAndTheRightTwin = do
   refused "is not a vault in the chain's registry" f $ advance t.tchain "01"
     [releaseLine "redeem-1" otherVaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseVault = otherVaultAddr]
   other <- twinRulesOf f.registry twinAddr "TKA" 18
-  refused "another admin's than the chain's gateway" f $ advance t.tchain "01"
+  refused otherAdmin f $ advance t.tchain "01"
     [releaseLine "redeem-1" vaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseRules = other]
   r6 <- twinRulesOf f.gateway twin6Addr "TKS" 6
   refused "another token than the twin's" f $ advance t.tchain "01"
@@ -287,11 +299,11 @@ testAReleaseFinerThanTheTokenIsRefused = do
   r6 <- twinRulesOf f.gateway twin6Addr "TKS" 6
   req <- redeemOf t r6 twin6Addr 10.0 "redeem-6" 1.0
   let l = ReleaseLeg with releaseRequest = req; releaseRules = r6; releaseVault = vaultAddr
-  (_, _) <- submit (asBuilder f) $ advance t.tchain "01" [line "payment" (releaseId vaultAddr "redeem-6") twin6Addr uAddr oneMillion ""] [l]
-  twinHeld f.v >>= \xs -> xs === [9.0]
   fine <- redeemOf t r6 twin6Addr 10.0 "redeem-7" 1.0000001
   refused "not a whole number of base units" f $ advance t.tchain "01" [line "payment" (releaseId vaultAddr "redeem-7") twin6Addr uAddr oneMillion ""]
     [ReleaseLeg with releaseRequest = fine; releaseRules = r6; releaseVault = vaultAddr]
+  (_, _) <- submit (asBuilder f) $ advance t.tchain "01" [line "payment" (releaseId vaultAddr "redeem-6") twin6Addr uAddr oneMillion ""] [l]
+  twinHeld f.v >>= \xs -> xs === [9.0, 10.0]
 
 -- Two requests with one ref make one payment id, which the gateway records once: a block that carries both is refused.
 testTwoReleasesOfOneIdAreRefused : Script ()
