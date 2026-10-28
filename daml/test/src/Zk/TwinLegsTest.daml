@@ -578,18 +578,21 @@ testAPinProposalIsOfItsChain = do
   p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
   submitMustFail f.confirmer $ exerciseCmd p AcceptTwin with chain = other.chain
 
+-- A twin of 6 decimals for each tag in turn, on the chain contract the one before made.
+pinSixes : F -> ContractId ZkChain -> [Text] -> Script (ContractId ZkChain)
+pinSixes _ chain [] = pure chain
+pinSixes f chain (d :: ds) = do
+  let token = mconcat (replicate 20 ("e" <> d))
+  r <- twinRulesOf f.gateway token ("T" <> d) 6
+  next <- pinTwin f chain r token 6
+  pinSixes f next ds
+
 -- The chain pins 16 twins and refuses a 17th.
 testTheChainPinsSixteenTwins : Script ()
 testTheChainPinsSixteenTwins = do
   t <- bareFixture
   let f = t.fx
-  let token d = mconcat (replicate 20 ("e" <> d))
-  let pinAll chain [] = pure chain
-      pinAll chain (d :: ds) = do
-        r <- twinRulesOf f.gateway (token d) ("T" <> d) 6
-        next <- pinTwin f chain r (token d) 6
-        pinAll next ds
-  c16 <- pinAll f.chain (T.explode "0123456789abcdef")
+  c16 <- pinSixes f f.chain (T.explode "0123456789abcdef")
   Some ps <- pinnedOf f c16
   length ps === 16
   r17 <- twinRulesOf f.gateway twinAddr "TKA" 18
