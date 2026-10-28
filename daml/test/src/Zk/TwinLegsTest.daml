@@ -15,6 +15,7 @@ import qualified Twin.Twin as TW
 import Zk.Chain
 import Zk.ChainTest
 import Zk.Hex
+import Zk.Sidecar
 
 twinAddr, twin6Addr, otherVaultAddr : Text
 twinAddr = mconcat (replicate 20 "7a")      -- an ERC-20 of 18 decimals
