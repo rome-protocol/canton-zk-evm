@@ -2,13 +2,20 @@
 // Copyright 2026 Rome Protocol
 pragma solidity 0.8.28;
 
-// Four tokens that are not the gateway's own wrapped tokens, for the gateway's tests only. They are compiled by run.sh and deployed by check.py.
+// Five tokens that are not the gateway's own wrapped tokens, for the gateway's tests only. They are compiled by run.sh and deployed by check.py.
 
 // mint and burn do nothing and never fail: a token that would let the gateway through if the gateway did not check that the
 // token is one it made.
 contract OpenToken {
     function mint(address, uint256) external {}
     function burn(address, uint256) external {}
+}
+
+// approve says no. The vault's release is refused by a token like this one.
+contract ApproveFalseToken {
+    function approve(address, uint256) external pure returns (bool) {
+        return false;
+    }
 }
 
 // transferFrom says no.

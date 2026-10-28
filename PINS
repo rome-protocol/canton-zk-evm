@@ -71,7 +71,8 @@ SOLC_VERSION=0.8.28
 SOLC_IMAGE=ethereum/solc@sha256:b3b83d65e1eae916b58e0c19b9051afa7ffc93e00f8210196639dee794a2a98a
 SOLC_IMAGE_ID=sha256:2c814b81cef52e49a3e13bb16f10e5fd8beaa9b3c0b2912f2d5e73f27024ccd0
 # The gateway (gateway/Gateway.sol): one contract at this fixed address, put into each run's genesis by network/make-state.sh.
-# gateway/Gateway.bin-runtime is its runtime code, built by gateway/build.sh with the solc image above and checked in CI.
+# gateway/Gateway.bin-runtime is its runtime code, and gateway/Vault.bin-runtime is the runtime code of the vault (gateway/Vault.sol),
+# both built by gateway/build.sh with the solc image above and checked in CI.
 # The address is far from the low addresses Ethereum uses for precompiles and system contracts.
 GATEWAY_ADDRESS=0xa7e0000000000000000000000000000000000000
 # The database of the persistent network (network/postgres.sh, CZE_PERSIST=1): postgres 16.10 on Alpine, pinned by digest (the multi-arch

@@ -9,7 +9,7 @@
                              running hash of the block's legs in Python, from the legs the test meant to make, and compares it with
                              legs[n] as eth_getProof reports it.
 """
-import importlib.util, json, os, secrets, sys, time
+import hashlib, importlib.util, json, os, secrets, sys, time
 from pathlib import Path
 
 from eth_abi import decode, encode
@@ -27,12 +27,15 @@ _spec.loader.exec_module(mb)  # rpc_http, rpc_ws and the ports, as prover/make-b
 PINS = dict(line.split("=", 1) for line in (ROOT / "PINS").read_text().splitlines() if "=" in line and not line.startswith("#"))
 GW = PINS["GATEWAY_ADDRESS"]
 RUNTIME = "0x" + (ROOT / "gateway" / "Gateway.bin-runtime").read_text().strip()
+VAULT_RUNTIME = "0x" + (ROOT / "gateway" / "Vault.bin-runtime").read_text().strip()
+VAULT = "0xa7e1000000000000000000000000000000000000"  # the vault's address in this test's genesis; the gateway's is fixed by PINS
 NAMES = ["deployer", "alice", "bob", "carol"]
 ZERO32 = b"\0" * 32
 EMPTY_STORAGE_ROOT = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"
 EMPTY_PARTY_HASH = "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
 DEPOSIT, WITHDRAWAL, PAYMENT = 1, 2, 3
 LEG_TOPIC = "0x" + keccak256(b"Leg(uint8,bytes32,address,address,uint256,string)").hex()
+RELEASED_TOPIC = "0x" + keccak256(b"Released(bytes32,address,address,uint256,string)").hex()
 HTTP = mb.HTTP
 
 failed = []
@@ -83,6 +86,8 @@ def genesis(state: Path) -> None:
         with os.fdopen(fd, "w") as f:
             f.write(key)
         base["alloc"][Account.from_key("0x" + key).address.lower()] = {"balance": hex(10 * 10**18)}
+    # The vault, put into the genesis as the gateway is: its runtime code, nonce 1, no balance and no storage.
+    base["alloc"][VAULT] = {"balance": "0x0", "nonce": "0x1", "code": VAULT_RUNTIME}
     (state / "genesis.json").write_text(json.dumps(base, indent=2))
 
 
@@ -187,6 +192,11 @@ def run(state: Path) -> None:
     ok(int(proof["nonce"], 16) == 1 and int(proof["balance"], 16) == 0, "the account has nonce 1 and no balance")
     ok(proof["storageHash"] == EMPTY_STORAGE_ROOT, "the account has no storage")
     ok(EMPTY_PARTY_HASH == keccak256(b"").hex(), "the Keccak-256 of an empty party is the value the documents name")
+    vproof = rpc("eth_getProof", [VAULT, [], "0x0"])
+    ok(rpc("eth_getCode", [VAULT, "0x0"]) == VAULT_RUNTIME, "block 0 holds the vault's runtime code at the vault's address")
+    ok(int(vproof["nonce"], 16) == 1 and int(vproof["balance"], 16) == 0 and vproof["storageHash"] == EMPTY_STORAGE_ROOT,
+       "the vault has nonce 1, no balance and no storage")
+    ok(call(VAULT, "GATEWAY()", [], "address")[0].lower() == GW, "the vault's gateway is GATEWAY_ADDRESS")
 
     # --- blocks without legs: legs[n] reads as zero
     c.block([])
@@ -208,11 +218,12 @@ def run(state: Path) -> None:
     mocks = {k.split(":")[1]: v["bin"] for k, v in json.loads((state / "mocks.json").read_text())["contracts"].items()}
     tka_code = (ROOT / "demo" / "TKA.bin").read_text().strip() + encode(["address", "uint256"], [a, 1000 * 10**18]).hex()
     blk = c.block([c.tx("deployer", None, "0x" + tka_code),
+                   c.tx("deployer", None, "0x" + mocks["ApproveFalseToken"]),
                    c.tx("deployer", None, "0x" + mocks["FalseToken"]),
                    c.tx("deployer", None, "0x" + mocks["SilentToken"]),
                    c.tx("deployer", None, "0x" + mocks["CallbackToken"] + encode(["address"], [GW]).hex()),
                    c.tx("deployer", None, "0x" + mocks["OpenToken"])])
-    tka, false_token, silent_token, callback, open_token = (rpc("eth_getTransactionReceipt", [t["hash"]])["contractAddress"] for t in blk["transactions"])
+    tka, approve_false, false_token, silent_token, callback, open_token = (rpc("eth_getTransactionReceipt", [t["hash"]])["contractAddress"] for t in blk["transactions"])
     ok(all(statuses(blk)) and erc20(tka, a) == 1000 * 10**18, "the test tokens are deployed; alice holds 1000 TKA")
 
     # --- claim (a deposit leg): the recipient mints to herself
@@ -288,6 +299,89 @@ def run(state: Path) -> None:
     ok(statuses(blk) == [1, 1] and call(callback, "lastOk()", [], "bool")[0] is True, "a callback with another id goes through")
     check_block(blk, [(PAYMENT, "0x" + idp2.hex(), callback, cc, 5, ""), (PAYMENT, "0x" + idq.hex(), callback, cc, 9, "")],
                 "callback, another id (the outer leg first)")
+
+    # --- the vault: a lock is a payment into it, a release is a payment out of it, and both are legs of the gateway
+    # a release names a ref, and the vault makes the id itself: SHA-256 of "vault-release,<vault address, lowercase hex>,<ref>"
+    vault_id = lambda ref: "0x" + hashlib.sha256(f"vault-release,{VAULT[2:].lower()},{ref}".encode()).hexdigest()
+    release = lambda ref, token, to, amount: calldata("release(string,address,address,uint256)", [ref, token, to, amount])
+    pay_to = lambda i, token, to, amount: calldata("pay(bytes32,address,address,uint256)", [bytes.fromhex(i[2:]), token, to, amount])
+    allowance = lambda t, owner, spender: call(t, "allowance(address,address)", [owner, spender], "uint256")[0]
+    lock1, lock2 = ident("lock-1"), ident("lock-2")
+    ref1, ref2, ref3 = "release-1", "release-2", "release-3"
+    rel1, rel2, rel3 = vault_id(ref1), vault_id(ref2), vault_id(ref3)
+    ok(call(VAULT, "releaseId(string)", [ref1], "bytes32")[0] == bytes.fromhex(rel1[2:]), "the vault's releaseId is the SHA-256 of vault-release, its address and the ref")
+    carol_tka, alice_tka = erc20(tka, cc), erc20(tka, a)
+    blk = c.block([c.tx("alice", tka, calldata("approve(address,uint256)", [GW, 10 * 10**18])),
+                   c.tx("alice", GW, pay_to(lock1, tka, VAULT, 10 * 10**18))])
+    check_block(blk, [(PAYMENT, lock1, tka, VAULT, 10 * 10**18, "")], "lock")
+    ok(statuses(blk) == [1, 1] and erc20(tka, VAULT) == 10 * 10**18 and erc20(tka, a) == alice_tka - 10 * 10**18,
+       "a lock is a payment into the vault: alice's TKA moved to the vault")
+
+    blk = c.block([c.tx("bob", VAULT, release(ref1, tka, cc, 4 * 10**18))])
+    check_block(blk, [(PAYMENT, rel1, tka, cc, 4 * 10**18, "")], "release")
+    ok(statuses(blk) == [1] and erc20(tka, VAULT) == 6 * 10**18 and erc20(tka, cc) == carol_tka + 4 * 10**18,
+       "release, called by bob, paid carol 4 TKA out of the vault")
+    ok(used(rel1) and allowance(tka, VAULT, GW) == 0, "the release used up its id and left no allowance for the gateway")
+    logs = rpc("eth_getLogs", [{"fromBlock": hex(int(blk["number"], 16)), "toBlock": hex(int(blk["number"], 16)), "address": VAULT}])
+    ok(len(logs) == 1 and logs[0]["topics"] == [RELEASED_TOPIC, rel1, "0x" + "00" * 12 + tka[2:], "0x" + "00" * 12 + cc[2:]]
+       and decode(["uint256", "string"], bytes.fromhex(logs[0]["data"][2:])) == (4 * 10**18, ref1), "the vault logged Released(id, token, to, amount, ref)")
+
+    # a lock and two releases in one block, with a refused release between them: the legs are in the order of the transactions
+    blk = c.block([
+        c.tx("carol", VAULT, release(ref2, tka, a, 2 * 10**18)),
+        c.tx("alice", VAULT, release(ref1, tka, a, 1)),                     # ref used: reverts
+        c.tx("alice", tka, calldata("approve(address,uint256)", [GW, 3 * 10**18])),
+        c.tx("alice", GW, pay_to(lock2, tka, VAULT, 3 * 10**18)),
+        c.tx("alice", VAULT, release(ref3, tka, d, 5 * 10**18)),
+    ])
+    check_block(blk, [(PAYMENT, rel2, tka, a, 2 * 10**18, ""), (PAYMENT, lock2, tka, VAULT, 3 * 10**18, ""),
+                      (PAYMENT, rel3, tka, d, 5 * 10**18, "")], "lock and releases")
+    ok(statuses(blk) == [1, 0, 1, 1, 1] and erc20(tka, VAULT) == 2 * 10**18 and erc20(tka, d) == 5 * 10**18,
+       "a release that reused a ref reverted and the others did not; the vault holds 6 - 2 + 3 - 5 = 2 TKA")
+
+    # every refusal reverts, leaves no leg and moves nothing
+    fresh_r = [f"vault-fresh-{i}" for i in range(6)]
+    fresh_v = [vault_id(r) for r in fresh_r]
+    refused = [
+        ("release of zero", c.tx("bob", VAULT, release(fresh_r[0], tka, cc, 0))),
+        ("release of more than the vault holds", c.tx("bob", VAULT, release(fresh_r[1], tka, cc, 2 * 10**18 + 1))),
+        ("release with the ref of an earlier release", c.tx("bob", VAULT, release(ref3, tka, cc, 1))),
+        ("release to the vault itself", c.tx("bob", VAULT, release("vault-fresh-5", tka, VAULT, 1))),
+        ("release of a token that refuses the approval", c.tx("bob", VAULT, release(fresh_r[2], approve_false, cc, 1))),
+        ("release of a token that has no approve", c.tx("bob", VAULT, release(fresh_r[3], false_token, cc, 1))),
+        ("release of an address with no code", c.tx("bob", VAULT, release(fresh_r[4], unknown, cc, 1))),
+        ("a call that names no function", c.tx("bob", VAULT, "0x")),
+    ]
+    before = (erc20(tka, VAULT), erc20(tka, cc), allowance(tka, VAULT, GW))
+    blk = c.block([raw for _, raw in refused])
+    ok(statuses(blk) == [0] * len(refused), "every refusal by the vault reverted: " + ", ".join(label for label, _ in refused))
+    check_block(blk, [], "vault refusals")
+    ok((erc20(tka, VAULT), erc20(tka, cc), allowance(tka, VAULT, GW)) == before, "the refusals moved no tokens and left no allowance")
+    ok(not any(used(f) for f in fresh_v), "a refused release did not use up its id")
+
+    # the vault pays only ids that it makes itself: a caller cannot make it pay the id that a DvpTerms (payment id), a venue trade or a
+    # lock waits for, whatever ref the caller gives. The ids of other domains stay unused, and the leg's id is the vault's own.
+    foreign = {
+        "a DvpTerms payment id": f"{a[2:].lower()},{cc[2:].lower()},dvp-1",
+        "a venue trade id": "venue-trade,Venue::1220abcd,trade-1",
+        "a lock id": "lock,Receiver::1220abcd,lock-1",
+    }
+    for label, pre in foreign.items():
+        want_foreign = "0x" + hashlib.sha256(pre.encode()).hexdigest()
+        own = vault_id(pre)
+        before_bal = erc20(tka, VAULT)
+        blk = c.block([c.tx("carol", VAULT, release(pre, tka, cc, 1))])
+        ok(own != want_foreign and statuses(blk) == [1] and not used(want_foreign) and used(own),
+           f"a caller cannot make the vault pay {label}: the leg has the vault's id, and that id stays unused")
+        check_block(blk, [(PAYMENT, own, tka, cc, 1, "")], f"release with a ref shaped as {label}")
+        ok(erc20(tka, VAULT) == before_bal - 1, f"the release with a ref shaped as {label} moved one wei out of the vault")
+    # the gateway pays from the caller's own tokens and never from the vault's: carol approves the gateway and pays one wei
+    # of TKA, and it comes out of her balance; the vault's balance and its allowance to the gateway stay as they were
+    v_bal, v_allow, c_bal = erc20(tka, VAULT), allowance(tka, VAULT, GW), erc20(tka, cc)
+    blk = c.block([c.tx("carol", tka, calldata("approve(address,uint256)", [GW, 1])),
+                   c.tx("carol", GW, pay_to(fresh_v[5], tka, a, 1))])
+    ok(statuses(blk) == [1, 1] and erc20(tka, cc) == c_bal - 1 and erc20(tka, VAULT) == v_bal and allowance(tka, VAULT, GW) == v_allow,
+       "a plain pay by someone else is paid from their own tokens: the vault's balance and its allowance did not change")
 
     # --- the wrapped token is a plain ERC-20 between holders, and a block of plain transfers has no legs
     blk = c.block([c.tx("bob", wtkb, calldata("transfer(address,uint256)", [a, 10**10])),
