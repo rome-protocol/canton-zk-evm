@@ -80,6 +80,19 @@ describe.skipIf(!TEST_URL)("the legs of registered gateways", () => {
     });
   });
 
+  it("says degraded, naming the gateway and the block, when one of its Leg logs cannot be decoded, and goes on without that block's legs", async () => {
+    await inDb(async (pool) => {
+      const chain = await indexed(pool, [{ txs: 1, extra: [{ gateway: GW2, kind: 3, id: ID2, token: TOKEN, account: ALICE, amount: 9n }] }, { txs: 1 }]);
+      await pool.query("update logs set data = $2 where address = $1 and block_number = 1", [Buffer.from(GW2.slice(2), "hex"), Buffer.from("1234", "hex")]);
+      await registry(pool, chain);
+      await registeredLegsOnce(pool, chain.reads);
+      expect(await c10(pool)).toMatchObject({ status: "degraded", detail: expect.stringContaining(`the registered gateway ${GW2}`) });
+      const value = (await pool.query("select value from health_checks where check_id = 'C10'")).rows[0].value;
+      expect(value).toEqual({ block: 1, gateway: GW2 });
+      expect(await legRows(pool)).toEqual([]);
+    });
+  });
+
   it("goes on from its cursor in batches, and indexes nothing for a gateway that is not registered or a vault", async () => {
     await inDb(async (pool) => {
       const chain = await indexed(pool, [

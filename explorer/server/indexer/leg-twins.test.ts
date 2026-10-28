@@ -29,12 +29,15 @@ const inDb = (fn: (pool: Pool) => Promise<void>) => withDatabase(async (pool) =>
 });
 const pin = (token: string, decimals: number) => ({ twinToken: token.slice(2), twinDecimals: decimals, twinRules: "00ab" });
 const pay = (id: string, token: string, account: string, amount: bigint) => ({ gateway: GW2, kind: 3, id, token, account, amount });
-async function setUp(pool: Pool, shapes: BlockShape[]): Promise<SyntheticChain> {
+async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false): Promise<SyntheticChain> {
   await migrate(pool);
   const chain = makeChain(shapes);
   chain.reads.rethHead = shapes.length;
   chain.ledger.ledgerHead = shapes.length;
-  const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline" });
+  const fake = await startFakeLedger([], { ledgerEnd: 999, active: [zkChain([registered(GW2, "Gateway"), registered(VAULT, "Vault", "c2")], { twins: [pin(TOKEN, 18), pin(SIX, 6)] })] });
+  fakes.push(fake);
+  const ledger = createLedger(fake.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS);
+  const indexer = createIndexer({ pool, reads: chain.reads, ledger: chain.ledger, pins: PINS, chainId: CHAIN_ID, gateway: GATEWAY, derive: "inline", ...(viaLoop ? { custody: { ledger, ms: 50 } } : {}) });
   opened.push(indexer);
   await indexer.open();
   await indexer.runOnce();
@@ -43,10 +46,16 @@ async function setUp(pool: Pool, shapes: BlockShape[]): Promise<SyntheticChain> 
     await pool.query("insert into contracts (address, origin, runtime_code_hash, name) values ($1, 'genesis', $2, 'T')", [Buffer.from(t.slice(2), "hex"), Buffer.alloc(32, 0x5a)]);
     await pool.query("insert into tokens (address, standard, name, symbol, decimals, first_transfer_block, metadata_status) values ($1, 'ERC-20', 'T', 'T', $2, 1, 'read')", [Buffer.from(t.slice(2), "hex"), dec]);
   }
-  const f = await startFakeLedger([], { ledgerEnd: 999, active: [zkChain([registered(GW2, "Gateway"), registered(VAULT, "Vault", "c2")], { twins: [pin(TOKEN, 18), pin(SIX, 6)] })] });
-  fakes.push(f);
-  await custodyOnce(pool, createLedger(f.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS), chain.reads, 500, PARTICIPANT, CHAIN_ID);
   for (const n of [1, 2, 3]) chain.reads.storage[`${GW2}:${legsSlot(n)}`] = "0x" + "00".repeat(32);
+  if (viaLoop) {
+    // the indexer's own custody loop reads the registry, indexes the registered gateway's legs and counts the twin sums, with no call of the steps here
+    const halt = indexer.start();
+    try {
+      for (let i = 0; i < 200 && (await pool.query("select 1 from twin_totals")).rowCount === 0; i++) await new Promise((r) => setTimeout(r, 50));
+    } finally { await halt(); }
+    return chain;
+  }
+  await custodyOnce(pool, ledger, chain.reads, 500, PARTICIPANT, CHAIN_ID);
   await registeredLegsOnce(pool, chain.reads);
   await twinTotalsOnce(pool);
   return chain;
@@ -198,6 +207,16 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       // a pin that is new: the same
       await again([pin(TOKEN, 18), pin(SIX, 6), pin(OTHER, 8)], [registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")]);
       expect(await totals(pool)).toEqual([]);
+    });
+  });
+
+  it("is done by the indexer's own custody loop: the registry, the registered gateway's legs, then the twin sums, with the chain's id passed on", async () => {
+    await inDb(async (pool) => {
+      await setUp(pool, threeBlocks(), true);
+      expect((await pool.query("select kind from canton_registry order by kind")).rows.map((r) => r.kind)).toEqual(["gateway", "vault"]);
+      expect((await pool.query("select count(*)::int as n from gateway_legs where gateway is not null")).rows[0].n).toBeGreaterThan(0);
+      expect((await totals(pool)).map((t) => t.locks)).toEqual([2, 1]);
+      expect((await blockLegs(pool, 1))[1]).toMatchObject({ canton: { role: "lock" } });
     });
   });
 
