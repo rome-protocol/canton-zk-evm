@@ -772,17 +772,22 @@ LEDGER_MARGIN = timedelta(seconds=5)   # the builder's clock is not Canton's: a 
 PAUSE_REFUSAL = re.compile(r"the legs are paused until [^\\\"]{0,64}: a block that carries a leg is refused")
 QUOTA_REFUSAL = re.compile(r"the block's withdrawals of the instrument .{1,300}? are over the withdrawal quota: [0-9.]+ more would make [0-9.]+ "
                            r"in the last [0-9]+ s, and the quota is [0-9.]+")
+# Daml's refusal of a block that lacks the entry of a registered gateway (checkRegisteredGateways, Chain.daml). The builder reads the registry with the chain
+# contract; a Gateway entry accepted between that read and the submit is a race, never a transaction's fault.
+GATEWAY_REFUSAL = re.compile(r"the block carries no entry for the registered gateway [0-9a-f]{40}")
 
 
 def no_fault_refusal(result: dict) -> str | None:
-    """Why Canton's refusal of a block says nothing against its transactions, or None. Three refusals: the legs are paused, a withdrawal quota is over
-    (only for a block that carried a leg, in the words of the chain contract), or the chain contract the Advance names is gone (a change of
-    the chain contract, such as a pause, came between the builder's read and the submit)."""
+    """Why Canton's refusal of a block says nothing against its transactions, or None. Four refusals: the legs are paused, a withdrawal quota is over
+    (only for a block that carried a leg, in the words of the chain contract), the chain contract the Advance names is gone (a change of
+    the chain contract, such as a pause, came between the builder's read and the submit), or the block lacks the entry of a gateway registered since the read."""
     text = result.get("reason") or ""
     if result.get("legTransactions") and (PAUSE_REFUSAL.search(text) or QUOTA_REFUSAL.search(text)):
         return "limit"
     cid = result.get("chainContract")
     if cid and "CONTRACT_NOT_FOUND" in text and cid in text:
+        return "changed"
+    if GATEWAY_REFUSAL.search(text):
         return "changed"
     return None
 

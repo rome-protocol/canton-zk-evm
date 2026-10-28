@@ -107,6 +107,7 @@
       withdraw  the operator's token (WithdrawContract) on every pending proposal for the address. reject is the confirmer's RejectContract on them.
       add       AddContract at once, signed by the operator, the confirmer and the gateway together: for a participant that hosts all three and whose operator user holds the confirmer's right too. It skips the change delay.
     There is no removal: a Gateway entry stops every block of the chain until the builder sends its proofs (builder 0.5.0 does), so look with --dry-run first.
+    Accept no Gateway entry before the builder sends its proofs (pinned to 0.5.0) and the explorer reads the legs of registered gateways.
     With --dry-run nothing is submitted.
 
   setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay|leg-limits|renew-pause [--dry-run]
@@ -1001,6 +1002,8 @@ def main(argv: list) -> int:
                 or own.withdraw_proposal or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash or own.delay_seconds is not None
                 or own.pause_seconds is not None or own.quota is not None or own.quota_window_seconds is not None or own.no_quota or own.pause_max_seconds is not None):
             ap.error("--contract-step does only the registry's step: no other step, no --demo, no values and no chain arguments")
+        if own.contract_step in ("propose", "accept", "add") and not LOOPBACK_OR_HTTPS.match(own.reth_url):
+            raise SystemExit("the reth URL must be https, or http on this machine (127.0.0.1): its answer about the code at the address is the only check before an entry that cannot be removed")
         check_settings(own.ledger_url, ("confirmer",) if own.contract_step in ("accept", "reject") else ("operator",))
         os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
         print(json.dumps(contract_step(own.ledger_url, own.contract_step, own.contract_address, own.contract_kind, own.reth_url, own.dry_run)))

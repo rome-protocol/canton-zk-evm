@@ -9,6 +9,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 import builder as b
 import test_builder as tb
+from test_pipeline import Depth
 from fakes import GATEWAY, PAYMENT, Leg, tx
 
 ALICE, BOB, PAY, DEP, TERMS = tb.ALICE, tb.BOB, tb.PAY, tb.DEP, tb.TERMS
@@ -106,10 +107,20 @@ class Registered(tb.LegCase):
 
     def test_a_proof_that_cannot_be_read_stops_the_block(self):
         s = self.chain(entry(G2))
-        s.reth.fail_proof_reads = 3
+        s.reth.fail_proof_address = "0x" + G2   # the first gateway's proofs read fine; only the registered gateway's read fails
         s.reth.pool[ALICE] = [tx(ALICE, 0)]
-        with self.assertRaises(Exception):
+        with self.assertRaises(b.BuilderError) as cm:
             b.build_block(s.cfg)
+        self.assertIn(G2, str(cm.exception))
+        self.assertIn("0x" + GATEWAY, {p[0] for p in s.reth.proof_reads})   # the first gateway's proof was read before
+        self.assertNotIn("0x" + G2, {p[0] for p in s.reth.proof_reads})
+        self.assertEqual(s.ledger.commit_count, 0)   # no Advance was sent
+
+    def test_the_refusal_for_a_gateway_registered_since_the_read_is_nobodys_fault(self):
+        text = f"the block carries no entry for the registered gateway {G2}"
+        self.assertEqual(b.no_fault_refusal({"reason": f"INTERPRETATION_ERROR: {text}"}), "changed")
+        self.assertIsNone(b.no_fault_refusal({"reason": "the block carries no entry for the registered gateway nothing"}))
+        self.assertIsNone(b.no_fault_refusal({"reason": "the block's parent is not the chain's head"}))
 
     def test_an_entry_the_builder_cannot_read_stops_the_block(self):
         for bad in (entry("B8" * 20), entry("b8" * 19), entry(G2, "Pool"), {"contractAddress": G2}):
@@ -118,6 +129,33 @@ class Registered(tb.LegCase):
 
     def test_a_kind_written_as_a_tagged_value_is_read_too(self):
         self.assertEqual(b.registered_gateways({"contracts": [entry(G2, {"tag": "Gateway", "value": {}}), entry(VAULT, {"tag": "Vault"})]}), [G2])
+
+
+class Pipelined(Depth, tb.LegCase):
+    """With blocks in flight a Gateway entry can be accepted between the cut of a block and its submit: the Advance then names the new chain contract
+    with no entry for that gateway, and Daml refuses it. That refusal is nobody's fault, and no transaction becomes a suspect."""
+
+    def test_a_gateway_registered_between_the_cut_and_the_submit_holds_nobody_back(self):
+        s = self.setup({}, terms=[TERMS])
+        p = self.pipeline(s, 2)
+        t = tx(ALICE, 0)
+        s.reth.pool[ALICE] = [t]
+        ledger, original, text = s.ledger, s.ledger.refusal, f"the block carries no entry for the registered gateway {G2}"
+        def refusal(header, cid):
+            ledger.refusal = original   # once
+            ledger.consumed.append(cid)
+            ledger.cids[ledger.cids.index(cid)] = f"{cid.split('@')[0]}#{len(ledger.consumed)}"
+            ledger.chain_extra = {"contracts": [entry(G2)]}
+            return 409, "INTERPRETATION_ERROR", text
+        ledger.refusal = refusal
+        self.drive(p, lambda: self.reports)
+        self.assertFalse(self.reports[0]["committed"])
+        self.assertIn(text, self.reports[0]["reason"])
+        self.assertEqual(self.status()["excluded"], [])
+        self.assertEqual((p.previous_kept, p.suspects, p.probe), (set(), [], None))
+        self.drive(p, lambda: any(r["committed"] for r in self.reports))   # the next block is cut on the registry as it is now
+        last = s.ledger.submitted[-1]["commands"][0]["ExerciseCommand"]["choiceArgument"]
+        self.assertEqual([g["address"] for g in last["extraGateways"]], [G2])
 
 
 if __name__ == "__main__":

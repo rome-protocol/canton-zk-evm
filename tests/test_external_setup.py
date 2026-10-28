@@ -1632,6 +1632,12 @@ class Registry(unittest.TestCase):
             self.assertIn("40 lowercase hex", self.refused("propose", bad, "vault"))
         self.assertEqual((self.sent(), self.reth.calls), ([], []))
 
+    def test_a_reth_url_that_is_remote_and_plain_http_is_refused_before_anything_is_read(self):
+        for step, kind in (("propose", "vault"), ("accept", "vault"), ("add", "gateway")):
+            with self.subTest(step=step):
+                self.assertIn("reth URL must be https", self.refused(step, V1, kind, "--reth-url", "http://203.0.113.5:8545"))
+        self.assertEqual((self.sent(), self.reth.calls), ([], []))
+
     def test_a_propose_needs_the_operators_token_and_an_accept_the_confirmers(self):
         os.environ.pop("CZE_TOKEN_FILE_OPERATOR")
         with self.assertRaises(SystemExit) as ctx:
