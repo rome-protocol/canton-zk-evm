@@ -7,7 +7,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 t=$here/build/test
 rm -rf "$t"; mkdir -p "$t"
 cp -r "$here/test/src" "$t/src"
-sed "s|__DARS__|$here/dars|; s|__DAR__|$here/dist/canton-zk-evm-stub.dar|" "$here/test/daml.yaml" > "$t/daml.yaml"
+sed "s|__DARS__|$here/dars|; s|__DAR__|$here/dist/canton-zk-evm-stub.dar|; s|__TWIN__|$(cd "$here/../apps/twin" && pwd)/dist/ostia-twin.dar|" "$here/test/daml.yaml" > "$t/daml.yaml"
 if [ -n "${SDK_VERSION:-}" ]; then   # the same toolchain as build.sh used for the stub form
   sed -i.bak "s|^sdk-version:.*|sdk-version: $SDK_VERSION|; s|--target=2.1|--target=${TARGET:-2.4}|" "$t/daml.yaml"
 fi

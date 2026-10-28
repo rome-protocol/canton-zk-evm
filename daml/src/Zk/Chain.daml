@@ -16,6 +16,8 @@ import Splice.Api.Token.MetadataV1
 import Splice.Api.Token.HoldingV1 (Holding, InstrumentId)
 import Splice.Api.Token.AllocationV1
 import Splice.Api.Token.TransferInstructionV1
+import qualified Twin.Amount as TA
+import qualified Twin.Twin as TW
 import Zk.Hex
 import Zk.Sidecar
 
@@ -76,6 +78,23 @@ data Leg
   | ClaimLeg with
       claimCid : ContractId FundedClaim
       tokenCid : ContractId GatewayToken
+  -- From package 0.5.0, at the end again. The Canton twin of an ERC-20 (the `ostia-twin` package): a lock is a payment of the ERC-20
+  -- into a registered vault, which mints the twin to `lockReceiver`; a release is a payment out of a vault, which burns the twin of a
+  -- `RedeemRequest`. Both are payments of a gateway (the first or a registered one), written as `payment` lines.
+  -- The lock's id is `lockId lockReceiver lockRef`, so the leg carries the id's parts and the line is made from them; the amount is the
+  -- ERC-20 amount in base units, as 64 hex digits (the twin's amount is that, exactly, at 10 decimals). `lockRules` names the twin.
+  | LockLeg with
+      lockRules : ContractId TW.TwinRules
+      lockReceiver : Party
+      lockRef : Text
+      lockVault : Text
+      lockAmount : Text
+  -- The release's id is `releaseId releaseVault ref` of the request, the id that the vault makes (gateway/Vault.sol); its token, payee and
+  -- amount are the request's.
+  | ReleaseLeg with
+      releaseRequest : ContractId RedeemRequest
+      releaseRules : ContractId TW.TwinRules
+      releaseVault : Text
   deriving (Eq, Show)
 
 noExtraArgs : ExtraArgs
@@ -338,6 +357,7 @@ template ZkChain
         -- of each attached leg from its own contracts, the sidecar hashes the lines as the gateway contract does and compares the
         -- result with the proven value. One call is made also for a block with no legs: it proves that the block needs none.
         legLines <- mapA (legLine this) legs
+        checkTwinIdsDistinct allLegs
         legsAnswer <- legsCall (T.intercalate "," [b.stateRoot, show b.number, gatewayAddress,
           T.intercalate ";" gatewayAccountNodes, T.intercalate ";" gatewayStorageNodes, T.intercalate "|" legLines])
         assertMsg ("the legs are not the ones the block recorded: " <> legsAnswer)
@@ -360,7 +380,7 @@ template ZkChain
         pure (next, record)
 
 -- What a registered contract is for. A `Gateway` is a contract whose legs `Advance` reads, as it reads the first gateway's; a `Vault` is only an
--- address that Daml trusts as a payee (a later version uses it).
+-- address that Daml trusts as the payee of a lock and the payer of a release (`LockLeg`, `ReleaseLeg`).
 data ContractKind = Gateway | Vault
   deriving (Eq, Show)
 
@@ -536,6 +556,12 @@ withdrawalsOf legs = fmap concat (mapA one legs)
     one (WithdrawalLeg _ tokenCid _ amount _ _) = do
       t <- fetch tokenCid
       pure [(partyToText t.instrumentId.admin <> "/" <> t.instrumentId.id, amount)]
+    -- A release counts against the quota like a withdrawal, under the twin's instrument.
+    one (ReleaseLeg requestCid rulesCid _) = do
+      q <- fetch requestCid
+      r <- fetch rulesCid
+      let i = TW.instrumentOf r.admin r.token
+      pure [(partyToText i.admin <> "/" <> i.id, q.amount)]
     one _ = pure []
 
 -- Refuse a block whose withdrawals would take a Canton instrument over the quota, and give the tallies that the chain keeps after it. Without a quota
@@ -789,6 +815,84 @@ legLine chain (ClaimLeg claimCid tokenCid) = do
   assertMsg "the funded claim is for another token than the leg's" (c.gatewayToken == tokenCid)
   pure (legField "deposit" c.claimId t.evmToken c.recipient (show c.amount) "")
 
+legLine chain (LockLeg rulesCid receiver ref vault amountHex) = do
+  r <- fetch rulesCid
+  checkTwin chain r
+  checkVault chain vault
+  assertMsg "the lock's reference is empty" (ref /= "")
+  a <- twinAmount r amountHex
+  assertMsg "the lock is of no amount" (a > 0.0)
+  pure (legField "payment" (lockId receiver ref) r.token vault amountHex "")
+legLine chain (ReleaseLeg requestCid rulesCid vault) = do
+  q <- fetch requestCid
+  r <- fetch rulesCid
+  checkChain "the redeem request" chain q.chainId q.operator q.confirmer
+  checkGateway "the redeem request" chain q.gateway
+  checkTwin chain r
+  assertMsg "the redeem request is for another token than the twin's" (q.token == r.token)
+  checkVault chain vault
+  units <- case TA.toBaseUnits r.decimals q.amount of
+    Some u -> pure u
+    None -> abort ("the release's amount " <> show q.amount <> " is not a whole number of base units of the ERC-20 (it has " <> show r.decimals <> " decimals)")
+  pure (legField "payment" (releaseId vault q.ref) q.token q.recipient (hex64 units) "")
+
+-- The twin the leg names is one of this chain's gateway, which is the twin's admin and the only party that can mint and burn it.
+checkTwin : ZkChain -> TW.TwinRules -> Update ()
+checkTwin chain r = assertMsg "the twin is another admin's than the chain's gateway" (r.admin == chain.gateway)
+
+-- The payee of a lock and the payer of a release is a vault of the registry.
+checkVault : ZkChain -> Text -> Update ()
+checkVault chain vault =
+  assertMsg ("the address " <> vault <> " is not a vault in the chain's registry")
+    (any (\c -> c.contractAddress == vault && c.contractKind == Vault) (fromOptional [] chain.contracts))
+
+-- The twin's amount of an ERC-20 amount (64 hex digits of base units). A twin has 10 decimals: an amount finer than that, or over what a twin
+-- holds, is refused and never rounded.
+twinAmount : TW.TwinRules -> Text -> Update Decimal
+twinAmount r amountHex = case TA.fromBaseUnits r.decimals amountHex of
+  Some a -> pure a
+  None -> abort ("the amount " <> amountHex <> " of an ERC-20 of " <> show r.decimals
+    <> " decimals is not a twin amount: a twin has 10 decimals, an amount finer than that is refused and never rounded")
+
+-- The id of the EVM payment that locks an ERC-20 in a vault: the SHA-256 of the tag "lock", the Canton receiver's party id and a reference,
+-- as `venueTradeId` is made. The tag is not a party id, a "venue-trade" tag or "vault-release", so no id of another kind equals it.
+lockId : Party -> Text -> Text
+lockId receiver ref = T.sha256 (T.intercalate "," ["lock", partyToText receiver, ref])
+
+-- The id of the EVM payment that `Vault.release(ref, ...)` makes: the SHA-256 of `vault-release,<vault address, 40 lowercase hex digits>,<ref>`.
+releaseId : Text -> Text -> Text
+releaseId vault ref = T.sha256 ("vault-release," <> vault <> "," <> ref)
+
+-- A whole number as 64 lowercase hex digits, the form of an ERC-20 amount in a payment line.
+hex64 : Numeric 0 -> Text
+hex64 n = T.implode (digits 64 n [])
+  where
+    digits : Int -> Numeric 0 -> [Text] -> [Text]
+    digits k x acc
+      | k == 0 = acc
+      | otherwise =
+          let sixteen = intToNumeric 16 : Numeric 0
+              q0 = x / sixteen          -- rounded, so the remainder is between -8 and 8
+              r0 = x - q0 * sixteen
+              (q, r) = if r0 < intToNumeric 0 then (q0 - intToNumeric 1, r0 + sixteen) else (q0, r0)
+          in digits (k - 1) q (hexDigitOf r :: acc)
+
+hexDigitOf : Numeric 0 -> Text
+hexDigitOf r = fromOptional "0" (lookup r (zip (map intToNumeric [0 .. 15]) (T.explode "0123456789abcdef")))
+
+-- The gateway uses each payment id once, so no honest block carries one id twice; a block that does is refused before it settles anything.
+twinIds : Leg -> Update [Text]
+twinIds (LockLeg _ receiver ref _ _) = pure [lockId receiver ref]
+twinIds (ReleaseLeg requestCid _ vault) = do
+  q <- fetch requestCid
+  pure [releaseId vault q.ref]
+twinIds _ = pure []
+
+checkTwinIdsDistinct : [Leg] -> Update ()
+checkTwinIdsDistinct legs = do
+  ids <- fmap concat (mapA twinIds legs)
+  assertMsg "a block carries the same twin payment id twice" (length (dedup ids) == length ids)
+
 -- Settle a leg that the sidecar has confirmed. Each choice adds the authority of its own contract's signatory to the
 -- authority of `Advance`: the operator, the confirmer and the gateway, who are the signatories of `ZkChain`.
 settle : Leg -> Update ()
@@ -800,6 +904,13 @@ settle (TradeLeg tradeCid) = do
   _ <- exercise tradeCid SettleTrade
   pure ()
 settle (ClaimLeg claimCid _) = exercise claimCid Redeem
+-- The twin is minted to the receiver, 1:1, against the payment the block recorded. `Advance` brings the gateway's authority, the twin's admin.
+settle (LockLeg rulesCid receiver ref _ amountHex) = do
+  r <- fetch rulesCid
+  a <- twinAmount r amountHex
+  _ <- exercise rulesCid TW.Mint with owner = receiver; amount = a; reference = lockId receiver ref
+  pure ()
+settle (ReleaseLeg requestCid rulesCid _) = exercise requestCid BurnForRelease with rules = rulesCid
 
 -- One per block: everything a third party needs to replay the chain and re-check each proof.
 template BlockRecord
@@ -1053,3 +1164,39 @@ template FundedClaim
     choice Redeem : ()
       controller operator, confirmer, gateway
       do pure ()
+
+-- A holder's request to redeem a twin: "burn these holdings for `amount` of `token`, and let the vault pay `amount` to `recipient`, an EVM
+-- address, under `ref`". The request is made before the vault pays: the vault's `release` makes the payment id from the vault's address and
+-- `ref` (`releaseId`), so `ref` must be unique per request, because the gateway uses each id once; make it from a fresh random value. The
+-- holder signs, so no one can redeem another party's twin. `BurnForRelease` runs only inside `Advance`, with the release leg that the block
+-- recorded; it burns `amount` out of the holdings and archives the request. The holder keeps the change.
+-- The holdings are not locked here: a holder who spends them first makes the burn, and the block that carries the payment, fail. The builder
+-- includes a release in a block only while the holdings are there (hardening, README.md).
+template RedeemRequest
+  with
+    holder : Party
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    builder : Party
+    chainId : Int
+    token : Text
+    holdings : [ContractId Holding]
+    amount : Decimal
+    recipient : Text
+    ref : Text
+  where
+    signatory holder
+    observer operator, confirmer, gateway, builder
+    ensure chainId > 0 && hexOfLength 40 token && hexOfLength 40 recipient && amount > 0.0 && ref /= "" && not (null holdings)
+
+    -- Its controllers sign `ZkChain`, so their authority is present together inside `Advance` and nowhere else.
+    choice BurnForRelease : ()
+      with rules : ContractId TW.TwinRules
+      controller operator, confirmer, gateway
+      do
+        r <- fetch rules
+        assertMsg "the twin is another admin's than the request's gateway" (r.admin == gateway)
+        assertMsg "the twin is of another token than the request's" (r.token == token)
+        _ <- exercise rules TW.Burn with owner = holder; holdingCids = holdings; amount = amount; reference = ref
+        pure ()
