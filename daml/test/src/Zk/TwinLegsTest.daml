@@ -5,6 +5,7 @@
 module Zk.TwinLegsTest where
 
 import DA.Assert ((===))
+import DA.Foldable (forA_)
 import DA.List (sort)
 import qualified DA.Text as T
 import Daml.Script
@@ -42,9 +43,16 @@ twinFixture : Script TF
 twinFixture = do
   t <- bareFixture
   c <- register t.fx t.fx.chain vaultEntry
-  pure t with tchain = c
+  c2 <- pinTwin t.fx c t.trules twinAddr 18
+  pure t with tchain = c2
 
--- The same, with the chain as the fixture made it: a registry of no entries (so no vault).
+-- The operator and the gateway propose the pin of the twin and the confirmer accepts it on `chain`.
+pinTwin : F -> ContractId ZkChain -> ContractId TW.TwinRules -> Text -> Int -> Script (ContractId ZkChain)
+pinTwin f chain rules token decimals = do
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeTwin with entry = PinnedTwin with twinToken = token; twinDecimals = decimals; twinRules = rules
+  submit f.confirmer $ exerciseCmd p AcceptTwin with chain
+
+-- The same, with the chain as the fixture made it: a registry of no entries (so no vault) and no twin pinned.
 bareFixture : Script TF
 bareFixture = do
   f <- fixture
@@ -164,7 +172,8 @@ testALockOnAChainWithNoRegistryIsRefused : Script ()
 testALockOnAChainWithNoRegistryIsRefused = do
   t <- bareFixture
   let f = t.fx
-  refused "is not a vault in the chain's registry" f $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
+  c <- pinTwin f t.tchain t.trules twinAddr 18
+  refused "is not a vault in the chain's registry" f $ advance c "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
 
 -- The leg's parts must give the id the block recorded (and the token, payee and amount): the line Daml makes from the leg is the one the
 -- sidecar compares with the block's legs.
@@ -225,8 +234,9 @@ testALockOfASixDecimalTokenMintsExactly = do
   t <- twinFixture
   let f = t.fx
   r6 <- twinRulesOf f.gateway twin6Addr "TKS" 6
+  c6 <- pinTwin f t.tchain r6 twin6Addr 6
   let l = LockLeg with lockRules = r6; lockReceiver = f.v; lockRef = "ref-6"; lockVault = vaultAddr; lockAmount = oneMillion
-  (_, _) <- submit (asBuilder f) $ advance t.tchain "01" [line "payment" (lockId f.v "ref-6") twin6Addr vaultAddr oneMillion ""] [l]
+  (_, _) <- submit (asBuilder f) $ advance c6 "01" [line "payment" (lockId f.v "ref-6") twin6Addr vaultAddr oneMillion ""] [l]
   twinHeld f.v >>= \xs -> xs === [1.0]
 
 -- A good release: the vault paid 4 of the twin's token to the address of the request, which burns 4 of the holder's 10 and archives the request.
@@ -291,7 +301,8 @@ testAReleaseNeedsARegisteredVaultAndTheRightTwin = do
   refused otherAdmin f $ advance t.tchain "01"
     [releaseLine "redeem-1" vaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseRules = other]
   r6 <- twinRulesOf f.gateway twin6Addr "TKS" 6
-  refused "another token than the twin's" f $ advance t.tchain "01"
+  c6 <- pinTwin f t.tchain r6 twin6Addr 6
+  refused "another token than the twin's" f $ advance c6 "01"
     [releaseLine "redeem-1" vaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseRules = r6]
   twinHeld f.v >>= \xs -> xs === [10.0]
 
@@ -310,12 +321,13 @@ testAReleaseFinerThanTheTokenIsRefused = do
   t <- twinFixture
   let f = t.fx
   r6 <- twinRulesOf f.gateway twin6Addr "TKS" 6
+  c6 <- pinTwin f t.tchain r6 twin6Addr 6
   req <- redeemOf t r6 twin6Addr 10.0 "redeem-6" 1.0
   let l = ReleaseLeg with releaseRequest = req; releaseRules = r6; releaseVault = vaultAddr
   fine <- redeemOf t r6 twin6Addr 10.0 "redeem-7" 1.0000001
-  refused "not a whole number of base units" f $ advance t.tchain "01" [line "payment" (releaseId vaultAddr "redeem-7") twin6Addr uAddr oneMillion ""]
+  refused "not a whole number of base units" f $ advance c6 "01" [line "payment" (releaseId vaultAddr "redeem-7") twin6Addr uAddr oneMillion ""]
     [ReleaseLeg with releaseRequest = fine; releaseRules = r6; releaseVault = vaultAddr]
-  (_, _) <- submit (asBuilder f) $ advance t.tchain "01" [line "payment" (releaseId vaultAddr "redeem-6") twin6Addr uAddr oneMillion ""] [l]
+  (_, _) <- submit (asBuilder f) $ advance c6 "01" [line "payment" (releaseId vaultAddr "redeem-6") twin6Addr uAddr oneMillion ""] [l]
   twinHeld f.v >>= \xs -> xs === [9.0, 10.0]
 
 -- Two requests with one ref make one payment id, which the gateway records once: a block that carries both is refused.
@@ -450,3 +462,138 @@ testARequestOfAnotherChainIsRefused = do
   ownConfirmer <- submit f.v $ createCmd base with confirmer = f.builder
   refused "the redeem request names another confirmer than the chain's" f $ advance t.tchain "01" recorded [releaseLegOf t ownConfirmer]
   twinHeld f.v >>= \xs -> xs === [10.0]
+
+-- The twins pinned in the chain record (daml 0.5.0): `ZkChain.twins`, `ProposeTwin` / `AcceptTwin`, and the rules and decimals a twin leg must use.
+
+pinnedOf : F -> ContractId ZkChain -> Script (Optional [PinnedTwin])
+pinnedOf f chain = do
+  Some c <- queryContractId f.operator chain
+  pure c.twins
+
+-- A chain with a vault but no twin pinned: the token of a lock or a release is not pinned, so the leg is refused.
+testAnUnpinnedTokenIsRefused : Script ()
+testAnUnpinnedTokenIsRefused = do
+  t <- bareFixture
+  let f = t.fx
+  pinnedOf f t.tchain >>= \p -> p === None
+  c <- register f t.tchain vaultEntry
+  refused "has no twin pinned in the chain's record" f $ advance c "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
+  req <- redeem t "redeem-1" 10.0 4.0
+  refused "has no twin pinned in the chain's record" f $ advance c "01" [releaseLine "redeem-1" vaultAddr uAddr fourTokens] [releaseLegOf t req]
+  twinHeld f.v >>= \xs -> xs === [10.0]
+  -- pinned, the same lock mints
+  c2 <- pinTwin f c t.trules twinAddr 18
+  pinnedOf f c2 >>= \p -> p === Some [PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules]
+  (_, _) <- submit (asBuilder f) $ advance c2 "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
+  twinHeld f.v >>= \xs -> xs === [10.0, 10.0]
+
+-- Another rules contract of the gateway, for the pinned token, is refused by a lock and by a release, with the same decimals or with others.
+testALegNamingOtherRulesOfAPinnedTokenIsRefused : Script ()
+testALegNamingOtherRulesOfAPinnedTokenIsRefused = do
+  t <- twinFixture
+  let f = t.fx
+  same <- twinRulesOf f.gateway twinAddr "TKA" 18
+  fewer <- twinRulesOf f.gateway twinAddr "TKA" 6
+  more <- twinRulesOf f.gateway twinAddr "TKA" 30
+  req <- redeem t "redeem-1" 10.0 4.0
+  forA_ [same, fewer, more] $ \other -> do
+    refused "other rules than the ones pinned" f $ advance t.tchain "01"
+      [lockLine f.v "ref-1" vaultAddr tenTokens] [(lockLegOf t f.v "ref-1" tenTokens) with lockRules = other]
+    refused "other rules than the ones pinned" f $ advance t.tchain "01"
+      [releaseLine "redeem-1" vaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseRules = other]
+  twinHeld f.v >>= \xs -> xs === [10.0]
+  -- the pinned rules still mint and burn
+  (_, _) <- submit (asBuilder f) $ advance t.tchain "01" [lockLine f.v "ref-1" vaultAddr tenTokens] [lockLegOf t f.v "ref-1" tenTokens]
+  twinHeld f.v >>= \xs -> xs === [10.0, 10.0]
+
+-- Pinning a twin whose rules are of another token or other decimals than the entry names is refused, so is a token twice.
+testAPinIsCheckedAgainstItsRules : Script ()
+testAPinIsCheckedAgainstItsRules = do
+  t <- bareFixture
+  let f = t.fx
+  let pin e = do
+        p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = e
+        trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = f.chain
+  let refusedPin why e = pin e >>= \r -> case r of
+        Left err -> assertMsg ("refused, but not for \"" <> why <> "\": " <> show err) (why `T.isInfixOf` show err)
+        Right _ -> abort ("the chain pinned a twin it should have refused (" <> why <> ")")
+  let good = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
+  refusedPin "other decimals than the entry's" (good with twinDecimals = 6)
+  refusedPin "another token than the entry's" (good with twinToken = twin6Addr)
+  forA_ [good with twinToken = "7A", good with twinDecimals = 37, good with twinDecimals = -1] $ \e ->
+    submitMustFail (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = e
+  c <- pinTwin f f.chain t.trules twinAddr 18
+  -- a second rules of the same token, even the same decimals, is not a second pin
+  second <- twinRulesOf f.gateway twinAddr "TKA" 18
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = good with twinRules = second
+  r <- trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = c
+  case r of
+    Left e -> assertMsg ("refused, but not as a second pin: " <> show e) ("is pinned already" `T.isInfixOf` show e)
+    Right _ -> abort "a token was pinned twice"
+  -- rules of another admin cannot be fetched by the chain
+  foreign <- twinRulesOf f.registry twin6Addr "TKS" 6
+  q <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = PinnedTwin with twinToken = twin6Addr; twinDecimals = 6; twinRules = foreign
+  submitMustFail f.confirmer $ exerciseCmd q AcceptTwin with chain = c
+  pinnedOf f c >>= \x -> x === Some [good]
+
+-- A pin waits out the change delay and is made by the right parties; it is taken back by the operator or turned down by the confirmer.
+testAPinWaitsOutTheDelayAndTheRightParties : Script ()
+testAPinWaitsOutTheDelayAndTheRightParties = do
+  t <- bareFixture
+  let f = t.fx
+  let entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
+  chain <- setDelay f f.chain (Some (seconds 100))
+  submitMustFail f.operator $ exerciseCmd chain ProposeTwin with entry
+  submitMustFail f.confirmer $ exerciseCmd chain ProposeTwin with entry
+  submitMustFail f.gateway $ exerciseCmd chain ProposeTwin with entry
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeTwin with entry
+  [_] <- query @TwinProposal f.reader
+  submitMustFail f.operator $ exerciseCmd p AcceptTwin with chain
+  mustWait f.confirmer $ exerciseCmd p AcceptTwin with chain
+  passTime (seconds 99)
+  mustWait f.confirmer $ exerciseCmd p AcceptTwin with chain
+  passTime (seconds 1)
+  next <- submit f.confirmer $ exerciseCmd p AcceptTwin with chain
+  pinnedOf f next >>= \x -> x === Some [entry]
+  -- withdrawn or rejected, a proposal cannot be accepted
+  let propose = submit (actAs [f.operator, f.gateway]) $ exerciseCmd next ProposeTwin with entry = entry with twinToken = twin6Addr
+  p1 <- propose
+  forA_ [f.builder, f.reader, f.confirmer] $ \who -> submitMustFail who $ exerciseCmd p1 WithdrawTwin
+  forA_ [f.builder, f.reader] $ \who -> submitMustFail who $ exerciseCmd p1 RejectTwin
+  submit f.operator $ exerciseCmd p1 WithdrawTwin
+  submitMustFail f.confirmer $ exerciseCmd p1 AcceptTwin with chain = next
+  p2 <- propose
+  submitMustFail f.operator $ exerciseCmd p2 RejectTwin
+  submit f.confirmer $ exerciseCmd p2 RejectTwin
+  submitMustFail f.confirmer $ exerciseCmd p2 AcceptTwin with chain = next
+  pinnedOf f next >>= \x -> x === Some [entry]
+
+-- A proposal made for one chain is not accepted on another.
+testAPinProposalIsOfItsChain : Script ()
+testAPinProposalIsOfItsChain = do
+  t <- bareFixture
+  let f = t.fx
+  other <- fixture
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = t.trules
+  submitMustFail f.confirmer $ exerciseCmd p AcceptTwin with chain = other.chain
+
+-- The chain pins 16 twins and refuses a 17th.
+testTheChainPinsSixteenTwins : Script ()
+testTheChainPinsSixteenTwins = do
+  t <- bareFixture
+  let f = t.fx
+  let token d = mconcat (replicate 20 ("e" <> d))
+  let pinAll chain [] = pure chain
+      pinAll chain (d :: ds) = do
+        r <- twinRulesOf f.gateway (token d) ("T" <> d) 6
+        next <- pinTwin f chain r (token d) 6
+        pinAll next ds
+  c16 <- pinAll f.chain (T.explode "0123456789abcdef")
+  Some ps <- pinnedOf f c16
+  length ps === 16
+  r17 <- twinRulesOf f.gateway twinAddr "TKA" 18
+  p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c16 ProposeTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = r17
+  r <- trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = c16
+  case r of
+    Left e -> assertMsg ("refused, but not as the 17th: " <> show e) ("at most 16" `T.isInfixOf` show e)
+    Right _ -> abort "a 17th twin was pinned"

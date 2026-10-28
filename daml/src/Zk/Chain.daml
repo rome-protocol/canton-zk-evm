@@ -130,7 +130,7 @@ template ChainProposal
         create ZkChain with
           headNumber = 0; headHash = genesisHash; headStateRoot = genesisStateRoot; changeDelay = None
           pauseMax = None; pausedUntil = None; pauseCooldownUntil = None; pauseStartedAt = None; withdrawalQuota = None; quotaWindow = None; withdrawn = None
-          contracts = None; ..
+          contracts = None; twins = None; ..
 
 -- The chain's one state contract. Every block consumes it, so Canton alone decides which block comes next.
 -- The gateway is the party that holds the Canton tokens locked for the EVM tokens that stand for them.
@@ -174,6 +174,9 @@ template ZkChain
     -- The registry of EVM contracts the chain trusts besides the first gateway (see `RegisteredContract`). Last in the record and optional, so a
     -- chain made under 0.4.0 or earlier still upgrades; `None` is an empty registry, which behaves as 0.4.0 did.
     contracts : Optional [RegisteredContract]
+    -- The Canton twins the chain trusts, each pinned with its rules and decimals (see `PinnedTwin`). Also last and optional, for the same reason;
+    -- `None` is no twin, so no twin leg is accepted.
+    twins : Optional [PinnedTwin]
   where
     signatory operator, confirmer, gateway
     observer builder
@@ -215,6 +218,22 @@ template ZkChain
         assertMsg "the contract is registered already" (entry.contractAddress `notElem` map (.contractAddress) known)
         assertMsg ("the registry holds at most " <> show maxContracts <> " contracts") (length known < maxContracts)
         create this with contracts = Some (known ++ [entry])
+
+    -- One twin is pinned by the operator, the confirmer and the gateway together; see `TwinProposal`. The rules must be the gateway's own, of
+    -- the token and decimals the entry names; a token is pinned once, and at most `maxTwins` are kept. There is no removal in this version.
+    choice AddTwin : ContractId ZkChain
+      with entry : PinnedTwin
+      controller operator, confirmer, gateway
+      do
+        assertMsg "the twin's token must be 40 lowercase hex digits" (pinnedOk entry)
+        r <- fetch entry.twinRules
+        checkTwin this r
+        assertMsg "the rules are of another token than the entry's" (r.token == entry.twinToken)
+        assertMsg "the rules have other decimals than the entry's" (r.decimals == entry.twinDecimals)
+        let known = fromOptional [] twins
+        assertMsg "the token is pinned already" (entry.twinToken `notElem` map (.twinToken) known)
+        assertMsg ("the chain pins at most " <> show maxTwins <> " twins") (length known < maxTwins)
+        create this with twins = Some (known ++ [entry])
 
     -- The wait that gas-cap and program changes sit out is replaced like the program is, and by a proposal that itself waited
     -- out the current wait; see `ChangeDelayProposal`.
@@ -303,6 +322,13 @@ template ZkChain
         now <- getTime
         create ContractProposal with operator; confirmer; gateway; reader; chainId; entry; proposedAt = now
 
+    nonconsuming choice ProposeTwin : ContractId TwinProposal
+      with entry : PinnedTwin
+      controller operator, gateway
+      do
+        now <- getTime
+        create TwinProposal with operator; confirmer; gateway; reader; chainId; entry; proposedAt = now
+
     nonconsuming choice ProposeChangeDelay : ContractId ChangeDelayProposal
       with newDelay : Optional RelTime
       controller operator, gateway
@@ -379,6 +405,23 @@ template ZkChain
           number = b.number; blockHash = b.blockHash; parentHash = b.parentHash; ..
         next <- create this with headNumber = b.number; headHash = b.blockHash; headStateRoot = b.stateRoot; withdrawn = tallies
         pure (next, record)
+
+-- One twin pinned in the chain record (`ZkChain.twins`): the ERC-20 (40 lowercase hex digits), its decimals and the `TwinRules` contract that
+-- converts it. A lock or a release of that token must name exactly these rules, and the decimals are the entry's. The rules' contract id
+-- stays the same for as long as the gateway keeps the contract (`Mint` and `Burn` do not consume it); a correction is a new `TwinRules` and a
+-- new reviewed pin, and a token is pinned once, so a token whose rules were archived is out of use until the chain has a way to remove a pin.
+data PinnedTwin = PinnedTwin with
+    twinToken : Text
+    twinDecimals : Int
+    twinRules : ContractId TW.TwinRules
+  deriving (Eq, Show)
+
+pinnedOk : PinnedTwin -> Bool
+pinnedOk e = hexOfLength 40 e.twinToken && e.twinDecimals >= 0 && e.twinDecimals <= 36
+
+-- The most twins a chain may pin, so `Advance`'s work stays bounded.
+maxTwins : Int
+maxTwins = 16
 
 -- What a registered contract is for. A `Gateway` is a contract whose legs `Advance` reads, as it reads the first gateway's; a `Vault` is only an
 -- address that Daml trusts as the payee of a lock and the payer of a release (`LockLeg`, `ReleaseLeg`).
@@ -698,6 +741,42 @@ template ContractProposal
         waitedOut "the contract" proposedAt c.changeDelay
         exercise chain AddContract with entry
 
+-- The operator proposes to pin a twin, and the gateway consents to it; the confirmer accepts it on the chain's current contract once the chain's
+-- change delay has passed, like `ContractProposal`. The confirmer is expected to accept only after it has checked the rules' token and decimals
+-- against the ERC-20 itself.
+template TwinProposal
+  with
+    operator : Party
+    confirmer : Party
+    gateway : Party
+    reader : Party
+    chainId : Int
+    entry : PinnedTwin
+    proposedAt : Time
+  where
+    -- Made by `ZkChain.ProposeTwin` only (the confirmer signs as well), which stamps it with the ledger time.
+    signatory operator, gateway, confirmer
+    ensure chainId > 0 && pinnedOk entry
+    observer reader
+
+    -- Either one alone takes it away, as for `ContractProposal`.
+    choice WithdrawTwin : ()
+      controller operator
+      do pure ()
+
+    choice RejectTwin : ()
+      controller confirmer
+      do pure ()
+
+    choice AcceptTwin : ContractId ZkChain
+      with chain : ContractId ZkChain
+      controller confirmer
+      do
+        c <- fetch chain
+        assertMsg "the proposal is for another chain" (c.chainId == chainId && c.operator == operator && c.confirmer == confirmer && c.gateway == gateway)
+        waitedOut "the twin" proposedAt c.changeDelay
+        exercise chain AddTwin with entry
+
 -- The operator proposes a new change delay, and the gateway consents to it; the confirmer accepts it on the chain's current contract.
 -- The proposal waits out the delay that is in force when it is accepted, like any other change, so a delay cannot be cut short
 -- by one step. `None` takes the wait away, and any value is at most `maxChangeDelay`.
@@ -819,6 +898,7 @@ legLine chain (ClaimLeg claimCid tokenCid) = do
 legLine chain (LockLeg rulesCid receiver ref vault amountHex) = do
   r <- fetch rulesCid
   checkTwin chain r
+  checkPinned chain rulesCid r
   checkVault chain vault
   assertMsg "the lock's reference is empty" (ref /= "")
   a <- twinAmount r amountHex
@@ -830,6 +910,7 @@ legLine chain (ReleaseLeg requestCid rulesCid vault) = do
   checkChain "the redeem request" chain q.chainId q.operator q.confirmer
   checkGateway "the redeem request" chain q.gateway
   checkTwin chain r
+  checkPinned chain rulesCid r
   assertMsg "the redeem request is for another token than the twin's" (q.token == r.token)
   checkVault chain vault
   units <- case TA.toBaseUnits r.decimals q.amount of
@@ -840,6 +921,14 @@ legLine chain (ReleaseLeg requestCid rulesCid vault) = do
 -- The twin the leg names is one of this chain's gateway, which is the twin's admin and the only party that can mint and burn it.
 checkTwin : ZkChain -> TW.TwinRules -> Update ()
 checkTwin chain r = assertMsg "the twin is another admin's than the chain's gateway" (r.admin == chain.gateway)
+
+-- The twin the leg names is the one pinned for its token: exactly the pinned rules, with the pinned decimals. A token with no pin is refused.
+checkPinned : ZkChain -> ContractId TW.TwinRules -> TW.TwinRules -> Update ()
+checkPinned chain rulesCid r = case filter (\p -> p.twinToken == r.token) (fromOptional [] chain.twins) of
+  [] -> abort ("the token " <> r.token <> " has no twin pinned in the chain's record")
+  (p :: _) -> do
+    assertMsg ("the leg names other rules than the ones pinned for the token " <> r.token) (p.twinRules == rulesCid)
+    assertMsg ("the rules' decimals are not the pinned " <> show p.twinDecimals) (p.twinDecimals == r.decimals)
 
 -- The payee of a lock and the payer of a release is a vault of the registry.
 checkVault : ZkChain -> Text -> Update ()
