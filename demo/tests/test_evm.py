@@ -64,6 +64,18 @@ class FakeReth(http.server.BaseHTTPRequestHandler):
 
 
 class EvmTests(unittest.TestCase):
+    def test_the_gateway_is_the_pinned_one_unless_a_second_one_is_named(self):
+        os.environ.pop("CZE_DEMO_GATEWAY_ADDRESS", None)
+        pinned = evm.gateway_address()
+        self.addCleanup(os.environ.pop, "CZE_DEMO_GATEWAY_ADDRESS", None)
+        os.environ["CZE_DEMO_GATEWAY_ADDRESS"] = "0x" + "b8" * 20
+        self.assertEqual(evm.gateway_address(), "0x" + "b8" * 20)
+        self.assertNotEqual(evm.gateway_address(), pinned)
+        for bad in ("b8" * 20, "0x" + "B8" * 20, "0x" + "b8" * 19):
+            os.environ["CZE_DEMO_GATEWAY_ADDRESS"] = bad
+            with self.assertRaises(SystemExit):
+                evm.gateway_address()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -76,6 +76,22 @@ jobs:
           java-version: "21"
       - run: tests/demo_otc.sh
 
+  # A second gateway in the chain's registry (Daml 0.5.0), on the real network: reth with the reviewed gateway code at a second address, the Gateway entry
+  # proposed by the operator and accepted by the confirmer (network/external/setup.py --contract-step), and blocks with and without a leg of that gateway
+  # that commit, with the real account proofs of its `legs[number]` slot (tests/demo_registered_gateway.sh).
+  registered-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/pinned-images
+        with:
+          images: RETH_IMAGE BUSYBOX_IMAGE
+      - uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: tests/demo_registered_gateway.sh
+
   # A chain that runs is upgraded to the next version of the Daml package, its gas cap is raised, and the block gas limit goes over the old cap,
   # on the real network: the DAR of the tag v0.2.0 and the current source, the package put on each participant in the steps of
   # network/external/setup.py --package-step (check, upload not vetted, vet with a dry run first), the builder pinned to the new package, the gas cap raised in

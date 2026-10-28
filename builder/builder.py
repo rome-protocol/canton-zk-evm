@@ -672,6 +672,7 @@ class LegEvent:
     amount: int    # in base units
     party: str     # a withdrawal's receiver, as the text the holder sent; empty otherwise
     tx: str        # the hash of the transaction that made the event
+    gateway: str = ""   # the registered gateway (40 lowercase hex digits) that recorded it; empty for the chain's first gateway
 
 
 def decode_leg(log: dict) -> LegEvent:
@@ -692,11 +693,32 @@ def decode_leg(log: dict) -> LegEvent:
         raise BuilderError(f"cannot read a Leg event of the gateway: {e}") from e
 
 
+def registered_gateways(chain: dict) -> list:
+    """The addresses (40 lowercase hex digits) of the Gateway entries of the chain's registry (`ZkChain.contracts`), in the registry's order. A
+    chain with no registry, or only vaults, has none."""
+    found = []
+    for entry in chain.get("contracts") or []:
+        try:
+            kind, address = entry["contractKind"], entry["contractAddress"]
+            kind = kind.get("tag") if isinstance(kind, dict) else kind
+            if kind not in ("Gateway", "Vault") or not re.fullmatch(r"[0-9a-f]{40}", address):
+                raise ValueError(kind)
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            raise BuilderError(f"the chain record's registry holds an entry the builder cannot read: {entry!r}") from e
+        if kind == "Gateway":
+            found.append(address)
+    return found
+
+
 def read_legs(reth: Reth, chain: dict, block_hash: str) -> list:
     """The block's Leg events, in log order, which is the order of the gateway's running hash. This is reth's own view and nothing
-    depends on it being honest: the hash in the proven state decides, and Daml compares the legs sent with it."""
-    logs = reth.call("eth_getLogs", [{"blockHash": block_hash, "address": "0x" + chain["gatewayAddress"], "topics": [LEG_TOPIC]}])
-    return [decode_leg(log) for log in logs]
+    depends on it being honest: the hash in the proven state decides, and Daml compares the legs sent with it. The first gateway's events come
+    first, then each registered gateway's in the registry's order (each marked with its `gateway`), the order Advance settles them in."""
+    events = []
+    for address in ["", *registered_gateways(chain)]:
+        logs = reth.call("eth_getLogs", [{"blockHash": block_hash, "address": "0x" + (address or chain["gatewayAddress"]), "topics": [LEG_TOPIC]}])
+        events += [dataclasses.replace(decode_leg(log), gateway=address) for log in logs]
+    return events
 
 
 def claim_used(reth: Reth, chain: dict, block_hash: str, claim_id: str) -> bool:
@@ -705,11 +727,26 @@ def claim_used(reth: Reth, chain: dict, block_hash: str, claim_id: str) -> bool:
     return int(reth.call("eth_getStorageAt", ["0x" + chain["gatewayAddress"], slot, block_hash]), 16) != 0
 
 
-def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
-    """(account nodes, storage nodes) of the gateway's account and its `legs[number]` slot at the block, in hex without 0x."""
+def proofs_of(reth: Reth, address: str, number: str) -> tuple:
+    """(account nodes, storage nodes) of a gateway's account and its `legs[number]` slot at the block, in hex without 0x."""
     slot = "0x" + keccak256(int(number, 16).to_bytes(32, "big") + bytes(32)).hex()   # Solidity's key for a mapping at slot 0
-    proof = reth.call("eth_getProof", ["0x" + chain["gatewayAddress"], [slot], number])
+    proof = reth.call("eth_getProof", ["0x" + address, [slot], number])
     return [x[2:] for x in proof["accountProof"]], [x[2:] for x in proof["storageProof"][0]["proof"]]
+
+
+def gateway_proofs(reth: Reth, chain: dict, number: str) -> tuple:
+    """(account nodes, storage nodes) of the chain's first gateway at the block."""
+    return proofs_of(reth, chain["gatewayAddress"], number)
+
+
+def extra_gateway_blocks(reth: Reth, chain: dict, number: str, legs: dict) -> list:
+    """Advance's `extraGateways`: one entry for each registered gateway, each with its proofs at the block and the legs it recorded in it (`legs`
+    maps an address to them). A chain with no registered gateway gets an empty list, which `prepare_submit` leaves out of the argument (a package before 0.5.0 has no such field)."""
+    blocks = []
+    for address in registered_gateways(chain):
+        account_nodes, storage_nodes = proofs_of(reth, address, number)
+        blocks.append({"address": address, "accountNodes": account_nodes, "storageNodes": storage_nodes, "legs": legs.get(address, [])})
+    return blocks
 
 
 class NoCantonSide(Exception):
@@ -735,19 +772,38 @@ LEDGER_MARGIN = timedelta(seconds=5)   # the builder's clock is not Canton's: a 
 PAUSE_REFUSAL = re.compile(r"the legs are paused until [^\\\"]{0,64}: a block that carries a leg is refused")
 QUOTA_REFUSAL = re.compile(r"the block's withdrawals of the instrument .{1,300}? are over the withdrawal quota: [0-9.]+ more would make [0-9.]+ "
                            r"in the last [0-9]+ s, and the quota is [0-9.]+")
+# Daml's refusal of a block that lacks the entry of a registered gateway (checkRegisteredGateways, Chain.daml). The builder reads the registry with the chain
+# contract; a Gateway entry accepted between that read and the submit is a race, never a transaction's fault. The block carries an entry for every gateway the
+# builder read: a refusal that names one of those is not that race (Daml cannot say "no entry" for it), so its words are no proof and it is handled as any refusal.
+GATEWAY_REFUSAL = re.compile(r"the block carries no entry for the registered gateway ([0-9a-f]{40})")
 
 
 def no_fault_refusal(result: dict) -> str | None:
-    """Why Canton's refusal of a block says nothing against its transactions, or None. Three refusals: the legs are paused, a withdrawal quota is over
-    (only for a block that carried a leg, in the words of the chain contract), or the chain contract the Advance names is gone (a change of
-    the chain contract, such as a pause, came between the builder's read and the submit)."""
+    """Why Canton's refusal of a block says nothing against its transactions, or None. Four refusals: the legs are paused, a withdrawal quota is over
+    (only for a block that carried a leg, in the words of the chain contract), the chain contract the Advance names is gone (a change of
+    the chain contract, such as a pause, came between the builder's read and the submit), or the block lacks the entry of a gateway registered since the read."""
     text = result.get("reason") or ""
     if result.get("legTransactions") and (PAUSE_REFUSAL.search(text) or QUOTA_REFUSAL.search(text)):
         return "limit"
     cid = result.get("chainContract")
     if cid and "CONTRACT_NOT_FOUND" in text and cid in text:
         return "changed"
+    named = GATEWAY_REFUSAL.search(text)
+    if named:   # a race only when the block did not carry that entry AND the registry as Canton holds it now has it: any other address is a forged sentence
+        norm = lambda key: {str(a).lower().removeprefix("0x") for a in result.get(key, [])}
+        if named.group(1) not in norm("carriedGateways") and named.group(1) in norm("registeredGateways"):
+            return "changed"
     return None
+
+
+def gateway_evidence(cfg: "Config", sub: "Submission") -> dict:
+    """What tells the registry race from a forged refusal sentence: the gateways the block carried, and the Gateway entries of the registry as Canton holds
+    it now (one chain read). The registry has no removal, so a real race names an entry that is there now. A read that fails leaves the list empty: an ordinary refusal."""
+    try:
+        registered = registered_gateways(Ledger(cfg).head())
+    except Exception:
+        registered = []
+    return {"carriedGateways": [sub.built.chain["gatewayAddress"], *(g["address"] for g in sub.built.extra_gateways)], "registeredGateways": registered}
 
 
 class Said(str):
@@ -1342,6 +1398,7 @@ class Built:
     storage_nodes: list
     checked_input: bool = False   # the pre-check already made input.bin of this very block in `attempt_dir`
     disclosed: list = field(default_factory=list)   # the allocations of the venue trades in `legs`, passed with Advance next to --disclosed
+    extra_gateways: list = field(default_factory=list)   # Advance's extraGateways: an entry (address, accountNodes, storageNodes, legs) for each registered gateway
 
 
 @dataclass
@@ -1544,10 +1601,14 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         (attempt_dir / "witness.json").write_text(json.dumps(reth.call("debug_executionWitness", [payload["blockNumber"]])))
     # The gateway's proofs are read while this block is reth's tip, before the prover runs.
     account_nodes, storage_nodes = gateway_proofs(reth, chain, payload["blockNumber"])
-    return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=legs, leg_txs=leg_txs,
+    by_gateway: dict = {}   # the legs, by the gateway that recorded them: the events and the legs are in the same order
+    for event, leg in zip(events, legs):
+        by_gateway.setdefault(event.gateway, []).append(leg)
+    extra = extra_gateway_blocks(reth, chain, payload["blockNumber"], by_gateway)
+    return Built(n=n, chain=chain, head=head, payload=payload, block_hash=block_hash, header=header, txs=txs, legs=by_gateway.get("", []), leg_txs=leg_txs,
                  left_out=left_out, chosen=chosen, pairs=pairs, lost=lost, work=work, attempt_dir=attempt_dir,
                  account_nodes=account_nodes, storage_nodes=storage_nodes, checked_input=checked_input,
-                 disclosed=venue_disclosed(legs, canton))
+                 disclosed=venue_disclosed(legs, canton), extra_gateways=extra)
 
 
 @dataclass
@@ -1663,6 +1724,8 @@ def prepare_submit(cfg: Config, reth: Reth, built: Built, proven: Proven, attemp
     n, chain, block_hash, header, txs, legs = built.n, built.chain, built.block_hash, built.header, built.txs, built.legs
     argument = {"headerHex": header.hex(), "txsHex": "" if txs == EMPTY_LIST else txs.hex(), "proofHex": proven.proof,
                 "gatewayAccountNodes": built.account_nodes, "gatewayStorageNodes": built.storage_nodes, "legs": legs}
+    if built.extra_gateways:   # left out when none is registered, so that the argument is still the one the packages before 0.5.0 take
+        argument["extraGateways"] = built.extra_gateways
     argument_text = json.dumps(argument)
     (built.work / "advance.json").write_text(argument_text)   # kept: the argument of the Advance, as it was sent
     command_id = f"ostia-{int(chain['chainId'])}-{n}-{block_hash[2:18]}-{attempt.seq}"   # the same block hash and attempt give the same id
@@ -1718,7 +1781,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
     `after_commit(reth)` runs once a commit is booked and its record is gone, before the paid traffic is read (a read of about a second): the
     next block's Advance can go first. The `answered` line is written before that, so the attempt is closed before the next block's record
     replaces its record; the paid traffic of such a block follows on a `paid_traffic` line of its attempt."""
-    attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs
+    attempt, n, block_hash, head, chosen, legs = sub.attempt, sub.n, sub.built.block_hash, sub.built.head, sub.built.chosen, sub.built.legs + [x for g in sub.built.extra_gateways for x in g["legs"]]
     report, command_id, answer, reason, rejected, not_taken = sub.report, sub.command_id, reply.answer, reply.reason, reply.rejected, reply.not_taken
     report["advanceSeconds"] = reply.advance_seconds
     traffic_before, traffic_after = sub.traffic_before, reply.traffic_after
@@ -1759,6 +1822,7 @@ def settle_reply(cfg: Config, reth: Reth, sub: Submission, reply: Reply, unknown
             report["rewindError"] = rewind_error
         answered("refused" if rejected else "not_taken", reason=reason[:600])
         return {"committed": False, "rejected": rejected, **report, "reason": reason, "keptTransactions": [t["hash"] for t in chosen],
+                **(gateway_evidence(cfg, sub) if GATEWAY_REFUSAL.search(reason) else {}),   # the entries the block carried and the registry as Canton holds it now, to tell a race from a forged sentence
                 **({"chainContract": sub.built.chain["contractId"]} if "CONTRACT_NOT_FOUND" in reason else {})}   # which contract is gone: the Advance's own chain contract, or another
     # Committed. After a lost reply the update id and offset are not known: null.
     report.update(updateId=answer.get("updateId"), completionOffset=answer.get("completionOffset"))
@@ -2162,6 +2226,7 @@ class Producer:
         self.excluded: dict = {}          # transaction hash -> the time its cool-down ends
         self.previous_kept: set = set()   # the transactions of the last block Canton refused, when it was the one before
         self.limit_kept: set = set()      # the transactions of the last block Canton refused for the legs pause or a quota ...
+        self.gateways_named: set = set()  # the gateway addresses that registry-race refusals named since the last commit: a real race cannot name one twice
         self.limit_legs: set = set()      # ... and its leg transactions: a second such refusal that carries one of them again is theirs
         self.suspects: list = []          # transactions that were in two refused blocks together: tried one block each before any is left out
         self.probe = None                 # the suspect the next block may hold
@@ -2535,6 +2600,7 @@ class Producer:
             self.committed += 1
             self.refusals_in_row = 0
             self.previous_kept = set()
+            self.gateways_named = set()
             self.limit_kept = set()
             self.limit_legs = set()
             self.proof_kept = set()
@@ -2568,6 +2634,11 @@ class Producer:
         cool-down. Several are tried one block each (the others kept out of it) before any is held back, so an honest transaction that
         was only next to a bad one is not held back with it."""
         why = no_fault_refusal(result)
+        named = GATEWAY_REFUSAL.search(result.get("reason") or "")
+        if why == "changed" and named:
+            # The next block is cut on the registry that has this entry, so a refusal that names the same address again is no race: normal handling.
+            why = None if named.group(1) in self.gateways_named else why
+            self.gateways_named.add(named.group(1))
         kept = {h.lower() for h in result.get("keptTransactions", [])}
         legs = {h.lower() for h in result.get("legTransactions", [])}
         if why == "limit" and legs & self.limit_legs:
