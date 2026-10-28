@@ -62,6 +62,9 @@ data Leg
   = DepositLeg with
       request : ContractId DepositRequest
       token : ContractId GatewayToken
+      -- From package 0.5.0, the last field of each leg that exercises a token-standard choice (DepositLeg, WithdrawalLeg, PaymentLeg,
+      -- TradeLeg): the registry's choice context for that choice (`ExtraArgs.context`), which Canton Coin needs. None passes an empty one.
+      choiceContext : Optional ChoiceContext
   | WithdrawalLeg with
       id : Text
       token : ContractId GatewayToken
@@ -69,12 +72,15 @@ data Leg
       amount : Decimal
       acceptance : ContractId WithdrawalAcceptance
       inputs : [ContractId Holding]
+      choiceContext : Optional ChoiceContext
   | PaymentLeg with
       terms : ContractId DvpTerms
+      choiceContext : Optional ChoiceContext
   -- From package 0.4.0, at the end so that 0.3.0 contracts upgrade. A payment that settles a venue's trade, and the claim that
   -- the trade's settlement made, which the EVM side redeems as a deposit would be.
   | TradeLeg with
       tradeCid : ContractId VenueTrade
+      choiceContext : Optional ChoiceContext
   | ClaimLeg with
       claimCid : ContractId FundedClaim
       tokenCid : ContractId GatewayToken
@@ -99,6 +105,10 @@ data Leg
 
 noExtraArgs : ExtraArgs
 noExtraArgs = ExtraArgs with context = emptyChoiceContext; meta = emptyMetadata
+
+-- The extra arguments of a token-standard choice: the choice context the leg carries, or an empty one.
+extraArgsOf : Optional ChoiceContext -> ExtraArgs
+extraArgsOf ctx = ExtraArgs with context = fromOptional emptyChoiceContext ctx; meta = emptyMetadata
 
 template ChainProposal
   with
@@ -598,7 +608,7 @@ addTally t (x :: xs)
 withdrawalsOf : [Leg] -> Update [(Text, Decimal)]
 withdrawalsOf legs = fmap concat (mapA one legs)
   where
-    one (WithdrawalLeg _ tokenCid _ amount _ _) = do
+    one (WithdrawalLeg _ tokenCid _ amount _ _ _) = do
       t <- fetch tokenCid
       pure [(partyToText t.instrumentId.admin <> "/" <> t.instrumentId.id, amount)]
     -- A release counts against the quota like a withdrawal, under the twin's instrument.
@@ -856,7 +866,7 @@ legField kind id token account amount party = T.intercalate "/" [kind, id, token
 
 -- What a leg makes the sidecar check. This also refuses, before anything is settled, a leg whose contracts are not this chain's.
 legLine : ZkChain -> Leg -> Update Text
-legLine chain (DepositLeg requestCid tokenCid) = do
+legLine chain (DepositLeg requestCid tokenCid _) = do
   r <- fetch requestCid
   t <- fetch tokenCid
   assertMsg "the deposit id is not derived from the depositor and the label" (isDerived r.depositor r.depositId r.label)
@@ -868,7 +878,7 @@ legLine chain (DepositLeg requestCid tokenCid) = do
   assertMsg "the deposit is of another instrument than the token's" (leg.instrumentId == t.instrumentId)
   assertMsg "the deposit is of no amount" (leg.amount > 0.0)
   pure (legField "deposit" r.depositId t.evmToken r.recipient (show leg.amount) "")
-legLine chain (WithdrawalLeg id tokenCid from amount acceptanceCid _) = do
+legLine chain (WithdrawalLeg id tokenCid from amount acceptanceCid _ _) = do
   t <- fetch tokenCid
   w <- fetch acceptanceCid
   checkChain "the acceptance" chain w.chainId w.operator w.confirmer
@@ -877,11 +887,11 @@ legLine chain (WithdrawalLeg id tokenCid from amount acceptanceCid _) = do
   assertMsg "the withdrawal's id must be 64 lowercase hex digits and its burner 40" (hexOfLength 64 id && hexOfLength 40 from)
   assertMsg "the withdrawal is of no amount" (amount > 0.0)
   pure (legField "withdrawal" id t.evmToken from (show amount) (toHex (partyToText w.party)))
-legLine chain (PaymentLeg termsCid) = do
+legLine chain (PaymentLeg termsCid _) = do
   t <- fetch termsCid
   checkChain "the DvpTerms contract" chain t.chainId t.operator t.confirmer
   pure (legField "payment" t.dvpId t.token t.payee t.amount "")
-legLine chain (TradeLeg tradeCid) = do
+legLine chain (TradeLeg tradeCid _) = do
   t <- fetch tradeCid
   checkChain "the venue trade" chain t.chainId t.operator t.confirmer
   checkGateway "the venue trade" chain t.gateway
@@ -990,12 +1000,12 @@ checkTwinIdsDistinct legs = do
 -- Settle a leg that the sidecar has confirmed. Each choice adds the authority of its own contract's signatory to the
 -- authority of `Advance`: the operator, the confirmer and the gateway, who are the signatories of `ZkChain`.
 settle : Leg -> Update ()
-settle (DepositLeg requestCid _) = exercise requestCid Lock
-settle (WithdrawalLeg _ tokenCid _ amount acceptanceCid inputs) =
-  exercise acceptanceCid Receive with token = tokenCid; amount; inputs
-settle (PaymentLeg termsCid) = exercise termsCid Settle
-settle (TradeLeg tradeCid) = do
-  _ <- exercise tradeCid SettleTrade
+settle (DepositLeg requestCid _ ctx) = exercise requestCid Lock with choiceContext = ctx
+settle (WithdrawalLeg _ tokenCid _ amount acceptanceCid inputs ctx) =
+  exercise acceptanceCid Receive with token = tokenCid; amount; inputs; choiceContext = ctx
+settle (PaymentLeg termsCid ctx) = exercise termsCid Settle with choiceContext = ctx
+settle (TradeLeg tradeCid ctx) = do
+  _ <- exercise tradeCid SettleTrade with choiceContext = ctx
   pure ()
 settle (ClaimLeg claimCid _) = exercise claimCid Redeem
 -- The twin is minted to the receiver, 1:1, against the payment the block recorded. `Advance` brings the gateway's authority, the twin's admin.
@@ -1084,13 +1094,15 @@ template DepositRequest
     -- The operator, the confirmer and the gateway together are the signatories of `ZkChain`, so their authority is present
     -- inside `Advance` and nowhere else: none of them can lock alone, and the builder cannot lock at all.
     choice Lock : ()
+      with
+        choiceContext : Optional ChoiceContext
       controller operator, confirmer, gateway
       do
         a <- fetch allocation
         let leg = (view a).allocation
         assertMsg "the allocation's executor is not the operator" (leg.settlement.executor == operator)
         assertMsg "the allocation is not from the depositor to the gateway" (leg.transferLeg.sender == depositor && leg.transferLeg.receiver == gateway)
-        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = extraArgsOf choiceContext
         pure ()
 
 -- "I accept withdrawals": a standing acceptance by a party that wants to receive Canton tokens from the gateway. Made once.
@@ -1115,6 +1127,7 @@ template WithdrawalAcceptance
         token : ContractId GatewayToken
         amount : Decimal
         inputs : [ContractId Holding]
+        choiceContext : Optional ChoiceContext
       controller operator, confirmer, gateway
       do
         t <- fetch token
@@ -1126,11 +1139,11 @@ template WithdrawalAcceptance
           transfer = Transfer with
             sender = gateway; receiver = party; amount; instrumentId = t.instrumentId
             requestedAt = now; executeBefore = addRelTime now (days 1); inputHoldingCids = inputs; meta = emptyMetadata
-          extraArgs = noExtraArgs
+          extraArgs = extraArgsOf choiceContext
         case r.output of
           TransferInstructionResult_Completed _ -> pure ()
           TransferInstructionResult_Pending offer -> do
-            accepted <- exercise offer TransferInstruction_Accept with extraArgs = noExtraArgs
+            accepted <- exercise offer TransferInstruction_Accept with extraArgs = extraArgsOf choiceContext
             case accepted.output of
               TransferInstructionResult_Completed _ -> pure ()
               _ -> abort "the transfer to the receiver did not complete"
@@ -1169,13 +1182,15 @@ template DvpTerms
     -- Its controllers, the operator and the confirmer, sign `ZkChain` with the gateway, so their authority is present
     -- together inside `Advance` and nowhere else: neither can settle alone, and the builder cannot settle at all.
     choice Settle : ()
+      with
+        choiceContext : Optional ChoiceContext
       controller operator, confirmer
       do
         a <- fetch allocation
         let leg = (view a).allocation
         assertMsg "the allocation's executor is not the operator" (leg.settlement.executor == operator)
         assertMsg "the allocation is not from u to v" (leg.transferLeg.sender == u && leg.transferLeg.receiver == v)
-        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = extraArgsOf choiceContext
         pure ()
 
 -- The id of a deposit: the SHA-256 of the tag "deposit", the depositor's party id and a label that the depositor chooses, as
@@ -1238,6 +1253,8 @@ template VenueTrade
 
     -- Its controllers sign `ZkChain`, so their authority is present together inside `Advance` and nowhere else.
     choice SettleTrade : ContractId FundedClaim
+      with
+        choiceContext : Optional ChoiceContext
       controller operator, confirmer, gateway
       do
         a <- fetch allocation
@@ -1248,7 +1265,7 @@ template VenueTrade
         assertMsg "the allocation's receiver is not the gateway" (leg.transferLeg.receiver == gateway)
         assertMsg "the allocation is of another instrument than the token's" (leg.transferLeg.instrumentId == g.instrumentId)
         assertMsg "the allocation is of no amount" (leg.transferLeg.amount > 0.0)
-        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+        _ <- exercise allocation Allocation_ExecuteTransfer with extraArgs = extraArgsOf choiceContext
         create FundedClaim with
           operator; confirmer; gateway; builder; chainId; claimId; recipient; gatewayToken
           amount = leg.transferLeg.amount

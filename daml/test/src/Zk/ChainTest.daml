@@ -186,15 +186,15 @@ advance : ContractId ZkChain -> Text -> [Text] -> [Leg] -> Commands (ContractId 
 advance chain header recorded legs = advanceWith chain header "aa" ["aa"] (recordedNodes recorded) legs
 
 depositLeg : F -> Leg
-depositLeg f = DepositLeg with request = f.deposit; token = f.token
+depositLeg f = DepositLeg with request = f.deposit; token = f.token; choiceContext = None
 
 paymentLeg : F -> Leg
-paymentLeg f = PaymentLeg with terms = f.terms
+paymentLeg f = PaymentLeg with terms = f.terms; choiceContext = None
 
 -- U's withdrawal of 4 TKB, funded from a holding of the gateway's.
 withdrawalLeg : F -> ContractId H.Holding -> Leg
 withdrawalLeg f holding = WithdrawalLeg with
-  id = withdrawalId; token = f.token; from = burnerAddr; amount = 4.0; acceptance = f.acceptance; inputs = [holding]
+  id = withdrawalId; token = f.token; from = burnerAddr; amount = 4.0; acceptance = f.acceptance; inputs = [holding]; choiceContext = None
 
 -- The gateway's custody: a holding of 10 TKB, which only withdrawals draw on.
 custody : F -> Script (ContractId H.Holding)
@@ -480,7 +480,7 @@ testTwoPaymentsToOneAddressSettleInOneBlock : Script ()
 testTwoPaymentsToOneAddressSettleInOneBlock = do
   f <- fixture
   second <- makeTerms f.operator f.confirmer f.builder f.reg f.u f.v f.operator f.confirmer label2
-  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [paymentLine f.dvp1, paymentLine f.dvp2] [paymentLeg f, PaymentLeg with terms = second]
+  (_, _) <- submit (asBuilder f) $ advance f.chain "01" [paymentLine f.dvp1, paymentLine f.dvp2] [paymentLeg f, PaymentLeg with terms = second; choiceContext = None]
   holds f.v "TKB" >>= \xs -> xs === [10.0, 10.0]
 
 -- Terms are tied to the two parties who signed them. A builder with a token and a second party of its own cannot sign
@@ -503,7 +503,7 @@ testTermsOfOtherPartiesCannotStandInForAPayment = do
     submitMustFail (actAs [u, v]) $ createCmd (forged with u = u; v = v; allocation = old.allocation)
   -- terms of its own carry the id of its own pair, which the block did not record
   mine <- submit (actAs [f.builder, b2]) $ createCmd (forged with dvpId = paymentId f.builder b2 label1)
-  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = mine]
+  refused notRecorded f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = mine; choiceContext = None]
 
 -- A leg settles in a later block just as in the first: the sidecar is asked about that block's own root and number.
 testALegSettlesInALaterBlock : Script ()
@@ -605,35 +605,35 @@ testRefusesContractsOfAnotherChain = do
   other <- submit (actAs [f.u, f.v]) $ createCmd DvpTerms with
     u = f.u; v = f.v; operator = f.operator; confirmer = f.confirmer; builder = f.builder
     chainId = 2; label = label1; dvpId = f.dvp1; token = tokenAddr; payee = uAddr; amount = tenTokens; allocation = old.allocation
-  refused "is for another chain" f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = other]
+  refused "is for another chain" f $ advance f.chain "01" [paymentLine f.dvp1] [PaymentLeg with terms = other; choiceContext = None]
   -- a deposit request for another chain, and one that names another gateway party (the builder) than the chain's
   d2 <- makeDeposit f.operator f.confirmer f.gateway f.builder 2 f.reg f.d f.gateway f.operator "TKB" depositLabel1 recipientAddr
-  refused "is for another chain" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = d2; token = f.token]
+  refused "is for another chain" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = d2; token = f.token; choiceContext = None]
   d3 <- makeDeposit f.operator f.confirmer f.builder f.builder 770101 f.reg f.d f.builder f.operator "TKB" depositLabel1 recipientAddr
-  refused "names another gateway" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = d3; token = f.token]
+  refused "names another gateway" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = d3; token = f.token; choiceContext = None]
   -- an acceptance for another chain, and a token registered for another chain
   a2 <- submit f.u $ createCmd WithdrawalAcceptance with
     party = f.u; chainId = 2; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder
   holding <- custody f
   refused "is for another chain" f $ advance f.chain "01" [withdrawalLine withdrawalId burnerAddr "4.0" f.u] [(withdrawalLeg f holding) with acceptance = a2]
   t2 <- makeToken f.operator f.confirmer f.gateway f.builder 2 f.reg wTkb
-  refused "is for another chain" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = f.deposit; token = t2]
+  refused "is for another chain" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = f.deposit; token = t2; choiceContext = None]
 
 -- A deposit of another instrument than the one the token wraps.
 testRefusesADepositOfAnotherInstrument : Script ()
 testRefusesADepositOfAnotherInstrument = do
   f <- fixture
   other <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.operator "TKC" depositLabel1 recipientAddr
-  refused "of another instrument" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = other; token = f.token]
+  refused "of another instrument" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = other; token = f.token; choiceContext = None]
 
 -- A deposit that is not an allocation to the gateway, with the operator as executor: another receiver, another executor.
 testRefusesADepositNotToTheGateway : Script ()
 testRefusesADepositNotToTheGateway = do
   f <- fixture
   toV <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.v f.operator "TKB" depositLabel1 recipientAddr
-  refused "not from the depositor to the gateway" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = toV; token = f.token]
+  refused "not from the depositor to the gateway" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = toV; token = f.token; choiceContext = None]
   byBuilder <- makeDeposit f.operator f.confirmer f.gateway f.builder 770101 f.reg f.d f.gateway f.builder "TKB" depositLabel1 recipientAddr
-  refused "executor is not the operator" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = byBuilder; token = f.token]
+  refused "executor is not the operator" f $ advance f.chain "01" [depositLine f.deposit1] [DepositLeg with request = byBuilder; token = f.token; choiceContext = None]
 
 -- A token whose factory belongs to another registry than the one its instrument names: the factory refuses, because the
 -- withdrawal names the instrument's admin as the one it expects. With the token's own factory the same block settles.
@@ -662,18 +662,18 @@ testSettleOutsideAdvanceIsRefused = do
   holding <- custody f
   let readers = readAs [f.operator, f.confirmer, f.gateway, f.u, f.v, f.d, f.registry, f.builder] <> disclose f.rules
   forA_ [f.operator, f.confirmer, f.builder, f.u, f.v] $ \p ->
-    submitMustFail (actAs p <> readers) $ exerciseCmd f.terms Settle
+    submitMustFail (actAs p <> readers) $ exerciseCmd f.terms Settle with choiceContext = None
   forA_ [[f.operator], [f.confirmer], [f.gateway], [f.builder], [f.d], [f.operator, f.confirmer], [f.operator, f.gateway], [f.confirmer, f.gateway]] $ \ps -> do
-    submitMustFail (actAs ps <> readers) $ exerciseCmd f.deposit Lock
+    submitMustFail (actAs ps <> readers) $ exerciseCmd f.deposit Lock with choiceContext = None
     submitMustFail (actAs ps <> readers) $ exerciseCmd f.acceptance Receive with
-      token = f.token; amount = 4.0; inputs = [holding]
+      token = f.token; amount = 4.0; inputs = [holding]; choiceContext = None
   nothingMoved f
   -- Those were refused for lack of authority, not for lack of sight: the three together, who meet only inside Advance
   -- on purpose, can do each of the three.
-  submit (actAs [f.operator, f.confirmer, f.gateway] <> readers) $ exerciseCmd f.deposit Lock
+  submit (actAs [f.operator, f.confirmer, f.gateway] <> readers) $ exerciseCmd f.deposit Lock with choiceContext = None
   submit (actAs [f.operator, f.confirmer, f.gateway] <> readers) $ exerciseCmd f.acceptance Receive with
-    token = f.token; amount = 4.0; inputs = [holding]
-  submit (actAs [f.operator, f.confirmer] <> readers) $ exerciseCmd f.terms Settle
+    token = f.token; amount = 4.0; inputs = [holding]; choiceContext = None
+  submit (actAs [f.operator, f.confirmer] <> readers) $ exerciseCmd f.terms Settle with choiceContext = None
   holds f.u "TKB" >>= \xs -> xs === [4.0]
   holds f.v "TKB" >>= \xs -> xs === [10.0]
 
@@ -1515,7 +1515,7 @@ testThePauseMaximumIsAChainSetting = do
 -- A withdrawal of `a` of the token at `tok`, funded from `h`.
 withdrawalOf : F -> ContractId GatewayToken -> ContractId H.Holding -> Decimal -> Leg
 withdrawalOf f tok h a = WithdrawalLeg with
-  id = withdrawalId; token = tok; from = burnerAddr; amount = a; acceptance = f.acceptance; inputs = [h]
+  id = withdrawalId; token = tok; from = burnerAddr; amount = a; acceptance = f.acceptance; inputs = [h]; choiceContext = None
 
 wLine : Text -> Decimal -> Party -> Text
 wLine evmToken a p = line "withdrawal" withdrawalId evmToken burnerAddr (show a) (toHex (partyToText p))
@@ -1712,7 +1712,7 @@ makeTrade : F -> Party -> Script (ContractId VenueTrade)
 makeTrade f venue = makeTradeOf f venue venue f.gateway "TKB" identity
 
 tradeLeg : ContractId VenueTrade -> Leg
-tradeLeg c = TradeLeg with tradeCid = c
+tradeLeg c = TradeLeg with tradeCid = c; choiceContext = None
 
 claimLegOf : F -> ContractId FundedClaim -> Leg
 claimLegOf f c = ClaimLeg with claimCid = c; tokenCid = f.token
@@ -1910,10 +1910,10 @@ testATradeIsSettledOnceAndNeedsAllThree = do
   f <- fixture
   venue <- makeVenue
   trade <- makeTrade f venue
-  submitMustFail (actAs f.builder <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade
-  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd trade SettleTrade
-  _ <- submit (actAs [f.operator, f.confirmer, f.gateway] <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade
-  submitMustFail (actAs [f.operator, f.confirmer, f.gateway] <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade
+  submitMustFail (actAs f.builder <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade with choiceContext = None
+  submitMustFail (actAs [f.operator, f.confirmer]) $ exerciseCmd trade SettleTrade with choiceContext = None
+  _ <- submit (actAs [f.operator, f.confirmer, f.gateway] <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade with choiceContext = None
+  submitMustFail (actAs [f.operator, f.confirmer, f.gateway] <> readAs [venue, f.u, f.registry] <> disclose f.rules) $ exerciseCmd trade SettleTrade with choiceContext = None
   holds f.gateway "TKB" >>= \xs -> xs === [10.0]
 
 -- While the legs are paused a trade leg and a claim leg are refused like any other.
