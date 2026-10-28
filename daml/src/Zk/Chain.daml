@@ -865,21 +865,21 @@ releaseId vault ref = T.sha256 ("vault-release," <> vault <> "," <> ref)
 
 -- A whole number as 64 lowercase hex digits, the form of an ERC-20 amount in a payment line.
 hex64 : Numeric 0 -> Text
-hex64 n = T.implode (hexDigits 64 n [])
+hex64 n = T.implode (amountDigits 64 n [])
 
 -- The last `k` hex digits of `x` in front of `acc` (the recursion is a top-level function: Daml-LF has no local recursion).
-hexDigits : Int -> Numeric 0 -> [Text] -> [Text]
-hexDigits k x acc
+amountDigits : Int -> Numeric 0 -> [Text] -> [Text]
+amountDigits k x acc
   | k == 0 = acc
   | otherwise =
       let sixteen = intToNumeric 16 : Numeric 0
           q0 = x / sixteen          -- rounded, so the remainder is between -8 and 8
           r0 = x - q0 * sixteen
           (q, r) = if r0 < intToNumeric 0 then (q0 - intToNumeric 1, r0 + sixteen) else (q0, r0)
-      in hexDigits (k - 1) q (hexDigitOf r :: acc)
+      in amountDigits (k - 1) q (hexDigitOf r :: acc)
 
 hexDigitOf : Numeric 0 -> Text
-hexDigitOf r = fromOptional "0" (lookup r (zip (map intToNumeric [0 .. 15]) (T.explode "0123456789abcdef")))
+hexDigitOf r = fromOptional "0" (lookup r (zip (map intToNumeric [0 .. 15]) hexDigits))
 
 -- The gateway uses each payment id once, so no honest block carries one id twice; a block that does is refused before it settles anything.
 twinIds : Leg -> Update [Text]
