@@ -746,11 +746,11 @@ testADepositIdIsDerivedFromTheDepositorAndTheLabel = do
         , paymentId f.u f.v "pay-1" ] $ \other ->
     forA_ [Some depositLabel1, Some "another"] $ \l ->
       submitMustFail f.d $ createCmd request with depositId = other; label = l
-  -- v submits a request that names d as the depositor: that fails because d has not authorized it, which is an authorization
-  -- check and says nothing of the derivation
   -- the id derived for another depositor: the squatter v makes a request with d's id, under its own party or under d's
   submitMustFail f.v $ createCmd request with depositor = f.v
   submitMustFail f.v $ createCmd request with depositor = f.v; label = Some "another"
+  -- v submits a request that names d as the depositor: that fails because d has not authorized it, which is an authorization
+  -- check and says nothing of the derivation
   submitMustFail f.v $ createCmd request
   -- the ids of two labels, and of two depositors with one label, differ
   assertMsg "two labels of one depositor make one id" (depositIdOf f.d "a" /= depositIdOf f.d "b")

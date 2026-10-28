@@ -976,7 +976,8 @@ def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     request that names a claim's id, so a request never holds the claim back. The reverse holds too: a claim's id is public (the payment's id is
     in the chain's event), so an id that is the claim id of a funded claim, or of a venue trade whose payment would create one, is never settled
     by a request: only that funded claim, with its own recipient, may settle it. Otherwise another party's request could use the id at the
-    gateway first, and the claim would be refused as used for ever."""
+    gateway first, and the claim would be refused as used for ever. (From package 0.5.0 a request's id is derived from its depositor and a label, so this
+    applies to requests made before 0.5.0 and to a builder run with --unlabelled-deposits.)"""
     chain = canton.chain
     claims = [c for c in canton.claims if c["claimId"] == leg.id and names_chain(c, chain, "gateway")]
     reserved = bool(claims) or any(t["claimId"] == leg.id and names_chain(t, chain, "gateway") for t in canton.trades)

@@ -246,8 +246,16 @@ deposit dep-3b "$NEW"
 # dep-3 is a request of 0.2.0 that names V's address, and V claims it: Canton would refuse it under the new package. The builder turns it down before
 # it proves the block, so the block commits with the two legs and without the claim, which stays in the pool until it is replaced.
 claim_tx=$(evm claim v "$DEP3_ID" "$WTKB" 10 | jq -r .tx)
-block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2b and dep-3b, and not the claim of dep-2c
+block_under "$NEW" 3 2 "the block pinned to the new package"   # dep-2b and dep-3b, and not the claim of dep-3
 is "$(jq -r --arg t "$claim_tx" '[.leftOut[] | select(.transaction == $t)] | length' <<<"$BLOCK_OUT")" 1 "the claim of the request without a label is left out of block 3"
+# What protects the chain if a builder is malicious or misconfigured: a builder pinned to the new package that does attach the request without a label
+# (--unlabelled-deposits turns its own turn-down off) is refused by Canton when the leg settles, so a request made under 0.2.0 cannot settle under 0.5.0.
+# (The same id check in the deposit leg inside Advance is defence in depth: Daml Script cannot make a request that fails the template's ensure, so no test reaches it.)
+set +e; out=$(build "$NEW" old); status=$?; set -e
+echo "$out" | jq -c '{committed, rejected, reason: (.reason // "" | .[0:300])}'
+is "$(jq -r .committed <<<"$out")" false "the block that attaches the request without a label under the new package committed"
+jq -e '.rejected == true and (.reason | test("precondition|not derived"))' <<<"$out" >/dev/null || fail "Canton did not refuse the block that attaches the request without a label, or not for its precondition: $out"
+is "$(canton status | jq -r '.chain[0].headNumber')" 3 "Canton's head after the refused block (nothing changed)"
 evm replace v > /dev/null
 is "$(gas_limit 3)" 30000000 "the gas limit of block 3 (no target was asked: reth stays at the genesis cap)"
 is "$(probe DepositRequest | jq -c '[.contracts[]] | sort')" "[\"$OLD\",\"$OLD\"]" "the requests left are the two made under 0.2.0 (dep-2 and dep-3), the new ones are settled"
