@@ -310,9 +310,11 @@ python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step rej
 python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --twin-step add      $T             # at once, for a participant where one user acts for all three parties
 ```
 
+A pin cannot be removed, and its decimals scale every lock and release, so propose, accept and add (also with `--dry-run`) first read the ERC-20 from reth (`--reth-url`, https or http on this machine; the finalized block): there must be code at `--twin-token` and its `decimals()` must be `--twin-decimals`, or the step is refused; the JSON line shows the decimals read (`tokenDecimals`). Add `--reth-url` to the commands above where reth is not on 127.0.0.1:8545.
+
 The confirmer cannot see the rules (the gateway is their admin), and the accept fetches them, so `--twin-rules-disclosed` is a JSON file with the rules as a disclosed contract (`templateId`, `contractId`, `createdEventBlob`, `synchronizerId`), read from the gateway's participant with the created-event blob; the step refuses it when its contract id is not `--twin-rules` and refuses an accept without it. The proposal is read again by exact entry (token, decimals, rules): a proposal for the same token with other decimals or rules must be withdrawn first, a token pinned with other rules is refused, and the chain holds at most 16 twins. Daml checks the rules against the token and the decimals when the pin is added, and this version has no removal, so check the decimals against the ERC-20 itself and run `--dry-run` first. `--dry-run` sends nothing; a dry run of an accept prints `proposedAt` and `acceptableAt`.
 
-The builder reads the pins from the chain record at each block and needs `--twin-registry-url` (builder/README.md) for the locks, whose id parts the registry service holds.
+The builder reads the pins from the chain record at each block, and the pinned `TwinRules` (it must read as the gateway, or have them in `--disclosed`) to see that they are active: archiving them stops the token. It needs `--twin-registry-url` (builder/README.md) for the locks, whose id parts the registry service holds, and sees the holdings a release burns only when it reads as the gateway.
 
 ## Switching a running chain to a later fork or ZisK release
 
