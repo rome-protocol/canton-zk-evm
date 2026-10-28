@@ -81,13 +81,17 @@ describe("the block page: Settled with this block", () => {
 
   it("says how many legs a block recorded when it recorded more than 50, and pages through them from the block's own route", async () => {
     const first = Array.from({ length: 50 }, (_, i) => plainLeg({ legIndex: i, legId: hash(0x10 + i) }));
-    const calls = await openBlock(first, { blockLegs: () => reply(page([plainLeg({ legIndex: 50, legId: hash(0xaa) })])) }, 73);
+    const calls = await openBlock(first, { blockLegs: () => reply(page([plainLeg({ legIndex: 50, legId: hash(0xaa), amount: "2000000000000000000" })])) }, 73);
     const s = settled();
     expect(s.getAllByRole("listitem")).toHaveLength(50);
     expect(await s.findByText(/73 legs in this block/)).toBeInTheDocument();
     await userEvent.click(s.getByRole("button", { name: "Page through all 73 legs" }));
     expect(await screen.findByRole("link", { name: "50" })).toHaveAttribute("href", `/leg/${hash(0xaa)}`);
     expect(calls.some((c) => c.startsWith("/api/blocks/16816/legs"))).toBe(true);
+    // an 18-decimal paged leg reads in whole tokens with its symbol, and its kind in words, as the panel does
+    const row = screen.getByRole("link", { name: "50" }).closest("tr") as HTMLElement;
+    await waitFor(() => expect(row).toHaveTextContent("2 TKA"));
+    expect(within(row).getByText("Deposit")).toBeInTheDocument();
     // the paged table replaces the first 50, which are not listed twice, and one button goes back
     expect(screen.queryAllByRole("link", { name: "Leg 0" })).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "Show the first 50 again" }));

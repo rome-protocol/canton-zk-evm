@@ -294,9 +294,9 @@ describe("the block page, for a final block", () => {
     await open(block({ legs: [plainLeg({ legIndex: 0, kind: "deposit", legId: hash(0x1e), token: addr(0xcb), account: addr(0x5b), amount: "250" })] }));
     const panel = await screen.findByRole("region", { name: "Settled with this block" });
     expect(screen.queryByText(LEGS)).toBeNull();
-    const note = within(panel).getByText(new RegExp(LEGS_WHO.slice(0, 40)));
+    const note = within(panel).getByText(/A swap shows both its amounts/);
     expect(note).toHaveAttribute("role", "tooltip");
-    expect(note).toHaveTextContent("A swap shows both its amounts; the Canton party behind it stays private");
+    expect(note).toHaveTextContent("A swap shows both its amounts; the Canton party behind it stays private: only the parties to each leg and the chain's operator, confirmer, gateway and builder know who it is, and each token's registry sees its own token move.");
     expect(note.textContent).not.toMatch(/Daml/i);
   });
 

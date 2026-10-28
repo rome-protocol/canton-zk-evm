@@ -12,6 +12,13 @@ export function useLegToken(token: string, enabled = true) {
   return useQuery({ queryKey: ["token-info", token], queryFn: () => getTokenInfo(token), retry: false, staleTime: 60_000, enabled }).data ?? null;
 }
 
+const KIND: Record<string, string> = { deposit: "Deposit", withdrawal: "Withdrawal", payment: "Payment" };
+
+/** What a leg was, in words: the same on the panel's lines and in the table of a block's legs. A leg that is the claim of a Canton payment says so. */
+export function legKindWord(kind: string, claim = false): string {
+  return claim ? "Claim" : (KIND[kind] ?? kind);
+}
+
 /** The amount of a leg in whole tokens with the token's decimals; the raw amount, and nothing guessed, when they are not known. */
 export function LegAmount({ l }: { l: Pick<LegListItem, "token" | "amount"> }) {
   const t = useLegToken(l.token);
