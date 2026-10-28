@@ -31,6 +31,15 @@ export const STALE_AFTER_INTERVALS = 3;
 export const API_INTERVAL_SECONDS = 5;
 
 const INDEXER_ROUND = 2;
+/** How often the custody loop writes its rows when a row does not say (`CUSTODY_MS` is 30 s unless set). The indexer writes its own interval into the row's threshold (`intervalSeconds`), so the API never has to know the setting. */
+export const CUSTODY_INTERVAL_SECONDS = 30;
+/** The rows whose writer says its own interval in the row's threshold. */
+const OWN_INTERVAL = new Set(["custody", "registered_legs"]);
+/** The interval a row is held to: the one the row says for the custody loop's rows, else the check's own. */
+function intervalOf(id: string, threshold: unknown, spec: CheckSpec): number | undefined {
+  const said = OWN_INTERVAL.has(id) && threshold !== null && typeof threshold === "object" ? (threshold as { intervalSeconds?: unknown }).intervalSeconds : undefined;
+  return typeof said === "number" && Number.isFinite(said) && said >= 1 ? said : spec.intervalSeconds;
+}
 const ROUND: CheckSpec = { role: "indexer", worst: "degraded", intervalSeconds: INDEXER_ROUND, stale: "degraded" };
 /** The indexer's own rows. C1, C2, C3 and C7 are written when they fail, and the indexer stops at that block, so they are `down` and have no interval. */
 const SPECS: Record<string, CheckSpec> = {
@@ -44,6 +53,10 @@ const SPECS: Record<string, CheckSpec> = {
   db_ids: { role: "indexer", worst: "down", intervalSeconds: INDEXER_ROUND, stale: "degraded" },
   producer_alive: ROUND, producer_state: ROUND, prover: ROUND,
   journal: { role: "indexer", worst: "degraded" }, reth_reads: { role: "indexer", worst: "degraded" },
+  // The custody read and the leg index of the registered gateways are written from the custody loop, which is off unless the gateway party is set: the rows are not expected, and are never down. A row that
+  // the loop stops refreshing (the read hangs, or the loop is gone) turns degraded after three of the loop's own intervals, so a freeze is never silent.
+  custody: { role: "indexer", worst: "degraded", intervalSeconds: CUSTODY_INTERVAL_SECONDS, stale: "degraded" },
+  registered_legs: { role: "indexer", worst: "degraded", intervalSeconds: CUSTODY_INTERVAL_SECONDS, stale: "degraded" },
   // The shared rows of the API: the instance that holds the faucet's or the tracker's lock writes them.
   faucet: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
   tracker: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
@@ -113,7 +126,8 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
   const checks: HealthEntry[] = [];
   for (const r of [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
     const spec = specOf(r.id);
-    const stale = spec.intervalSeconds !== undefined && r.ageSeconds > spec.intervalSeconds * STALE_AFTER_INTERVALS;
+    const interval = intervalOf(r.id, r.threshold, spec);
+    const stale = interval !== undefined && r.ageSeconds > interval * STALE_AFTER_INTERVALS;
     const written = asStatus(r.status);
     // What a check writes is held to its worst word; a writer that has stopped counts for what the stop means, which can be more (a stopped indexer: final data is stale).
     const held = RANK[written] > RANK[spec.worst] ? spec.worst : written;
@@ -128,7 +142,7 @@ export function evaluate(rows: RawRow[], { instance, started = true }: EvaluateO
     checks.push({
       id: r.id, role: spec.role, status, ...(r.status !== status ? { written: r.status } : {}), value: r.value, threshold: r.threshold, detail,
       sinceSeconds: Math.max(0, Math.round(r.sinceSeconds)), changedAt: r.changedAt, refreshedAt: r.refreshedAt, refreshedAgoSeconds: Math.max(0, Math.round(r.ageSeconds * 10) / 10),
-      intervalSeconds: spec.intervalSeconds ?? null, stale, elsewhere: spec.role === "api" && owner !== null && owner !== instance,
+      intervalSeconds: interval ?? null, stale, elsewhere: spec.role === "api" && owner !== null && owner !== instance,
     });
   }
   // A refreshed check with no row has not been looked at: after a rebuild from an export, or before a new indexer's first round. No row must not read as healthy.

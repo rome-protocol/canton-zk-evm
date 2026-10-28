@@ -24,6 +24,7 @@ import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { transactionHashes } from "./rlp.ts";
 import { checkLegs, legsOf, writeBlockRow, writeFacts } from "./stage1.ts";
+import { resetTwinTotals } from "./custody.ts";
 import { deriveCursor, rederive } from "./stage2.ts";
 import { rebuildAggregates } from "./aggregates.ts";
 
@@ -91,7 +92,11 @@ export async function reindexRange(o: ReindexOptions, from: number, to: number |
       const c = await o.pool.connect();
       try {
         await c.query("begin");
-        for (const t of ["tx_hashes", "transactions", "logs", "gateway_legs"]) await c.query(`delete from ${t} where block_number = $1`, [n]);
+        for (const t of ["tx_hashes", "transactions", "logs"]) await c.query(`delete from ${t} where block_number = $1`, [n]);
+        // The first gateway's legs are written again with the block; a registered gateway's are kept: the block's logs do not change, so neither do the legs read from them.
+        await c.query("delete from gateway_legs where block_number = $1 and gateway is null", [n]);
+        // The twin sums were counted from the legs and logs this block had: they are counted again.
+        await resetTwinTotals(c);
         const logCount = await writeBlockRow(c, { record: { number: n, headerHex: stored.header, txsHex: stored.txs, updateId: stored.update_id, recordTime: stored.record_time }, block, receipts, legsCount, legsHash }, true);
         const { rowsTx, rowsLogs } = await writeFacts(c, n, block, receipts, legs);
         if (rowsTx !== block.transactions.length || rowsLogs !== logCount) {

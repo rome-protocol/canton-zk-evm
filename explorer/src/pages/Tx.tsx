@@ -320,7 +320,7 @@ function Body({ t, coin, detail, block, read, st }: { t: ApiTxSeen; coin: Coin |
   // The transfers and the input are full-width cards under the facts and the side cards, as on the screen; on a phone they follow the Canton record and the proof.
   const below = (
     <>
-      <LegsPanel title="Canton side" info="The gateway legs this transaction caused. A payment that settled a swap shows both sides of the swap." legs={t.legs} total={t.legs.length} payer={t.from} txBlock={t.block?.number} />
+      <LegsPanel title="Canton side" info="The gateway legs this transaction caused, on the gateway or on a registered gateway. A payment that settled a swap shows both sides of the swap; a lock or a release shows the twin." legs={t.legs} total={t.legs.length} payer={t.from} txBlock={t.block?.number} />
       {final && <TransfersCard hash={t.hash} />}
       {t.status !== "waiting" && <InputCard t={t} />}
     </>

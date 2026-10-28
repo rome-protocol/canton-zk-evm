@@ -6,7 +6,7 @@ import { Chip } from "../components/Chip.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Item, Kv } from "../components/Kv.tsx";
 import { useFollowing } from "../useStatus.ts";
-import { LegAmount, LegsPrivacy, LegToken } from "./LegParts.tsx";
+import { LegAmount, LegsPrivacy, LegToken, legKindWord } from "./LegParts.tsx";
 
 /** The Canton update that carries the leg's block. It is the block's update, read from the block route; the leg's own settlement on Canton is not public. */
 function BlockUpdate({ block }: { block: number }) {
@@ -22,6 +22,8 @@ function Facts({ l }: { l: LegListItem }) {
       <div className="list-h"><h2>What the EVM recorded</h2><span className="muted small">the gateway's Leg event</span></div>
       <Kv>
         <Item label="Kind"><span className="tag">{l.kind}</span></Item>
+        {l.twin && <Item label="Twin"><span className="tag">{legKindWord(l.kind, l.twin)}</span> <span className="muted">of a token a registered vault holds</span></Item>}
+        {l.gateway && <Item label="Gateway"><HashLink value={l.gateway} to={`/address/${l.gateway}`} full /> <span className="muted">a registered gateway</span></Item>}
         <Item label="Leg id"><HashLink value={l.legId} full /></Item>
         <Item label="Position">Leg {l.legIndex}, transaction {l.txIndex}, log {l.logIndex}</Item>
         <Item label="Block"><Link className="num" to={`/block/${l.block}`}>{l.block}</Link></Item>

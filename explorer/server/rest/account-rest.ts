@@ -6,11 +6,11 @@
  */
 import type { Pool } from "pg";
 import { ChainDbError } from "../chain-db.ts";
+import { gatewayOf, legKindOf, twinOf, TWIN_FROM, TWIN_SELECT } from "../indexer/leg-canton.ts";
 import { addressOfKey, bytes, hex, hexOrNull, isoTime, MS, txSelect, US, type TxListItem, txItem, withTokenMoves } from "./chain-rest.ts";
 
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Key = (number | string)[];
-const LEG_KINDS = ["", "deposit", "withdrawal", "payment"] as const;
 /** A Canton amount's own scale (Daml Numeric 10): the unit of `canton.custody`. */
 const CUSTODY_DECIMALS = 10;
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
@@ -111,9 +111,14 @@ export interface TokenItem {
  * null when the token did not answer at that block. `readAt` is when the read was made.
  */
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
-export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null }
+/**
+ * The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (the locks into a registered vault less the releases out of one, in the token's base units), `vaultBalance` what the
+ * registered vaults held of the token at the block `through`, the same block the sums are counted to (null where reth did not give it), `locks` and `releases` the legs counted. The sums are kept by the indexer, once per leg, and count the legs up to the block `through` (null before the first pass).
+ */
+export interface TwinSupply { supply: string; vaultBalance: string | null; locks: number; releases: number; through: number | null }
+export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
-export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; legId: string; token: string; account: string; amount: string; party: string | null }
+export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; gateway: string | null; twin: "lock" | "release" | null; legId: string; token: string; account: string; amount: string; party: string | null }
 /** What is known of an address for showing it by name; a null name is a name nothing holds, and `kind` is "account" for an address no contract or token row names. */
 export interface LabelItem { address: string; name: string | null; symbol: string | null; kind: "token" | "contract" | "account" | null; standard: string | null; decimals: number | null; verified: boolean }
 export interface NameMatch { kind: "token" | "contract"; name: string | null; symbol: string | null; address: string }
@@ -495,7 +500,20 @@ export function createAccountRest(pool: Pool) {
     if (!r) return undefined;
     const [g] = await query("select instrument_admin, instrument_id, custody::text as custody, holdings, supply::text as supply, supply_block, ledger_offset, read_at from gateway_tokens where evm_token = $1", [bytes(a)]);
     const canton = g ? { instrumentAdmin: g.instrument_admin, instrumentId: g.instrument_id, custody: g.custody, custodyDecimals: CUSTODY_DECIMALS, holdings: Number(g.holdings), supply: g.supply ?? null, supplyBlock: Number(g.supply_block), ledgerOffset: Number(g.ledger_offset), readAt: new Date(g.read_at).toISOString() } : null;
-    return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton };
+    return { ...tokenItem(r), totalSupplyBlock: num(r.total_supply_block), balanceMode: r.balance_mode, canton, twin: await twinSupply(a) };
+  }
+
+  /**
+   * The twin line of an ERC-20 that a registered vault holds or took in (null for any other token): one row of what the indexer keeps per token (`twin_totals`, counted once per leg). `supply` is the locks less
+   * the releases, and `vaultBalance` is what the registered vaults held of the token at the SAME block, `through`, that the sums are counted to (both are written by one pass of the indexer in one transaction), so
+   * the two never differ because one trails the other; `vaultBalance` is null where reth did not give it at that block.
+   */
+  async function twinSupply(a: string): Promise<TwinSupply | null> {
+    const [t] = await query("select t.locked::text as locked, t.released::text as released, t.locks, t.releases, t.vault_balance::text as vault_balance, (select value from meta where key = 'twin_totals_block') as through from twin_totals t where t.token = $1 and exists (select 1 from canton_registry where kind = 'vault')", [bytes(a)]);
+    if (!t) return null;
+    const vaultBalance: string | null = t.vault_balance ?? null;
+    if (Number(t.locks) === 0 && Number(t.releases) === 0 && (vaultBalance === null || vaultBalance === "0")) return null;
+    return { supply: (BigInt(t.locked) - BigInt(t.released)).toString(), vaultBalance, locks: Number(t.locks), releases: Number(t.releases), through: t.through == null ? null : Number(t.through) };
   }
 
   /** Who holds a token, most first, after the key (value, holder, id). A holder of several ids of an ERC-1155 is listed once for each. */
@@ -520,10 +538,11 @@ export function createAccountRest(pool: Pool) {
     return rows.map(transferItem);
   }
 
-  const legSelect = "g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, t.hash";
-  const legFrom = "from gateway_legs g left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index";
+  const legSelect = `g.block_number, g.leg_index, g.tx_index, g.log_index, g.kind, g.leg_id, g.token, g.account, g.amount::text as amount, g.party, g.gateway, t.hash, ${TWIN_SELECT}`;
+  // The legs a page reads are picked first, so that the twin legs are told for the page's rows and not for the table's.
+  const legFrom = (pick = "gateway_legs") => `from ${pick} g left join transactions t on t.block_number = g.block_number and t.tx_index = g.tx_index ${TWIN_FROM}`;
   const legItem = (r: Row): LegListItem => ({
-    block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: LEG_KINDS[r.kind] ?? String(r.kind), legId: hex(r.leg_id),
+    block: Number(r.block_number), txHash: hexOrNull(r.hash), legIndex: r.leg_index, txIndex: r.tx_index, logIndex: r.log_index, kind: legKindOf(r), gateway: gatewayOf(r), twin: twinOf(r), legId: hex(r.leg_id),
     token: hex(r.token), account: hex(r.account), amount: r.amount, party: r.party ?? null,
   });
 
@@ -531,7 +550,7 @@ export function createAccountRest(pool: Pool) {
   async function legs(before: Key | null, limit: number): Promise<LegListItem[]> {
     const [bn, li] = before ?? [null, null];
     const rows = await query(
-      `select ${legSelect} ${legFrom} where ($1::bigint is null or (g.block_number, g.leg_index) < ($1::bigint, $2::int)) order by g.block_number desc, g.leg_index desc limit $3`,
+      `select ${legSelect} ${legFrom("(select * from gateway_legs where ($1::bigint is null or (block_number, leg_index) < ($1::bigint, $2::int)) order by block_number desc, leg_index desc limit $3)")} order by g.block_number desc, g.leg_index desc`,
       [bn, li, limit + 1],
     );
     return rows.map(legItem);
@@ -586,7 +605,7 @@ export function createAccountRest(pool: Pool) {
 
   /** One leg by its id. An id is a hash of the leg, so one is expected to name one leg; if the same leg is ever recorded twice, this is the first. */
   async function leg(id: string): Promise<LegListItem | undefined> {
-    const [r] = await query(`select ${legSelect} ${legFrom} where g.leg_id = $1 order by g.block_number, g.leg_index limit 1`, [bytes(id)]);
+    const [r] = await query(`select ${legSelect} ${legFrom()} where g.leg_id = $1 order by g.block_number, g.leg_index limit 1`, [bytes(id)]);
     return r && legItem(r);
   }
 

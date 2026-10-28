@@ -1,7 +1,7 @@
 /**
  * The record export (design section 4.4): every stored block record, with its proof and the Canton facts the explorer keeps about it, as one
  * line of JSON each, behind a header line. `explorer reindex --records <file>` builds a fresh database from it, so Canton's pruning matters
- * only for a database that starts from nothing and has no export.
+ * for a database that starts from nothing and has no export, and for the custody read, which walks the gateway's updates from the participant's first offset after a fresh start, a participant change or a reindex (a pruned participant leaves it failing).
  *
  * A line holds what the indexer read from Canton and nothing else: the record (header, transactions, proof, hashes, the two signatories), the
  * update's id, record time, effective time, synchronizer and template, and the participant the offset belongs to. No observer and no party but

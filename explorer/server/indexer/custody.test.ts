@@ -5,7 +5,7 @@ import { TEST_URL, checkRequired, withDatabase } from "../db/testing.ts";
 import { migrate } from "../db/migrate.ts";
 import { createLedger, CUSTODY_ENDPOINTS, type Ledger } from "../ledger.ts";
 import { CHAIN_ID, GATEWAY, PARTICIPANT, PINS, makeChain, type SyntheticChain } from "../../test/synthetic-chain.ts";
-import { FAKE_GATEWAY, FAKE_REGISTRY, gatewayToken, holding, startFakeLedger, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
+import { FAKE_GATEWAY, FAKE_REGISTRY, archivedEvent, gatewayToken, holding, holdingEvent, startFakeLedger, transaction, type ActiveContract, type FakeLedger } from "../../test/fake-ledger.ts";
 import { createIndexer, type Indexer } from "./indexer.ts";
 import { custodyOnce as custodyAt } from "./custody.ts";
 
@@ -14,7 +14,7 @@ const SUPPLY = "0x18160ddd";
 const word = (n: bigint) => "0x" + n.toString(16).padStart(64, "0");
 const SOMEONE = "alice::1220" + "ab".repeat(32);
 /** The custody read as the indexer makes it, by default as the participant the synthetic chain reports. */
-const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayCustody">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT) => custodyAt(pool, ledger, reads, limit, participant);
+const custodyOnce = (pool: Pool, ledger: Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">, reads: SyntheticChain["reads"], limit: number, participant: string = PARTICIPANT) => custodyAt(pool, ledger, reads, limit, participant);
 const fakes: FakeLedger[] = [];
 const opened: Indexer[] = [];
 afterEach(async () => {
@@ -50,14 +50,16 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
   it("writes a row for each registered token, at the newest indexed block and the offset of its record, and nothing for a gateway with no token", async () => {
     await inDb(async (pool) => {
       const { chain } = await indexed(pool, 3, { [TKB]: 1_005_000_000n, [TKC]: 0n });
-      const first = await gatewayLedger([holding(1, FAKE_GATEWAY, "5")]);
-      expect(await custodyOnce(pool, first.ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 30, block: 3 });
-      expect(first.fake.requests.map((r) => (r.body as { activeAtOffset: number }).activeAtOffset)).toEqual([30]);
+      const first = await gatewayLedger([holding(1, FAKE_GATEWAY, "100"), holding(3, SOMEONE, "7")]);
+      expect(await custodyOnce(pool, first.ledger, chain.reads, 500)).toMatchObject({ tokens: 0, offset: 30, block: 3 });
+      expect(first.fake.requests.filter((r) => r.path.endsWith("active-contracts")).map((r) => (r.body as { activeAtOffset: number }).activeAtOffset)).toEqual([30]);
+      expect(first.fake.requests.filter((r) => r.path === "/v2/updates").map((r) => (r.body as { endInclusive: number }).endInclusive)).toEqual([30, 30]);
       expect(await rows(pool)).toEqual([]);
-      const { ledger } = await gatewayLedger([gatewayToken(TKB), gatewayToken(TKC, FAKE_REGISTRY, "TKC"), holding(1, FAKE_GATEWAY, "100"), holding(2, FAKE_GATEWAY, "0.5"), holding(3, SOMEONE, "7")]);
-      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 2, offset: 30, block: 3 });
+      const { ledger } = await gatewayLedger([gatewayToken(TKB), gatewayToken(TKC, FAKE_REGISTRY, "TKC")]);
+      // The holdings were walked by the first read, up to offset 30: a registered token that comes later is set against them.
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toMatchObject({ tokens: 2, offset: 30, block: 3 });
       expect(await rows(pool)).toMatchObject([
-        { evm: "d1".repeat(20), instrument_admin: FAKE_REGISTRY, instrument_id: "TKB", custody: "1005000000000", holdings: 2, supply: "1005000000", supply_block: 3, ledger_offset: 30 },
+        { evm: "d1".repeat(20), instrument_admin: FAKE_REGISTRY, instrument_id: "TKB", custody: "1000000000000", holdings: 1, supply: "1005000000", supply_block: 3, ledger_offset: 30 },
         { evm: "d2".repeat(20), instrument_admin: FAKE_REGISTRY, instrument_id: "TKC", custody: "0", holdings: 0, supply: "0", supply_block: 3, ledger_offset: 30 },
       ]);
     });
@@ -67,7 +69,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
     await inDb(async (pool) => {
       const { chain, indexer } = await indexed(pool, 0, {}, 2);
       const { ledger, fake } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")]);
-      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toMatchObject({ tokens: 0, offset: 0, block: null });
       expect(fake.requests).toHaveLength(0);
       chain.reads.rethHead = 2;
       chain.ledger.ledgerHead = 2;
@@ -88,7 +90,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       // the reader moved: the participant that holds every indexed record is no longer the one read, and the new one has no block yet
       await pool.query("update canton_participants set moved_out_at = now()");
       await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('new-participant', 0, now())");
-      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toMatchObject({ tokens: 0, offset: 0, block: null });
       expect(fake.requests).toHaveLength(asked);
       expect(await rows(pool)).toEqual(before);
     });
@@ -102,7 +104,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       const before = await rows(pool);
       const asked = fake.requests.length;
       // LEDGER_URL points at another participant, and the database has not been moved: nothing is read at the old participant's offset
-      expect(await custodyOnce(pool, ledger, chain.reads, 500, "other-participant")).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(await custodyOnce(pool, ledger, chain.reads, 500, "other-participant")).toMatchObject({ tokens: 0, offset: 0, block: null });
       // A -> B: B has one block; A <- B: the reader is back at A, which has no newer block than B's
       await pool.query("update canton_participants set moved_out_at = now()");
       const [b] = (await pool.query("insert into canton_participants (participant_id, first_offset, moved_in_at) values ('participant-b', 0, now()) returning id")).rows;
@@ -110,7 +112,7 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       await pool.query("update canton_updates set participant = $1 where update_id = $2", [b.id, last.update_id]);
       await pool.query("update canton_participants set moved_out_at = now() where participant_id = 'participant-b'");
       await pool.query("update canton_participants set first_offset = 0, last_offset = null, moved_in_at = now(), moved_out_at = null where participant_id = $1", [PARTICIPANT]);
-      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toEqual({ tokens: 0, offset: 0, block: null });
+      expect(await custodyOnce(pool, ledger, chain.reads, 500)).toMatchObject({ tokens: 0, offset: 0, block: null });
       expect(fake.requests).toHaveLength(asked);
       expect(await rows(pool)).toEqual(before);
     });
@@ -123,14 +125,17 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
       const units = 10n ** 10n;
       let head = 2;
       const { chain, indexer } = await indexed(pool, 2, {}, 3);
-      const depositsAtOffset = (offset: number) => Math.min(head, Math.floor(offset / 10));
       const asked: number[] = [];
+      // Each deposit is a holding created at the offset of its block: the walk up to an offset is what Canton knew then.
       const canton = {
-        gatewayCustody: async (_limit: number, offset: number) => {
-          asked.push(offset);
-          return { offset, tokens: [{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", custody: BigInt(depositsAtOffset(offset)) * 10n * units, holdings: depositsAtOffset(offset) }] };
+        gatewayTokens: async () => [{ evmToken: TKB, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB" }],
+        holdingPages: async function* (after: number, upTo: number) {
+          asked.push(upTo);
+          for (let n = Math.max(after / 10 + 1, 1); n * 10 <= Math.min(upTo, head * 10); n++) {
+            yield { offset: n * 10, changes: [{ kind: "created" as const, contractId: `cid${n}`, instrumentAdmin: FAKE_REGISTRY, instrumentId: "TKB", amount: 10n * units }] };
+          }
         },
-      } as unknown as Pick<Ledger, "gatewayCustody">;
+      } as unknown as Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">;
       const reth = { call: async (_to: string, _input: string, block: number) => word(BigInt(Math.min(head, block)) * 10n * 10n ** 6n) } as unknown as SyntheticChain["reads"];
       const diff = async () => {
         const [r] = await rows(pool);
@@ -152,14 +157,14 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
     });
   });
 
-  it("keeps the rows to the tokens of the last read: a token's change is written, one that is no longer registered is dropped", async () => {
+  it("keeps the rows to the tokens of the last read: one that is no longer registered is dropped", async () => {
     await inDb(async (pool) => {
       const { chain } = await indexed(pool, 2, { [TKB]: 1n, [TKC]: 1n });
       await custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), gatewayToken(TKC, FAKE_REGISTRY, "TKC"), holding(1, FAKE_GATEWAY, "1")])).ledger, chain.reads, 500);
       const first = await rows(pool);
-      await custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1"), holding(2, FAKE_GATEWAY, "2")])).ledger, chain.reads, 500);
+      await custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")])).ledger, chain.reads, 500);
       const after = await rows(pool);
-      expect(after).toMatchObject([{ evm: "d1".repeat(20), custody: "30000000000", holdings: 2, ledger_offset: 20 }]);
+      expect(after).toMatchObject([{ evm: "d1".repeat(20), custody: "10000000000", holdings: 1, ledger_offset: 20 }]);
       expect(after[0]!.read_at.getTime()).toBeGreaterThanOrEqual(first[0]!.read_at.getTime());
       await custodyOnce(pool, (await gatewayLedger([])).ledger, chain.reads, 500);
       expect(await rows(pool)).toEqual([]);
@@ -168,14 +173,77 @@ describe.skipIf(!TEST_URL)("the gateway's custody, as the indexer keeps it", () 
 
   it("leaves the last rows as they are when Canton cannot be read, or its answer cannot be stood behind, and says so", async () => {
     await inDb(async (pool) => {
-      const { chain } = await indexed(pool, 1, { [TKB]: 1n });
+      const { chain, indexer } = await indexed(pool, 1, { [TKB]: 1n }, 2);
       await custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")])).ledger, chain.reads, 500);
       const before = await rows(pool);
       const down = await startFakeLedger([], { httpStatus: 503, active: [] });
       fakes.push(down);
       await expect(custodyOnce(pool, createLedger(down.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS), chain.reads, 500)).rejects.toThrow(/cannot read Canton/);
-      await expect(custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1", FAKE_REGISTRY, "TKB", null, "unreadable")])).ledger, chain.reads, 500)).rejects.toThrow(/custody/);
+      // The next block's update brings a holding with no view: the walk fails, and nothing is written.
+      chain.reads.rethHead = 2; chain.ledger.ledgerHead = 2;
+      await indexer.runOnce();
+      const bad = await startFakeLedger([transaction(15, "u15", [holdingEvent(holding(2, FAKE_GATEWAY, "1", FAKE_REGISTRY, "TKB", null, "unreadable"))])], { ledgerEnd: 999, active: [gatewayToken(TKB)] });
+      fakes.push(bad);
+      await expect(custodyOnce(pool, createLedger(bad.url, 2000, FAKE_GATEWAY, 100, null, CUSTODY_ENDPOINTS), chain.reads, 500)).rejects.toThrow(/custody/);
       expect(await rows(pool)).toEqual(before);
+    });
+  });
+
+  it("brings the holdings up to the offset of each block by the walk of the updates: a holding created since is added and an archived one is gone, in the same total as the supply at that block", async () => {
+    await inDb(async (pool) => {
+      const { chain, indexer } = await indexed(pool, 1, { [TKB]: 1n }, 3);
+      const world = await startFakeLedger([
+        transaction(15, "u15", [holdingEvent(holding(2, FAKE_GATEWAY, "4"))]), transaction(25, "u25", [archivedEvent(holding(1, FAKE_GATEWAY, "1").contractId)]),
+      ], { ledgerEnd: 999, active: [gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")] });
+      fakes.push(world);
+      const ledger = createLedger(world.url, 2000, FAKE_GATEWAY, 1, null, CUSTODY_ENDPOINTS);
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      expect(await rows(pool)).toMatchObject([{ custody: "10000000000", holdings: 1, ledger_offset: 10 }]);
+      chain.reads.rethHead = 2; chain.ledger.ledgerHead = 2;
+      await indexer.runOnce();
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      expect(await rows(pool)).toMatchObject([{ custody: "50000000000", holdings: 2, ledger_offset: 20 }]);
+      chain.reads.rethHead = 3; chain.ledger.ledgerHead = 3;
+      await indexer.runOnce();
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      expect(await rows(pool)).toMatchObject([{ custody: "40000000000", holdings: 1, ledger_offset: 30 }]);
+      // Nothing of a holding but the sums: the table of holdings keeps a hash, an instrument and an amount, no owner and no contract id.
+      const kept = JSON.stringify((await pool.query("select * from gateway_holdings")).rows);
+      for (const secret of [FAKE_GATEWAY, "00000002"]) expect(kept).not.toContain(secret);
+    });
+  });
+
+  it("is not stopped by the twin holdings of any number of users: with a list maximum far below their count, the custody is still read, and again at the next block", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 2, { [TKB]: 1n });
+      const twins = Array.from({ length: 700 }, (_, i) => holding(1000 + i, SOMEONE, "1", FAKE_GATEWAY, "TWIN"));
+      const { ledger } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "2"), ...twins]);
+      await custodyOnce(pool, ledger, chain.reads, 500);
+      expect(await rows(pool)).toMatchObject([{ custody: "20000000000", holdings: 1, ledger_offset: 20 }]);
+      expect(Number((await pool.query("select count(*) from gateway_holdings")).rows[0].count)).toBe(1);
+    });
+  });
+
+  it("walks again from the start when the participant read is another one, and forgets what the older walk kept", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 1, { [TKB]: 1n });
+      await custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")])).ledger, chain.reads, 500);
+      await pool.query("insert into meta (key, value) values ('holdings_participant', 'older') on conflict (key) do update set value = excluded.value");
+      await pool.query("insert into gateway_holdings (contract_hash, instrument_admin, instrument_id, amount) values ($1, 'x', 'y', 5)", [Buffer.alloc(32, 7)]);
+      await custodyOnce(pool, (await gatewayLedger([gatewayToken(TKB), holding(3, FAKE_GATEWAY, "3")])).ledger, chain.reads, 500);
+      expect(await rows(pool)).toMatchObject([{ custody: "30000000000", holdings: 1 }]);
+      expect(Number((await pool.query("select count(*) from gateway_holdings")).rows[0].count)).toBe(1);
+    });
+  });
+
+  it("goes on with the custody when the chain record cannot be read, and says what failed", async () => {
+    await inDb(async (pool) => {
+      const { chain } = await indexed(pool, 1, { [TKB]: 1n });
+      const { ledger } = await gatewayLedger([gatewayToken(TKB), holding(1, FAKE_GATEWAY, "1")]);
+      const broken = { ...ledger, chainRegistry: async () => { throw new Error("the chain record cannot be read"); } } as unknown as Pick<Ledger, "gatewayTokens" | "holdingPages" | "chainRegistry">;
+      const got = await custodyAt(pool, broken, chain.reads, 500, PARTICIPANT, CHAIN_ID);
+      expect(got).toMatchObject({ tokens: 1, registryError: "the chain record cannot be read" });
+      expect(await rows(pool)).toMatchObject([{ custody: "10000000000", holdings: 1 }]);
     });
   });
 

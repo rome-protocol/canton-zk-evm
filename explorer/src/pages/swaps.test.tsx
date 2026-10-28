@@ -73,10 +73,38 @@ describe("the block page: Settled with this block", () => {
     expect(settled().queryByText("Seller gives")).toBeNull();
   });
 
+  it("shows a lock and a release as such, with the twin's instrument and amount", async () => {
+    const instrument = { admin: "a::1220", id: "erc20:" + "d1".repeat(20) };
+    const lock = plainLeg({ legIndex: 1, legId: hash(0x1c), kind: "payment", gateway: addr(0xb1), canton: { role: "lock", amount: "50000000000", instrument, settledUpdateId: update(0xf1), recipient: addr(0xb2) } });
+    const rel = plainLeg({ legIndex: 2, legId: hash(0x2c), kind: "payment", gateway: addr(0xb1), canton: { role: "release", amount: "30000000000", instrument, settledUpdateId: update(0xf2), recipient: addr(0xa1) } });
+    await openBlock([lock, rel]);
+    const lines = settled().getAllByRole("listitem");
+    expect(lines[0]).toHaveTextContent("Lock");
+    expect(lines[0]).toHaveTextContent("5 erc20:" + "d1".repeat(20));
+    expect(lines[1]).toHaveTextContent("Release");
+    expect(lines[1]).toHaveTextContent("3 erc20:" + "d1".repeat(20));
+    expect(settled().queryByText("Seller gives")).toBeNull();
+  });
+
+  it("names the registered gateways in the panel's note", async () => {
+    await openBlock([plainLeg()]);
+    expect(settled().getByRole("tooltip", { hidden: true })).toHaveTextContent(/registered gateways/);
+  });
+
   it("has no panel for a block that recorded no legs", async () => {
     await openBlock([]);
     await screen.findByRole("region", { name: "Transactions" });
     expect(screen.queryByRole("region", { name: "Settled with this block" })).toBeNull();
+  });
+
+  it("shows a lock in the table of all of a block's legs, with the twin's amount", async () => {
+    const first = Array.from({ length: 50 }, (_, i) => plainLeg({ legIndex: i, legId: hash(0x10 + i) }));
+    const lock = plainLeg({ legIndex: 50, legId: hash(0xac), kind: "payment", gateway: addr(0xb1), canton: { role: "lock", amount: "50000000000", instrument: { admin: "a::1220", id: "erc20:" + "d1".repeat(20) }, settledUpdateId: update(0xf1), recipient: addr(0xb2) } });
+    await openBlock(first, { blockLegs: () => reply(page([lock])) }, 51);
+    await userEvent.click(await settled().findByRole("button", { name: "Page through all 51 legs" }));
+    const row = (await screen.findByRole("link", { name: "50" })).closest("tr")!;
+    expect(row).toHaveTextContent("Lock");
+    expect(row).toHaveTextContent("5 erc20:" + "d1".repeat(20));
   });
 
   it("says so inline when the block's legs route cannot answer after paging is asked for", async () => {
@@ -139,6 +167,14 @@ describe("the transaction page: Canton side", () => {
     expect(s.getByText("2.5")).toBeInTheDocument();
     expect(s.getByText(/Settled together in one Canton transaction/)).toBeInTheDocument();
     expect(s.getByRole("link", { name: "Open swap" })).toHaveAttribute("href", `/swap/${PAY}`);
+  });
+
+  it("shows a lock as such with the twin's instrument and amount", async () => {
+    const lock = plainLeg({ legIndex: 1, legId: hash(0x1c), kind: "payment", canton: { role: "lock", amount: "50000000000", instrument: { admin: "a::1220", id: "erc20:" + "d1".repeat(20) }, settledUpdateId: update(0xf1), recipient: addr(0xb2) } });
+    await openTx([lock]);
+    const s = within(await screen.findByRole("region", { name: "Canton side" }));
+    expect(s.getByRole("listitem")).toHaveTextContent("Lock");
+    expect(s.getByRole("listitem")).toHaveTextContent("5 erc20:" + "d1".repeat(20));
   });
 
   it("shows a compact line for a leg that is no swap", async () => {

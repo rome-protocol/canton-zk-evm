@@ -295,15 +295,16 @@ export async function stage1(c: PoolClient, i: Stage1Input): Promise<Stage1Resul
  * cannot be decoded, or a hash that differs, is `degraded` naming the block, never a stop. A later block that agrees does not clear the report of an
  * older one: the row stays degraded until a person has looked, because one old block that disagrees is still one that disagrees.
  */
-export async function checkLegs(c: PoolClient, n: number, legs: ReturnType<typeof legsOf>["legs"], onChain: string | null, problem: Error | null): Promise<void> {
+export async function checkLegs(c: PoolClient, n: number, legs: ReturnType<typeof legsOf>["legs"], onChain: string | null, problem: Error | null, gateway: string | null = null): Promise<void> {
+  const of = gateway === null ? "the gateway" : `the registered gateway ${gateway}`;
   if (problem) {
-    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n }, detail: problem.message }]);
+    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, ...(gateway === null ? {} : { gateway }) }, detail: gateway === null ? problem.message : `${of}: ${problem.message}` }]);
     return;
   }
   if (legs.length === 0) return;
   const computed = legHash(legs.map((l) => l.leg));
   if (computed !== onChain) {
-    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, computed, onChain }, detail: `block ${n}: the leg hash worked out from its ${legs.length} Leg events is ${computed}, but the gateway's legs[${n}] is ${onChain}` }]);
+    await setHealth(c, [{ id: "C10", status: "degraded", value: { block: n, computed, onChain, ...(gateway === null ? {} : { gateway }) }, detail: `block ${n}: the leg hash worked out from its ${legs.length} Leg events is ${computed}, but ${of}'s legs[${n}] is ${onChain}` }]);
     return;
   }
   const now0 = (await c.query("select status from health_checks where check_id = 'C10'")).rows[0]?.status as string | undefined;
