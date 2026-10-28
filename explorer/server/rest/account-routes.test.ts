@@ -412,13 +412,13 @@ describe.skipIf(!TEST_URL)("the REST routes of accounts, contracts, tokens and l
   it("shows the twin line of a token a registered vault holds, from the kept totals, with the block they are counted to; null otherwise", async () => {
     expect(body(await get(`/api/tokens/${T1}`)).twin).toBeNull();
     await sql("insert into canton_registry (address, kind, code_hash, admin, ledger_offset) values ($1, 'vault', $2, 'gw::1220ab', 5)", [who(0xc1), Buffer.alloc(32, 1)]);
-    await sql("insert into twin_totals (token, locked, released, locks, releases) values ($1, 900, 400, 3, 1)", [who(0xb1)]);
+    await sql("insert into twin_totals (token, locked, released, locks, releases, vault_balance) values ($1, 900, 400, 3, 1, 480)", [who(0xb1)]);
     await sql("insert into meta (key, value) values ('twin_totals_block', '3') on conflict (key) do update set value = excluded.value");
     try {
       const t = body(await get(`/api/tokens/${T1}`));
       same(t, F.tokenDetail);
       same(t.twin, F.twinSupply);
-      expect(t.twin).toEqual({ supply: "500", vaultBalance: "0", locks: 3, releases: 1, through: 3 });
+      expect(t.twin).toEqual({ supply: "500", vaultBalance: "480", locks: 3, releases: 1, through: 3 });
       expect(t.twin).not.toHaveProperty("partial");
       expect(body(await get(`/api/tokens/${T2}`)).twin).toBeNull();
       for (const i of body(await get("/api/tokens")).items) expect(i).not.toHaveProperty("twin");

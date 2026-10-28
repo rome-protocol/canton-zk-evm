@@ -31,6 +31,8 @@ export const STALE_AFTER_INTERVALS = 3;
 export const API_INTERVAL_SECONDS = 5;
 
 const INDEXER_ROUND = 2;
+/** How often the custody loop writes its rows (`CUSTODY_MS`, 30 s unless set, at least 1 s); the API and the indexer read the same setting. */
+export const CUSTODY_INTERVAL_SECONDS = Math.max(1, Math.ceil((Number(process.env.CUSTODY_MS) || 30_000) / 1000));
 const ROUND: CheckSpec = { role: "indexer", worst: "degraded", intervalSeconds: INDEXER_ROUND, stale: "degraded" };
 /** The indexer's own rows. C1, C2, C3 and C7 are written when they fail, and the indexer stops at that block, so they are `down` and have no interval. */
 const SPECS: Record<string, CheckSpec> = {
@@ -44,8 +46,10 @@ const SPECS: Record<string, CheckSpec> = {
   db_ids: { role: "indexer", worst: "down", intervalSeconds: INDEXER_ROUND, stale: "degraded" },
   producer_alive: ROUND, producer_state: ROUND, prover: ROUND,
   journal: { role: "indexer", worst: "degraded" }, reth_reads: { role: "indexer", worst: "degraded" },
-  // The leg index of the registered gateways is written from the custody loop, which is off unless the gateway party is set: the row is not expected, and never down.
-  registered_legs: { role: "indexer", worst: "degraded" },
+  // The custody read and the leg index of the registered gateways are written from the custody loop, which is off unless the gateway party is set: the rows are not expected, and are never down. A row that
+  // the loop stops refreshing (the read hangs, or the loop is gone) turns degraded after three of the loop's own intervals, so a freeze is never silent.
+  custody: { role: "indexer", worst: "degraded", intervalSeconds: CUSTODY_INTERVAL_SECONDS, stale: "degraded" },
+  registered_legs: { role: "indexer", worst: "degraded", intervalSeconds: CUSTODY_INTERVAL_SECONDS, stale: "degraded" },
   // The shared rows of the API: the instance that holds the faucet's or the tracker's lock writes them.
   faucet: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },
   tracker: { role: "api", worst: "degraded", intervalSeconds: API_INTERVAL_SECONDS, stale: "degraded" },

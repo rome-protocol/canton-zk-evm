@@ -113,9 +113,9 @@ export interface TokenItem {
 export interface CantonCustody { instrumentAdmin: string; instrumentId: string; custody: string; custodyDecimals: number; holdings: number; supply: string | null; supplyBlock: number; ledgerOffset: number; readAt: string }
 /**
  * The Canton twin of an ERC-20 a registered vault holds: `supply` is what the twin has in issue (the locks into a registered vault less the releases out of one, in the token's base units), `vaultBalance` what the
- * registered vaults hold of the token now (the index's balances), `locks` and `releases` the legs counted. The sums are kept by the indexer, once per leg, and count the legs up to the block `through` (null before the first pass).
+ * registered vaults held of the token at the block `through`, the same block the sums are counted to (null where reth did not give it), `locks` and `releases` the legs counted. The sums are kept by the indexer, once per leg, and count the legs up to the block `through` (null before the first pass).
  */
-export interface TwinSupply { supply: string; vaultBalance: string; locks: number; releases: number; through: number | null }
+export interface TwinSupply { supply: string; vaultBalance: string | null; locks: number; releases: number; through: number | null }
 export interface TokenDetail extends TokenItem { totalSupplyBlock: number | null; balanceMode: string; canton: CantonCustody | null; twin: TwinSupply | null }
 export interface HolderItem { holder: string; tokenId: string; value: string; updatedBlock: number }
 export interface LegListItem { block: number; txHash: string | null; legIndex: number; txIndex: number; logIndex: number; kind: string; gateway: string | null; twin: "lock" | "release" | null; legId: string; token: string; account: string; amount: string; party: string | null }
@@ -504,16 +504,16 @@ export function createAccountRest(pool: Pool) {
   }
 
   /**
-   * The twin line of an ERC-20 that a registered vault holds or took in (null for any other token): one row of the sums the indexer keeps per token (`twin_totals`, counted once per leg), and one read of the
-   * vaults' balances of the token. `through` is the block the sums are counted to.
+   * The twin line of an ERC-20 that a registered vault holds or took in (null for any other token): one row of what the indexer keeps per token (`twin_totals`, counted once per leg). `supply` is the locks less
+   * the releases, and `vaultBalance` is what the registered vaults held of the token at the SAME block, `through`, that the sums are counted to (both are written by one pass of the indexer in one transaction), so
+   * the two never differ because one trails the other; `vaultBalance` is null where reth did not give it at that block.
    */
   async function twinSupply(a: string): Promise<TwinSupply | null> {
-    const [held] = await query("select coalesce(sum(b.value), 0)::text as v from token_balances b join canton_registry r on r.kind = 'vault' and r.address = b.holder where b.token = $1", [bytes(a)]);
-    const [t] = await query("select t.locked::text as locked, t.released::text as released, t.locks, t.releases, (select value from meta where key = 'twin_totals_block') as through from twin_totals t where t.token = $1 and exists (select 1 from canton_registry where kind = 'vault')", [bytes(a)]);
-    const vaultBalance: string = held?.v ?? "0";
-    if (!t && vaultBalance === "0") return null;
-    const locked = BigInt(t?.locked ?? "0"), out = BigInt(t?.released ?? "0");
-    return { supply: (locked - out).toString(), vaultBalance, locks: Number(t?.locks ?? 0), releases: Number(t?.releases ?? 0), through: t?.through == null ? null : Number(t.through) };
+    const [t] = await query("select t.locked::text as locked, t.released::text as released, t.locks, t.releases, t.vault_balance::text as vault_balance, (select value from meta where key = 'twin_totals_block') as through from twin_totals t where t.token = $1 and exists (select 1 from canton_registry where kind = 'vault')", [bytes(a)]);
+    if (!t) return null;
+    const vaultBalance: string | null = t.vault_balance ?? null;
+    if (Number(t.locks) === 0 && Number(t.releases) === 0 && (vaultBalance === null || vaultBalance === "0")) return null;
+    return { supply: (BigInt(t.locked) - BigInt(t.released)).toString(), vaultBalance, locks: Number(t.locks), releases: Number(t.releases), through: t.through == null ? null : Number(t.through) };
   }
 
   /** Who holds a token, most first, after the key (value, holder, id). A holder of several ids of an ERC-1155 is listed once for each. */

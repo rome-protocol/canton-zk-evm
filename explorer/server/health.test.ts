@@ -28,7 +28,7 @@ describe("the health model (design 6.5)", () => {
   });
 
   it("is degraded for C4, C6, C8, C9 and C10, the producer's rows and the prover, and never down: they are not needed for final data", () => {
-    for (const id of ["C4", "C6", "C8", "C9", "C10", "producer_alive", "producer_state", "prover", "journal", "registered_legs"]) {
+    for (const id of ["C4", "C6", "C8", "C9", "C10", "producer_alive", "producer_state", "prover", "journal", "registered_legs", "custody"]) {
       const e = evaluate([...fresh().filter((r) => r.id !== id), row(id, "degraded", 1, "failed")]);
       expect(e.status, id).toBe("degraded");
       expect(httpStatusOf(e.status), id).toBe(200);
@@ -36,6 +36,15 @@ describe("the health model (design 6.5)", () => {
       const loud = evaluate([...fresh().filter((r) => r.id !== id), row(id, "down", 1, "failed")]);
       expect(loud.status, id).toBe("degraded");
       expect(loud.checks.find((c) => c.id === id)).toMatchObject({ status: "degraded", written: "down" });
+    }
+  });
+
+  it("turns the custody and registered_legs rows degraded, never down, when the custody loop stops refreshing them", () => {
+    for (const id of ["custody", "registered_legs"]) {
+      expect(evaluate([...fresh(), row(id, "ok", 5)]).status, id).toBe("ok");
+      const stale = evaluate([...fresh(), row(id, "ok", 10_000)]);
+      expect(stale.status, id).toBe("degraded");
+      expect(httpStatusOf(stale.status), id).toBe(200);
     }
   });
 

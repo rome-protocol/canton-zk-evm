@@ -72,7 +72,7 @@ describe.skipIf(!TEST_URL)("the registry in the custody read", () => {
     await inDb(async (pool) => {
       const chain = await indexed(pool, 3);
       const first = await ledgerOf([zkChain([registered(GW2, "Gateway"), registered(VAULT, "Vault", "c2")])]);
-      expect(await custodyOnce(pool, first, chain.reads, 500, PARTICIPANT, CHAIN_ID)).toEqual({ tokens: 0, offset: 30, block: 3 });
+      expect(await custodyOnce(pool, first, chain.reads, 500, PARTICIPANT, CHAIN_ID)).toEqual({ tokens: 0, holdings: 0, offset: 30, block: 3, registryError: null });
       // no read was made before: a gateway registered long ago is read from its first leg
       expect(await entries(pool)).toEqual([
         { address: "b1".repeat(20), kind: "gateway", hash: "e1".repeat(32), admin: FAKE_GATEWAY, cursor: 0, ledger_offset: 30 },
@@ -107,9 +107,9 @@ describe.skipIf(!TEST_URL)("the registry in the custody read", () => {
       const chain = await indexed(pool, 2);
       const many = Array.from({ length: 6 }, (_, i) => holding(i + 1, FAKE_GATEWAY, "5"));
       const ledger = await ledgerOf([zkChain([registered(GW2, "Gateway"), registered(VAULT, "Vault")], { twins: [{ twinToken: "c1".repeat(20), twinDecimals: 6, twinRules: "00ab" }] }), ...many]);
-      // the custody read refuses a list as long as its limit, and says so ...
-      await expect(custodyOnce(pool, ledger, chain.reads, 5, PARTICIPANT, CHAIN_ID)).rejects.toThrow(/custody cannot be read/);
-      // ... but the registry, its own read, was kept
+      // the holdings are walked and not listed, so the custody is read although there are more of them than the limit ...
+      expect((await custodyOnce(pool, ledger, chain.reads, 5, PARTICIPANT, CHAIN_ID)).registryError).toBeNull();
+      // ... and the registry, its own read, was kept
       expect((await entries(pool)).map((e) => e.kind)).toEqual(["gateway", "vault"]);
       expect((await pool.query("select encode(token, 'hex') as token, decimals from canton_twins")).rows).toEqual([{ token: "c1".repeat(20), decimals: 6 }]);
     });

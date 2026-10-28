@@ -581,12 +581,17 @@ export function createIndexer(o: IndexerOptions) {
       let failing = "", venueFailing = "", registeredFailing = "";
       while (running && o.custody) {
         try {
-          await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId);
-          failing = "";
-        } catch (e) {
+          const read = await custodyOnce(o.pool, o.custody.ledger, o.reads, o.custody.limit ?? 200, (participantId ??= await o.ledger.participantId()), o.chainId);
+          const problem = read.registryError !== null ? `the chain record's registry cannot be read: ${read.registryError}` : read.block === null ? "no block of the participant now read is indexed yet, so there is nothing to read the custody at" : null;
+          await setHealth(o.pool, [{ id: "custody", status: problem === null ? "ok" : "degraded", value: { tokens: read.tokens, holdings: read.holdings, block: read.block, offset: read.offset }, detail: problem }]);
           // Said once for each kind of failure, not on every pass.
+          if (problem !== null && failing !== problem) log(`indexer (custody): ${problem}`);
+          failing = problem ?? "";
+        } catch (e) {
           if (failing !== (e as Error).message) log(`indexer (custody): ${(e as Error).message}`);
           failing = (e as Error).message;
+          // The row says what failed, and its time moves: the last rows of the custody stay, with the time they were read at.
+          await setHealth(o.pool, [{ id: "custody", status: "degraded", detail: `the custody cannot be read: ${failing}` }]).catch(() => undefined);
         }
         // The Canton side of the swaps (a venue's trades and the funded claims) is read the same way, as the gateway party, and fails on its own.
         try {
@@ -597,16 +602,23 @@ export function createIndexer(o: IndexerOptions) {
           venueFailing = (e as Error).message;
         }
         // The legs of the registered gateways (the chain record's registry, read above) are indexed from the logs stage 1 wrote, a batch of blocks at a time until they are caught up.
+        let registeredError: string | null = null;
         try {
           while (running && (await registeredLegsOnce(o.pool, o.reads)).blocks > 0) { /* the next batch */ }
           // The twin sums go on from the legs just indexed, a batch of blocks at a time.
-          while (running && (await twinTotalsOnce(o.pool)).blocks > 0) { /* the next batch */ }
-          const lag = await registeredLegsHealth(o.pool);
-          if (lag) await setHealth(o.pool, [lag]);
+          while (running && (await twinTotalsOnce(o.pool, o.reads)).blocks > 0) { /* the next batch */ }
           registeredFailing = "";
         } catch (e) {
-          if (registeredFailing !== (e as Error).message) log(`indexer (registered gateways): ${(e as Error).message}`);
-          registeredFailing = (e as Error).message;
+          registeredError = (e as Error).message;
+          if (registeredFailing !== registeredError) log(`indexer (registered gateways): ${registeredError}`);
+          registeredFailing = registeredError;
+        }
+        // The row is written after every pass, the one that failed too: it reads the database only, so the lag keeps growing while the legs stop, and a pass that fails says so.
+        try {
+          const lag = await registeredLegsHealth(o.pool);
+          if (lag) await setHealth(o.pool, [registeredError === null ? lag : { ...lag, status: "degraded", detail: `the legs of the registered gateways cannot be indexed: ${registeredError}` }]);
+        } catch (e) {
+          log(`indexer (registered gateways health): ${(e as Error).message}`);
         }
         for (let waited = 0; running && waited < custodyMs; waited += 50) await sleep(50);
       }

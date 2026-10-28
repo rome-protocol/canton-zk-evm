@@ -10,7 +10,6 @@ import { Icon } from "./Icon.tsx";
 import { Info } from "./Info.tsx";
 import "./swap.css";
 
-/** Canton holds an amount with ten decimals, as the gateway's custody does. */
 /** A block's or a transaction's answer carries this many legs; the block's own legs route has the rest. */
 export const LEGS_SHOWN = 50;
 /** A block with more swap legs than this shows each from its leg alone, with no read per card. */

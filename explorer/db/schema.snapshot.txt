@@ -395,6 +395,16 @@ table faucet_requests
   CREATE INDEX faucet_requests_updated_at_idx ON public.faucet_requests USING btree (updated_at)
   CREATE UNIQUE INDEX faucet_requests_pkey ON public.faucet_requests USING btree (ticket)
 
+table gateway_holdings
+  column contract_hash bytea not null
+  column instrument_admin text not null
+  column instrument_id text not null
+  column amount numeric not null
+  constraint gateway_holdings_amount_check CHECK ((amount >= (0)::numeric))
+  constraint gateway_holdings_pkey PRIMARY KEY (contract_hash)
+  CREATE INDEX gateway_holdings_instrument_idx ON public.gateway_holdings USING btree (instrument_admin, instrument_id)
+  CREATE UNIQUE INDEX gateway_holdings_pkey ON public.gateway_holdings USING btree (contract_hash)
+
 table gateway_legs
   column block_number bigint not null
   column leg_index integer not null
@@ -749,9 +759,9 @@ table token_transfers partition by RANGE (block_number)
   CREATE INDEX token_transfers_to_erc1155_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE ((amount IS NOT NULL) AND (token_id IS NOT NULL))
   CREATE INDEX token_transfers_to_erc20_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NULL)
   CREATE INDEX token_transfers_to_erc721_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (amount IS NULL)
-  CREATE INDEX token_transfers_to_nft_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NOT NULL)
   CREATE INDEX token_transfers_token_block_number_idx ON ONLY public.token_transfers USING btree (token, block_number DESC)
   CREATE INDEX token_transfers_token_token_id_block_number_log_index_idx ON ONLY public.token_transfers USING btree (token, token_id, block_number DESC, log_index DESC)
+  CREATE INDEX token_transfers_to_nft_idx ON ONLY public.token_transfers USING btree (to_address, block_number DESC, log_index DESC, batch_index DESC) WHERE (token_id IS NOT NULL)
   CREATE UNIQUE INDEX token_transfers_pkey ON ONLY public.token_transfers USING btree (block_number, log_index, batch_index)
 
 table tokens
@@ -849,6 +859,7 @@ table twin_totals
   column released numeric not null default 0
   column locks bigint not null default 0
   column releases bigint not null default 0
+  column vault_balance numeric
   constraint twin_totals_pkey PRIMARY KEY (token)
   CREATE UNIQUE INDEX twin_totals_pkey ON public.twin_totals USING btree (token)
 

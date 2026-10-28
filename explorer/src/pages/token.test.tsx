@@ -555,5 +555,6 @@ describe("the Canton twin line", () => {
     expect(compareTwin({ supply: "5", vaultBalance: "5" })).toEqual({ state: "equal", diff: "0" });
     expect(compareTwin({ supply: "5", vaultBalance: "7" })).toEqual({ state: "vault-higher", diff: "2" });
     expect(compareTwin({ supply: "9", vaultBalance: "7" })).toEqual({ state: "twin-higher", diff: "2" });
+    expect(compareTwin({ supply: "9", vaultBalance: null })).toEqual({ state: "unread", diff: "0" });
   });
 });

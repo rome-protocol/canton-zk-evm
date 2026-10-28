@@ -24,7 +24,8 @@ import { legsSlot } from "./legs.ts";
 import type { FinalReads, TxTrace } from "./reads.ts";
 import { transactionHashes } from "./rlp.ts";
 import { checkLegs, legsOf, writeBlockRow, writeFacts } from "./stage1.ts";
-import { resetTwinTotals } from "./custody.ts";import { deriveCursor, rederive } from "./stage2.ts";
+import { resetTwinTotals } from "./custody.ts";
+import { deriveCursor, rederive } from "./stage2.ts";
 import { rebuildAggregates } from "./aggregates.ts";
 
 /** Any fixed number, the same for every process of this schema; not the indexer's own lock key. */

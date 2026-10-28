@@ -29,9 +29,12 @@ const inDb = (fn: (pool: Pool) => Promise<void>) => withDatabase(async (pool) =>
 });
 const pin = (token: string, decimals: number) => ({ twinToken: token.slice(2), twinDecimals: decimals, twinRules: "00ab" });
 const pay = (id: string, token: string, account: string, amount: bigint) => ({ gateway: GW2, kind: 3, id, token, account, amount });
-async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false): Promise<SyntheticChain> {
+/** The call that reads what a vault holds of a token, as reth is asked for it. */
+const balanceKey = (token: string, vault: string) => `${token}:0x70a08231${"0".repeat(24)}${vault.slice(2)}`;
+async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false, balances: [string, string, bigint][] = []): Promise<SyntheticChain> {
   await migrate(pool);
   const chain = makeChain(shapes);
+  for (const [t, v, n] of balances) chain.reads.callResults[balanceKey(t, v)] = "0x" + n.toString(16).padStart(64, "0");
   chain.reads.rethHead = shapes.length;
   chain.ledger.ledgerHead = shapes.length;
   const fake = await startFakeLedger([], { ledgerEnd: 999, active: [zkChain([registered(GW2, "Gateway"), registered(VAULT, "Vault", "c2")], { twins: [pin(TOKEN, 18), pin(SIX, 6)] })] });
@@ -57,7 +60,7 @@ async function setUp(pool: Pool, shapes: BlockShape[], viaLoop = false): Promise
   }
   await custodyOnce(pool, ledger, chain.reads, 500, PARTICIPANT, CHAIN_ID);
   await registeredLegsOnce(pool, chain.reads);
-  await twinTotalsOnce(pool);
+  await twinTotalsOnce(pool, chain.reads);
   return chain;
 }
 
@@ -129,25 +132,40 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       expect((await chain.blockLegs(1, null, 10)).map((l) => [l.kind, l.gateway, l.canton?.role ?? null])).toEqual([["deposit", null, null], ["payment", GW2, "lock"]]);
     });
   });
-  it("gives a twin token its supply (locks less releases) next to what the vaults hold, from sums kept as the legs are indexed, and nothing for any other token", async () => {
+  it("gives a twin token its supply (locks less releases) next to what the vaults held at the same block, from sums kept as the legs are indexed, and nothing for any other token", async () => {
     await inDb(async (pool) => {
       await setUp(pool, [
         { txs: 1, extra: [pay(ID1, TOKEN, VAULT, 5n * 10n ** 18n), pay(ID4, SIX, VAULT, 2_500_000n)] },
         { txs: 1, extra: [pay(ID2, TOKEN, ALICE, 3n * 10n ** 18n)], extraLogs: [released(VAULT, ID2, TOKEN, ALICE)] },
         { txs: 1 },
-      ]);
-      const held = (t: string, h: string, v: bigint) => pool.query("insert into token_balances (token, holder, value, updated_block) values ($1, $2, $3, 2)", [Buffer.from(t.slice(2), "hex"), Buffer.from(h.slice(2), "hex"), v.toString()]);
-      await held(TOKEN, VAULT, 2n * 10n ** 18n);
-      await held(TOKEN, ALICE, 3n * 10n ** 18n);
+      ], false, [[TOKEN, VAULT, 2n * 10n ** 18n], [SIX, VAULT, 2_500_000n]]);
       const accounts = createAccountRest(pool);
-      // 5 locked, 3 released: the twin has 2 in issue, and the vault holds 2 (Alice's balance is not the vault's)
+      // 5 locked, 3 released: the twin has 2 in issue, and the vault held 2 at block 3, where the sums stop
       expect((await accounts.token(TOKEN))?.twin).toEqual({ supply: (2n * 10n ** 18n).toString(), vaultBalance: (2n * 10n ** 18n).toString(), locks: 1, releases: 1, through: 3 });
-      expect((await accounts.token(SIX))?.twin).toEqual({ supply: "2500000", vaultBalance: "0", locks: 1, releases: 0, through: 3 });
-      // a balance held by an address that is not a registered vault is not the vault's
-      await held(SIX, OTHER_VAULT, 1n);
-      expect((await accounts.token(SIX))?.twin?.vaultBalance).toBe("0");
+      expect((await accounts.token(SIX))?.twin).toEqual({ supply: "2500000", vaultBalance: "2500000", locks: 1, releases: 0, through: 3 });
+      // A lock or a release that is indexed after the last twin pass moves the index's live balance of the vault and not the twin's two numbers, which are of one block: the card shows no gap that is not there.
+      await pool.query("insert into token_balances (token, holder, value, updated_block) values ($1, $2, $3, 4)", [Buffer.from(TOKEN.slice(2), "hex"), Buffer.from(VAULT.slice(2), "hex"), (9n * 10n ** 18n).toString()]);
+      expect((await accounts.token(TOKEN))?.twin).toMatchObject({ supply: (2n * 10n ** 18n).toString(), vaultBalance: (2n * 10n ** 18n).toString(), through: 3 });
       await pool.query("delete from canton_registry where kind = 'vault'");
       expect((await accounts.token(TOKEN))?.twin).toBeNull();
+    });
+  });
+
+  it("reads the vaults' balance at the block the sums stop at, only in the pass that reaches it, and leaves it null for a token that does not answer", async () => {
+    await inDb(async (pool) => {
+      const chain = await setUp(pool, threeBlocks(), false, [[TOKEN, VAULT, 7n]]);
+      const bal = async () => (await pool.query("select encode(token, 'hex') as token, vault_balance::text as v from twin_totals order by token")).rows;
+      // SIX does not answer: not known, not zero
+      expect(await bal()).toEqual([{ token: "d1".repeat(20), v: "7" }, { token: "d2".repeat(20), v: null }]);
+      chain.reads.calls.call = 0;
+      await pool.query("delete from twin_totals");
+      await pool.query("delete from meta where key = 'twin_totals_block'");
+      expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
+      expect(await bal()).toEqual([{ token: "d1".repeat(20), v: null }, { token: "d2".repeat(20), v: null }]);
+      expect(chain.reads.calls.call).toBe(0);
+      await twinTotalsOnce(pool, chain.reads, 1);
+      expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
+      expect(await bal()).toEqual([{ token: "d1".repeat(20), v: "7" }, { token: "d2".repeat(20), v: null }]);
     });
   });
 
@@ -161,28 +179,28 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
 
   it("counts the twin sums once per leg, a batch of blocks at a time from its cursor, and counts nothing while no vault is registered", async () => {
     await inDb(async (pool) => {
-      await setUp(pool, threeBlocks());
+      const chain = await setUp(pool, threeBlocks());
       const all = await totals(pool);
       expect(all).toEqual([
         { token: "d1".repeat(20), locked: (5n * 10n ** 18n + 1n).toString(), released: (3n * 10n ** 18n).toString(), locks: 2, releases: 1 },
         { token: "d2".repeat(20), locked: "2500000", released: "0", locks: 1, releases: 0 },
       ]);
       expect(await done(pool)).toBe("3");
-      expect(await twinTotalsOnce(pool)).toEqual({ blocks: 0 });
+      expect(await twinTotalsOnce(pool, chain.reads)).toEqual({ blocks: 0 });
       await pool.query("delete from twin_totals");
       await pool.query("delete from meta where key = 'twin_totals_block'");
-      expect(await twinTotalsOnce(pool, 1)).toEqual({ blocks: 1 });
+      expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
       expect((await totals(pool)).map((t) => [t.token.slice(0, 2), t.locks, t.releases])).toEqual([["d1", 1, 0], ["d2", 1, 0]]);
-      expect(await twinTotalsOnce(pool, 1)).toEqual({ blocks: 1 });
-      expect(await twinTotalsOnce(pool, 1)).toEqual({ blocks: 1 });
+      expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
+      expect(await twinTotalsOnce(pool, chain.reads, 1)).toEqual({ blocks: 1 });
       expect(await totals(pool)).toEqual(all);
       // a registered gateway that has not caught up holds the count back: its legs are not all in yet
       await pool.query("delete from twin_totals");
       await pool.query("insert into meta (key, value) values ('twin_totals_block', '0') on conflict (key) do update set value = '0'");
       await pool.query("update canton_registry set legs_cursor = 1 where kind = 'gateway'");
-      expect(await twinTotalsOnce(pool)).toEqual({ blocks: 1 });
+      expect(await twinTotalsOnce(pool, chain.reads)).toEqual({ blocks: 1 });
       await pool.query("delete from canton_registry where kind = 'vault'");
-      expect(await twinTotalsOnce(pool)).toEqual({ blocks: 0 });
+      expect(await twinTotalsOnce(pool, chain.reads)).toEqual({ blocks: 0 });
     });
   });
 
@@ -202,7 +220,7 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       await again([pin(TOKEN, 18), pin(SIX, 6)], [registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")]);
       expect(await totals(pool)).toEqual([]);
       expect(await done(pool)).toBeNull();
-      await twinTotalsOnce(pool);
+      await twinTotalsOnce(pool, chain.reads);
       expect(await totals(pool)).toEqual(before);
       // a pin that is new: the same
       await again([pin(TOKEN, 18), pin(SIX, 6), pin(OTHER, 8)], [registered(VAULT, "Vault", "c2"), registered(OTHER_VAULT, "Vault", "c3")]);
@@ -233,7 +251,7 @@ describe.skipIf(!TEST_URL)("the twin legs", () => {
       expect(await legs()).toEqual(before);
       expect(await totals(pool)).toEqual([]);
       expect(await done(pool)).toBeNull();
-      await twinTotalsOnce(pool);
+      await twinTotalsOnce(pool, chain.reads);
       expect((await totals(pool)).map((t) => t.locks)).toEqual([2, 1]);
     });
   });
