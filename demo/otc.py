@@ -278,8 +278,8 @@ def pay(net: canton.Network, label: str, tokens: str = None, seconds: str = None
     if not canton.WHOLE.fullmatch(count) or int(count) == 0:
         raise SystemExit(f"the TKA amount must be a whole number, more than zero: {count!r}")
     claim_of = claim_id(made["payId"])
-    if evm.main(["used", claim_of])["used"]:   # the gateway takes an id once: a claim that someone else has made with this id leaves the buyer with nothing to claim
-        raise SystemExit(f"the gateway has already taken the claim id of {label!r} ({claim_of}): do not pay")
+    if evm.main(["used", claim_of]).get("used") is not False:   # the gateway takes an id once: a claim that someone else has made with this id leaves the buyer with nothing to claim; an answer that is not a plain "no" is a failed check
+        raise SystemExit(f"the gateway has already taken the claim id of {label!r} ({claim_of}), or the check did not answer: do not pay")
     approve = evm.main(["approve", BUYER, "0x" + made["token"], "gateway", count])
     paid = evm.main(["pay", BUYER, made["payId"], "0x" + made["token"], "0x" + made["payee"], count])
     out = {"label": label, "tka": int(count), "tradeTka": full, "approve": approve["tx"], "pay": paid["tx"]}

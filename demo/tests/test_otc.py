@@ -252,6 +252,15 @@ class OtcTests(LedgerTestCase):
         self.assertIn("do not pay", str(refused.exception))
         self.assertEqual(self.calls, [["used", claim]])
 
+    def test_the_buyer_does_not_pay_when_the_claim_id_check_gives_no_answer(self):
+        self.published()
+        claim = otc.ids(self.net, "t1")["claimId"]
+        with mock.patch.object(otc.evm, "main", lambda argv: self.calls.append(argv) or {}):   # an answer with no "used" in it
+            with self.assertRaises(SystemExit) as refused:
+                otc.pay(self.net, "t1")
+        self.assertIn("do not pay", str(refused.exception))
+        self.assertEqual(self.calls, [["used", claim]])
+
     def test_the_claim_needs_the_funded_claim_and_names_its_token_and_amount(self):
         with self.assertRaises(canton.Fail):
             otc.claim(self.net, "t1")
