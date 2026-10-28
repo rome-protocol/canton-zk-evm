@@ -376,7 +376,7 @@ class ChoiceContexts:
     def __init__(self, registries: dict, tokens: dict | None = None, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF,
                  budget: float | None = None):
         self.registries, self.tokens, self.timeout, self.deadline, self.backoff = registries, tokens or {}, timeout, deadline, backoff
-        self.budget, self.spent, self.seen = deadline if budget is None else budget, 0.0, {}
+        self.budget, self.spent, self.seen, self.noted = deadline if budget is None else budget, 0.0, {}, set()
 
     def wants(self, admin: str) -> bool:
         """Whether the registry of this instrument admin is one the builder asks."""
@@ -390,9 +390,14 @@ class ChoiceContexts:
     def transfer(self, admin: str, factory: str, transfer: dict):
         """(context, disclosed contracts) for `TransferFactory_Transfer` of this transfer through this factory; the factory the registry names must be the token's."""
         args = {"expectedAdmin": admin, "transfer": transfer, "extraArgs": {"context": {"values": {}}, "meta": {"values": {}}}}
-        reply = self.ask(admin, "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": args, "excludeDebugFields": True})
+        timeless = {**transfer, "requestedAt": None, "executeBefore": None}   # the builder's clock moves on in a rebuild: the same transfer is not asked again for it
+        reply = self.ask(admin, "/registry/transfer-instruction/v1/transfer-factory", {"choiceArguments": args, "excludeDebugFields": True},
+                         {"choiceArguments": {**args, "transfer": timeless}})
         if not isinstance(reply, dict) or reply.get("factoryId") != factory:
             raise NoCantonSide("the token registry names another transfer factory than the token's")
+        if reply.get("transferKind") != "direct" and (admin, args["transfer"].get("receiver")) not in self.noted:   # Daml's Receive then reuses this context to accept an offer
+            self.noted.add((admin, args["transfer"].get("receiver")))
+            print(f"the token registry's transfer to {args['transfer'].get('receiver')} is of kind {str(reply.get('transferKind'))[:32]!r}, not 'direct'", file=sys.stderr)
         return self.read(reply.get("choiceContext"))
 
     def read(self, reply):
@@ -405,9 +410,10 @@ class ChoiceContexts:
             raise NoCantonSide("the token registry gave an answer that is not a choice context") from e
         return (context if context["values"] else None), disclosed
 
-    def ask(self, admin: str, path: str, payload: dict):
+    def ask(self, admin: str, path: str, payload: dict, identity: dict | None = None):
+        """The registry's answer to this request; `identity` (the payload by default) tells which requests are the same one."""
         base = self.registries[admin]
-        key = (base, path, json.dumps(payload, sort_keys=True))
+        key = (base, path, json.dumps(payload if identity is None else identity, sort_keys=True))
         if key in self.seen:
             return self.seen[key]
         down = REGISTRY_DOWN.get(("choice", base))

@@ -1,7 +1,7 @@
 """The token registry's choice context (Daml 0.5.0): a deposit, withdrawal, payment or trade leg of an instrument whose registry the builder is given
 (`--registry ADMIN=URL`) carries the registry's context for its choice, and the contracts the context names go with the Advance as disclosed contracts.
 The registry is a fake CIP-0056 off-ledger service; the tests run against test_builder.py's fake ledger."""
-import json, sys, tempfile, threading, time, unittest
+import contextlib, io, json, sys, tempfile, threading, time, unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -358,6 +358,24 @@ class Contexts(tb.LegCase):
         reader = b.ChoiceContexts({ADMIN: r.url})
         self.assertEqual(reader.allocation(ADMIN, "a-1"), reader.allocation(ADMIN, "a-1"))
         self.assertEqual(len(r.asked), 1)
+
+    def test_a_withdrawals_answer_is_asked_once_whatever_times_the_rebuild_gives_it(self):
+        r = Registry(answer=FACTORY)
+        self.addCleanup(r.close)
+        reader = b.ChoiceContexts({ADMIN: r.url})
+        transfer = {"sender": "gw", "receiver": "r::1", "amount": "4.0", "requestedAt": "2026-10-28T10:00:00Z", "executeBefore": "2026-10-29T10:00:00Z"}
+        first = reader.transfer(ADMIN, "fac-1", transfer)
+        again = reader.transfer(ADMIN, "fac-1", {**transfer, "requestedAt": "2026-10-28T10:00:07Z", "executeBefore": "2026-10-29T10:00:07Z"})
+        self.assertEqual((first, len(r.asked)), (again, 1))
+        reader.transfer(ADMIN, "fac-1", {**transfer, "amount": "5.0"})
+        self.assertEqual(len(r.asked), 2)
+
+    def test_a_transfer_that_is_not_direct_is_said_so(self):
+        r = Registry(answer={**FACTORY, "transferKind": "offer"})
+        self.addCleanup(r.close)
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            b.ChoiceContexts({ADMIN: r.url}).transfer(ADMIN, "fac-1", {"amount": "4.0"})
+        self.assertIn("offer", err.getvalue())
 
     # ---- configuration
     def test_registries_are_admin_equals_url(self):
