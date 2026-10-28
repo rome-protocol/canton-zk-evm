@@ -11,7 +11,7 @@ import { custodyOnce } from "./custody.ts";
 import { registeredLegsHealth, registeredLegsOnce } from "./registered-legs.ts";
 import { legsSlot } from "./legs.ts";
 
-const GW2 = "0x" + "b1".repeat(20), VAULT = "0x" + "b2".repeat(20), STRAY = "0x" + "b3".repeat(20), TOKEN = "0x" + "d1".repeat(20), ALICE = "0x" + "a1".repeat(20);
+const GW2 = "0x" + "b1".repeat(20), GW4 = "0x" + "b6".repeat(20), VAULT = "0x" + "b2".repeat(20), STRAY = "0x" + "b3".repeat(20), TOKEN = "0x" + "d1".repeat(20), ALICE = "0x" + "a1".repeat(20);
 const ID1 = "0x" + "11".repeat(32), ID2 = "0x" + "22".repeat(32), ID3 = "0x" + "33".repeat(32);
 const PARTY = "alice::1220" + "ab".repeat(32);
 const fakes: FakeLedger[] = [];
@@ -66,6 +66,27 @@ describe.skipIf(!TEST_URL)("the legs of registered gateways", () => {
       // caught up: nothing is done again
       expect(await registeredLegsOnce(pool, chain.reads)).toEqual({ legs: 0, blocks: 0 });
       expect(await legRows(pool)).toHaveLength(3);
+    });
+  });
+
+  it("checks two registered gateways in the same block each against its own legs[N]: a bad hash of one is named, and neither gateway's leg is skipped", async () => {
+    await inDb(async (pool) => {
+      const chain = await indexed(pool, [
+        { txs: 1, leg: 1, extra: [{ gateway: GW2, kind: 3, id: ID1, token: TOKEN, account: ALICE, amount: 7n }, { gateway: GW4, kind: 3, id: ID2, token: TOKEN, account: ALICE, amount: 9n }] },
+        { txs: 1, extra: [{ gateway: GW2, kind: 3, id: ID3, token: TOKEN, account: ALICE, amount: 5n }, { gateway: GW4, kind: 3, id: ID1, token: TOKEN, account: ALICE, amount: 3n }] },
+      ]);
+      // block 1: the first gateway's hash is right, the second's is wrong; block 2: the other way round
+      chain.reads.storage[`${GW2}:${legsSlot(1)}`] = hashOf(3, ID1, ALICE, 7n);
+      chain.reads.storage[`${GW4}:${legsSlot(1)}`] = "0x" + "ee".repeat(32);
+      chain.reads.storage[`${GW2}:${legsSlot(2)}`] = "0x" + "ee".repeat(32);
+      chain.reads.storage[`${GW4}:${legsSlot(2)}`] = hashOf(3, ID1, ALICE, 3n);
+      await registry(pool, chain, [registered(GW2, "Gateway"), registered(GW4, "Gateway"), registered(VAULT, "Vault")]);
+      expect(await registeredLegsOnce(pool, chain.reads)).toEqual({ legs: 4, blocks: 4 });
+      expect((await legRows(pool)).map((r) => [r.block, r.i, r.gateway?.slice(0, 2) ?? null, r.amount])).toEqual([[1, 0, null, "42"], [1, 1, "b1", "7"], [1, 2, "b6", "9"], [2, 0, "b1", "5"], [2, 1, "b6", "3"]]);
+      expect((await c10(pool)).status).toBe("degraded");
+      // the first bad hash is the one named: the second gateway's in block 1, not the first gateway's good one
+      expect((await c10(pool)).detail).toContain(`block 1: `);
+      expect((await c10(pool)).detail).toContain(`the registered gateway ${GW4}'s legs[1]`);
     });
   });
 
