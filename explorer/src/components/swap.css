@@ -17,7 +17,7 @@
 .sw-card.mini .sw-side { padding: 14px 20px; }
 .sw-card.mini .sw-amt { font-size: 24px; }
 .sw-one + .sw-one, .sw-one + .sw-lines { margin-top: 14px; }
-.sw-one-h { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+.sw-one-h { display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 14px; white-space: nowrap; margin-bottom: 6px; }
 .sw-lines { list-style: none; margin: 0; padding: 0; }
 .sw-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 9px 0; border-bottom: 1px solid var(--line-2); font-size: 13.5px; }
 .sw-line:last-child { border-bottom: 0; }

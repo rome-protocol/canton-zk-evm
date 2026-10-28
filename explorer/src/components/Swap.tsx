@@ -121,10 +121,10 @@ export function LegsPanel({ title, info, legs, total, block, payer = null }: { t
   const more = block !== undefined && total > legs.length;
   return (
     <section className="card" aria-label={title}>
-      <div className="sec-h"><h3>{title}</h3><Info about={title.toLowerCase()}>{info}</Info><span className="grow" /><Link className="small" to="/swaps">All swaps</Link></div>
+      <div className="sec-h"><h3>{title}</h3><Info about={title.toLowerCase()}>{info}</Info></div>
       {views.map(([l, v]) => v && (
         <div className="sw-one" key={l.legId + l.legIndex}>
-          <div className="sw-one-h"><Link className="small" to={`/swap/${v.payId}`}>Open swap</Link></div>
+          <div className="sw-one-h"><Link className="small" to={`/swap/${v.payId}`}>Open swap</Link><Link className="small" to="/swaps">All swaps</Link></div>
           <LegCard v={v} />
         </div>
       ))}

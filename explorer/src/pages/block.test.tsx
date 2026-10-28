@@ -290,6 +290,13 @@ describe("the block page, for a final block", () => {
     expect(await within(screen.getByRole("region", { name: "Transactions" })).findByText("No transactions in this block.")).toBeInTheDocument();
   });
 
+  it("drops the not-shown note when the block has legs, and keeps who sees the Daml side in the panel's i", async () => {
+    await open(block({ legs: [plainLeg({ legIndex: 0, kind: "deposit", legId: hash(0x1e), token: addr(0xcb), account: addr(0x5b), amount: "250" })] }));
+    const panel = await screen.findByRole("region", { name: "Settled with this block" });
+    expect(screen.queryByText(LEGS)).toBeNull();
+    expect(within(panel).getByText(new RegExp(LEGS_WHO.slice(0, 40)))).toHaveAttribute("role", "tooltip");
+  });
+
   it("lists the legs the block recorded in a panel, and shows nothing when it recorded none", async () => {
     await open(block({ legs: [plainLeg({ legIndex: 0, kind: "deposit", legId: hash(0x1e), token: addr(0xcb), account: addr(0x5b), amount: "250" })] }));
     const line = within(await screen.findByRole("region", { name: "Settled with this block" })).getByRole("listitem");
