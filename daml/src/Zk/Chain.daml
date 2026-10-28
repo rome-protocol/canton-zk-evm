@@ -2,8 +2,8 @@
 -- proof, checks that the block follows the chain's head, checks with the sidecar that the legs attached are exactly the
 -- ones the block recorded in the gateway contract's state, settles them, and moves the head on. Daml does no proof checking
 -- and no hashing of blocks; it compares the strings the sidecar answers (README.md). The only hashes it takes name things and
--- prove nothing: the payment id of a pair of parties (`paymentId`), the payment id of a venue's trade (`venueTradeId`) and the id of the
--- claim that trade makes (`venueClaimId`).
+-- prove nothing: the payment id of a pair of parties (`paymentId`), the payment id of a venue's trade (`venueTradeId`), the id of the
+-- claim that trade makes (`venueClaimId`), the id of a lock (`lockId`) and the id of a vault's release (`releaseId`).
 module Zk.Chain where
 
 import DA.Date (date, Month(Jan))
@@ -1191,7 +1191,7 @@ template RedeemRequest
     observer operator, confirmer, gateway, builder
     ensure chainId > 0 && hexOfLength 40 token && hexOfLength 40 recipient && amount > 0.0 && ref /= "" && not (null holdings)
 
-    -- Its controllers sign `ZkChain`, so their authority is present together inside `Advance` and nowhere else.
+    -- Its controllers sign `ZkChain`, so their authority is present together inside `Advance`; the three together can also burn outside it, as the chain's root of trust.
     choice BurnForRelease : ()
       with rules : ContractId TW.TwinRules
       controller operator, confirmer, gateway

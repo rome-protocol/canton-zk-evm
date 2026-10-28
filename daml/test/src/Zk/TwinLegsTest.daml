@@ -14,7 +14,6 @@ import qualified Twin.Amount as TA
 import qualified Twin.Twin as TW
 import Zk.Chain
 import Zk.ChainTest
-import Zk.Hex
 import Zk.Sidecar
 
 twinAddr, twin6Addr, otherVaultAddr : Text
@@ -374,3 +373,66 @@ testAReleaseCountsAgainstTheQuotaAndALockDoesNot = do
   Some c <- queryContractId f.operator c2
   Some [tally] <- pure c.withdrawn
   (tally.tallyToken, tally.tallyAmount) === (partyToText f.gateway <> "/erc20:" <> twinAddr, 4.0)
+
+-- A builder with a twin of its own: TwinRules that it administers can be fetched inside `Advance` (the builder is an authorizer there), so
+-- only the chain's own checks stop a leg from using them. A twin the builder administers is the builder's to mint, and no release of the
+-- gateway's vault may ever follow from it.
+ownTwin : TF -> Script (ContractId TW.TwinRules)
+ownTwin t = twinRulesOf t.fx.builder twinAddr "TKA" 18
+
+-- A lock into a registered vault, with the builder's own twin: refused, so the lock is not turned into a twin the gateway cannot release.
+testALockWithATwinOfTheBuildersOwnIsRefused : Script ()
+testALockWithATwinOfTheBuildersOwnIsRefused = do
+  t <- twinFixture
+  let f = t.fx
+  own <- ownTwin t
+  refused "the twin is another admin's than the chain's gateway" f $ advance t.tchain "01"
+    [lockLine f.v "ref-1" vaultAddr tenTokens] [(lockLegOf t f.v "ref-1" tenTokens) with lockRules = own]
+  twinHeld f.v >>= \xs -> xs === []
+
+-- A release with the builder's own twin, minted by the builder to the holder, for a request that names the chain's gateway: refused at the twin.
+testAReleaseWithATwinOfTheBuildersOwnIsRefused : Script ()
+testAReleaseWithATwinOfTheBuildersOwnIsRefused = do
+  t <- twinFixture
+  let f = t.fx
+  own <- ownTwin t
+  h <- submit f.builder $ exerciseCmd own TW.Mint with owner = f.v; amount = 10.0; reference = "setup"
+  req <- submit f.v $ createCmd RedeemRequest with
+    holder = f.v; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+    token = twinAddr; holdings = [toInterfaceContractId @H.Holding h]; amount = 4.0; recipient = uAddr; ref = "redeem-1"
+  refused "the twin is another admin's than the chain's gateway" f $ advance t.tchain "01"
+    [releaseLine "redeem-1" vaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseRules = own]
+  twinHeld f.v >>= \xs -> xs === [10.0]
+
+-- The drain: a fake twin of the builder's, held by the builder, and a request that names the builder as the gateway. The request is the
+-- builder's to sign, so only the chain's check of the gateway stands between it and the vault's tokens.
+testARequestThatNamesTheBuilderAsGatewayIsRefused : Script ()
+testARequestThatNamesTheBuilderAsGatewayIsRefused = do
+  t <- twinFixture
+  let f = t.fx
+  own <- ownTwin t
+  h <- submit f.builder $ exerciseCmd own TW.Mint with owner = f.builder; amount = 10.0; reference = "setup"
+  req <- submit f.builder $ createCmd RedeemRequest with
+    holder = f.builder; operator = f.operator; confirmer = f.confirmer; gateway = f.builder; builder = f.builder; chainId = 770101
+    token = twinAddr; holdings = [toInterfaceContractId @H.Holding h]; amount = 4.0; recipient = uAddr; ref = "drain-1"
+  refused "names another gateway than the chain's" f $ advance t.tchain "01"
+    [releaseLine "drain-1" vaultAddr uAddr fourTokens] [(releaseLegOf t req) with releaseRules = own]
+  twinHeld f.builder >>= \xs -> xs === [10.0]
+
+-- A request that names another chain id, operator or confirmer than the chain's is refused inside `Advance`, whoever signed it.
+testARequestOfAnotherChainIsRefused : Script ()
+testARequestOfAnotherChainIsRefused = do
+  t <- twinFixture
+  let f = t.fx
+  h <- submit f.gateway $ exerciseCmd t.trules TW.Mint with owner = f.v; amount = 10.0; reference = "setup"
+  let base = RedeemRequest with
+        holder = f.v; operator = f.operator; confirmer = f.confirmer; gateway = f.gateway; builder = f.builder; chainId = 770101
+        token = twinAddr; holdings = [toInterfaceContractId @H.Holding h]; amount = 4.0; recipient = uAddr; ref = "redeem-1"
+  let recorded = [releaseLine "redeem-1" vaultAddr uAddr fourTokens]
+  other <- submit f.v $ createCmd base with chainId = 770102
+  refused "the redeem request is for another chain" f $ advance t.tchain "01" recorded [releaseLegOf t other]
+  ownOperator <- submit f.v $ createCmd base with operator = f.builder
+  refused "the redeem request names another operator than the chain's" f $ advance t.tchain "01" recorded [releaseLegOf t ownOperator]
+  ownConfirmer <- submit f.v $ createCmd base with confirmer = f.builder
+  refused "the redeem request names another confirmer than the chain's" f $ advance t.tchain "01" recorded [releaseLegOf t ownConfirmer]
+  twinHeld f.v >>= \xs -> xs === [10.0]
