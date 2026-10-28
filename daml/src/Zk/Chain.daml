@@ -408,8 +408,9 @@ template ZkChain
 
 -- One twin pinned in the chain record (`ZkChain.twins`): the ERC-20 (40 lowercase hex digits), its decimals and the `TwinRules` contract that
 -- converts it. A lock or a release of that token must name exactly these rules, and the decimals are the entry's. The rules' contract id
--- stays the same for as long as the gateway keeps the contract (`Mint` and `Burn` do not consume it); a correction is a new `TwinRules` and a
--- new reviewed pin, and a token is pinned once, so a token whose rules were archived is out of use until the chain has a way to remove a pin.
+-- stays the same for as long as the gateway keeps the contract (`Mint` and `Burn` do not consume it). A token is pinned once and this version
+-- cannot remove or correct a pin: a wrong pin stays in force until the gateway archives its rules, and the token is then out of use until a
+-- package upgrade adds pin removal.
 data PinnedTwin = PinnedTwin with
     twinToken : Text
     twinDecimals : Int
