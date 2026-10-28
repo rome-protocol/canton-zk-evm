@@ -1645,6 +1645,173 @@ class Registry(unittest.TestCase):
         self.assertIn("CZE_TOKEN_FILE_OPERATOR", str(ctx.exception))
 
 
+class TwinParticipant(FakeParticipant):
+    """The participant of the twin steps: the chain's `twins`, the TwinProposal template and its choices, as the Daml of 0.5.0 does them."""
+    def __init__(self):
+        super().__init__()
+        self.contracts["TwinProposal"] = []
+        self.bodies = []
+
+    def route(self, method, path, body, raw):
+        if path == "/v2/commands/submit-and-wait":
+            command = body["commands"][0]
+            exercise = command.get("ExerciseCommand") or {}
+            choice = exercise.get("choice")
+            if choice in ("ProposeTwin", "AddTwin", "AcceptTwin", "RejectTwin", "WithdrawTwin"):
+                self.submitted = getattr(self, "submitted", []) + [(command, body["actAs"])]
+                self.submitted_users = getattr(self, "submitted_users", []) + [body.get("userId")]
+                self.bodies.append(body)
+                [chain] = self.contracts["ZkChain"]
+                if choice == "ProposeTwin":
+                    now = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+                    keys = ("operator", "confirmer", "gateway", "chainId")
+                    self.contracts["TwinProposal"].append({"contractId": f"tp{len(self.contracts['TwinProposal']) + 1}", "args": {
+                        **{k: chain["args"][k] for k in keys}, "entry": exercise["choiceArgument"]["entry"], "proposedAt": now}})
+                elif choice == "AddTwin":
+                    chain["args"]["twins"] = [*(chain["args"].get("twins") or []), exercise["choiceArgument"]["entry"]]
+                else:
+                    [proposal] = [c for c in self.contracts["TwinProposal"] if c["contractId"] == exercise["contractId"]]
+                    self.contracts["TwinProposal"].remove(proposal)
+                    if choice == "AcceptTwin":
+                        chain["args"]["twins"] = [*(chain["args"].get("twins") or []), proposal["args"]["entry"]]
+                return {}
+        return super().route(method, path, body, raw)
+
+
+TOKEN_A, RULES_A = "11" * 20, "00rules-a"
+ENTRY_A = {"twinToken": TOKEN_A, "twinDecimals": "6", "twinRules": RULES_A}
+DISCLOSED_RULES = {"templateId": "pkg:Twin.Twin:TwinRules", "contractId": RULES_A, "createdEventBlob": "beef", "synchronizerId": "sync::1"}
+
+
+class Twins(unittest.TestCase):
+    """setup.py --twin-step: the chain's pinned twins."""
+    run_setup = Setup.run_setup
+
+    def sent(self):
+        return getattr(self.node, "submitted", [])[self.base:]
+
+    def setUp(self):
+        Setup.setUp(self)
+        self.node.close()
+        self.node = TwinParticipant()
+        self.addCleanup(self.node.close)
+        self.base = 0
+        self.run_setup()
+        self.base = len(getattr(self.node, "submitted", []))
+        self.disclosed = Path(self.dar).parent / "rules.json"
+        self.disclosed.write_text(json.dumps(DISCLOSED_RULES))
+
+    def step(self, step, *extra, token=TOKEN_A, expect=0):
+        out = io.StringIO()
+        args = ["--ledger-url", self.node.url, "--twin-step", step, "--twin-token", token, *extra]
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = setup.main(args)
+        self.assertEqual(code, expect)
+        return json.loads(out.getvalue())
+
+    def refused(self, *args, **kw):
+        with self.assertRaises(SystemExit) as ctx, contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.step(*args, **kw)
+        return str(ctx.exception)
+
+    def pinned(self):
+        return self.node.contracts["ZkChain"][0]["args"].get("twins") or []
+
+    A = ("--twin-decimals", "6", "--twin-rules", RULES_A)
+
+    def test_a_twin_is_proposed_by_the_operator_and_accepted_by_the_confirmer_with_the_rules_disclosed(self):
+        proposed = self.step("propose", *self.A)
+        self.assertEqual((proposed["submitted"], proposed["alreadyProposed"], proposed["entry"]), (True, False, ENTRY_A))
+        [(command, acts)] = self.sent()
+        self.assertEqual(sorted(acts), ["ostia-gateway::1220fp", "ostia-operator::1220fp"])
+        self.assertEqual((command["ExerciseCommand"]["choice"], command["ExerciseCommand"]["choiceArgument"]), ("ProposeTwin", {"entry": ENTRY_A}))
+        self.assertEqual(self.pinned(), [])   # a proposal alone pins nothing
+        self.assertFalse(self.step("propose", *self.A)["submitted"])   # the same proposal again
+        self.assertEqual(len(self.node.contracts["TwinProposal"]), 1)
+        accepted = self.step("accept", *self.A, "--twin-rules-disclosed", str(self.disclosed))
+        self.assertTrue(accepted["submitted"])
+        self.assertEqual(self.sent()[-1][1], ["ostia-confirmer::1220fp"])
+        last = self.sent()[-1][0]["ExerciseCommand"]
+        self.assertEqual((last["choice"], last["choiceArgument"]), ("AcceptTwin", {"chain": "c1"}))
+        self.assertEqual(self.node.bodies[-1]["disclosedContracts"], [DISCLOSED_RULES])
+        self.assertNotIn("disclosedContracts", self.node.bodies[0])
+        self.assertEqual(self.pinned(), [ENTRY_A])
+        again = self.step("accept", *self.A, "--twin-rules-disclosed", str(self.disclosed))
+        self.assertEqual((again["submitted"], again["alreadyAccepted"]), (False, True))
+        self.assertIn("pinned already", self.refused("propose", *self.A))
+
+    def test_an_accept_is_refused_without_the_rules_disclosed_or_with_other_rules(self):
+        self.step("propose", *self.A)
+        self.assertIn("--twin-rules-disclosed is needed", self.refused("accept", *self.A))
+        other = Path(self.dar).parent / "other.json"
+        other.write_text(json.dumps({**DISCLOSED_RULES, "contractId": "other"}))
+        self.assertIn("not the rules", self.refused("accept", *self.A, "--twin-rules-disclosed", str(other)))
+        other.write_text(json.dumps({"contractId": RULES_A}))
+        self.assertIn("must hold one disclosed contract", self.refused("accept", *self.A, "--twin-rules-disclosed", str(other)))
+        self.assertEqual((len(self.sent()), self.pinned()), (1, []))
+
+    def test_an_accept_waits_out_the_change_delay_and_a_dry_run_says_when(self):
+        self.node.contracts["ZkChain"][0]["args"]["changeDelay"] = {"microseconds": str(3600 * 10**6)}
+        self.step("propose", *self.A)
+        dry = self.step("accept", *self.A, "--dry-run")
+        self.assertEqual((dry["submitted"], dry["changeDelaySeconds"], dry["dryRun"]), (False, 3600, True))
+        self.assertIn("acceptableAt", dry)
+        self.assertIn("may be accepted from", self.refused("accept", *self.A, "--twin-rules-disclosed", str(self.disclosed)))
+        args = self.node.contracts["TwinProposal"][0]["args"]
+        args["proposedAt"] = setup.show_time(setup.parse_time(args["proposedAt"]) - timedelta(seconds=3601))
+        self.assertTrue(self.step("accept", *self.A, "--twin-rules-disclosed", str(self.disclosed))["submitted"])
+        self.assertEqual(self.pinned(), [ENTRY_A])
+
+    def test_an_accept_with_no_proposal_for_the_entry_is_refused(self):
+        self.assertIn("no proposal for this twin", self.refused("accept", *self.A, "--twin-rules-disclosed", str(self.disclosed)))
+
+    def test_a_proposal_with_other_decimals_is_taken_back_before_another_is_made(self):
+        self.step("propose", *self.A)
+        self.assertIn("other decimals or other rules", self.refused("propose", "--twin-decimals", "18", "--twin-rules", RULES_A))
+        withdrawn = self.step("withdraw")
+        self.assertEqual((withdrawn["pending"], withdrawn["done"]), (1, 1))
+        self.assertEqual((self.sent()[-1][0]["ExerciseCommand"]["choice"], self.sent()[-1][1]), ("WithdrawTwin", ["ostia-operator::1220fp"]))
+        self.assertEqual(self.node.contracts["TwinProposal"], [])
+        self.assertTrue(self.step("propose", "--twin-decimals", "18", "--twin-rules", RULES_A)["submitted"])
+
+    def test_the_confirmer_rejects_and_a_dry_run_of_a_withdraw_or_reject_sends_nothing(self):
+        self.step("propose", *self.A)
+        count = len(self.sent())
+        self.assertEqual((self.step("reject", "--dry-run")["done"], self.step("withdraw", "--dry-run")["done"]), (0, 0))
+        self.assertEqual(len(self.sent()), count)
+        self.assertEqual(self.step("reject")["done"], 1)
+        self.assertEqual((self.sent()[-1][0]["ExerciseCommand"]["choice"], self.sent()[-1][1]), ("RejectTwin", ["ostia-confirmer::1220fp"]))
+        self.assertEqual(self.step("reject")["pending"], 0)
+
+    def test_add_pins_at_once_for_all_three_parties_and_a_pinned_token_is_not_pinned_again_with_other_rules(self):
+        added = self.step("add", *self.A)
+        self.assertTrue(added["submitted"])
+        self.assertEqual(sorted(self.sent()[-1][1]), ["ostia-confirmer::1220fp", "ostia-gateway::1220fp", "ostia-operator::1220fp"])
+        self.assertEqual((self.sent()[-1][0]["ExerciseCommand"]["choice"], self.pinned()), ("AddTwin", [ENTRY_A]))
+        self.assertTrue(self.step("add", *self.A)["alreadyAccepted"])
+        self.assertIn("pinned already, with other", self.refused("add", "--twin-decimals", "6", "--twin-rules", "other-rules"))
+
+    def test_a_propose_dry_run_submits_nothing(self):
+        dry = self.step("propose", *self.A, "--dry-run")
+        self.assertEqual((dry["submitted"], dry["dryRun"], dry["entry"]), (False, True, ENTRY_A))
+        self.assertEqual((self.sent(), self.node.contracts["TwinProposal"]), ([], []))
+
+    def test_the_arguments_are_checked(self):
+        for extra, words in (((), "--twin-decimals"), (("--twin-decimals", "37", "--twin-rules", RULES_A), "0 to 36"), (("--twin-decimals", "6"), "--twin-rules")):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                self.step("propose", *extra)
+        self.assertIn("40 lowercase hex", self.refused("propose", *self.A, token="0x" + TOKEN_A))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.step("withdraw", *self.A)   # decimals and rules go with the steps that carry an entry
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.step("propose", *self.A, "--twin-rules-disclosed", str(self.disclosed))   # only an accept takes the disclosed rules
+        self.assertEqual(self.sent(), [])
+
+    def test_sixteen_pins_are_the_most(self):
+        self.node.contracts["ZkChain"][0]["args"]["twins"] = [{**ENTRY_A, "twinToken": f"{i:02x}" * 20} for i in range(0x20, 0x30)]
+        self.assertIn("16 twins", self.refused("propose", *self.A))
+
+
 class Timing(unittest.TestCase):
     def test_the_proposal_time_and_the_accept_time_print_in_one_form(self):
         # the ledger drops trailing zeros of the fraction ("24.1737Z"); both times must print the same way, so a reader can compare them as text
