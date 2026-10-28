@@ -258,6 +258,24 @@ The quota is at most `--quota` units of each Canton instrument in any `--quota-w
 
 The custody and the wrapped supply are not compared by `Advance` (see daml/README.md, "Custody and the wrapped supply"); the check is per instrument (the instrument's custody against the sum of the supplies of all its wrapped tokens); today's explorer read compares per token and shows the difference on the token page, so it is right only while each instrument has one wrapped token (nothing alerts on it yet).
 
+### The registry of EVM contracts
+
+Daml 0.5.0 gives the chain a list of EVM contracts it trusts besides its first gateway: a gateway whose legs `Advance` reads, or a vault that only holds tokens (daml/README.md, "The registry"). An entry is added the way the program is changed, and `setup.py --contract-step` does each part, printing one JSON line:
+
+```sh
+R="--reth-url http://127.0.0.1:8545"   # reth's HTTP RPC, where the code at the address is read (eth_getCode, finalized block)
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --contract-step propose --contract-address "$ADDR" --contract-kind vault $R --dry-run   # operator's token; the checks, nothing sent
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --contract-step propose --contract-address "$ADDR" --contract-kind vault $R             # operator's token (acts for the operator and the gateway)
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --contract-step accept  --contract-address "$ADDR" --contract-kind vault $R             # confirmer's token, once the change delay has passed
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --contract-step withdraw --contract-address "$ADDR"   # operator's token: takes back its pending proposals for the address
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --contract-step reject   --contract-address "$ADDR"   # confirmer's token: turns them down
+python3 network/external/setup.py --ledger-url "$CZE_LEDGER_URL" --contract-step add      --contract-address "$ADDR" --contract-kind vault $R             # at once, for a participant where one user acts for all three parties
+```
+
+The code hash of the entry is the keccak-256 of the code that reth holds at the address. `propose`, `accept` and `add` refuse unless it equals the keccak-256 of the reviewed build in this repo: `gateway/Gateway.bin-runtime` for `--contract-kind gateway` and `gateway/Vault.bin-runtime` for `vault` (`gateway/build.sh --check` keeps those files true to the sources). The two builds differ, so a vault's code is refused as a gateway and the other way round, and an address with no code or other code is refused. `propose` also refuses an address that is registered already, the chain's first gateway (it is not in the registry) and a full registry (16 entries); a proposal for the address with another hash or kind has to be withdrawn first. `accept` waits out the chain's change delay like the other accepts (the line prints `proposedAt` and `acceptableAt`; a dry run sends nothing), and a re-run after it went through prints `"alreadyAccepted": true`. `withdraw` and `reject` take only the address and read no code. `add` is `AddContract`, signed by the operator, the confirmer and the gateway together, so it skips the change delay and needs one Ledger API user that may act as all three: on a participant that hosts them all, the operator's user with the confirmer's right added; the participant refuses it otherwise.
+
+There is no removal. Accept no `Gateway` entry before the builder is on 0.5.0 (it sends `extraGateways` for it in every block: builder/README.md) and before the explorer reads the legs of registered gateways; a wrong entry stops every block until a package upgrade.
+
 **Privacy.** The operator of the participant sees every contract of every Ostia party, because all of them are hosted there, and holds what it takes to act as them. Nothing about Ostia keeps a chain's data from the validator's operator. Use a participant whose operator you trust with the chain, and keep the token files off shared machines.
 
 **The explorer.** It and its indexer read Canton as the reader party, with the reader user's token: make a 0600 token file for `ostia-reader` (HS256, audience `https://canton.network.global`, `sub` `ostia-reader`, or your `CZE_USER_PREFIX`'s reader) and give it to `explorer/run.sh` as `LEDGER_TOKEN_FILE` (or `CZE_TOKEN_FILE_READER`), with `LEDGER_URL` and `READER_PARTY` for this participant. The file is read again on every call, so refresh it in place. See `explorer/README.md`.
@@ -352,7 +370,7 @@ tests/network_checks.sh      # the damlc pin check, the DAR's id, and the stop o
 python3 -m unittest discover -s tests -p 'test_propose.py'   # the proposal scripts, against a fake Ledger API and a fake reth
 tests/persist_scripts.sh     # down.sh and restart.sh act on the containers persist.env names; a failed --wipe is reported, against a fake Docker
 python3 -m unittest discover -s tests -p 'test_replay_from_canton.py'   # rebuild reth from Canton's block records and re-check a range, against a fake Ledger API and a fake reth
-python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights
+python3 -m unittest discover -s tests -p 'test_external_setup.py'   # the setup on an existing participant, against a fake participant: idempotent, tokens, rights, and the registry's --contract-step with a fake reth for the code hash
 tests/canton_external.sh     # the pinned Canton with a login on its Ledger API, started without Ostia's bootstrap: the setup twice, the rights and one Advance
 tests/canton_persist.sh      # the chain survives a crash of Canton and a stop of the database (needs Docker)
 tests/canton_network.sh      # the pinned Canton, the real Daml package, a registered token and one Advance, against stand-ins for the sidecars and reth

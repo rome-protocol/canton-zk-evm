@@ -96,6 +96,19 @@
     The accept waits out the chain's change delay like a gas cap (the line prints "proposedAt" and "acceptableAt"; a dry run of the accept sends nothing). The
     change may loosen a limit or tighten it. A proposal not wanted is taken back by the operator (--withdraw-proposal leg-limits).
 
+  setup.py --ledger-url <URL> --contract-step propose|accept|withdraw|reject|add --contract-address <hex> [--contract-kind gateway|vault] [--reth-url <URL>] [--dry-run]
+
+    The chain's registry of EVM contracts (Daml 0.5.0, ZkChain.contracts), in the steps of a program change, each printing one JSON line. The entry is
+    the address, the kind and the code hash, which is the keccak-256 of the code that reth holds at the address (eth_getCode at the finalized block).
+    propose, accept and add refuse unless that hash is the keccak-256 of the reviewed build in this repo: gateway/Gateway.bin-runtime for --contract-kind
+    gateway, gateway/Vault.bin-runtime for vault. A vault's code is no gateway's and the other way round, so each is refused as the other kind.
+      propose   the operator's token (which acts for the operator and the gateway party): exercises ProposeContract on the chain's one contract. Nothing is done if the same proposal is there already.
+      accept    the confirmer's token: exercises AcceptContract on the proposal for exactly this entry, once the chain's change delay has passed (the line prints "proposedAt" and "acceptableAt").
+      withdraw  the operator's token: WithdrawContract on every pending proposal for the address. reject is the confirmer's RejectContract on them.
+      add       AddContract at once, signed by the operator, the confirmer and the gateway together: for a participant that hosts all three and whose operator user holds the confirmer's right too. It skips the change delay.
+    There is no removal: a Gateway entry stops every block of the chain until the builder sends its proofs (builder 0.5.0 does), so look with --dry-run first.
+    With --dry-run nothing is submitted.
+
   setup.py --ledger-url <URL> --withdraw-proposal gas-cap|program|change-delay|leg-limits|renew-pause [--dry-run]
 
     The operator's token: withdraws every pending proposal of that kind for the chain (the Withdraw choice). The confirmer rejects one with
@@ -108,14 +121,16 @@ applies the rules of check-env.sh itself, before it sends anything: the URL is h
 mode 0600 with one token, and ADMIN, OPERATOR and CONFIRMER are all named, unless CZE_LEDGER_NO_AUTH=1 says the Ledger API has no login (then
 no token is sent). A token is never printed.
 """
-import argparse, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
+import argparse, functools, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request, zipfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "network" / "canton"))
+sys.path.insert(0, str(ROOT / "builder"))
 import propose
+from keccak import keccak256
 
 # Role: (acts as, reads as, primary party). The rights follow network/canton/bootstrap.canton.
 # The operator and the gateway sign the chain together, so the operator's user acts as both; the builder reads what they see and acts as neither.
@@ -422,10 +437,15 @@ def step_chain(url: str, step: str, with_gateway: bool = False) -> tuple:
     """The ledger of the step's user (the operator for a proposal, the confirmer for an acceptance), the chain's one contract and the parties.
     With `with_gateway` the proposal is made as the operator's user acts in the chain's own proposal: for the operator and the gateway party."""
     parties = propose.read_env_file(Path(os.environ.get("CZE_STATE_DIR", ROOT / "state")) / "canton" / "parties.env")
-    missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") + (("GATEWAY_PARTY",) if with_gateway and step == "propose" else ()) if not parties.get(k)]
+    missing = [k for k in ("OPERATOR_PARTY", "CONFIRMER_PARTY") + (("GATEWAY_PARTY",) if (with_gateway and step == "propose") or step == "add" else ()) if not parties.get(k)]
     if missing:
         raise SystemExit(f"parties.env in the state directory does not name {missing}: run setup.py first")
-    if step == "propose" and with_gateway:
+    if step == "add":
+        # AddContract is signed by the operator, the confirmer and the gateway together, so one user acts for all three: a participant that hosts them
+        # all, whose operator user has also been given the confirmer's right. The participant refuses the command otherwise.
+        ledger = propose.Ledger(url, propose.user_id("operator"), parties["OPERATOR_PARTY"], (parties["GATEWAY_PARTY"], parties["CONFIRMER_PARTY"]),
+                                propose.role_token("operator"))
+    elif step == "propose" and with_gateway:
         ledger = propose.operator_ledger(url, parties)
     elif step == "propose":
         # A gas cap proposal is the operator's alone, so this acts for the operator only (not for the gateway party that the chain's own user also acts for).
@@ -577,6 +597,116 @@ def program_step(url: str, step: str, new: dict, dry_run: bool) -> dict:
         check_waited(result, "the program")
         submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ProgramProposal", "contractId": mine[0]["contractId"], "choice": "AcceptProgram",
                                                     "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
+    return {**result, "submitted": not dry_run}
+
+
+# ---- the registry of EVM contracts (Daml 0.5.0: ZkChain.contracts) --------------------------------------------------------------------------
+
+CONTRACT_BUILDS = {"gateway": "Gateway.bin-runtime", "vault": "Vault.bin-runtime"}   # the reviewed builds in the repo (gateway/build.sh --check keeps them true)
+CONTRACT_KINDS = {"gateway": "Gateway", "vault": "Vault"}
+ADDRESS40 = re.compile(r"[0-9a-f]{40}")
+MAX_CONTRACTS = 16   # the Daml's maxContracts
+
+
+@functools.lru_cache(maxsize=None)
+def reviewed_hash(kind: str) -> str:
+    """The keccak-256 (64 hex digits) of the runtime code of the reviewed build of that kind, which is gateway/<Kind>.bin-runtime in this repo."""
+    path = ROOT / "gateway" / CONTRACT_BUILDS[kind]
+    try:
+        return keccak256(bytes.fromhex(path.read_text().strip())).hex()
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cannot read the reviewed build {path}: {e}") from None
+
+
+def deployed_hash(reth_url: str, address: str) -> str:
+    """The keccak-256 of the code that reth holds at the address (at the finalized block, the one Canton has committed)."""
+    try:
+        answer = propose.post(reth_url, {"jsonrpc": "2.0", "id": 1, "method": "eth_getCode", "params": ["0x" + address, "finalized"]})
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"cannot ask reth for the code at {address}: {e}") from None
+    code = answer.get("result") if isinstance(answer, dict) else None
+    if not isinstance(code, str) or not re.fullmatch(r"0x([0-9a-f]{2})*", code):
+        raise SystemExit(f"reth gave no code for {address}: {answer!r}")
+    if code == "0x":
+        raise SystemExit(f"there is no code at {address} (at reth's finalized block)")
+    return keccak256(bytes.fromhex(code[2:])).hex()
+
+
+def check_contract(reth_url: str, address: str, kind: str) -> str:
+    """The code hash of the entry, after checking that the code at the address is exactly the reviewed build of that kind: a gateway entry only for
+    a gateway build, a vault entry only for a vault build. Anything else is refused."""
+    code_hash = deployed_hash(reth_url, address)
+    for other, name in CONTRACT_BUILDS.items():
+        if other != kind and code_hash == reviewed_hash(other):
+            raise SystemExit(f"the code at {address} is the {other} build ({name}), not a {kind}: it cannot be a {kind} entry")
+    if code_hash != reviewed_hash(kind):
+        raise SystemExit(f"the code at {address} (keccak-256 {code_hash}) is not the reviewed {kind} build, gateway/{CONTRACT_BUILDS[kind]} "
+                         f"(keccak-256 {reviewed_hash(kind)})")
+    return code_hash
+
+
+def entry_of(address: str, code_hash: str, kind: str) -> dict:
+    return {"contractAddress": address, "contractCodeHash": code_hash, "contractKind": CONTRACT_KINDS[kind]}
+
+
+def contract_step(url: str, step: str, address: str, kind, reth_url: str, dry_run: bool) -> dict:
+    """The registry's steps, each by the party that controls it: `propose` (ProposeContract, the operator and the gateway), `accept` (AcceptContract, the
+    confirmer, after the change delay), `withdraw` (WithdrawContract, the operator) and `reject` (RejectContract, the confirmer) take the entry for
+    the address (withdraw and reject: every pending proposal for the address), and `add` (AddContract) puts it in at once for a submission that acts for
+    all three parties. propose, accept and add first check that reth holds, at the address, exactly the reviewed build of the kind."""
+    if not ADDRESS40.fullmatch(address or ""):
+        raise SystemExit("--contract-address must be 40 lowercase hex digits without 0x")
+    if step in ("propose", "accept", "add") and kind not in CONTRACT_KINDS:
+        raise SystemExit("--contract-kind gateway or vault is needed")
+    ledger, chain = step_chain(url, "propose" if step == "withdraw" else step, with_gateway=step == "propose")
+    known = [c for c in chain.get("contracts") or [] if c.get("contractAddress") == address]
+    pending = [p for p in ledger.active("ContractProposal") if p.get("chainId") == chain["chainId"] and p.get("operator") == chain["operator"]
+               and p.get("confirmer") == chain["confirmer"] and p.get("gateway") == chain["gateway"] and (p.get("entry") or {}).get("contractAddress") == address]
+    result = {"step": step, "chainId": chain["chainId"], "address": address, "dryRun": dry_run}
+    if step in ("withdraw", "reject"):
+        if not dry_run:
+            for p in pending:
+                submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ContractProposal", "contractId": p["contractId"],
+                                                          "choice": "WithdrawContract" if step == "withdraw" else "RejectContract", "choiceArgument": {}}}, step)
+        return {**result, "pending": len(pending), "done": 0 if dry_run else len(pending)}
+    code_hash = check_contract(reth_url, address, kind)
+    entry = entry_of(address, code_hash, kind)
+    result["entry"] = entry
+    registered = [c for c in known if {k: c.get(k) for k in entry} == entry]
+    if known and not registered:
+        raise SystemExit(f"{address} is registered already, with another code hash or kind: {known[0]}")
+    if address == chain.get("gatewayAddress"):
+        raise SystemExit("the address is the chain's first gateway, which is not in the registry")
+    mine = [p for p in pending if p.get("entry") == entry]
+    if step == "propose":
+        if registered:
+            raise SystemExit("the contract is registered already")
+        if len(chain.get("contracts") or []) >= MAX_CONTRACTS:
+            raise SystemExit(f"the registry holds {MAX_CONTRACTS} contracts, the most it may")
+        if pending and not mine:
+            raise SystemExit("a proposal for this address with another code hash or kind is on this participant already: the operator takes it back "
+                             "(--contract-step withdraw) before another is proposed")
+        if not mine and not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "ProposeContract",
+                                                       "choiceArgument": {"entry": entry}}}, "propose")
+            mine = [p for p in ledger.active("ContractProposal") if p.get("entry") == entry and p.get("chainId") == chain["chainId"]]   # read again, for the time the ledger gave it
+        return {**result, "submitted": not pending and not dry_run, "alreadyProposed": bool(pending), **timing((mine or [None])[0], chain)}
+    if step == "add":
+        if registered:
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        if not dry_run:
+            submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ZkChain", "contractId": chain["contractId"], "choice": "AddContract",
+                                                       "choiceArgument": {"entry": entry}}}, "add")
+        return {**result, "submitted": not dry_run}
+    if not mine:   # accept
+        if registered:   # a re-run after the accept went through (or committed after a timeout): done
+            return {**result, "submitted": False, "alreadyAccepted": True}
+        raise SystemExit("no proposal for this contract, with this code hash and kind, is on this participant")
+    result.update(timing(mine[0], chain))
+    if not dry_run:
+        check_waited(result, "the registry")
+        submit_step(ledger, {"ExerciseCommand": {"templateId": propose.PKG + "ContractProposal", "contractId": mine[0]["contractId"], "choice": "AcceptContract",
+                                                   "choiceArgument": {"chain": chain["contractId"]}}}, "accept")
     return {**result, "submitted": not dry_run}
 
 
@@ -835,7 +965,7 @@ def main(argv: list) -> int:
     ap.add_argument("--dar", default=os.environ.get("CZE_DAR"))
     ap.add_argument("--demo", action="store_true", help="also the demo's parties and users (u, v, registry, demo)")
     ap.add_argument("--package-step", choices=("check", "upload", "vet"), help="only this step of putting the DAR's package on the participant (see the top of this file)")
-    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step or --leg-limits-step: nothing is submitted")
+    ap.add_argument("--dry-run", action="store_true", help="with --package-step vet: the participant prepares the vetting and applies nothing; with --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step or --contract-step: nothing is submitted")
     ap.add_argument("--gas-cap-step", choices=("propose", "accept"), help="raise the chain's gas cap: the operator proposes, the confirmer accepts (see the top of this file)")
     ap.add_argument("--new-gas-cap", type=int, help="with --gas-cap-step: the new gas cap")
     ap.add_argument("--program-step", choices=("propose", "accept"), help="replace the chain's program key, ZisK root and rules hash: the operator proposes, the confirmer accepts (see the top of this file)")
@@ -851,9 +981,32 @@ def main(argv: list) -> int:
     ap.add_argument("--quota-window-seconds", type=int, help="with --leg-limits-step: the window of the quota in seconds (1 up to 30 days)")
     ap.add_argument("--no-quota", action="store_true", help="with --leg-limits-step: no withdrawal quota")
     ap.add_argument("--pause-max-seconds", type=int, help="with --leg-limits-step: the longest a pause may run (1 second up to 14 days); without it, the default of 3 days")
+    ap.add_argument("--contract-step", choices=("propose", "accept", "withdraw", "reject", "add"), help="the registry of EVM contracts: the operator proposes an entry, the confirmer accepts or rejects it, the operator withdraws it, or `add` puts it in at once for a submission that acts for all three parties (see the top of this file)")
+    ap.add_argument("--contract-address", help="with --contract-step: the contract's address (40 lowercase hex digits without 0x)")
+    ap.add_argument("--contract-kind", choices=("gateway", "vault"), help="with --contract-step propose, accept or add: what the contract is; its code must be the reviewed build of that kind")
+    ap.add_argument("--reth-url", default=os.environ.get("CZE_RETH_URL") or f"http://127.0.0.1:{os.environ.get('RETH_HTTP_PORT', '8545')}", help="with --contract-step propose, accept or add: reth's HTTP RPC, which the code at the address is read from")
     ap.add_argument("--withdraw-proposal", choices=tuple(PROPOSAL_KINDS), help="the operator takes back its pending proposals of this kind (the Withdraw choice); use it for a proposal that is not wanted")
     own, rest = ap.parse_known_args(argv)
     rest = [a for a in rest if a != "--"]
+    if own.contract_step:
+        if not own.ledger_url:
+            ap.error("--ledger-url (CZE_LEDGER_URL) is required")
+        if not own.contract_address:
+            ap.error("--contract-step needs --contract-address")
+        if own.contract_step in ("propose", "accept", "add") and not own.contract_kind:
+            ap.error(f"--contract-step {own.contract_step} needs --contract-kind gateway|vault")
+        if own.contract_step in ("withdraw", "reject") and own.contract_kind:
+            ap.error("--contract-kind goes with --contract-step propose, accept or add")
+        if (rest or own.demo or own.package_step or own.gas_cap_step or own.program_step or own.change_delay_step or own.pause_step or own.leg_limits_step
+                or own.withdraw_proposal or own.new_gas_cap is not None or own.program_vk or own.root_c or own.rules_hash or own.delay_seconds is not None
+                or own.pause_seconds is not None or own.quota is not None or own.quota_window_seconds is not None or own.no_quota or own.pause_max_seconds is not None):
+            ap.error("--contract-step does only the registry's step: no other step, no --demo, no values and no chain arguments")
+        check_settings(own.ledger_url, ("confirmer",) if own.contract_step in ("accept", "reject") else ("operator",))
+        os.environ.setdefault("CZE_USER_PREFIX", "ostia-")
+        print(json.dumps(contract_step(own.ledger_url, own.contract_step, own.contract_address, own.contract_kind, own.reth_url, own.dry_run)))
+        return 0
+    if own.contract_address or own.contract_kind:
+        ap.error("--contract-address and --contract-kind go with --contract-step")
     limit_values = (own.quota is not None or own.quota_window_seconds is not None or own.no_quota or own.pause_max_seconds is not None)
     if own.pause_step or own.leg_limits_step:
         if not own.ledger_url:
@@ -933,7 +1086,7 @@ def main(argv: list) -> int:
     if not own.ledger_url or not own.dar:
         ap.error("--ledger-url (CZE_LEDGER_URL) and --dar (CZE_DAR) are required")
     if own.dry_run and own.package_step != "vet":
-        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step or --withdraw-proposal")
+        ap.error("--dry-run goes with --package-step vet, --gas-cap-step, --program-step, --change-delay-step, --pause-step, --leg-limits-step, --contract-step or --withdraw-proposal")
     if own.package_step and (rest or own.demo):
         ap.error("--package-step does only the package: no --demo and no chain arguments")
     check_settings(own.ledger_url, ("admin",) if own.package_step else TOKEN_ROLES)
