@@ -215,8 +215,8 @@ if printf '%s\n' "$CALLS" | grep -qx 'POST /v2/state/active-contracts'; then
     ))' "$WORK/ledger-calls" >/dev/null \
     || fail "a custody read was not for the gateway party alone, the chain record, the registered tokens and the holding interface alone"
 fi
-# Every update request is, in structure, one of two: the reader's (filtersByParty has the reader party as its only key and every template is the block record), or, only when the gateway
-# party is set, the gateway's read of the Canton side of the swaps (the gateway party as the only key and every template one of GatewayToken, VenueTrade and FundedClaim; or no template and every interface the holding interface).
+# Every update request is, in structure, one of three: the reader's (filtersByParty has the reader party as its only key and every template is the block record), or, only when the gateway
+# party is set, the gateway's read of the Canton side of the swaps (the gateway party as the only key and every template one of GatewayToken, VenueTrade and FundedClaim), or the custody read's walk of the gateway's holdings (the gateway party as the only key, no template, and every interface the holding interface).
 # Neither has filtersForAnyParty.
 jq -s -e --arg r "$READER_PARTY" --arg g "${GATEWAY_PARTY:-}" '
   def keys_are($p): .updateFormat.includeTransactions.eventFormat | (.filtersByParty | keys) == [$p];
@@ -231,7 +231,7 @@ jq -s -e --arg r "$READER_PARTY" --arg g "${GATEWAY_PARTY:-}" '
         or ($g != "" and keys_are($g) and (templates | length == 0) and ([.. | objects | select(has("interfaceId")) | .interfaceId] | (length > 0 and all(endswith(":Splice.Api.Token.HoldingV1:Holding")))))
       )
   ))' "$WORK/ledger-calls" >/dev/null \
-  || fail "an update request was not for the reader party and the block record alone, nor for the gateway party and the token, trade and claim templates alone: $(jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | head -n 3 | cut -c1-600)"
+  || fail "an update request was not for the reader party and the block record alone, nor for the gateway party and the token, trade and claim templates alone, nor for the gateway party and the holding interface alone: $(jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | head -n 3 | cut -c1-600)"
 for party in "$OPERATOR_PARTY" "$BUILDER_PARTY" "$CONFIRMER_PARTY" "$U_PARTY" "$V_PARTY" "$REGISTRY_PARTY"; do
   ! jq -r 'select(.method == "POST") | .body' "$WORK/ledger-calls" | grep -qF "$party" || fail "a request named a party other than the reader or, for the custody read, the gateway: $party"
 done
