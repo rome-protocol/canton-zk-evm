@@ -128,7 +128,7 @@ export function Block() {
           {b.canton && <ProofCard c={b.canton} pins={st?.pins} block={b.number}><Verify b={b} st={st} /></ProofCard>}
           {!b.canton && <Verify b={b} st={st} />}
           {b.legs.length === 0 && <LegsPrivacy />}
-          <LegsPanel title="Settled with this block" info={`The deposits, payments, claims and withdrawals this block recorded on the gateway. A swap shows both its sides. The Daml side of a leg is not public. ${LEGS_WHO}`} legs={b.legs} total={detail.data?.legsCount ?? b.legs.length} block={String(b.number)} />
+          <LegsPanel title="Settled with this block" info={`The deposits, payments, claims and withdrawals this block recorded on the gateway. A swap shows both its amounts; the Canton party behind it stays private. ${LEGS_WHO}`} legs={b.legs} total={detail.data?.legsCount ?? b.legs.length} block={String(b.number)} />
           {final ? (st && <PagedTransactions id={String(b.number)} total={b.txCount} coin={st.coin} chain={st.chainName} />) : <Transactions rows={b.transactions} />}
           {b.canton && <RecordData c={b.canton} />}
         </>

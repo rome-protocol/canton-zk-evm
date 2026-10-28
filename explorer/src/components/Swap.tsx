@@ -14,6 +14,8 @@ import "./swap.css";
 export const CANTON_DECIMALS = 10;
 /** A block's or a transaction's answer carries this many legs; the block's own legs route has the rest. */
 export const LEGS_SHOWN = 50;
+/** A block with more swap legs than this shows each from its leg alone, with no read per card. */
+const SWAP_LOOKUPS = 5;
 
 /** What a swap card shows, from a swap or from the leg that paid it. The payer and the symbol are null where the leg alone does not say. */
 export interface SwapView {
@@ -86,11 +88,11 @@ export function SwapCard({ v }: { v: SwapView }) {
 }
 
 /** The swap behind a payment id, read once and kept for every card and page that shows it. */
-export const useSwap = (payId: string) => useQuery({ queryKey: ["swap", payId], queryFn: () => getSwap(payId), retry: false, staleTime: 60_000 });
+export const useSwap = (payId: string, enabled = true) => useQuery({ queryKey: ["swap", payId], queryFn: () => getSwap(payId), retry: false, staleTime: 60_000, enabled });
 
 /** The card of a leg that paid a swap: from the swap itself when it can be read (it names the payer), else from the leg. */
-function LegCard({ v }: { v: SwapView }) {
-  const q = useSwap(v.payId);
+function LegCard({ v, lookup }: { v: SwapView; lookup: boolean }) {
+  const q = useSwap(v.payId, lookup);
   return <SwapCard v={q.data ? viewOfSwap(q.data) : v} />;
 }
 
@@ -113,26 +115,38 @@ export function LegLine({ l }: { l: BlockLeg }) {
 }
 
 /** The legs of a block or a transaction: a swap as its card, every other leg as one line. A block with more than 50 legs says how many, and pages through them from its own route. */
-export function LegsPanel({ title, info, legs, total, block, payer = null }: { title: string; info: string; legs: BlockLeg[]; total: number; block?: string; payer?: string | null }) {
+export function LegsPanel({ title, info, legs, total, block, payer = null, txBlock }: { title: string; info: string; legs: BlockLeg[]; total: number; block?: string; payer?: string | null; txBlock?: number }) {
   const [all, setAll] = useState(false);
   if (!legs.length) return null;
-  const views = legs.map((l) => [l, viewOfLeg(l, payer)] as const);
-  const lines = views.filter(([, v]) => !v).map(([l]) => l);
   const more = block !== undefined && total > legs.length;
+  if (more && all) {
+    return (
+      <>
+        <BlockLegs id={block} />
+        <p className="muted small"><button type="button" className="linkish" onClick={() => setAll(false)}>Show the first {LEGS_SHOWN} again</button> with their swaps.</p>
+      </>
+    );
+  }
+  const views = legs.map((l) => [l, viewOfLeg(l, payer)] as const);
+  // A block full of swaps does not read each swap on its own: the leg already shows both amounts. A transaction names its payer, so its cards keep the read.
+  const lookup = payer !== null || views.filter(([, v]) => v).length <= SWAP_LOOKUPS;
+  const lines = views.filter(([, v]) => !v).map(([l]) => l);
   return (
     <section className="card" aria-label={title}>
       <div className="sec-h"><h3>{title}</h3><Info about={title.toLowerCase()}>{info}</Info></div>
       {views.map(([l, v]) => v && (
         <div className="sw-one" key={l.legId + l.legIndex}>
           <div className="sw-one-h"><Link className="small" to={`/swap/${v.payId}`}>Open swap</Link><Link className="small" to="/swaps">All swaps</Link></div>
-          <LegCard v={v} />
+          <LegCard v={v} lookup={lookup} />
         </div>
       ))}
       {lines.length > 0 && <ul className="sw-lines">{lines.map((l) => <LegLine key={l.legId + l.legIndex} l={l} />)}</ul>}
       {more && (
-        <p className="muted small">{count(total)} legs in this block; the first {LEGS_SHOWN} are shown. {!all && <button type="button" className="linkish" onClick={() => setAll(true)}>Page through all {count(total)} legs</button>}</p>
+        <p className="muted small">{count(total)} legs in this block; the first {LEGS_SHOWN} are shown. <button type="button" className="linkish" onClick={() => setAll(true)}>Page through all {count(total)} legs</button></p>
       )}
-      {more && all && <BlockLegs id={block} />}
+      {block === undefined && txBlock !== undefined && legs.length >= LEGS_SHOWN && (
+        <p className="muted small">Only the first {LEGS_SHOWN} legs are shown. <Link to={`/block/${txBlock}`}>Open the block</Link> to page through all of its legs.</p>
+      )}
     </section>
   );
 }

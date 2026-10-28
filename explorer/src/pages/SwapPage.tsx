@@ -1,11 +1,12 @@
 import { Link, useParams } from "react-router-dom";
-import { type SwapItem, type SwapStep } from "../api.ts";
+import { getSwap, type SwapItem, type SwapStep } from "../api.ts";
 import { unready } from "../components/Cards.tsx";
 import { HashLink } from "../components/HashLink.tsx";
 import { Icon } from "../components/Icon.tsx";
 import { Info } from "../components/Info.tsx";
-import { SwapCard, useSides, useSwap, viewOfSwap } from "../components/Swap.tsx";
-import { count, dateTime } from "../format.ts";
+import { SwapCard, useSides, viewOfSwap } from "../components/Swap.tsx";
+import { dateTime } from "../format.ts";
+import { useFollowing } from "../useStatus.ts";
 
 /** Settled: the payment is in its block. Claimed: the buyer has also redeemed the Canton side. */
 export function SwapStatus({ s }: { s: Pick<SwapItem, "status"> }) {
@@ -24,7 +25,7 @@ function Step({ name, where, children, waiting = false }: { name: string; where:
 function Landed({ step }: { step: SwapStep }) {
   return (
     <>
-      <span><Link to={`/block/${step.block}`}>Block {count(step.block)}</Link>{" "}{step.txHash ? <HashLink value={step.txHash} to={`/tx/${step.txHash}`} /> : <span className="muted" title="The explorer has not stored this transaction">—</span>}</span>
+      <span><Link to={`/block/${step.block}`}>Block {step.block}</Link>{" "}{step.txHash ? <HashLink value={step.txHash} to={`/tx/${step.txHash}`} /> : <span className="muted" title="The explorer has not stored this transaction">—</span>}</span>
       <span>Canton update <HashLink value={step.updateId} kind="update" to={`/canton/${step.updateId}`} /></span>
       <span className="muted">{dateTime(step.recordTime)}</span>
     </>
@@ -57,7 +58,7 @@ function Body({ s }: { s: SwapItem }) {
 /** One swap, by the id of its payment: the two sides, and the journey from the offer to the claim. */
 export function SwapPage() {
   const { id = "" } = useParams();
-  const q = useSwap(id);
+  const q = useFollowing(["swap", id], () => getSwap(id), (x) => x.status === "claimed");
   const wait = unready(q, "Reading the swap…");
   return wait ?? (q.data ? <Body s={q.data} /> : null);
 }

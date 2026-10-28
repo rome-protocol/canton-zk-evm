@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { addr, block, blockDetail, blockSummary, fakeApi, hash, page, plainLeg, renderApp, reply, route, status, swapItem, swapLeg, tx, txDetail, update, updateDetail } from "../test-utils.tsx";
@@ -88,6 +88,23 @@ describe("the block page: Settled with this block", () => {
     await userEvent.click(s.getByRole("button", { name: "Page through all 73 legs" }));
     expect(await screen.findByRole("link", { name: "50" })).toHaveAttribute("href", `/leg/${hash(0xaa)}`);
     expect(calls.some((c) => c.startsWith("/api/blocks/16816/legs"))).toBe(true);
+    // the paged table replaces the first 50, which are not listed twice, and one button goes back
+    expect(screen.queryAllByRole("link", { name: "Leg 0" })).toHaveLength(0);
+    await userEvent.click(screen.getByRole("button", { name: "Show the first 50 again" }));
+    expect(await screen.findAllByRole("link", { name: /^Leg \d+$/ })).toHaveLength(50);
+  });
+
+  it("reads each swap leg's swap only when the block has a few of them, not one call per card for a block full of swaps", async () => {
+    const many = Array.from({ length: 6 }, (_, i) => swapLeg({ legIndex: i, legId: hash(0x50 + i) }));
+    const calls = await openBlock(many);
+    expect(await settled().findAllByText("Seller gives")).toHaveLength(6);
+    expect(calls.filter((c) => c.startsWith("/api/swaps/"))).toHaveLength(0);
+  });
+
+  it("reads the swap of a leg when the block has just the one", async () => {
+    const calls = await openBlock([swapLeg()]);
+    await settled().findByText("Seller gives");
+    await waitFor(() => expect(calls.some((c) => c.startsWith("/api/swaps/"))).toBe(true));
   });
 });
 
@@ -113,6 +130,14 @@ describe("the transaction page: Canton side", () => {
     const s = within(await screen.findByRole("region", { name: "Canton side" }));
     expect(s.getByRole("listitem")).toHaveTextContent("Deposit");
     expect(s.queryByText("Seller gives")).toBeNull();
+  });
+
+  it("says that only the first 50 legs are shown and links the block that holds them all", async () => {
+    const legs = Array.from({ length: 50 }, (_, i) => plainLeg({ legIndex: i, legId: hash(0x10 + i) }));
+    await openTx(legs);
+    const s = within(await screen.findByRole("region", { name: "Canton side" }));
+    expect(s.getByText(/Only the first 50 legs are shown/)).toBeInTheDocument();
+    expect(s.getByRole("link", { name: "Open the block" })).toHaveAttribute("href", "/block/3");
   });
 
   it("has no panel for a transaction that caused no legs", async () => {
@@ -191,10 +216,10 @@ describe("the swap page", () => {
     expect(steps[0]).toHaveTextContent("Offer");
     expect(within(steps[0]!).getByRole("link", { name: update(0x85).slice(0, 8) + "…" + update(0x85).slice(-4) })).toHaveAttribute("href", `/canton/${update(0x85)}`);
     expect(steps[1]).toHaveTextContent("Payment");
-    expect(within(steps[1]!).getByRole("link", { name: "Block 16,816" })).toHaveAttribute("href", "/block/16816");
+    expect(within(steps[1]!).getByRole("link", { name: "Block 16816" })).toHaveAttribute("href", "/block/16816");
     expect(within(steps[1]!).getByRole("link", { name: "0x0404…0404" })).toHaveAttribute("href", `/tx/${hash(0x04)}`);
     expect(steps[2]).toHaveTextContent("Claim");
-    expect(within(steps[2]!).getByRole("link", { name: "Block 16,823" })).toHaveAttribute("href", "/block/16823");
+    expect(within(steps[2]!).getByRole("link", { name: "Block 16823" })).toHaveAttribute("href", "/block/16823");
     expect(within(steps[2]!).getByRole("link", { name: "0x3737…3737" })).toHaveAttribute("href", `/tx/${hash(0x37)}`);
   });
 
@@ -206,6 +231,13 @@ describe("the swap page", () => {
     expect(steps[2]).toHaveTextContent("Waiting");
     expect(within(steps[2]!).queryByRole("link")).toBeNull();
   });
+
+  it("keeps reading while the swap is not yet claimed, and shows the claim once it lands", async () => {
+    let n = 0;
+    await open(swapItem({ status: "settled", claim: null }), { swaps: () => reply(++n < 2 ? swapItem({ status: "settled", claim: null }) : swapItem()) });
+    expect(screen.getByText("Settled")).toBeInTheDocument();
+    expect(await screen.findByText("Claimed", {}, { timeout: 5000 })).toBeInTheDocument();
+  }, 10000);
 
   it("shows plain words: no template or package names", async () => {
     await open();
