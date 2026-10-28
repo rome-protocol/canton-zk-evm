@@ -47,11 +47,16 @@ twinFixture = do
   c2 <- pinTwin t.fx c t.trules twinAddr 18
   pure t with tchain = c2
 
+-- The confirmer fetches the twin's rules when it accepts a pin, so they are disclosed to it (it has to see them to check the token and the
+-- decimals against the ERC-20 in any case); the tests let it read as the gateway, the rules' admin.
+confirmerOf : F -> SubmitOptions
+confirmerOf f = actAs f.confirmer <> readAs [f.gateway]
+
 -- The operator and the gateway propose the pin of the twin and the confirmer accepts it on `chain`.
 pinTwin : F -> ContractId ZkChain -> ContractId TW.TwinRules -> Text -> Int -> Script (ContractId ZkChain)
 pinTwin f chain rules token decimals = do
   p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd chain ProposeTwin with entry = PinnedTwin with twinToken = token; twinDecimals = decimals; twinRules = rules
-  submit f.confirmer $ exerciseCmd p AcceptTwin with chain
+  submit (confirmerOf f) $ exerciseCmd p AcceptTwin with chain
 
 -- The same, with the chain as the fixture made it: a registry of no entries (so no vault) and no twin pinned.
 bareFixture : Script TF
@@ -514,7 +519,7 @@ testAPinIsCheckedAgainstItsRules = do
   let f = t.fx
   let pin e = do
         p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd f.chain ProposeTwin with entry = e
-        trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = f.chain
+        trySubmit (confirmerOf f) $ exerciseCmd p AcceptTwin with chain = f.chain
   let refusedPin why e = pin e >>= \r -> case r of
         Left err -> assertMsg ("refused, but not for \"" <> why <> "\": " <> show err) (why `T.isInfixOf` show err)
         Right _ -> abort ("the chain pinned a twin it should have refused (" <> why <> ")")
@@ -527,14 +532,14 @@ testAPinIsCheckedAgainstItsRules = do
   -- a second rules of the same token, even the same decimals, is not a second pin
   second <- twinRulesOf f.gateway twinAddr "TKA" 18
   p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = (good with twinRules = second)
-  r <- trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = c
+  r <- trySubmit (confirmerOf f) $ exerciseCmd p AcceptTwin with chain = c
   case r of
     Left e -> assertMsg ("refused, but not as a second pin: " <> show e) ("is pinned already" `T.isInfixOf` show e)
     Right _ -> abort "a token was pinned twice"
   -- rules of another admin cannot be fetched by the chain
   foreign <- twinRulesOf f.registry twin6Addr "TKS" 6
   q <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c ProposeTwin with entry = PinnedTwin with twinToken = twin6Addr; twinDecimals = 6; twinRules = foreign
-  submitMustFail f.confirmer $ exerciseCmd q AcceptTwin with chain = c
+  submitMustFail (confirmerOf f) $ exerciseCmd q AcceptTwin with chain = c
   pinnedOf f c >>= \x -> x === Some [good]
 
 -- A pin waits out the change delay and is made by the right parties; it is taken back by the operator or turned down by the confirmer.
@@ -554,7 +559,7 @@ testAPinWaitsOutTheDelayAndTheRightParties = do
   passTime (seconds 99)
   mustWait f.confirmer $ exerciseCmd p AcceptTwin with chain
   passTime (seconds 1)
-  next <- submit f.confirmer $ exerciseCmd p AcceptTwin with chain
+  next <- submit (confirmerOf f) $ exerciseCmd p AcceptTwin with chain
   pinnedOf f next >>= \x -> x === Some [entry]
   -- withdrawn or rejected, a proposal cannot be accepted
   let propose = submit (actAs [f.operator, f.gateway]) $ exerciseCmd next ProposeTwin with entry = (entry with twinToken = twin6Addr)
@@ -597,7 +602,7 @@ testTheChainPinsSixteenTwins = do
   length ps === 16
   r17 <- twinRulesOf f.gateway twinAddr "TKA" 18
   p <- submit (actAs [f.operator, f.gateway]) $ exerciseCmd c16 ProposeTwin with entry = PinnedTwin with twinToken = twinAddr; twinDecimals = 18; twinRules = r17
-  r <- trySubmit f.confirmer $ exerciseCmd p AcceptTwin with chain = c16
+  r <- trySubmit (confirmerOf f) $ exerciseCmd p AcceptTwin with chain = c16
   case r of
     Left e -> assertMsg ("refused, but not as the 17th: " <> show e) ("at most 16" `T.isInfixOf` show e)
     Right _ -> abort "a 17th twin was pinned"
