@@ -977,7 +977,7 @@ def deposit_leg(leg: LegEvent, canton: Canton, claimed: dict | None) -> dict:
     in the chain's event), so an id that is the claim id of a funded claim, or of a venue trade whose payment would create one, is never settled
     by a request: only that funded claim, with its own recipient, may settle it. Otherwise another party's request could use the id at the
     gateway first, and the claim would be refused as used for ever. (From package 0.5.0 a request's id is derived from its depositor and a label, so this
-    applies to requests made before 0.5.0 and to a builder run with --unlabelled-deposits.)"""
+    applies to requests made before 0.5.0 and to a builder run with --unlabelled-deposits, which in turn turns down a request that carries a label.)"""
     chain = canton.chain
     claims = [c for c in canton.claims if c["claimId"] == leg.id and names_chain(c, chain, "gateway")]
     reserved = bool(claims) or any(t["claimId"] == leg.id and names_chain(t, chain, "gateway") for t in canton.trades)
@@ -1017,7 +1017,12 @@ def request_leg(leg: LegEvent, canton: Canton, claimed: dict | None, requests: l
     token = canton.token(leg)
 
     def problem(r):
-        found = derived_problem(r) if canton.derived_ids else None
+        if canton.derived_ids:
+            found = derived_problem(r)
+        elif r.get("label") is not None:
+            found = "it carries a label (made under 0.5.0), which a package before 0.5.0 cannot take"
+        else:
+            found = None
         if found:
             return found
         if r["allocation"] not in canton.allocations:

@@ -760,6 +760,12 @@ class VenueLegs(LegCase):
         self.build(s)
         self.assertEqual(self.attached(s, "DepositLeg"), {"request": "req-1", "token": "tok-1"})
 
+    def test_a_builder_pinned_before_the_derived_ids_turns_down_a_request_that_carries_a_label(self):
+        # a request with a label was made under 0.5.0, and an older package cannot take it: the Advance would be refused after the proof
+        s, t = self.setup_leg(DEP, requests=[("req-1", REQUEST[1])], allocations=["alloc-d1"])
+        s.cfg.unlabelled_deposits = True
+        self.assert_left_out(s, t, "carries a label")
+
     def test_a_claim_whose_token_is_not_a_token_of_this_chain_is_not_used(self):
         s, t = self.setup_leg(CLAIM_DEP, claims=[CLAIM], tokens=[("tok-1", {**TOKEN[1], "gateway": "other"})])
         self.assert_left_out(s, t, "another token")
