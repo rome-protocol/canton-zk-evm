@@ -178,7 +178,7 @@ def call_data(signature: str, values: list) -> str:
 
 
 def gateway_address() -> str:
-    """The chain's gateway (PINS), or the one CZE_DEMO_GATEWAY_ADDRESS names (tests/demo_registered_gateway.sh sends to a second, registered gateway)."""
+    """The chain's gateway (PINS), or the one CZE_DEMO_GATEWAY_ADDRESS names (a test of a second, registered gateway sends to that one)."""
     override = os.environ.get("CZE_DEMO_GATEWAY_ADDRESS")
     if override:
         if not re.fullmatch(r"0x[0-9a-f]{40}", override):
