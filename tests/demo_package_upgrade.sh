@@ -29,8 +29,9 @@
 #      hash, and the refusal is the sidecar's, with the reason "no malformed input"), and the chain stays where it was. Then block 4 is built again
 #      without the capital letter and commits under the new package, and each header's gas limit moves up by exactly parent/1024 - 1, so the first block is
 #      over the old cap of 30,000,000.
-#   6. The builder is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the new chain
-#      contract and deposit, and the new chain contract is a 0.2.0 one, with the raised cap.
+#   6. A deposit request is made under 0.2.0, by the package id (a request of the new package has a label, which 0.2.0 code cannot take). The builder
+#      is pinned back to 0.2.0 (the downgrade): a block with a gas limit over 30,000,000 commits, 0.2.0 code consumes the new chain contract and the
+#      request, and the new chain contract is a 0.2.0 one, with the raised cap.
 #   7. Forward again: a deposit, the builder pinned to the new package, the block commits. Then the legs are paused for real (setup.py --pause-step pause, the
 #      confirmer alone): a block with no legs still commits, a block that carries a deposit is refused by Canton and reth goes back, and after
 #      --pause-step unpause the same deposit's block commits.
@@ -165,7 +166,7 @@ deposit() {
   local made id before new=""
   before=$(probe DepositRequest | jq -c '.contracts | keys')
   # A request of 0.2.0 has no label (a later one carries the label its id is derived from), so the old package's request is made without it.
-  if [ "$2" = "$OLD" ]; then made=$(CZE_DEPOSIT_WITHOUT_LABEL=1 canton deposit "$1" "$U_ADDR" 10); else made=$(canton deposit "$1" "$U_ADDR" 10); fi
+  if [ "$2" = "$OLD" ]; then made=$(CZE_DEPOSIT_WITHOUT_LABEL=1 CZE_DEPOSIT_PACKAGE="$OLD" canton deposit "$1" "$U_ADDR" 10); else made=$(canton deposit "$1" "$U_ADDR" 10); fi
   id=$(jq -r .depositId <<<"$made")
   [ "${3:-}" = noclaim ] || evm claim u "$id" "$WTKB" 10 | jq -r .tx > /dev/null
   for _ in $(seq 1 30); do   # the request reaches the operator's participant a moment after the depositor's commit
@@ -403,8 +404,9 @@ is "$(gas_limit 5)" "$(( $(gas_limit 4) + $(gas_limit 4) / 1024 - 1 ))" "the gas
 [ "$(gas_limit 5)" -gt 30000000 ] || fail "block 5 is not over the old cap"
 is "$(evm wrapped "$WTKB" "$U_ADDR" finalized | jq -c .)" '{"balance":"50.0","supply":"50.0"}' "U's wTKB after block 5"
 
-step "stage 6: a deposit made under the new package, then the builder is pinned back to 0.2.0 (the downgrade): a block over the old cap commits under 0.2.0"
-deposit dep-6 "$NEW"
+step "stage 6: a deposit made under 0.2.0, then the builder is pinned back to 0.2.0 (the downgrade): a block over the old cap commits under 0.2.0"
+# A request made under the new package has a label, which 0.2.0 code cannot take (a downgrade drops no value), so this one is made under 0.2.0, by its id.
+deposit dep-6 "$OLD"
 block_under "$OLD" 6 1 "the block pinned back to 0.2.0"
 is "$(gas_limit 6)" "$(( $(gas_limit 5) + $(gas_limit 5) / 1024 - 1 ))" "the gas limit of block 6 (over the old cap, under 0.2.0)"
 is "$(probe ZkChain | jq -r '.gasCaps | join(",")')" 60000000 "the gas cap after the downgrade (the chain contract keeps it)"

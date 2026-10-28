@@ -474,7 +474,8 @@ def accept(net: Network, who: str) -> dict:
 def deposit(net: Network, label: str, recipient: str, amount: str) -> dict:
     """U allocates `amount` TKB to the gateway and signs a request to deposit it for the EVM address `recipient`. The request carries `label`, and its
     deposit id is the one derived from U and the label (`deposit_id_of`). A chain on package 0.4.0 or earlier has no label in its request:
-    CZE_DEPOSIT_WITHOUT_LABEL=1 makes the request of that package, with a random id (the package-upgrade test makes its 0.2.0 requests so)."""
+    CZE_DEPOSIT_WITHOUT_LABEL=1 makes the request of that package, with a random id, and CZE_DEPOSIT_PACKAGE=<package id> makes it under that
+    package (the package-upgrade test makes its 0.2.0 requests so)."""
     read_label(label)
     if not CANTON_AMOUNT.fullmatch(amount) or float(amount) == 0:
         raise SystemExit(f"the amount must be more than zero, with at most 10 decimals: {amount!r}")
@@ -487,7 +488,8 @@ def deposit(net: Network, label: str, recipient: str, amount: str) -> dict:
                  "depositor": net.party("u"), "depositId": deposit_id, "recipient": address, "allocation": allocation["contractId"]}
     if not unlabelled:
         arguments["label"] = label
-    net.submit("users", ["u"], {"CreateCommand": {"templateId": DEPOSIT_REQUEST, "createArguments": arguments}})
+    package = os.environ.get("CZE_DEPOSIT_PACKAGE")   # the request is made under this package, by its id, not by the package's name
+    net.submit("users", ["u"], {"CreateCommand": {"templateId": f"{package}:Zk.Chain:DepositRequest" if package else DEPOSIT_REQUEST, "createArguments": arguments}})
     [request] = net.wait_for("the deposit request", lambda: [e for e in net.template("operator", "operator", DEPOSIT_REQUEST) if e["createArgument"]["depositId"] == deposit_id])
     return {"label": label, "depositId": deposit_id, "recipient": "0x" + address, "allocation": allocation["contractId"], "request": request["contractId"]}
 
