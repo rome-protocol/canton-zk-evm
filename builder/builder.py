@@ -101,7 +101,7 @@ class Config:
     stop: object = None               # the producer's stop event (threading.Event), set by produce(): a stop ends the wait that follows a prover's refusal
     twin_registry_url: str = ""       # --twin-registry-url (CZE_TWIN_REGISTRY_URL): the twin registry service that gives the parts of a lock's id; empty: no lock is attached
     registries: dict = field(default_factory=dict)   # --registry ADMIN=URL (CZE_TOKEN_REGISTRIES): the token registry of each instrument admin whose legs get a choice context
-    registry_tokens: dict = field(default_factory=dict)   # --registry-token-file ADMIN=FILE (CZE_TOKEN_REGISTRY_TOKEN_FILES): the bearer token that registry wants, read once at start
+    registry_tokens: dict = field(default_factory=dict)   # --registry-token-file ADMIN=FILE (CZE_TOKEN_REGISTRY_TOKEN_FILES): the file with the bearer token that registry wants, read again for each request
     precheck: object = None           # --precheck: a precheck.Precheck (the emulator and the budgets); None: blocks are not run in the emulator before they are proven
     target_gas_limit: int = 0         # the block gas limit to move toward (--target-gas-limit); 0: none is asked, and reth moves the limit toward --builder.gaslimit (the genesis cap). The chain's gasCap, read from Canton for each block, is the most that is ever sent
 
@@ -294,8 +294,8 @@ def parse_registries(items) -> dict:
     for item in items:
         admin, _, url = item.partition("=")
         parts = urllib.parse.urlsplit(url)
-        if not canton_party_text(admin) or parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment:
-            raise BuilderError(f"a token registry must be ADMIN=URL (an http or https URL with no query), not {item!r}")
+        if not canton_party_text(admin) or parts.scheme not in ("http", "https") or not parts.hostname or parts.query or parts.fragment or parts.username is not None or parts.password is not None:
+            raise BuilderError(f"a token registry must be ADMIN=URL (an http or https URL with no query and no user or password), not {item!r}")
         if admin in found:
             raise BuilderError(f"two token registries for {admin}")
         found[admin] = url
@@ -419,7 +419,7 @@ class ChoiceContexts:
             raise NoCantonSide(why)
         headers = {"content-type": "application/json"}
         if self.tokens.get(admin):
-            headers["authorization"] = f"Bearer {self.tokens[admin]}"
+            headers["authorization"] = f"Bearer {registry_token(self.tokens[admin])}"
         started = time.monotonic()
         try:
             self.seen[key] = json.loads(bounded_fetch(base, "POST", path, limit, self.timeout, CONTEXT_MAX_BODY, json.dumps(payload).encode(), headers),
@@ -2704,20 +2704,34 @@ def check_package_id(value: str) -> str:
     return value
 
 
+def registry_token(path: str) -> str:
+    """The bearer token in the file, read now (a token that is renewed in its file needs no restart); a file that cannot be read or does not hold one token
+    is a NoCantonSide, which leaves the leg out, never a failed build. The token is never printed."""
+    try:
+        token = Path(path).read_text().strip()
+    except (OSError, ValueError) as e:
+        raise NoCantonSide("the token registry's token cannot be read") from e
+    if not token or any(c in token for c in "\r\n\0"):
+        raise NoCantonSide("the token registry's token file does not hold one token")
+    return token
+
+
 def read_registry_tokens(items, registries: dict) -> dict:
-    """{admin: bearer token} from `ADMIN=FILE` items, each for an admin that has a registry; the token is never printed."""
+    """{admin: token file} from `ADMIN=FILE` items, each for an admin that has a registry that is https or on this machine (a token is not sent in the
+    clear); the file is checked to hold one token now, and read again for each request. The token is never printed."""
     found = {}
     for item in items:
         admin, _, path = item.strip().partition("=")
         if admin not in registries:
             raise BuilderError(f"a registry token for {admin}, which has no token registry (--registry)")
+        url = urllib.parse.urlsplit(registries[admin])
+        if url.scheme != "https" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
+            raise BuilderError(f"a registry token for {admin}, whose token registry is not https (a token is not sent in the clear, except to this machine)")
         try:
-            token = Path(path).read_text().strip()
-        except OSError as e:
-            raise BuilderError(f"cannot read the registry token file {path}: {e}") from e
-        if not token or any(c in token for c in "\r\n\0"):
-            raise BuilderError(f"the registry token file {path} must hold one token")
-        found[admin] = token
+            registry_token(path)
+        except NoCantonSide as e:
+            raise BuilderError(f"the registry token file {path} must hold one token that can be read") from e
+        found[admin] = path
     return found
 
 

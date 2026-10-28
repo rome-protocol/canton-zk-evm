@@ -1,7 +1,7 @@
 """The token registry's choice context (Daml 0.5.0): a deposit, withdrawal, payment or trade leg of an instrument whose registry the builder is given
 (`--registry ADMIN=URL`) carries the registry's context for its choice, and the contracts the context names go with the Advance as disclosed contracts.
 The registry is a fake CIP-0056 off-ledger service; the tests run against test_builder.py's fake ledger."""
-import json, sys, threading, time, unittest
+import json, sys, tempfile, threading, time, unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -263,9 +263,32 @@ class Contexts(tb.LegCase):
         s = self.setup({ALICE: [], BOB: []}, terms=[TERMS, ("terms-2", {**TERMS[1], "dvpId": "ff" * 32, "allocation": "alloc-2"})])
         s.reth.pool[ALICE], s.reth.pool[BOB] = [self.leg_tx(s, PAY, ALICE)], [self.leg_tx(s, Leg(PAYMENT, "ff" * 32, TKA, PAYEE, 10), BOB)]
         r = self.registry(s, TERMS_ADMIN, answer=ANSWER)
-        s.cfg.registry_tokens = {TERMS_ADMIN: "s3cret", "unused::1220" + "ee" * 32: "other"}
+        token, unused = Path(s.dir) / "token", Path(s.dir) / "unused"
+        token.write_text("s3cret\n")
+        unused.write_text("other\n")
+        s.cfg.registry_tokens = {TERMS_ADMIN: str(token), "unused::1220" + "ee" * 32: str(unused)}
         self.build(s)
         self.assertEqual({a[2] for a in r.asked}, {"Bearer s3cret"})
+
+    def test_a_token_that_is_renewed_in_its_file_is_sent_from_the_next_request_on(self):
+        r = Registry(answer=ANSWER)
+        self.addCleanup(r.close)
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "token"
+            f.write_text("first\n")
+            reader = b.ChoiceContexts({ADMIN: r.url}, {ADMIN: str(f)})
+            reader.allocation(ADMIN, "a-1")
+            f.write_text("second\n")
+            reader.allocation(ADMIN, "a-2")
+            self.assertEqual([a[2] for a in r.asked], ["Bearer first", "Bearer second"])
+            for text in ("", "a\nb"):   # a file that cannot be read now, or holds no token, leaves the leg out; it never fails the build
+                f.write_text(text)
+                with self.assertRaises(b.NoCantonSide):
+                    reader.allocation(ADMIN, "a-3")
+            f.unlink()
+            with self.assertRaises(b.NoCantonSide):
+                reader.allocation(ADMIN, "a-3")
+            self.assertEqual(len(r.asked), 2)
 
     # ---- the reader on its own
     def test_a_slow_registry_is_given_up_on_at_the_deadline_and_not_asked_again_for_a_while(self):
@@ -313,14 +336,30 @@ class Contexts(tb.LegCase):
         s = self.setup({ALICE: []})
         f = Path(s.dir) / "token"
         f.write_text("abc\n")
-        self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: "http://x"}), {ADMIN: "abc"})
+        self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: "https://x"}), {ADMIN: str(f)})   # the path: the token is read again for each request
         with self.assertRaises(b.BuilderError):
             b.read_registry_tokens([f"{ADMIN}={f}"], {})
         f.write_text("a\nb")
         with self.assertRaises(b.BuilderError):
-            b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: "http://x"})
+            b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: "https://x"})
         with self.assertRaises(b.BuilderError):
-            b.read_registry_tokens([f"{ADMIN}={f}.none"], {ADMIN: "http://x"})
+            b.read_registry_tokens([f"{ADMIN}={f}.none"], {ADMIN: "https://x"})
+
+    def test_a_token_goes_only_to_an_https_registry_or_one_on_this_machine(self):
+        s = self.setup({ALICE: []})
+        f = Path(s.dir) / "token"
+        f.write_text("abc\n")
+        for url in ("http://v.example/scan", "http://10.0.0.5:8080"):
+            with self.subTest(url), self.assertRaises(b.BuilderError):
+                b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url})
+        for url in ("https://v.example/scan", "http://127.0.0.1:8080", "http://localhost/x", "http://[::1]:8080"):
+            with self.subTest(url):
+                self.assertEqual(b.read_registry_tokens([f"{ADMIN}={f}"], {ADMIN: url}), {ADMIN: str(f)})
+
+    def test_a_registry_url_with_a_user_and_password_is_refused(self):
+        for bad in (f"{ADMIN}=https://u:p@v.example/x", f"{ADMIN}=https://u@v.example/x"):
+            with self.subTest(bad), self.assertRaises(b.BuilderError):
+                b.parse_registries([bad])
 
 
 class CommandLine(tb.Case):
