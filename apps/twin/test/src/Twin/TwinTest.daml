@@ -72,25 +72,22 @@ completedHoldings r = case r.output of
   _ -> abort "the transfer did not complete at once"
 
 allocSpec : F -> Time -> Party -> Party -> Decimal -> A.AllocationSpecification
-allocSpec f now sender receiver amt = A.AllocationSpecification with
-  settlement = settlement
-  transferLegId = "leg-0"
-  transferLeg = leg
-  where
-    ref = A.Reference with id = "swap-1"; cid = None
-    settlement = A.SettlementInfo with
-      executor = f.carol
-      settlementRef = ref
-      requestedAt = now
-      allocateBefore = addRelTime now (hours 1)
-      settleBefore = addRelTime now (hours 2)
-      meta = emptyMetadata
-    leg = A.TransferLeg with
-      sender = sender
-      receiver = receiver
-      amount = amt
-      instrumentId = f.instrument
-      meta = emptyMetadata
+allocSpec f now sender receiver amt =
+  let ref = A.Reference with id = "swap-1"; cid = None
+      settlement = A.SettlementInfo with
+        executor = f.carol
+        settlementRef = ref
+        requestedAt = now
+        allocateBefore = addRelTime now (hours 1)
+        settleBefore = addRelTime now (hours 2)
+        meta = emptyMetadata
+      leg = A.TransferLeg with
+        sender = sender
+        receiver = receiver
+        amount = amt
+        instrumentId = f.instrument
+        meta = emptyMetadata
+  in A.AllocationSpecification with settlement = settlement; transferLegId = "leg-0"; transferLeg = leg
 
 allocateCmd : F -> Time -> A.AllocationSpecification -> [ContractId H.Holding] -> Commands AI.AllocationInstructionResult
 allocateCmd f now spec inputs = exerciseCmd (toInterfaceContractId @AI.AllocationFactory f.rulesCid) AI.AllocationFactory_Allocate with
