@@ -1,0 +1,269 @@
+-- The Canton twin of an ERC-20 token that Ostia's vault holds: a CIP-0056 (token standard V1) token with the instrument id
+-- `erc20:<token address>` (40 lowercase hex digits) and 10 decimals. The twin's admin party (the gateway party on DevNet) alone
+-- signs every holding, so a transfer is complete at once and the receiver has nothing to accept. The twin is minted and burnt only
+-- through the admin's choices on `TwinRules`; the chain's `Advance` calls them against a proven payment into or out of the vault.
+module Twin.Twin where
+
+import DA.Optional (isSome, optionalToList)
+import qualified DA.Text as T
+import qualified DA.TextMap as TM
+
+import Splice.Api.Token.MetadataV1
+import qualified Splice.Api.Token.HoldingV1 as H
+import qualified Splice.Api.Token.AllocationV1 as A
+import qualified Splice.Api.Token.AllocationInstructionV1 as AI
+import qualified Splice.Api.Token.TransferInstructionV1 as TI
+
+import Twin.Amount
+
+-- | `n` lowercase hex digits (an EVM address is 40).
+hexOfLength : Int -> Text -> Bool
+hexOfLength n t = T.length t == n && all (`elem` T.explode "0123456789abcdef") (T.explode t)
+
+-- | The twin's instrument: `erc20:<token address>`, administered by the twin's admin party.
+instrumentOf : Party -> Text -> H.InstrumentId
+instrumentOf admin token = H.InstrumentId with admin = admin; id = "erc20:" <> token
+
+-- | What a wallet reads of the token (on the factories' views): the ERC-20's address, name, symbol and decimals, and the twin's decimals.
+twinMeta : Text -> Text -> Text -> Int -> Metadata
+twinMeta token name symbol decimals = Metadata with
+  values = TM.fromList
+    [ (metaKey "erc20", token), (metaKey "name", name), (metaKey "symbol", symbol)
+    , (metaKey "decimals", show twinDecimals), (metaKey "erc20-decimals", show decimals) ]
+
+-- | The twin's metadata keys are prefixed with the DNS name of the app that defines them, as MetadataV1 asks.
+metaKey : Text -> Text
+metaKey k = "romeprotocol.com/" <> k
+
+-- | A holding of the twin. Only the admin signs; the owner sees it and nothing more is needed to receive it.
+template TwinHolding with
+    admin : Party
+    owner : Party
+    token : Text       -- the ERC-20's address, 40 lowercase hex digits
+    amount : Decimal
+    meta : Metadata
+  where
+    signatory admin
+    observer owner
+    ensure amount > 0.0 && hexOfLength 40 token
+
+    interface instance H.Holding for TwinHolding where
+      view = H.HoldingView with
+        owner = owner
+        instrumentId = instrumentOf admin token
+        amount = amount
+        lock = None
+        meta = meta
+
+-- | An allocation of the twin for a settlement (the DvP leg): the sender's amount, held until the settlement's executor, the sender
+-- and the receiver execute it (`Allocation_ExecuteTransfer`) or it is cancelled or withdrawn. It is also a locked holding of the sender,
+-- as the Splice reference token's allocation is, so the sender's wallet still counts the amount.
+template TwinAllocation with
+    admin : Party
+    token : Text
+    allocation : A.AllocationSpecification
+  where
+    signatory admin
+    observer allocation.transferLeg.sender, allocation.transferLeg.receiver, allocation.settlement.executor
+    ensure allocation.transferLeg.amount > 0.0
+      && allocation.transferLeg.instrumentId == instrumentOf admin token
+      && allocation.settlement.allocateBefore <= allocation.settlement.settleBefore
+
+    interface instance H.Holding for TwinAllocation where
+      view = H.HoldingView with
+        owner = allocation.transferLeg.sender
+        instrumentId = allocation.transferLeg.instrumentId
+        amount = allocation.transferLeg.amount
+        lock = Some H.Lock with
+          holders = [allocation.transferLeg.sender, admin]
+          expiresAt = Some allocation.settlement.settleBefore
+          expiresAfter = None
+          context = Some ("allocation for settlement of " <> allocation.settlement.settlementRef.id)
+        meta = emptyMetadata
+
+    interface instance A.Allocation for TwinAllocation where
+      view = A.AllocationView with
+        allocation = allocation
+        holdingCids = []
+        meta = emptyMetadata
+
+      allocation_executeTransferImpl _self _arg = do
+        now <- getTime
+        assertMsg "the settlement is at or past settleBefore" (now < allocation.settlement.settleBefore)
+        out <- create TwinHolding with
+          admin = admin
+          owner = allocation.transferLeg.receiver
+          token = token
+          amount = allocation.transferLeg.amount
+          meta = emptyMetadata
+        pure $ A.Allocation_ExecuteTransferResult with
+          senderHoldingCids = []
+          receiverHoldingCids = [toInterfaceContractId out]
+          meta = emptyMetadata
+
+      allocation_cancelImpl _self _arg = do
+        back <- giveBack admin token allocation
+        pure $ A.Allocation_CancelResult with
+          senderHoldingCids = [toInterfaceContractId back]
+          meta = emptyMetadata
+
+      allocation_withdrawImpl _self _arg = do
+        back <- giveBack admin token allocation
+        pure $ A.Allocation_WithdrawResult with
+          senderHoldingCids = [toInterfaceContractId back]
+          meta = emptyMetadata
+
+-- | The sender's amount, as a holding again.
+giveBack : Party -> Text -> A.AllocationSpecification -> Update (ContractId TwinHolding)
+giveBack admin token spec = create TwinHolding with
+  admin = admin
+  owner = spec.transferLeg.sender
+  token = token
+  amount = spec.transferLeg.amount
+  meta = emptyMetadata
+
+-- | Archives `owner`'s holdings of this twin (`admin`'s holdings of `token`; none may be locked, so an allocation is refused) and
+-- returns their total. At least one is required. Each input is fetched as a `TwinHolding`, so a contract of any other template
+-- that implements the `Holding` interface and reports the twin's instrument is refused.
+consume : Party -> Text -> Party -> [ContractId H.Holding] -> Update Decimal
+consume admin token owner cids = do
+  assertMsg "at least one input holding is required" (not (null cids))
+  amounts <- forA cids $ \cid -> do
+    let tcid = fromInterfaceContractId @TwinHolding cid
+    h <- fetch tcid
+    assertMsg "an input holding is not of this twin" (h.admin == admin && h.token == token)
+    assertMsg "an input holding is not the owner's" (h.owner == owner)
+    archive tcid
+    pure h.amount
+  pure (sum amounts)
+
+-- | What is left of `total` after `spent`, as the owner's new holding; none when nothing is left.
+changeOf : Party -> Party -> Text -> Decimal -> Decimal -> Update (Optional (ContractId H.Holding))
+changeOf admin owner token total spent = do
+  assertMsg "the input holdings are less than the amount" (total >= spent)
+  let left = total - spent
+  if left == 0.0
+    then pure None
+    else do
+      c <- create TwinHolding with admin = admin; owner = owner; token = token; amount = left; meta = emptyMetadata
+      pure (Some (toInterfaceContractId c))
+
+-- | A twin of a token with fewer than 10 decimals is spent in whole base units only: the vault cannot pay out a finer amount, and
+-- never rounds one. (A token of 10 or more decimals has every twin amount whole.)
+assertWholeBaseUnits : Int -> Decimal -> Update ()
+assertWholeBaseUnits decimals amount =
+  assertMsg "the amount is not a whole number of the token's base units" (decimals >= twinDecimals || isSome (toBaseUnits decimals amount))
+
+-- | The rules of one twin: the token standard's transfer factory and allocation factory, and the admin's mint and burn. There is
+-- one per ERC-20 token. The admin is the only signatory.
+template TwinRules with
+    admin : Party
+    token : Text      -- the ERC-20's address, 40 lowercase hex digits
+    name : Text
+    symbol : Text
+    decimals : Int    -- the ERC-20's decimals, 0 to 36
+  where
+    signatory admin
+    ensure hexOfLength 40 token && T.length name > 0 && T.length symbol > 0 && decimals >= 0 && decimals <= 36
+
+    -- | Mint `amount` to `owner` (as a new holding), against the vault payment that `reference` names. Only the admin can.
+    nonconsuming choice Mint : ContractId TwinHolding
+      with
+        owner : Party
+        amount : Decimal
+        reference : Text
+      controller admin
+      do
+        assertMsg "mint: the amount must be positive" (amount > 0.0)
+        assertWholeBaseUnits decimals amount
+        assertMsg "mint: a reference is required" (T.length reference > 0)
+        create TwinHolding with
+          admin = admin
+          owner = owner
+          token = token
+          amount = amount
+          meta = Metadata with values = TM.fromList [(metaKey "mint-reference", reference)]
+
+    -- | Burn `amount` out of `owner`'s holdings (the whole of each holding is archived, and what is left of the total comes back as
+    -- one new holding), against the vault payment that `reference` names. Only the admin can.
+    nonconsuming choice Burn : Optional (ContractId H.Holding)
+      with
+        owner : Party
+        holdingCids : [ContractId H.Holding]
+        amount : Decimal
+        reference : Text
+      controller admin
+      do
+        assertMsg "burn: the amount must be positive" (amount > 0.0)
+        assertWholeBaseUnits decimals amount
+        assertMsg "burn: a reference is required" (T.length reference > 0)
+        total <- consume admin token owner holdingCids
+        changeOf admin owner token total amount
+
+    interface instance TI.TransferFactory for TwinRules where
+      view = TI.TransferFactoryView with
+        admin = admin
+        meta = twinMeta token name symbol decimals
+
+      transferFactory_publicFetchImpl _self arg = do
+        assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
+        pure (TI.TransferFactoryView with
+          admin = admin
+          meta = twinMeta token name symbol decimals)
+
+      transferFactory_transferImpl _self arg = do
+        assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
+        let t = arg.transfer
+        now <- getTime
+        assertMsg "the instrument is not this twin's" (t.instrumentId == instrumentOf admin token)
+        assertMsg "the amount must be positive" (t.amount > 0.0)
+        assertWholeBaseUnits decimals t.amount
+        assertMsg "requestedAt is in the future" (t.requestedAt <= now)
+        assertMsg "executeBefore has passed" (now < t.executeBefore)
+        total <- consume admin token t.sender t.inputHoldingCids
+        change <- changeOf admin t.sender token total t.amount
+        out <- create TwinHolding with
+          admin = admin
+          owner = t.receiver
+          token = token
+          amount = t.amount
+          meta = emptyMetadata
+        pure $ TI.TransferInstructionResult with
+          output = TI.TransferInstructionResult_Completed with receiverHoldingCids = [toInterfaceContractId out]
+          senderChangeCids = optionalToList change
+          meta = emptyMetadata
+
+    interface instance AI.AllocationFactory for TwinRules where
+      view = AI.AllocationFactoryView with
+        admin = admin
+        meta = twinMeta token name symbol decimals
+
+      allocationFactory_publicFetchImpl _self arg = do
+        assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
+        pure (AI.AllocationFactoryView with
+          admin = admin
+          meta = twinMeta token name symbol decimals)
+
+      allocationFactory_allocateImpl _self arg = do
+        assertMsg "expectedAdmin is not this twin's admin" (arg.expectedAdmin == admin)
+        let spec = arg.allocation
+        let settlement = spec.settlement
+        let leg = spec.transferLeg
+        now <- getTime
+        assertMsg "the instrument is not this twin's" (leg.instrumentId == instrumentOf admin token)
+        assertMsg "the amount must be positive" (leg.amount > 0.0)
+        assertWholeBaseUnits decimals leg.amount
+        assertMsg "requestedAt is in the future" (arg.requestedAt <= now)
+        assertMsg "settlement.requestedAt is in the future" (settlement.requestedAt <= now)
+        assertMsg "allocateBefore has passed" (now < settlement.allocateBefore)
+        assertMsg "allocateBefore is after settleBefore" (settlement.allocateBefore <= settlement.settleBefore)
+        total <- consume admin token leg.sender arg.inputHoldingCids
+        change <- changeOf admin leg.sender token total leg.amount
+        alloc <- create TwinAllocation with
+          admin = admin
+          token = token
+          allocation = spec
+        pure $ AI.AllocationInstructionResult with
+          output = AI.AllocationInstructionResult_Completed with allocationCid = toInterfaceContractId alloc
+          senderChangeCids = optionalToList change
+          meta = emptyMetadata

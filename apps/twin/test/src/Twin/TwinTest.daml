@@ -1,0 +1,530 @@
+-- Daml Script tests for the twin app. The token is driven through the standard's own factories, as a CIP-0056 wallet drives it.
+module Twin.TwinTest where
+
+import DA.Assert ((===))
+import DA.List (head)
+import DA.Optional (isSome)
+import qualified DA.Text as T
+import qualified DA.TextMap as TM
+import DA.Time (addRelTime, hours, minutes)
+import Daml.Script
+
+import Splice.Api.Token.MetadataV1
+import qualified Splice.Api.Token.HoldingV1 as H
+import qualified Splice.Api.Token.TransferInstructionV1 as TI
+import qualified Splice.Api.Token.AllocationV1 as A
+import qualified Splice.Api.Token.AllocationInstructionV1 as AI
+
+import Twin.Amount
+import Twin.Twin
+
+tokenAddr, otherAddr : Text
+tokenAddr = mconcat (replicate 20 "11")
+otherAddr = mconcat (replicate 20 "22")
+
+noExtraArgs : ExtraArgs
+noExtraArgs = ExtraArgs (ChoiceContext mempty) emptyMetadata
+
+data F = F with
+  admin, alice, bob, carol : Party
+  instrument : H.InstrumentId
+  rulesCid : ContractId TwinRules
+  rules : Disclosure
+
+setup : Script F
+setup = do
+  [admin, alice, bob, carol] <- mapA allocateParty ["Admin", "Alice", "Bob", "Carol"]
+  rulesCid <- submit admin $ createCmd TwinRules with admin = admin; token = tokenAddr; name = "Token A"; symbol = "TKA"; decimals = 18
+  Some rules <- queryDisclosure admin rulesCid
+  pure F with instrument = instrumentOf admin tokenAddr; ..
+
+mintTo : F -> Party -> Decimal -> Script (ContractId H.Holding)
+mintTo f p a = do
+  c <- submit f.admin $ exerciseCmd f.rulesCid Mint with owner = p; amount = a; reference = "lock-1"
+  pure (toInterfaceContractId c)
+
+-- The sum of a party's unlocked holdings of the instrument, and of its locked ones.
+balanceOf, lockedOf : F -> Party -> Script Decimal
+balanceOf f p = do
+  hs <- queryInterface @H.Holding p
+  pure (sum [ v.amount | (_, Some v) <- hs, v.owner == p, v.instrumentId == f.instrument, not (isSome v.lock) ])
+lockedOf f p = do
+  hs <- queryInterface @H.Holding p
+  pure (sum [ v.amount | (_, Some v) <- hs, v.owner == p, v.instrumentId == f.instrument, isSome v.lock ])
+
+transferSpec : F -> Time -> Party -> Party -> Decimal -> [ContractId H.Holding] -> TI.Transfer
+transferSpec f now sender receiver amt inputs = TI.Transfer with
+  sender = sender; receiver = receiver; amount = amt; instrumentId = f.instrument
+  requestedAt = now; executeBefore = addRelTime now (hours 1); inputHoldingCids = inputs; meta = emptyMetadata
+
+-- A wallet's transfer through the factory. The wallet is given the rules contract (explicit disclosure), as it is on a real ledger.
+transferCmd : F -> TI.Transfer -> Commands TI.TransferInstructionResult
+transferCmd f t = exerciseCmd (toInterfaceContractId @TI.TransferFactory f.rulesCid) TI.TransferFactory_Transfer with
+  expectedAdmin = f.admin; transfer = t; extraArgs = noExtraArgs
+
+transfer : F -> Party -> Party -> Decimal -> [ContractId H.Holding] -> Script TI.TransferInstructionResult
+transfer f sender receiver amt inputs = do
+  now <- getTime
+  submit (actAs sender <> disclose f.rules) $ transferCmd f (transferSpec f now sender receiver amt inputs)
+
+completedHoldings : TI.TransferInstructionResult -> Script [ContractId H.Holding]
+completedHoldings r = case r.output of
+  TI.TransferInstructionResult_Completed cs -> pure cs
+  _ -> abort "the transfer did not complete at once"
+
+allocSpec : F -> Time -> Party -> Party -> Decimal -> A.AllocationSpecification
+allocSpec f now = legSpec f now f.instrument "leg-0"
+
+-- One leg of the settlement "swap-1", of any instrument.
+legSpec : F -> Time -> H.InstrumentId -> Text -> Party -> Party -> Decimal -> A.AllocationSpecification
+legSpec f now instrument legId sender receiver amt =
+  let ref = A.Reference with id = "swap-1"; cid = None
+      settlement = A.SettlementInfo with
+        executor = f.carol
+        settlementRef = ref
+        requestedAt = now
+        allocateBefore = addRelTime now (hours 1)
+        settleBefore = addRelTime now (hours 2)
+        meta = emptyMetadata
+      leg = A.TransferLeg with
+        sender = sender
+        receiver = receiver
+        amount = amt
+        instrumentId = instrument
+        meta = emptyMetadata
+  in A.AllocationSpecification with settlement = settlement; transferLegId = legId; transferLeg = leg
+
+allocateCmd : F -> Time -> A.AllocationSpecification -> [ContractId H.Holding] -> Commands AI.AllocationInstructionResult
+allocateCmd f = allocateVia f f.rulesCid
+
+allocateVia : F -> ContractId TwinRules -> Time -> A.AllocationSpecification -> [ContractId H.Holding] -> Commands AI.AllocationInstructionResult
+allocateVia f rulesCid now spec inputs = exerciseCmd (toInterfaceContractId @AI.AllocationFactory rulesCid) AI.AllocationFactory_Allocate with
+  expectedAdmin = f.admin; allocation = spec; requestedAt = now; inputHoldingCids = inputs; extraArgs = noExtraArgs
+
+-- Alice allocates 3 to Bob for Carol's settlement; the allocation and the change come back.
+allocated : F -> [ContractId H.Holding] -> Script (ContractId A.Allocation)
+allocated f inputs = do
+  now <- getTime
+  r <- submit (actAs f.alice <> disclose f.rules) $ allocateCmd f now (allocSpec f now f.alice f.bob 3.0) inputs
+  case r.output of
+    AI.AllocationInstructionResult_Completed c -> pure c
+    _ -> abort "the allocation did not complete at once"
+
+-- Test-only holdings of templates this package does not own, which report this twin's instrument. The first is signed by its owner
+-- (a package an attacker vets), the second by the admin (another asset the admin issues).
+template FakeHolding with
+    owner : Party
+    admin : Party
+    token : Text
+    amount : Decimal
+  where
+    signatory owner
+    observer admin
+    interface instance H.Holding for FakeHolding where
+      view = H.HoldingView with owner = owner; instrumentId = instrumentOf admin token; amount = amount; lock = None; meta = emptyMetadata
+
+template AdminFakeHolding with
+    owner : Party
+    admin : Party
+    token : Text
+    amount : Decimal
+  where
+    signatory admin
+    observer owner
+    interface instance H.Holding for AdminFakeHolding where
+      view = H.HoldingView with owner = owner; instrumentId = instrumentOf admin token; amount = amount; lock = None; meta = emptyMetadata
+
+-- | 64 hex digits from the short form.
+hex64 : Text -> Text
+hex64 s = T.implode (replicate (64 - T.length s) "0") <> s
+
+-- Metadata: the instrument id is `erc20:<address>`, and the factory's view carries the name, symbol and 10 decimals.
+testInstrumentAndMetadata : Script ()
+testInstrumentAndMetadata = do
+  f <- setup
+  f.instrument.admin === f.admin
+  f.instrument.id === "erc20:" <> tokenAddr
+  twinDecimals === 10
+  _ <- mintTo f f.alice 10.0
+  Some v <- queryInterfaceContractId @TI.TransferFactory f.admin (toInterfaceContractId f.rulesCid)
+  v.admin === f.admin
+  TM.lookup "romeprotocol.com/symbol" v.meta.values === Some "TKA"
+  TM.lookup "romeprotocol.com/name" v.meta.values === Some "Token A"
+  TM.lookup "romeprotocol.com/decimals" v.meta.values === Some "10"
+  TM.lookup "romeprotocol.com/erc20" v.meta.values === Some tokenAddr
+  TM.lookup "romeprotocol.com/erc20-decimals" v.meta.values === Some "18"
+  -- the rules of a twin name an ERC-20 address, a name and a symbol
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = "0x" <> tokenAddr; name = "x"; symbol = "X"; decimals = 18
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = ""; symbol = "X"; decimals = 18
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = ""; decimals = 18
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = "X"; decimals = (-1)
+  submitMustFail f.admin $ createCmd TwinRules with admin = f.admin; token = tokenAddr; name = "x"; symbol = "X"; decimals = 37
+
+-- The balance is the sum of the owner's holdings; the owner sees them, nobody else's.
+testBalance : Script ()
+testBalance = do
+  f <- setup
+  _ <- mintTo f f.alice 10.0
+  _ <- mintTo f f.alice 2.5
+  _ <- mintTo f f.bob 1.0
+  balanceOf f f.alice >>= (=== 12.5)
+  balanceOf f f.bob >>= (=== 1.0)
+  balanceOf f f.carol >>= (=== 0.0)
+  -- the mint's reference is on the holding
+  hs <- queryInterface @H.Holding f.bob
+  [ TM.lookup "romeprotocol.com/mint-reference" v.meta.values | (_, Some v) <- hs ] === [Some "lock-1"]
+
+-- A transfer is complete at once: the receiver does nothing, and the sender's change comes back.
+testTransferCompletesAtOnce : Script ()
+testTransferCompletesAtOnce = do
+  f <- setup
+  h <- mintTo f f.alice 10.0
+  r <- transfer f f.alice f.bob 4.0 [h]
+  received <- completedHoldings r
+  length received === 1
+  length r.senderChangeCids === 1
+  balanceOf f f.alice >>= (=== 6.0)
+  balanceOf f f.bob >>= (=== 4.0)
+  Some rv <- queryInterfaceContractId @H.Holding f.bob (head received)
+  rv.owner === f.bob
+  rv.amount === 4.0
+  rv.instrumentId === f.instrument
+  -- Bob passes it on, and nobody but Alice, Bob and the admin was ever needed
+  _ <- transfer f f.bob f.carol 1.5 received
+  balanceOf f f.bob >>= (=== 2.5)
+  balanceOf f f.carol >>= (=== 1.5)
+
+-- Spending a whole holding leaves no change; several holdings are merged; a transfer to oneself is a split.
+testTransferInputs : Script ()
+testTransferInputs = do
+  f <- setup
+  a <- mintTo f f.alice 3.0
+  b <- mintTo f f.alice 4.0
+  r <- transfer f f.alice f.bob 7.0 [a, b]
+  length r.senderChangeCids === 0
+  balanceOf f f.alice >>= (=== 0.0)
+  balanceOf f f.bob >>= (=== 7.0)
+  c <- mintTo f f.alice 5.0
+  r2 <- transfer f f.alice f.alice 2.0 [c]
+  length r2.senderChangeCids === 1
+  balanceOf f f.alice >>= (=== 5.0)
+  -- the smallest amount, 10 decimals
+  d <- mintTo f f.carol 0.0000000002
+  _ <- transfer f f.carol f.bob 0.0000000001 [d]
+  balanceOf f f.carol >>= (=== 0.0000000001)
+
+-- Refused transfers: no input, too little, a holding that is not the sender's, another instrument, a wrong admin, a bad amount, a bad time.
+testTransferRefused : Script ()
+testTransferRefused = do
+  f <- setup
+  now <- getTime
+  h <- mintTo f f.alice 10.0
+  bobs <- mintTo f f.bob 10.0
+  let refused t = submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f t
+  refused (transferSpec f now f.alice f.bob 4.0 [])
+  refused (transferSpec f now f.alice f.bob 10.5 [h])
+  refused (transferSpec f now f.alice f.bob 4.0 [bobs])
+  refused (transferSpec f now f.alice f.bob 0.0 [h])
+  refused (transferSpec f now f.alice f.bob (-1.0) [h])
+  let base = transferSpec f now f.alice f.bob 4.0 [h]
+  refused (base with instrumentId = instrumentOf f.admin otherAddr)
+  refused (base with instrumentId = instrumentOf f.alice tokenAddr)
+  refused (base with requestedAt = addRelTime now (hours 1))
+  refused (base with executeBefore = now)
+  -- the same holding twice is archived twice
+  refused (transferSpec f now f.alice f.bob 4.0 [h, h])
+  -- a wrong expected admin
+  submitMustFail (actAs f.alice <> disclose f.rules) $ exerciseCmd (toInterfaceContractId @TI.TransferFactory f.rulesCid) TI.TransferFactory_Transfer with
+    expectedAdmin = f.bob; transfer = transferSpec f now f.alice f.bob 4.0 [h]; extraArgs = noExtraArgs
+  -- Bob cannot move Alice's holding, and nothing above changed a balance
+  submitMustFail (actAs f.bob <> disclose f.rules) $ transferCmd f (transferSpec f now f.bob f.bob 4.0 [h])
+  balanceOf f f.alice >>= (=== 10.0)
+  balanceOf f f.bob >>= (=== 10.0)
+
+-- DvP: Alice allocates 3 for Bob's settlement; Carol (the executor), Alice and Bob execute it, and Bob holds 3.
+testAllocateAndExecute : Script ()
+testAllocateAndExecute = do
+  f <- setup
+  h <- mintTo f f.alice 10.0
+  alloc <- allocated f [h]
+  -- the amount is locked, the change is free
+  balanceOf f f.alice >>= (=== 7.0)
+  lockedOf f f.alice >>= (=== 3.0)
+  Some v <- queryInterfaceContractId @A.Allocation f.carol alloc
+  v.allocation.settlement.executor === f.carol
+  v.allocation.settlement.settlementRef.id === "swap-1"
+  v.allocation.transferLeg.receiver === f.bob
+  -- the executor alone, or without the receiver, cannot execute
+  submitMustFail f.carol $ exerciseCmd alloc A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  submitMustFail (actAs [f.carol, f.alice]) $ exerciseCmd alloc A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  r <- submit (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd alloc A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  length r.receiverHoldingCids === 1
+  balanceOf f f.bob >>= (=== 3.0)
+  balanceOf f f.alice >>= (=== 7.0)
+  lockedOf f f.alice >>= (=== 0.0)
+  -- it cannot be executed twice
+  submitMustFail (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd alloc A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+
+-- Alice takes her allocation back (withdraw), and the executor cancels another (cancel); the amount returns to her.
+testAllocationWithdrawAndCancel : Script ()
+testAllocationWithdrawAndCancel = do
+  f <- setup
+  h <- mintTo f f.alice 10.0
+  alloc <- allocated f [h]
+  submitMustFail f.bob $ exerciseCmd alloc A.Allocation_Withdraw with extraArgs = noExtraArgs
+  r <- submit f.alice $ exerciseCmd alloc A.Allocation_Withdraw with extraArgs = noExtraArgs
+  length r.senderHoldingCids === 1
+  balanceOf f f.alice >>= (=== 10.0)
+  lockedOf f f.alice >>= (=== 0.0)
+  h2 <- mintTo f f.alice 4.0
+  alloc2 <- allocated f [h2]
+  r2 <- submit (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd alloc2 A.Allocation_Cancel with extraArgs = noExtraArgs
+  length r2.senderHoldingCids === 1
+  balanceOf f f.alice >>= (=== 14.0)
+
+-- Refused allocations and executions: too little, a locked holding as input, a wrong admin, a window that is shut, an execution after settleBefore.
+testAllocationRefused : Script ()
+testAllocationRefused = do
+  f <- setup
+  now <- getTime
+  h <- mintTo f f.alice 4.0
+  let refused spec inputs = submitMustFail (actAs f.alice <> disclose f.rules) $ allocateCmd f now spec inputs
+  refused (allocSpec f now f.alice f.bob 5.0) [h]
+  refused (allocSpec f now f.alice f.bob 1.0) []
+  refused (allocSpec f now f.alice f.bob 0.0) [h]
+  let spec = allocSpec f now f.alice f.bob 1.0
+  refused (spec with transferLeg = spec.transferLeg with instrumentId = instrumentOf f.admin otherAddr) [h]
+  refused (spec with settlement = spec.settlement with allocateBefore = now) [h]
+  refused (spec with settlement = spec.settlement with settleBefore = now) [h]
+  submitMustFail (actAs f.alice <> disclose f.rules) $ exerciseCmd (toInterfaceContractId @AI.AllocationFactory f.rulesCid) AI.AllocationFactory_Allocate with
+    expectedAdmin = f.bob; allocation = allocSpec f now f.alice f.bob 1.0; requestedAt = now; inputHoldingCids = [h]; extraArgs = noExtraArgs
+  -- an allocation is a locked holding, and cannot be spent
+  alloc <- allocated f [h]
+  _ <- mintTo f f.alice 5.0
+  submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 1.0 [coerceInterfaceContractId @H.Holding alloc])
+  -- after settleBefore it cannot be executed, and Alice still takes it back
+  passTime (hours 3)
+  submitMustFail (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd alloc A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  _ <- submit f.alice $ exerciseCmd alloc A.Allocation_Withdraw with extraArgs = noExtraArgs
+  pure ()
+
+-- Mint and burn are the admin's alone, and burn takes holdings of this twin and of the owner only.
+testMintAndBurnOnlyByAdmin : Script ()
+testMintAndBurnOnlyByAdmin = do
+  f <- setup
+  h <- mintTo f f.alice 10.0
+  -- nobody else can mint or burn, not even the owner of the holdings
+  submitMustFail (actAs f.alice <> disclose f.rules) $ exerciseCmd f.rulesCid Mint with owner = f.alice; amount = 1.0; reference = "x"
+  submitMustFail (actAs f.alice <> disclose f.rules) $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 1.0; reference = "x"
+  submitMustFail (actAs [f.alice, f.bob] <> disclose f.rules) $ exerciseCmd f.rulesCid Mint with owner = f.bob; amount = 1.0; reference = "x"
+  -- the admin burns 4 of 10: the holding is archived and 6 comes back
+  change <- submit f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 4.0; reference = "release-1"
+  isSome change === True
+  balanceOf f f.alice >>= (=== 6.0)
+  -- a burn of the whole of what is left leaves no change
+  hs <- queryInterface @H.Holding f.alice
+  left <- case hs of
+    [(c, _)] -> pure c
+    _ -> abort "expected one holding"
+  c2 <- submit f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [left]; amount = 6.0; reference = "release-2"
+  c2 === None
+  balanceOf f f.alice >>= (=== 0.0)
+
+-- Refused mints and burns: a zero or negative amount, no reference, more than the holdings, another owner's holding, another twin's holding.
+testMintAndBurnRefused : Script ()
+testMintAndBurnRefused = do
+  f <- setup
+  h <- mintTo f f.alice 10.0
+  bobs <- mintTo f f.bob 10.0
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Mint with owner = f.alice; amount = 0.0; reference = "x"
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Mint with owner = f.alice; amount = (-1.0); reference = "x"
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Mint with owner = f.alice; amount = 1.0; reference = ""
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 0.0; reference = "x"
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 1.0; reference = ""
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 10.5; reference = "x"
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = []; amount = 1.0; reference = "x"
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [bobs]; amount = 1.0; reference = "x"
+  -- the holding of another ERC-20's twin is not burnt through these rules
+  otherRules <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"; decimals = 18
+  other <- submit f.admin $ exerciseCmd otherRules Mint with owner = f.alice; amount = 5.0; reference = "x"
+  submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [toInterfaceContractId other]; amount = 1.0; reference = "x"
+  balanceOf f f.alice >>= (=== 10.0)
+
+-- Base units to a twin amount: exact, or refused, never rounded.
+testBaseUnits : Script ()
+testBaseUnits = do
+  -- 6 decimals (USDC): 1,000,000 base units are 1
+  fromBaseUnits 6 (hex64 "f4240") === Some 1.0
+  fromBaseUnits 6 (hex64 "1") === Some 0.000001
+  -- 18 decimals: 10^18 is 1; steps of 10^8 base units are exact, a finer amount is refused
+  fromBaseUnits 18 (hex64 "de0b6b3a7640000") === Some 1.0
+  fromBaseUnits 18 (hex64 "5f5e100") === Some 0.0000000001
+  fromBaseUnits 18 (hex64 "5f5e101") === None
+  fromBaseUnits 18 (hex64 "1") === None
+  fromBaseUnits 18 (hex64 "0") === Some 0.0 -- zero converts; the mint refuses it
+  -- 10 decimals: as it is; 0 decimals: whole units
+  fromBaseUnits 10 (hex64 "1") === Some 0.0000000001
+  fromBaseUnits 0 (hex64 "a") === Some 10.0
+  -- malformed: a wrong length, an upper-case or non-hex digit, decimals out of range
+  fromBaseUnits 6 "f4240" === None
+  fromBaseUnits 6 (hex64 "F4240") === None
+  fromBaseUnits 6 (hex64 "0x") === None
+  fromBaseUnits (-1) (hex64 "1") === None
+  fromBaseUnits 37 (hex64 "1") === None
+  -- too large for a twin: 2^255; the limit is 10^17 whole units
+  fromBaseUnits 6 ("8" <> T.implode (replicate 63 "0")) === None
+  fromBaseUnits 6 (hex64 "16345785d8a0000") === Some 100000000000.0
+  fromBaseUnits 6 (hex64 "152d02c7e14af6800000") === None
+
+-- Only this twin's own holdings are spent: a holding of another template that reports the instrument is refused by a transfer, an
+-- allocation and a burn, so it mints nothing and releases nothing.
+testForeignHoldingRefused : Script ()
+testForeignHoldingRefused = do
+  f <- setup
+  now <- getTime
+  fake <- submit f.alice $ createCmd FakeHolding with owner = f.alice; admin = f.admin; token = tokenAddr; amount = 1000.0
+  adminFake <- submit f.admin $ createCmd AdminFakeHolding with owner = f.alice; admin = f.admin; token = tokenAddr; amount = 1000.0
+  let foreign = [toInterfaceContractId @H.Holding fake, toInterfaceContractId @H.Holding adminFake]
+  _ <- forA foreign $ \h -> do
+    submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 500.0 [h])
+    submitMustFail (actAs f.alice <> disclose f.rules) $ allocateCmd f now (allocSpec f now f.alice f.bob 3.0) [h]
+    submitMustFail f.admin $ exerciseCmd f.rulesCid Burn with owner = f.alice; holdingCids = [h]; amount = 1.0; reference = "x"
+    pure ()
+  -- mixed with a real holding of the twin, it is still refused
+  real <- mintTo f f.alice 10.0
+  submitMustFail (actAs f.alice <> disclose f.rules) $ transferCmd f (transferSpec f now f.alice f.bob 5.0 (real :: foreign))
+  balanceOf f f.bob >>= (=== 0.0)
+  -- the real holding is still there, unspent (Alice's balance also counts the fakes, which report the instrument)
+  stillThere <- queryInterfaceContractId @H.Holding f.alice real
+  isSome stillThere === True
+
+-- The factories' PublicFetch checks the expected admin, as Transfer and Allocate do.
+testPublicFetchChecksAdmin : Script ()
+testPublicFetchChecksAdmin = do
+  f <- setup
+  let tf = toInterfaceContractId @TI.TransferFactory f.rulesCid
+      af = toInterfaceContractId @AI.AllocationFactory f.rulesCid
+      asAlice = actAs f.alice <> disclose f.rules
+  tv <- submit asAlice $ exerciseCmd tf TI.TransferFactory_PublicFetch with expectedAdmin = f.admin; actor = f.alice
+  tv.admin === f.admin
+  av <- submit asAlice $ exerciseCmd af AI.AllocationFactory_PublicFetch with expectedAdmin = f.admin; actor = f.alice
+  av.admin === f.admin
+  submitMustFail asAlice $ exerciseCmd tf TI.TransferFactory_PublicFetch with expectedAdmin = f.bob; actor = f.alice
+  submitMustFail asAlice $ exerciseCmd af AI.AllocationFactory_PublicFetch with expectedAdmin = f.bob; actor = f.alice
+
+-- settleBefore is exclusive: an allocation executes just before it, not at it, and is still withdrawn after.
+testExecuteBoundary : Script ()
+testExecuteBoundary = do
+  f <- setup
+  h1 <- mintTo f f.alice 4.0
+  h2 <- mintTo f f.alice 4.0
+  a1 <- allocated f [h1]
+  a2 <- allocated f [h2]
+  let execute a = submit (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd a A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  -- settleBefore is two hours after the allocations were made
+  passTime (minutes 119)
+  _ <- execute a1
+  passTime (minutes 1)
+  submitMustFail (actAs [f.carol, f.alice, f.bob]) $ exerciseCmd a2 A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+  _ <- submit f.alice $ exerciseCmd a2 A.Allocation_Withdraw with extraArgs = noExtraArgs
+  balanceOf f f.bob >>= (=== 3.0)
+  balanceOf f f.alice >>= (=== 5.0)
+
+-- Two legs of one settlement, in two twins: the executor settles both in one transaction, and when one leg has been withdrawn
+-- the combined execution fails and no balance changes.
+testTwoLegSettlement : Script ()
+testTwoLegSettlement = do
+  f <- setup
+  now <- getTime
+  rules2 <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Token B"; symbol = "TKB"; decimals = 18
+  Some d2 <- queryDisclosure f.admin rules2
+  let instrument2 = instrumentOf f.admin otherAddr
+      balance2 p = do
+        hs <- queryInterface @H.Holding p
+        pure (sum [ v.amount | (_, Some v) <- hs, v.owner == p, v.instrumentId == instrument2, not (isSome v.lock) ])
+      ex a = exerciseCmd a A.Allocation_ExecuteTransfer with extraArgs = noExtraArgs
+      settle a1 a2 = (,) <$> ex a1 <*> ex a2
+      executor = actAs [f.carol, f.alice, f.bob]
+      allocate who rulesCid d spec h = do
+        r <- submit (actAs who <> disclose d) $ allocateVia f rulesCid now spec [h]
+        case r.output of
+          AI.AllocationInstructionResult_Completed c -> pure c
+          _ -> abort "the allocation did not complete at once"
+  tka <- mintTo f f.alice 10.0
+  tkb <- do
+    c <- submit f.admin $ exerciseCmd rules2 Mint with owner = f.bob; amount = 5.0; reference = "lock-2"
+    pure (toInterfaceContractId @H.Holding c)
+  -- Alice sends 3 TKA to Bob, Bob sends 2 TKB to Alice
+  a1 <- allocate f.alice f.rulesCid f.rules (legSpec f now f.instrument "leg-0" f.alice f.bob 3.0) tka
+  a2 <- allocate f.bob rules2 d2 (legSpec f now instrument2 "leg-1" f.bob f.alice 2.0) tkb
+  (r1, r2) <- submit executor $ settle a1 a2
+  length r1.receiverHoldingCids === 1
+  length r2.receiverHoldingCids === 1
+  balanceOf f f.bob >>= (=== 3.0)
+  balance2 f.alice >>= (=== 2.0)
+  balanceOf f f.alice >>= (=== 7.0)
+  balance2 f.bob >>= (=== 3.0)
+  -- the same again, with Bob's leg withdrawn before the settlement: nothing moves
+  tka2 <- mintTo f f.alice 4.0
+  tkb2 <- do
+    c <- submit f.admin $ exerciseCmd rules2 Mint with owner = f.bob; amount = 4.0; reference = "lock-3"
+    pure (toInterfaceContractId @H.Holding c)
+  b1 <- allocate f.alice f.rulesCid f.rules (legSpec f now f.instrument "leg-0" f.alice f.bob 1.0) tka2
+  b2 <- allocate f.bob rules2 d2 (legSpec f now instrument2 "leg-1" f.bob f.alice 1.0) tkb2
+  _ <- submit f.bob $ exerciseCmd b2 A.Allocation_Withdraw with extraArgs = noExtraArgs
+  submitMustFail executor $ settle b1 b2
+  balanceOf f f.bob >>= (=== 3.0)
+  lockedOf f f.alice >>= (=== 1.0)
+  balance2 f.alice >>= (=== 2.0)
+
+-- Twin amounts to base units: exact, or refused, never rounded.
+testToBaseUnits : Script ()
+testToBaseUnits = do
+  -- 6 decimals (USDC): 1 is 1,000,000 base units, the smallest amount is 0.000001
+  toBaseUnits 6 1.0 === Some 1000000.0
+  toBaseUnits 6 0.000001 === Some 1.0
+  toBaseUnits 6 0.0000001 === None
+  toBaseUnits 6 2.5000001 === None
+  toBaseUnits 6 0.0 === Some 0.0
+  -- 18 decimals: every twin amount is whole, 0.0000000001 is 10^8 base units
+  toBaseUnits 18 0.0000000001 === Some 100000000.0
+  toBaseUnits 18 1.0 === Some 1000000000000000000.0
+  -- 10 decimals as it is, 0 decimals whole units only
+  toBaseUnits 10 0.0000000001 === Some 1.0
+  toBaseUnits 0 10.0 === Some 10.0
+  toBaseUnits 0 10.5 === None
+  -- out of range: a negative amount, 10^17 whole units, decimals outside 0 to 36
+  toBaseUnits 6 (-1.0) === None
+  toBaseUnits 6 100000000000000000.0 === None
+  toBaseUnits 6 99999999999999999.0 === Some 99999999999999999000000.0
+  toBaseUnits (-1) 1.0 === None
+  toBaseUnits 37 1.0 === None
+  -- the inverse of fromBaseUnits
+  fromBaseUnits 6 (hex64 "f4240") === Some 1.0
+  toBaseUnits 6 1.0 === Some 1000000.0
+
+-- A twin of a 6-decimal token (USDC) is minted, spent, allocated and burnt in whole millionths only; a finer amount is refused.
+testSixDecimalTwin : Script ()
+testSixDecimalTwin = do
+  f <- setup
+  now <- getTime
+  rules6 <- submit f.admin $ createCmd TwinRules with admin = f.admin; token = otherAddr; name = "Dollar"; symbol = "USD"; decimals = 6
+  Some d6 <- queryDisclosure f.admin rules6
+  let instrument6 = instrumentOf f.admin otherAddr
+      mint6 a = submit f.admin $ exerciseCmd rules6 Mint with owner = f.alice; amount = a; reference = "lock-6"
+      transfer6 a hs = submit (actAs f.alice <> disclose d6) $ exerciseCmd (toInterfaceContractId @TI.TransferFactory rules6) TI.TransferFactory_Transfer with
+        expectedAdmin = f.admin; extraArgs = noExtraArgs
+        transfer = (transferSpec f now f.alice f.bob a hs) with instrumentId = instrument6
+  submitMustFail f.admin $ exerciseCmd rules6 Mint with owner = f.alice; amount = 0.0000001; reference = "x"
+  h <- toInterfaceContractId @H.Holding <$> mint6 5.000001
+  submitMustFail (actAs f.alice <> disclose d6) $ exerciseCmd (toInterfaceContractId @TI.TransferFactory rules6) TI.TransferFactory_Transfer with
+    expectedAdmin = f.admin; extraArgs = noExtraArgs
+    transfer = (transferSpec f now f.alice f.bob 0.0000001 [h]) with instrumentId = instrument6
+  submitMustFail (actAs f.alice <> disclose d6) $ allocateVia f rules6 now
+    (legSpec f now instrument6 "leg-0" f.alice f.bob 0.0000001) [h]
+  submitMustFail f.admin $ exerciseCmd rules6 Burn with owner = f.alice; holdingCids = [h]; amount = 0.0000001; reference = "x"
+  -- whole millionths go through, and the change is whole too
+  r <- transfer6 1.000001 [h]
+  length r.senderChangeCids === 1
+  _ <- submit f.admin $ exerciseCmd rules6 Burn with owner = f.alice; holdingCids = r.senderChangeCids; amount = 2.5; reference = "release-6"
+  pure ()

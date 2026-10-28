@@ -60,6 +60,7 @@ The demo passed all its checks on the same machine, with one NVIDIA RTX PRO 6000
 | `explorer/` | A block explorer for Ostia, with a tROME faucet and an in-browser proof check (see [explorer/README.md](explorer/README.md)) |
 | `load/` | The mixed load kit (tokens, NFTs, ERC-3643, Uniswap V2, a RedStone price consumer, TACEO's Merces contracts with client-side proofs only) and what one DevNet run measured |
 | `apps/otc/` | An OTC app in its own Daml package: a seller's offer of a Canton token for an ERC-20 payment, and the trade a venue makes of it (see [apps/otc/README.md](apps/otc/README.md)) |
+| `apps/twin/` | The Canton twin of an ERC-20 held in an Ostia vault, in its own Daml package: a CIP-0056 token (V1) with transfer and allocation factories and the admin's mint and burn (see [apps/twin/README.md](apps/twin/README.md)) |
 | `demo/` | A deposit, a payment, a withdrawal, a payment whose allocation is taken back, and a tampered proof (run on a GPU on 2026-10-05; `results/` holds the runs and the smoke test) |
 
 `PINS` lists the exact versions and image digests everything is built against.

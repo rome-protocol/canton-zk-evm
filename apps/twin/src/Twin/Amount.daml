@@ -1,0 +1,61 @@
+-- Amounts: from an ERC-20's base units to a twin's amount. A twin has 10 decimals, like every Daml `Decimal`. A token with 10 or
+-- fewer decimals converts exactly; one with more converts only when the amount is a whole number of twin units (a multiple of
+-- 10^(decimals - 10) base units), and a finer amount is refused (`None`), never rounded.
+module Twin.Amount where
+
+import DA.Numeric (cast)
+import qualified DA.Text as T
+
+-- | Decimals of every twin.
+twinDecimals : Int
+twinDecimals = 10
+
+pow10 : Int -> Numeric 0
+pow10 n = if n <= 0 then intToNumeric 1 else intToNumeric 10 * pow10 (n - 1)
+
+hexDigits : [(Text, Int)]
+hexDigits = zip (T.explode "0123456789abcdef") [0 .. 15]
+
+hexValue : Numeric 0 -> [Text] -> Optional (Numeric 0)
+hexValue acc [] = Some acc
+hexValue acc (c :: cs) = case lookup c hexDigits of
+  None -> None
+  Some d -> hexValue (acc * intToNumeric 16 + intToNumeric d) cs
+
+-- | The twin's amount for `baseUnits` (an ERC-20 amount as 64 lowercase hex digits) of a token with `decimals` decimals (0 to 36).
+-- `None` for anything not exact: malformed hex, a finer amount than 10 decimals, or more than 10^17 whole units.
+fromBaseUnits : Int -> Text -> Optional Decimal
+fromBaseUnits decimals baseUnits
+  | decimals < 0 || decimals > 36 = None
+  | T.length baseUnits /= 64 = None
+  | not (T.isPrefixOf (T.implode (replicate 34 "0")) baseUnits) = None
+  | otherwise = case hexValue (intToNumeric 0) (T.explode (T.drop 34 baseUnits)) of
+      None -> None
+      Some base
+        | decimals <= twinDecimals -> if base >= pow10 (17 + decimals) then None else units (base * pow10 (twinDecimals - decimals))
+        | base >= pow10 36 -> None
+        | otherwise ->
+            let step = pow10 (decimals - twinDecimals)
+                q = base / step
+            in if q * step == base then units q else None
+  where
+    -- `q` whole units of 10^-10 (below 10^27, which a `Decimal` holds)
+    units : Numeric 0 -> Optional Decimal
+    units q
+      | q >= pow10 27 = None
+      | otherwise = Some (cast q / 10000000000.0)
+
+-- | The ERC-20 base units (a whole number, as a `Numeric 0`) of a twin `amount` of a token with `decimals` decimals (0 to 36).
+-- `None` for anything not exact: a negative amount, a finer amount than one base unit (a 6-decimal token has no 0.0000001), or
+-- more than 10^17 whole units. The inverse of `fromBaseUnits`.
+toBaseUnits : Int -> Decimal -> Optional (Numeric 0)
+toBaseUnits decimals amount
+  | decimals < 0 || decimals > 36 = None
+  | amount < 0.0 || amount >= 100000000000000000.0 = None
+  | otherwise =
+      let u = cast (amount * 10000000000.0) : Numeric 0   -- twin units of 10^-10, a whole number
+      in if decimals <= twinDecimals
+           then let step = pow10 (twinDecimals - decimals)
+                    q = u / step
+                in if q * step == u then Some q else None
+           else if u >= pow10 (46 - decimals) then None else Some (u * pow10 (decimals - twinDecimals))
