@@ -14,7 +14,7 @@ not known whether it committed ("committed": null; reth is left where it is: an 
 README.md), 1 on any other failure (reth is moved
 back too, where it had moved). One JSON line on stdout says which, whatever the failure.
 """
-import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
+import argparse, base64, contextlib, fcntl, functools, hashlib, hmac, http.client, itertools, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -165,29 +165,75 @@ REGISTRY_BACKOFF = 30.0         # seconds a registry that could not be reached i
 REGISTRY_DOWN: dict = {}        # registry URL -> (time.monotonic() until which it is not asked, why)
 
 
-def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF):
-    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
-    or None when the service has none (HTTP 404). The service is trusted for nothing: the answer is read to at most REGISTRY_MAX_BODY bytes and
-    within `deadline` seconds in all, and its receiver must be a party id and its ref text of at most REGISTRY_MAX_FIELD bytes. A service that cannot
-    be reached, is too slow or answers anything else leaves the lock's leg out with that reason; one that cannot be reached or is too slow is not asked
-    again for `backoff` seconds (REGISTRY_DOWN). The answers are asked once per id."""
-    seen: dict = {}
+class _RegistryStatus(Exception):
+    """The registry answered with this HTTP status instead of 200."""
 
-    def fetch(lock_id: str):
-        end = time.monotonic() + deadline
-        with urllib.request.urlopen(f"{base_url.rstrip('/')}/twin/v1/lock-parts/{lock_id}", timeout=min(timeout, deadline)) as r:
-            chunks, size = [], 0
-            while True:
-                if time.monotonic() > end:
-                    raise TimeoutError(f"no answer within {deadline:g} s")
-                chunk = r.read1(8192)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > REGISTRY_MAX_BODY:
-                    raise ValueError("the answer is too long")
-                chunks.append(chunk)
-        body = json.loads(b"".join(chunks))
+
+def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 10, backoff: float = REGISTRY_BACKOFF, budget: float | None = None):
+    """A function that asks the twin registry service (`GET <url>/twin/v1/lock-parts/<lock id>`) for the parts of a lock's id: {"receiver", "ref"},
+    or None when the service has none (HTTP 404). The service is trusted for nothing: a request is bounded as a whole (connecting, the status line,
+    the headers and the body) by `deadline` seconds, by a timer and not by the socket's timeout, which a server that sends a byte now and then
+    defeats; when it runs out the connection is closed under the request. The answer is read to at most REGISTRY_MAX_BODY bytes, a redirect is
+    not followed, and the receiver must be a party id and the ref text of at most REGISTRY_MAX_FIELD bytes. All the requests of one reader (the
+    builder makes one for each block) share `budget` seconds (the deadline by default), so that a slow service costs the block one wait, not one for
+    every lock. A service that cannot be reached, is too slow or answers anything else (an answer that cannot be parsed or decoded, nested
+    too deep, a status other than 200 and 404) leaves the lock's leg out with that reason, and never fails the build; one that cannot be reached or
+    is too slow is not asked again for `backoff` seconds (REGISTRY_DOWN). The answers are asked once per id."""
+    seen: dict = {}
+    spent = [0.0]
+    budget = deadline if budget is None else budget
+    url = urllib.parse.urlsplit(base_url)
+
+    def fetch(lock_id: str, limit: float) -> bytes:
+        connection = (http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection)(url.hostname, url.port, timeout=min(timeout, limit))
+        out: dict = {}
+        over = threading.Event()
+
+        def run():
+            r = None
+            try:
+                connection.connect()
+                if over.is_set():
+                    return
+                connection.request("GET", f"{url.path.rstrip('/')}/twin/v1/lock-parts/{lock_id}", headers={"accept": "application/json"})
+                r = connection.getresponse()
+                if r.status != 200:
+                    raise _RegistryStatus(r.status)
+                chunks, size = [], 0
+                while True:
+                    chunk = r.read1(8192)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > REGISTRY_MAX_BODY:
+                        raise ValueError("the answer is too long")
+                    chunks.append(chunk)
+                out["body"] = b"".join(chunks)
+            except BaseException as e:   # handed to the caller's thread
+                out["error"] = e
+            finally:   # the response too: a stored error holds this frame, and the frame the response's file, which would keep the socket open
+                if r is not None:
+                    r.close()
+                connection.close()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(limit)
+        if worker.is_alive():   # still connecting, or waiting for a byte: close the socket under it, which ends its read
+            over.set()
+            sock = connection.sock
+            if sock is not None:
+                with contextlib.suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
+                with contextlib.suppress(OSError):
+                    sock.close()
+            raise TimeoutError(f"no answer within {limit:g} s")
+        if "error" in out:
+            raise out["error"]
+        return out["body"]
+
+    def parse(raw: bytes):
+        body = json.loads(raw)
         if not isinstance(body, dict) or not canton_party_text(body.get("receiver")) or not isinstance(body.get("ref"), str):
             raise ValueError("not {receiver, ref}")
         if not 0 < len(body["ref"].encode("utf-8")) <= REGISTRY_MAX_FIELD:   # a lone surrogate cannot be encoded: a ValueError
@@ -200,19 +246,26 @@ def twin_registry_reader(base_url: str, timeout: float = 10, deadline: float = 1
         down = REGISTRY_DOWN.get(base_url)
         if down and time.monotonic() < down[0]:
             raise NoCantonSide(down[1])
+        limit = min(deadline, budget - spent[0])
+        if limit <= 0:
+            why = f"the twin registry service cannot be read: the block's {budget:g} s for it are used"
+            REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
+            raise NoCantonSide(why)
+        started = time.monotonic()
         try:
-            seen[lock_id] = fetch(lock_id)
-        except urllib.error.HTTPError as e:
-            e.close()
-            if e.code != 404:
-                raise NoCantonSide(f"the twin registry service answered HTTP {e.code}") from e
+            seen[lock_id] = parse(fetch(lock_id, limit))
+        except _RegistryStatus as e:
+            if e.args[0] != 404:
+                raise NoCantonSide(f"the twin registry service answered HTTP {e.args[0]}") from e
             seen[lock_id] = None
-        except ValueError as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
+        except (ValueError, TypeError, RecursionError) as e:   # also a UnicodeError; the text is not the answer's, which may hold what cannot be written
             raise NoCantonSide("the twin registry service gave an answer that is not the parts of a lock's id") from e
         except (OSError, http.client.HTTPException) as e:
             why = f"the twin registry service cannot be read: {e}"
             REGISTRY_DOWN[base_url] = (time.monotonic() + backoff, why)
             raise NoCantonSide(why) from e
+        finally:
+            spent[0] += time.monotonic() - started
         return seen[lock_id]
     return read
 
@@ -1808,6 +1861,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
     checked, staged = False, None   # with the pre-check on: whether this block was checked, and the prefix it cut the block back to (reth's tip already)
     reuse: dict = {}   # the files of the pre-check of the whole block, when it passed (the prover's input is made once)
     work = Path(cfg.work_dir) / f"block-{n}"
+    lock_parts = twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None   # one for the block: its answers and its time budget hold across rebuilds
     while True:
         # Build the block and see which legs it records. A transaction whose leg has no Canton side is not allowed in: reth goes back to
         # Canton's head and the block is built again without it (and without its sender's later transactions). Nothing is proven until
@@ -1825,7 +1879,7 @@ def build(cfg: Config, reth: Reth, chain: dict, head: str, exclude: set, prove_e
         paused = pause_in_force(Ledger(cfg).head() if defer_legs else chain, now) if events else None
         parent = payload["parentHash"]   # every block before the new one is final when a trade payment is judged (on Canton's head), so its state tells which claim ids are gone
         canton = Canton(Ledger(cfg), chain, now, cfg.venues, used=lambda claim_id: claim_used(reth, chain, parent, claim_id),
-                        lock_parts=twin_registry_reader(cfg.twin_registry_url) if cfg.twin_registry_url else None)
+                        lock_parts=lock_parts)
         if paused:   # Canton refuses a block that carries a leg: every leg of this block is left out, with nothing read from Canton
             legs, missing = [], [(event, Said(f"the Canton legs are paused until {stamp(paused)}")) for event in events]
         else:

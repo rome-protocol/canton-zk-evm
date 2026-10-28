@@ -58,6 +58,14 @@ class Registry:
                 registry.asked.append(self.path)
                 lock_id = self.path.rsplit("/", 1)[1]
                 time.sleep(registry.delay)
+                if registry.trickle == "headers":   # the status line, then a byte now and then, and the headers never end
+                    try:
+                        self.wfile.write(b"HTTP/1.1 200 OK\r\n"); self.wfile.flush()
+                        for _ in range(100):
+                            self.wfile.write(b"x"); self.wfile.flush(); time.sleep(0.1)
+                    except OSError:
+                        pass
+                    return
                 if registry.trickle:
                     self.send_response(200)
                     self.send_header("content-length", "100000")
@@ -76,10 +84,13 @@ class Registry:
                     code, body = 200, json.dumps({"lockId": lock_id, **registry.parts[lock_id]}).encode()
                 else:
                     code, body = 404, b"{}"
-                self.send_response(code)
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(code)
+                    self.send_header("content-length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except OSError:   # the builder hung up: it has read what it will
+                    pass
         self.server = HTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
@@ -180,7 +191,10 @@ class Twins(tb.LegCase):
     def test_a_hostile_registry_answer_leaves_the_lock_out_and_never_stops_the_block(self):
         good = {"receiver": RECEIVER, "ref": REF}
         for raw in (json.dumps({**good, "ref": "\ud800"}).encode(), json.dumps({**good, "ref": "r" * 257}).encode(), json.dumps({**good, "ref": ""}).encode(),
-                    b'{"receiver":"' + RECEIVER.encode() + b'","ref":"' + b"a" * 70000 + b'"}', b"[1]", b"\xff\xfe", json.dumps({**good, "receiver": 5}).encode()):
+                    b'{"receiver":"' + RECEIVER.encode() + b'","ref":"' + b"a" * 70000 + b'"}', b"[1]", b"\xff\xfe", json.dumps({**good, "receiver": 5}).encode(),
+                    b"[" * 10000 + b"]" * 10000, b'{"a":' * 10000 + b"1" + b"}" * 10000, b"[" * 70000,   # nested deeper than the parser's stack
+                    b'{"receiver":"\xc3\x28","ref":"r"}', b'{"receiver":"\xed\xa0\x80","ref":"r"}',   # bytes that are no UTF-8
+                    b" " * (5 * 1024 * 1024) + b"{}"):   # far past the cap
             s, t = self.setup_twin(LOCK)
             s.registry.raw = raw
             self.assert_left_out(s, t, "not the parts of a lock's id")
@@ -215,6 +229,47 @@ class Twins(tb.LegCase):
             b.twin_registry_reader(registry.url, timeout=5, deadline=0.5)("aa" * 32)
         self.assertLess(time.monotonic() - started, 3)
         self.assertIn("cannot be read", str(e.exception))
+
+    def test_a_registry_that_trickles_its_status_line_and_headers_is_given_up_on_at_the_deadline(self):
+        registry = Registry(trickle="headers")
+        self.addCleanup(registry.close)
+        started = time.monotonic()
+        with self.assertRaises(b.NoCantonSide) as e:
+            b.twin_registry_reader(registry.url, timeout=5, deadline=0.5)("aa" * 32)
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIn("cannot be read", str(e.exception))
+
+    def test_a_registry_that_is_slow_for_every_lock_costs_the_block_one_budget(self):
+        registry = Registry(delay=0.3)
+        self.addCleanup(registry.close)
+        read = b.twin_registry_reader(registry.url, timeout=5, deadline=1, budget=0.5)
+        started = time.monotonic()
+        self.assertIsNone(read("aa" * 32))   # 404, after 0.3 s
+        for lock_id in ("bb" * 32, "cc" * 32, "dd" * 32):   # the second is cut at the budget's end, the rest are not asked
+            with self.assertRaises(b.NoCantonSide):
+                read(lock_id)
+        self.assertLess(time.monotonic() - started, 0.9)
+        self.assertEqual(len(registry.asked), 2)
+
+    def test_a_parser_that_runs_out_of_stack_leaves_the_lock_out(self):   # a 10,000-deep array parses on Python 3.14 and not on 3.12: make the failure certain
+        registry = Registry(raw=b"[1]")
+        self.addCleanup(registry.close)
+        def deep(raw):
+            raise RecursionError("maximum recursion depth exceeded")
+        original, b.json.loads = b.json.loads, deep
+        try:
+            with self.assertRaises(b.NoCantonSide) as e:
+                b.twin_registry_reader(registry.url)("aa" * 32)
+        finally:
+            b.json.loads = original
+        self.assertIn("not the parts of a lock's id", str(e.exception))
+
+    def test_a_registry_that_answers_with_a_redirect_is_not_followed(self):
+        registry = Registry(status=302)
+        self.addCleanup(registry.close)
+        with self.assertRaises(b.NoCantonSide) as e:
+            b.twin_registry_reader(registry.url)("aa" * 32)
+        self.assertIn("HTTP 302", str(e.exception))
 
     def test_a_lock_is_exact_in_what_daml_accepts(self):
         self.assertIsNone(b.twin_units(10**36, 24))
