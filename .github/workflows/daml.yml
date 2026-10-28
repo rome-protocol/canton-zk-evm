@@ -2,10 +2,10 @@ name: daml
 
 on:
   pull_request:
-    paths: ["daml/**", "apps/otc/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "apps/otc/**", "apps/twin/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
   push:
     branches: [main]
-    paths: ["daml/**", "apps/otc/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
+    paths: ["daml/**", "apps/otc/**", "apps/twin/**", "network/canton/build-dar.sh", "network/canton/fetch.sh", "network/canton/dar-id.sh", "network/canton/check-damlc.sh", "network/canton/check-sdk-damlc.sh", "network/canton/fetch-jar.sh", "PINS", ".github/workflows/daml.yml"]
 
 permissions:
   contents: read

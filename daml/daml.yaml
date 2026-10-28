@@ -1,4 +1,4 @@
-# The canton-zk-evm Daml package. Build it through build.sh, which fills in the dars path and the sidecar form.
+# The canton-zk-evm Daml package. Build it through build.sh, which fills in the dars path, the twin app's DAR (ostia-twin, from 0.5.0) and the sidecar form.
 sdk-version: 3.5.12
 name: canton-zk-evm
 version: 0.5.0
@@ -11,5 +11,6 @@ data-dependencies:
   - __DARS__/splice-api-token-holding-v1-1.0.0.dar
   - __DARS__/splice-api-token-allocation-v1-1.0.0.dar
   - __DARS__/splice-api-token-transfer-instruction-v1-1.0.0.dar
+  - __TWIN__
 build-options:
   - --target=2.1

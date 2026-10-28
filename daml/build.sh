@@ -15,7 +15,10 @@ b=$here/build/$form
 rm -rf "$b"; mkdir -p "$b" "$here/dist"
 cp -r "$here/src" "$b/src"
 cp "$here/sidecar/$form.daml" "$b/src/Zk/Sidecar.daml"
-sed "s|__DARS__|$here/dars|" "$here/daml.yaml" > "$b/daml.yaml"
+# The chain package depends on the twin app's DAR (from 0.5.0), which is built first with the same toolchain.
+"$here/../apps/twin/build.sh" >&2
+twin=$(cd "$here/../apps/twin" && pwd)/dist/ostia-twin.dar
+sed "s|__DARS__|$here/dars|; s|__TWIN__|$twin|" "$here/daml.yaml" > "$b/daml.yaml"
 if [ "$form" = stub ]; then
   sed -i.bak "s|^name: canton-zk-evm\$|name: canton-zk-evm-stub|" "$b/daml.yaml"
 fi
